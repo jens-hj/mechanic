@@ -1,0 +1,21 @@
+[package]
+name = "mechanic-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy_math.workspace = true
+bytemuck.workspace = true
+mechanic-core = { path = "../mechanic-core" }
+thiserror.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+naga.workspace = true
+pollster.workspace = true
+wgpu = { workspace = true, features = ["noop"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "mechanic-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_gizmos_render",
+    "bevy_pbr",
+    "bevy_ui_render",
+    "bevy_winit",
+    "default_app",
+    "default_font",
+    "keyboard",
+    "mouse",
+    "multi_threaded",
+    "std",
+    "wayland",
+    "x11",
+] }
+mechanic-core = { path = "../mechanic-core" }
+mechanic-gpu = { path = "../mechanic-gpu" }
+
+[lints]
+workspace = true

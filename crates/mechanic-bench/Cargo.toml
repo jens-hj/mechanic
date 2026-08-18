@@ -1,0 +1,16 @@
+[package]
+name = "mechanic-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy_math.workspace = true
+mechanic-core = { path = "../mechanic-core" }
+mechanic-gpu = { path = "../mechanic-gpu" }
+pollster.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true

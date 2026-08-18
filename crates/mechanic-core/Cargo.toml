@@ -1,0 +1,13 @@
+[package]
+name = "mechanic-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy_math.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
