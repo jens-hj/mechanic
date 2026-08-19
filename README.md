@@ -8,7 +8,7 @@ The repository currently implements the milestone-1 foundation:
 
 - a transactional CPU `ConstructionGraph` with stable generational handles;
 - exact weld-group compilation into compound bodies;
-- cuboid mass, center-of-mass, and inertia calculation;
+- exact cuboid and hollow-cylinder mass, center-of-mass, and inertia calculation;
 - canonical bearing spanning forests and explicit loop-closure edges;
 - fixed-capacity GPU ABI, failure states, snapshot handles, GPU LBVH/SAT/contact
   kernels, and coordinate-space bearing FK;
@@ -30,11 +30,13 @@ cargo run -p mechanic-app
   so the construction view stays unobstructed.
 - Option/Alt + left-drag to orbit (middle-drag also works), Shift + left-drag
   to move the orbital centre across the ground plane, and use the mouse wheel
-  or trackpad scroll to zoom. Right-click removes one hovered cuboid; hold and
-  drag to preview a flat rectangular deletion plane. `Q` cycles its plane just
-  like block placement, and releasing removes the selected cuboids atomically.
+  or trackpad scroll to zoom. Right-click removes one hovered cylinder. On a
+  cuboid, hold and drag to preview a flat rectangular deletion plane. `Q`
+  cycles its plane like block placement, and releasing removes the selected
+  cuboids atomically.
 - Use the clickable hotbar at the bottom of the window or press `1` for Block,
-  `2` for Bearing, `3` for Weld, `4` for Hammer, and `5` for Joint X-ray.
+  `2` for Cylinder, `3` for Bearing, `4` for Weld, `5` for Hammer, and `6` for
+  Joint X-ray.
   Hover an icon to see its tool name. Tool selection persists when the
   simulation mode changes.
 - With Block selected, click and release the white ghost to place one block, or
@@ -42,12 +44,26 @@ cargo run -p mechanic-app
   press `Q` to cycle the `XZ`, `XY`, and `YZ` planes; release to place the whole
   sheet, or press `Escape`/right-click to cancel. A drag is limited to 4,096
   blocks and commits atomically. Blocks have a fixed 0.25 m cube size.
+- With Cylinder selected, click a flat ground, cuboid, cylinder-end, or bearing
+  socket face to place one load-bearing cylinder with its local Y axis along
+  the face normal. Left/Right adjusts outer diameter by 0.05 m,
+  Shift+Left/Right adjusts inner diameter by 0.05 m, and Down/Up adjusts axial
+  length by 0.25 m. Shift+Down/Up adjusts the retained slice angle by 15° from
+  15° through a full 360° cylinder; the slice is centred on the cylinder's
+  local +X direction. The supported ranges are 0.05–8.00 m outer diameter,
+  0.00 m through outer-minus-0.05 m inner diameter, and 0.25–8.00 m length.
+  Defaults are 0.25 m outer diameter, solid (0.00 m inner), 0.25 m length, and
+  a full 360° sweep. Reducing the outer diameter clamps the bore to preserve
+  the 0.05 m wall. These transient values survive tool and simulation changes
+  but do not add undo-history entries.
 - With Weld selected, left-click two touching existing objects. The weld
   compiles both objects into one rigid compound without spawning geometry.
-- With Bearing selected, `[` / `]` decrease/increase the outer diameter by
-  0.05 m, while `Shift+[` / `Shift+]` adjust the inner diameter by 0.05 m.
+- With Bearing selected, Left/Right adjusts the outer diameter by 0.05 m,
+  while Shift+Left/Right adjusts the inner diameter by 0.05 m. Up/Down have no
+  bearing action because bearings have no adjustable axial length.
   The HUD and placement ghost show the current values. The first left-click
-  places that orange ring 5 cm into and 5 cm out of a cuboid face without
+  places that orange ring 5 cm into and 5 cm out of a cuboid face or cylinder
+  end without
   creating a block. The default is 0.25 m outer and 0.10 m inner diameter.
   Switch to Block and move a block ghost onto any face area covered by the
   bearing ring. The bearing and block ghost turn green when the attachment is
@@ -86,11 +102,15 @@ cargo run -p mechanic-app
 - While simulating with Hammer selected, press and hold the left mouse button
   on a moving cuboid to charge a strike, then release to apply an impulse at
   that exact point along the camera ray. A quick click gives a light tap;
-  charging for 1.5 seconds reaches maximum strength. Tools remain selectable in
-  either mode, but build tools act only while building and Hammer acts only
-  while actively simulating.
+  charging for 1.5 seconds reaches maximum strength. Strong impacts are
+  delivered over at most 12 physics ticks, with excess force on very light
+  bodies limited so they cannot cross thin collision geometry between ticks.
+  Tools remain selectable in either mode, but build tools act only while
+  building and Hammer acts only while actively simulating.
 
-New blocks automatically weld to every face-touching block. This includes
+New blocks and cylinders automatically weld through positive-area material
+overlap on touching flat faces, including only the material retained by a
+cylinder slice. This includes
 blocks placed beside or on top of existing blocks and all neighbors inside a
 dragged sheet. Blocks touching the ground are also welded to it automatically,
 so construction placed on the platform is fixed by default. When placement
@@ -98,8 +118,13 @@ starts on a bearing-connected rigid group, its new blocks weld only to that
 clicked rotor and to each other; touching blocks outside that rotor remain
 physically separate.
 
-Bearing placement requires a cuboid support; the ground can support standalone
-cubes or be selected as one side of a weld. Valid placement ghosts are
+Bearings require a cuboid face or flat annular or sector-shaped cylinder end;
+curved cylinder walls and radial slice walls never provide placement, weld, or
+bearing geometry. The ground can support blocks or cylinders and can be
+selected as one side of a weld. A face entirely inside a cylinder bore or
+outside its retained slice stays disconnected. Curved and radial slice walls
+remain selectable for deletion, Hammer strikes, and object-level selection,
+and rays through a bore or omitted sector reach objects behind it. Valid placement ghosts are
 transparent white. Invalid placement and deletion ghosts are transparent red
 and match the geometry affected by the action. Bearing rings may visually
 overhang their supporting faces. Their holes are visual only: they do not cut,
@@ -109,6 +134,14 @@ have no mass or collision geometry. To keep heavy scenes responsive, simulation
 runs at most one fixed tick per rendered frame and updates moving geometry at a
 throttled cadence. It still uses synchronous CPU snapshot readback, so it is not
 evidence for the integrated-render gate.
+
+Each full cylinder is rendered and picked as one smooth 24-segment annular mesh;
+slices retain the same 15° visual resolution and add their exact radial cut
+walls. Physics compiles every cylinder or slice to 16 radial cuboid colliders,
+leaving the bore and omitted sector physically passable without changing the
+GPU ABI or collision kernels. Cuboids still compile to one collider each; under the
+131,072-collider limit an all-cylinder creation therefore supports about 8,192
+parts.
 
 The three smaller creation-picker scenes keep contact within articulated
 mechanisms enabled. The full 20,000-part stress scene disables that contact to

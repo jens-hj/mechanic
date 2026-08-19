@@ -6,7 +6,10 @@ use std::{
 use bevy_math::{Mat3, Quat, Vec3};
 use thiserror::Error;
 
-use crate::{BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, FaceOwner, PartId};
+use crate::{BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, FaceOwner, PartId, PartSpec};
+
+/// Number of cuboid colliders used for each cylinder.
+pub const CYLINDER_COLLIDER_COUNT: usize = 16;
 
 /// Aggregate mass properties expressed in the compiled root frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -136,7 +139,7 @@ pub struct CompiledCreation {
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TopologyError {
     /// Simulation requires at least one part.
-    #[error("construction contains no cuboids")]
+    #[error("construction contains no parts")]
     EmptyConstruction,
     /// A bearing's endpoints were welded into the same compound.
     #[error("bearing {bearing:?} connects compound {compound} to itself after weld compilation")]
@@ -206,7 +209,14 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     }
 
     let mut compounds = Vec::with_capacity(grouped.len());
-    let mut colliders = Vec::with_capacity(part_rows.len());
+    let collider_capacity = part_rows
+        .iter()
+        .map(|(_, spec)| match spec {
+            PartSpec::Cuboid(_) => 1,
+            PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
+        })
+        .sum();
+    let mut colliders = Vec::with_capacity(collider_capacity);
     let mut compound_by_dense_part = vec![0_u32; part_rows.len()];
 
     for member_rows in grouped.values() {
@@ -226,13 +236,13 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         for &row in member_rows {
             let (part, spec) = part_rows[row];
             compound_by_dense_part[row] = compound_index;
-            colliders.push(LocalCuboidCollider {
-                source_part: part,
+            append_part_colliders(
+                &mut colliders,
+                part,
                 compound_index,
-                local_center: spec.pose.translation() - mass_properties.center_of_mass,
-                local_rotation: spec.pose.rotation.quaternion(),
-                half_extents: spec.size_meters() * 0.5,
-            });
+                *spec,
+                mass_properties.center_of_mass,
+            );
         }
         let collider_end = u32::try_from(colliders.len()).expect("collider count fits u32");
         compounds.push(CompiledCompound {
@@ -451,33 +461,32 @@ fn compile_tree_metadata(
 }
 
 fn calculate_mass_properties<'a>(
-    parts: impl Iterator<Item = (PartId, crate::CuboidSpec)> + Clone + 'a,
+    parts: impl Iterator<Item = (PartId, PartSpec)> + Clone + 'a,
     is_static: bool,
 ) -> Result<MassProperties, TopologyError> {
     let mut total_mass = 0.0;
     let mut weighted_center = Vec3::ZERO;
     let identifying_part = parts.clone().next().expect("weld groups are non-empty").0;
     for (_, spec) in parts.clone() {
-        let size = spec.size_meters();
-        let mass = CUBOID_DENSITY_KG_M3 * size.x * size.y * size.z;
-        total_mass += mass;
-        weighted_center += spec.pose.translation() * mass;
+        let properties = part_mass_properties(spec);
+        let world_center =
+            spec.pose().translation() + spec.pose().rotation.quaternion() * properties.local_center;
+        total_mass += properties.mass;
+        weighted_center += world_center * properties.mass;
     }
     let center_of_mass = weighted_center / total_mass;
     let mut inertia = Mat3::ZERO;
     for (_, spec) in parts {
-        let size = spec.size_meters();
-        let mass = CUBOID_DENSITY_KG_M3 * size.x * size.y * size.z;
-        let diagonal = Vec3::new(
-            mass * (size.y * size.y + size.z * size.z) / 12.0,
-            mass * (size.x * size.x + size.z * size.z) / 12.0,
-            mass * (size.x * size.x + size.y * size.y) / 12.0,
-        );
-        let rotation = Mat3::from_quat(spec.pose.rotation.quaternion());
-        let own_inertia = rotation * Mat3::from_diagonal(diagonal) * rotation.transpose();
-        let offset = spec.pose.translation() - center_of_mass;
+        let properties = part_mass_properties(spec);
+        let rotation = Mat3::from_quat(spec.pose().rotation.quaternion());
+        let own_inertia =
+            rotation * Mat3::from_diagonal(properties.local_inertia) * rotation.transpose();
+        let world_part_center =
+            spec.pose().translation() + spec.pose().rotation.quaternion() * properties.local_center;
+        let offset = world_part_center - center_of_mass;
         let outer = Mat3::from_cols(offset * offset.x, offset * offset.y, offset * offset.z);
-        inertia += own_inertia + mass * (Mat3::IDENTITY * offset.length_squared() - outer);
+        inertia +=
+            own_inertia + properties.mass * (Mat3::IDENTITY * offset.length_squared() - outer);
     }
 
     let determinant = inertia.determinant();
@@ -504,6 +513,103 @@ fn calculate_mass_properties<'a>(
             inertia.inverse()
         },
     })
+}
+
+#[derive(Clone, Copy)]
+struct PartMassProperties {
+    mass: f32,
+    local_center: Vec3,
+    local_inertia: Vec3,
+}
+
+fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
+    match spec {
+        PartSpec::Cuboid(spec) => {
+            let size = spec.size_meters();
+            let mass = CUBOID_DENSITY_KG_M3 * size.x * size.y * size.z;
+            PartMassProperties {
+                mass,
+                local_center: Vec3::ZERO,
+                local_inertia: Vec3::new(
+                    mass * (size.y * size.y + size.z * size.z) / 12.0,
+                    mass * (size.x * size.x + size.z * size.z) / 12.0,
+                    mass * (size.x * size.x + size.y * size.y) / 12.0,
+                ),
+            }
+        }
+        PartSpec::Cylinder(spec) => {
+            let outer = spec.dimensions.outer_diameter() * 0.5;
+            let inner = spec.dimensions.inner_diameter() * 0.5;
+            let length = spec.dimensions.axial_length();
+            let sweep = spec.dimensions.sweep_angle_radians();
+            let radial_squared = outer * outer + inner * inner;
+            let mass =
+                CUBOID_DENSITY_KG_M3 * sweep * (outer * outer - inner * inner) * length * 0.5;
+            let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
+                / (3.0 * sweep * (outer * outer - inner * inner));
+            let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
+            let radial_perpendicular = radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
+            let axial_variance = length * length / 12.0;
+            PartMassProperties {
+                mass,
+                local_center: Vec3::new(center_x, 0.0, 0.0),
+                local_inertia: Vec3::new(
+                    mass * (axial_variance + radial_perpendicular),
+                    mass * (radial_parallel + radial_perpendicular - center_x * center_x),
+                    mass * (radial_parallel + axial_variance - center_x * center_x),
+                ),
+            }
+        }
+    }
+}
+
+fn append_part_colliders(
+    colliders: &mut Vec<LocalCuboidCollider>,
+    part: PartId,
+    compound_index: u32,
+    spec: PartSpec,
+    center_of_mass: Vec3,
+) {
+    match spec {
+        PartSpec::Cuboid(spec) => colliders.push(LocalCuboidCollider {
+            source_part: part,
+            compound_index,
+            local_center: spec.pose.translation() - center_of_mass,
+            local_rotation: spec.pose.rotation.quaternion(),
+            half_extents: spec.size_meters() * 0.5,
+        }),
+        PartSpec::Cylinder(spec) => {
+            let outer = spec.dimensions.outer_diameter() * 0.5;
+            let inner = spec.dimensions.inner_diameter() * 0.5;
+            let half_radial = (outer - inner) * 0.5;
+            let center_radius = (outer + inner) * 0.5;
+            let sweep = spec.dimensions.sweep_angle_radians();
+            let segment_angle = sweep / 16.0;
+            let half_tangent = outer * (segment_angle * 0.5).tan();
+            let start_angle = if spec.dimensions.sweep_angle_degrees() == 360 {
+                -segment_angle * 0.5
+            } else {
+                -sweep * 0.5
+            };
+            let part_rotation = spec.pose.rotation.quaternion();
+            for segment in 0_u16..16 {
+                let angle = start_angle + segment_angle * (f32::from(segment) + 0.5);
+                let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
+                colliders.push(LocalCuboidCollider {
+                    source_part: part,
+                    compound_index,
+                    local_center: spec.pose.translation() - center_of_mass
+                        + part_rotation * (radial * center_radius),
+                    local_rotation: part_rotation * Quat::from_rotation_y(-angle),
+                    half_extents: Vec3::new(
+                        half_radial,
+                        spec.dimensions.axial_length() * 0.5,
+                        half_tangent,
+                    ),
+                });
+            }
+        }
+    }
 }
 
 const fn ordered_pair(a: u32, b: u32) -> [u32; 2] {
@@ -559,7 +665,8 @@ mod tests {
 
     use crate::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        CuboidSpec, FaceKind, FaceRef, GridRotation, RigidLinkSpec, TopologyError, WeldSpec,
+        CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceRef, GridRotation,
+        RigidLinkSpec, TopologyError, WeldSpec,
     };
 
     fn cube_at(units: IVec3) -> CuboidSpec {
@@ -581,6 +688,93 @@ mod tests {
                 second: FaceRef::ground(),
             }))
             .unwrap();
+    }
+
+    #[test]
+    fn hollow_cylinder_compiles_exact_mass_inertia_and_sixteen_colliders() {
+        let mut graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::new(1.0, 0.5, 2.0).unwrap();
+        let spec = CylinderSpec::new(dimensions, BuildPose::default());
+        graph.apply(BuildCommand::SpawnCylinder(spec)).unwrap();
+
+        let compiled = graph.compile().unwrap();
+        let properties = compiled.compounds[0].mass_properties;
+        let outer = 0.5_f32;
+        let inner = 0.25_f32;
+        let expected_mass = crate::CUBOID_DENSITY_KG_M3
+            * core::f32::consts::PI
+            * (outer * outer - inner * inner)
+            * 2.0;
+        let expected_axial = expected_mass * (outer * outer + inner * inner) * 0.5;
+        let expected_transverse =
+            expected_mass * (3.0 * (outer * outer + inner * inner) + 4.0) / 12.0;
+        assert_eq!(compiled.colliders.len(), super::CYLINDER_COLLIDER_COUNT);
+        assert!((properties.mass - expected_mass).abs() < 1.0e-3);
+        assert!(properties.center_of_mass.abs_diff_eq(Vec3::ZERO, 1.0e-6));
+        assert!((properties.inertia.x_axis.x - expected_transverse).abs() < 1.0e-3);
+        assert!((properties.inertia.y_axis.y - expected_axial).abs() < 1.0e-3);
+        assert!((properties.inertia.z_axis.z - expected_transverse).abs() < 1.0e-3);
+        assert!(compiled.colliders.iter().all(|collider| {
+            (collider.half_extents.y - 1.0).abs() < 1.0e-6
+                && collider.local_center.length() >= inner - 1.0e-6
+        }));
+    }
+
+    #[test]
+    fn cylinder_sector_compiles_exact_offset_mass_properties_and_sixteen_colliders() {
+        let mut graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::new(1.0, 0.5, 2.0)
+            .unwrap()
+            .with_sweep_angle_degrees(90)
+            .unwrap();
+        graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                dimensions,
+                BuildPose::default(),
+            )))
+            .unwrap();
+
+        let compiled = graph.compile().unwrap();
+        let properties = compiled.compounds[0].mass_properties;
+        let outer = 0.5_f32;
+        let inner = 0.25_f32;
+        let length = 2.0_f32;
+        let sweep = core::f32::consts::FRAC_PI_2;
+        let expected_mass =
+            crate::CUBOID_DENSITY_KG_M3 * sweep * (outer * outer - inner * inner) * length * 0.5;
+        let expected_center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
+            / (3.0 * sweep * (outer * outer - inner * inner));
+        let radial_squared = outer * outer + inner * inner;
+        let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
+        let radial_perpendicular = radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
+
+        assert_eq!(compiled.colliders.len(), super::CYLINDER_COLLIDER_COUNT);
+        assert!((properties.mass - expected_mass).abs() < 1.0e-3);
+        assert!(
+            properties
+                .center_of_mass
+                .abs_diff_eq(Vec3::new(expected_center_x, 0.0, 0.0), 1.0e-6)
+        );
+        assert!(
+            (properties.inertia.x_axis.x
+                - expected_mass * (length * length / 12.0 + radial_perpendicular))
+                .abs()
+                < 1.0e-3
+        );
+        assert!(
+            (properties.inertia.y_axis.y
+                - expected_mass
+                    * (radial_parallel + radial_perpendicular
+                        - expected_center_x * expected_center_x))
+                .abs()
+                < 1.0e-3
+        );
+        assert!(
+            compiled
+                .colliders
+                .iter()
+                .all(|collider| { (collider.local_center + properties.center_of_mass).x > 0.0 })
+        );
     }
 
     fn bearing(

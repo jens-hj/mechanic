@@ -48,6 +48,7 @@ const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 // Diagonal Jacobi rows share off-centre inertia terms and adjacent bodies.
 // Under-relaxation keeps their simultaneous impulses dissipative.
 const BEARING_PROJECTION_RELAXATION: f32 = 0.5;
+const GRAVITY_ALIGNED_BEARING_SLEEP_SPEED: f32 = 0.005;
 const INVALID_INDEX: u32 = 0xffffffffu;
 const INVALID_NUMERIC_FLAG: u32 = 2u;
 
@@ -188,7 +189,7 @@ fn apply_velocity_deltas(@builtin(global_invocation_id) invocation: vec3<u32>) {
     angular_velocities[body] = vec4<f32>(angular_velocities[body].xyz + angular_delta, 0.0);
 }
 
-fn permitted_speed(body: u32) -> f32 {
+fn permitted_axis(body: u32) -> vec3<f32> {
     let mechanism = mechanism_bodies[body];
     let parent = mechanism.metadata.x;
     let bearing = bearings[mechanism.metadata.y];
@@ -196,7 +197,23 @@ fn permitted_speed(body: u32) -> f32 {
     if mechanism.metadata.z != 0u {
         axis = -normalize(quat_rotate(rotations[parent], bearing.local_axis_b.xyz));
     }
+    return axis;
+}
+
+fn permitted_speed(body: u32) -> f32 {
+    let mechanism = mechanism_bodies[body];
+    let parent = mechanism.metadata.x;
+    let axis = permitted_axis(body);
     return dot(angular_velocities[body].xyz - angular_velocities[parent].xyz, axis);
+}
+
+fn stabilized_speed(body: u32, speed: f32) -> f32 {
+    let gravity_aligned = abs(permitted_axis(body).y) > 0.999;
+    return select(
+        speed,
+        0.0,
+        gravity_aligned && abs(speed) < GRAVITY_ALIGNED_BEARING_SLEEP_SPEED,
+    );
 }
 
 @compute @workgroup_size(256)
@@ -210,7 +227,10 @@ fn advance_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if coordinate == INVALID_INDEX {
         return;
     }
-    let speed = permitted_speed(body);
+    // Constraint projection can feed world-space body motion back into a permitted
+    // coordinate after body damping. Damp the authoritative joint speed here so
+    // coupled passive bearings cannot retain a numerical limit cycle.
+    let speed = stabilized_speed(body, permitted_speed(body) * config.angular_damping);
     coordinates[coordinate].angular_velocity = speed;
     coordinates[coordinate].angle += speed * config.delta_seconds;
 }
@@ -223,7 +243,9 @@ fn capture_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
     let coordinate = bearings[mechanism_bodies[body].metadata.y].metadata.z;
     if coordinate != INVALID_INDEX {
-        coordinates[coordinate].angular_velocity = permitted_speed(body);
+        // Contact impulses are captured at full strength and receive the normal
+        // once-per-tick coordinate damping during the next advance.
+        coordinates[coordinate].angular_velocity = stabilized_speed(body, permitted_speed(body));
     }
 }
 

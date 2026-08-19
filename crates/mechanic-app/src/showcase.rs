@@ -1058,8 +1058,8 @@ mod tests {
                 mechanic_core::FaceOwner::Part(part) => graph.part(part).unwrap(),
                 mechanic_core::FaceOwner::Ground => unreachable!(),
             };
-            let source_center = source.pose.translation();
-            let target_center = target.pose.translation();
+            let source_center = source.pose().translation();
+            let target_center = target.pose().translation();
             let source_half = source.size_meters() * 0.5;
             let target_half = target.size_meters() * 0.5;
             let source_minimum = source_center - source_half;
@@ -1173,8 +1173,8 @@ mod tests {
                 let half = spec.size_meters() * 0.5;
                 (
                     part,
-                    spec.pose.translation() - half,
-                    spec.pose.translation() + half,
+                    spec.pose().translation() - half,
+                    spec.pose().translation() + half,
                 )
             })
             .collect::<Vec<_>>();

@@ -7,8 +7,8 @@ use std::{
 use bevy::prelude::*;
 use mechanic_core::{
     BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-    CuboidSpec, FaceKind, FaceOwner, FaceRef, GridRotation, PartId, PendingOperation,
-    RigidLinkSpec, WeldSpec, snap_world_to_grid,
+    CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
+    PartId, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec, snap_world_to_grid,
 };
 
 pub(crate) const GROUND_HALF_SIZE: f32 = 10.0;
@@ -99,6 +99,13 @@ pub(crate) struct PlacementCandidate {
     pub(crate) anchor: Option<Vec3>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CylinderPlacementCandidate {
+    pub(crate) spec: CylinderSpec,
+    pub(crate) attached_face: FaceKind,
+    pub(crate) anchor: Option<Vec3>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PlacementError {
     OutsidePlatform,
@@ -108,6 +115,7 @@ pub(crate) enum PlacementError {
     BearingOutsideFace,
     SameObject,
     ObjectsDoNotTouch,
+    CurvedSurface,
     EmptyBlockBatch,
     BlocksOverlap,
     DragPlaneUnavailable,
@@ -118,15 +126,18 @@ pub(crate) enum PlacementError {
 impl fmt::Display for PlacementError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OutsidePlatform => formatter.write_str("cube would extend beyond the platform"),
+            Self::OutsidePlatform => formatter.write_str("part would extend beyond the platform"),
             Self::NoFaceOverlap => formatter.write_str("cube does not overlap the selected face"),
-            Self::OverlapsPart(part) => write!(formatter, "cube overlaps {part:?}"),
+            Self::OverlapsPart(part) => write!(formatter, "part overlaps {part:?}"),
             Self::BearingOnGround => formatter.write_str("bearings cannot attach to the ground"),
             Self::BearingOutsideFace => {
                 formatter.write_str("the bearing anchor lies outside this face")
             }
             Self::SameObject => formatter.write_str("select two different objects"),
             Self::ObjectsDoNotTouch => formatter.write_str("the selected objects do not touch"),
+            Self::CurvedSurface => {
+                formatter.write_str("curved cylinder walls are not connection faces")
+            }
             Self::EmptyBlockBatch => formatter.write_str("block drag did not produce any blocks"),
             Self::BlocksOverlap => formatter.write_str("dragged blocks overlap one another"),
             Self::DragPlaneUnavailable => {
@@ -149,8 +160,25 @@ pub(crate) struct FaceGeometry {
     pub(crate) normal: Vec3,
     tangent_u: Vec3,
     tangent_v: Vec3,
-    half_u: f32,
-    half_v: f32,
+    profile: FaceProfile,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FaceProfile {
+    Rectangle {
+        half_u: f32,
+        half_v: f32,
+    },
+    Annulus {
+        inner_radius: f32,
+        outer_radius: f32,
+    },
+    AnnularSector {
+        inner_radius: f32,
+        outer_radius: f32,
+        half_angle: f32,
+    },
+    Ground,
 }
 
 pub(crate) fn raycast_construction(
@@ -165,7 +193,7 @@ pub(crate) fn raycast_construction(
     let ground = raycast_ground(origin, direction);
     graph
         .parts()
-        .filter_map(|(part, spec)| raycast_cuboid(origin, direction, part, *spec))
+        .filter_map(|(part, spec)| raycast_part(origin, direction, part, *spec))
         .chain(ground)
         .filter(|hit| hit.distance >= 0.0 && hit.distance.is_finite())
         .min_by(|left, right| {
@@ -173,6 +201,93 @@ pub(crate) fn raycast_construction(
                 .partial_cmp(&right.distance)
                 .unwrap_or(Ordering::Equal)
         })
+}
+
+pub(crate) fn raycast_construction_for_annulus(
+    graph: &ConstructionGraph,
+    origin: Vec3,
+    direction: Vec3,
+    inner_diameter: f32,
+    outer_diameter: f32,
+) -> Option<SurfaceHit> {
+    if !origin.is_finite()
+        || !direction.is_finite()
+        || direction.length_squared() < f32::EPSILON
+        || !inner_diameter.is_finite()
+        || !outer_diameter.is_finite()
+        || inner_diameter < 0.0
+        || outer_diameter <= inner_diameter
+    {
+        return None;
+    }
+    let direction = direction.normalize();
+    let placement_profile = FaceProfile::Annulus {
+        inner_radius: inner_diameter * 0.5,
+        outer_radius: outer_diameter * 0.5,
+    };
+    raycast_construction(graph, origin, direction)
+        .into_iter()
+        .chain(graph.parts().filter_map(|(part, spec)| match spec {
+            PartSpec::Cylinder(spec) => {
+                raycast_cylinder_bore_obstruction(origin, direction, part, *spec, placement_profile)
+            }
+            PartSpec::Cuboid(_) => None,
+        }))
+        .min_by(|left, right| left.distance.total_cmp(&right.distance))
+}
+
+fn raycast_cylinder_bore_obstruction(
+    origin: Vec3,
+    direction: Vec3,
+    part: PartId,
+    spec: CylinderSpec,
+    placement_profile: FaceProfile,
+) -> Option<SurfaceHit> {
+    let rotation = spec.pose.rotation.quaternion();
+    let inverse = rotation.inverse();
+    let local_origin = inverse * (origin - spec.pose.translation());
+    let local_direction = inverse * direction;
+    if local_direction.y.abs() <= f32::EPSILON {
+        return None;
+    }
+    let outer_radius = spec.dimensions.outer_diameter() * 0.5;
+    let half_length = spec.dimensions.axial_length() * 0.5;
+    [
+        (half_length, FaceKind::PositiveY),
+        (-half_length, FaceKind::NegativeY),
+    ]
+    .into_iter()
+    .filter_map(|(y, face_kind)| {
+        let distance = (y - local_origin.y) / local_direction.y;
+        if distance < 0.0 {
+            return None;
+        }
+        let local_point = local_origin + local_direction * distance;
+        let radial_squared = local_point
+            .x
+            .mul_add(local_point.x, local_point.z * local_point.z);
+        if radial_squared > (outer_radius + CONTACT_EPSILON).powi(2) {
+            return None;
+        }
+        let support = cylinder_face_geometry(spec, face_kind)
+            .expect("cylinder end faces always expose flat geometry");
+        if point_in_profile(local_point.x, local_point.z, support.profile) {
+            return None;
+        }
+        let placement = FaceGeometry {
+            center: origin + direction * distance,
+            normal: -support.normal,
+            tangent_u: support.tangent_u,
+            tangent_v: support.tangent_v,
+            profile: placement_profile,
+        };
+        profiles_overlap(support, placement).then_some(SurfaceHit {
+            distance,
+            point: placement.center,
+            face: FaceRef::part(part, face_kind),
+        })
+    })
+    .min_by(|left, right| left.distance.total_cmp(&right.distance))
 }
 
 pub(crate) fn candidate_from_hit(graph: &ConstructionGraph, hit: SurfaceHit) -> PlacementCandidate {
@@ -196,6 +311,49 @@ pub(crate) fn candidate_from_hit(graph: &ConstructionGraph, hit: SurfaceHit) -> 
         attached_face,
         anchor,
     }
+}
+
+pub(crate) fn cylinder_candidate_from_hit(
+    graph: &ConstructionGraph,
+    hit: SurfaceHit,
+    dimensions: CylinderDimensions,
+) -> Result<CylinderPlacementCandidate, PlacementError> {
+    let support =
+        try_face_geometry_from_ref(hit.face, Some(graph)).ok_or(PlacementError::CurvedSurface)?;
+    let support_center_half_units = snap_world_to_half_grid(support.center);
+    let mut center_half_units =
+        support_center_half_units + snap_world_to_grid(hit.point - support.center) * 2;
+    let (axis, sign) = cardinal_axis(support.normal);
+    center_half_units[axis] =
+        support_center_half_units[axis] + sign * i32::from(dimensions.axial_length_units());
+    let rotation = rotation_y_to_normal(support.normal);
+    let spec = CylinderSpec::new(
+        dimensions,
+        BuildPose::from_half_grid(center_half_units, rotation),
+    );
+    let attached_face = FaceKind::NegativeY;
+    let candidate_face = cylinder_face_geometry(spec, attached_face)
+        .expect("negative-y is a cylinder connection face");
+    Ok(CylinderPlacementCandidate {
+        spec,
+        attached_face,
+        anchor: supporting_face_overlap(graph, support, candidate_face),
+    })
+}
+
+fn supporting_face_overlap(
+    graph: &ConstructionGraph,
+    selected: FaceGeometry,
+    candidate: FaceGeometry,
+) -> Option<Vec3> {
+    overlap_center(selected, candidate).or_else(|| {
+        graph.parts().find_map(|(_, spec)| {
+            ALL_FACES.into_iter().find_map(|face| {
+                part_face_geometry(*spec, face)
+                    .and_then(|support| overlap_center(support, candidate))
+            })
+        })
+    })
 }
 
 #[cfg(test)]
@@ -242,6 +400,102 @@ pub(crate) fn stage_bearing_block_batch(
     )
 }
 
+pub(crate) fn validate_cylinder_candidate(
+    graph: &ConstructionGraph,
+    candidate: CylinderPlacementCandidate,
+) -> Result<(), PlacementError> {
+    if candidate.anchor.is_none() {
+        return Err(PlacementError::NoFaceOverlap);
+    }
+    validate_part(graph, PartSpec::Cylinder(candidate.spec))
+}
+
+pub(crate) fn stage_cylinder_from_source(
+    graph: &ConstructionGraph,
+    candidate: CylinderPlacementCandidate,
+    source: FaceOwner,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_cylinder(graph, candidate, None, Some(source))
+}
+
+pub(crate) fn stage_bearing_cylinder(
+    graph: &ConstructionGraph,
+    candidate: CylinderPlacementCandidate,
+    source: FaceRef,
+    anchor: Vec3,
+    dimensions: BearingDimensions,
+    rigid_targets: &[PartId],
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_cylinder(
+        graph,
+        candidate,
+        Some((source, anchor, dimensions, rigid_targets)),
+        None,
+    )
+}
+
+fn stage_connected_cylinder(
+    graph: &ConstructionGraph,
+    candidate: CylinderPlacementCandidate,
+    bearing: Option<(FaceRef, Vec3, BearingDimensions, &[PartId])>,
+    auto_weld_source: Option<FaceOwner>,
+) -> Result<ConstructionGraph, PlacementError> {
+    validate_cylinder_candidate(graph, candidate)?;
+    let existing_parts = graph.parts().map(|(part, _)| part).collect::<Vec<_>>();
+    let weld_scope =
+        auto_weld_source.and_then(|source| bearing_connected_weld_scope(graph, source));
+    let mut staged = graph.clone();
+    let BuildOutcome::Spawned(part) = staged
+        .apply(BuildCommand::SpawnCylinder(candidate.spec))
+        .map_err(|error| PlacementError::Graph(error.to_string()))?
+    else {
+        unreachable!()
+    };
+    let mut connections = Vec::new();
+    if let Some((source, anchor, dimensions, rigid_targets)) = bearing {
+        let axis = face_geometry_from_ref(source, Some(graph)).normal;
+        connections.push(BuildCommand::AddBearing(
+            BearingSpec::new(
+                source,
+                FaceRef::part(part, candidate.attached_face),
+                anchor,
+                axis,
+            )
+            .with_dimensions(dimensions),
+        ));
+        connections.extend(rigid_targets.iter().copied().map(|target| {
+            BuildCommand::RigidLink(RigidLinkSpec {
+                first: target,
+                second: part,
+            })
+        }));
+    } else {
+        if weld_scope.is_none()
+            && let Some((first, second)) =
+                touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Ground)
+        {
+            connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+        }
+        for other in existing_parts {
+            if weld_scope
+                .as_ref()
+                .is_some_and(|members| !members.contains(&other))
+            {
+                continue;
+            }
+            if let Some((first, second)) =
+                touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Part(other))
+            {
+                connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+            }
+        }
+    }
+    staged
+        .apply_batch(connections)
+        .map_err(|error| PlacementError::Graph(error.to_string()))?;
+    Ok(staged)
+}
+
 fn stage_connected_block_batch(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
@@ -252,8 +506,8 @@ fn stage_connected_block_batch(
     validate_block_batch(graph, start, specs)?;
     for (index, spec) in specs.iter().enumerate() {
         for other in &specs[..index] {
-            let (minimum, maximum) = world_bounds(*spec);
-            let (other_minimum, other_maximum) = world_bounds(*other);
+            let (minimum, maximum) = cuboid_world_bounds(*spec);
+            let (other_minimum, other_maximum) = cuboid_world_bounds(*other);
             if bounds_overlap_interior(minimum, maximum, other_minimum, other_maximum) {
                 return Err(PlacementError::BlocksOverlap);
             }
@@ -540,14 +794,23 @@ pub(crate) fn bearing_anchor_from_hit(
     if matches!(hit.face.owner, FaceOwner::Ground) {
         return Err(PlacementError::BearingOnGround);
     }
-    let face = face_geometry_from_ref(hit.face, Some(graph));
-    let mut anchor = snap_world_to_grid(hit.point).as_vec3() * GRID_UNIT_METERS;
+    let face =
+        try_face_geometry_from_ref(hit.face, Some(graph)).ok_or(PlacementError::CurvedSurface)?;
+    let mut anchor =
+        face.center + snap_world_to_grid(hit.point - face.center).as_vec3() * GRID_UNIT_METERS;
     let (normal_axis, _) = cardinal_axis(face.normal);
     anchor[normal_axis] = face.center[normal_axis];
     let offset = anchor - face.center;
-    if offset.dot(face.tangent_u).abs() > face.half_u + CONTACT_EPSILON
-        || offset.dot(face.tangent_v).abs() > face.half_v + CONTACT_EPSILON
-    {
+    let u = offset.dot(face.tangent_u);
+    let v = offset.dot(face.tangent_v);
+    let inside_face_extent = match face.profile {
+        FaceProfile::Annulus { outer_radius, .. }
+        | FaceProfile::AnnularSector { outer_radius, .. } => {
+            u.mul_add(u, v * v) <= (outer_radius + CONTACT_EPSILON).powi(2)
+        }
+        _ => point_in_profile(u, v, face.profile),
+    };
+    if !inside_face_extent {
         return Err(PlacementError::BearingOutsideFace);
     }
     Ok(anchor)
@@ -592,7 +855,9 @@ pub(crate) fn bearing_support_face_excluding(
         }
         for face_kind in ALL_FACES {
             let face_ref = FaceRef::part(part, face_kind);
-            let face = face_geometry(*spec, face_kind);
+            let Some(face) = part_face_geometry(*spec, face_kind) else {
+                continue;
+            };
             if !faces_share_plane_and_normal(selected, face)
                 || !bearing_ring_overlaps_face(anchor, dimensions, face)
             {
@@ -627,6 +892,24 @@ pub(crate) fn bearing_overlaps_candidate(
     bearing_ring_overlaps_face(anchor, dimensions, target_face)
 }
 
+pub(crate) fn bearing_overlaps_cylinder_candidate(
+    graph: &ConstructionGraph,
+    source: FaceRef,
+    anchor: Vec3,
+    dimensions: BearingDimensions,
+    candidate: CylinderPlacementCandidate,
+) -> bool {
+    let source_face = face_geometry_from_ref(source, Some(graph));
+    let target_face = cylinder_face_geometry(candidate.spec, candidate.attached_face)
+        .expect("cylinder attachment face is flat");
+    source_face.normal.dot(target_face.normal) <= -1.0 + CONTACT_EPSILON
+        && (source_face.center - target_face.center)
+            .dot(source_face.normal)
+            .abs()
+            <= CONTACT_EPSILON
+        && bearing_ring_overlaps_face(anchor, dimensions, target_face)
+}
+
 pub(crate) fn stage_bearing_attachment(
     graph: &ConstructionGraph,
     candidate: PlacementCandidate,
@@ -650,22 +933,19 @@ fn bearing_ring_overlaps_face(
     dimensions: BearingDimensions,
     face: FaceGeometry,
 ) -> bool {
-    let offset = anchor - face.center;
-    if offset.dot(face.normal).abs() > CONTACT_EPSILON {
-        return false;
-    }
-    let center_u = offset.dot(face.tangent_u).abs();
-    let center_v = offset.dot(face.tangent_v).abs();
-    let nearest_u = (center_u - face.half_u).max(0.0);
-    let nearest_v = (center_v - face.half_v).max(0.0);
-    let nearest_radius_squared = nearest_u.mul_add(nearest_u, nearest_v * nearest_v);
-    let farthest_u = center_u + face.half_u;
-    let farthest_v = center_v + face.half_v;
-    let farthest_radius_squared = farthest_u.mul_add(farthest_u, farthest_v * farthest_v);
-    let outer_radius = dimensions.outer_diameter() * 0.5;
-    let inner_radius = dimensions.inner_diameter() * 0.5;
-    nearest_radius_squared < outer_radius * outer_radius
-        && farthest_radius_squared > inner_radius * inner_radius
+    profiles_overlap(
+        FaceGeometry {
+            center: anchor,
+            normal: face.normal,
+            tangent_u: face.tangent_u,
+            tangent_v: face.tangent_v,
+            profile: FaceProfile::Annulus {
+                inner_radius: dimensions.inner_diameter() * 0.5,
+                outer_radius: dimensions.outer_diameter() * 0.5,
+            },
+        },
+        face,
+    )
 }
 
 fn bearing_ring_contains_face_center(
@@ -678,10 +958,14 @@ fn bearing_ring_contains_face_center(
         return false;
     }
     let radial = offset - face.normal * offset.dot(face.normal);
-    let radius_squared = radial.length_squared();
-    let outer_radius = dimensions.outer_diameter() * 0.5;
-    let inner_radius = dimensions.inner_diameter() * 0.5;
-    radius_squared >= inner_radius * inner_radius && radius_squared <= outer_radius * outer_radius
+    point_in_profile(
+        radial.dot(face.tangent_u),
+        radial.dot(face.tangent_v),
+        FaceProfile::Annulus {
+            inner_radius: dimensions.inner_diameter() * 0.5,
+            outer_radius: dimensions.outer_diameter() * 0.5,
+        },
+    )
 }
 
 fn faces_share_plane_and_normal(first: FaceGeometry, second: FaceGeometry) -> bool {
@@ -693,21 +977,27 @@ pub(crate) fn face_geometry_from_ref(
     face: FaceRef,
     graph: Option<&ConstructionGraph>,
 ) -> FaceGeometry {
+    try_face_geometry_from_ref(face, graph).expect("face reference must expose flat geometry")
+}
+
+pub(crate) fn try_face_geometry_from_ref(
+    face: FaceRef,
+    graph: Option<&ConstructionGraph>,
+) -> Option<FaceGeometry> {
     match face.owner {
-        FaceOwner::Ground => FaceGeometry {
+        FaceOwner::Ground => Some(FaceGeometry {
             center: Vec3::ZERO,
             normal: Vec3::Y,
             tangent_u: Vec3::X,
             tangent_v: Vec3::Z,
-            half_u: f32::INFINITY,
-            half_v: f32::INFINITY,
-        },
+            profile: FaceProfile::Ground,
+        }),
         FaceOwner::Part(part) => {
             let spec = graph
                 .and_then(|graph| graph.part(part))
                 .copied()
                 .expect("live face references have a part");
-            face_geometry(spec, face.face)
+            part_face_geometry(spec, face.face)
         }
     }
 }
@@ -729,8 +1019,49 @@ pub(crate) fn face_geometry(spec: CuboidSpec, face: FaceKind) -> FaceGeometry {
         normal,
         tangent_u: snap_cardinal(rotation * tangent_u),
         tangent_v: snap_cardinal(rotation * tangent_v),
-        half_u: half_u * 0.5,
-        half_v: half_v * 0.5,
+        profile: FaceProfile::Rectangle {
+            half_u: half_u * 0.5,
+            half_v: half_v * 0.5,
+        },
+    }
+}
+
+fn cylinder_face_geometry(spec: CylinderSpec, face: FaceKind) -> Option<FaceGeometry> {
+    if !matches!(face, FaceKind::PositiveY | FaceKind::NegativeY) {
+        return None;
+    }
+    let rotation = spec.pose.rotation.quaternion();
+    let local_normal = if face == FaceKind::PositiveY {
+        Vec3::Y
+    } else {
+        Vec3::NEG_Y
+    };
+    let normal = snap_cardinal(rotation * local_normal);
+    let profile = if spec.dimensions.sweep_angle_degrees() == 360 {
+        FaceProfile::Annulus {
+            inner_radius: spec.dimensions.inner_diameter() * 0.5,
+            outer_radius: spec.dimensions.outer_diameter() * 0.5,
+        }
+    } else {
+        FaceProfile::AnnularSector {
+            inner_radius: spec.dimensions.inner_diameter() * 0.5,
+            outer_radius: spec.dimensions.outer_diameter() * 0.5,
+            half_angle: spec.dimensions.sweep_angle_radians() * 0.5,
+        }
+    };
+    Some(FaceGeometry {
+        center: spec.pose.translation() + normal * spec.dimensions.axial_length() * 0.5,
+        normal,
+        tangent_u: snap_cardinal(rotation * Vec3::X),
+        tangent_v: snap_cardinal(rotation * Vec3::Z),
+        profile,
+    })
+}
+
+fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
+    match spec {
+        PartSpec::Cuboid(spec) => Some(face_geometry(spec, face)),
+        PartSpec::Cylinder(spec) => cylinder_face_geometry(spec, face),
     }
 }
 
@@ -746,7 +1077,11 @@ fn validate_candidate(
 }
 
 fn validate_spec(graph: &ConstructionGraph, spec: CuboidSpec) -> Result<(), PlacementError> {
-    let (minimum, maximum) = world_bounds(spec);
+    validate_part(graph, PartSpec::Cuboid(spec))
+}
+
+fn validate_part(graph: &ConstructionGraph, spec: PartSpec) -> Result<(), PlacementError> {
+    let (minimum, maximum) = part_world_bounds(spec);
     if minimum.x < -GROUND_HALF_SIZE - CONTACT_EPSILON
         || maximum.x > GROUND_HALF_SIZE + CONTACT_EPSILON
         || minimum.z < -GROUND_HALF_SIZE - CONTACT_EPSILON
@@ -755,9 +1090,8 @@ fn validate_spec(graph: &ConstructionGraph, spec: CuboidSpec) -> Result<(), Plac
     {
         return Err(PlacementError::OutsidePlatform);
     }
-    for (part, spec) in graph.parts() {
-        let (other_minimum, other_maximum) = world_bounds(*spec);
-        if bounds_overlap_interior(minimum, maximum, other_minimum, other_maximum) {
+    for (part, existing) in graph.parts() {
+        if parts_overlap(spec, *existing) {
             return Err(PlacementError::OverlapsPart(part));
         }
     }
@@ -769,24 +1103,35 @@ fn touching_face_pair(
     first: FaceOwner,
     second: FaceOwner,
 ) -> Option<(FaceRef, FaceRef)> {
-    owner_faces(first).into_iter().find_map(|first_face| {
-        owner_faces(second).into_iter().find_map(|second_face| {
-            overlap_center(
-                face_geometry_from_ref(first_face, Some(graph)),
-                face_geometry_from_ref(second_face, Some(graph)),
-            )
-            .map(|_| (first_face, second_face))
+    owner_faces(graph, first)
+        .into_iter()
+        .find_map(|first_face| {
+            owner_faces(graph, second)
+                .into_iter()
+                .find_map(|second_face| {
+                    overlap_center(
+                        face_geometry_from_ref(first_face, Some(graph)),
+                        face_geometry_from_ref(second_face, Some(graph)),
+                    )
+                    .map(|_| (first_face, second_face))
+                })
         })
-    })
 }
 
-fn owner_faces(owner: FaceOwner) -> Vec<FaceRef> {
+fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
     match owner {
         FaceOwner::Ground => vec![FaceRef::ground()],
-        FaceOwner::Part(part) => ALL_FACES
-            .into_iter()
-            .map(|face| FaceRef::part(part, face))
-            .collect(),
+        FaceOwner::Part(part) => match graph.part(part).copied() {
+            Some(PartSpec::Cuboid(_)) => ALL_FACES
+                .into_iter()
+                .map(|face| FaceRef::part(part, face))
+                .collect(),
+            Some(PartSpec::Cylinder(_)) => [FaceKind::PositiveY, FaceKind::NegativeY]
+                .into_iter()
+                .map(|face| FaceRef::part(part, face))
+                .collect(),
+            None => Vec::new(),
+        },
     }
 }
 
@@ -822,6 +1167,120 @@ fn raycast_cuboid(
         point: hit.point,
         face: FaceRef::part(part, face_for_normal(hit.local_normal)),
     })
+}
+
+fn raycast_part(origin: Vec3, direction: Vec3, part: PartId, spec: PartSpec) -> Option<SurfaceHit> {
+    match spec {
+        PartSpec::Cuboid(spec) => raycast_cuboid(origin, direction, part, spec),
+        PartSpec::Cylinder(spec) => raycast_cylinder(origin, direction, part, spec),
+    }
+}
+
+fn raycast_cylinder(
+    origin: Vec3,
+    direction: Vec3,
+    part: PartId,
+    spec: CylinderSpec,
+) -> Option<SurfaceHit> {
+    let direction = direction.normalize();
+    let rotation = spec.pose.rotation.quaternion();
+    let inverse = rotation.inverse();
+    let local_origin = inverse * (origin - spec.pose.translation());
+    let local_direction = inverse * direction;
+    let outer = spec.dimensions.outer_diameter() * 0.5;
+    let inner = spec.dimensions.inner_diameter() * 0.5;
+    let half_length = spec.dimensions.axial_length() * 0.5;
+    let mut candidates = Vec::with_capacity(6);
+
+    if local_direction.y.abs() > f32::EPSILON {
+        for (y, face) in [
+            (half_length, FaceKind::PositiveY),
+            (-half_length, FaceKind::NegativeY),
+        ] {
+            let distance = (y - local_origin.y) / local_direction.y;
+            if distance >= 0.0 {
+                let point = local_origin + local_direction * distance;
+                let radial_squared = point.x.mul_add(point.x, point.z * point.z);
+                if radial_squared <= outer * outer + CONTACT_EPSILON
+                    && radial_squared >= inner * inner - CONTACT_EPSILON
+                    && point_in_cylinder_sweep(point.x, point.z, spec.dimensions)
+                {
+                    candidates.push((distance, face));
+                }
+            }
+        }
+    }
+    for radius in [outer, inner] {
+        if radius <= 0.0 {
+            continue;
+        }
+        let a = local_direction
+            .x
+            .mul_add(local_direction.x, local_direction.z * local_direction.z);
+        if a <= f32::EPSILON {
+            continue;
+        }
+        let b = 2.0
+            * local_origin
+                .x
+                .mul_add(local_direction.x, local_origin.z * local_direction.z);
+        let c = local_origin
+            .x
+            .mul_add(local_origin.x, local_origin.z * local_origin.z)
+            - radius * radius;
+        let discriminant = b.mul_add(b, -4.0 * a * c);
+        if discriminant < 0.0 {
+            continue;
+        }
+        let root = discriminant.sqrt();
+        for distance in [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)] {
+            if distance >= 0.0 {
+                let y = local_origin.y + local_direction.y * distance;
+                let point = local_origin + local_direction * distance;
+                if y.abs() <= half_length + CONTACT_EPSILON
+                    && point_in_cylinder_sweep(point.x, point.z, spec.dimensions)
+                {
+                    candidates.push((distance, FaceKind::PositiveX));
+                }
+            }
+        }
+    }
+    if spec.dimensions.sweep_angle_degrees() < 360 {
+        let half_sweep = spec.dimensions.sweep_angle_radians() * 0.5;
+        for (angle, outward) in [(-half_sweep, -1.0_f32), (half_sweep, 1.0_f32)] {
+            let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
+            let angular = Vec3::new(-angle.sin(), 0.0, angle.cos()) * outward;
+            let denominator = local_direction.dot(angular);
+            if denominator.abs() <= f32::EPSILON {
+                continue;
+            }
+            let distance = -local_origin.dot(angular) / denominator;
+            if distance < 0.0 {
+                continue;
+            }
+            let point = local_origin + local_direction * distance;
+            let radius = point.dot(radial);
+            if point.y.abs() <= half_length + CONTACT_EPSILON
+                && radius >= inner - CONTACT_EPSILON
+                && radius <= outer + CONTACT_EPSILON
+            {
+                candidates.push((distance, FaceKind::PositiveX));
+            }
+        }
+    }
+    let (distance, face) = candidates
+        .into_iter()
+        .min_by(|left, right| left.0.partial_cmp(&right.0).unwrap_or(Ordering::Equal))?;
+    Some(SurfaceHit {
+        distance,
+        point: origin + direction * distance,
+        face: FaceRef::part(part, face),
+    })
+}
+
+fn point_in_cylinder_sweep(x: f32, z: f32, dimensions: CylinderDimensions) -> bool {
+    dimensions.sweep_angle_degrees() == 360
+        || z.atan2(x).abs() <= dimensions.sweep_angle_radians() * 0.5 + CONTACT_EPSILON
 }
 
 pub(crate) fn raycast_oriented_cuboid(
@@ -894,30 +1353,242 @@ fn overlap_center(first: FaceGeometry, second: FaceGeometry) -> Option<Vec3> {
     {
         return None;
     }
-    let mut center = first.center;
-    for axis in 0..3 {
-        if first.normal[axis].abs() > 0.5 {
-            continue;
+    profiles_overlap(first, second).then_some((first.center + second.center) * 0.5)
+}
+
+fn point_in_profile(u: f32, v: f32, profile: FaceProfile) -> bool {
+    match profile {
+        FaceProfile::Rectangle { half_u, half_v } => {
+            u.abs() <= half_u + CONTACT_EPSILON && v.abs() <= half_v + CONTACT_EPSILON
         }
-        let (first_min, first_max) = face_axis_interval(first, axis);
-        let (second_min, second_max) = face_axis_interval(second, axis);
-        let minimum = first_min.max(second_min);
-        let maximum = first_max.min(second_max);
-        if maximum - minimum <= CONTACT_EPSILON {
-            return None;
+        FaceProfile::Annulus {
+            inner_radius,
+            outer_radius,
+        } => {
+            let squared = u.mul_add(u, v * v);
+            squared >= (inner_radius - CONTACT_EPSILON).max(0.0).powi(2)
+                && squared <= (outer_radius + CONTACT_EPSILON).powi(2)
         }
-        center[axis] = (minimum + maximum) * 0.5;
+        FaceProfile::AnnularSector {
+            inner_radius,
+            outer_radius,
+            half_angle,
+        } => {
+            let squared = u.mul_add(u, v * v);
+            squared >= (inner_radius - CONTACT_EPSILON).max(0.0).powi(2)
+                && squared <= (outer_radius + CONTACT_EPSILON).powi(2)
+                && v.atan2(u).abs() <= half_angle + CONTACT_EPSILON
+        }
+        FaceProfile::Ground => true,
     }
-    Some(center)
 }
 
-fn face_axis_interval(face: FaceGeometry, axis: usize) -> (f32, f32) {
-    let radius =
-        face.tangent_u[axis].abs() * face.half_u + face.tangent_v[axis].abs() * face.half_v;
-    (face.center[axis] - radius, face.center[axis] + radius)
+fn profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
+    match (first.profile, second.profile) {
+        (FaceProfile::Ground, _) | (_, FaceProfile::Ground) => true,
+        (FaceProfile::Rectangle { half_u, half_v }, FaceProfile::Rectangle { .. }) => {
+            positive_rect_overlap(first, second, first.tangent_u, half_u)
+                && positive_rect_overlap(first, second, first.tangent_v, half_v)
+        }
+        (FaceProfile::Annulus { .. }, FaceProfile::Rectangle { .. }) => {
+            annulus_rectangle_overlap(first, second)
+        }
+        (FaceProfile::Rectangle { .. }, FaceProfile::Annulus { .. }) => {
+            annulus_rectangle_overlap(second, first)
+        }
+        (FaceProfile::Annulus { .. }, FaceProfile::Annulus { .. }) => {
+            let FaceProfile::Annulus {
+                inner_radius: inner_a,
+                outer_radius: outer_a,
+            } = first.profile
+            else {
+                unreachable!()
+            };
+            let FaceProfile::Annulus {
+                inner_radius: inner_b,
+                outer_radius: outer_b,
+            } = second.profile
+            else {
+                unreachable!()
+            };
+            let offset = second.center - first.center;
+            let distance =
+                Vec2::new(offset.dot(first.tangent_u), offset.dot(first.tangent_v)).length();
+            distance < outer_a + outer_b - CONTACT_EPSILON
+                && distance + outer_a > inner_b + CONTACT_EPSILON
+                && distance + outer_b > inner_a + CONTACT_EPSILON
+        }
+        (FaceProfile::AnnularSector { .. }, _) | (_, FaceProfile::AnnularSector { .. }) => {
+            sector_profiles_overlap(first, second)
+        }
+    }
 }
 
-fn world_bounds(spec: CuboidSpec) -> (Vec3, Vec3) {
+fn sector_profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
+    let first_cells = profile_cells(first, first.center, first.tangent_u, first.tangent_v);
+    let second_cells = profile_cells(second, first.center, first.tangent_u, first.tangent_v);
+    first_cells.iter().any(|first| {
+        second_cells
+            .iter()
+            .any(|second| convex_polygons_overlap(first, second))
+    })
+}
+
+fn profile_cells(face: FaceGeometry, origin: Vec3, plane_u: Vec3, plane_v: Vec3) -> Vec<Vec<Vec2>> {
+    let project = |point: Vec3| {
+        let offset = point - origin;
+        Vec2::new(offset.dot(plane_u), offset.dot(plane_v))
+    };
+    match face.profile {
+        FaceProfile::Rectangle { half_u, half_v } => vec![vec![
+            project(face.center - face.tangent_u * half_u - face.tangent_v * half_v),
+            project(face.center + face.tangent_u * half_u - face.tangent_v * half_v),
+            project(face.center + face.tangent_u * half_u + face.tangent_v * half_v),
+            project(face.center - face.tangent_u * half_u + face.tangent_v * half_v),
+        ]],
+        FaceProfile::Annulus {
+            inner_radius,
+            outer_radius,
+        } => annular_profile_cells(
+            face,
+            origin,
+            plane_u,
+            plane_v,
+            inner_radius,
+            outer_radius,
+            std::f32::consts::PI,
+        ),
+        FaceProfile::AnnularSector {
+            inner_radius,
+            outer_radius,
+            half_angle,
+        } => annular_profile_cells(
+            face,
+            origin,
+            plane_u,
+            plane_v,
+            inner_radius,
+            outer_radius,
+            half_angle,
+        ),
+        FaceProfile::Ground => Vec::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn annular_profile_cells(
+    face: FaceGeometry,
+    origin: Vec3,
+    plane_u: Vec3,
+    plane_v: Vec3,
+    inner_radius: f32,
+    outer_radius: f32,
+    half_angle: f32,
+) -> Vec<Vec<Vec2>> {
+    let sweep = half_angle * 2.0;
+    let segment_count = (1_u16..=24)
+        .find(|&count| (f32::from(count) * (std::f32::consts::PI / 12.0) - sweep).abs() < 1.0e-4)
+        .expect("annular profiles use 15-degree increments");
+    let project = |point: Vec3| {
+        let offset = point - origin;
+        Vec2::new(offset.dot(plane_u), offset.dot(plane_v))
+    };
+    (0..segment_count)
+        .map(|segment| {
+            let first_angle = -half_angle + sweep * f32::from(segment) / f32::from(segment_count);
+            let second_angle =
+                -half_angle + sweep * f32::from(segment + 1) / f32::from(segment_count);
+            let radial = |angle: f32| face.tangent_u * angle.cos() + face.tangent_v * angle.sin();
+            let outer_first = project(face.center + radial(first_angle) * outer_radius);
+            let outer_second = project(face.center + radial(second_angle) * outer_radius);
+            if inner_radius == 0.0 {
+                vec![project(face.center), outer_first, outer_second]
+            } else {
+                vec![
+                    project(face.center + radial(first_angle) * inner_radius),
+                    outer_first,
+                    outer_second,
+                    project(face.center + radial(second_angle) * inner_radius),
+                ]
+            }
+        })
+        .collect()
+}
+
+fn convex_polygons_overlap(first: &[Vec2], second: &[Vec2]) -> bool {
+    first
+        .iter()
+        .zip(first.iter().cycle().skip(1))
+        .chain(second.iter().zip(second.iter().cycle().skip(1)))
+        .all(|(start, end)| {
+            let edge = *end - *start;
+            let axis = Vec2::new(-edge.y, edge.x).normalize();
+            let project = |polygon: &[Vec2]| {
+                polygon.iter().fold(
+                    (f32::INFINITY, f32::NEG_INFINITY),
+                    |(minimum, maximum), point| {
+                        let value = point.dot(axis);
+                        (minimum.min(value), maximum.max(value))
+                    },
+                )
+            };
+            let (first_minimum, first_maximum) = project(first);
+            let (second_minimum, second_maximum) = project(second);
+            first_maximum.min(second_maximum) - first_minimum.max(second_minimum) > CONTACT_EPSILON
+        })
+}
+
+fn positive_rect_overlap(
+    first: FaceGeometry,
+    second: FaceGeometry,
+    axis: Vec3,
+    first_half: f32,
+) -> bool {
+    let FaceProfile::Rectangle { half_u, half_v } = second.profile else {
+        unreachable!()
+    };
+    let second_half =
+        second.tangent_u.dot(axis).abs() * half_u + second.tangent_v.dot(axis).abs() * half_v;
+    first_half + second_half - (second.center - first.center).dot(axis).abs() > CONTACT_EPSILON
+}
+
+fn annulus_rectangle_overlap(annulus: FaceGeometry, rectangle: FaceGeometry) -> bool {
+    let FaceProfile::Annulus {
+        inner_radius,
+        outer_radius,
+    } = annulus.profile
+    else {
+        unreachable!()
+    };
+    let FaceProfile::Rectangle { half_u, half_v } = rectangle.profile else {
+        unreachable!()
+    };
+    let offset = annulus.center - rectangle.center;
+    let center_u = offset.dot(rectangle.tangent_u).abs();
+    let center_v = offset.dot(rectangle.tangent_v).abs();
+    let nearest_u = (center_u - half_u).max(0.0);
+    let nearest_v = (center_v - half_v).max(0.0);
+    let nearest_squared = nearest_u.mul_add(nearest_u, nearest_v * nearest_v);
+    let farthest_u = center_u + half_u;
+    let farthest_v = center_v + half_v;
+    let farthest_squared = farthest_u.mul_add(farthest_u, farthest_v * farthest_v);
+    nearest_squared < (outer_radius - CONTACT_EPSILON).max(0.0).powi(2)
+        && farthest_squared > (inner_radius + CONTACT_EPSILON).powi(2)
+}
+
+fn rotation_y_to_normal(normal: Vec3) -> GridRotation {
+    let (axis, sign) = cardinal_axis(normal);
+    match (axis, sign) {
+        (0, 1) => GridRotation::new(0, 0, 3),
+        (0, _) => GridRotation::new(0, 0, 1),
+        (1, 1) => GridRotation::default(),
+        (1, _) => GridRotation::new(2, 0, 0),
+        (2, 1) => GridRotation::new(1, 0, 0),
+        _ => GridRotation::new(3, 0, 0),
+    }
+}
+
+fn cuboid_world_bounds(spec: CuboidSpec) -> (Vec3, Vec3) {
     let rotation = Mat3::from_quat(spec.pose.rotation.quaternion());
     let half = spec.size_meters() * 0.5;
     let world_half = Vec3::new(
@@ -933,6 +1604,154 @@ fn world_bounds(spec: CuboidSpec) -> (Vec3, Vec3) {
     );
     let center = spec.pose.translation();
     (center - world_half, center + world_half)
+}
+
+pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
+    match spec {
+        PartSpec::Cuboid(spec) => cuboid_world_bounds(spec),
+        PartSpec::Cylinder(spec) => {
+            let rotation = Mat3::from_quat(spec.pose.rotation.quaternion());
+            let (local_minimum, local_maximum) = cylinder_local_bounds(spec.dimensions);
+            let mut world_minimum = Vec3::splat(f32::INFINITY);
+            let mut world_maximum = Vec3::splat(f32::NEG_INFINITY);
+            for x in [local_minimum.x, local_maximum.x] {
+                for y in [local_minimum.y, local_maximum.y] {
+                    for z in [local_minimum.z, local_maximum.z] {
+                        let point = spec.pose.translation() + rotation * Vec3::new(x, y, z);
+                        world_minimum = world_minimum.min(point);
+                        world_maximum = world_maximum.max(point);
+                    }
+                }
+            }
+            (world_minimum, world_maximum)
+        }
+    }
+}
+
+fn cylinder_local_bounds(dimensions: CylinderDimensions) -> (Vec3, Vec3) {
+    let outer = dimensions.outer_diameter() * 0.5;
+    let inner = dimensions.inner_diameter() * 0.5;
+    let half_length = dimensions.axial_length() * 0.5;
+    if dimensions.sweep_angle_degrees() == 360 {
+        return (
+            Vec3::new(-outer, -half_length, -outer),
+            Vec3::new(outer, half_length, outer),
+        );
+    }
+
+    let half_sweep = dimensions.sweep_angle_radians() * 0.5;
+    let mut minimum = Vec3::new(f32::INFINITY, -half_length, f32::INFINITY);
+    let mut maximum = Vec3::new(f32::NEG_INFINITY, half_length, f32::NEG_INFINITY);
+    for angle in [
+        -half_sweep,
+        half_sweep,
+        -std::f32::consts::FRAC_PI_2,
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+    ] {
+        if angle.abs() > half_sweep + CONTACT_EPSILON {
+            continue;
+        }
+        for radius in [inner, outer] {
+            let point = Vec3::new(radius * angle.cos(), 0.0, radius * angle.sin());
+            minimum = minimum.min(point);
+            maximum = maximum.max(point);
+        }
+    }
+    (minimum, maximum)
+}
+
+#[derive(Clone, Copy)]
+struct CollisionBox {
+    center: Vec3,
+    rotation: Quat,
+    half: Vec3,
+}
+
+fn parts_overlap(first: PartSpec, second: PartSpec) -> bool {
+    part_collision_boxes(first).into_iter().any(|first| {
+        part_collision_boxes(second)
+            .into_iter()
+            .any(|second| boxes_overlap(first, second))
+    })
+}
+
+fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
+    match spec {
+        PartSpec::Cuboid(spec) => vec![CollisionBox {
+            center: spec.pose.translation(),
+            rotation: spec.pose.rotation.quaternion(),
+            half: spec.size_meters() * 0.5,
+        }],
+        PartSpec::Cylinder(spec) => {
+            let outer = spec.dimensions.outer_diameter() * 0.5;
+            let inner = spec.dimensions.inner_diameter() * 0.5;
+            let radial_half = (outer - inner) * 0.5;
+            let center_radius = (outer + inner) * 0.5;
+            let sweep = spec.dimensions.sweep_angle_radians();
+            let segment_angle = sweep / 16.0;
+            let tangent_half = outer * (segment_angle * 0.5).tan();
+            let start_angle = if spec.dimensions.sweep_angle_degrees() == 360 {
+                -segment_angle * 0.5
+            } else {
+                -sweep * 0.5
+            };
+            let rotation = spec.pose.rotation.quaternion();
+            (0_u16..16)
+                .map(|segment| {
+                    let angle = start_angle + segment_angle * (f32::from(segment) + 0.5);
+                    let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
+                    CollisionBox {
+                        center: spec.pose.translation() + rotation * (radial * center_radius),
+                        rotation: rotation * Quat::from_rotation_y(-angle),
+                        half: Vec3::new(
+                            radial_half,
+                            spec.dimensions.axial_length() * 0.5,
+                            tangent_half,
+                        ),
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
+fn boxes_overlap(first: CollisionBox, second: CollisionBox) -> bool {
+    let first_axes = [
+        first.rotation * Vec3::X,
+        first.rotation * Vec3::Y,
+        first.rotation * Vec3::Z,
+    ];
+    let second_axes = [
+        second.rotation * Vec3::X,
+        second.rotation * Vec3::Y,
+        second.rotation * Vec3::Z,
+    ];
+    let offset = second.center - first.center;
+    let separates = |axis: Vec3| {
+        if axis.length_squared() <= 1.0e-10 {
+            return false;
+        }
+        let axis = axis.normalize();
+        let radius = |axes: [Vec3; 3], half: Vec3| {
+            axes[0].dot(axis).abs() * half.x
+                + axes[1].dot(axis).abs() * half.y
+                + axes[2].dot(axis).abs() * half.z
+        };
+        offset.dot(axis).abs()
+            >= radius(first_axes, first.half) + radius(second_axes, second.half) - CONTACT_EPSILON
+    };
+    if first_axes.into_iter().chain(second_axes).any(separates) {
+        return false;
+    }
+    for first_axis in first_axes {
+        for second_axis in second_axes {
+            if separates(first_axis.cross(second_axis)) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn bounds_overlap_interior(
@@ -982,17 +1801,19 @@ mod tests {
     use bevy::prelude::{IVec3, Vec3};
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        CuboidSpec, FaceKind, FaceOwner, FaceRef, GridRotation, PendingOperation, RigidLinkSpec,
-        WeldSpec,
+        CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
+        PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
     };
 
     use super::{
-        BLOCK_SIZE_METERS, PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
-        bearing_attachment_candidate, bearing_overlaps_candidate, bearing_ring_overlaps_face,
-        bearing_support_face, begin_weld, block_sheet_specs, candidate_from_hit,
-        face_geometry_from_ref, raycast_construction, raycast_placement_plane, rigid_body_parts,
-        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
-        stage_block_batch_from_source, stage_cuboid, stage_weld_objects,
+        BLOCK_SIZE_METERS, PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit,
+        bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
+        bearing_ring_overlaps_face, bearing_support_face, begin_weld, block_sheet_specs,
+        candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref,
+        raycast_construction, raycast_construction_for_annulus, raycast_placement_plane,
+        rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
+        stage_block_batch_from_source, stage_cuboid, stage_cylinder_from_source,
+        stage_weld_objects, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -1002,6 +1823,269 @@ mod tests {
             panic!("cube must spawn");
         };
         part
+    }
+
+    fn spawn_cylinder(
+        graph: &mut ConstructionGraph,
+        dimensions: CylinderDimensions,
+        pose: BuildPose,
+    ) -> mechanic_core::PartId {
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                dimensions, pose,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        part
+    }
+
+    #[test]
+    fn rays_pass_through_cylinder_bores_but_hit_annular_material() {
+        let mut graph = ConstructionGraph::new();
+        let cylinder = spawn_cylinder(
+            &mut graph,
+            CylinderDimensions::new(1.0, 0.5, 1.0).unwrap(),
+            BuildPose::new(IVec3::new(0, 8, 0), GridRotation::default()),
+        );
+        let cube = spawn_cube(&mut graph, IVec3::new(0, 4, 0), 1);
+        let through_bore =
+            raycast_construction(&graph, Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y).unwrap();
+        assert_eq!(through_bore.face.owner, FaceOwner::Part(cube));
+        let annulus = raycast_construction(&graph, Vec3::new(0.4, 5.0, 0.0), Vec3::NEG_Y).unwrap();
+        assert_eq!(annulus.face.owner, FaceOwner::Part(cylinder));
+    }
+
+    #[test]
+    fn cylinder_sector_raycast_hits_retained_caps_and_cut_walls_only() {
+        let mut graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::new(1.0, 0.0, 1.0)
+            .unwrap()
+            .with_sweep_angle_degrees(90)
+            .unwrap();
+        let cylinder = spawn_cylinder(
+            &mut graph,
+            dimensions,
+            BuildPose::new(IVec3::new(0, 8, 0), GridRotation::default()),
+        );
+        let cube = spawn_cube(&mut graph, IVec3::new(0, 4, 0), 4);
+
+        let retained = raycast_construction(&graph, Vec3::new(0.3, 5.0, 0.0), Vec3::NEG_Y).unwrap();
+        assert_eq!(retained.face.owner, FaceOwner::Part(cylinder));
+        assert_eq!(retained.face.face, FaceKind::PositiveY);
+
+        let missing = raycast_construction(&graph, Vec3::new(-0.3, 5.0, 0.0), Vec3::NEG_Y).unwrap();
+        assert_eq!(missing.face.owner, FaceOwner::Part(cube));
+
+        let cut_wall = raycast_construction(&graph, Vec3::new(0.3, 2.0, 2.0), Vec3::NEG_Z).unwrap();
+        assert_eq!(cut_wall.face.owner, FaceOwner::Part(cylinder));
+        assert_eq!(cut_wall.face.face, FaceKind::PositiveX);
+    }
+
+    #[test]
+    fn annular_placement_stops_at_a_bore_only_when_material_cannot_pass() {
+        let mut graph = ConstructionGraph::new();
+        let cylinder = spawn_cylinder(
+            &mut graph,
+            CylinderDimensions::new(1.0, 0.5, 1.0).unwrap(),
+            BuildPose::new(IVec3::new(0, 8, 0), GridRotation::default()),
+        );
+        let cube = spawn_cube(&mut graph, IVec3::new(0, 4, 0), 1);
+        let origin = Vec3::new(0.0, 5.0, 0.0);
+
+        let fitting =
+            raycast_construction_for_annulus(&graph, origin, Vec3::NEG_Y, 0.0, 0.4).unwrap();
+        assert_eq!(fitting.face.owner, FaceOwner::Part(cube));
+
+        let obstructed =
+            raycast_construction_for_annulus(&graph, origin, Vec3::NEG_Y, 0.0, 0.6).unwrap();
+        assert_eq!(obstructed.face.owner, FaceOwner::Part(cylinder));
+        assert_eq!(obstructed.face.face, FaceKind::PositiveY);
+        let candidate = cylinder_candidate_from_hit(
+            &graph,
+            obstructed,
+            CylinderDimensions::new(0.6, 0.0, 0.25).unwrap(),
+        )
+        .unwrap();
+        let staged = stage_cylinder_from_source(&graph, candidate, obstructed.face.owner).unwrap();
+        assert_eq!(staged.weld_count(), 1);
+
+        let surrounding_sleeve =
+            raycast_construction_for_annulus(&graph, origin, Vec3::NEG_Y, 1.1, 1.2).unwrap();
+        assert_eq!(surrounding_sleeve.face.owner, FaceOwner::Part(cube));
+    }
+
+    #[test]
+    fn bearing_can_center_over_a_bore_when_its_ring_has_support() {
+        let mut graph = ConstructionGraph::new();
+        let cylinder = spawn_cylinder(
+            &mut graph,
+            CylinderDimensions::new(1.0, 0.5, 1.0).unwrap(),
+            BuildPose::new(IVec3::new(0, 8, 0), GridRotation::default()),
+        );
+        let source = FaceRef::part(cylinder, FaceKind::PositiveY);
+        let hit = SurfaceHit {
+            distance: 2.5,
+            point: Vec3::new(0.0, 2.5, 0.0),
+            face: source,
+        };
+
+        let anchor = bearing_anchor_from_hit(&graph, hit).unwrap();
+        assert_eq!(anchor, hit.point);
+        assert_eq!(
+            bearing_support_face(
+                &graph,
+                source,
+                anchor,
+                BearingDimensions::new(0.6, 0.2).unwrap(),
+            ),
+            Some(source)
+        );
+        assert!(
+            bearing_support_face(
+                &graph,
+                source,
+                anchor,
+                BearingDimensions::new(0.4, 0.2).unwrap(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn small_blocks_can_occupy_a_large_cylinder_bore() {
+        let mut graph = ConstructionGraph::new();
+        spawn_cylinder(
+            &mut graph,
+            CylinderDimensions::new(1.0, 0.6, 1.0).unwrap(),
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        );
+        let cube = CuboidSpec::new(
+            [1; 3],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let candidate = PlacementCandidate {
+            spec: cube,
+            attached_face: FaceKind::NegativeY,
+            anchor: Some(Vec3::ZERO),
+        };
+        assert!(stage_cuboid(&graph, candidate).is_ok());
+    }
+
+    #[test]
+    fn blocks_can_occupy_the_missing_side_of_a_cylinder_sector() {
+        let mut graph = ConstructionGraph::new();
+        spawn_cylinder(
+            &mut graph,
+            CylinderDimensions::new(1.0, 0.0, 1.0)
+                .unwrap()
+                .with_sweep_angle_degrees(90)
+                .unwrap(),
+            BuildPose::new(IVec3::new(0, 4, 0), GridRotation::default()),
+        );
+        let cube = CuboidSpec::new(
+            [1; 3],
+            BuildPose::new(IVec3::new(-1, 4, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let candidate = PlacementCandidate {
+            spec: cube,
+            attached_face: FaceKind::NegativeY,
+            anchor: Some(Vec3::ZERO),
+        };
+
+        assert!(stage_cuboid(&graph, candidate).is_ok());
+    }
+
+    #[test]
+    fn cylinders_place_along_all_six_flat_face_normals() {
+        let cases = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ];
+        for outward in cases {
+            let mut graph = ConstructionGraph::new();
+            let support = spawn_cube(&mut graph, IVec3::new(0, 16, 0), 4);
+            let hit = super::raycast_cuboid(
+                Vec3::new(0.0, 4.0, 0.0) + outward * 5.0,
+                -outward,
+                support,
+                graph.part(support).copied().unwrap().as_cuboid().unwrap(),
+            )
+            .unwrap();
+            let candidate = cylinder_candidate_from_hit(
+                &graph,
+                hit,
+                CylinderDimensions::new(0.25, 0.0, 0.5).unwrap(),
+            )
+            .unwrap();
+            let axis = candidate.spec.pose.rotation.quaternion() * Vec3::Y;
+            assert!(axis.abs_diff_eq(outward, 1.0e-6));
+            assert!(stage_cylinder_from_source(&graph, candidate, hit.face.owner).is_ok());
+        }
+    }
+
+    #[test]
+    fn thin_annular_cylinder_places_on_a_coplanar_block_sheet() {
+        let mut graph = ConstructionGraph::new();
+        let mut center = None;
+        for x in -2..=2 {
+            for z in -2..=2 {
+                let spec = CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::from_half_grid(IVec3::new(x * 2, 1, z * 2), GridRotation::default()),
+                )
+                .unwrap();
+                let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+                else {
+                    unreachable!()
+                };
+                if x == 0 && z == 0 {
+                    center = Some(part);
+                }
+            }
+        }
+        let center = center.unwrap();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::new(0.0, 0.25, 0.0),
+            face: FaceRef::part(center, FaceKind::PositiveY),
+        };
+        let candidate = cylinder_candidate_from_hit(
+            &graph,
+            hit,
+            CylinderDimensions::new(0.75, 0.70, 0.25).unwrap(),
+        )
+        .unwrap();
+
+        assert!(candidate.anchor.is_some());
+        assert!(stage_cylinder_from_source(&graph, candidate, hit.face.owner).is_ok());
+    }
+
+    #[test]
+    fn bearing_anchor_rejects_a_curved_cylinder_wall() {
+        let mut graph = ConstructionGraph::new();
+        let cylinder = spawn_cylinder(
+            &mut graph,
+            CylinderDimensions::new(0.5, 0.25, 0.5).unwrap(),
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        );
+        let curved_hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::new(0.25, 0.5, 0.0),
+            face: FaceRef::part(cylinder, FaceKind::PositiveX),
+        };
+
+        assert_eq!(
+            bearing_anchor_from_hit(&graph, curved_hit),
+            Err(PlacementError::CurvedSurface)
+        );
     }
 
     #[test]
@@ -1058,7 +2142,7 @@ mod tests {
                 Vec3::new(0.0, 4.0, 0.0) + outward * 5.0,
                 -outward,
                 part,
-                *graph.part(part).unwrap(),
+                graph.part(part).copied().unwrap().as_cuboid().unwrap(),
             )
             .expect("ray reaches requested face");
             assert_eq!(hit.face.face, expected_face);
@@ -1134,6 +2218,23 @@ mod tests {
         let candidate = candidate_from_hit(&graph, hit);
         assert!(matches!(
             stage_cuboid(&graph, candidate),
+            Err(PlacementError::OutsidePlatform)
+        ));
+    }
+
+    #[test]
+    fn cylinder_slice_platform_bounds_ignore_the_omitted_sector() {
+        let graph = ConstructionGraph::new();
+        let pose = BuildPose::new(IVec3::new(-40, 2, 0), GridRotation::default());
+        let slice = CylinderDimensions::new(1.0, 0.0, 1.0)
+            .unwrap()
+            .with_sweep_angle_degrees(90)
+            .unwrap();
+        assert!(validate_part(&graph, PartSpec::Cylinder(CylinderSpec::new(slice, pose))).is_ok());
+
+        let full = CylinderDimensions::new(1.0, 0.0, 1.0).unwrap();
+        assert!(matches!(
+            validate_part(&graph, PartSpec::Cylinder(CylinderSpec::new(full, pose))),
             Err(PlacementError::OutsidePlatform)
         ));
     }
@@ -1323,6 +2424,32 @@ mod tests {
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.bearing_count(), 0);
         assert!(graph.pending().is_none());
+    }
+
+    #[test]
+    fn bearing_anchor_preserves_a_side_faces_half_grid_height() {
+        let graph = ConstructionGraph::new();
+        let block = candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            },
+        );
+        let graph = stage_cuboid(&graph, block).unwrap();
+        let part = graph.parts().next().unwrap().0;
+        let source = FaceRef::part(part, FaceKind::PositiveX);
+        let face = face_geometry_from_ref(source, Some(&graph));
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: face.center + Vec3::new(0.0, 0.02, 0.10),
+            face: source,
+        };
+
+        let anchor = bearing_anchor_from_hit(&graph, hit).unwrap();
+
+        assert!(anchor.abs_diff_eq(face.center, 1.0e-6));
     }
 
     #[test]

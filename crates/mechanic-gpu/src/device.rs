@@ -2831,8 +2831,10 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
     use mechanic_core::{
         BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-        FaceKind, FaceRef, GridRotation, WeldSpec,
+        CylinderDimensions, CylinderSpec, FaceKind, FaceRef, GridRotation, RigidLinkSpec, WeldSpec,
     };
+
+    use crate::GpuMechanismCoordinate;
 
     use super::{GpuPhysics, GpuPhysicsConfig};
 
@@ -2975,6 +2977,134 @@ mod tests {
         graph.compile().unwrap()
     }
 
+    fn branching_pendulum_creation(
+        arm_count: usize,
+        hanging: bool,
+    ) -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        let root = CuboidSpec::new(
+            [8, 4, 8],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(root) = graph.apply(BuildCommand::Spawn(root)).unwrap() else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(root, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+        let bar = CuboidSpec::new(
+            [24, 2, 2],
+            BuildPose::from_half_grid(IVec3::new(0, 10, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(bar) = graph.apply(BuildCommand::Spawn(bar)).unwrap() else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(root, FaceKind::PositiveY),
+                FaceRef::part(bar, FaceKind::NegativeY),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::Y,
+            )))
+            .unwrap();
+
+        for (center, bar_face, arm_face, anchor, axis) in [
+            (
+                IVec3::new(26, if hanging { 7 } else { 16 }, 1),
+                FaceKind::PositiveX,
+                FaceKind::NegativeX,
+                Vec3::new(3.0, 1.25, 0.0),
+                Vec3::X,
+            ),
+            (
+                IVec3::new(-26, if hanging { 7 } else { 16 }, -1),
+                FaceKind::NegativeX,
+                FaceKind::PositiveX,
+                Vec3::new(-3.0, 1.25, 0.0),
+                Vec3::NEG_X,
+            ),
+        ]
+        .into_iter()
+        .take(arm_count)
+        {
+            let arm = CuboidSpec::new(
+                [2, 8, 2],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(arm) = graph.apply(BuildCommand::Spawn(arm)).unwrap() else {
+                unreachable!()
+            };
+            graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(bar, bar_face),
+                    FaceRef::part(arm, arm_face),
+                    anchor,
+                    axis,
+                )))
+                .unwrap();
+        }
+        graph.compile().unwrap()
+    }
+
+    fn swinging_arm_with_coaxial_rotor_creation() -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        let root = CuboidSpec::new(
+            [8, 8, 8],
+            BuildPose::new(IVec3::new(0, 4, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(root) = graph.apply(BuildCommand::Spawn(root)).unwrap() else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(root, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+
+        let arm = CuboidSpec::new(
+            [2, 2, 24],
+            BuildPose::from_half_grid(IVec3::new(10, 10, 24), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(arm) = graph.apply(BuildCommand::Spawn(arm)).unwrap() else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(root, FaceKind::PositiveX),
+                FaceRef::part(arm, FaceKind::NegativeX),
+                Vec3::new(1.0, 1.25, 0.25),
+                Vec3::X,
+            )))
+            .unwrap();
+
+        let rotor = CylinderSpec::new(
+            CylinderDimensions::new(0.25, 0.20, 0.75).unwrap(),
+            BuildPose::from_half_grid(IVec3::new(10, 5, 46), GridRotation::default()),
+        );
+        let BuildOutcome::Spawned(rotor) = graph.apply(BuildCommand::SpawnCylinder(rotor)).unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(arm, FaceKind::NegativeY),
+                FaceRef::part(rotor, FaceKind::PositiveY),
+                Vec3::new(1.25, 1.0, 5.75),
+                Vec3::NEG_Y,
+            )))
+            .unwrap();
+        graph.compile().unwrap()
+    }
+
     fn relative_bearing_rotation(
         snapshot: &[crate::GpuTransform],
         bearing: &mechanic_core::CompiledBearing,
@@ -3036,7 +3166,11 @@ mod tests {
             run_long_pendulum(&device, &queue, &single, true);
         assert_eq!(single_diagnostics.error_flags, 0);
         assert_eq!(single_diagnostics.active_contact_count, 0);
-        assert!((single_angles[0] - std::f32::consts::FRAC_PI_2).abs() < 0.02);
+        assert!(
+            (single_angles[0] - std::f32::consts::FRAC_PI_2).abs() < 0.02,
+            "single pendulum angle was {}",
+            single_angles[0]
+        );
         assert!(single_speeds[0] < 0.2);
 
         let double = tall_pendulum_creation(true);
@@ -3046,12 +3180,138 @@ mod tests {
         assert_eq!(free_diagnostics.error_flags, 0);
         assert!((free_angles[0] - std::f32::consts::FRAC_PI_2).abs() < 0.02);
         assert!((free_angles[1] + std::f32::consts::FRAC_PI_2).abs() < 0.02);
-        assert!(free_speeds.iter().all(|speed| *speed < 0.5));
+        assert!(
+            free_speeds.iter().all(|speed| *speed < 1.0e-4),
+            "double pendulum retained free speeds {free_speeds:?}"
+        );
 
         let (_, contact_speeds, contact_diagnostics) =
             run_long_pendulum(&device, &queue, &double, true);
         assert_eq!(contact_diagnostics.error_flags, 0);
-        assert!(contact_speeds.iter().all(|speed| *speed < 0.5));
+        assert!(
+            contact_speeds.iter().all(|speed| *speed < 1.0e-4),
+            "double pendulum retained contact speeds {contact_speeds:?}"
+        );
+    }
+
+    #[test]
+    fn branching_pendulum_reaches_rest_instead_of_retaining_spin() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        for (arm_count, hanging) in [(1, false), (2, false), (1, true), (2, true)] {
+            let creation = branching_pendulum_creation(arm_count, hanging);
+            let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+            if arm_count == 1 && hanging {
+                gpu.initialize_mechanism_coordinates(
+                    &queue,
+                    &[
+                        GpuMechanismCoordinate {
+                            angle: 0.0,
+                            angular_velocity: 0.0,
+                        },
+                        GpuMechanismCoordinate {
+                            angle: 0.35,
+                            angular_velocity: 0.0,
+                        },
+                    ],
+                )
+                .unwrap();
+            }
+            let sample = |tick: u64| {
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let current = gpu
+                    .read_snapshot_transforms(&device, &queue, u8::try_from(tick % 3).unwrap())
+                    .unwrap();
+                let previous = gpu
+                    .read_snapshot_transforms(
+                        &device,
+                        &queue,
+                        u8::try_from((tick - 1) % 3).unwrap(),
+                    )
+                    .unwrap();
+                creation
+                    .bearings
+                    .iter()
+                    .map(|bearing| {
+                        let current_relative = relative_bearing_rotation(&current, bearing);
+                        let previous_relative = relative_bearing_rotation(&previous, bearing);
+                        let delta = previous_relative.conjugate() * current_relative;
+                        2.0 * delta.xyz().length().atan2(delta.w.abs()) * 60.0
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for tick in 1..=1_200 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let early = sample(1_200);
+            for tick in 1_201..=2_400 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let late = sample(2_400);
+            assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+            assert!(
+                late.iter().all(|speed| *speed < 1.0e-4),
+                "{arm_count}-arm hanging={hanging} bearing speeds plateaued from {early:?} to {late:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn moving_coaxial_rotor_does_not_gain_perpetual_spin() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let creation = swinging_arm_with_coaxial_rotor_creation();
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        gpu.initialize_mechanism_coordinates(
+            &queue,
+            &[
+                GpuMechanismCoordinate {
+                    angle: 0.35,
+                    angular_velocity: 0.0,
+                },
+                GpuMechanismCoordinate {
+                    angle: 0.0,
+                    angular_velocity: 0.0,
+                },
+            ],
+        )
+        .unwrap();
+        let sample = |tick: u64| {
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let current = gpu
+                .read_snapshot_transforms(&device, &queue, u8::try_from(tick % 3).unwrap())
+                .unwrap();
+            let previous = gpu
+                .read_snapshot_transforms(&device, &queue, u8::try_from((tick - 1) % 3).unwrap())
+                .unwrap();
+            creation
+                .bearings
+                .iter()
+                .map(|bearing| {
+                    let current_relative = relative_bearing_rotation(&current, bearing);
+                    let previous_relative = relative_bearing_rotation(&previous, bearing);
+                    let delta = previous_relative.conjugate() * current_relative;
+                    2.0 * delta.xyz().length().atan2(delta.w.abs()) * 60.0
+                })
+                .collect::<Vec<_>>()
+        };
+        for tick in 1..=1_200 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        let early_speeds = sample(1_200);
+        for tick in 1_201..=2_400 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        let late_speeds = sample(2_400);
+        let diagnostics = gpu.read_last_tick(&device).unwrap();
+        assert_eq!(diagnostics.error_flags, 0);
+        assert_eq!(diagnostics.active_contact_count, 0);
+        assert!(
+            late_speeds.iter().all(|speed| *speed < 1.0e-4),
+            "bearing state failed to settle from {early_speeds:?} to {late_speeds:?}"
+        );
     }
 
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -3217,6 +3477,82 @@ mod tests {
         assert!(snapshot[1].rotation[0].abs() < 1.0e-4);
         assert!(snapshot[1].rotation[1].abs() < 1.0e-4);
         assert!(snapshot[1].rotation[2].abs() < 1.0e-4);
+    }
+
+    fn cylinder_drop_creation(
+        inner_diameter: f32,
+        drop_x_half_units: i32,
+    ) -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        let support_spec = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(8, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(support) =
+            graph.apply(BuildCommand::Spawn(support_spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(support, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+        let cylinder_spec = CylinderSpec::new(
+            CylinderDimensions::new(1.0, inner_diameter, 1.0).unwrap(),
+            BuildPose::new(IVec3::new(0, 12, 0), GridRotation::default()),
+        );
+        let BuildOutcome::Spawned(cylinder) = graph
+            .apply(BuildCommand::SpawnCylinder(cylinder_spec))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: support,
+                second: cylinder,
+            }))
+            .unwrap();
+        let drop_spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(
+                IVec3::new(drop_x_half_units, 40, 0),
+                GridRotation::default(),
+            ),
+        )
+        .unwrap();
+        graph.apply(BuildCommand::Spawn(drop_spec)).unwrap();
+        graph.compile().unwrap()
+    }
+
+    #[test]
+    fn gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion() {
+        let hollow = cylinder_drop_creation(0.60, 0);
+        let solid = cylinder_drop_creation(0.0, 0);
+        let annular = cylinder_drop_creation(0.60, 3);
+        let Some((hollow_snapshot, hollow_readback)) = run_ticks(&hollow, 60, true) else {
+            return;
+        };
+        let Some((solid_snapshot, solid_readback)) = run_ticks(&solid, 60, true) else {
+            return;
+        };
+        let Some((annular_snapshot, annular_readback)) = run_ticks(&annular, 60, true) else {
+            return;
+        };
+        assert_eq!(hollow_readback.error_flags, 0);
+        assert_eq!(solid_readback.error_flags, 0);
+        assert_eq!(annular_readback.error_flags, 0);
+        let falling_body = 1;
+        assert!(hollow_snapshot[falling_body].position[1] < 2.5);
+        assert!(solid_snapshot[falling_body].position[1] > 3.4);
+        assert!(
+            annular_snapshot[falling_body].position[1] > 3.4,
+            "annular drop reached y={} instead of resting on the ring",
+            annular_snapshot[falling_body].position[1]
+        );
     }
 
     #[test]

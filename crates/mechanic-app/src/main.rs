@@ -23,30 +23,41 @@ use bevy::{
     },
 };
 use builder::{
-    BEARING_DEPTH, BLOCK_SIZE_METERS, GROUND_HALF_SIZE, PlacementCandidate, PlacementError,
-    PlacementPlane, SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate,
-    bearing_overlaps_candidate, bearing_support_face, bearing_support_face_excluding, begin_weld,
-    block_sheet_specs, candidate_from_hit, face_geometry_from_ref, raycast_construction,
-    raycast_oriented_cuboid, raycast_placement_plane, rigid_body_parts, stage_bearing_attachment,
-    stage_bearing_block_batch, stage_block_batch_from_source, stage_weld_objects,
-    validate_block_batch,
+    BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
+    PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
+    bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
+    bearing_support_face, bearing_support_face_excluding, begin_weld, block_sheet_specs,
+    candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref, part_world_bounds,
+    raycast_construction, raycast_construction_for_annulus, raycast_oriented_cuboid,
+    raycast_placement_plane, rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch,
+    stage_bearing_cylinder, stage_block_batch_from_source, stage_cylinder_from_source,
+    stage_weld_objects, try_face_geometry_from_ref, validate_block_batch,
+    validate_cylinder_candidate,
 };
 use camera::OrbitCamera;
 use creation_menu::CreationMenuState;
 use hotbar::{HotbarPointerCapture, SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
-    BearingDimensions, BuildCommand, CompiledCreation, ConstructionGraph, CuboidSpec, FaceOwner,
-    MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, PartId,
-    PendingOperation, TopologyError,
+    BearingDimensions, BuildCommand, CYLINDER_SWEEP_STEP_DEGREES, CompiledCreation,
+    ConstructionGraph, CuboidSpec, CylinderDimensions, FaceOwner, MAX_BEARING_OUTER_DIAMETER,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
+    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
+    MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation, TopologyError,
 };
-use mechanic_gpu::{FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform};
+use mechanic_gpu::{
+    FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
+};
 
 const SIMULATION_VISUAL_TICK_INTERVAL: u32 = 2;
 const HAMMER_CHARGE_SECONDS: f32 = 1.5;
 const HAMMER_MIN_IMPULSE: f32 = 25.0;
 const HAMMER_MAX_IMPULSE: f32 = 4_000.0;
+const HAMMER_MAX_POINT_TRAVEL_PER_TICK: f32 = 0.05;
+const HAMMER_MAX_DELIVERY_TICKS: u16 = 12;
 const HISTORY_CAPACITY: usize = 64;
 const BEARING_DIAMETER_STEP: f32 = 0.05;
+const CYLINDER_DIAMETER_STEP: f32 = 0.05;
+const CYLINDER_LENGTH_STEP: f32 = 0.25;
 const HELP_TEXT_COLOR: Color = Color::srgb(0.88, 0.92, 0.96);
 const HELP_MUTED_COLOR: Color = Color::srgb(0.58, 0.66, 0.73);
 const HELP_BLUE_COLOR: Color = Color::srgb(0.30, 0.78, 1.0);
@@ -74,6 +85,7 @@ struct AppSimulation {
 #[derive(Resource, Default)]
 struct HammerInteraction {
     charging: Option<HammerCharge>,
+    pending: Option<HammerImpact>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,6 +94,14 @@ struct HammerCharge {
     local_point: Vec3,
     direction: Vec3,
     elapsed_seconds: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HammerImpact {
+    body_index: u32,
+    local_point: Vec3,
+    impulse_per_tick: Vec3,
+    remaining_ticks: u16,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -132,6 +152,11 @@ struct PlacedBearing {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 struct BearingToolSettings {
     dimensions: BearingDimensions,
+}
+
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+struct CylinderToolSettings {
+    dimensions: CylinderDimensions,
 }
 
 #[derive(Clone, Debug)]
@@ -198,19 +223,23 @@ enum SimulationShortcut {
 #[derive(Clone, Copy, Debug)]
 enum DeleteTarget {
     PlacedBearing(usize),
+    Part(PartId),
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
 fn handle_simulation_shortcut(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
+    mut hammer: ResMut<HammerInteraction>,
     mut menu: ResMut<CreationMenuState>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
 ) {
     if keyboard.just_pressed(KeyCode::Escape) && simulation.is_running() && !menu.is_open() {
         *simulation = AppSimulation::default();
+        *hammer = HammerInteraction::default();
         state.construction_mesh_dirty = true;
         state.feedback = Some("Returned to build mode".to_owned());
         return;
@@ -226,6 +255,7 @@ fn handle_simulation_shortcut(
     let restarting = simulation.is_running();
     if restarting && shortcut == SimulationShortcut::TogglePlayback {
         simulation.paused = !simulation.paused;
+        *hammer = HammerInteraction::default();
         state.feedback = Some(if simulation.paused {
             "Simulation paused — Space resumes, Shift+Space restarts".to_owned()
         } else {
@@ -236,6 +266,7 @@ fn handle_simulation_shortcut(
     state.block_drag = None;
     state.delete_drag = None;
     state.delete_target = None;
+    *hammer = HammerInteraction::default();
 
     if graph.0.pending().is_some() {
         let _ = graph.0.apply(BuildCommand::CancelPending);
@@ -385,18 +416,9 @@ fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
     let mut minimum = Vec3::splat(f32::INFINITY);
     let mut maximum = Vec3::splat(f32::NEG_INFINITY);
     for (_, spec) in graph.parts() {
-        let center = spec.pose.translation();
-        let half = spec.size_meters() * 0.5;
-        let rotation = spec.pose.rotation.quaternion();
-        for x in [-half.x, half.x] {
-            for y in [-half.y, half.y] {
-                for z in [-half.z, half.z] {
-                    let corner = center + rotation * Vec3::new(x, y, z);
-                    minimum = minimum.min(corner);
-                    maximum = maximum.max(corner);
-                }
-            }
-        }
+        let (part_minimum, part_maximum) = part_world_bounds(*spec);
+        minimum = minimum.min(part_minimum);
+        maximum = maximum.max(part_maximum);
     }
     minimum.is_finite().then_some((minimum, maximum))
 }
@@ -411,6 +433,7 @@ fn advance_simulation(
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
+    mut hammer: ResMut<HammerInteraction>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     visuals: Res<EditorVisuals>,
@@ -454,6 +477,13 @@ fn advance_simulation(
         next_simulation_tick(scheduler, next_tick, time.delta(), *paused)
     };
     if let Some(tick) = tick {
+        if let Err(error) =
+            apply_pending_hammer_impact(&simulation, &mut hammer, &render_device, &render_queue)
+        {
+            hammer.pending = None;
+            stop_failed_simulation(&mut simulation, &mut state, error);
+            return;
+        }
         let diagnostics = {
             let gpu = simulation
                 .gpu
@@ -595,6 +625,7 @@ struct EditorState {
     /// Unattached bearing that would claim the current block preview.
     attachment_bearing: Option<usize>,
     preview: Option<PlacementCandidate>,
+    cylinder_preview: Option<CylinderPlacementCandidate>,
     preview_error: Option<PlacementError>,
     feedback: Option<String>,
     construction_mesh_dirty: bool,
@@ -612,6 +643,7 @@ struct EditorVisuals {
     simulation_mesh: Handle<Mesh>,
     bearing_mesh: Handle<Mesh>,
     cube_preview_mesh: Handle<Mesh>,
+    cylinder_preview_mesh: Handle<Mesh>,
     bearing_preview_mesh: Handle<Mesh>,
     white_preview_material: Handle<StandardMaterial>,
     green_preview_material: Handle<StandardMaterial>,
@@ -658,6 +690,19 @@ enum HelpLine {
     Status,
 }
 
+const BEARING_RENDER_DEPTH_BIAS: f32 = 2.0;
+const BEARING_RENDER_RADIAL_SKIN: f32 = 0.001;
+
+fn bearing_surface_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::srgb(0.95, 0.58, 0.08),
+        metallic: 0.35,
+        perceptual_roughness: 0.55,
+        depth_bias: BEARING_RENDER_DEPTH_BIAS,
+        ..default()
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -675,6 +720,7 @@ fn main() {
         .init_resource::<AppSimulation>()
         .init_resource::<HammerInteraction>()
         .init_resource::<BearingToolSettings>()
+        .init_resource::<CylinderToolSettings>()
         .init_resource::<SelectedTool>()
         .init_resource::<HotbarPointerCapture>()
         .insert_resource(GlobalAmbientLight {
@@ -695,7 +741,11 @@ fn main() {
                 camera::update_orbit_camera,
                 handle_simulation_shortcut,
                 handle_shortcuts,
-                handle_bearing_dimension_shortcuts,
+                (
+                    handle_bearing_dimension_shortcuts,
+                    handle_cylinder_dimension_shortcuts,
+                )
+                    .chain(),
                 handle_tool_change,
                 update_hover,
                 handle_build_actions,
@@ -721,6 +771,7 @@ fn setup(
     let simulation_mesh = meshes.add(Cuboid::default());
     let bearing_mesh = meshes.add(Cuboid::default());
     let cube_preview_mesh = meshes.add(Cuboid::default());
+    let cylinder_preview_mesh = meshes.add(single_cylinder_mesh(CylinderDimensions::default()));
     let bearing_preview_mesh = meshes.add(single_bearing_mesh(BearingDimensions::default()));
     let block_drag_preview_mesh = meshes.add(Cuboid::default());
     let delete_drag_preview_mesh = meshes.add(Cuboid::default());
@@ -731,12 +782,7 @@ fn setup(
         perceptual_roughness: 0.8,
         ..default()
     });
-    let bearing_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.95, 0.58, 0.08),
-        metallic: 0.35,
-        perceptual_roughness: 0.55,
-        ..default()
-    });
+    let bearing_material = materials.add(bearing_surface_material());
     let joint_xray_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.95, 0.58, 0.08),
         cull_mode: None,
@@ -770,6 +816,7 @@ fn setup(
         simulation_mesh: simulation_mesh.clone(),
         bearing_mesh: bearing_mesh.clone(),
         cube_preview_mesh: cube_preview_mesh.clone(),
+        cylinder_preview_mesh,
         bearing_preview_mesh,
         white_preview_material: white_preview_material.clone(),
         green_preview_material,
@@ -1082,6 +1129,7 @@ fn handle_shortcuts(
         KeyCode::Digit3,
         KeyCode::Digit4,
         KeyCode::Digit5,
+        KeyCode::Digit6,
     ] {
         if keyboard.just_pressed(key) {
             selection.0 = shortcut_tool(key).expect("numbered tool key has a mapping");
@@ -1134,9 +1182,9 @@ fn requested_bearing_dimension_adjustment(
     if tool != Tool::Bearing || simulating || menu_blocks_input {
         return None;
     }
-    let direction = if keyboard.just_pressed(KeyCode::BracketLeft) {
+    let direction = if keyboard.just_pressed(KeyCode::ArrowLeft) {
         -1
-    } else if keyboard.just_pressed(KeyCode::BracketRight) {
+    } else if keyboard.just_pressed(KeyCode::ArrowRight) {
         1
     } else {
         return None;
@@ -1200,6 +1248,137 @@ fn handle_bearing_dimension_shortcuts(
     ));
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CylinderDimensionTarget {
+    Outer,
+    Inner,
+    Length,
+    Sweep,
+}
+
+fn requested_cylinder_dimension_adjustment(
+    keyboard: &ButtonInput<KeyCode>,
+    tool: Tool,
+    simulating: bool,
+    menu_blocks_input: bool,
+) -> Option<(CylinderDimensionTarget, i8)> {
+    if tool != Tool::Cylinder || simulating || menu_blocks_input {
+        return None;
+    }
+    let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if keyboard.just_pressed(KeyCode::ArrowDown) {
+        return Some((
+            if shift {
+                CylinderDimensionTarget::Sweep
+            } else {
+                CylinderDimensionTarget::Length
+            },
+            -1,
+        ));
+    }
+    if keyboard.just_pressed(KeyCode::ArrowUp) {
+        return Some((
+            if shift {
+                CylinderDimensionTarget::Sweep
+            } else {
+                CylinderDimensionTarget::Length
+            },
+            1,
+        ));
+    }
+    let direction = if keyboard.just_pressed(KeyCode::ArrowLeft) {
+        -1
+    } else if keyboard.just_pressed(KeyCode::ArrowRight) {
+        1
+    } else {
+        return None;
+    };
+    let target = if shift {
+        CylinderDimensionTarget::Inner
+    } else {
+        CylinderDimensionTarget::Outer
+    };
+    Some((target, direction))
+}
+
+fn adjusted_cylinder_dimensions(
+    dimensions: CylinderDimensions,
+    target: CylinderDimensionTarget,
+    direction: i8,
+) -> CylinderDimensions {
+    if target == CylinderDimensionTarget::Sweep {
+        let sweep = (i32::from(dimensions.sweep_angle_degrees())
+            + i32::from(direction) * i32::from(CYLINDER_SWEEP_STEP_DEGREES))
+        .clamp(
+            i32::from(MIN_CYLINDER_SWEEP_DEGREES),
+            i32::from(MAX_CYLINDER_SWEEP_DEGREES),
+        );
+        return dimensions
+            .with_sweep_angle_degrees(u16::try_from(sweep).expect("clamped sweep fits u16"))
+            .expect("clamped cylinder sweep is valid");
+    }
+    let step_diameter = f32::from(direction) * CYLINDER_DIAMETER_STEP;
+    let stepped_diameter = |value: f32| {
+        ((value + step_diameter) / CYLINDER_DIAMETER_STEP).round() * CYLINDER_DIAMETER_STEP
+    };
+    let (outer, inner, length) = match target {
+        CylinderDimensionTarget::Outer => {
+            let outer = stepped_diameter(dimensions.outer_diameter())
+                .clamp(MIN_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER);
+            (
+                outer,
+                dimensions
+                    .inner_diameter()
+                    .min(outer - MIN_CYLINDER_DIAMETER_GAP),
+                dimensions.axial_length(),
+            )
+        }
+        CylinderDimensionTarget::Inner => (
+            dimensions.outer_diameter(),
+            stepped_diameter(dimensions.inner_diameter())
+                .clamp(0.0, dimensions.outer_diameter() - MIN_CYLINDER_DIAMETER_GAP),
+            dimensions.axial_length(),
+        ),
+        CylinderDimensionTarget::Length => (
+            dimensions.outer_diameter(),
+            dimensions.inner_diameter(),
+            (dimensions.axial_length() + f32::from(direction) * CYLINDER_LENGTH_STEP)
+                .clamp(0.25, 8.0),
+        ),
+        CylinderDimensionTarget::Sweep => unreachable!("sweep adjustment returned above"),
+    };
+    CylinderDimensions::new(outer, inner, length)
+        .expect("clamped cylinder tool settings satisfy core dimensions")
+        .with_sweep_angle_degrees(dimensions.sweep_angle_degrees())
+        .expect("existing cylinder sweep remains valid")
+}
+
+fn handle_cylinder_dimension_shortcuts(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    simulation: Res<AppSimulation>,
+    selection: Res<SelectedTool>,
+    menu: Res<CreationMenuState>,
+    mut settings: ResMut<CylinderToolSettings>,
+    mut state: ResMut<EditorState>,
+) {
+    let Some((target, direction)) = requested_cylinder_dimension_adjustment(
+        &keyboard,
+        selection.0,
+        simulation.is_running(),
+        menu.blocks_pointer(),
+    ) else {
+        return;
+    };
+    settings.dimensions = adjusted_cylinder_dimensions(settings.dimensions, target, direction);
+    state.feedback = Some(format!(
+        "Cylinder outer {:.2} m, inner {:.2} m, length {:.2} m, sweep {}°",
+        settings.dimensions.outer_diameter(),
+        settings.dimensions.inner_diameter(),
+        settings.dimensions.axial_length(),
+        settings.dimensions.sweep_angle_degrees(),
+    ));
+}
+
 fn handle_tool_change(
     selection: Res<SelectedTool>,
     mut graph: ResMut<EditorGraph>,
@@ -1217,7 +1396,7 @@ fn handle_tool_change(
     state.feedback = None;
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn update_hover(
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
@@ -1227,6 +1406,8 @@ fn update_hover(
     keyboard: Res<ButtonInput<KeyCode>>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
+    bearing_settings: Res<BearingToolSettings>,
+    cylinder_settings: Res<CylinderToolSettings>,
     hotbar_capture: Res<HotbarPointerCapture>,
 ) {
     if simulation.is_running() {
@@ -1241,7 +1422,12 @@ fn update_hover(
             state.feedback = Some("Delete drag cancelled while moving camera".to_owned());
         }
         clear_hover(&mut state);
-        refresh_tool_preview(&graph.0, &mut state, selection.0);
+        refresh_tool_preview_with_cylinder(
+            &graph.0,
+            &mut state,
+            selection.0,
+            cylinder_settings.dimensions,
+        );
         return;
     }
     if hotbar_capture.active() {
@@ -1258,7 +1444,12 @@ fn update_hover(
             return;
         }
         clear_hover(&mut state);
-        refresh_tool_preview(&graph.0, &mut state, selection.0);
+        refresh_tool_preview_with_cylinder(
+            &graph.0,
+            &mut state,
+            selection.0,
+            cylinder_settings.dimensions,
+        );
         return;
     };
     let (camera, camera_transform) = *camera;
@@ -1272,7 +1463,12 @@ fn update_hover(
             return;
         }
         clear_hover(&mut state);
-        refresh_tool_preview(&graph.0, &mut state, selection.0);
+        refresh_tool_preview_with_cylinder(
+            &graph.0,
+            &mut state,
+            selection.0,
+            cylinder_settings.dimensions,
+        );
         return;
     };
     if state.block_drag.is_some() {
@@ -1283,8 +1479,32 @@ fn update_hover(
         refresh_delete_drag(&graph.0, &mut state, ray.origin, ray.direction.as_vec3());
         return;
     }
-    let construction_hit = raycast_construction(&graph.0, ray.origin, ray.direction.as_vec3());
-    if (selection.0 == Tool::Block || mouse_buttons.pressed(MouseButton::Right))
+    let ray_direction = ray.direction.as_vec3();
+    let construction_hit = if mouse_buttons.pressed(MouseButton::Right) {
+        raycast_construction(&graph.0, ray.origin, ray_direction)
+    } else {
+        match selection.0 {
+            Tool::Bearing => raycast_construction_for_annulus(
+                &graph.0,
+                ray.origin,
+                ray_direction,
+                bearing_settings.dimensions.inner_diameter(),
+                bearing_settings.dimensions.outer_diameter(),
+            ),
+            Tool::Cylinder => raycast_construction_for_annulus(
+                &graph.0,
+                ray.origin,
+                ray_direction,
+                cylinder_settings.dimensions.inner_diameter(),
+                cylinder_settings.dimensions.outer_diameter(),
+            ),
+            Tool::Block | Tool::Weld | Tool::Hammer | Tool::JointXray => {
+                raycast_construction(&graph.0, ray.origin, ray_direction)
+            }
+        }
+    };
+    if (matches!(selection.0, Tool::Block | Tool::Cylinder)
+        || mouse_buttons.pressed(MouseButton::Right))
         && let Some((bearing, distance)) = raycast_placed_bearings(
             &graph.0,
             &state.placed_bearings,
@@ -1295,17 +1515,32 @@ fn update_hover(
     {
         state.hovered = construction_hit;
         state.hovered_bearing = Some(bearing);
-        refresh_tool_preview(&graph.0, &mut state, selection.0);
+        refresh_tool_preview_with_cylinder(
+            &graph.0,
+            &mut state,
+            selection.0,
+            cylinder_settings.dimensions,
+        );
         return;
     }
     let Some(hit) = construction_hit else {
         clear_hover(&mut state);
-        refresh_tool_preview(&graph.0, &mut state, selection.0);
+        refresh_tool_preview_with_cylinder(
+            &graph.0,
+            &mut state,
+            selection.0,
+            cylinder_settings.dimensions,
+        );
         return;
     };
     state.hovered_bearing = None;
     state.hovered = Some(hit);
-    refresh_tool_preview(&graph.0, &mut state, selection.0);
+    refresh_tool_preview_with_cylinder(
+        &graph.0,
+        &mut state,
+        selection.0,
+        cylinder_settings.dimensions,
+    );
 }
 
 fn refresh_block_drag(
@@ -1422,8 +1657,9 @@ fn delete_sheet_parts(
     Ok(graph
         .parts()
         .filter_map(|(part, spec)| {
-            centers
-                .contains(&spec.pose.translation_half_units())
+            matches!(spec, PartSpec::Cuboid(_))
+                .then(|| centers.contains(&spec.pose().translation_half_units()))
+                .unwrap_or(false)
                 .then_some(part)
         })
         .collect())
@@ -1434,15 +1670,27 @@ fn clear_hover(state: &mut EditorState) {
     state.hovered_bearing = None;
     state.attachment_bearing = None;
     state.preview = None;
+    state.cylinder_preview = None;
     state.preview_error = None;
 }
 
-fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool: Tool) {
+#[allow(clippy::too_many_lines)]
+fn refresh_tool_preview_with_cylinder(
+    graph: &ConstructionGraph,
+    state: &mut EditorState,
+    tool: Tool,
+    cylinder_dimensions: CylinderDimensions,
+) {
     state.preview = None;
+    state.cylinder_preview = None;
     state.attachment_bearing = None;
     state.preview_error = match (tool, graph.pending()) {
         (Tool::Block, _) => {
-            let surface_candidate = state.hovered.map(|hit| candidate_from_hit(graph, hit));
+            let surface_candidate = state.hovered.and_then(|hit| {
+                try_face_geometry_from_ref(hit.face, Some(graph))
+                    .is_some()
+                    .then(|| candidate_from_hit(graph, hit))
+            });
             let direct_bearing = state.hovered_bearing.filter(|&index| {
                 state.placed_bearings.get(index).is_some_and(|bearing| {
                     surface_candidate.is_none_or(|candidate| {
@@ -1497,11 +1745,71 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
         (Tool::Weld, Some(PendingOperation::Weld(first))) => state
             .hovered
             .and_then(|hit| stage_weld_objects(graph, first.owner, hit.face.owner).err()),
+        (Tool::Cylinder, _) => {
+            let surface_candidate = state
+                .hovered
+                .and_then(|hit| cylinder_candidate_from_hit(graph, hit, cylinder_dimensions).ok());
+            let direct_bearing = state.hovered_bearing.filter(|&index| {
+                state.placed_bearings.get(index).is_some_and(|bearing| {
+                    surface_candidate.is_none_or(|candidate| {
+                        bearing_overlaps_cylinder_candidate(
+                            graph,
+                            bearing.source,
+                            bearing.anchor,
+                            bearing.dimensions,
+                            candidate,
+                        )
+                    })
+                })
+            });
+            let bearing_index = direct_bearing.or_else(|| {
+                surface_candidate.and_then(|candidate| {
+                    state.placed_bearings.iter().position(|bearing| {
+                        bearing_overlaps_cylinder_candidate(
+                            graph,
+                            bearing.source,
+                            bearing.anchor,
+                            bearing.dimensions,
+                            candidate,
+                        )
+                    })
+                })
+            });
+            state.attachment_bearing = bearing_index;
+            let candidate = if let Some(bearing) =
+                bearing_index.and_then(|index| state.placed_bearings.get(index).copied())
+            {
+                surface_candidate.or_else(|| {
+                    let hit = SurfaceHit {
+                        distance: 0.0,
+                        point: bearing.anchor,
+                        face: bearing.source,
+                    };
+                    cylinder_candidate_from_hit(graph, hit, cylinder_dimensions).ok()
+                })
+            } else {
+                surface_candidate
+            };
+            candidate.and_then(|candidate| {
+                let error = validate_cylinder_candidate(graph, candidate).err();
+                state.cylinder_preview = Some(candidate);
+                error
+            })
+        }
         (Tool::Weld | Tool::Hammer | Tool::JointXray, _) => None,
-        (Tool::Bearing, _) => state
-            .hovered
-            .and_then(|hit| bearing_anchor_from_hit(graph, hit).err()),
+        (Tool::Bearing, _) => state.hovered.and_then(|hit| {
+            if try_face_geometry_from_ref(hit.face, Some(graph)).is_none() {
+                Some(PlacementError::CurvedSurface)
+            } else {
+                bearing_anchor_from_hit(graph, hit).err()
+            }
+        }),
     };
+}
+
+#[cfg(test)]
+fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool: Tool) {
+    refresh_tool_preview_with_cylinder(graph, state, tool, CylinderDimensions::default());
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1515,6 +1823,7 @@ fn handle_build_actions(
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
+    cylinder_settings: Res<CylinderToolSettings>,
     hotbar_capture: Res<HotbarPointerCapture>,
 ) {
     if simulation.is_running() {
@@ -1547,21 +1856,29 @@ fn handle_build_actions(
             && let FaceOwner::Part(part) = hit.face.owner
             && let Some(spec) = graph.0.part(part).copied()
         {
-            let plane = PlacementPlane::from_normal(
-                face_geometry_from_ref(hit.face, Some(&graph.0)).normal,
-            );
-            state.delete_drag = Some(DeleteDrag {
-                start: spec,
-                plane,
-                last_endpoint: None,
-                parts: vec![part],
-                error: None,
-            });
-            state.delete_preview_revision = state.delete_preview_revision.wrapping_add(1);
-            state.feedback = Some(format!(
-                "Dragging delete on {} plane — release to remove, Q changes plane",
-                plane.label()
-            ));
+            match spec {
+                PartSpec::Cuboid(spec) => {
+                    let plane = PlacementPlane::from_normal(
+                        face_geometry_from_ref(hit.face, Some(&graph.0)).normal,
+                    );
+                    state.delete_drag = Some(DeleteDrag {
+                        start: spec,
+                        plane,
+                        last_endpoint: None,
+                        parts: vec![part],
+                        error: None,
+                    });
+                    state.delete_preview_revision = state.delete_preview_revision.wrapping_add(1);
+                    state.feedback = Some(format!(
+                        "Dragging delete on {} plane — release to remove, Q changes plane",
+                        plane.label()
+                    ));
+                }
+                PartSpec::Cylinder(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some("Release right mouse to delete cylinder".to_owned());
+                }
+            }
         }
     }
     if mouse.just_released(MouseButton::Right) {
@@ -1610,6 +1927,28 @@ fn handle_build_actions(
                         }
                     }
                 }
+                DeleteTarget::Part(part) => {
+                    let previous = EditorSnapshot::capture(&graph.0, &state);
+                    match stage_part_deletion_preserving_bearings(
+                        &graph.0,
+                        &state.placed_bearings,
+                        &[part],
+                    ) {
+                        Ok((staged, placed_bearings, migrated)) => {
+                            graph.0 = staged;
+                            state.placed_bearings = placed_bearings;
+                            history.commit(previous);
+                            state.feedback = Some(if migrated == 0 {
+                                "Deleted cylinder and incident connections".to_owned()
+                            } else {
+                                format!("Deleted cylinder; moved {migrated} bearing(s)")
+                            });
+                            state.construction_mesh_dirty = true;
+                            clear_hover(&mut state);
+                        }
+                        Err(error) => state.feedback = Some(error.to_string()),
+                    }
+                }
             }
         }
         if let Some(drag) = state.delete_drag.take() {
@@ -1650,36 +1989,94 @@ fn handle_build_actions(
         handle_block_actions(&mouse, &mut graph.0, &mut state, &mut history);
         return;
     }
+    if selection.0 == Tool::Cylinder {
+        if mouse.just_pressed(MouseButton::Left) {
+            let Some(candidate) = state.cylinder_preview else {
+                state.feedback = Some("Point at a flat face or compatible bearing".to_owned());
+                return;
+            };
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let staged = if let Some(index) = state.attachment_bearing {
+                let Some(bearing) = state.placed_bearings.get(index).copied() else {
+                    state.feedback = Some("Bearing is no longer available".to_owned());
+                    return;
+                };
+                let rigid_targets = bearing_socket_targets(&graph.0, bearing);
+                stage_bearing_cylinder(
+                    &graph.0,
+                    candidate,
+                    bearing.source,
+                    bearing.anchor,
+                    bearing.dimensions,
+                    &rigid_targets,
+                )
+            } else {
+                let Some(hit) = state.hovered else {
+                    return;
+                };
+                stage_cylinder_from_source(&graph.0, candidate, hit.face.owner)
+            };
+            match staged {
+                Ok(staged) => {
+                    graph.0 = staged;
+                    history.commit(previous);
+                    state.feedback = Some(format!(
+                        "Placed cylinder {:.2}/{:.2} m × {:.2} m at {}°",
+                        cylinder_settings.dimensions.outer_diameter(),
+                        cylinder_settings.dimensions.inner_diameter(),
+                        cylinder_settings.dimensions.axial_length(),
+                        cylinder_settings.dimensions.sweep_angle_degrees(),
+                    ));
+                    state.construction_mesh_dirty = true;
+                    clear_hover(&mut state);
+                }
+                Err(error) => state.feedback = Some(error.to_string()),
+            }
+        }
+        return;
+    }
     if mouse.pressed(MouseButton::Right) || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
 
     match selection.0 {
         Tool::Block => unreachable!("block actions are handled before this match"),
+        Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),
         Tool::Weld => {
             let Some(hit) = state.hovered else {
                 state.feedback = Some("Select an object".to_owned());
                 return;
             };
-            match graph.0.pending() {
-                Some(PendingOperation::Weld(first)) => {
-                    match stage_weld_objects(&graph.0, first.owner, hit.face.owner) {
-                        Ok(staged) => {
-                            let previous = EditorSnapshot::capture(&graph.0, &state);
-                            graph.0 = staged;
-                            history.commit(previous);
-                            state.feedback = Some("Welded the two objects".to_owned());
-                        }
-                        Err(error) => state.feedback = Some(error.to_string()),
+            if let Some(PendingOperation::Weld(first)) = graph.0.pending() {
+                match stage_weld_objects(&graph.0, first.owner, hit.face.owner) {
+                    Ok(staged) => {
+                        let previous = EditorSnapshot::capture(&graph.0, &state);
+                        graph.0 = staged;
+                        history.commit(previous);
+                        state.feedback = Some("Welded the two objects".to_owned());
                     }
+                    Err(error) => state.feedback = Some(error.to_string()),
                 }
-                _ => match begin_weld(&mut graph.0, hit.face) {
+            } else {
+                let selected_face = if try_face_geometry_from_ref(hit.face, Some(&graph.0))
+                    .is_some()
+                {
+                    hit.face
+                } else {
+                    match hit.face.owner {
+                        FaceOwner::Part(part) => {
+                            mechanic_core::FaceRef::part(part, mechanic_core::FaceKind::PositiveY)
+                        }
+                        FaceOwner::Ground => hit.face,
+                    }
+                };
+                match begin_weld(&mut graph.0, selected_face) {
                     Ok(()) => {
                         state.feedback =
                             Some("First object selected; choose a touching object".to_owned());
                     }
                     Err(error) => state.feedback = Some(error.to_string()),
-                },
+                }
             }
         }
         Tool::Bearing => {
@@ -1733,7 +2130,12 @@ fn handle_build_actions(
                 Some("Joint X-ray shows every bearing through the creation".to_owned());
         }
     }
-    refresh_tool_preview(&graph.0, &mut state, selection.0);
+    refresh_tool_preview_with_cylinder(
+        &graph.0,
+        &mut state,
+        selection.0,
+        cylinder_settings.dimensions,
+    );
 }
 
 fn bearing_location_occupied(
@@ -2016,19 +2418,20 @@ fn handle_hammer_actions(
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     simulation: Res<AppSimulation>,
+    graph: Res<EditorGraph>,
     mut hammer: ResMut<HammerInteraction>,
     mut state: ResMut<EditorState>,
     selection: Res<SelectedTool>,
     hotbar_capture: Res<HotbarPointerCapture>,
-    render_device: Res<RenderDevice>,
-    render_queue: Res<RenderQueue>,
 ) {
     if !simulation.is_running() {
         hammer.charging = None;
+        hammer.pending = None;
         return;
     }
     if simulation.is_paused() {
         hammer.charging = None;
+        hammer.pending = None;
         return;
     }
     if !selection.0.works_in_mode(true) {
@@ -2065,6 +2468,7 @@ fn handle_hammer_actions(
                     .as_ref()
                     .expect("running simulation has compiled creation");
                 raycast_simulation(
+                    &graph.0,
                     creation,
                     &simulation.transforms,
                     ray.origin,
@@ -2112,25 +2516,65 @@ fn handle_hammer_actions(
         return;
     };
     let transform = simulation.transforms[charge.body_index as usize];
+    let magnitude = hammer_impulse_magnitude(charge.elapsed_seconds);
+    let impulse = charge.direction * magnitude;
+    let (delivery_ticks, impulse_per_tick) = hammer_delivery(
+        simulation
+            .creation
+            .as_ref()
+            .expect("running simulation has compiled creation"),
+        transform,
+        charge.body_index,
+        charge.local_point,
+        impulse,
+    );
+    hammer.pending = Some(HammerImpact {
+        body_index: charge.body_index,
+        local_point: charge.local_point,
+        impulse_per_tick,
+        remaining_ticks: delivery_ticks,
+    });
+    let delivered_magnitude = impulse_per_tick.length() * f32::from(delivery_ticks);
+    state.feedback = Some(if delivered_magnitude + f32::EPSILON < magnitude {
+        format!("Hammer strike: {delivered_magnitude:.0} N·s (stability limited)")
+    } else {
+        format!("Hammer strike: {magnitude:.0} N·s")
+    });
+}
+
+fn apply_pending_hammer_impact(
+    simulation: &AppSimulation,
+    hammer: &mut HammerInteraction,
+    render_device: &RenderDevice,
+    render_queue: &RenderQueue,
+) -> Result<(), String> {
+    let Some(impact) = hammer.pending.as_mut() else {
+        return Ok(());
+    };
+    let transform = simulation
+        .transforms
+        .get(impact.body_index as usize)
+        .ok_or_else(|| "hammer target no longer exists".to_owned())?;
     let position = Vec3::from_slice(&transform.position[..3]);
     let rotation = Quat::from_array(transform.rotation);
-    let world_point = position + rotation * charge.local_point;
-    let magnitude = hammer_impulse_magnitude(charge.elapsed_seconds);
-    let result = simulation
+    let world_point = position + rotation * impact.local_point;
+    simulation
         .gpu
         .as_ref()
         .expect("running simulation has GPU state")
         .apply_impulse(
             render_device.wgpu_device(),
-            &render_queue,
-            charge.body_index,
+            render_queue,
+            impact.body_index,
             world_point,
-            charge.direction * magnitude,
-        );
-    state.feedback = Some(match result {
-        Ok(_) => format!("Hammer strike: {magnitude:.0} N·s"),
-        Err(error) => format!("Hammer strike failed: {error}"),
-    });
+            impact.impulse_per_tick,
+        )
+        .map_err(|error| format!("Hammer strike failed: {error}"))?;
+    impact.remaining_ticks -= 1;
+    if impact.remaining_ticks == 0 {
+        hammer.pending = None;
+    }
+    Ok(())
 }
 
 fn hammer_impulse_magnitude(elapsed_seconds: f32) -> f32 {
@@ -2138,35 +2582,191 @@ fn hammer_impulse_magnitude(elapsed_seconds: f32) -> f32 {
     HAMMER_MIN_IMPULSE + (HAMMER_MAX_IMPULSE - HAMMER_MIN_IMPULSE) * charge * charge
 }
 
+fn hammer_delivery(
+    creation: &CompiledCreation,
+    transform: GpuTransform,
+    body_index: u32,
+    local_point: Vec3,
+    impulse: Vec3,
+) -> (u16, Vec3) {
+    let point_travel = hammer_point_travel(creation, transform, body_index, local_point, impulse);
+    let maximum_travel = HAMMER_MAX_POINT_TRAVEL_PER_TICK * f32::from(HAMMER_MAX_DELIVERY_TICKS);
+    let delivered_impulse = if point_travel > maximum_travel {
+        impulse * (maximum_travel / point_travel)
+    } else {
+        impulse
+    };
+    let delivered_travel = point_travel.min(maximum_travel);
+    let mut ticks = 1_u16;
+    while delivered_travel > HAMMER_MAX_POINT_TRAVEL_PER_TICK * f32::from(ticks)
+        && ticks < HAMMER_MAX_DELIVERY_TICKS
+    {
+        ticks += 1;
+    }
+    (ticks, delivered_impulse / f32::from(ticks))
+}
+
+fn hammer_point_travel(
+    creation: &CompiledCreation,
+    transform: GpuTransform,
+    body_index: u32,
+    local_point: Vec3,
+    impulse: Vec3,
+) -> f32 {
+    let compound = &creation.compounds[body_index as usize];
+    let mass = &compound.mass_properties;
+    let rotation = Quat::from_array(transform.rotation);
+    let arm = rotation * local_point;
+    let local_torque = rotation.inverse() * arm.cross(impulse);
+    let angular_delta = rotation * (mass.inverse_inertia * local_torque);
+    let linear_delta = impulse * mass.inverse_mass;
+    let maximum_radius = creation
+        .colliders
+        .iter()
+        .filter(|collider| collider.compound_index == body_index)
+        .map(|collider| collider.local_center.length() + collider.half_extents.length())
+        .fold(0.0_f32, f32::max);
+    (linear_delta.length() + angular_delta.length() * maximum_radius) * FIXED_DT_SECONDS
+}
+
 fn raycast_simulation(
+    graph: &ConstructionGraph,
     creation: &CompiledCreation,
     transforms: &[GpuTransform],
     origin: Vec3,
     direction: Vec3,
 ) -> Option<SimulationHit> {
     creation
-        .colliders
+        .part_to_compound
         .iter()
-        .filter_map(|collider| {
-            let body_index = collider.compound_index;
+        .filter_map(|&(part, body_index)| {
             let transform = transforms.get(body_index as usize)?;
             let position = Vec3::from_slice(&transform.position[..3]);
             let rotation = Quat::from_array(transform.rotation);
-            let center = position + rotation * collider.local_center;
-            let hit = raycast_oriented_cuboid(
-                origin,
-                direction,
-                center,
-                rotation * collider.local_rotation,
-                collider.half_extents,
-            )?;
+            let initial = &creation.compounds[body_index as usize];
+            let spec = *graph.part(part)?;
+            let center =
+                position + rotation * (spec.pose().translation() - initial.root_translation);
+            let part_rotation = rotation * spec.pose().rotation.quaternion();
+            let (distance, point) = match spec {
+                PartSpec::Cuboid(spec) => {
+                    let hit = raycast_oriented_cuboid(
+                        origin,
+                        direction,
+                        center,
+                        part_rotation,
+                        spec.size_meters() * 0.5,
+                    )?;
+                    (hit.distance, hit.point)
+                }
+                PartSpec::Cylinder(spec) => {
+                    let distance = raycast_cylinder_shape(
+                        origin,
+                        direction,
+                        center,
+                        part_rotation,
+                        spec.dimensions,
+                    )?;
+                    (distance, origin + direction.normalize() * distance)
+                }
+            };
             Some(SimulationHit {
                 body_index,
-                distance: hit.distance,
-                point: hit.point,
+                distance,
+                point,
             })
         })
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
+}
+
+fn raycast_cylinder_shape(
+    origin: Vec3,
+    direction: Vec3,
+    center: Vec3,
+    rotation: Quat,
+    dimensions: CylinderDimensions,
+) -> Option<f32> {
+    let direction = direction.normalize();
+    let local_origin = rotation.inverse() * (origin - center);
+    let local_direction = rotation.inverse() * direction;
+    let outer_radius = dimensions.outer_diameter() * 0.5;
+    let inner_radius = dimensions.inner_diameter() * 0.5;
+    let half_length = dimensions.axial_length() * 0.5;
+    let mut nearest = f32::INFINITY;
+    if local_direction.y.abs() > f32::EPSILON {
+        for y in [-half_length, half_length] {
+            let distance = (y - local_origin.y) / local_direction.y;
+            let point = local_origin + local_direction * distance;
+            let radius_squared = point.x.mul_add(point.x, point.z * point.z);
+            if distance >= 0.0
+                && radius_squared <= outer_radius * outer_radius
+                && radius_squared >= inner_radius * inner_radius
+                && point_in_cylinder_slice(point.x, point.z, dimensions)
+            {
+                nearest = nearest.min(distance);
+            }
+        }
+    }
+    for radius in [outer_radius, inner_radius] {
+        if radius <= 0.0 {
+            continue;
+        }
+        let a = local_direction
+            .x
+            .mul_add(local_direction.x, local_direction.z * local_direction.z);
+        if a <= f32::EPSILON {
+            continue;
+        }
+        let b = 2.0
+            * local_origin
+                .x
+                .mul_add(local_direction.x, local_origin.z * local_direction.z);
+        let c = local_origin
+            .x
+            .mul_add(local_origin.x, local_origin.z * local_origin.z)
+            - radius * radius;
+        let discriminant = b.mul_add(b, -4.0 * a * c);
+        if discriminant < 0.0 {
+            continue;
+        }
+        let root = discriminant.sqrt();
+        for distance in [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)] {
+            let y = local_origin.y + local_direction.y * distance;
+            let point = local_origin + local_direction * distance;
+            if distance >= 0.0
+                && y.abs() <= half_length
+                && point_in_cylinder_slice(point.x, point.z, dimensions)
+            {
+                nearest = nearest.min(distance);
+            }
+        }
+    }
+    if dimensions.sweep_angle_degrees() < 360 {
+        let half_sweep = dimensions.sweep_angle_radians() * 0.5;
+        for (angle, outward) in [(-half_sweep, -1.0_f32), (half_sweep, 1.0_f32)] {
+            let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
+            let angular = Vec3::new(-angle.sin(), 0.0, angle.cos()) * outward;
+            let denominator = local_direction.dot(angular);
+            if denominator.abs() <= f32::EPSILON {
+                continue;
+            }
+            let distance = -local_origin.dot(angular) / denominator;
+            if distance < 0.0 {
+                continue;
+            }
+            let point = local_origin + local_direction * distance;
+            let radius = point.dot(radial);
+            if point.y.abs() <= half_length && radius >= inner_radius && radius <= outer_radius {
+                nearest = nearest.min(distance);
+            }
+        }
+    }
+    nearest.is_finite().then_some(nearest)
+}
+
+fn point_in_cylinder_slice(x: f32, z: f32, dimensions: CylinderDimensions) -> bool {
+    dimensions.sweep_angle_degrees() == 360
+        || z.atan2(x).abs() <= dimensions.sweep_angle_radians() * 0.5 + 1.0e-5
 }
 
 fn hovered_part(hit: Option<SurfaceHit>) -> Option<PartId> {
@@ -2353,6 +2953,7 @@ fn update_previews(
     simulation: Res<AppSimulation>,
     selected_tool: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
+    cylinder_settings: Res<CylinderToolSettings>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut rendered_block_revision: Local<u64>,
@@ -2428,7 +3029,7 @@ fn update_previews(
                 .filter_map(|&part| graph.0.part(part).copied())
                 .collect::<Vec<_>>();
             if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
-                *mesh = combined_specs_mesh(&specs);
+                *mesh = combined_parts_mesh_scaled(&specs, 1.0);
             }
             *rendered_delete_revision = state.delete_preview_revision;
         }
@@ -2457,6 +3058,17 @@ fn update_previews(
                         bearing.anchor,
                         normal,
                     );
+                }
+            }
+            DeleteTarget::Part(part) => {
+                if let Some(spec) = graph.0.part(part).copied() {
+                    if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
+                        *mesh = combined_parts_mesh_scaled(&[spec], 1.015);
+                    }
+                    delete.0.0 = visuals.delete_drag_preview_mesh.clone();
+                    *delete.1 = Transform::default();
+                    delete.3.0 = visuals.red_preview_material.clone();
+                    *delete.2 = Visibility::Visible;
                 }
             }
         }
@@ -2522,6 +3134,19 @@ fn update_previews(
                 );
             }
         }
+        (Tool::Cylinder, _) => {
+            if let Some(candidate) = state.cylinder_preview {
+                if let Some(mut mesh) = meshes.get_mut(&visuals.cylinder_preview_mesh) {
+                    *mesh = single_cylinder_mesh(cylinder_settings.dimensions);
+                }
+                show_cylinder_preview(
+                    &mut action,
+                    &visuals.cylinder_preview_mesh,
+                    action_material,
+                    candidate.spec,
+                );
+            }
+        }
         (Tool::Weld, pending) => {
             if let Some(part) = hovered_part(state.hovered) {
                 if *rendered_weld_hover != Some(part) || graph.is_changed() {
@@ -2530,7 +3155,7 @@ fn update_previews(
                         .filter_map(|member| graph.0.part(member).copied())
                         .collect::<Vec<_>>();
                     if let Some(mut mesh) = meshes.get_mut(&visuals.weld_hover_preview_mesh) {
-                        *mesh = combined_specs_mesh_scaled(&specs, 1.018);
+                        *mesh = combined_parts_mesh_scaled(&specs, 1.018);
                     }
                     *rendered_weld_hover = Some(part);
                 }
@@ -2548,7 +3173,7 @@ fn update_previews(
                         .filter_map(|member| graph.0.part(member).copied())
                         .collect::<Vec<_>>();
                     if let Some(mut mesh) = meshes.get_mut(&visuals.weld_selection_preview_mesh) {
-                        *mesh = combined_specs_mesh_scaled(&specs, 1.028);
+                        *mesh = combined_parts_mesh_scaled(&specs, 1.028);
                     }
                     *rendered_weld_selection = Some(part);
                 }
@@ -2559,8 +3184,9 @@ fn update_previews(
             }
         }
         (Tool::Bearing, _) => {
-            if let Some(hit) = state.hovered {
-                let face = face_geometry_from_ref(hit.face, Some(&graph.0));
+            if let Some(hit) = state.hovered
+                && let Some(face) = try_face_geometry_from_ref(hit.face, Some(&graph.0))
+            {
                 let anchor = bearing_anchor_from_hit(&graph.0, hit).unwrap_or(hit.point);
                 update_bearing_preview_mesh(
                     &mut meshes,
@@ -2612,7 +3238,9 @@ fn bearing_attachment_is_highlighted(
     attachment_bearing: Option<usize>,
     preview_error: Option<&PlacementError>,
 ) -> bool {
-    tool == Tool::Block && attachment_bearing.is_some() && preview_error.is_none()
+    matches!(tool, Tool::Block | Tool::Cylinder)
+        && attachment_bearing.is_some()
+        && preview_error.is_none()
 }
 
 type PreviewItem<'a> = (
@@ -2655,7 +3283,22 @@ fn show_bearing_preview(
     *preview.2 = Visibility::Visible;
 }
 
-#[allow(clippy::too_many_lines)] // Tool-specific guidance is kept together with its HUD layout.
+fn show_cylinder_preview(
+    preview: &mut PreviewItem<'_>,
+    mesh_handle: &Handle<Mesh>,
+    material_handle: &Handle<StandardMaterial>,
+    spec: mechanic_core::CylinderSpec,
+) {
+    preview.0.0 = mesh_handle.clone();
+    *preview.1 = Transform::from_translation(spec.pose.translation())
+        .with_rotation(spec.pose.rotation.quaternion())
+        .with_scale(Vec3::splat(0.992));
+    preview.3.0 = material_handle.clone();
+    *preview.2 = Visibility::Visible;
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// Tool-specific guidance is kept together with its HUD layout.
 fn update_help_text(
     graph: Res<EditorGraph>,
     state: Res<EditorState>,
@@ -2663,6 +3306,7 @@ fn update_help_text(
     hammer: Res<HammerInteraction>,
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
+    cylinder_settings: Res<CylinderToolSettings>,
     mut lines: Query<(&HelpLine, &mut Text, &mut TextColor)>,
 ) {
     let active_error = state
@@ -2725,6 +3369,9 @@ fn update_help_text(
             (false, Tool::Block, _, None, Some(_)) => {
                 "Green bearing attachment active — click or drag to connect blocks".to_owned()
             }
+            (false, Tool::Cylinder, _, _, Some(_)) => {
+                "Green bearing attachment active — click to connect cylinder".to_owned()
+            }
             (true, Tool::Hammer, _, _, _) => {
                 "Hold left mouse on a moving cuboid; release to strike".to_owned()
             }
@@ -2733,6 +3380,9 @@ fn update_help_text(
             }
             (false, Tool::Block, _, _, _) => {
                 "Click for one block or drag to place a welded sheet".to_owned()
+            }
+            (false, Tool::Cylinder, _, _, _) => {
+                "Click a flat face to place; Shift+Down/Up changes the slice angle".to_owned()
             }
             (false, Tool::Weld, None, _, _) => "Left click selects the first object".to_owned(),
             (false, Tool::Weld, Some(_), _, _) => "Left click a touching second object".to_owned(),
@@ -2800,12 +3450,16 @@ fn update_help_text(
     };
     let pointer_controls =
         format!("{action_controls}     ALT+LEFT  Orbit     SHIFT+LEFT  Pan     WHEEL  Zoom");
-    let tool = tool_status_line(selection.0, bearing_settings.dimensions);
+    let tool = tool_status_line(
+        selection.0,
+        bearing_settings.dimensions,
+        cylinder_settings.dimensions,
+    );
     let tool_color = match selection.0 {
         Tool::Bearing => HELP_ORANGE_COLOR,
         Tool::Hammer => HELP_YELLOW_COLOR,
         Tool::Weld => HELP_GREEN_COLOR,
-        Tool::Block | Tool::JointXray => HELP_BLUE_COLOR,
+        Tool::Block | Tool::Cylinder | Tool::JointXray => HELP_BLUE_COLOR,
     };
     let counts = format!(
         "{} parts  •  {} welds  •  {} bearings",
@@ -2832,13 +3486,24 @@ fn update_help_text(
     }
 }
 
-fn tool_status_line(tool: Tool, bearing_dimensions: BearingDimensions) -> String {
+fn tool_status_line(
+    tool: Tool,
+    bearing_dimensions: BearingDimensions,
+    cylinder_dimensions: CylinderDimensions,
+) -> String {
     match tool {
         Tool::Block => format!("Tool: Block    Block size: {BLOCK_SIZE_METERS:.2} m"),
         Tool::Bearing => format!(
-            "Tool: Bearing    Outer: {:.2} m  [ / ]    Inner: {:.2} m  Shift+[ / Shift+]",
+            "Tool: Bearing    Outer: {:.2} m ←/→  Inner: {:.2} m Shift+←/→",
             bearing_dimensions.outer_diameter(),
             bearing_dimensions.inner_diameter(),
+        ),
+        Tool::Cylinder => format!(
+            "Tool: Cylinder    Outer: {:.2} m ←/→  Inner: {:.2} m Shift+←/→  Length: {:.2} m ↓/↑  Sweep: {}° Shift+↓/↑",
+            cylinder_dimensions.outer_diameter(),
+            cylinder_dimensions.inner_diameter(),
+            cylinder_dimensions.axial_length(),
+            cylinder_dimensions.sweep_angle_degrees(),
         ),
         _ => format!("Tool: {}", tool.label()),
     }
@@ -2902,13 +3567,35 @@ const CUBE_INDICES: [u32; 36] = [
 ];
 
 fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
-    let mut positions = Vec::with_capacity(graph.part_count() * CUBE_POSITIONS.len());
-    let mut normals = Vec::with_capacity(graph.part_count() * CUBE_NORMALS.len());
-    let mut indices = Vec::with_capacity(graph.part_count() * CUBE_INDICES.len());
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
     for (_, spec) in graph.parts() {
-        append_cuboid(spec, &mut positions, &mut normals, &mut indices);
+        append_part(*spec, 1.0, &mut positions, &mut normals, &mut indices);
     }
 
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
+fn combined_parts_mesh_scaled(specs: &[PartSpec], scale_factor: f32) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    for &spec in specs {
+        append_part(
+            spec,
+            scale_factor,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+    }
     Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
@@ -2958,31 +3645,45 @@ fn combined_simulation_mesh(
     transforms: &[GpuTransform],
     kind: SimulationMeshKind,
 ) -> Mesh {
-    let colliders = creation.colliders.iter().filter(|collider| {
-        let is_static = creation.compounds[collider.compound_index as usize].is_static;
-        match kind {
-            SimulationMeshKind::Static => is_static,
-            SimulationMeshKind::Dynamic => !is_static,
-        }
-    });
-    let collider_count = colliders.clone().count();
-    let mut positions = Vec::with_capacity(collider_count * CUBE_POSITIONS.len());
-    let mut normals = Vec::with_capacity(collider_count * CUBE_NORMALS.len());
-    let mut indices = Vec::with_capacity(collider_count * CUBE_INDICES.len());
-    for collider in colliders {
-        let transform = transforms[collider.compound_index as usize];
+    let parts = creation
+        .part_to_compound
+        .iter()
+        .filter(|(_, compound_index)| {
+            let is_static = creation.compounds[*compound_index as usize].is_static;
+            match kind {
+                SimulationMeshKind::Static => is_static,
+                SimulationMeshKind::Dynamic => !is_static,
+            }
+        });
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    for &(part, compound_index) in parts {
+        let transform = transforms[compound_index as usize];
         let root_translation = Vec3::from_array(transform.position[..3].try_into().unwrap());
         let root_rotation = Quat::from_array(transform.rotation);
-        let translation = root_translation + root_rotation * collider.local_center;
-        let rotation = root_rotation * collider.local_rotation;
-        let size = graph
-            .part(collider.source_part)
-            .expect("compiled collider source remains in graph")
-            .size_meters();
-        append_transformed_cuboid(
-            translation,
-            rotation,
-            size,
+        let initial = &creation.compounds[compound_index as usize];
+        let spec = *graph.part(part).expect("compiled source remains in graph");
+        let local_center = spec.pose().translation() - initial.root_translation;
+        let world_spec = match spec {
+            PartSpec::Cuboid(cuboid) => {
+                append_transformed_cuboid(
+                    root_translation + root_rotation * local_center,
+                    root_rotation * cuboid.pose.rotation.quaternion(),
+                    cuboid.size_meters(),
+                    &mut positions,
+                    &mut normals,
+                    &mut indices,
+                );
+                continue;
+            }
+            PartSpec::Cylinder(cylinder) => cylinder,
+        };
+        append_cylinder_shape(
+            root_translation + root_rotation * local_center,
+            root_rotation * world_spec.pose.rotation.quaternion(),
+            world_spec.dimensions,
+            1.0,
             &mut positions,
             &mut normals,
             &mut indices,
@@ -3162,6 +3863,187 @@ fn append_bearing_cylinder(
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
 ) {
+    let inner_diameter = if dimensions.inner_diameter() > 0.0 {
+        dimensions.inner_diameter() + BEARING_RENDER_RADIAL_SKIN * 2.0
+    } else {
+        0.0
+    };
+    append_annular_cylinder(
+        anchor,
+        axis,
+        dimensions.outer_diameter() - BEARING_RENDER_RADIAL_SKIN * 2.0,
+        inner_diameter,
+        BEARING_DEPTH,
+        positions,
+        normals,
+        indices,
+    );
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn append_cylinder_shape(
+    center: Vec3,
+    rotation: Quat,
+    dimensions: CylinderDimensions,
+    scale: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    if dimensions.sweep_angle_degrees() == 360 {
+        append_annular_cylinder(
+            center,
+            rotation * Vec3::Y,
+            dimensions.outer_diameter() * scale,
+            dimensions.inner_diameter() * scale,
+            dimensions.axial_length() * scale,
+            positions,
+            normals,
+            indices,
+        );
+        return;
+    }
+
+    let axis = rotation * Vec3::Y;
+    let tangent_u = rotation * Vec3::X;
+    let tangent_v = rotation * Vec3::Z;
+    let outer = dimensions.outer_diameter() * scale * 0.5;
+    let inner = dimensions.inner_diameter() * scale * 0.5;
+    let half_length = dimensions.axial_length() * scale * 0.5;
+    let sweep = dimensions.sweep_angle_radians();
+    let segment_count = dimensions.sweep_angle_degrees() / 15;
+    let lower = center - axis * half_length;
+    let upper = center + axis * half_length;
+    let radial = |angle: f32| tangent_u * angle.cos() + tangent_v * angle.sin();
+    let angular = |angle: f32| -tangent_u * angle.sin() + tangent_v * angle.cos();
+
+    for segment in 0..segment_count {
+        let first_angle = -sweep * 0.5 + sweep * f32::from(segment) / f32::from(segment_count);
+        let second_angle = -sweep * 0.5 + sweep * f32::from(segment + 1) / f32::from(segment_count);
+        let first = radial(first_angle);
+        let second = radial(second_angle);
+        append_mesh_quad(
+            [
+                lower + first * outer,
+                upper + first * outer,
+                upper + second * outer,
+                lower + second * outer,
+            ],
+            (first + second).normalize(),
+            positions,
+            normals,
+            indices,
+        );
+        if inner > 0.0 {
+            append_mesh_quad(
+                [
+                    lower + second * inner,
+                    upper + second * inner,
+                    upper + first * inner,
+                    lower + first * inner,
+                ],
+                -(first + second).normalize(),
+                positions,
+                normals,
+                indices,
+            );
+            append_mesh_quad(
+                [
+                    lower + first * inner,
+                    lower + first * outer,
+                    lower + second * outer,
+                    lower + second * inner,
+                ],
+                -axis,
+                positions,
+                normals,
+                indices,
+            );
+            append_mesh_quad(
+                [
+                    upper + second * inner,
+                    upper + second * outer,
+                    upper + first * outer,
+                    upper + first * inner,
+                ],
+                axis,
+                positions,
+                normals,
+                indices,
+            );
+        } else {
+            append_mesh_triangle(
+                [lower, lower + first * outer, lower + second * outer],
+                -axis,
+                positions,
+                normals,
+                indices,
+            );
+            append_mesh_triangle(
+                [upper, upper + second * outer, upper + first * outer],
+                axis,
+                positions,
+                normals,
+                indices,
+            );
+        }
+    }
+
+    for (angle, normal, reverse) in [
+        (-sweep * 0.5, -angular(-sweep * 0.5), false),
+        (sweep * 0.5, angular(sweep * 0.5), true),
+    ] {
+        let direction = radial(angle);
+        let inner_lower = lower + direction * inner;
+        let inner_upper = upper + direction * inner;
+        let outer_lower = lower + direction * outer;
+        let outer_upper = upper + direction * outer;
+        let vertices = if reverse {
+            [inner_lower, outer_lower, outer_upper, inner_upper]
+        } else {
+            [inner_lower, inner_upper, outer_upper, outer_lower]
+        };
+        append_mesh_quad(vertices, normal, positions, normals, indices);
+    }
+}
+
+fn append_mesh_triangle(
+    vertices: [Vec3; 3],
+    normal: Vec3,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    let base = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
+    positions.extend(vertices.map(|vertex| vertex.to_array()));
+    normals.extend([normal.to_array(); 3]);
+    indices.extend([base, base + 1, base + 2]);
+}
+
+fn append_mesh_quad(
+    vertices: [Vec3; 4],
+    normal: Vec3,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    let base = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
+    positions.extend(vertices.map(|vertex| vertex.to_array()));
+    normals.extend([normal.to_array(); 4]);
+    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn append_annular_cylinder(
+    anchor: Vec3,
+    axis: Vec3,
+    outer_diameter: f32,
+    inner_diameter: f32,
+    axial_length: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
     const SEGMENTS: u16 = 24;
     let axis = axis.normalize();
     let tangent_u = if axis.y.abs() < 0.9 {
@@ -3170,9 +4052,9 @@ fn append_bearing_cylinder(
         axis.cross(Vec3::X).normalize()
     };
     let tangent_v = axis.cross(tangent_u);
-    let outer_radius = dimensions.outer_diameter() * 0.5;
-    let inner_radius = dimensions.inner_diameter() * 0.5;
-    let half_depth = BEARING_DEPTH * 0.5;
+    let outer_radius = outer_diameter * 0.5;
+    let inner_radius = inner_diameter * 0.5;
+    let half_depth = axial_length * 0.5;
     let lower = anchor - axis * half_depth;
     let upper = anchor + axis * half_depth;
     let base = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
@@ -3340,16 +4222,54 @@ fn append_bearing_face_ring(
     base
 }
 
-fn append_cuboid(
-    spec: &CuboidSpec,
+fn append_part(
+    spec: PartSpec,
+    scale_factor: f32,
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
 ) {
-    let size = spec.size_meters();
-    let rotation = spec.pose.rotation.quaternion();
-    let translation = spec.pose.translation();
-    append_transformed_cuboid(translation, rotation, size, positions, normals, indices);
+    match spec {
+        PartSpec::Cuboid(spec) => append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
+        PartSpec::Cylinder(spec) => append_cylinder_shape(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.dimensions,
+            scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
+    }
+}
+
+fn single_cylinder_mesh(dimensions: CylinderDimensions) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    append_cylinder_shape(
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        dimensions,
+        1.0,
+        &mut positions,
+        &mut normals,
+        &mut indices,
+    );
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 fn append_transformed_cuboid(
@@ -3378,18 +4298,29 @@ mod rendering_tests {
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-        FaceKind, FaceRef, GridRotation,
+        CylinderDimensions, CylinderSpec, FaceKind, FaceRef, GridRotation,
     };
     use mechanic_gpu::GpuTransform;
 
     use super::{
-        BEARING_DEPTH, PlacedBearing, append_bearing_cylinder, bearing_preview_dimensions_changed,
-        combined_bearing_mesh, combined_simulation_bearing_mesh, joint_xray_is_visible,
+        BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, PlacedBearing, SimulationMeshKind,
+        append_bearing_cylinder, append_cylinder_shape, bearing_preview_dimensions_changed,
+        bearing_surface_material, combined_bearing_mesh, combined_simulation_bearing_mesh,
+        combined_simulation_mesh, joint_xray_is_visible, single_bearing_mesh, single_cylinder_mesh,
     };
     use crate::hotbar::Tool;
 
+    fn positions(mesh: &Mesh) -> Vec<Vec3> {
+        let Some(VertexAttributeValues::Float32x3(values)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("mesh must have float3 positions")
+        };
+        values.iter().copied().map(Vec3::from_array).collect()
+    }
+
     #[test]
-    fn bearing_mesh_uses_custom_outer_inner_and_fixed_depth() {
+    fn bearing_mesh_insets_radial_surfaces_without_changing_depth() {
         let anchor = Vec3::new(2.0, 3.0, 4.0);
         let axis = Vec3::X;
         let dimensions = BearingDimensions::new(0.80, 0.30).unwrap();
@@ -3428,8 +4359,112 @@ mod rendering_tests {
 
         assert!((minimum_depth + BEARING_DEPTH * 0.5).abs() < 1.0e-6);
         assert!((maximum_depth - BEARING_DEPTH * 0.5).abs() < 1.0e-6);
-        assert!((maximum_radius - dimensions.outer_diameter() * 0.5).abs() < 1.0e-6);
-        assert!((minimum_radius - dimensions.inner_diameter() * 0.5).abs() < 1.0e-6);
+        assert!(
+            (maximum_radius - (dimensions.outer_diameter() * 0.5 - BEARING_RENDER_RADIAL_SKIN))
+                .abs()
+                < 1.0e-6
+        );
+        assert!(
+            (minimum_radius - (dimensions.inner_diameter() * 0.5 + BEARING_RENDER_RADIAL_SKIN))
+                .abs()
+                < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn bearing_material_biases_coplanar_surfaces_toward_the_camera() {
+        assert!(bearing_surface_material().depth_bias > 0.0);
+    }
+
+    #[test]
+    fn solid_bearing_remains_closed_when_its_outer_radius_is_inset() {
+        let mesh = single_bearing_mesh(BearingDimensions::new(0.4, 0.0).unwrap());
+        assert!(positions(&mesh).iter().any(|position| {
+            position.x.hypot(position.z) < f32::EPSILON && position.y.abs() <= BEARING_DEPTH * 0.5
+        }));
+    }
+
+    #[test]
+    fn cylinder_mesh_uses_exact_radii_and_variable_axial_length() {
+        let mesh = single_cylinder_mesh(CylinderDimensions::new(1.2, 0.4, 2.0).unwrap());
+        let positions = positions(&mesh);
+        let maximum_radius = positions
+            .iter()
+            .map(|position| position.x.hypot(position.z))
+            .fold(0.0_f32, f32::max);
+        let maximum_y = positions
+            .iter()
+            .map(|position| position.y.abs())
+            .fold(0.0_f32, f32::max);
+        assert!((maximum_radius - 0.6).abs() < 1.0e-5);
+        assert!((maximum_y - 1.0).abs() < 1.0e-5);
+        assert!(
+            positions
+                .iter()
+                .any(|position| { (position.x.hypot(position.z) - 0.2).abs() < 1.0e-5 })
+        );
+    }
+
+    #[test]
+    fn cylinder_sector_mesh_has_cut_walls_and_outward_winding() {
+        let dimensions = CylinderDimensions::new(1.0, 0.5, 1.0)
+            .unwrap()
+            .with_sweep_angle_degrees(90)
+            .unwrap();
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        append_cylinder_shape(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            dimensions,
+            1.0,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+
+        assert!(positions.iter().all(|position| position[0] >= -1.0e-6));
+        assert!(normals.iter().any(|normal| normal[1].abs() < 1.0e-6
+            && normal[0].abs() > 0.5
+            && normal[2].abs() > 0.5));
+        for triangle in indices.chunks_exact(3) {
+            let a = Vec3::from_array(positions[triangle[0] as usize]);
+            let b = Vec3::from_array(positions[triangle[1] as usize]);
+            let c = Vec3::from_array(positions[triangle[2] as usize]);
+            let geometric_normal = (b - a).cross(c - a);
+            let expected_normal = triangle
+                .iter()
+                .map(|&index| Vec3::from_array(normals[index as usize]))
+                .sum::<Vec3>();
+            assert!(geometric_normal.dot(expected_normal) > 0.0);
+        }
+    }
+
+    #[test]
+    fn simulation_renders_one_cylinder_despite_sixteen_physical_colliders() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                CylinderDimensions::new(1.0, 0.5, 1.0).unwrap(),
+                BuildPose::default(),
+            )))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        assert_eq!(
+            creation.colliders.len(),
+            mechanic_core::CYLINDER_COLLIDER_COUNT
+        );
+        let transforms = [GpuTransform {
+            position: [0.0, 0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        }];
+        let mesh =
+            combined_simulation_mesh(&graph, &creation, &transforms, SimulationMeshKind::Dynamic);
+        assert_eq!(
+            mesh.count_vertices(),
+            single_cylinder_mesh(CylinderDimensions::new(1.0, 0.5, 1.0).unwrap()).count_vertices()
+        );
     }
 
     #[test]
@@ -3567,8 +4602,18 @@ mod rendering_tests {
                 (offset - Vec3::Y * offset.y).length()
             })
             .fold(0.0, f32::max);
-        assert!((attached_radius - attached_dimensions.outer_diameter() * 0.5).abs() < 1.0e-6);
-        assert!((placed_radius - placed_dimensions.outer_diameter() * 0.5).abs() < 1.0e-6);
+        assert!(
+            (attached_radius
+                - (attached_dimensions.outer_diameter() * 0.5 - BEARING_RENDER_RADIAL_SKIN))
+                .abs()
+                < 1.0e-6
+        );
+        assert!(
+            (placed_radius
+                - (placed_dimensions.outer_diameter() * 0.5 - BEARING_RENDER_RADIAL_SKIN))
+                .abs()
+                < 1.0e-6
+        );
     }
 
     #[test]
@@ -3752,22 +4797,24 @@ mod interaction_tests {
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-        FaceKind, FaceOwner, FaceRef, GridRotation, PendingOperation, RigidLinkSpec,
+        CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
+        PendingOperation, RigidLinkSpec,
     };
     use mechanic_gpu::GpuTransform;
 
     use super::{
         AppSimulation, BearingDimensionTarget, BearingToolSettings, BlockAttachment, BlockDrag,
-        EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE,
-        HAMMER_MIN_IMPULSE, HelpText, HistoryAction, HotbarPointerCapture, PlacedBearing,
-        PlacementPlane, SelectedTool, SimulationShortcut, SurfaceHit, Tool,
-        adjusted_bearing_dimensions, apply_history_action, bearing_attachment_candidate,
-        bearing_attachment_is_highlighted, block_sheet_specs, candidate_from_hit,
-        delete_sheet_parts, hammer_impulse_magnitude, handle_block_actions, handle_build_actions,
+        CylinderDimensionTarget, CylinderToolSettings, EditorGraph, EditorHistory, EditorState,
+        HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HelpText, HistoryAction,
+        HotbarPointerCapture, PlacedBearing, PlacementPlane, SelectedTool, SimulationShortcut,
+        SurfaceHit, Tool, adjusted_bearing_dimensions, adjusted_cylinder_dimensions,
+        apply_history_action, bearing_attachment_candidate, bearing_attachment_is_highlighted,
+        block_sheet_specs, candidate_from_hit, delete_sheet_parts, hammer_delivery,
+        hammer_impulse_magnitude, hammer_point_travel, handle_block_actions, handle_build_actions,
         handle_tool_change, help_toggle_requested, raycast_construction, raycast_placed_bearings,
         raycast_simulation, refresh_tool_preview, requested_bearing_dimension_adjustment,
-        requested_simulation_shortcut, rigid_body_parts, stage_part_deletion_preserving_bearings,
-        toggle_help_text, tool_status_line,
+        requested_cylinder_dimension_adjustment, requested_simulation_shortcut, rigid_body_parts,
+        stage_part_deletion_preserving_bearings, toggle_help_text, tool_status_line,
     };
 
     #[test]
@@ -3822,7 +4869,7 @@ mod interaction_tests {
     #[test]
     fn bearing_shortcuts_are_gated_and_adjust_the_requested_diameter() {
         let mut keyboard = ButtonInput::default();
-        keyboard.press(KeyCode::BracketRight);
+        keyboard.press(KeyCode::ArrowRight);
         assert_eq!(
             requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
             Some((BearingDimensionTarget::Outer, 1))
@@ -3840,6 +4887,13 @@ mod interaction_tests {
             None
         );
 
+        keyboard.reset_all();
+        keyboard.press(KeyCode::ArrowUp);
+        assert_eq!(
+            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
+            None
+        );
+
         let increased = adjusted_bearing_dimensions(
             BearingDimensions::default(),
             BearingDimensionTarget::Outer,
@@ -3848,11 +4902,59 @@ mod interaction_tests {
         assert!((increased.outer_diameter() - 0.30).abs() < 1.0e-6);
         assert!((increased.inner_diameter() - 0.10).abs() < f32::EPSILON);
 
+        keyboard.reset_all();
+        keyboard.press(KeyCode::ArrowRight);
         keyboard.press(KeyCode::ShiftLeft);
         assert_eq!(
             requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
             Some((BearingDimensionTarget::Inner, 1))
         );
+    }
+
+    #[test]
+    fn cylinder_shortcuts_adjust_and_clamp_without_graph_history() {
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::ArrowRight);
+        assert_eq!(
+            requested_cylinder_dimension_adjustment(&keyboard, Tool::Cylinder, false, false),
+            Some((CylinderDimensionTarget::Outer, 1))
+        );
+        keyboard.press(KeyCode::ShiftLeft);
+        assert_eq!(
+            requested_cylinder_dimension_adjustment(&keyboard, Tool::Cylinder, false, false),
+            Some((CylinderDimensionTarget::Inner, 1))
+        );
+        keyboard.release(KeyCode::ArrowRight);
+        keyboard.press(KeyCode::ArrowDown);
+        assert_eq!(
+            requested_cylinder_dimension_adjustment(&keyboard, Tool::Cylinder, false, false),
+            Some((CylinderDimensionTarget::Sweep, -1))
+        );
+        assert!(
+            requested_cylinder_dimension_adjustment(&keyboard, Tool::Block, false, false).is_none()
+        );
+
+        let dimensions = CylinderDimensions::new(0.25, 0.20, 0.25).unwrap();
+        let reduced = adjusted_cylinder_dimensions(dimensions, CylinderDimensionTarget::Outer, -1);
+        assert!((reduced.outer_diameter() - 0.20).abs() < 1.0e-6);
+        assert!((reduced.inner_diameter() - 0.15).abs() < 1.0e-6);
+        let minimum = adjusted_cylinder_dimensions(reduced, CylinderDimensionTarget::Length, -1);
+        assert!((minimum.axial_length() - 0.25).abs() < f32::EPSILON);
+        let slice = adjusted_cylinder_dimensions(minimum, CylinderDimensionTarget::Sweep, -1);
+        assert_eq!(slice.sweep_angle_degrees(), 345);
+        let minimum_sweep = (0..30).fold(slice, |dimensions, _| {
+            adjusted_cylinder_dimensions(dimensions, CylinderDimensionTarget::Sweep, -1)
+        });
+        assert_eq!(minimum_sweep.sweep_angle_degrees(), 15);
+
+        let graph = ConstructionGraph::new();
+        let history = EditorHistory::default();
+        let settings = CylinderToolSettings {
+            dimensions: minimum,
+        };
+        assert_eq!(graph.part_count(), 0);
+        assert!(history.undo.is_empty() && history.redo.is_empty());
+        assert_eq!(settings.dimensions, minimum);
     }
 
     #[test]
@@ -3881,10 +4983,14 @@ mod interaction_tests {
         );
         assert!((maximum_inner.inner_diameter() - 0.15).abs() < 1.0e-6);
 
-        let hud = tool_status_line(Tool::Bearing, settings.dimensions);
+        let hud = tool_status_line(
+            Tool::Bearing,
+            settings.dimensions,
+            CylinderDimensions::default(),
+        );
         assert!(hud.contains("Outer: 0.15 m"));
         assert!(hud.contains("Inner: 0.10 m"));
-        assert!(hud.contains("Shift+["));
+        assert!(hud.contains("Shift+←/→"));
     }
 
     #[test]
@@ -3897,6 +5003,56 @@ mod interaction_tests {
         assert!((full - HAMMER_MAX_IMPULSE).abs() < f32::EPSILON);
         assert!((full - 4_000.0).abs() < f32::EPSILON);
         assert!((hammer_impulse_magnitude(100.0) - HAMMER_MAX_IMPULSE).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn hard_hammer_impulses_are_delivered_in_collision_safe_steps() {
+        let mut graph = ConstructionGraph::new();
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::new(0, 1, 0), GridRotation::default()),
+        )
+        .unwrap();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let creation = graph.compile().unwrap();
+        let root = creation.compounds[0].root_translation;
+        let transform = GpuTransform {
+            position: [root.x, root.y, root.z, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let impulse = Vec3::X * HAMMER_MAX_IMPULSE;
+        let local_point = Vec3::new(0.0, 0.125, 0.0);
+
+        let (ticks, impulse_per_tick) =
+            hammer_delivery(&creation, transform, 0, local_point, impulse);
+
+        assert!(ticks > 1);
+        assert!(ticks <= super::HAMMER_MAX_DELIVERY_TICKS);
+        assert!(impulse_per_tick.length() * f32::from(ticks) < impulse.length());
+        assert!(
+            hammer_point_travel(&creation, transform, 0, local_point, impulse_per_tick)
+                <= super::HAMMER_MAX_POINT_TRAVEL_PER_TICK + f32::EPSILON
+        );
+
+        let mut heavy_graph = ConstructionGraph::new();
+        let heavy = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        heavy_graph.apply(BuildCommand::Spawn(heavy)).unwrap();
+        let heavy_creation = heavy_graph.compile().unwrap();
+        let heavy_root = heavy_creation.compounds[0].root_translation;
+        let heavy_transform = GpuTransform {
+            position: [heavy_root.x, heavy_root.y, heavy_root.z, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let (heavy_ticks, heavy_impulse_per_tick) =
+            hammer_delivery(&heavy_creation, heavy_transform, 0, Vec3::ZERO, impulse);
+        assert!(
+            (heavy_impulse_per_tick.length() * f32::from(heavy_ticks) - impulse.length()).abs()
+                < 1.0e-3
+        );
     }
 
     #[test]
@@ -3917,6 +5073,7 @@ mod interaction_tests {
         }];
 
         let hit = raycast_simulation(
+            &graph,
             &creation,
             &transforms,
             Vec3::new(5.0, 1.0, 5.0),
@@ -3927,10 +5084,55 @@ mod interaction_tests {
         assert!(hit.point.abs_diff_eq(Vec3::new(5.0, 1.0, 0.5), 1.0e-5));
         assert!(
             raycast_simulation(
+                &graph,
                 &creation,
                 &transforms,
                 Vec3::new(0.0, 1.0, 5.0),
                 Vec3::NEG_Z,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn hammer_raycast_respects_a_cylinder_slice() {
+        let mut graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::new(1.0, 0.0, 1.0)
+            .unwrap()
+            .with_sweep_angle_degrees(90)
+            .unwrap();
+        let spec = CylinderSpec::new(
+            dimensions,
+            BuildPose::new(IVec3::ZERO, GridRotation::default()),
+        );
+        let BuildOutcome::Spawned(_) = graph.apply(BuildCommand::SpawnCylinder(spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        let creation = graph.compile().unwrap();
+        let root = creation.compounds[0].root_translation;
+        let transforms = [GpuTransform {
+            position: [root.x, root.y, root.z, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        }];
+
+        assert!(
+            raycast_simulation(
+                &graph,
+                &creation,
+                &transforms,
+                Vec3::new(0.3, 2.0, 0.0),
+                Vec3::NEG_Y,
+            )
+            .is_some()
+        );
+        assert!(
+            raycast_simulation(
+                &graph,
+                &creation,
+                &transforms,
+                Vec3::new(-0.3, 2.0, 0.0),
+                Vec3::NEG_Y,
             )
             .is_none()
         );
@@ -4259,6 +5461,7 @@ mod interaction_tests {
             .insert_resource(AppSimulation::default())
             .insert_resource(SelectedTool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
+            .insert_resource(CylinderToolSettings::default())
             .insert_resource(HotbarPointerCapture::default())
             .add_systems(Update, handle_build_actions);
 
@@ -4413,6 +5616,7 @@ mod interaction_tests {
             .insert_resource(AppSimulation::default())
             .insert_resource(SelectedTool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
+            .insert_resource(CylinderToolSettings::default())
             .insert_resource(HotbarPointerCapture::default())
             .add_systems(Update, handle_build_actions);
 
@@ -4455,7 +5659,7 @@ mod interaction_tests {
             };
             parts.push(part);
         }
-        let start = *graph.part(parts[0]).unwrap();
+        let start = graph.part(parts[0]).copied().unwrap().as_cuboid().unwrap();
 
         let selected =
             delete_sheet_parts(&graph, start, IVec3::new(3, 1, 3), PlacementPlane::Xz).unwrap();
@@ -4573,7 +5777,7 @@ mod history_tests {
             error: None,
         });
         state.delete_drag = Some(DeleteDrag {
-            start: *graph.part(support).unwrap(),
+            start: graph.part(support).copied().unwrap().as_cuboid().unwrap(),
             plane: PlacementPlane::Xz,
             last_endpoint: None,
             parts: vec![support],

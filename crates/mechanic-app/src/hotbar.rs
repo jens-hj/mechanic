@@ -19,6 +19,7 @@ const SLOT_SELECTED_BORDER: Color = Color::srgb(0.25, 0.85, 1.0);
 pub(crate) enum Tool {
     #[default]
     Block,
+    Cylinder,
     Bearing,
     Weld,
     Hammer,
@@ -29,6 +30,7 @@ impl Tool {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Block => "Block",
+            Self::Cylinder => "Cylinder",
             Self::Bearing => "Bearing",
             Self::Weld => "Weld",
             Self::Hammer => "Hammer",
@@ -39,10 +41,11 @@ impl Tool {
     pub(crate) const fn shortcut(self) -> &'static str {
         match self {
             Self::Block => "1",
-            Self::Bearing => "2",
-            Self::Weld => "3",
-            Self::Hammer => "4",
-            Self::JointXray => "5",
+            Self::Cylinder => "2",
+            Self::Bearing => "3",
+            Self::Weld => "4",
+            Self::Hammer => "5",
+            Self::JointXray => "6",
         }
     }
 
@@ -58,10 +61,11 @@ impl Tool {
 pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
     match key {
         KeyCode::Digit1 => Some(Tool::Block),
-        KeyCode::Digit2 => Some(Tool::Bearing),
-        KeyCode::Digit3 => Some(Tool::Weld),
-        KeyCode::Digit4 => Some(Tool::Hammer),
-        KeyCode::Digit5 => Some(Tool::JointXray),
+        KeyCode::Digit2 => Some(Tool::Cylinder),
+        KeyCode::Digit3 => Some(Tool::Bearing),
+        KeyCode::Digit4 => Some(Tool::Weld),
+        KeyCode::Digit5 => Some(Tool::Hammer),
+        KeyCode::Digit6 => Some(Tool::JointXray),
         _ => None,
     }
 }
@@ -143,6 +147,7 @@ pub(crate) fn spawn(commands: &mut Commands) {
             .with_children(|bar| {
                 for tool in [
                     Tool::Block,
+                    Tool::Cylinder,
                     Tool::Bearing,
                     Tool::Weld,
                     Tool::Hammer,
@@ -201,11 +206,41 @@ fn spawn_icon(parent: &mut ChildSpawnerCommands<'_>, tool: Tool) {
         })
         .with_children(|icon| match tool {
             Tool::Block => spawn_block_icon(icon),
+            Tool::Cylinder => spawn_cylinder_icon(icon),
             Tool::Bearing => spawn_bearing_icon(icon),
             Tool::Weld => spawn_weld_icon(icon),
             Tool::Hammer => spawn_hammer_icon(icon),
             Tool::JointXray => spawn_joint_xray_icon(icon),
         });
+}
+
+fn spawn_cylinder_icon(icon: &mut ChildSpawnerCommands<'_>) {
+    icon.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(7),
+            top: px(5),
+            width: px(26),
+            height: px(30),
+            border: UiRect::all(px(2)),
+            border_radius: BorderRadius::all(px(13)),
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.22, 0.55, 0.86)),
+        BorderColor::all(ICON_COLOR),
+    ));
+    icon.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(15),
+            top: px(12),
+            width: px(10),
+            height: px(16),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BackgroundColor(SLOT_BACKGROUND),
+    ));
 }
 
 fn spawn_block_icon(icon: &mut ChildSpawnerCommands<'_>) {
@@ -412,15 +447,22 @@ mod tests {
     #[test]
     fn numbered_shortcuts_follow_hotbar_order() {
         assert_eq!(shortcut_tool(KeyCode::Digit1), Some(Tool::Block));
-        assert_eq!(shortcut_tool(KeyCode::Digit2), Some(Tool::Bearing));
-        assert_eq!(shortcut_tool(KeyCode::Digit3), Some(Tool::Weld));
-        assert_eq!(shortcut_tool(KeyCode::Digit4), Some(Tool::Hammer));
-        assert_eq!(shortcut_tool(KeyCode::Digit5), Some(Tool::JointXray));
+        assert_eq!(shortcut_tool(KeyCode::Digit2), Some(Tool::Cylinder));
+        assert_eq!(shortcut_tool(KeyCode::Digit3), Some(Tool::Bearing));
+        assert_eq!(shortcut_tool(KeyCode::Digit4), Some(Tool::Weld));
+        assert_eq!(shortcut_tool(KeyCode::Digit5), Some(Tool::Hammer));
+        assert_eq!(shortcut_tool(KeyCode::Digit6), Some(Tool::JointXray));
     }
 
     #[test]
     fn tools_act_only_in_their_supported_mode() {
-        for tool in [Tool::Block, Tool::Bearing, Tool::Weld, Tool::JointXray] {
+        for tool in [
+            Tool::Block,
+            Tool::Cylinder,
+            Tool::Bearing,
+            Tool::Weld,
+            Tool::JointXray,
+        ] {
             assert!(tool.works_in_mode(false));
             assert!(!tool.works_in_mode(true));
         }

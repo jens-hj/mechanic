@@ -9,6 +9,24 @@ pub const GRID_UNIT_METERS: f32 = 0.25;
 /// Largest cuboid dimension in grid units (8 m).
 pub const MAX_GRID_UNITS: u8 = 32;
 
+/// Smallest supported cylinder outer diameter, in metres.
+pub const MIN_CYLINDER_OUTER_DIAMETER: f32 = 0.05;
+
+/// Largest supported cylinder outer diameter, in metres.
+pub const MAX_CYLINDER_OUTER_DIAMETER: f32 = 8.0;
+
+/// Minimum difference between a cylinder's outer and inner diameters, in metres.
+pub const MIN_CYLINDER_DIAMETER_GAP: f32 = 0.05;
+
+/// Smallest supported retained cylinder sector, in degrees.
+pub const MIN_CYLINDER_SWEEP_DEGREES: u16 = 15;
+
+/// Full-cylinder sweep angle, in degrees.
+pub const MAX_CYLINDER_SWEEP_DEGREES: u16 = 360;
+
+/// Adjustment increment for retained cylinder sectors, in degrees.
+pub const CYLINDER_SWEEP_STEP_DEGREES: u16 = 15;
+
 /// Converts a world position into its nearest quarter-metre grid coordinate.
 pub fn snap_world_to_grid(position: Vec3) -> IVec3 {
     (position / GRID_UNIT_METERS).round().as_ivec3()
@@ -181,6 +199,240 @@ pub struct CuboidSpec {
     pub pose: BuildPose,
 }
 
+/// Invalid load-bearing cylinder dimensions.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum CylinderDimensionError {
+    /// The outer diameter was not finite.
+    #[error("cylinder outer diameter must be finite")]
+    NonFiniteOuterDiameter,
+    /// The outer diameter was outside the supported range.
+    #[error("cylinder outer diameter must be between 0.05 m and 8.00 m")]
+    OuterDiameterOutOfRange,
+    /// The inner diameter was not finite.
+    #[error("cylinder inner diameter must be finite")]
+    NonFiniteInnerDiameter,
+    /// The inner diameter was negative or left less than the minimum wall thickness.
+    #[error(
+        "cylinder inner diameter must be non-negative and at least 0.05 m smaller than the outer diameter"
+    )]
+    InnerDiameterOutOfRange,
+    /// The axial length was not finite.
+    #[error("cylinder axial length must be finite")]
+    NonFiniteAxialLength,
+    /// The axial length was outside the supported range or not a quarter-metre increment.
+    #[error("cylinder axial length must be between 0.25 m and 8.00 m in 0.25 m increments")]
+    AxialLengthOutOfRange,
+    /// The retained angular sector was outside the supported stepped range.
+    #[error("cylinder sweep angle must be between 15 and 360 degrees in 15-degree increments")]
+    SweepAngleOutOfRange,
+}
+
+/// Validated dimensions for a solid or hollow cylinder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CylinderDimensions {
+    outer_diameter: f32,
+    inner_diameter: f32,
+    axial_length: GridDimension,
+    sweep_angle_degrees: u16,
+}
+
+impl CylinderDimensions {
+    /// Default cylinder outer diameter, in metres.
+    pub const DEFAULT_OUTER_DIAMETER: f32 = 0.25;
+    /// Default cylinder inner diameter, in metres.
+    pub const DEFAULT_INNER_DIAMETER: f32 = 0.0;
+    /// Default cylinder axial length, in metres.
+    pub const DEFAULT_AXIAL_LENGTH: f32 = 0.25;
+
+    /// Creates validated cylinder dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CylinderDimensionError`] when a diameter is non-finite or out
+    /// of range, or when the length is not a supported quarter-metre increment.
+    pub fn new(
+        outer_diameter: f32,
+        inner_diameter: f32,
+        axial_length: f32,
+    ) -> Result<Self, CylinderDimensionError> {
+        if !outer_diameter.is_finite() {
+            return Err(CylinderDimensionError::NonFiniteOuterDiameter);
+        }
+        if !(MIN_CYLINDER_OUTER_DIAMETER..=MAX_CYLINDER_OUTER_DIAMETER).contains(&outer_diameter) {
+            return Err(CylinderDimensionError::OuterDiameterOutOfRange);
+        }
+        if !inner_diameter.is_finite() {
+            return Err(CylinderDimensionError::NonFiniteInnerDiameter);
+        }
+        if inner_diameter < 0.0 || inner_diameter > outer_diameter - MIN_CYLINDER_DIAMETER_GAP {
+            return Err(CylinderDimensionError::InnerDiameterOutOfRange);
+        }
+        if !axial_length.is_finite() {
+            return Err(CylinderDimensionError::NonFiniteAxialLength);
+        }
+        let length_units = axial_length / GRID_UNIT_METERS;
+        let rounded_units = length_units.round();
+        if (length_units - rounded_units).abs() > 1.0e-5
+            || !(1.0..=f32::from(MAX_GRID_UNITS)).contains(&rounded_units)
+        {
+            return Err(CylinderDimensionError::AxialLengthOutOfRange);
+        }
+        let units = (1..=MAX_GRID_UNITS)
+            .find(|&units| (f32::from(units) - rounded_units).abs() < 1.0e-5)
+            .ok_or(CylinderDimensionError::AxialLengthOutOfRange)?;
+        let axial_length =
+            GridDimension::new(units).map_err(|_| CylinderDimensionError::AxialLengthOutOfRange)?;
+        Ok(Self {
+            outer_diameter,
+            inner_diameter,
+            axial_length,
+            sweep_angle_degrees: MAX_CYLINDER_SWEEP_DEGREES,
+        })
+    }
+
+    /// Sets the retained angular sector centred on local positive X.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CylinderDimensionError::SweepAngleOutOfRange`] unless the
+    /// angle is between 15 and 360 degrees in 15-degree increments.
+    pub const fn with_sweep_angle_degrees(
+        mut self,
+        sweep_angle_degrees: u16,
+    ) -> Result<Self, CylinderDimensionError> {
+        if sweep_angle_degrees < MIN_CYLINDER_SWEEP_DEGREES
+            || sweep_angle_degrees > MAX_CYLINDER_SWEEP_DEGREES
+            || !sweep_angle_degrees.is_multiple_of(CYLINDER_SWEEP_STEP_DEGREES)
+        {
+            return Err(CylinderDimensionError::SweepAngleOutOfRange);
+        }
+        self.sweep_angle_degrees = sweep_angle_degrees;
+        Ok(self)
+    }
+
+    /// Outer diameter in metres.
+    pub const fn outer_diameter(self) -> f32 {
+        self.outer_diameter
+    }
+
+    /// Inner diameter in metres. Zero represents a solid cylinder.
+    pub const fn inner_diameter(self) -> f32 {
+        self.inner_diameter
+    }
+
+    /// Axial length in metres.
+    pub fn axial_length(self) -> f32 {
+        self.axial_length.meters()
+    }
+
+    /// Axial length in quarter-metre grid units.
+    pub const fn axial_length_units(self) -> u8 {
+        self.axial_length.units()
+    }
+
+    /// Retained angular sector in degrees, centred on local positive X.
+    pub const fn sweep_angle_degrees(self) -> u16 {
+        self.sweep_angle_degrees
+    }
+
+    /// Retained angular sector in radians.
+    pub fn sweep_angle_radians(self) -> f32 {
+        f32::from(self.sweep_angle_degrees).to_radians()
+    }
+}
+
+impl Default for CylinderDimensions {
+    fn default() -> Self {
+        Self {
+            outer_diameter: Self::DEFAULT_OUTER_DIAMETER,
+            inner_diameter: Self::DEFAULT_INNER_DIAMETER,
+            axial_length: GridDimension(1),
+            sweep_angle_degrees: MAX_CYLINDER_SWEEP_DEGREES,
+        }
+    }
+}
+
+/// Editable cylinder dimensions and build pose. Its axis is local Y.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CylinderSpec {
+    /// Validated solid or hollow dimensions.
+    pub dimensions: CylinderDimensions,
+    /// Cylinder centre and cardinal orientation.
+    pub pose: BuildPose,
+}
+
+impl CylinderSpec {
+    /// Creates a cylinder from validated dimensions and a build pose.
+    pub const fn new(dimensions: CylinderDimensions, pose: BuildPose) -> Self {
+        Self { dimensions, pose }
+    }
+}
+
+/// A construction part with shape-specific dimensions and a shared build pose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PartSpec {
+    /// Rectangular cuboid.
+    Cuboid(CuboidSpec),
+    /// Solid or hollow cylinder whose axis is local Y.
+    Cylinder(CylinderSpec),
+}
+
+impl PartSpec {
+    /// Part build pose.
+    pub const fn pose(self) -> BuildPose {
+        match self {
+            Self::Cuboid(spec) => spec.pose,
+            Self::Cylinder(spec) => spec.pose,
+        }
+    }
+
+    /// Returns the cuboid shape, when this part is a cuboid.
+    pub const fn as_cuboid(self) -> Option<CuboidSpec> {
+        match self {
+            Self::Cuboid(spec) => Some(spec),
+            Self::Cylinder(_) => None,
+        }
+    }
+
+    /// Returns the cylinder shape, when this part is a cylinder.
+    pub const fn as_cylinder(self) -> Option<CylinderSpec> {
+        match self {
+            Self::Cylinder(spec) => Some(spec),
+            Self::Cuboid(_) => None,
+        }
+    }
+
+    /// Axis-aligned local dimensions. Cylinders return diameter/length/diameter.
+    pub fn size_meters(self) -> Vec3 {
+        match self {
+            Self::Cuboid(spec) => spec.size_meters(),
+            Self::Cylinder(spec) => Vec3::new(
+                spec.dimensions.outer_diameter(),
+                spec.dimensions.axial_length(),
+                spec.dimensions.outer_diameter(),
+            ),
+        }
+    }
+}
+
+impl PartialEq<CuboidSpec> for PartSpec {
+    fn eq(&self, other: &CuboidSpec) -> bool {
+        matches!(self, Self::Cuboid(spec) if spec == other)
+    }
+}
+
+impl From<CuboidSpec> for PartSpec {
+    fn from(value: CuboidSpec) -> Self {
+        Self::Cuboid(value)
+    }
+}
+
+impl From<CylinderSpec> for PartSpec {
+    fn from(value: CylinderSpec) -> Self {
+        Self::Cylinder(value)
+    }
+}
+
 impl CuboidSpec {
     /// Creates a cuboid from integer quarter-metre dimensions.
     ///
@@ -209,7 +461,7 @@ impl CuboidSpec {
     }
 }
 
-/// One of the six oriented cuboid faces.
+/// One of the six oriented local faces. Cylinders expose only their Y ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FaceKind {
     /// Positive local x face.
@@ -267,13 +519,13 @@ impl FaceKind {
 /// Object owning a selectable face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FaceOwner {
-    /// A user-created cuboid.
+    /// A user-created construction part.
     Part(PartId),
     /// The central static ground plane. Only its positive-y face is valid.
     Ground,
 }
 
-/// Stable reference to a cuboid or ground face.
+/// Stable reference to a part or ground face.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FaceRef {
     /// Face owner.
@@ -283,7 +535,7 @@ pub struct FaceRef {
 }
 
 impl FaceRef {
-    /// Creates a cuboid-face reference.
+    /// Creates a part-face reference.
     pub const fn part(part: PartId, face: FaceKind) -> Self {
         Self {
             owner: FaceOwner::Part(part),
@@ -306,9 +558,25 @@ pub(crate) struct FaceGeometry {
     pub(crate) normal: Vec3,
     pub(crate) tangent_u: Vec3,
     pub(crate) tangent_v: Vec3,
-    pub(crate) half_u: f32,
-    pub(crate) half_v: f32,
-    pub(crate) infinite: bool,
+    pub(crate) profile: FaceProfile,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FaceProfile {
+    Rectangle {
+        half_u: f32,
+        half_v: f32,
+    },
+    Annulus {
+        inner_radius: f32,
+        outer_radius: f32,
+    },
+    AnnularSector {
+        inner_radius: f32,
+        outer_radius: f32,
+        half_angle: f32,
+    },
+    Ground,
 }
 
 pub(crate) fn cuboid_face(spec: CuboidSpec, face: FaceKind) -> FaceGeometry {
@@ -324,10 +592,38 @@ pub(crate) fn cuboid_face(spec: CuboidSpec, face: FaceKind) -> FaceGeometry {
         normal,
         tangent_u,
         tangent_v,
-        half_u: size[u_axis.index()] * 0.5,
-        half_v: size[v_axis.index()] * 0.5,
-        infinite: false,
+        profile: FaceProfile::Rectangle {
+            half_u: size[u_axis.index()] * 0.5,
+            half_v: size[v_axis.index()] * 0.5,
+        },
     }
+}
+
+pub(crate) fn cylinder_face(spec: CylinderSpec, face: FaceKind) -> Option<FaceGeometry> {
+    if !matches!(face, FaceKind::PositiveY | FaceKind::NegativeY) {
+        return None;
+    }
+    let rotation = spec.pose.rotation.quaternion();
+    let normal = snap_cardinal(rotation * Vec3::Y) * face.sign();
+    let profile = if spec.dimensions.sweep_angle_degrees() == MAX_CYLINDER_SWEEP_DEGREES {
+        FaceProfile::Annulus {
+            inner_radius: spec.dimensions.inner_diameter() * 0.5,
+            outer_radius: spec.dimensions.outer_diameter() * 0.5,
+        }
+    } else {
+        FaceProfile::AnnularSector {
+            inner_radius: spec.dimensions.inner_diameter() * 0.5,
+            outer_radius: spec.dimensions.outer_diameter() * 0.5,
+            half_angle: spec.dimensions.sweep_angle_radians() * 0.5,
+        }
+    };
+    Some(FaceGeometry {
+        center: spec.pose.translation() + normal * spec.dimensions.axial_length() * 0.5,
+        normal,
+        tangent_u: snap_cardinal(rotation * Vec3::X),
+        tangent_v: snap_cardinal(rotation * Vec3::Z),
+        profile,
+    })
 }
 
 pub(crate) const fn ground_face() -> FaceGeometry {
@@ -336,9 +632,7 @@ pub(crate) const fn ground_face() -> FaceGeometry {
         normal: Vec3::Y,
         tangent_u: Vec3::X,
         tangent_v: Vec3::Z,
-        half_u: f32::INFINITY,
-        half_v: f32::INFINITY,
-        infinite: true,
+        profile: FaceProfile::Ground,
     }
 }
 
@@ -350,7 +644,10 @@ fn snap_cardinal(vector: Vec3) -> Vec3 {
 mod tests {
     use bevy_math::{IVec3, Vec3};
 
-    use super::{BuildPose, CuboidSpec, FaceKind, GridRotation, cuboid_face, snap_world_to_grid};
+    use super::{
+        BuildPose, CuboidSpec, CylinderDimensionError, CylinderDimensions, FaceKind, GridRotation,
+        cuboid_face, snap_world_to_grid,
+    };
 
     #[test]
     fn snaps_world_coordinates_to_quarter_metre_grid() {
@@ -380,6 +677,46 @@ mod tests {
         assert!(CuboidSpec::new([0, 4, 4], BuildPose::default()).is_err());
         assert!(CuboidSpec::new([33, 4, 4], BuildPose::default()).is_err());
         assert!(CuboidSpec::new([1, 32, 1], BuildPose::default()).is_ok());
+    }
+
+    #[test]
+    fn cylinder_dimensions_validate_defaults_bounds_wall_and_length_grid() {
+        let dimensions = CylinderDimensions::default();
+        assert!((dimensions.outer_diameter() - 0.25).abs() < f32::EPSILON);
+        assert!(dimensions.inner_diameter().abs() < f32::EPSILON);
+        assert!((dimensions.axial_length() - 0.25).abs() < f32::EPSILON);
+        assert_eq!(dimensions.sweep_angle_degrees(), 360);
+        assert!(CylinderDimensions::new(0.05, 0.0, 0.25).is_ok());
+        assert!(CylinderDimensions::new(8.0, 7.95, 8.0).is_ok());
+        assert_eq!(
+            CylinderDimensions::new(0.049, 0.0, 0.25),
+            Err(CylinderDimensionError::OuterDiameterOutOfRange)
+        );
+        assert_eq!(
+            CylinderDimensions::new(0.25, 0.201, 0.25),
+            Err(CylinderDimensionError::InnerDiameterOutOfRange)
+        );
+        assert_eq!(
+            CylinderDimensions::new(0.25, 0.0, 0.30),
+            Err(CylinderDimensionError::AxialLengthOutOfRange)
+        );
+        assert_eq!(
+            CylinderDimensions::new(0.25, 0.0, 8.25),
+            Err(CylinderDimensionError::AxialLengthOutOfRange)
+        );
+        assert!(
+            dimensions
+                .with_sweep_angle_degrees(15)
+                .is_ok_and(|dimensions| dimensions.sweep_angle_degrees() == 15)
+        );
+        assert_eq!(
+            dimensions.with_sweep_angle_degrees(14),
+            Err(CylinderDimensionError::SweepAngleOutOfRange)
+        );
+        assert_eq!(
+            dimensions.with_sweep_angle_degrees(361),
+            Err(CylinderDimensionError::SweepAngleOutOfRange)
+        );
     }
 
     #[test]

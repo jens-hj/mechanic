@@ -6,12 +6,15 @@ mod graph;
 mod id;
 
 pub use compile::{
-    CompiledBearing, CompiledCompound, CompiledCreation, LocalCuboidCollider, LoopTopology,
-    MassProperties, MechanismBodyTopology, TopologyError,
+    CYLINDER_COLLIDER_COUNT, CompiledBearing, CompiledCompound, CompiledCreation,
+    LocalCuboidCollider, LoopTopology, MassProperties, MechanismBodyTopology, TopologyError,
 };
 pub use geometry::{
-    Axis, BuildPose, CuboidSpec, DimensionError, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS,
-    GridDimension, GridRotation, MAX_GRID_UNITS, snap_world_to_grid,
+    Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, CuboidSpec, CylinderDimensionError,
+    CylinderDimensions, CylinderSpec, DimensionError, FaceKind, FaceOwner, FaceRef,
+    GRID_UNIT_METERS, GridDimension, GridRotation, MAX_CYLINDER_OUTER_DIAMETER,
+    MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS, MIN_CYLINDER_DIAMETER_GAP,
+    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartSpec, snap_world_to_grid,
 };
 pub use graph::{
     BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome,
@@ -20,7 +23,7 @@ pub use graph::{
 };
 pub use id::{BearingId, PartId, RigidLinkId, WeldId};
 
-/// Fixed density used for every cuboid in this milestone, in kg/m³.
+/// Fixed construction-material density, in kg/m³.
 pub const CUBOID_DENSITY_KG_M3: f32 = 500.0;
 
 /// Maximum acceptable derived bearing-anchor separation, in metres.
