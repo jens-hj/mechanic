@@ -845,6 +845,7 @@ mod tests {
         BEARING_COUNT, COMPOUND_COUNT, CreationPreset, PART_COUNT, WELD_COUNT, build, build_preset,
         uses_reduced_collision_mode,
     };
+    use mechanic_core::BearingDimensions;
     use mechanic_gpu::{GpuPhysics, GpuPhysicsConfig, MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS};
 
     #[test]
@@ -858,6 +859,11 @@ mod tests {
         assert_eq!(creation.colliders.len(), PART_COUNT);
         assert_eq!(creation.compounds.len(), COMPOUND_COUNT);
         assert_eq!(creation.bearings.len(), BEARING_COUNT);
+        assert!(
+            graph
+                .bearings()
+                .all(|(_, bearing)| bearing.dimensions == BearingDimensions::default())
+        );
         assert_eq!(creation.loop_topology.tree_bearings.len(), BEARING_COUNT);
         assert!(creation.loop_topology.closure_bearings.is_empty());
         assert!(graph.pending().is_none());

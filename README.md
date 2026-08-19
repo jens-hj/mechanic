@@ -26,6 +26,8 @@ reference M1 Pro.
 cargo run -p mechanic-app
 ```
 
+- Press `?` to show or hide the controls and status overlay. It starts hidden
+  so the construction view stays unobstructed.
 - Option/Alt + left-drag to orbit (middle-drag also works), Shift + left-drag
   to move the orbital centre across the ground plane, and use the mouse wheel
   or trackpad scroll to zoom. Right-click removes one hovered cuboid; hold and
@@ -42,15 +44,31 @@ cargo run -p mechanic-app
   blocks and commits atomically. Blocks have a fixed 0.25 m cube size.
 - With Weld selected, left-click two touching existing objects. The weld
   compiles both objects into one rigid compound without spawning geometry.
-- With Bearing selected, the first left-click places a 0.25 m diameter visual
-  cylinder 5 cm into and 5 cm out of a cuboid face without creating a block.
-  Switch to Block and hover the bearing; it highlights when targeted, and a
-  click attaches a new block through that zero-volume physics joint instead of
-  welding it to the support. Holding and dragging from the highlighted bearing
-  attaches an internally welded sheet through that one bearing. Right-click
-  removes an unattached bearing.
-- With Joint X-ray selected in build mode, every attached bearing and
-  unattached bearing socket is drawn through the construction for inspection.
+- With Bearing selected, `[` / `]` decrease/increase the outer diameter by
+  0.05 m, while `Shift+[` / `Shift+]` adjust the inner diameter by 0.05 m.
+  The HUD and placement ghost show the current values. The first left-click
+  places that orange ring 5 cm into and 5 cm out of a cuboid face without
+  creating a block. The default is 0.25 m outer and 0.10 m inner diameter.
+  Switch to Block and move a block ghost onto any face area covered by the
+  bearing ring. The bearing and block ghost turn green when the attachment is
+  active; clicking attaches the new block through that zero-volume physics
+  joint instead of welding it to the support. Large bearings can claim offset
+  block faces under their overhang, while faces entirely inside the hole remain
+  ordinary block placements. Holding and dragging from the green attachment
+  preview attaches an internally welded sheet through that one bearing. The
+  socket remains available afterward, so another green placement can attach a
+  block group to another covered part of the same ring. Every group attached
+  directly to one socket becomes part of the same rigid rotor, even across a
+  gap, and they all share that bearing's single rotational motion.
+  Right-click on the orange ring removes the bearing and all of its joint
+  attachments without deleting their blocks; right-clicking through its hole
+  reaches and removes the block behind it. The bearing remains supported by
+  blocks under its ring surface, so a block in the hole can be removed
+  independently. Removing its current support block automatically moves the
+  bearing's ownership to another block under the ring; the bearing disappears
+  only when no covered support remains.
+- With Joint X-ray selected in build mode, every bearing socket is drawn
+  through the construction for inspection.
 - Press `P` in build mode to open the creation picker. It offers deterministic
   kinetic scenes with 256, 1,024, 4,096, or 20,000 parts. Pendulum Garden tests
   branched joints and counterweights, Mobile Workshop mixes welded compounds
@@ -59,29 +77,37 @@ cargo run -p mechanic-app
   single undoable edit; every scene remains fully editable.
 - In build mode, press `Ctrl+Z` or `Cmd+Z` to undo and add `Shift` to redo.
   History retains the latest 64 committed construction edits for the current
-  launch. Starting and stopping simulation does not clear it.
+  launch. Starting or leaving simulation does not clear it.
 - Press `Escape` to cancel a pending weld or bearing selection.
-- Press `Space` to compile the current construction and start simulation. Press
-  `Space` again to stop and return to the editable construction.
+- Press `Space` to compile the current construction and start simulation. While
+  it is running, `Space` pauses or resumes at the exact current pose and
+  `Shift+Space` restarts from the original construction. Press `Escape` to
+  leave simulation and return to build mode.
 - While simulating with Hammer selected, press and hold the left mouse button
   on a moving cuboid to charge a strike, then release to apply an impulse at
   that exact point along the camera ray. A quick click gives a light tap;
   charging for 1.5 seconds reaches maximum strength. Tools remain selectable in
   either mode, but build tools act only while building and Hammer acts only
-  while simulating; `Space` is the only mode switch.
+  while actively simulating.
 
 New blocks automatically weld to every face-touching block. This includes
 blocks placed beside or on top of existing blocks and all neighbors inside a
 dragged sheet. Blocks touching the ground are also welded to it automatically,
-so construction placed on the platform is fixed by default.
+so construction placed on the platform is fixed by default. When placement
+starts on a bearing-connected rigid group, its new blocks weld only to that
+clicked rotor and to each other; touching blocks outside that rotor remain
+physically separate.
 
 Bearing placement requires a cuboid support; the ground can support standalone
 cubes or be selected as one side of a weld. Valid placement ghosts are
 transparent white. Invalid placement and deletion ghosts are transparent red
-and match the geometry affected by the action. To keep heavy scenes responsive,
-simulation runs at most one fixed tick per rendered frame, updates only the
-dynamic mesh at a throttled cadence, and hides bearing cylinders until build
-mode resumes. It still uses synchronous CPU snapshot readback, so it is not
+and match the geometry affected by the action. Bearing rings may visually
+overhang their supporting faces. Their holes are visual only: they do not cut,
+bore, change the mass of, or alter collisions for connected blocks. Bearings
+remain visible and follow their supporting bodies during simulation, but still
+have no mass or collision geometry. To keep heavy scenes responsive, simulation
+runs at most one fixed tick per rendered frame and updates moving geometry at a
+throttled cadence. It still uses synchronous CPU snapshot readback, so it is not
 evidence for the integrated-render gate.
 
 The three smaller creation-picker scenes keep contact within articulated

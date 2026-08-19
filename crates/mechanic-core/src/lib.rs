@@ -14,10 +14,11 @@ pub use geometry::{
     GridDimension, GridRotation, MAX_GRID_UNITS, snap_world_to_grid,
 };
 pub use graph::{
-    BearingSpec, BuildCommand, BuildOutcome, ConstructionGraph, GraphError, PendingOperation,
-    WeldSpec,
+    BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome,
+    ConstructionGraph, GraphError, MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP,
+    MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec, WeldSpec,
 };
-pub use id::{BearingId, PartId, WeldId};
+pub use id::{BearingId, PartId, RigidLinkId, WeldId};
 
 /// Fixed density used for every cuboid in this milestone, in kg/m³.
 pub const CUBOID_DENSITY_KG_M3: f32 = 500.0;

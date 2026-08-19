@@ -155,7 +155,7 @@ pub enum TopologyError {
 }
 
 impl ConstructionGraph {
-    /// Compiles weld groups, mass properties, bearings, and loop equations atomically.
+    /// Compiles rigid groups, mass properties, bearings, and loop equations atomically.
     ///
     /// # Errors
     ///
@@ -192,6 +192,9 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
             }
             (FaceOwner::Ground, FaceOwner::Ground) => {}
         }
+    }
+    for (_, link) in graph.rigid_links.iter() {
+        weld_groups.union(dense_by_part[&link.first], dense_by_part[&link.second]);
     }
 
     let mut grouped = BTreeMap::<usize, Vec<usize>>::new();
@@ -257,6 +260,7 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         .collect::<Vec<_>>();
     let mut topology = LoopTopology::default();
     let mut bearings = Vec::with_capacity(graph.bearings.len());
+    let mut physical_bearing_keys = BTreeSet::new();
     let mut suppressed = BTreeSet::new();
 
     for (bearing_id, bearing) in graph.bearings.iter() {
@@ -273,6 +277,15 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
                 bearing: bearing_id,
                 compound: compound_a,
             });
+        }
+        let physical_key = (
+            compound_a,
+            compound_b,
+            bearing.shared_anchor.to_array().map(f32::to_bits),
+            bearing.axis.to_array().map(f32::to_bits),
+        );
+        if !physical_bearing_keys.insert(physical_key) {
+            continue;
         }
 
         let a = compound_a as usize;
@@ -545,8 +558,8 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
 
     use crate::{
-        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-        FaceKind, FaceRef, GridRotation, TopologyError, WeldSpec,
+        BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
+        CuboidSpec, FaceKind, FaceRef, GridRotation, RigidLinkSpec, TopologyError, WeldSpec,
     };
 
     fn cube_at(units: IVec3) -> CuboidSpec {
@@ -617,6 +630,65 @@ mod tests {
     }
 
     #[test]
+    fn shared_bearing_attachments_compile_as_one_rotor_and_one_joint() {
+        let mut graph = ConstructionGraph::new();
+        let support = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(support) = graph.apply(BuildCommand::Spawn(support)).unwrap()
+        else {
+            unreachable!()
+        };
+        let targets = [IVec3::new(0, 9, 0), IVec3::new(2, 9, 0)].map(|center| {
+            let spec = CuboidSpec::new(
+                [1, 1, 1],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let dimensions = BearingDimensions::new(0.80, 0.10).unwrap();
+        for target in targets {
+            graph
+                .apply(BuildCommand::AddBearing(
+                    BearingSpec::new(
+                        FaceRef::part(support, FaceKind::PositiveY),
+                        FaceRef::part(target, FaceKind::NegativeY),
+                        Vec3::Y,
+                        Vec3::Y,
+                    )
+                    .with_dimensions(dimensions),
+                ))
+                .unwrap();
+        }
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: targets[0],
+                second: targets[1],
+            }))
+            .unwrap();
+
+        let compiled = graph.compile().unwrap();
+        let compound_for = |part| {
+            compiled
+                .part_to_compound
+                .iter()
+                .find_map(|&(candidate, compound)| (candidate == part).then_some(compound))
+                .unwrap()
+        };
+        assert_eq!(compiled.compounds.len(), 2);
+        assert_eq!(compiled.bearings.len(), 1);
+        assert_eq!(compound_for(targets[0]), compound_for(targets[1]));
+        assert_ne!(compound_for(support), compound_for(targets[0]));
+    }
+
+    #[test]
     fn welding_to_ground_makes_only_that_group_static() {
         let mut graph = ConstructionGraph::new();
         let grounded = spawn(&mut graph, IVec3::new(0, 2, 0));
@@ -664,6 +736,32 @@ mod tests {
                 bearing,
                 compound: 0
             })
+        );
+    }
+
+    #[test]
+    fn bearing_dimensions_do_not_change_compiled_physics() {
+        let compile_with = |dimensions: BearingDimensions| {
+            let mut graph = ConstructionGraph::new();
+            let a = spawn(&mut graph, IVec3::ZERO);
+            let b = spawn(&mut graph, IVec3::new(4, 0, 0));
+            graph
+                .apply(BuildCommand::AddBearing(
+                    BearingSpec::new(
+                        FaceRef::part(a, FaceKind::PositiveX),
+                        FaceRef::part(b, FaceKind::NegativeX),
+                        Vec3::new(0.5, 0.0, 0.0),
+                        Vec3::X,
+                    )
+                    .with_dimensions(dimensions),
+                ))
+                .unwrap();
+            graph.compile().unwrap()
+        };
+
+        assert_eq!(
+            compile_with(BearingDimensions::default()),
+            compile_with(BearingDimensions::new(0.50, 0.20).unwrap())
         );
     }
 

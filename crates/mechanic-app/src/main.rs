@@ -14,6 +14,7 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::visibility::{NoFrustumCulling, RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
+    input::keyboard::Key,
     mesh::Indices,
     prelude::*,
     render::{
@@ -22,18 +23,20 @@ use bevy::{
     },
 };
 use builder::{
-    BEARING_DEPTH, BEARING_DIAMETER, BLOCK_SIZE_METERS, GROUND_HALF_SIZE, PlacementCandidate,
-    PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
-    bearing_attachment_candidate, begin_weld, block_sheet_specs, candidate_from_hit,
-    face_geometry_from_ref, raycast_construction, raycast_oriented_cuboid, raycast_placement_plane,
-    stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch, stage_weld_objects,
-    validate_block_batch, welded_body_parts,
+    BEARING_DEPTH, BLOCK_SIZE_METERS, GROUND_HALF_SIZE, PlacementCandidate, PlacementError,
+    PlacementPlane, SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate,
+    bearing_overlaps_candidate, bearing_support_face, bearing_support_face_excluding, begin_weld,
+    block_sheet_specs, candidate_from_hit, face_geometry_from_ref, raycast_construction,
+    raycast_oriented_cuboid, raycast_placement_plane, rigid_body_parts, stage_bearing_attachment,
+    stage_bearing_block_batch, stage_block_batch_from_source, stage_weld_objects,
+    validate_block_batch,
 };
 use camera::OrbitCamera;
 use creation_menu::CreationMenuState;
 use hotbar::{HotbarPointerCapture, SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
-    BuildCommand, CompiledCreation, ConstructionGraph, CuboidSpec, FaceOwner, PartId,
+    BearingDimensions, BuildCommand, CompiledCreation, ConstructionGraph, CuboidSpec, FaceOwner,
+    MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, PartId,
     PendingOperation, TopologyError,
 };
 use mechanic_gpu::{FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform};
@@ -43,6 +46,14 @@ const HAMMER_CHARGE_SECONDS: f32 = 1.5;
 const HAMMER_MIN_IMPULSE: f32 = 25.0;
 const HAMMER_MAX_IMPULSE: f32 = 4_000.0;
 const HISTORY_CAPACITY: usize = 64;
+const BEARING_DIAMETER_STEP: f32 = 0.05;
+const HELP_TEXT_COLOR: Color = Color::srgb(0.88, 0.92, 0.96);
+const HELP_MUTED_COLOR: Color = Color::srgb(0.58, 0.66, 0.73);
+const HELP_BLUE_COLOR: Color = Color::srgb(0.30, 0.78, 1.0);
+const HELP_GREEN_COLOR: Color = Color::srgb(0.35, 0.93, 0.60);
+const HELP_YELLOW_COLOR: Color = Color::srgb(1.0, 0.76, 0.28);
+const HELP_RED_COLOR: Color = Color::srgb(1.0, 0.40, 0.36);
+const HELP_ORANGE_COLOR: Color = Color::srgb(1.0, 0.65, 0.20);
 
 #[derive(Resource, Default)]
 struct EditorGraph(ConstructionGraph);
@@ -51,6 +62,7 @@ struct EditorGraph(ConstructionGraph);
 struct AppSimulation {
     gpu: Option<GpuPhysics>,
     creation: Option<CompiledCreation>,
+    paused: bool,
     scheduler: FixedStepScheduler,
     next_tick: u64,
     transforms: Vec<GpuTransform>,
@@ -91,11 +103,13 @@ struct BlockDrag {
 
 #[derive(Clone, Copy, Debug)]
 enum BlockAttachment {
-    AutoWeld,
+    AutoWeld {
+        source: FaceOwner,
+    },
     Bearing {
-        index: usize,
         source: mechanic_core::FaceRef,
         anchor: Vec3,
+        dimensions: BearingDimensions,
     },
 }
 
@@ -112,6 +126,12 @@ struct DeleteDrag {
 struct PlacedBearing {
     source: mechanic_core::FaceRef,
     anchor: Vec3,
+    dimensions: BearingDimensions,
+}
+
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+struct BearingToolSettings {
+    dimensions: BearingDimensions,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +189,12 @@ enum HistoryAction {
     Redo,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SimulationShortcut {
+    TogglePlayback,
+    Restart,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum DeleteTarget {
     PlacedBearing(usize),
@@ -183,18 +209,28 @@ fn handle_simulation_shortcut(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
 ) {
-    if !keyboard.just_pressed(KeyCode::Space) {
+    if keyboard.just_pressed(KeyCode::Escape) && simulation.is_running() && !menu.is_open() {
+        *simulation = AppSimulation::default();
+        state.construction_mesh_dirty = true;
+        state.feedback = Some("Returned to build mode".to_owned());
         return;
     }
+    let Some(shortcut) = requested_simulation_shortcut(&keyboard) else {
+        return;
+    };
     if menu.is_open() {
         menu.close();
         state.feedback = Some("Creation menu closed".to_owned());
         return;
     }
-    if simulation.is_running() {
-        *simulation = AppSimulation::default();
-        state.construction_mesh_dirty = true;
-        state.feedback = Some("Simulation stopped; returned to build mode".to_owned());
+    let restarting = simulation.is_running();
+    if restarting && shortcut == SimulationShortcut::TogglePlayback {
+        simulation.paused = !simulation.paused;
+        state.feedback = Some(if simulation.paused {
+            "Simulation paused — Space resumes, Shift+Space restarts".to_owned()
+        } else {
+            "Simulation resumed".to_owned()
+        });
         return;
     }
     state.block_drag = None;
@@ -242,6 +278,7 @@ fn handle_simulation_shortcut(
     *simulation = AppSimulation {
         gpu: Some(gpu),
         creation: Some(creation),
+        paused: false,
         scheduler: FixedStepScheduler::new(),
         next_tick: 1,
         transforms,
@@ -249,7 +286,21 @@ fn handle_simulation_shortcut(
         static_mesh_dirty: true,
         render_dirty: true,
     };
-    state.feedback = Some("Simulation running (throttled mesh preview)".to_owned());
+    state.feedback = Some(if restarting {
+        "Simulation restarted".to_owned()
+    } else {
+        "Simulation running (throttled mesh preview)".to_owned()
+    });
+}
+
+fn requested_simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<SimulationShortcut> {
+    keyboard.just_pressed(KeyCode::Space).then(|| {
+        if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+            SimulationShortcut::Restart
+        } else {
+            SimulationShortcut::TogglePlayback
+        }
+    })
 }
 
 fn handle_creation_menu_shortcut(
@@ -265,9 +316,8 @@ fn handle_creation_menu_shortcut(
         state.feedback = Some("Creation menu closed".to_owned());
     } else if keyboard.just_pressed(KeyCode::KeyP) {
         if simulation.is_running() {
-            state.feedback = Some(
-                "Creations can be opened in build mode — press Space to stop simulation".to_owned(),
-            );
+            state.feedback =
+                Some("Creations can be opened in build mode — press Escape first".to_owned());
         } else if menu.is_open() {
             menu.close();
             state.feedback = Some("Creation menu closed".to_owned());
@@ -351,7 +401,11 @@ fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
     minimum.is_finite().then_some((minimum, maximum))
 }
 
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::type_complexity
+)]
 fn advance_simulation(
     time: Res<Time>,
     graph: Res<EditorGraph>,
@@ -392,11 +446,12 @@ fn advance_simulation(
 
     let tick = {
         let AppSimulation {
+            paused,
             scheduler,
             next_tick,
             ..
         } = &mut *simulation;
-        next_simulation_tick(scheduler, next_tick, time.delta())
+        next_simulation_tick(scheduler, next_tick, time.delta(), *paused)
     };
     if let Some(tick) = tick {
         let diagnostics = {
@@ -464,7 +519,6 @@ fn advance_simulation(
             );
         }
         **construction_visibility = Visibility::Visible;
-        **bearing_visibility = Visibility::Hidden;
         simulation.static_mesh_dirty = false;
     }
 
@@ -483,6 +537,19 @@ fn advance_simulation(
             SimulationMeshKind::Dynamic,
         );
     }
+    if let Some(mut mesh) = meshes.get_mut(&visuals.bearing_mesh) {
+        *mesh = combined_simulation_bearing_mesh(
+            &graph.0,
+            creation,
+            &simulation.transforms,
+            &state.placed_bearings,
+        );
+    }
+    **bearing_visibility = if graph.0.bearing_count() == 0 && state.placed_bearings.is_empty() {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    };
     **simulation_visibility = Visibility::Visible;
     simulation.render_dirty = false;
 }
@@ -491,7 +558,11 @@ fn next_simulation_tick(
     scheduler: &mut FixedStepScheduler,
     next_tick: &mut u64,
     elapsed: std::time::Duration,
+    paused: bool,
 ) -> Option<u64> {
+    if paused {
+        return None;
+    }
     if scheduler.advance(elapsed).count() == 0 {
         return None;
     }
@@ -510,12 +581,19 @@ impl AppSimulation {
     const fn is_running(&self) -> bool {
         self.gpu.is_some()
     }
+
+    const fn is_paused(&self) -> bool {
+        self.is_running() && self.paused
+    }
 }
 
 #[derive(Resource, Default)]
 struct EditorState {
     hovered: Option<SurfaceHit>,
+    /// Unattached bearing surface directly hit by the pointer ray.
     hovered_bearing: Option<usize>,
+    /// Unattached bearing that would claim the current block preview.
+    attachment_bearing: Option<usize>,
     preview: Option<PlacementCandidate>,
     preview_error: Option<PlacementError>,
     feedback: Option<String>,
@@ -536,6 +614,7 @@ struct EditorVisuals {
     cube_preview_mesh: Handle<Mesh>,
     bearing_preview_mesh: Handle<Mesh>,
     white_preview_material: Handle<StandardMaterial>,
+    green_preview_material: Handle<StandardMaterial>,
     red_preview_material: Handle<StandardMaterial>,
     block_drag_preview_mesh: Handle<Mesh>,
     delete_drag_preview_mesh: Handle<Mesh>,
@@ -567,6 +646,18 @@ struct JointXrayVisual;
 #[derive(Component)]
 struct HelpText;
 
+#[derive(Clone, Copy, Component)]
+enum HelpLine {
+    Title,
+    PrimaryControls,
+    EditControls,
+    PointerControls,
+    Tool,
+    Counts,
+    Hint,
+    Status,
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -583,6 +674,7 @@ fn main() {
         .init_resource::<CreationMenuState>()
         .init_resource::<AppSimulation>()
         .init_resource::<HammerInteraction>()
+        .init_resource::<BearingToolSettings>()
         .init_resource::<SelectedTool>()
         .init_resource::<HotbarPointerCapture>()
         .insert_resource(GlobalAmbientLight {
@@ -595,6 +687,7 @@ fn main() {
             Update,
             (
                 handle_creation_menu_shortcut,
+                toggle_help_text,
                 handle_history_shortcut,
                 creation_menu::update,
                 handle_creation_request,
@@ -602,6 +695,7 @@ fn main() {
                 camera::update_orbit_camera,
                 handle_simulation_shortcut,
                 handle_shortcuts,
+                handle_bearing_dimension_shortcuts,
                 handle_tool_change,
                 update_hover,
                 handle_build_actions,
@@ -627,7 +721,7 @@ fn setup(
     let simulation_mesh = meshes.add(Cuboid::default());
     let bearing_mesh = meshes.add(Cuboid::default());
     let cube_preview_mesh = meshes.add(Cuboid::default());
-    let bearing_preview_mesh = meshes.add(Cylinder::new(BEARING_DIAMETER * 0.5, BEARING_DEPTH));
+    let bearing_preview_mesh = meshes.add(single_bearing_mesh(BearingDimensions::default()));
     let block_drag_preview_mesh = meshes.add(Cuboid::default());
     let delete_drag_preview_mesh = meshes.add(Cuboid::default());
     let weld_hover_preview_mesh = meshes.add(Cuboid::default());
@@ -663,6 +757,13 @@ fn setup(
         unlit: true,
         ..default()
     });
+    let green_preview_material = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.12, 1.0, 0.28, 0.52),
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        unlit: true,
+        ..default()
+    });
 
     commands.insert_resource(EditorVisuals {
         construction_mesh: construction_mesh.clone(),
@@ -671,6 +772,7 @@ fn setup(
         cube_preview_mesh: cube_preview_mesh.clone(),
         bearing_preview_mesh,
         white_preview_material: white_preview_material.clone(),
+        green_preview_material,
         red_preview_material: red_preview_material.clone(),
         block_drag_preview_mesh,
         delete_drag_preview_mesh,
@@ -784,25 +886,87 @@ fn setup(
             ));
         });
 
-    commands.spawn((
-        HelpText,
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(17.0),
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        Node {
-            position_type: PositionType::Absolute,
-            top: px(14),
-            left: px(14),
-            padding: UiRect::all(px(10)),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.02, 0.025, 0.035, 0.82)),
-    ));
+    commands
+        .spawn((
+            Name::new("Help and status panel"),
+            HelpText,
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(16),
+                left: px(16),
+                width: px(720),
+                max_width: percent(94),
+                padding: UiRect::all(px(16)),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(7),
+                border: UiRect::all(px(1)),
+                border_radius: BorderRadius::all(px(10)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.015, 0.022, 0.032, 0.94)),
+            BorderColor::all(Color::srgba(0.24, 0.38, 0.48, 0.92)),
+            GlobalZIndex(20),
+            Visibility::Hidden,
+        ))
+        .with_children(|panel| {
+            for line in [
+                HelpLine::Title,
+                HelpLine::PrimaryControls,
+                HelpLine::EditControls,
+                HelpLine::PointerControls,
+                HelpLine::Tool,
+                HelpLine::Counts,
+                HelpLine::Hint,
+                HelpLine::Status,
+            ] {
+                let (font_size, color, margin) = match line {
+                    HelpLine::Title => (21.0, HELP_BLUE_COLOR, UiRect::bottom(px(3))),
+                    HelpLine::PrimaryControls => (15.0, HELP_TEXT_COLOR, UiRect::ZERO),
+                    HelpLine::EditControls | HelpLine::PointerControls => {
+                        (14.0, HELP_MUTED_COLOR, UiRect::ZERO)
+                    }
+                    HelpLine::Tool => (17.0, HELP_BLUE_COLOR, UiRect::top(px(6))),
+                    HelpLine::Counts => (14.0, HELP_MUTED_COLOR, UiRect::ZERO),
+                    HelpLine::Hint => (15.0, HELP_TEXT_COLOR, UiRect::top(px(4))),
+                    HelpLine::Status => (14.0, HELP_GREEN_COLOR, UiRect::ZERO),
+                };
+                panel.spawn((
+                    line,
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(font_size),
+                        ..default()
+                    },
+                    TextColor(color),
+                    Node {
+                        width: percent(100),
+                        margin,
+                        ..default()
+                    },
+                ));
+            }
+        });
     hotbar::spawn(&mut commands);
     creation_menu::spawn(&mut commands);
+}
+
+fn help_toggle_requested(keyboard: &ButtonInput<Key>) -> bool {
+    keyboard
+        .get_just_pressed()
+        .any(|key| matches!(key, Key::Character(character) if character == "?"))
+}
+
+fn toggle_help_text(
+    keyboard: Res<ButtonInput<Key>>,
+    mut visibility: Single<&mut Visibility, With<HelpText>>,
+) {
+    if !help_toggle_requested(&keyboard) {
+        return;
+    }
+    **visibility = match **visibility {
+        Visibility::Hidden => Visibility::Visible,
+        _ => Visibility::Hidden,
+    };
 }
 
 fn requested_history_action(keyboard: &ButtonInput<KeyCode>) -> Option<HistoryAction> {
@@ -856,7 +1020,7 @@ fn apply_history_action(
 ) -> bool {
     if simulation_running {
         state.feedback = Some(format!(
-            "{} is available in build mode — press Space to stop simulation",
+            "{} is available in build mode — press Escape first",
             match action {
                 HistoryAction::Undo => "Undo",
                 HistoryAction::Redo => "Redo",
@@ -955,6 +1119,87 @@ fn handle_shortcuts(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BearingDimensionTarget {
+    Outer,
+    Inner,
+}
+
+fn requested_bearing_dimension_adjustment(
+    keyboard: &ButtonInput<KeyCode>,
+    tool: Tool,
+    simulating: bool,
+    menu_blocks_input: bool,
+) -> Option<(BearingDimensionTarget, i8)> {
+    if tool != Tool::Bearing || simulating || menu_blocks_input {
+        return None;
+    }
+    let direction = if keyboard.just_pressed(KeyCode::BracketLeft) {
+        -1
+    } else if keyboard.just_pressed(KeyCode::BracketRight) {
+        1
+    } else {
+        return None;
+    };
+    let target = if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+        BearingDimensionTarget::Inner
+    } else {
+        BearingDimensionTarget::Outer
+    };
+    Some((target, direction))
+}
+
+fn adjusted_bearing_dimensions(
+    dimensions: BearingDimensions,
+    target: BearingDimensionTarget,
+    direction: i8,
+) -> BearingDimensions {
+    let step = f32::from(direction) * BEARING_DIAMETER_STEP;
+    let stepped =
+        |diameter: f32| ((diameter + step) / BEARING_DIAMETER_STEP).round() * BEARING_DIAMETER_STEP;
+    let (outer, inner) = match target {
+        BearingDimensionTarget::Outer => {
+            let outer = stepped(dimensions.outer_diameter())
+                .clamp(MIN_BEARING_OUTER_DIAMETER, MAX_BEARING_OUTER_DIAMETER);
+            let inner = dimensions
+                .inner_diameter()
+                .min(outer - MIN_BEARING_DIAMETER_GAP);
+            (outer, inner)
+        }
+        BearingDimensionTarget::Inner => {
+            let inner = stepped(dimensions.inner_diameter())
+                .clamp(0.0, dimensions.outer_diameter() - MIN_BEARING_DIAMETER_GAP);
+            (dimensions.outer_diameter(), inner)
+        }
+    };
+    BearingDimensions::new(outer, inner)
+        .expect("clamped bearing tool settings satisfy core dimensions")
+}
+
+fn handle_bearing_dimension_shortcuts(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    simulation: Res<AppSimulation>,
+    selection: Res<SelectedTool>,
+    menu: Res<CreationMenuState>,
+    mut settings: ResMut<BearingToolSettings>,
+    mut state: ResMut<EditorState>,
+) {
+    let Some((target, direction)) = requested_bearing_dimension_adjustment(
+        &keyboard,
+        selection.0,
+        simulation.is_running(),
+        menu.blocks_pointer(),
+    ) else {
+        return;
+    };
+    settings.dimensions = adjusted_bearing_dimensions(settings.dimensions, target, direction);
+    state.feedback = Some(format!(
+        "Bearing outer {:.2} m, inner {:.2} m",
+        settings.dimensions.outer_diameter(),
+        settings.dimensions.inner_diameter()
+    ));
+}
+
 fn handle_tool_change(
     selection: Res<SelectedTool>,
     mut graph: ResMut<EditorGraph>,
@@ -1048,7 +1293,7 @@ fn update_hover(
         )
         && construction_hit.is_none_or(|hit| distance <= hit.distance)
     {
-        state.hovered = None;
+        state.hovered = construction_hit;
         state.hovered_bearing = Some(bearing);
         refresh_tool_preview(&graph.0, &mut state, selection.0);
         return;
@@ -1187,27 +1432,62 @@ fn delete_sheet_parts(
 fn clear_hover(state: &mut EditorState) {
     state.hovered = None;
     state.hovered_bearing = None;
+    state.attachment_bearing = None;
     state.preview = None;
     state.preview_error = None;
 }
 
 fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool: Tool) {
     state.preview = None;
+    state.attachment_bearing = None;
     state.preview_error = match (tool, graph.pending()) {
         (Tool::Block, _) => {
-            if let Some(bearing) = state
-                .hovered_bearing
-                .and_then(|index| state.placed_bearings.get(index).copied())
+            let surface_candidate = state.hovered.map(|hit| candidate_from_hit(graph, hit));
+            let direct_bearing = state.hovered_bearing.filter(|&index| {
+                state.placed_bearings.get(index).is_some_and(|bearing| {
+                    surface_candidate.is_none_or(|candidate| {
+                        bearing_overlaps_candidate(
+                            graph,
+                            bearing.source,
+                            bearing.anchor,
+                            bearing.dimensions,
+                            candidate,
+                        )
+                    })
+                })
+            });
+            let bearing_index = direct_bearing.or_else(|| {
+                surface_candidate.and_then(|candidate| {
+                    state.placed_bearings.iter().position(|bearing| {
+                        bearing_overlaps_candidate(
+                            graph,
+                            bearing.source,
+                            bearing.anchor,
+                            bearing.dimensions,
+                            candidate,
+                        )
+                    })
+                })
+            });
+            state.attachment_bearing = bearing_index;
+            if let Some(bearing) =
+                bearing_index.and_then(|index| state.placed_bearings.get(index).copied())
             {
-                let candidate = bearing_attachment_candidate(graph, bearing.source, bearing.anchor);
-                let error =
-                    stage_bearing_attachment(graph, candidate, bearing.source, bearing.anchor)
-                        .err();
+                let candidate = surface_candidate.unwrap_or_else(|| {
+                    bearing_attachment_candidate(graph, bearing.source, bearing.anchor)
+                });
+                let error = stage_bearing_attachment(
+                    graph,
+                    candidate,
+                    bearing.source,
+                    bearing.anchor,
+                    bearing.dimensions,
+                )
+                .err();
                 state.preview = Some(candidate);
                 error
             } else {
-                state.hovered.and_then(|hit| {
-                    let candidate = candidate_from_hit(graph, hit);
+                surface_candidate.and_then(|candidate| {
                     let error = validate_block_batch(graph, candidate, &[candidate.spec]).err();
                     state.preview = Some(candidate);
                     error
@@ -1234,6 +1514,7 @@ fn handle_build_actions(
     mut history: ResMut<EditorHistory>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
+    bearing_settings: Res<BearingToolSettings>,
     hotbar_capture: Res<HotbarPointerCapture>,
 ) {
     if simulation.is_running() {
@@ -1287,13 +1568,46 @@ fn handle_build_actions(
         if let Some(target) = state.delete_target.take() {
             match target {
                 DeleteTarget::PlacedBearing(index) => {
-                    if index < state.placed_bearings.len() {
+                    if let Some(socket) = state.placed_bearings.get(index).copied() {
                         let previous = EditorSnapshot::capture(&graph.0, &state);
-                        state.placed_bearings.remove(index);
-                        history.commit(previous);
-                        state.feedback = Some("Deleted unattached bearing".to_owned());
-                        state.construction_mesh_dirty = true;
-                        clear_hover(&mut state);
+                        let attached = graph
+                            .0
+                            .bearings()
+                            .filter_map(|(id, bearing)| {
+                                bearing_uses_socket(bearing, socket).then_some(id)
+                            })
+                            .collect::<Vec<_>>();
+                        let targets = bearing_socket_targets(&graph.0, socket)
+                            .into_iter()
+                            .collect::<HashSet<_>>();
+                        let rigid_links = graph
+                            .0
+                            .rigid_links()
+                            .filter_map(|(id, link)| {
+                                (targets.contains(&link.first) && targets.contains(&link.second))
+                                    .then_some(id)
+                            })
+                            .collect::<Vec<_>>();
+                        let mut staged = graph.0.clone();
+                        let commands = rigid_links
+                            .iter()
+                            .copied()
+                            .map(BuildCommand::RemoveRigidLink)
+                            .chain(attached.iter().copied().map(BuildCommand::RemoveBearing));
+                        match staged.apply_batch(commands) {
+                            Ok(_) => {
+                                graph.0 = staged;
+                                state.placed_bearings.remove(index);
+                                history.commit(previous);
+                                state.feedback = Some(format!(
+                                    "Deleted bearing and {} attachment(s)",
+                                    attached.len()
+                                ));
+                                state.construction_mesh_dirty = true;
+                                clear_hover(&mut state);
+                            }
+                            Err(error) => state.feedback = Some(error.to_string()),
+                        }
                     }
                 }
             }
@@ -1303,20 +1617,27 @@ fn handle_build_actions(
                 state.feedback = Some(error.to_string());
                 return;
             }
-            let deleted = drag.parts.iter().copied().collect::<HashSet<_>>();
             let previous = EditorSnapshot::capture(&graph.0, &state);
-            let mut staged = graph.0.clone();
-            match staged.apply_batch(drag.parts.iter().copied().map(BuildCommand::Remove)) {
-                Ok(_) => {
+            match stage_part_deletion_preserving_bearings(
+                &graph.0,
+                &state.placed_bearings,
+                &drag.parts,
+            ) {
+                Ok((staged, placed_bearings, migrated)) => {
                     graph.0 = staged;
-                    state.placed_bearings.retain(|bearing| {
-                        !matches!(bearing.source.owner, FaceOwner::Part(owner) if deleted.contains(&owner))
-                    });
+                    state.placed_bearings = placed_bearings;
                     history.commit(previous);
-                    state.feedback = Some(format!(
-                        "Deleted {} cuboid(s) and incident connections",
-                        drag.parts.len()
-                    ));
+                    state.feedback = Some(if migrated == 0 {
+                        format!(
+                            "Deleted {} cuboid(s) and incident connections",
+                            drag.parts.len()
+                        )
+                    } else {
+                        format!(
+                            "Deleted {} cuboid(s); moved {migrated} bearing(s) to remaining support",
+                            drag.parts.len()
+                        )
+                    });
                     state.construction_mesh_dirty = true;
                     clear_hover(&mut state);
                 }
@@ -1368,16 +1689,32 @@ fn handle_build_actions(
             };
             match bearing_anchor_from_hit(&graph.0, hit) {
                 Ok(anchor) => {
-                    let duplicate = state.placed_bearings.iter().any(|bearing| {
-                        bearing.source == hit.face && bearing.anchor.abs_diff_eq(anchor, 1.0e-5)
-                    });
+                    let Some(source) = bearing_support_face(
+                        &graph.0,
+                        hit.face,
+                        anchor,
+                        bearing_settings.dimensions,
+                    ) else {
+                        state.feedback = Some(
+                            "The bearing ring must overlap at least one supporting block"
+                                .to_owned(),
+                        );
+                        return;
+                    };
+                    let duplicate = bearing_location_occupied(
+                        &graph.0,
+                        &state.placed_bearings,
+                        hit.face,
+                        anchor,
+                    );
                     if duplicate {
                         state.feedback = Some("A bearing is already placed here".to_owned());
                     } else {
                         let previous = EditorSnapshot::capture(&graph.0, &state);
                         state.placed_bearings.push(PlacedBearing {
-                            source: hit.face,
+                            source,
                             anchor,
+                            dimensions: bearing_settings.dimensions,
                         });
                         history.commit(previous);
                         state.feedback =
@@ -1399,6 +1736,146 @@ fn handle_build_actions(
     refresh_tool_preview(&graph.0, &mut state, selection.0);
 }
 
+fn bearing_location_occupied(
+    graph: &ConstructionGraph,
+    placed_bearings: &[PlacedBearing],
+    face: mechanic_core::FaceRef,
+    anchor: Vec3,
+) -> bool {
+    let same_surface = |candidate: mechanic_core::FaceRef| {
+        let selected = face_geometry_from_ref(face, Some(graph));
+        let candidate = face_geometry_from_ref(candidate, Some(graph));
+        selected.normal.dot(candidate.normal) > 1.0 - 1.0e-5
+            && (selected.center - candidate.center)
+                .dot(selected.normal)
+                .abs()
+                <= 1.0e-5
+    };
+    placed_bearings
+        .iter()
+        .any(|bearing| same_surface(bearing.source) && bearing.anchor.abs_diff_eq(anchor, 1.0e-5))
+        || graph.bearings().any(|(_, bearing)| {
+            (same_surface(bearing.source) || same_surface(bearing.target))
+                && bearing.shared_anchor.abs_diff_eq(anchor, 1.0e-5)
+        })
+}
+
+fn bearing_uses_socket(bearing: &mechanic_core::BearingSpec, socket: PlacedBearing) -> bool {
+    bearing.source == socket.source
+        && bearing.shared_anchor.abs_diff_eq(socket.anchor, 1.0e-5)
+        && bearing.dimensions == socket.dimensions
+}
+
+fn bearing_socket_targets(graph: &ConstructionGraph, socket: PlacedBearing) -> Vec<PartId> {
+    graph
+        .bearings()
+        .filter_map(|(_, bearing)| {
+            if !bearing_uses_socket(bearing, socket) {
+                return None;
+            }
+            match bearing.target.owner {
+                FaceOwner::Part(part) => Some(part),
+                FaceOwner::Ground => None,
+            }
+        })
+        .collect()
+}
+
+fn stage_part_deletion_preserving_bearings(
+    graph: &ConstructionGraph,
+    placed_bearings: &[PlacedBearing],
+    deleted_parts: &[PartId],
+) -> Result<(ConstructionGraph, Vec<PlacedBearing>, usize), mechanic_core::GraphError> {
+    let deleted = deleted_parts.iter().copied().collect::<HashSet<_>>();
+    let mut next_bearings = Vec::with_capacity(placed_bearings.len());
+    let mut migrations = Vec::<(PlacedBearing, Vec<mechanic_core::FaceRef>)>::new();
+    let mut unsupported_target_sets = Vec::<HashSet<PartId>>::new();
+
+    for &socket in placed_bearings {
+        let FaceOwner::Part(source_part) = socket.source.owner else {
+            continue;
+        };
+        if !deleted.contains(&source_part) {
+            next_bearings.push(socket);
+            continue;
+        }
+
+        let targets = graph
+            .bearings()
+            .filter_map(|(_, bearing)| {
+                if !bearing_uses_socket(bearing, socket) {
+                    return None;
+                }
+                match bearing.target.owner {
+                    FaceOwner::Part(part) if !deleted.contains(&part) => Some(bearing.target),
+                    FaceOwner::Part(_) | FaceOwner::Ground => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        if let Some(source) = bearing_support_face_excluding(
+            graph,
+            socket.source,
+            socket.anchor,
+            socket.dimensions,
+            &deleted,
+        ) {
+            let migrated = PlacedBearing { source, ..socket };
+            next_bearings.push(migrated);
+            migrations.push((migrated, targets));
+        } else {
+            unsupported_target_sets
+                .push(bearing_socket_targets(graph, socket).into_iter().collect());
+        }
+    }
+
+    let rigid_links = graph
+        .rigid_links()
+        .filter_map(|(id, link)| {
+            unsupported_target_sets
+                .iter()
+                .any(|targets| targets.contains(&link.first) && targets.contains(&link.second))
+                .then_some(id)
+        })
+        .collect::<Vec<_>>();
+    let mut staged = graph.clone();
+    staged.apply_batch(
+        rigid_links
+            .into_iter()
+            .map(BuildCommand::RemoveRigidLink)
+            .chain(deleted_parts.iter().copied().map(BuildCommand::Remove)),
+    )?;
+
+    let migrated_count = migrations.len();
+    let replacement_bearings = migrations
+        .into_iter()
+        .flat_map(|(socket, targets)| {
+            let axis = face_geometry_from_ref(socket.source, Some(&staged)).normal;
+            targets.into_iter().map(move |target| {
+                BuildCommand::AddBearing(
+                    mechanic_core::BearingSpec::new(socket.source, target, socket.anchor, axis)
+                        .with_dimensions(socket.dimensions),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    staged.apply_batch(replacement_bearings)?;
+
+    Ok((staged, next_bearings, migrated_count))
+}
+
+fn visible_bearing_count(graph: &ConstructionGraph, placed_bearings: &[PlacedBearing]) -> usize {
+    placed_bearings.len()
+        + graph
+            .bearings()
+            .filter(|(_, bearing)| {
+                !placed_bearings
+                    .iter()
+                    .any(|&socket| bearing_uses_socket(bearing, socket))
+            })
+            .count()
+}
+
+#[allow(clippy::too_many_lines)] // Click, drag, and bearing attachment share one transaction.
 fn handle_block_actions(
     mouse: &ButtonInput<MouseButton>,
     graph: &mut ConstructionGraph,
@@ -1410,22 +1887,28 @@ fn handle_block_actions(
             state.feedback = Some("Point at the platform or a cuboid face".to_owned());
             return;
         };
-        let (attachment, normal) = if let Some(index) = state.hovered_bearing {
+        let (attachment, normal) = if let Some(index) = state.attachment_bearing {
             let Some(bearing) = state.placed_bearings.get(index).copied() else {
                 state.feedback = Some("Bearing is no longer available".to_owned());
                 return;
             };
-            if let Some(error) =
-                stage_bearing_attachment(graph, candidate, bearing.source, bearing.anchor).err()
+            if let Some(error) = stage_bearing_attachment(
+                graph,
+                candidate,
+                bearing.source,
+                bearing.anchor,
+                bearing.dimensions,
+            )
+            .err()
             {
                 state.feedback = Some(error.to_string());
                 return;
             }
             (
                 BlockAttachment::Bearing {
-                    index,
                     source: bearing.source,
                     anchor: bearing.anchor,
+                    dimensions: bearing.dimensions,
                 },
                 face_geometry_from_ref(bearing.source, Some(graph)).normal,
             )
@@ -1436,7 +1919,9 @@ fn handle_block_actions(
             }
             let hit = state.hovered.expect("block preview originates from a hit");
             (
-                BlockAttachment::AutoWeld,
+                BlockAttachment::AutoWeld {
+                    source: hit.face.owner,
+                },
                 face_geometry_from_ref(hit.face, Some(graph)).normal,
             )
         };
@@ -1450,10 +1935,17 @@ fn handle_block_actions(
             error: None,
         });
         state.block_preview_revision = state.block_preview_revision.wrapping_add(1);
-        state.feedback = Some(format!(
-            "Dragging blocks on {} plane — release to place, Q changes plane",
-            plane.label()
-        ));
+        state.feedback = Some(if matches!(attachment, BlockAttachment::Bearing { .. }) {
+            format!(
+                "Attaching green blocks through bearing on {} plane — release to place",
+                plane.label()
+            )
+        } else {
+            format!(
+                "Dragging blocks on {} plane — release to place, Q changes plane",
+                plane.label()
+            )
+        });
         return;
     }
 
@@ -1470,31 +1962,41 @@ fn handle_block_actions(
     let count = drag.specs.len();
     let previous = EditorSnapshot::capture(graph, state);
     let staged = match drag.attachment {
-        BlockAttachment::AutoWeld => stage_block_batch(graph, drag.start, &drag.specs),
-        BlockAttachment::Bearing { source, anchor, .. } => {
-            stage_bearing_block_batch(graph, drag.start, &drag.specs, source, anchor)
+        BlockAttachment::AutoWeld { source } => {
+            stage_block_batch_from_source(graph, drag.start, &drag.specs, source)
+        }
+        BlockAttachment::Bearing {
+            source,
+            anchor,
+            dimensions,
+            ..
+        } => {
+            let socket = PlacedBearing {
+                source,
+                anchor,
+                dimensions,
+            };
+            let rigid_targets = bearing_socket_targets(graph, socket);
+            stage_bearing_block_batch(
+                graph,
+                drag.start,
+                &drag.specs,
+                source,
+                anchor,
+                dimensions,
+                &rigid_targets,
+            )
         }
     };
     match staged {
         Ok(staged) => {
             let weld_count = staged.weld_count().saturating_sub(graph.weld_count());
             *graph = staged;
-            if let BlockAttachment::Bearing {
-                index,
-                source,
-                anchor,
-            } = drag.attachment
-                && state.placed_bearings.get(index).is_some_and(|bearing| {
-                    bearing.source == source && bearing.anchor.abs_diff_eq(anchor, 1.0e-5)
-                })
-            {
-                state.placed_bearings.remove(index);
-            }
             history.commit(previous);
             state.feedback = Some(format!(
                 "Placed {count} block(s); added {weld_count} weld(s){}",
                 if matches!(drag.attachment, BlockAttachment::Bearing { .. }) {
-                    " through bearing"
+                    " through bearing; socket remains available"
                 } else {
                     ""
                 }
@@ -1525,11 +2027,15 @@ fn handle_hammer_actions(
         hammer.charging = None;
         return;
     }
+    if simulation.is_paused() {
+        hammer.charging = None;
+        return;
+    }
     if !selection.0.works_in_mode(true) {
         hammer.charging = None;
         if mouse.just_pressed(MouseButton::Left) && !hotbar_capture.active() {
             state.feedback = Some(format!(
-                "{} is available in build mode — press Space",
+                "{} is available in build mode — press Escape first",
                 selection.0.label()
             ));
         }
@@ -1676,26 +2182,88 @@ fn raycast_placed_bearings(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<(usize, f32)> {
+    if !origin.is_finite() || !direction.is_finite() || direction.length_squared() < f32::EPSILON {
+        return None;
+    }
+    let direction = direction.normalize();
     bearings
         .iter()
         .enumerate()
         .filter_map(|(index, bearing)| {
             let normal = face_geometry_from_ref(bearing.source, Some(graph)).normal;
-            let rotation = Quat::from_rotation_arc(Vec3::Y, normal);
-            let hit = raycast_oriented_cuboid(
+            let distance = raycast_bearing_annulus(
                 origin,
                 direction,
                 bearing.anchor,
-                rotation,
-                Vec3::new(
-                    BEARING_DIAMETER * 0.5,
-                    BEARING_DEPTH * 0.5,
-                    BEARING_DIAMETER * 0.5,
-                ),
+                normal,
+                bearing.dimensions,
             )?;
-            Some((index, hit.distance))
+            Some((index, distance))
         })
         .min_by(|left, right| left.1.total_cmp(&right.1))
+}
+
+fn raycast_bearing_annulus(
+    origin: Vec3,
+    direction: Vec3,
+    anchor: Vec3,
+    axis: Vec3,
+    dimensions: BearingDimensions,
+) -> Option<f32> {
+    let axis = axis.normalize();
+    let direction = direction.normalize();
+    let offset = origin - anchor;
+    let axial_origin = offset.dot(axis);
+    let axial_direction = direction.dot(axis);
+    let radial_origin = offset - axis * axial_origin;
+    let radial_direction = direction - axis * axial_direction;
+    let half_depth = BEARING_DEPTH * 0.5;
+    let outer_radius = dimensions.outer_diameter() * 0.5;
+    let inner_radius = dimensions.inner_diameter() * 0.5;
+    let mut nearest = f32::INFINITY;
+
+    let radial_a = radial_direction.length_squared();
+    if radial_a > f32::EPSILON {
+        for radius in [outer_radius, inner_radius] {
+            if radius <= 0.0 {
+                continue;
+            }
+            let radial_b = 2.0 * radial_origin.dot(radial_direction);
+            let radial_c = radial_origin.length_squared() - radius * radius;
+            let discriminant = radial_b.mul_add(radial_b, -4.0 * radial_a * radial_c);
+            if discriminant < 0.0 {
+                continue;
+            }
+            let root = discriminant.sqrt();
+            for distance in [
+                (-radial_b - root) / (2.0 * radial_a),
+                (-radial_b + root) / (2.0 * radial_a),
+            ] {
+                let depth = axial_origin + axial_direction * distance;
+                if distance >= 0.0 && depth.abs() <= half_depth + 1.0e-6 {
+                    nearest = nearest.min(distance);
+                }
+            }
+        }
+    }
+
+    if axial_direction.abs() > f32::EPSILON {
+        for depth in [-half_depth, half_depth] {
+            let distance = (depth - axial_origin) / axial_direction;
+            if distance < 0.0 {
+                continue;
+            }
+            let radial = radial_origin + radial_direction * distance;
+            let radius_squared = radial.length_squared();
+            if radius_squared <= outer_radius * outer_radius + f32::EPSILON
+                && radius_squared >= inner_radius * inner_radius
+            {
+                nearest = nearest.min(distance);
+            }
+        }
+    }
+
+    nearest.is_finite().then_some(nearest)
 }
 
 #[allow(clippy::type_complexity)]
@@ -1766,7 +2334,7 @@ fn update_joint_xray(
     **visibility = if joint_xray_is_visible(
         selection.0,
         simulation.is_running(),
-        graph.0.bearing_count() + state.placed_bearings.len(),
+        visible_bearing_count(&graph.0, &state.placed_bearings),
     ) {
         Visibility::Visible
     } else {
@@ -1784,10 +2352,12 @@ fn update_previews(
     state: Res<EditorState>,
     simulation: Res<AppSimulation>,
     selected_tool: Res<SelectedTool>,
+    bearing_settings: Res<BearingToolSettings>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut rendered_block_revision: Local<u64>,
     mut rendered_delete_revision: Local<u64>,
+    mut rendered_bearing_dimensions: Local<BearingDimensions>,
     mut rendered_weld_hover: Local<Option<PartId>>,
     mut rendered_weld_selection: Local<Option<PartId>>,
     mut action: Single<
@@ -1874,6 +2444,12 @@ fn update_previews(
             DeleteTarget::PlacedBearing(index) => {
                 if let Some(bearing) = state.placed_bearings.get(index) {
                     let normal = face_geometry_from_ref(bearing.source, Some(&graph.0)).normal;
+                    update_bearing_preview_mesh(
+                        &mut meshes,
+                        &visuals.bearing_preview_mesh,
+                        &mut rendered_bearing_dimensions,
+                        bearing.dimensions,
+                    );
                     show_bearing_preview(
                         &mut delete,
                         &visuals.bearing_preview_mesh,
@@ -1887,20 +2463,37 @@ fn update_previews(
         return;
     }
 
-    let action_material = if state.preview_error.is_none() {
-        &visuals.white_preview_material
-    } else {
+    let bearing_attachment_highlighted = bearing_attachment_is_highlighted(
+        selected_tool.0,
+        state.attachment_bearing,
+        state.preview_error.as_ref(),
+    );
+    let action_material = if state.preview_error.is_some() {
         &visuals.red_preview_material
+    } else if bearing_attachment_highlighted {
+        &visuals.green_preview_material
+    } else {
+        &visuals.white_preview_material
     };
     if let Some(bearing) = state
-        .hovered_bearing
+        .attachment_bearing
         .and_then(|index| state.placed_bearings.get(index))
     {
         let normal = face_geometry_from_ref(bearing.source, Some(&graph.0)).normal;
+        update_bearing_preview_mesh(
+            &mut meshes,
+            &visuals.bearing_preview_mesh,
+            &mut rendered_bearing_dimensions,
+            bearing.dimensions,
+        );
         show_bearing_preview(
             &mut selection,
             &visuals.bearing_preview_mesh,
-            &visuals.white_preview_material,
+            if bearing_attachment_highlighted {
+                &visuals.green_preview_material
+            } else {
+                &visuals.red_preview_material
+            },
             bearing.anchor,
             normal,
         );
@@ -1932,7 +2525,7 @@ fn update_previews(
         (Tool::Weld, pending) => {
             if let Some(part) = hovered_part(state.hovered) {
                 if *rendered_weld_hover != Some(part) || graph.is_changed() {
-                    let specs = welded_body_parts(&graph.0, part)
+                    let specs = rigid_body_parts(&graph.0, part)
                         .into_iter()
                         .filter_map(|member| graph.0.part(member).copied())
                         .collect::<Vec<_>>();
@@ -1950,7 +2543,7 @@ fn update_previews(
                 && let FaceOwner::Part(part) = first.owner
             {
                 if *rendered_weld_selection != Some(part) || graph.is_changed() {
-                    let specs = welded_body_parts(&graph.0, part)
+                    let specs = rigid_body_parts(&graph.0, part)
                         .into_iter()
                         .filter_map(|member| graph.0.part(member).copied())
                         .collect::<Vec<_>>();
@@ -1969,6 +2562,12 @@ fn update_previews(
             if let Some(hit) = state.hovered {
                 let face = face_geometry_from_ref(hit.face, Some(&graph.0));
                 let anchor = bearing_anchor_from_hit(&graph.0, hit).unwrap_or(hit.point);
+                update_bearing_preview_mesh(
+                    &mut meshes,
+                    &visuals.bearing_preview_mesh,
+                    &mut rendered_bearing_dimensions,
+                    bearing_settings.dimensions,
+                );
                 show_bearing_preview(
                     &mut action,
                     &visuals.bearing_preview_mesh,
@@ -1980,6 +2579,40 @@ fn update_previews(
         }
         (Tool::Hammer | Tool::JointXray, _) => {}
     }
+}
+
+fn update_bearing_preview_mesh(
+    meshes: &mut Assets<Mesh>,
+    mesh_handle: &Handle<Mesh>,
+    rendered_dimensions: &mut BearingDimensions,
+    dimensions: BearingDimensions,
+) {
+    if !bearing_preview_dimensions_changed(rendered_dimensions, dimensions) {
+        return;
+    }
+    if let Some(mut mesh) = meshes.get_mut(mesh_handle) {
+        *mesh = single_bearing_mesh(dimensions);
+    }
+}
+
+fn bearing_preview_dimensions_changed(
+    rendered_dimensions: &mut BearingDimensions,
+    dimensions: BearingDimensions,
+) -> bool {
+    if *rendered_dimensions == dimensions {
+        false
+    } else {
+        *rendered_dimensions = dimensions;
+        true
+    }
+}
+
+fn bearing_attachment_is_highlighted(
+    tool: Tool,
+    attachment_bearing: Option<usize>,
+    preview_error: Option<&PlacementError>,
+) -> bool {
+    tool == Tool::Block && attachment_bearing.is_some() && preview_error.is_none()
 }
 
 type PreviewItem<'a> = (
@@ -2029,28 +2662,39 @@ fn update_help_text(
     simulation: Res<AppSimulation>,
     hammer: Res<HammerInteraction>,
     selection: Res<SelectedTool>,
-    mut text: Single<&mut Text, With<HelpText>>,
+    bearing_settings: Res<BearingToolSettings>,
+    mut lines: Query<(&HelpLine, &mut Text, &mut TextColor)>,
 ) {
-    let status = hammer.charging.map_or_else(
-        || {
-            state
-                .delete_drag
-                .as_ref()
-                .and_then(|drag| drag.error.as_ref())
-                .or(state.preview_error.as_ref())
-                .map_or_else(
-                    || state.feedback.clone().unwrap_or_else(|| "Ready".to_owned()),
-                    ToString::to_string,
-                )
-        },
-        |charge| {
-            format!(
-                "Hammer charge: {:.0}% — release to strike",
-                charge.elapsed_seconds / HAMMER_CHARGE_SECONDS * 100.0
-            )
-        },
-    );
-    let tool_hint = if let Some(drag) = state.delete_drag.as_ref() {
+    let active_error = state
+        .delete_drag
+        .as_ref()
+        .and_then(|drag| drag.error.as_ref())
+        .or(state.preview_error.as_ref());
+    let status = if let Some(charge) = hammer.charging {
+        format!(
+            "Hammer charge: {:.0}% — release to strike",
+            charge.elapsed_seconds / HAMMER_CHARGE_SECONDS * 100.0
+        )
+    } else {
+        active_error.map_or_else(
+            || state.feedback.clone().unwrap_or_else(|| "Ready".to_owned()),
+            ToString::to_string,
+        )
+    };
+    let status_color = if hammer.charging.is_some() {
+        HELP_YELLOW_COLOR
+    } else if active_error.is_some()
+        || ["Cannot", "Could not", "Simulation stopped"]
+            .iter()
+            .any(|prefix| status.starts_with(prefix))
+    {
+        HELP_RED_COLOR
+    } else {
+        HELP_GREEN_COLOR
+    };
+    let tool_hint = if simulation.is_paused() {
+        "Simulation paused at the current pose — press Space to resume".to_owned()
+    } else if let Some(drag) = state.delete_drag.as_ref() {
         format!(
             "Release to delete {} cuboid(s) on the {} plane",
             drag.parts.len(),
@@ -2062,21 +2706,30 @@ fn update_help_text(
             selection.0,
             graph.0.pending(),
             state.block_drag.as_ref(),
-            state.hovered_bearing,
+            state.attachment_bearing,
         ) {
-            (false, Tool::Block, _, Some(drag), _) => format!(
-                "Release to place {} blocks on the {} plane",
-                drag.specs.len(),
-                drag.plane.label()
-            ),
+            (false, Tool::Block, _, Some(drag), _) => {
+                if matches!(drag.attachment, BlockAttachment::Bearing { .. }) {
+                    format!(
+                        "Green bearing attachment active — release to connect {} block(s)",
+                        drag.specs.len()
+                    )
+                } else {
+                    format!(
+                        "Release to place {} blocks on the {} plane",
+                        drag.specs.len(),
+                        drag.plane.label()
+                    )
+                }
+            }
             (false, Tool::Block, _, None, Some(_)) => {
-                "Bearing highlighted — click or drag to attach blocks through it".to_owned()
+                "Green bearing attachment active — click or drag to connect blocks".to_owned()
             }
             (true, Tool::Hammer, _, _, _) => {
                 "Hold left mouse on a moving cuboid; release to strike".to_owned()
             }
             (true, _, _, _, _) => {
-                "Selected tool is available in build mode — press Space".to_owned()
+                "This tool is build-only — press Escape to return to build mode".to_owned()
             }
             (false, Tool::Block, _, _, _) => {
                 "Click for one block or drag to place a welded sheet".to_owned()
@@ -2087,59 +2740,108 @@ fn update_help_text(
                 "Left click places a bearing; use Block to attach it".to_owned()
             }
             (false, Tool::Hammer, _, _, _) => {
-                "Hammer is available while simulating — press Space".to_owned()
+                "Hammer is available while simulating — press Space to start".to_owned()
             }
             (false, Tool::JointXray, _, _, _) => {
                 "All bearings are visible through the construction".to_owned()
             }
         }
     };
-    let mode = if simulation.is_running() {
-        "SIMULATING"
+    let (mode, title_color, primary_controls) = if simulation.is_paused() {
+        (
+            "PAUSED",
+            HELP_YELLOW_COLOR,
+            "SPACE  Resume     SHIFT+SPACE  Restart     ESC  Build mode     ?  Hide help",
+        )
+    } else if simulation.is_running() {
+        (
+            "SIMULATING",
+            HELP_GREEN_COLOR,
+            "SPACE  Pause     SHIFT+SPACE  Restart     ESC  Build mode     ?  Hide help",
+        )
     } else {
-        "BUILDING"
+        (
+            "BUILDING",
+            HELP_BLUE_COLOR,
+            "SPACE  Start simulation     P  Open creations     ?  Hide help",
+        )
     };
+    let title = format!("MECHANIC  •  {mode}");
     let action_controls = if state.delete_drag.is_some() {
-        "Release Right Delete   Esc Cancel"
+        "RELEASE RIGHT  Delete     ESC  Cancel"
     } else {
         match (
             simulation.is_running(),
             selection.0,
             state.block_drag.is_some(),
         ) {
-            (false, Tool::Block, true) => "Release Place   Right/Esc Cancel",
-            (true, Tool::Hammer, _) => "Hold Left Hammer",
-            (true, _, _) => "Left click No action",
-            (false, Tool::JointXray, _) => "Orbit/Pan Inspect   Right drag Delete",
-            (false, _, _) => "Left click Action   Right drag Delete",
+            (false, Tool::Block, true) => "RELEASE  Place     RIGHT / ESC  Cancel",
+            (true, Tool::Hammer, _) if !simulation.is_paused() => "HOLD LEFT  Charge hammer",
+            (true, _, _) => "Construction actions unavailable",
+            (false, Tool::JointXray, _) => "ORBIT / PAN  Inspect     RIGHT DRAG  Delete",
+            (false, _, _) => "LEFT  Action     RIGHT DRAG  Delete",
         }
     };
-    let tool_line = if selection.0 == Tool::Block {
-        format!("Tool: Block    Block size: {BLOCK_SIZE_METERS:.2} m")
-    } else {
-        format!("Tool: {}", selection.0.label())
-    };
     let plane_controls = if let Some(drag) = state.block_drag.as_ref() {
-        format!("Q Cycle Plane ({})", drag.plane.label())
+        format!("Q  Cycle plane ({})", drag.plane.label())
     } else if let Some(drag) = state.delete_drag.as_ref() {
-        format!("Q Cycle Delete Plane ({})", drag.plane.label())
+        format!("Q  Cycle delete plane ({})", drag.plane.label())
     } else {
-        "Q Cycle Plane While Dragging/Deleting".to_owned()
+        "Q  Cycle plane while dragging or deleting".to_owned()
     };
-    text.0 = format!(
-        "MECHANIC — {mode}\n\
-         {plane_controls}   P Open Creations   Space Start/Stop\n\
-         Ctrl/Cmd+Z Undo   Ctrl/Cmd+Shift+Z Redo\n\
-         {action_controls}\n\
-         Option+Left drag Orbit   Shift+Left drag Pan   Wheel Zoom\n\n\
-         {tool_line}\n\
-         Parts: {}   Welds: {}   Bearings: {}\n\
-         {tool_hint}\n\
-         {status}",
+    let edit_controls = if simulation.is_running() {
+        if simulation.is_paused() {
+            "Current pose is frozen; construction editing remains locked".to_owned()
+        } else {
+            "Physics is live; construction editing remains locked".to_owned()
+        }
+    } else {
+        format!("{plane_controls}     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo")
+    };
+    let pointer_controls =
+        format!("{action_controls}     ALT+LEFT  Orbit     SHIFT+LEFT  Pan     WHEEL  Zoom");
+    let tool = tool_status_line(selection.0, bearing_settings.dimensions);
+    let tool_color = match selection.0 {
+        Tool::Bearing => HELP_ORANGE_COLOR,
+        Tool::Hammer => HELP_YELLOW_COLOR,
+        Tool::Weld => HELP_GREEN_COLOR,
+        Tool::Block | Tool::JointXray => HELP_BLUE_COLOR,
+    };
+    let counts = format!(
+        "{} parts  •  {} welds  •  {} bearings",
         graph.0.part_count(),
         graph.0.weld_count(),
-        graph.0.bearing_count() + state.placed_bearings.len(),
+        visible_bearing_count(&graph.0, &state.placed_bearings),
     );
+    let status = format!("STATUS  •  {status}");
+
+    for (line, mut text, mut color) in &mut lines {
+        let (content, line_color): (&str, Color) = match line {
+            HelpLine::Title => (&title, title_color),
+            HelpLine::PrimaryControls => (primary_controls, HELP_TEXT_COLOR),
+            HelpLine::EditControls => (&edit_controls, HELP_MUTED_COLOR),
+            HelpLine::PointerControls => (&pointer_controls, HELP_MUTED_COLOR),
+            HelpLine::Tool => (&tool, tool_color),
+            HelpLine::Counts => (&counts, HELP_MUTED_COLOR),
+            HelpLine::Hint => (&tool_hint, HELP_TEXT_COLOR),
+            HelpLine::Status => (&status, status_color),
+        };
+        text.0.clear();
+        text.0.push_str(content);
+        color.0 = line_color;
+    }
+}
+
+fn tool_status_line(tool: Tool, bearing_dimensions: BearingDimensions) -> String {
+    match tool {
+        Tool::Block => format!("Tool: Block    Block size: {BLOCK_SIZE_METERS:.2} m"),
+        Tool::Bearing => format!(
+            "Tool: Bearing    Outer: {:.2} m  [ / ]    Inner: {:.2} m  Shift+[ / Shift+]",
+            bearing_dimensions.outer_diameter(),
+            bearing_dimensions.inner_diameter(),
+        ),
+        _ => format!("Tool: {}", tool.label()),
+    }
 }
 
 const CUBE_POSITIONS: [[f32; 3]; 24] = [
@@ -2298,16 +3000,21 @@ fn combined_simulation_mesh(
 
 fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBearing]) -> Mesh {
     const SEGMENTS: usize = 24;
-    let vertices_per_bearing = SEGMENTS * 4 + 2;
-    let indices_per_bearing = SEGMENTS * 12;
-    let bearing_count = graph.bearing_count() + placed_bearings.len();
+    let vertices_per_bearing = SEGMENTS * 8;
+    let indices_per_bearing = SEGMENTS * 24;
+    let bearing_count = visible_bearing_count(graph, placed_bearings);
     let mut positions = Vec::with_capacity(bearing_count * vertices_per_bearing);
     let mut normals = Vec::with_capacity(bearing_count * vertices_per_bearing);
     let mut indices = Vec::with_capacity(bearing_count * indices_per_bearing);
-    for (_, bearing) in graph.bearings() {
+    for (_, bearing) in graph.bearings().filter(|(_, bearing)| {
+        !placed_bearings
+            .iter()
+            .any(|&socket| bearing_uses_socket(bearing, socket))
+    }) {
         append_bearing_cylinder(
             bearing.shared_anchor,
             bearing.axis,
+            bearing.dimensions,
             &mut positions,
             &mut normals,
             &mut indices,
@@ -2318,6 +3025,7 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
         append_bearing_cylinder(
             bearing.anchor,
             axis,
+            bearing.dimensions,
             &mut positions,
             &mut normals,
             &mut indices,
@@ -2333,9 +3041,123 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
     .with_inserted_indices(Indices::U32(indices))
 }
 
+fn combined_simulation_bearing_mesh(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    placed_bearings: &[PlacedBearing],
+) -> Mesh {
+    const SEGMENTS: usize = 24;
+    let bearing_count = creation.bearings.len() + placed_bearings.len();
+    let mut positions = Vec::with_capacity(bearing_count * SEGMENTS * 8);
+    let mut normals = Vec::with_capacity(bearing_count * SEGMENTS * 8);
+    let mut indices = Vec::with_capacity(bearing_count * SEGMENTS * 24);
+
+    for compiled in &creation.bearings {
+        let bearing = graph
+            .bearing(compiled.source_bearing)
+            .expect("compiled bearing source remains in graph");
+        if placed_bearings
+            .iter()
+            .any(|&socket| bearing_uses_socket(bearing, socket))
+        {
+            continue;
+        }
+        let (anchor, axis) = transform_bearing_pose(
+            transforms[compiled.compound_a as usize],
+            compiled.local_anchor_a,
+            compiled.local_axis_a,
+        );
+        append_bearing_cylinder(
+            anchor,
+            axis,
+            bearing.dimensions,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+    }
+
+    for bearing in placed_bearings {
+        let FaceOwner::Part(source_part) = bearing.source.owner else {
+            continue;
+        };
+        let Some(compound_index) = creation
+            .part_to_compound
+            .iter()
+            .find_map(|&(part, index)| (part == source_part).then_some(index))
+        else {
+            continue;
+        };
+        let initial = &creation.compounds[compound_index as usize];
+        let inverse_initial_rotation = initial.root_rotation.inverse();
+        let local_anchor = inverse_initial_rotation * (bearing.anchor - initial.root_translation);
+        let source_axis = face_geometry_from_ref(bearing.source, Some(graph)).normal;
+        let local_axis = inverse_initial_rotation * source_axis;
+        let (anchor, axis) = transform_bearing_pose(
+            transforms[compound_index as usize],
+            local_anchor,
+            local_axis,
+        );
+        append_bearing_cylinder(
+            anchor,
+            axis,
+            bearing.dimensions,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+    }
+
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
+fn transform_bearing_pose(
+    transform: GpuTransform,
+    local_anchor: Vec3,
+    local_axis: Vec3,
+) -> (Vec3, Vec3) {
+    let translation = Vec3::new(
+        transform.position[0],
+        transform.position[1],
+        transform.position[2],
+    );
+    let rotation = Quat::from_array(transform.rotation);
+    (translation + rotation * local_anchor, rotation * local_axis)
+}
+
+fn single_bearing_mesh(dimensions: BearingDimensions) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    append_bearing_cylinder(
+        Vec3::ZERO,
+        Vec3::Y,
+        dimensions,
+        &mut positions,
+        &mut normals,
+        &mut indices,
+    );
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
+#[allow(clippy::too_many_lines)] // Solid and annular surfaces share one indexed mesh layout.
 fn append_bearing_cylinder(
     anchor: Vec3,
     axis: Vec3,
+    dimensions: BearingDimensions,
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
@@ -2348,7 +3170,8 @@ fn append_bearing_cylinder(
         axis.cross(Vec3::X).normalize()
     };
     let tangent_v = axis.cross(tangent_u);
-    let radius = BEARING_DIAMETER * 0.5;
+    let outer_radius = dimensions.outer_diameter() * 0.5;
+    let inner_radius = dimensions.inner_diameter() * 0.5;
     let half_depth = BEARING_DEPTH * 0.5;
     let lower = anchor - axis * half_depth;
     let upper = anchor + axis * half_depth;
@@ -2357,8 +3180,8 @@ fn append_bearing_cylinder(
     for segment in 0..SEGMENTS {
         let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
         let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
-        positions.push((lower + radial * radius).to_array());
-        positions.push((upper + radial * radius).to_array());
+        positions.push((lower + radial * outer_radius).to_array());
+        positions.push((upper + radial * outer_radius).to_array());
         normals.push(radial.to_array());
         normals.push(radial.to_array());
     }
@@ -2378,39 +3201,143 @@ fn append_bearing_cylinder(
         ]);
     }
 
-    let lower_center = u32::try_from(positions.len()).unwrap();
-    positions.push(lower.to_array());
-    normals.push((-axis).to_array());
-    let upper_center = u32::try_from(positions.len()).unwrap();
-    positions.push(upper.to_array());
-    normals.push(axis.to_array());
-    let lower_ring = u32::try_from(positions.len()).unwrap();
-    for segment in 0..SEGMENTS {
-        let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
-        let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
-        positions.push((lower + radial * radius).to_array());
+    if inner_radius == 0.0 {
+        let lower_center = u32::try_from(positions.len()).unwrap();
+        positions.push(lower.to_array());
         normals.push((-axis).to_array());
+        let upper_center = u32::try_from(positions.len()).unwrap();
+        positions.push(upper.to_array());
+        normals.push(axis.to_array());
+        let lower_ring = u32::try_from(positions.len()).unwrap();
+        for segment in 0..SEGMENTS {
+            let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
+            let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
+            positions.push((lower + radial * outer_radius).to_array());
+            normals.push((-axis).to_array());
+        }
+        let upper_ring = u32::try_from(positions.len()).unwrap();
+        for segment in 0..SEGMENTS {
+            let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
+            let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
+            positions.push((upper + radial * outer_radius).to_array());
+            normals.push(axis.to_array());
+        }
+        for segment in 0..SEGMENTS {
+            let next = (segment + 1) % SEGMENTS;
+            let current = u32::from(segment);
+            let next = u32::from(next);
+            indices.extend([
+                lower_center,
+                lower_ring + next,
+                lower_ring + current,
+                upper_center,
+                upper_ring + current,
+                upper_ring + next,
+            ]);
+        }
+        return;
     }
-    let upper_ring = u32::try_from(positions.len()).unwrap();
+
+    let inner_side = u32::try_from(positions.len()).unwrap();
     for segment in 0..SEGMENTS {
         let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
         let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
-        positions.push((upper + radial * radius).to_array());
-        normals.push(axis.to_array());
+        positions.push((lower + radial * inner_radius).to_array());
+        positions.push((upper + radial * inner_radius).to_array());
+        normals.push((-radial).to_array());
+        normals.push((-radial).to_array());
     }
+    for segment in 0..SEGMENTS {
+        let next = (segment + 1) % SEGMENTS;
+        let lower_current = inner_side + u32::from(segment) * 2;
+        let upper_current = lower_current + 1;
+        let lower_next = inner_side + u32::from(next) * 2;
+        let upper_next = lower_next + 1;
+        indices.extend([
+            lower_current,
+            upper_current,
+            lower_next,
+            upper_current,
+            upper_next,
+            lower_next,
+        ]);
+    }
+
+    let lower_outer = append_bearing_face_ring(
+        lower,
+        -axis,
+        outer_radius,
+        tangent_u,
+        tangent_v,
+        positions,
+        normals,
+    );
+    let lower_inner = append_bearing_face_ring(
+        lower,
+        -axis,
+        inner_radius,
+        tangent_u,
+        tangent_v,
+        positions,
+        normals,
+    );
+    let upper_outer = append_bearing_face_ring(
+        upper,
+        axis,
+        outer_radius,
+        tangent_u,
+        tangent_v,
+        positions,
+        normals,
+    );
+    let upper_inner = append_bearing_face_ring(
+        upper,
+        axis,
+        inner_radius,
+        tangent_u,
+        tangent_v,
+        positions,
+        normals,
+    );
     for segment in 0..SEGMENTS {
         let next = (segment + 1) % SEGMENTS;
         let current = u32::from(segment);
         let next = u32::from(next);
         indices.extend([
-            lower_center,
-            lower_ring + next,
-            lower_ring + current,
-            upper_center,
-            upper_ring + current,
-            upper_ring + next,
+            lower_outer + current,
+            lower_inner + current,
+            lower_outer + next,
+            lower_outer + next,
+            lower_inner + current,
+            lower_inner + next,
+            upper_outer + current,
+            upper_outer + next,
+            upper_inner + current,
+            upper_outer + next,
+            upper_inner + next,
+            upper_inner + current,
         ]);
     }
+}
+
+fn append_bearing_face_ring(
+    center: Vec3,
+    normal: Vec3,
+    radius: f32,
+    tangent_u: Vec3,
+    tangent_v: Vec3,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+) -> u32 {
+    const SEGMENTS: u16 = 24;
+    let base = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
+    for segment in 0..SEGMENTS {
+        let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
+        let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
+        positions.push((center + radial * radius).to_array());
+        normals.push(normal.to_array());
+    }
+    base
 }
 
 fn append_cuboid(
@@ -2445,26 +3372,38 @@ fn append_transformed_cuboid(
 
 #[cfg(test)]
 mod rendering_tests {
-    use bevy::prelude::{IVec3, Vec3};
-    use mechanic_core::{
-        BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec, FaceKind, FaceRef,
-        GridRotation,
+    use bevy::{
+        mesh::VertexAttributeValues,
+        prelude::{IVec3, Mesh, Quat, Vec3},
     };
+    use mechanic_core::{
+        BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
+        FaceKind, FaceRef, GridRotation,
+    };
+    use mechanic_gpu::GpuTransform;
 
     use super::{
-        BEARING_DEPTH, BEARING_DIAMETER, PlacedBearing, append_bearing_cylinder,
-        combined_bearing_mesh, joint_xray_is_visible,
+        BEARING_DEPTH, PlacedBearing, append_bearing_cylinder, bearing_preview_dimensions_changed,
+        combined_bearing_mesh, combined_simulation_bearing_mesh, joint_xray_is_visible,
     };
     use crate::hotbar::Tool;
 
     #[test]
-    fn bearing_visual_is_quarter_metre_wide_and_five_centimetres_each_side() {
+    fn bearing_mesh_uses_custom_outer_inner_and_fixed_depth() {
         let anchor = Vec3::new(2.0, 3.0, 4.0);
         let axis = Vec3::X;
+        let dimensions = BearingDimensions::new(0.80, 0.30).unwrap();
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut indices = Vec::new();
-        append_bearing_cylinder(anchor, axis, &mut positions, &mut normals, &mut indices);
+        append_bearing_cylinder(
+            anchor,
+            axis,
+            dimensions,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
 
         let offsets = positions
             .iter()
@@ -2482,10 +3421,74 @@ mod rendering_tests {
             .iter()
             .map(|offset| (*offset - axis * offset.dot(axis)).length())
             .fold(0.0, f32::max);
+        let minimum_radius = offsets
+            .iter()
+            .map(|offset| (*offset - axis * offset.dot(axis)).length())
+            .fold(f32::INFINITY, f32::min);
 
         assert!((minimum_depth + BEARING_DEPTH * 0.5).abs() < 1.0e-6);
         assert!((maximum_depth - BEARING_DEPTH * 0.5).abs() < 1.0e-6);
-        assert!((maximum_radius - BEARING_DIAMETER * 0.5).abs() < 1.0e-6);
+        assert!((maximum_radius - dimensions.outer_diameter() * 0.5).abs() < 1.0e-6);
+        assert!((minimum_radius - dimensions.inner_diameter() * 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn zero_inner_diameter_generates_a_solid_disc_with_outward_winding() {
+        let dimensions = BearingDimensions::new(0.50, 0.0).unwrap();
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        append_bearing_cylinder(
+            Vec3::ZERO,
+            Vec3::Y,
+            dimensions,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+
+        assert!(positions.iter().any(|position| {
+            let position = Vec3::from_array(*position);
+            position.x.abs() < 1.0e-6 && position.z.abs() < 1.0e-6
+        }));
+        for triangle in indices.chunks_exact(3) {
+            let a = Vec3::from_array(positions[triangle[0] as usize]);
+            let b = Vec3::from_array(positions[triangle[1] as usize]);
+            let c = Vec3::from_array(positions[triangle[2] as usize]);
+            let geometric_normal = (b - a).cross(c - a);
+            let expected_normal = triangle
+                .iter()
+                .map(|&index| Vec3::from_array(normals[index as usize]))
+                .sum::<Vec3>();
+            assert!(geometric_normal.dot(expected_normal) > 0.0);
+        }
+    }
+
+    #[test]
+    fn annular_mesh_inner_wall_and_faces_have_outward_winding() {
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        append_bearing_cylinder(
+            Vec3::ZERO,
+            Vec3::Y,
+            BearingDimensions::default(),
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+
+        for triangle in indices.chunks_exact(3) {
+            let a = Vec3::from_array(positions[triangle[0] as usize]);
+            let b = Vec3::from_array(positions[triangle[1] as usize]);
+            let c = Vec3::from_array(positions[triangle[2] as usize]);
+            let geometric_normal = (b - a).cross(c - a);
+            let expected_normal = triangle
+                .iter()
+                .map(|&index| Vec3::from_array(normals[index as usize]))
+                .sum::<Vec3>();
+            assert!(geometric_normal.dot(expected_normal) > 0.0);
+        }
     }
 
     #[test]
@@ -2502,6 +3505,7 @@ mod rendering_tests {
         let bearing = PlacedBearing {
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
+            dimensions: BearingDimensions::default(),
         };
 
         let mesh = combined_bearing_mesh(&graph, &[bearing]);
@@ -2511,31 +3515,377 @@ mod rendering_tests {
     }
 
     #[test]
+    fn combined_bearing_mesh_preserves_each_bearings_dimensions() {
+        let mut graph = ConstructionGraph::new();
+        let specs = [IVec3::new(0, 2, 0), IVec3::new(4, 2, 0)].map(|center| {
+            CuboidSpec::new([4, 4, 4], BuildPose::new(center, GridRotation::default())).unwrap()
+        });
+        let parts = specs.map(|spec| {
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let attached_dimensions = BearingDimensions::new(0.80, 0.30).unwrap();
+        graph
+            .apply(BuildCommand::AddBearing(
+                mechanic_core::BearingSpec::new(
+                    FaceRef::part(parts[0], FaceKind::PositiveX),
+                    FaceRef::part(parts[1], FaceKind::NegativeX),
+                    Vec3::new(0.5, 0.5, 0.0),
+                    Vec3::X,
+                )
+                .with_dimensions(attached_dimensions),
+            ))
+            .unwrap();
+        let placed_dimensions = BearingDimensions::new(0.40, 0.0).unwrap();
+        let placed = PlacedBearing {
+            source: FaceRef::part(parts[1], FaceKind::PositiveY),
+            anchor: Vec3::new(1.0, 1.0, 0.0),
+            dimensions: placed_dimensions,
+        };
+
+        let mesh = combined_bearing_mesh(&graph, &[placed]);
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("bearing mesh positions use Float32x3")
+        };
+        let attached_vertices = 24 * 8;
+        let attached_radius = positions[..attached_vertices]
+            .iter()
+            .map(|position| {
+                let offset = Vec3::from_array(*position) - Vec3::new(0.5, 0.5, 0.0);
+                (offset - Vec3::X * offset.x).length()
+            })
+            .fold(0.0, f32::max);
+        let placed_radius = positions[attached_vertices..]
+            .iter()
+            .map(|position| {
+                let offset = Vec3::from_array(*position) - placed.anchor;
+                (offset - Vec3::Y * offset.y).length()
+            })
+            .fold(0.0, f32::max);
+        assert!((attached_radius - attached_dimensions.outer_diameter() * 0.5).abs() < 1.0e-6);
+        assert!((placed_radius - placed_dimensions.outer_diameter() * 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn reusable_socket_with_multiple_attachments_renders_as_one_ring() {
+        const VERTICES_PER_BEARING: usize = 24 * 8;
+
+        let mut graph = ConstructionGraph::new();
+        let support = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(support) = graph.apply(BuildCommand::Spawn(support)).unwrap()
+        else {
+            unreachable!()
+        };
+        let targets = [IVec3::new(0, 9, 0), IVec3::new(2, 9, 0)].map(|center| {
+            let spec = CuboidSpec::new(
+                [1, 1, 1],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let socket = PlacedBearing {
+            source: FaceRef::part(support, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+            dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
+        };
+        for target in targets {
+            graph
+                .apply(BuildCommand::AddBearing(
+                    mechanic_core::BearingSpec::new(
+                        socket.source,
+                        FaceRef::part(target, FaceKind::NegativeY),
+                        socket.anchor,
+                        Vec3::Y,
+                    )
+                    .with_dimensions(socket.dimensions),
+                ))
+                .unwrap();
+        }
+        graph
+            .apply(BuildCommand::RigidLink(mechanic_core::RigidLinkSpec {
+                first: targets[0],
+                second: targets[1],
+            }))
+            .unwrap();
+
+        let build_mesh = combined_bearing_mesh(&graph, &[socket]);
+        assert_eq!(build_mesh.count_vertices(), VERTICES_PER_BEARING);
+
+        let creation = graph.compile().unwrap();
+        assert_eq!(creation.bearings.len(), 1);
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|compound| GpuTransform {
+                position: [
+                    compound.root_translation.x,
+                    compound.root_translation.y,
+                    compound.root_translation.z,
+                    0.0,
+                ],
+                rotation: compound.root_rotation.to_array(),
+            })
+            .collect::<Vec<_>>();
+        let simulation_mesh =
+            combined_simulation_bearing_mesh(&graph, &creation, &transforms, &[socket]);
+        assert_eq!(simulation_mesh.count_vertices(), VERTICES_PER_BEARING);
+    }
+
+    #[test]
+    fn simulation_bearing_mesh_follows_attached_and_unattached_source_bodies() {
+        const VERTICES_PER_BEARING: usize = 24 * 8;
+
+        let mut graph = ConstructionGraph::new();
+        let specs = [IVec3::new(0, 2, 0), IVec3::new(4, 2, 0)].map(|center| {
+            CuboidSpec::new([4, 4, 4], BuildPose::new(center, GridRotation::default())).unwrap()
+        });
+        let parts = specs.map(|spec| {
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let attached_dimensions = BearingDimensions::new(0.80, 0.30).unwrap();
+        graph
+            .apply(BuildCommand::AddBearing(
+                mechanic_core::BearingSpec::new(
+                    FaceRef::part(parts[0], FaceKind::PositiveX),
+                    FaceRef::part(parts[1], FaceKind::NegativeX),
+                    Vec3::new(0.5, 0.5, 0.0),
+                    Vec3::X,
+                )
+                .with_dimensions(attached_dimensions),
+            ))
+            .unwrap();
+        let placed = PlacedBearing {
+            source: FaceRef::part(parts[0], FaceKind::PositiveY),
+            anchor: Vec3::new(0.0, 1.0, 0.0),
+            dimensions: BearingDimensions::new(0.40, 0.10).unwrap(),
+        };
+        let creation = graph.compile().unwrap();
+        let source_compound = creation
+            .part_to_compound
+            .iter()
+            .find_map(|&(part, compound)| (part == parts[0]).then_some(compound))
+            .unwrap();
+        let rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let mut transforms = creation
+            .compounds
+            .iter()
+            .map(|compound| GpuTransform {
+                position: [
+                    compound.root_translation.x,
+                    compound.root_translation.y,
+                    compound.root_translation.z,
+                    0.0,
+                ],
+                rotation: compound.root_rotation.to_array(),
+            })
+            .collect::<Vec<_>>();
+        transforms[source_compound as usize] = GpuTransform {
+            position: [3.0, 4.0, 5.0, 0.0],
+            rotation: rotation.to_array(),
+        };
+
+        let mesh = combined_simulation_bearing_mesh(&graph, &creation, &transforms, &[placed]);
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("bearing mesh positions use Float32x3")
+        };
+        let attached_anchor = Vec3::new(3.0, 4.5, 5.0);
+        let placed_anchor = Vec3::new(2.5, 4.0, 5.0);
+        for (vertices, expected_anchor) in [
+            (&positions[..VERTICES_PER_BEARING], attached_anchor),
+            (&positions[VERTICES_PER_BEARING..], placed_anchor),
+        ] {
+            let centroid = vertices
+                .iter()
+                .map(|position| Vec3::from_array(*position))
+                .sum::<Vec3>()
+                / 192.0;
+            assert!(centroid.abs_diff_eq(expected_anchor, 1.0e-5));
+        }
+    }
+
+    #[test]
     fn joint_xray_is_build_only_and_requires_a_bearing() {
         assert!(joint_xray_is_visible(Tool::JointXray, false, 1));
         assert!(!joint_xray_is_visible(Tool::JointXray, true, 1));
         assert!(!joint_xray_is_visible(Tool::JointXray, false, 0));
         assert!(!joint_xray_is_visible(Tool::Block, false, 1));
     }
+
+    #[test]
+    fn unchanged_bearing_preview_dimensions_do_not_rebuild_the_mesh() {
+        let mut rendered = BearingDimensions::default();
+        assert!(!bearing_preview_dimensions_changed(
+            &mut rendered,
+            BearingDimensions::default(),
+        ));
+        let custom = BearingDimensions::new(0.80, 0.20).unwrap();
+        assert!(bearing_preview_dimensions_changed(&mut rendered, custom));
+        assert!(!bearing_preview_dimensions_changed(&mut rendered, custom));
+    }
 }
 
 #[cfg(test)]
 mod interaction_tests {
-    use bevy::prelude::{App, ButtonInput, IVec3, MouseButton, Update, Vec3};
+    use bevy::{
+        input::keyboard::Key,
+        prelude::{App, ButtonInput, IVec3, KeyCode, MouseButton, Update, Vec3, Visibility},
+    };
     use mechanic_core::{
-        BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec, FaceKind, FaceRef,
-        GridRotation, PendingOperation,
+        BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
+        FaceKind, FaceOwner, FaceRef, GridRotation, PendingOperation, RigidLinkSpec,
     };
     use mechanic_gpu::GpuTransform;
 
     use super::{
-        BlockAttachment, BlockDrag, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
-        HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, PlacedBearing, PlacementPlane,
-        SelectedTool, SurfaceHit, Tool, apply_history_action, bearing_attachment_candidate,
-        block_sheet_specs, candidate_from_hit, delete_sheet_parts, hammer_impulse_magnitude,
-        handle_block_actions, handle_tool_change, raycast_construction, raycast_placed_bearings,
-        raycast_simulation, welded_body_parts,
+        AppSimulation, BearingDimensionTarget, BearingToolSettings, BlockAttachment, BlockDrag,
+        EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE,
+        HAMMER_MIN_IMPULSE, HelpText, HistoryAction, HotbarPointerCapture, PlacedBearing,
+        PlacementPlane, SelectedTool, SimulationShortcut, SurfaceHit, Tool,
+        adjusted_bearing_dimensions, apply_history_action, bearing_attachment_candidate,
+        bearing_attachment_is_highlighted, block_sheet_specs, candidate_from_hit,
+        delete_sheet_parts, hammer_impulse_magnitude, handle_block_actions, handle_build_actions,
+        handle_tool_change, help_toggle_requested, raycast_construction, raycast_placed_bearings,
+        raycast_simulation, refresh_tool_preview, requested_bearing_dimension_adjustment,
+        requested_simulation_shortcut, rigid_body_parts, stage_part_deletion_preserving_bearings,
+        toggle_help_text, tool_status_line,
     };
+
+    #[test]
+    fn question_mark_toggles_the_hidden_help_overlay() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<Key>>()
+            .add_systems(Update, toggle_help_text);
+        let help = app.world_mut().spawn((HelpText, Visibility::Hidden)).id();
+        let question_mark = Key::Character("?".into());
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<Key>>()
+            .press(question_mark.clone());
+        assert!(help_toggle_requested(
+            app.world().resource::<ButtonInput<Key>>()
+        ));
+        app.update();
+        assert_eq!(
+            app.world().entity(help).get::<Visibility>(),
+            Some(&Visibility::Visible)
+        );
+
+        {
+            let mut keyboard = app.world_mut().resource_mut::<ButtonInput<Key>>();
+            keyboard.release(question_mark.clone());
+            keyboard.clear();
+            keyboard.press(question_mark);
+        }
+        app.update();
+        assert_eq!(
+            app.world().entity(help).get::<Visibility>(),
+            Some(&Visibility::Hidden)
+        );
+    }
+
+    #[test]
+    fn space_toggles_playback_and_shift_space_restarts() {
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::Space);
+        assert_eq!(
+            requested_simulation_shortcut(&keyboard),
+            Some(SimulationShortcut::TogglePlayback)
+        );
+
+        keyboard.press(KeyCode::ShiftLeft);
+        assert_eq!(
+            requested_simulation_shortcut(&keyboard),
+            Some(SimulationShortcut::Restart)
+        );
+    }
+
+    #[test]
+    fn bearing_shortcuts_are_gated_and_adjust_the_requested_diameter() {
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::BracketRight);
+        assert_eq!(
+            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
+            Some((BearingDimensionTarget::Outer, 1))
+        );
+        assert_eq!(
+            requested_bearing_dimension_adjustment(&keyboard, Tool::Block, false, false),
+            None
+        );
+        assert_eq!(
+            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, true, false),
+            None
+        );
+        assert_eq!(
+            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, true),
+            None
+        );
+
+        let increased = adjusted_bearing_dimensions(
+            BearingDimensions::default(),
+            BearingDimensionTarget::Outer,
+            1,
+        );
+        assert!((increased.outer_diameter() - 0.30).abs() < 1.0e-6);
+        assert!((increased.inner_diameter() - 0.10).abs() < f32::EPSILON);
+
+        keyboard.press(KeyCode::ShiftLeft);
+        assert_eq!(
+            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
+            Some((BearingDimensionTarget::Inner, 1))
+        );
+    }
+
+    #[test]
+    fn bearing_adjustments_clamp_and_remain_outside_history() {
+        let mut settings = BearingToolSettings {
+            dimensions: BearingDimensions::new(0.20, 0.15).unwrap(),
+        };
+        let history = EditorHistory::default();
+        settings.dimensions =
+            adjusted_bearing_dimensions(settings.dimensions, BearingDimensionTarget::Outer, -1);
+        assert!((settings.dimensions.outer_diameter() - 0.15).abs() < 1.0e-6);
+        assert!((settings.dimensions.inner_diameter() - 0.10).abs() < 1.0e-6);
+        assert!(history.undo.is_empty());
+        assert!(history.redo.is_empty());
+
+        let minimum = adjusted_bearing_dimensions(
+            BearingDimensions::new(0.05, 0.0).unwrap(),
+            BearingDimensionTarget::Outer,
+            -1,
+        );
+        assert_eq!(minimum, BearingDimensions::new(0.05, 0.0).unwrap());
+        let maximum_inner = adjusted_bearing_dimensions(
+            BearingDimensions::default(),
+            BearingDimensionTarget::Inner,
+            1,
+        );
+        assert!((maximum_inner.inner_diameter() - 0.15).abs() < 1.0e-6);
+
+        let hud = tool_status_line(Tool::Bearing, settings.dimensions);
+        assert!(hud.contains("Outer: 0.15 m"));
+        assert!(hud.contains("Inner: 0.10 m"));
+        assert!(hud.contains("Shift+["));
+    }
 
     #[test]
     fn hammer_charge_is_monotonic_and_clamped() {
@@ -2656,8 +4006,8 @@ mod interaction_tests {
             )))
             .unwrap();
 
-        assert_eq!(welded_body_parts(&graph, parts[0]), parts[..2]);
-        assert_eq!(welded_body_parts(&graph, parts[2]), vec![parts[2]]);
+        assert_eq!(rigid_body_parts(&graph, parts[0]), parts[..2]);
+        assert_eq!(rigid_body_parts(&graph, parts[2]), vec![parts[2]]);
     }
 
     #[test]
@@ -2704,7 +4054,9 @@ mod interaction_tests {
         let mut state = EditorState {
             block_drag: Some(BlockDrag {
                 start: candidate,
-                attachment: BlockAttachment::AutoWeld,
+                attachment: BlockAttachment::AutoWeld {
+                    source: FaceOwner::Ground,
+                },
                 plane: PlacementPlane::Xz,
                 last_endpoint: Some((PlacementPlane::Xz, endpoint)),
                 specs,
@@ -2748,10 +4100,12 @@ mod interaction_tests {
         let bearing = PlacedBearing {
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
+            dimensions: BearingDimensions::default(),
         };
         let mut state = EditorState {
             placed_bearings: vec![bearing],
             hovered_bearing: Some(0),
+            attachment_bearing: Some(0),
             preview: Some(bearing_attachment_candidate(
                 &graph,
                 bearing.source,
@@ -2760,13 +4114,30 @@ mod interaction_tests {
             ..Default::default()
         };
 
-        let origin = Vec3::new(0.0, 3.0, 0.0);
+        let origin = Vec3::new(0.1, 3.0, 0.0);
         let (_, bearing_distance) =
             raycast_placed_bearings(&graph, &state.placed_bearings, origin, Vec3::NEG_Y).unwrap();
         let support_distance = raycast_construction(&graph, origin, Vec3::NEG_Y)
             .unwrap()
             .distance;
         assert!(bearing_distance < support_distance);
+        assert!(
+            raycast_placed_bearings(
+                &graph,
+                &state.placed_bearings,
+                Vec3::new(0.0, 3.0, 0.0),
+                Vec3::NEG_Y,
+            )
+            .is_none()
+        );
+        let tiny_hole = PlacedBearing {
+            dimensions: BearingDimensions::new(0.25, 0.001).unwrap(),
+            ..bearing
+        };
+        assert!(
+            raycast_placed_bearings(&graph, &[tiny_hole], Vec3::new(0.0, 3.0, 0.0), Vec3::NEG_Y,)
+                .is_none()
+        );
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.bearing_count(), 0);
 
@@ -2783,10 +4154,282 @@ mod interaction_tests {
         mouse.release(MouseButton::Left);
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
 
-        assert!(state.placed_bearings.is_empty());
+        assert_eq!(state.placed_bearings, vec![bearing]);
         assert_eq!(graph.part_count(), 2);
         assert_eq!(graph.bearing_count(), 1);
         assert_eq!(graph.weld_count(), 0);
+    }
+
+    #[test]
+    fn oversized_bearing_claims_offset_block_preview_and_highlights_attachment() {
+        let mut graph = ConstructionGraph::new();
+        let support = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(support)).unwrap() else {
+            unreachable!()
+        };
+        let bearing = PlacedBearing {
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+            dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
+        };
+        let mut state = EditorState {
+            hovered: Some(SurfaceHit {
+                distance: 1.0,
+                point: Vec3::new(0.36, 1.0, 0.0),
+                face: bearing.source,
+            }),
+            placed_bearings: vec![bearing],
+            ..Default::default()
+        };
+
+        refresh_tool_preview(&graph, &mut state, Tool::Block);
+
+        assert_eq!(state.hovered_bearing, None);
+        assert_eq!(state.attachment_bearing, Some(0));
+        assert!(state.preview_error.is_none());
+        assert!(bearing_attachment_is_highlighted(
+            Tool::Block,
+            state.attachment_bearing,
+            state.preview_error.as_ref(),
+        ));
+        let preview = state.preview.unwrap();
+        assert!((preview.spec.pose.translation().x - 0.25).abs() < 1.0e-6);
+
+        let mut mouse = ButtonInput::default();
+        let mut history = EditorHistory::default();
+        mouse.press(MouseButton::Left);
+        handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
+        mouse.clear();
+        mouse.release(MouseButton::Left);
+        handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
+
+        assert_eq!(state.placed_bearings, vec![bearing]);
+        assert_eq!(graph.bearing_count(), 1);
+        assert_eq!(graph.weld_count(), 0);
+        assert_eq!(
+            graph.bearings().next().unwrap().1.dimensions,
+            bearing.dimensions
+        );
+    }
+
+    #[test]
+    fn right_click_through_bearing_hole_deletes_block_but_keeps_bearing() {
+        let mut graph = ConstructionGraph::new();
+        let parts = [IVec3::new(0, 1, 0), IVec3::new(2, 1, 0)].map(|center| {
+            let spec = CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let center_face = FaceRef::part(parts[0], FaceKind::PositiveY);
+        let bearing = PlacedBearing {
+            source: FaceRef::part(parts[1], FaceKind::PositiveY),
+            anchor: Vec3::new(0.0, 0.25, 0.0),
+            dimensions: BearingDimensions::new(0.75, 0.40).unwrap(),
+        };
+        let state = EditorState {
+            hovered: Some(SurfaceHit {
+                distance: 1.0,
+                point: bearing.anchor,
+                face: center_face,
+            }),
+            hovered_bearing: None,
+            attachment_bearing: Some(0),
+            placed_bearings: vec![bearing],
+            ..Default::default()
+        };
+        let mut mouse = ButtonInput::default();
+        mouse.press(MouseButton::Right);
+        let mut app = App::new();
+        app.insert_resource(mouse)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(EditorGraph(graph))
+            .insert_resource(state)
+            .insert_resource(EditorHistory::default())
+            .insert_resource(AppSimulation::default())
+            .insert_resource(SelectedTool(Tool::Block))
+            .insert_resource(BearingToolSettings::default())
+            .insert_resource(HotbarPointerCapture::default())
+            .add_systems(Update, handle_build_actions);
+
+        app.update();
+        {
+            let state = app.world().resource::<EditorState>();
+            assert!(state.delete_target.is_none());
+            assert!(state.delete_drag.is_some());
+        }
+        {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            mouse.release(MouseButton::Right);
+        }
+        app.update();
+
+        let graph = app.world().resource::<EditorGraph>();
+        let state = app.world().resource::<EditorState>();
+        assert!(graph.0.part(parts[0]).is_none());
+        assert!(graph.0.part(parts[1]).is_some());
+        assert_eq!(state.placed_bearings, vec![bearing]);
+    }
+
+    #[test]
+    fn deleting_current_support_rehomes_bearing_to_remaining_ring_support() {
+        let mut graph = ConstructionGraph::new();
+        let supports = [IVec3::new(-1, 1, 0), IVec3::new(1, 1, 0)].map(|center| {
+            let spec = CuboidSpec::new(
+                [1, 1, 1],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let target_spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::new(0, 3, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(target) = graph.apply(BuildCommand::Spawn(target_spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        let socket = PlacedBearing {
+            source: FaceRef::part(supports[0], FaceKind::PositiveY),
+            anchor: Vec3::new(0.0, 0.25, 0.0),
+            dimensions: BearingDimensions::new(0.50, 0.10).unwrap(),
+        };
+        graph
+            .apply(BuildCommand::AddBearing(
+                mechanic_core::BearingSpec::new(
+                    socket.source,
+                    FaceRef::part(target, FaceKind::NegativeY),
+                    socket.anchor,
+                    Vec3::Y,
+                )
+                .with_dimensions(socket.dimensions),
+            ))
+            .unwrap();
+
+        let (graph, sockets, migrated) =
+            stage_part_deletion_preserving_bearings(&graph, &[socket], &[supports[0]]).unwrap();
+
+        assert_eq!(migrated, 1);
+        assert!(graph.part(supports[0]).is_none());
+        assert!(graph.part(supports[1]).is_some());
+        assert_eq!(sockets.len(), 1);
+        assert_eq!(
+            sockets[0].source,
+            FaceRef::part(supports[1], FaceKind::PositiveY)
+        );
+        let bearing = graph.bearings().next().unwrap().1;
+        assert_eq!(bearing.source, sockets[0].source);
+        assert_eq!(bearing.target, FaceRef::part(target, FaceKind::NegativeY));
+        assert_eq!(graph.compile().unwrap().bearings.len(), 1);
+
+        let (graph, sockets, migrated) =
+            stage_part_deletion_preserving_bearings(&graph, &sockets, &[supports[1]]).unwrap();
+        assert_eq!(migrated, 0);
+        assert!(sockets.is_empty());
+        assert_eq!(graph.bearing_count(), 0);
+        assert!(graph.part(target).is_some());
+    }
+
+    #[test]
+    fn deleting_reusable_socket_removes_all_of_its_joint_attachments() {
+        let mut graph = ConstructionGraph::new();
+        let support_spec = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(support) =
+            graph.apply(BuildCommand::Spawn(support_spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        let targets = [IVec3::new(0, 9, 0), IVec3::new(2, 9, 0)].map(|center| {
+            let target_spec = CuboidSpec::new(
+                [1, 1, 1],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(target) =
+                graph.apply(BuildCommand::Spawn(target_spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            target
+        });
+        let socket = PlacedBearing {
+            source: FaceRef::part(support, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+            dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
+        };
+        for target in targets {
+            graph
+                .apply(BuildCommand::AddBearing(
+                    mechanic_core::BearingSpec::new(
+                        socket.source,
+                        FaceRef::part(target, FaceKind::NegativeY),
+                        socket.anchor,
+                        Vec3::Y,
+                    )
+                    .with_dimensions(socket.dimensions),
+                ))
+                .unwrap();
+        }
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: targets[0],
+                second: targets[1],
+            }))
+            .unwrap();
+        let state = EditorState {
+            hovered_bearing: Some(0),
+            placed_bearings: vec![socket],
+            ..Default::default()
+        };
+        let mut mouse = ButtonInput::default();
+        mouse.press(MouseButton::Right);
+        let mut app = App::new();
+        app.insert_resource(mouse)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(EditorGraph(graph))
+            .insert_resource(state)
+            .insert_resource(EditorHistory::default())
+            .insert_resource(AppSimulation::default())
+            .insert_resource(SelectedTool(Tool::Block))
+            .insert_resource(BearingToolSettings::default())
+            .insert_resource(HotbarPointerCapture::default())
+            .add_systems(Update, handle_build_actions);
+
+        app.update();
+        {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            mouse.clear();
+            mouse.release(MouseButton::Right);
+        }
+        app.update();
+
+        let graph = app.world().resource::<EditorGraph>();
+        let state = app.world().resource::<EditorState>();
+        assert_eq!(graph.0.part_count(), 3);
+        assert_eq!(graph.0.bearing_count(), 0);
+        assert_eq!(graph.0.rigid_link_count(), 0);
+        assert!(state.placed_bearings.is_empty());
     }
 
     #[test]
@@ -2826,8 +4469,8 @@ mod interaction_tests {
 mod history_tests {
     use bevy::prelude::{ButtonInput, IVec3, KeyCode, Vec3};
     use mechanic_core::{
-        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-        FaceKind, FaceRef, GridRotation, PendingOperation, WeldSpec,
+        BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
+        CuboidSpec, FaceKind, FaceRef, GridRotation, PendingOperation, WeldSpec,
     };
 
     use super::{
@@ -2882,6 +4525,7 @@ mod history_tests {
         let socket = PlacedBearing {
             source: FaceRef::part(support, FaceKind::PositiveY),
             anchor: Vec3::Y,
+            dimensions: BearingDimensions::new(0.70, 0.35).unwrap(),
         };
         let mut state = EditorState {
             placed_bearings: vec![socket],
@@ -2890,11 +4534,21 @@ mod history_tests {
         let mut history = EditorHistory::default();
         let previous = EditorSnapshot::capture(&graph, &state);
         let candidate = bearing_attachment_candidate(&graph, socket.source, socket.anchor);
-        graph = stage_bearing_attachment(&graph, candidate, socket.source, socket.anchor).unwrap();
-        state.placed_bearings.clear();
+        graph = stage_bearing_attachment(
+            &graph,
+            candidate,
+            socket.source,
+            socket.anchor,
+            socket.dimensions,
+        )
+        .unwrap();
         history.commit(previous);
         let attached_parts = graph.parts().map(|(id, _)| id).collect::<Vec<_>>();
         let attached_bearings = graph.bearings().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(
+            graph.bearings().next().unwrap().1.dimensions,
+            socket.dimensions
+        );
 
         graph
             .apply(BuildCommand::BeginPending(PendingOperation::Weld(
@@ -2910,7 +4564,9 @@ mod history_tests {
         state.preview = Some(candidate);
         state.block_drag = Some(BlockDrag {
             start: candidate,
-            attachment: BlockAttachment::AutoWeld,
+            attachment: BlockAttachment::AutoWeld {
+                source: hit.face.owner,
+            },
             plane: PlacementPlane::Xz,
             last_endpoint: None,
             specs: vec![candidate.spec],
@@ -2960,7 +4616,11 @@ mod history_tests {
             graph.bearings().map(|(id, _)| id).collect::<Vec<_>>(),
             attached_bearings
         );
-        assert!(state.placed_bearings.is_empty());
+        assert_eq!(
+            graph.bearings().next().unwrap().1.dimensions,
+            socket.dimensions
+        );
+        assert_eq!(state.placed_bearings, vec![socket]);
     }
 
     #[test]
@@ -3109,14 +4769,43 @@ mod showcase_loading_tests {
         let mut next_tick = 1;
 
         assert_eq!(
-            next_simulation_tick(&mut scheduler, &mut next_tick, Duration::from_secs(1)),
+            next_simulation_tick(
+                &mut scheduler,
+                &mut next_tick,
+                Duration::from_secs(1),
+                false,
+            ),
             Some(1)
         );
         assert_eq!(scheduler.next_tick(), 61);
         assert_eq!(
-            next_simulation_tick(&mut scheduler, &mut next_tick, Duration::from_millis(17)),
+            next_simulation_tick(
+                &mut scheduler,
+                &mut next_tick,
+                Duration::from_millis(17),
+                false,
+            ),
             Some(2)
         );
+    }
+
+    #[test]
+    fn paused_simulation_does_not_advance_or_accumulate_time() {
+        let mut scheduler = FixedStepScheduler::new();
+        let mut next_tick = 7;
+        let scheduler_tick = scheduler.next_tick();
+
+        assert_eq!(
+            next_simulation_tick(
+                &mut scheduler,
+                &mut next_tick,
+                Duration::from_secs(10),
+                true,
+            ),
+            None
+        );
+        assert_eq!(next_tick, 7);
+        assert_eq!(scheduler.next_tick(), scheduler_tick);
     }
 
     #[test]
