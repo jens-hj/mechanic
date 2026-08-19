@@ -5,10 +5,11 @@ use bevy::{
     prelude::*,
 };
 
+use crate::creation_menu::CreationMenuState;
 use crate::hotbar::HotbarPointerCapture;
 
-const MIN_PITCH: f32 = 0.08;
 const MAX_PITCH: f32 = FRAC_PI_2 - 0.08;
+const MIN_PITCH: f32 = -MAX_PITCH;
 const MIN_RADIUS: f32 = 3.0;
 const MAX_RADIUS: f32 = 60.0;
 
@@ -69,6 +70,7 @@ pub(crate) fn update_orbit_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     hotbar_capture: Res<HotbarPointerCapture>,
+    creation_menu: Res<CreationMenuState>,
 ) {
     let (orbit, transform) = &mut *camera;
     let scroll_scale = match scroll.unit {
@@ -77,13 +79,17 @@ pub(crate) fn update_orbit_camera(
     };
     orbit.apply_input(
         motion.delta,
-        if hotbar_capture.active() {
+        if hotbar_capture.active() || creation_menu.blocks_pointer() {
             0.0
         } else {
             scroll.delta.y * scroll_scale
         },
-        !hotbar_capture.active() && orbit_input_active(&mouse_buttons, &keyboard),
-        !hotbar_capture.active() && pan_input_active(&mouse_buttons, &keyboard),
+        !hotbar_capture.active()
+            && !creation_menu.blocks_pointer()
+            && orbit_input_active(&mouse_buttons, &keyboard),
+        !hotbar_capture.active()
+            && !creation_menu.blocks_pointer()
+            && pan_input_active(&mouse_buttons, &keyboard),
     );
     **transform = orbit.transform();
 }
@@ -139,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn orbit_pitch_and_zoom_stay_in_bounds() {
+    fn orbit_can_move_below_target_and_zoom_stays_in_bounds() {
         let mut camera = OrbitCamera::default();
         camera.apply_input(Vec2::new(0.0, 10_000.0), 10_000.0, true, false);
         assert!((camera.pitch - MAX_PITCH).abs() < f32::EPSILON);
@@ -147,6 +153,7 @@ mod tests {
 
         camera.apply_input(Vec2::new(0.0, -10_000.0), -10_000.0, true, false);
         assert!((camera.pitch - MIN_PITCH).abs() < f32::EPSILON);
+        assert!(camera.transform().translation.y < camera.target.y);
         assert!((camera.radius - MAX_RADIUS).abs() < f32::EPSILON);
     }
 

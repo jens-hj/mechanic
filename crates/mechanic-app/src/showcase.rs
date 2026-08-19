@@ -12,6 +12,81 @@ pub(crate) const WELD_COUNT: usize = 14_704;
 pub(crate) const BEARING_COUNT: usize = 3_712;
 pub(crate) const COMPOUND_COUNT: usize = 5_297;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CreationPreset {
+    PendulumGarden256,
+    MobileWorkshop1024,
+    ClosureLab4096,
+    KineticShowcase20000,
+}
+
+impl CreationPreset {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::PendulumGarden256,
+        Self::MobileWorkshop1024,
+        Self::ClosureLab4096,
+        Self::KineticShowcase20000,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::PendulumGarden256 => "Pendulum Garden — 256 parts",
+            Self::MobileWorkshop1024 => "Mobile Workshop — 1,024 parts",
+            Self::ClosureLab4096 => "Closure Lab — 4,096 parts",
+            Self::KineticShowcase20000 => "Kinetic Showcase — 20,000 parts",
+        }
+    }
+
+    pub(crate) const fn description(self) -> &'static str {
+        match self {
+            Self::PendulumGarden256 => "Branched pendulums with arms and counterweights",
+            Self::MobileWorkshop1024 => "Welded crossbars, branching links, and payloads",
+            Self::ClosureLab4096 => "512 closed loops under falling contact stacks",
+            Self::KineticShowcase20000 => "The full towers, ropes, mobiles, and obstacles",
+        }
+    }
+
+    pub(crate) const fn part_count(self) -> usize {
+        match self {
+            Self::PendulumGarden256 => 256,
+            Self::MobileWorkshop1024 => 1_024,
+            Self::ClosureLab4096 => 4_096,
+            Self::KineticShowcase20000 => PART_COUNT,
+        }
+    }
+
+    pub(crate) const fn body_count(self) -> usize {
+        match self {
+            Self::KineticShowcase20000 => COMPOUND_COUNT,
+            Self::MobileWorkshop1024 => 640,
+            _ => self.part_count(),
+        }
+    }
+
+    pub(crate) const fn weld_count(self) -> usize {
+        match self {
+            Self::PendulumGarden256 => 64,
+            Self::MobileWorkshop1024 | Self::ClosureLab4096 => 512,
+            Self::KineticShowcase20000 => WELD_COUNT,
+        }
+    }
+
+    pub(crate) const fn bearing_count(self) -> usize {
+        match self {
+            Self::PendulumGarden256 => 192,
+            Self::MobileWorkshop1024 => 512,
+            Self::ClosureLab4096 => 2_048,
+            Self::KineticShowcase20000 => BEARING_COUNT,
+        }
+    }
+
+    pub(crate) fn matches(self, graph: &ConstructionGraph) -> bool {
+        graph.part_count() == self.part_count()
+            && graph.weld_count() == self.weld_count()
+            && graph.bearing_count() == self.bearing_count()
+    }
+}
+
 const TOWER_SIDE: usize = 12;
 const TOWER_HEIGHT: usize = 24;
 const OVERHEAD_SITES: usize = 144;
@@ -168,6 +243,183 @@ pub(crate) fn build() -> Result<ConstructionGraph, ShowcaseError> {
         });
     }
 
+    instantiate(plan)
+}
+
+pub(crate) fn build_preset(preset: CreationPreset) -> Result<ConstructionGraph, ShowcaseError> {
+    match preset {
+        CreationPreset::PendulumGarden256 => build_pendulum_garden(),
+        CreationPreset::MobileWorkshop1024 => build_mobile_workshop(),
+        CreationPreset::ClosureLab4096 => build_closure_lab(),
+        CreationPreset::KineticShowcase20000 => build(),
+    }
+}
+
+pub(crate) fn uses_reduced_collision_mode(graph: &ConstructionGraph) -> bool {
+    CreationPreset::KineticShowcase20000.matches(graph)
+}
+
+fn grid_origin(index: usize, item_count: usize, x_spacing: i32, z_spacing: i32) -> (i32, i32) {
+    let mut columns = 1_usize;
+    while columns * columns < item_count {
+        columns += 1;
+    }
+    let row_count = item_count.div_ceil(columns);
+    let column = i32::try_from(index % columns).unwrap();
+    let row = i32::try_from(index / columns).unwrap();
+    let x_span = i32::try_from(columns.saturating_sub(1)).unwrap() * x_spacing;
+    let z_span = i32::try_from(row_count.saturating_sub(1)).unwrap() * z_spacing;
+    (
+        column * x_spacing - x_span / 2,
+        row * z_spacing - z_span / 2,
+    )
+}
+
+fn build_pendulum_garden() -> Result<ConstructionGraph, ShowcaseError> {
+    let mut plan = ShowcasePlan::default();
+    for index in 0..64 {
+        let (x, z) = grid_origin(index, 64, 18, 10);
+        let support = plan.part([2, 32, 2], [x, 16, z])?;
+        let arm = plan.part([12, 2, 2], [x + 5, 30, z + 2])?;
+        let pendulum = plan.part([2, 12, 6], [x + 12, 25, z + 4])?;
+        let counterweight = plan.part([2, 4, 6], [x - 2, 30, z])?;
+        plan.weld_ground(support);
+        plan.bearing(
+            support,
+            FaceKind::PositiveZ,
+            arm,
+            FaceKind::NegativeZ,
+            Vec3::new(units(x), 30.0, units(z + 1)),
+            Vec3::Z,
+        );
+        plan.bearing(
+            arm,
+            FaceKind::PositiveX,
+            pendulum,
+            FaceKind::NegativeX,
+            Vec3::new(units(x + 11), 30.0, units(z + 2)),
+            Vec3::X,
+        );
+        plan.bearing(
+            arm,
+            FaceKind::NegativeX,
+            counterweight,
+            FaceKind::PositiveX,
+            Vec3::new(units(x - 1), 30.0, units(z + 2)),
+            Vec3::NEG_X,
+        );
+    }
+    instantiate(plan)
+}
+
+fn build_mobile_workshop() -> Result<ConstructionGraph, ShowcaseError> {
+    let mut plan = ShowcasePlan::default();
+    for index in 0..128 {
+        let (x, z) = grid_origin(index, 128, 24, 18);
+        let support = plan.part([2, 32, 2], [x, 16, z])?;
+        let root = plan.part([10, 2, 2], [x + 4, 30, z + 2])?;
+        let crossbar = plan.part([2, 2, 10], [x + 10, 30, z + 2])?;
+        let first_branch = plan.part([6, 10, 2], [x + 12, 26, z - 4])?;
+        let second_branch = plan.part([6, 10, 2], [x + 12, 26, z + 8])?;
+        let first_payload = plan.part([4, 4, 4], [x + 12, 19, z - 4])?;
+        let second_payload = plan.part([4, 4, 4], [x + 12, 19, z + 8])?;
+        let rotor = plan.part([8, 2, 2], [x + 13, 32, z + 2])?;
+
+        plan.weld_ground(support);
+        plan.weld_parts(root, FaceKind::PositiveX, crossbar, FaceKind::NegativeX);
+        plan.weld_parts(
+            first_branch,
+            FaceKind::NegativeY,
+            first_payload,
+            FaceKind::PositiveY,
+        );
+        plan.weld_parts(
+            second_branch,
+            FaceKind::NegativeY,
+            second_payload,
+            FaceKind::PositiveY,
+        );
+        plan.bearing(
+            support,
+            FaceKind::PositiveZ,
+            root,
+            FaceKind::NegativeZ,
+            Vec3::new(units(x), 30.0, units(z + 1)),
+            Vec3::Z,
+        );
+        plan.bearing(
+            crossbar,
+            FaceKind::NegativeZ,
+            first_branch,
+            FaceKind::PositiveZ,
+            Vec3::new(units(x + 10), 30.0, units(z - 3)),
+            Vec3::NEG_Z,
+        );
+        plan.bearing(
+            crossbar,
+            FaceKind::PositiveZ,
+            second_branch,
+            FaceKind::NegativeZ,
+            Vec3::new(units(x + 10), 30.0, units(z + 7)),
+            Vec3::Z,
+        );
+        plan.bearing(
+            crossbar,
+            FaceKind::PositiveY,
+            rotor,
+            FaceKind::NegativeY,
+            Vec3::new(units(x + 10), 31.0, units(z + 2)),
+            Vec3::Y,
+        );
+    }
+    instantiate(plan)
+}
+
+fn build_closure_lab() -> Result<ConstructionGraph, ShowcaseError> {
+    let mut plan = ShowcasePlan::default();
+    for index in 0..512 {
+        let (origin_x, origin_z) = grid_origin(index, 512, 8, 6);
+        let lower_left = plan.part([2, 2, 2], [origin_x, 1, origin_z])?;
+        let lower_right = plan.part([2, 2, 2], [origin_x + 2, 1, origin_z])?;
+        let upper_right = plan.part([2, 2, 2], [origin_x + 2, 3, origin_z])?;
+        let upper_left = plan.part([2, 2, 2], [origin_x, 3, origin_z])?;
+        for y in [7, 9, 11, 13] {
+            plan.part([2, 2, 2], [origin_x + (y % 4), y, origin_z])?;
+        }
+        plan.weld_ground(lower_left);
+        plan.bearing(
+            lower_left,
+            FaceKind::PositiveX,
+            lower_right,
+            FaceKind::NegativeX,
+            Vec3::new(units(origin_x + 1), 1.0, units(origin_z)),
+            Vec3::X,
+        );
+        plan.bearing(
+            lower_right,
+            FaceKind::PositiveY,
+            upper_right,
+            FaceKind::NegativeY,
+            Vec3::new(units(origin_x + 2), 2.0, units(origin_z)),
+            Vec3::Y,
+        );
+        plan.bearing(
+            upper_right,
+            FaceKind::NegativeX,
+            upper_left,
+            FaceKind::PositiveX,
+            Vec3::new(units(origin_x + 1), 3.0, units(origin_z)),
+            Vec3::NEG_X,
+        );
+        plan.bearing(
+            upper_left,
+            FaceKind::NegativeY,
+            lower_left,
+            FaceKind::PositiveY,
+            Vec3::new(units(origin_x), 2.0, units(origin_z)),
+            Vec3::NEG_Y,
+        );
+    }
     instantiate(plan)
 }
 
@@ -587,9 +839,12 @@ fn x_bearing(direction: i32) -> (FaceKind, FaceKind, Vec3) {
 
 #[cfg(test)]
 mod tests {
-    use bevy::prelude::Vec3;
+    use bevy::prelude::{Quat, Vec3};
 
-    use super::{BEARING_COUNT, COMPOUND_COUNT, PART_COUNT, WELD_COUNT, build};
+    use super::{
+        BEARING_COUNT, COMPOUND_COUNT, CreationPreset, PART_COUNT, WELD_COUNT, build, build_preset,
+        uses_reduced_collision_mode,
+    };
     use mechanic_gpu::{GpuPhysics, GpuPhysicsConfig, MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS};
 
     #[test]
@@ -631,7 +886,196 @@ mod tests {
         assert!(creation.compounds.len() <= MAX_BODIES);
         assert!(creation.colliders.len() <= MAX_COLLIDERS);
         assert!(creation.bearings.len() <= MAX_BEARINGS);
+        assert!(uses_reduced_collision_mode(&graph));
         assert_no_initial_intersections(&graph);
+    }
+
+    #[test]
+    fn smaller_creation_presets_have_exact_valid_topology() {
+        for preset in CreationPreset::ALL[..3].iter().copied() {
+            let graph = build_preset(preset).unwrap();
+            let creation = graph.compile().unwrap();
+            let (component_count, component_size, closure_count) = match preset {
+                CreationPreset::PendulumGarden256 => (64, 4, 0),
+                CreationPreset::MobileWorkshop1024 => (128, 5, 0),
+                CreationPreset::ClosureLab4096 => (512, 4, 512),
+                CreationPreset::KineticShowcase20000 => unreachable!(),
+            };
+
+            assert_eq!(graph.part_count(), preset.part_count());
+            assert_eq!(graph.weld_count(), preset.weld_count());
+            assert_eq!(graph.bearing_count(), preset.bearing_count());
+            assert_eq!(creation.compounds.len(), preset.body_count());
+            assert_eq!(creation.bearings.len(), preset.bearing_count());
+            assert_eq!(
+                creation.loop_topology.tree_bearings.len(),
+                preset.bearing_count() - closure_count
+            );
+            assert_eq!(creation.loop_topology.closure_bearings.len(), closure_count);
+            assert_eq!(
+                creation
+                    .loop_topology
+                    .mechanism_components
+                    .iter()
+                    .filter(|component| component.len() == component_size)
+                    .count(),
+                component_count
+            );
+            assert_bearings_are_centered_on_face_overlaps(&graph);
+            assert!(!uses_reduced_collision_mode(&graph));
+            assert_no_initial_intersections(&graph);
+        }
+    }
+
+    #[test]
+    fn smaller_creation_presets_run_120_gpu_ticks_without_failure() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            }))
+            .ok()
+        else {
+            return;
+        };
+        let Some((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("mechanic creation preset test device"),
+                ..Default::default()
+            }))
+            .ok()
+        else {
+            return;
+        };
+
+        for preset in CreationPreset::ALL[..3].iter().copied() {
+            let creation = build_preset(preset).unwrap().compile().unwrap();
+            let gpu = GpuPhysics::new_with_config(
+                &device,
+                &queue,
+                &creation,
+                GpuPhysicsConfig {
+                    mechanism_self_collisions: true,
+                    ..GpuPhysicsConfig::default()
+                },
+            )
+            .unwrap();
+            for tick in 1..=120 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let diagnostics = gpu.read_last_tick(&device).unwrap();
+                assert_eq!(
+                    diagnostics.error_flags,
+                    0,
+                    "{} tick {tick} diagnostics: {diagnostics:?}",
+                    preset.label()
+                );
+            }
+            let snapshot = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+            let moved_body_count = snapshot
+                .iter()
+                .zip(&creation.compounds)
+                .filter(|(transform, compound)| {
+                    let position = Vec3::from_slice(&transform.position[..3]);
+                    let rotation = Quat::from_array(transform.rotation);
+                    position.distance(compound.root_translation) > 1.0e-4
+                        || rotation.angle_between(compound.root_rotation) > 1.0e-4
+                })
+                .count();
+            assert!(
+                moved_body_count > 0,
+                "{} did not produce any simulated motion",
+                preset.label()
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_presets_do_not_gain_unbounded_spin() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            }))
+            .ok()
+        else {
+            return;
+        };
+        let Some((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        else {
+            return;
+        };
+
+        for preset in [
+            CreationPreset::MobileWorkshop1024,
+            CreationPreset::ClosureLab4096,
+        ] {
+            let creation = build_preset(preset).unwrap().compile().unwrap();
+            let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+            for tick in 1..=600 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let current = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+            let previous = gpu.read_snapshot_transforms(&device, &queue, 2).unwrap();
+            let maximum_angular_speed = current
+                .iter()
+                .zip(previous)
+                .map(|(current, previous)| {
+                    Quat::from_array(current.rotation)
+                        .angle_between(Quat::from_array(previous.rotation))
+                        * 60.0
+                })
+                .fold(0.0_f32, f32::max);
+            let diagnostics = gpu.read_last_tick(&device).unwrap();
+            assert_eq!(diagnostics.error_flags, 0, "{}", preset.label());
+            assert!(
+                maximum_angular_speed < 3.0,
+                "{} reached {maximum_angular_speed:.3} rad/s",
+                preset.label()
+            );
+        }
+    }
+
+    fn assert_bearings_are_centered_on_face_overlaps(graph: &mechanic_core::ConstructionGraph) {
+        for (_, bearing) in graph.bearings() {
+            let source = match bearing.source.owner {
+                mechanic_core::FaceOwner::Part(part) => graph.part(part).unwrap(),
+                mechanic_core::FaceOwner::Ground => unreachable!(),
+            };
+            let target = match bearing.target.owner {
+                mechanic_core::FaceOwner::Part(part) => graph.part(part).unwrap(),
+                mechanic_core::FaceOwner::Ground => unreachable!(),
+            };
+            let source_center = source.pose.translation();
+            let target_center = target.pose.translation();
+            let source_half = source.size_meters() * 0.5;
+            let target_half = target.size_meters() * 0.5;
+            let source_minimum = source_center - source_half;
+            let source_maximum = source_center + source_half;
+            let target_minimum = target_center - target_half;
+            let target_maximum = target_center + target_half;
+            let normal_axis = (0..3).find(|&axis| bearing.axis[axis].abs() > 0.5).unwrap();
+            let mut expected = source_center + bearing.axis * source_half[normal_axis];
+            for axis in 0..3 {
+                if axis != normal_axis {
+                    expected[axis] = (source_minimum[axis].max(target_minimum[axis])
+                        + source_maximum[axis].min(target_maximum[axis]))
+                        * 0.5;
+                }
+            }
+            assert!(
+                bearing.shared_anchor.abs_diff_eq(expected, 1.0e-5),
+                "bearing anchor {:?} is not centered at {:?}",
+                bearing.shared_anchor,
+                expected
+            );
+        }
     }
 
     #[test]

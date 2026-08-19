@@ -63,6 +63,7 @@ const EMPTY_HASH_KEY: u32 = 0u;
 const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 const PROJECTED_RELAXATION: f32 = 0.125;
 const WARM_START_SCALE: f32 = 0.5;
+const CONTACT_FRICTION: f32 = 0.05;
 const INVALID_MANIFOLD_SLOT: u32 = 0xffffffffu;
 const MAX_MANIFOLD_PROBES: u32 = 256u;
 
@@ -163,6 +164,73 @@ fn collider_center(index: u32) -> vec3<f32> {
 fn collider_rotation(index: u32) -> vec4<f32> {
     let collider = colliders[index];
     return quat_multiply(rotations[collider.metadata.x], collider.local_rotation);
+}
+
+fn collider_support_point(index: u32, direction: vec3<f32>) -> vec3<f32> {
+    let collider = colliders[index];
+    let rotation = collider_rotation(index);
+    let axes = array<vec3<f32>, 3>(
+        quat_rotate(rotation, vec3<f32>(1.0, 0.0, 0.0)),
+        quat_rotate(rotation, vec3<f32>(0.0, 1.0, 0.0)),
+        quat_rotate(rotation, vec3<f32>(0.0, 0.0, 1.0)),
+    );
+    var point = collider_center(index);
+    for (var axis = 0u; axis < 3u; axis += 1u) {
+        let projection = dot(axes[axis], direction);
+        if abs(projection) > 1.0e-5 {
+            point += axes[axis] * collider.half_extents[axis] * sign(projection);
+        }
+    }
+    return point;
+}
+
+fn collider_vertex(index: u32, vertex: u32) -> vec3<f32> {
+    let collider = colliders[index];
+    let rotation = collider_rotation(index);
+    let axes = array<vec3<f32>, 3>(
+        quat_rotate(rotation, vec3<f32>(1.0, 0.0, 0.0)),
+        quat_rotate(rotation, vec3<f32>(0.0, 1.0, 0.0)),
+        quat_rotate(rotation, vec3<f32>(0.0, 0.0, 1.0)),
+    );
+    var point = collider_center(index);
+    for (var axis = 0u; axis < 3u; axis += 1u) {
+        let direction = select(-1.0, 1.0, (vertex & (1u << axis)) != 0u);
+        point += axes[axis] * collider.half_extents[axis] * direction;
+    }
+    return point;
+}
+
+fn collider_contains_point(index: u32, point: vec3<f32>) -> bool {
+    let collider = colliders[index];
+    let rotation = collider_rotation(index);
+    let local = quat_rotate(
+        vec4<f32>(-rotation.xyz, rotation.w),
+        point - collider_center(index),
+    );
+    return all(abs(local) <= collider.half_extents.xyz + vec3<f32>(1.0e-5));
+}
+
+fn calculate_contact_point(collider_a: u32, collider_b: u32, normal: vec3<f32>) -> vec3<f32> {
+    var sum = vec3<f32>(0.0);
+    var count = 0.0;
+    for (var vertex = 0u; vertex < 8u; vertex += 1u) {
+        let point_a = collider_vertex(collider_a, vertex);
+        if collider_contains_point(collider_b, point_a) {
+            sum += point_a;
+            count += 1.0;
+        }
+        let point_b = collider_vertex(collider_b, vertex);
+        if collider_contains_point(collider_a, point_b) {
+            sum += point_b;
+            count += 1.0;
+        }
+    }
+    if count > 0.0 {
+        return sum / count;
+    }
+    let point_a = collider_support_point(collider_a, normal);
+    let point_b = collider_support_point(collider_b, -normal);
+    return (point_a + point_b) * 0.5;
 }
 
 fn hash_cell(cell: vec3<i32>) -> u32 {
@@ -423,7 +491,7 @@ fn emit_narrowphase_contact(pair: vec2<u32>) {
     if sat.penetration < -1.0e-5 {
         return;
     }
-    let contact_point = (collider_center(pair.x) + collider_center(pair.y)) * 0.5;
+    let contact_point = calculate_contact_point(pair.x, pair.y, sat.normal);
     let output = atomicAdd(&diagnostics[2], 1u);
     if output < config.pair_capacity {
         contacts[output].metadata = vec4<u32>(
@@ -463,7 +531,7 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if sat.penetration < -1.0e-5 {
         return;
     }
-    let contact_point = (collider_center(pair.x) + collider_center(pair.y)) * 0.5;
+    let contact_point = calculate_contact_point(pair.x, pair.y, sat.normal);
     let output = atomicAdd(&diagnostics[2], 1u);
     if output < config.pair_capacity {
         contacts[output].metadata = vec4<u32>(
@@ -680,26 +748,23 @@ fn warm_start(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let tangent_speed = length(tangent_velocity);
     if tangent_speed > 1.0e-6 {
         let tangent = tangent_velocity / tangent_speed;
-        var tangent_denominator = world_masses[body_a].inverse_inertia_x_mass.w;
-        if body_b != INVALID_MANIFOLD_SLOT {
-            tangent_denominator += world_masses[body_b].inverse_inertia_x_mass.w;
-        }
+        let tangent_denominator = impulse_denominator(body_a, body_b, arm_a, arm_b, tangent);
         let friction_impulse = min(
             tangent_speed / tangent_denominator,
-            accumulated_impulse * 0.05,
+            accumulated_impulse * CONTACT_FRICTION,
         );
         impulse -= tangent * friction_impulse;
     }
     add_velocity_delta(
         body_a,
         -impulse * world_masses[body_a].inverse_inertia_x_mass.w,
-        inverse_inertia(body_a, cross(arm_a, -normal_impulse_vector)),
+        inverse_inertia(body_a, cross(arm_a, -impulse)),
     );
     if body_b != INVALID_MANIFOLD_SLOT {
         add_velocity_delta(
             body_b,
             impulse * world_masses[body_b].inverse_inertia_x_mass.w,
-            inverse_inertia(body_b, cross(arm_b, normal_impulse_vector)),
+            inverse_inertia(body_b, cross(arm_b, impulse)),
         );
     }
 }
@@ -750,26 +815,23 @@ fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let tangent_speed = length(tangent_velocity);
     if tangent_speed > 1.0e-6 {
         let tangent = tangent_velocity / tangent_speed;
-        var tangent_denominator = world_masses[body_a].inverse_inertia_x_mass.w;
-        if body_b != INVALID_MANIFOLD_SLOT {
-            tangent_denominator += world_masses[body_b].inverse_inertia_x_mass.w;
-        }
+        let tangent_denominator = impulse_denominator(body_a, body_b, arm_a, arm_b, tangent);
         let friction_impulse = min(
             tangent_speed / tangent_denominator,
-            abs(impulse_delta) * 0.05,
+            abs(impulse_delta) * CONTACT_FRICTION,
         );
         impulse -= tangent * friction_impulse;
     }
     add_velocity_delta(
         body_a,
         -impulse * world_masses[body_a].inverse_inertia_x_mass.w,
-        inverse_inertia(body_a, cross(arm_a, -normal_impulse_vector)),
+        inverse_inertia(body_a, cross(arm_a, -impulse)),
     );
     if body_b != INVALID_MANIFOLD_SLOT {
         add_velocity_delta(
             body_b,
             impulse * world_masses[body_b].inverse_inertia_x_mass.w,
-            inverse_inertia(body_b, cross(arm_b, normal_impulse_vector)),
+            inverse_inertia(body_b, cross(arm_b, impulse)),
         );
     }
 }

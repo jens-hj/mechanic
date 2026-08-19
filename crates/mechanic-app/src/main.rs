@@ -2,16 +2,17 @@
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 mod builder;
 mod camera;
+mod creation_menu;
 mod hotbar;
 mod showcase;
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::visibility::NoFrustumCulling,
+    camera::visibility::{NoFrustumCulling, RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
     mesh::Indices,
     prelude::*,
@@ -26,9 +27,10 @@ use builder::{
     bearing_attachment_candidate, begin_weld, block_sheet_specs, candidate_from_hit,
     face_geometry_from_ref, raycast_construction, raycast_oriented_cuboid, raycast_placement_plane,
     stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch, stage_weld_objects,
-    validate_block_batch,
+    validate_block_batch, welded_body_parts,
 };
 use camera::OrbitCamera;
+use creation_menu::CreationMenuState;
 use hotbar::{HotbarPointerCapture, SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
     BuildCommand, CompiledCreation, ConstructionGraph, CuboidSpec, FaceOwner, PartId,
@@ -40,6 +42,7 @@ const SIMULATION_VISUAL_TICK_INTERVAL: u32 = 2;
 const HAMMER_CHARGE_SECONDS: f32 = 1.5;
 const HAMMER_MIN_IMPULSE: f32 = 25.0;
 const HAMMER_MAX_IMPULSE: f32 = 4_000.0;
+const HISTORY_CAPACITY: usize = 64;
 
 #[derive(Resource, Default)]
 struct EditorGraph(ConstructionGraph);
@@ -105,10 +108,65 @@ struct DeleteDrag {
     error: Option<PlacementError>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct PlacedBearing {
     source: mechanic_core::FaceRef,
     anchor: Vec3,
+}
+
+#[derive(Clone, Debug)]
+struct EditorSnapshot {
+    graph: ConstructionGraph,
+    placed_bearings: Vec<PlacedBearing>,
+}
+
+impl EditorSnapshot {
+    fn capture(graph: &ConstructionGraph, state: &EditorState) -> Self {
+        let mut graph = graph.clone();
+        if graph.pending().is_some() {
+            graph
+                .apply(BuildCommand::CancelPending)
+                .expect("captured pending editor operation can be cancelled");
+        }
+        Self {
+            graph,
+            placed_bearings: state.placed_bearings.clone(),
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct EditorHistory {
+    undo: VecDeque<EditorSnapshot>,
+    redo: VecDeque<EditorSnapshot>,
+}
+
+impl EditorHistory {
+    fn commit(&mut self, previous: EditorSnapshot) {
+        self.redo.clear();
+        if self.undo.len() == HISTORY_CAPACITY {
+            self.undo.pop_front();
+        }
+        self.undo.push_back(previous);
+    }
+
+    fn undo(&mut self, current: EditorSnapshot) -> Option<EditorSnapshot> {
+        let previous = self.undo.pop_back()?;
+        self.redo.push_back(current);
+        Some(previous)
+    }
+
+    fn redo(&mut self, current: EditorSnapshot) -> Option<EditorSnapshot> {
+        let next = self.redo.pop_back()?;
+        self.undo.push_back(current);
+        Some(next)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryAction {
+    Undo,
+    Redo,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -121,13 +179,18 @@ fn handle_simulation_shortcut(
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
+    mut menu: ResMut<CreationMenuState>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
 ) {
     if !keyboard.just_pressed(KeyCode::Space) {
         return;
     }
-    state.cancel_showcase_replacement();
+    if menu.is_open() {
+        menu.close();
+        state.feedback = Some("Creation menu closed".to_owned());
+        return;
+    }
     if simulation.is_running() {
         *simulation = AppSimulation::default();
         state.construction_mesh_dirty = true;
@@ -149,7 +212,7 @@ fn handle_simulation_shortcut(
         }
     };
     let physics_config = GpuPhysicsConfig {
-        mechanism_self_collisions: !is_showcase_graph(&graph.0),
+        mechanism_self_collisions: !showcase::uses_reduced_collision_mode(&graph.0),
         ..GpuPhysicsConfig::default()
     };
     let gpu = match GpuPhysics::new_with_config(
@@ -189,34 +252,51 @@ fn handle_simulation_shortcut(
     state.feedback = Some("Simulation running (throttled mesh preview)".to_owned());
 }
 
-fn is_showcase_graph(graph: &ConstructionGraph) -> bool {
-    graph.part_count() == showcase::PART_COUNT
-        && graph.weld_count() == showcase::WELD_COUNT
-        && graph.bearing_count() == showcase::BEARING_COUNT
-}
-
-fn handle_showcase_shortcut(
+fn handle_creation_menu_shortcut(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     simulation: Res<AppSimulation>,
+    mut menu: ResMut<CreationMenuState>,
+) {
+    menu.begin_frame();
+    if menu.is_open() && keyboard.just_pressed(KeyCode::Escape) {
+        menu.close();
+        state.feedback = Some("Creation menu closed".to_owned());
+    } else if keyboard.just_pressed(KeyCode::KeyP) {
+        if simulation.is_running() {
+            state.feedback = Some(
+                "Creations can be opened in build mode — press Space to stop simulation".to_owned(),
+            );
+        } else if menu.is_open() {
+            menu.close();
+            state.feedback = Some("Creation menu closed".to_owned());
+        } else {
+            cancel_transient_editor_state(&mut graph.0, &mut state);
+            menu.open();
+            state.feedback = Some("Choose a creation to open".to_owned());
+        }
+    }
+}
+
+fn handle_creation_request(
+    mut menu: ResMut<CreationMenuState>,
+    mut graph: ResMut<EditorGraph>,
+    mut state: ResMut<EditorState>,
+    mut history: ResMut<EditorHistory>,
     mut camera: Single<(&mut OrbitCamera, &mut Transform)>,
 ) {
-    if simulation.is_running() || !keyboard.just_pressed(KeyCode::KeyP) {
+    let Some(preset) = menu.take_request() else {
         return;
-    }
-    if !showcase_press_requests_load(graph.0.part_count(), &mut state.showcase_replace_armed) {
-        state.feedback =
-            Some("Showcase replaces the current construction; press P again to confirm".to_owned());
-        return;
-    }
-
-    let result = showcase::build().and_then(|candidate| {
+    };
+    let previous = EditorSnapshot::capture(&graph.0, &state);
+    let result = showcase::build_preset(preset).and_then(|candidate| {
         install_editor_graph(&mut graph.0, candidate).map_err(showcase::ShowcaseError::from)
     });
     match result {
         Ok(creation) => {
-            debug_assert_eq!(creation.compounds.len(), showcase::COMPOUND_COUNT);
+            history.commit(previous);
+            debug_assert_eq!(creation.compounds.len(), preset.body_count());
             clear_hover(&mut state);
             state.block_drag = None;
             state.delete_drag = None;
@@ -224,8 +304,8 @@ fn handle_showcase_shortcut(
             state.placed_bearings.clear();
             state.construction_mesh_dirty = true;
             state.feedback = Some(format!(
-                "Showcase loaded: {} parts, {} welds, {} bearings, {} bodies — Space to simulate",
-                graph.0.part_count(),
+                "Opened {}: {} welds, {} bearings, {} bodies — Space to simulate",
+                preset.label(),
                 graph.0.weld_count(),
                 graph.0.bearing_count(),
                 creation.compounds.len(),
@@ -237,18 +317,8 @@ fn handle_showcase_shortcut(
             }
         }
         Err(error) => {
-            state.feedback = Some(format!("Could not load showcase: {error}"));
+            state.feedback = Some(format!("Could not open creation: {error}"));
         }
-    }
-}
-
-fn showcase_press_requests_load(part_count: usize, armed: &mut bool) -> bool {
-    if part_count > 0 && !*armed {
-        *armed = true;
-        false
-    } else {
-        *armed = false;
-        true
     }
 }
 
@@ -451,18 +521,11 @@ struct EditorState {
     feedback: Option<String>,
     construction_mesh_dirty: bool,
     delete_target: Option<DeleteTarget>,
-    showcase_replace_armed: bool,
     block_drag: Option<BlockDrag>,
     block_preview_revision: u64,
     delete_drag: Option<DeleteDrag>,
     delete_preview_revision: u64,
     placed_bearings: Vec<PlacedBearing>,
-}
-
-impl EditorState {
-    fn cancel_showcase_replacement(&mut self) {
-        self.showcase_replace_armed = false;
-    }
 }
 
 #[derive(Resource)]
@@ -476,6 +539,8 @@ struct EditorVisuals {
     red_preview_material: Handle<StandardMaterial>,
     block_drag_preview_mesh: Handle<Mesh>,
     delete_drag_preview_mesh: Handle<Mesh>,
+    weld_hover_preview_mesh: Handle<Mesh>,
+    weld_selection_preview_mesh: Handle<Mesh>,
 }
 
 #[derive(Component)]
@@ -497,6 +562,9 @@ struct SimulationVisual;
 struct BearingVisual;
 
 #[derive(Component)]
+struct JointXrayVisual;
+
+#[derive(Component)]
 struct HelpText;
 
 fn main() {
@@ -511,6 +579,8 @@ fn main() {
         }))
         .init_resource::<EditorGraph>()
         .init_resource::<EditorState>()
+        .init_resource::<EditorHistory>()
+        .init_resource::<CreationMenuState>()
         .init_resource::<AppSimulation>()
         .init_resource::<HammerInteraction>()
         .init_resource::<SelectedTool>()
@@ -524,16 +594,20 @@ fn main() {
         .add_systems(
             Update,
             (
+                handle_creation_menu_shortcut,
+                handle_history_shortcut,
+                creation_menu::update,
+                handle_creation_request,
                 hotbar::update,
                 camera::update_orbit_camera,
                 handle_simulation_shortcut,
-                handle_showcase_shortcut,
                 handle_shortcuts,
                 handle_tool_change,
                 update_hover,
                 handle_build_actions,
                 handle_hammer_actions,
                 sync_visual_meshes,
+                update_joint_xray,
                 advance_simulation,
                 update_previews,
                 update_help_text,
@@ -556,6 +630,8 @@ fn setup(
     let bearing_preview_mesh = meshes.add(Cylinder::new(BEARING_DIAMETER * 0.5, BEARING_DEPTH));
     let block_drag_preview_mesh = meshes.add(Cuboid::default());
     let delete_drag_preview_mesh = meshes.add(Cuboid::default());
+    let weld_hover_preview_mesh = meshes.add(Cuboid::default());
+    let weld_selection_preview_mesh = meshes.add(Cuboid::default());
     let construction_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.18, 0.48, 0.78),
         perceptual_roughness: 0.8,
@@ -565,6 +641,12 @@ fn setup(
         base_color: Color::srgb(0.95, 0.58, 0.08),
         metallic: 0.35,
         perceptual_roughness: 0.55,
+        ..default()
+    });
+    let joint_xray_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.95, 0.58, 0.08),
+        cull_mode: None,
+        unlit: true,
         ..default()
     });
     let white_preview_material = materials.add(StandardMaterial {
@@ -592,6 +674,8 @@ fn setup(
         red_preview_material: red_preview_material.clone(),
         block_drag_preview_mesh,
         delete_drag_preview_mesh,
+        weld_hover_preview_mesh,
+        weld_selection_preview_mesh,
     });
 
     commands.spawn((
@@ -627,11 +711,20 @@ fn setup(
     ));
     commands.spawn((
         Name::new("Bearing mesh"),
-        Mesh3d(bearing_mesh),
+        Mesh3d(bearing_mesh.clone()),
         MeshMaterial3d(bearing_material),
         NoFrustumCulling,
         Visibility::Hidden,
         BearingVisual,
+    ));
+    commands.spawn((
+        Name::new("Joint x-ray mesh"),
+        Mesh3d(bearing_mesh),
+        MeshMaterial3d(joint_xray_material),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        JointXrayVisual,
     ));
     commands.spawn((
         Name::new("Action preview"),
@@ -668,13 +761,28 @@ fn setup(
     ));
 
     let orbit = OrbitCamera::default();
-    commands.spawn((
-        Name::new("Orbital camera"),
-        Camera3d::default(),
-        Tonemapping::None,
-        orbit.transform(),
-        orbit,
-    ));
+    commands
+        .spawn((
+            Name::new("Orbital camera"),
+            Camera3d::default(),
+            Tonemapping::None,
+            orbit.transform(),
+            orbit,
+        ))
+        .with_children(|camera| {
+            camera.spawn((
+                Name::new("Joint x-ray camera"),
+                Camera3d::default(),
+                Camera {
+                    order: 1,
+                    clear_color: ClearColorConfig::None,
+                    ..default()
+                },
+                Tonemapping::None,
+                RenderLayers::layer(1),
+                Transform::default(),
+            ));
+        });
 
     commands.spawn((
         HelpText,
@@ -694,6 +802,103 @@ fn setup(
         BackgroundColor(Color::srgba(0.02, 0.025, 0.035, 0.82)),
     ));
     hotbar::spawn(&mut commands);
+    creation_menu::spawn(&mut commands);
+}
+
+fn requested_history_action(keyboard: &ButtonInput<KeyCode>) -> Option<HistoryAction> {
+    let primary_modifier = keyboard.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
+    if !primary_modifier || !keyboard.just_pressed(KeyCode::KeyZ) {
+        return None;
+    }
+    Some(
+        if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+            HistoryAction::Redo
+        } else {
+            HistoryAction::Undo
+        },
+    )
+}
+
+fn handle_history_shortcut(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut graph: ResMut<EditorGraph>,
+    mut state: ResMut<EditorState>,
+    mut history: ResMut<EditorHistory>,
+    simulation: Res<AppSimulation>,
+    mut menu: ResMut<CreationMenuState>,
+) {
+    let Some(action) = requested_history_action(&keyboard) else {
+        return;
+    };
+    let restored = apply_history_action(
+        action,
+        &mut graph.0,
+        &mut state,
+        &mut history,
+        simulation.is_running(),
+    );
+    if restored {
+        menu.close();
+    }
+}
+
+fn apply_history_action(
+    action: HistoryAction,
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    simulation_running: bool,
+) -> bool {
+    if simulation_running {
+        state.feedback = Some(format!(
+            "{} is available in build mode — press Space to stop simulation",
+            match action {
+                HistoryAction::Undo => "Undo",
+                HistoryAction::Redo => "Redo",
+            }
+        ));
+        return false;
+    }
+
+    let current = EditorSnapshot::capture(graph, state);
+    let restored = match action {
+        HistoryAction::Undo => history.undo(current),
+        HistoryAction::Redo => history.redo(current),
+    };
+    let Some(restored) = restored else {
+        state.feedback = Some(match action {
+            HistoryAction::Undo => "Nothing to undo".to_owned(),
+            HistoryAction::Redo => "Nothing to redo".to_owned(),
+        });
+        return false;
+    };
+
+    *graph = restored.graph;
+    state.placed_bearings = restored.placed_bearings;
+    cancel_transient_editor_state(graph, state);
+    state.construction_mesh_dirty = true;
+    state.feedback = Some(match action {
+        HistoryAction::Undo => "Undid construction edit".to_owned(),
+        HistoryAction::Redo => "Redid construction edit".to_owned(),
+    });
+    true
+}
+
+fn cancel_transient_editor_state(graph: &mut ConstructionGraph, state: &mut EditorState) {
+    if graph.pending().is_some() {
+        graph
+            .apply(BuildCommand::CancelPending)
+            .expect("restored pending editor operation can be cancelled");
+    }
+    state.block_drag = None;
+    state.delete_drag = None;
+    state.delete_target = None;
+    clear_hover(state);
 }
 
 fn handle_shortcuts(
@@ -702,23 +907,17 @@ fn handle_shortcuts(
     mut state: ResMut<EditorState>,
     mut selection: ResMut<SelectedTool>,
     simulation: Res<AppSimulation>,
+    menu: Res<CreationMenuState>,
 ) {
-    let editor_shortcut = keyboard.any_just_pressed([
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Escape,
-        KeyCode::KeyQ,
-    ]);
-    if editor_shortcut {
-        state.cancel_showcase_replacement();
+    if menu.blocks_pointer() {
+        return;
     }
     for key in [
         KeyCode::Digit1,
         KeyCode::Digit2,
         KeyCode::Digit3,
         KeyCode::Digit4,
+        KeyCode::Digit5,
     ] {
         if keyboard.just_pressed(key) {
             selection.0 = shortcut_tool(key).expect("numbered tool key has a mapping");
@@ -764,7 +963,6 @@ fn handle_tool_change(
     if !selection.is_changed() {
         return;
     }
-    state.cancel_showcase_replacement();
     if graph.0.pending().is_some() {
         let _ = graph.0.apply(BuildCommand::CancelPending);
     }
@@ -1019,19 +1217,21 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
         (Tool::Weld, Some(PendingOperation::Weld(first))) => state
             .hovered
             .and_then(|hit| stage_weld_objects(graph, first.owner, hit.face.owner).err()),
-        (Tool::Weld | Tool::Hammer, _) => None,
+        (Tool::Weld | Tool::Hammer | Tool::JointXray, _) => None,
         (Tool::Bearing, _) => state
             .hovered
             .and_then(|hit| bearing_anchor_from_hit(graph, hit).err()),
     };
 }
 
-#[allow(clippy::too_many_lines)] // Tool-specific input flows remain readable together.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+// Tool-specific input flows remain readable together.
 fn handle_build_actions(
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
+    mut history: ResMut<EditorHistory>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     hotbar_capture: Res<HotbarPointerCapture>,
@@ -1049,11 +1249,6 @@ fn handle_build_actions(
             state.feedback = Some("Delete drag cancelled over hotbar".to_owned());
         }
         return;
-    }
-    if mouse.any_just_pressed([MouseButton::Left, MouseButton::Right])
-        || mouse.just_released(MouseButton::Right)
-    {
-        state.cancel_showcase_replacement();
     }
     if camera::camera_input_active(&mouse, &keyboard) {
         return;
@@ -1093,7 +1288,9 @@ fn handle_build_actions(
             match target {
                 DeleteTarget::PlacedBearing(index) => {
                     if index < state.placed_bearings.len() {
+                        let previous = EditorSnapshot::capture(&graph.0, &state);
                         state.placed_bearings.remove(index);
+                        history.commit(previous);
                         state.feedback = Some("Deleted unattached bearing".to_owned());
                         state.construction_mesh_dirty = true;
                         clear_hover(&mut state);
@@ -1107,14 +1304,15 @@ fn handle_build_actions(
                 return;
             }
             let deleted = drag.parts.iter().copied().collect::<HashSet<_>>();
-            match graph
-                .0
-                .apply_batch(drag.parts.iter().copied().map(BuildCommand::Remove))
-            {
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let mut staged = graph.0.clone();
+            match staged.apply_batch(drag.parts.iter().copied().map(BuildCommand::Remove)) {
                 Ok(_) => {
+                    graph.0 = staged;
                     state.placed_bearings.retain(|bearing| {
                         !matches!(bearing.source.owner, FaceOwner::Part(owner) if deleted.contains(&owner))
                     });
+                    history.commit(previous);
                     state.feedback = Some(format!(
                         "Deleted {} cuboid(s) and incident connections",
                         drag.parts.len()
@@ -1128,7 +1326,7 @@ fn handle_build_actions(
         return;
     }
     if selection.0 == Tool::Block {
-        handle_block_actions(&mouse, &mut graph.0, &mut state);
+        handle_block_actions(&mouse, &mut graph.0, &mut state, &mut history);
         return;
     }
     if mouse.pressed(MouseButton::Right) || !mouse.just_pressed(MouseButton::Left) {
@@ -1146,7 +1344,9 @@ fn handle_build_actions(
                 Some(PendingOperation::Weld(first)) => {
                     match stage_weld_objects(&graph.0, first.owner, hit.face.owner) {
                         Ok(staged) => {
+                            let previous = EditorSnapshot::capture(&graph.0, &state);
                             graph.0 = staged;
+                            history.commit(previous);
                             state.feedback = Some("Welded the two objects".to_owned());
                         }
                         Err(error) => state.feedback = Some(error.to_string()),
@@ -1174,10 +1374,12 @@ fn handle_build_actions(
                     if duplicate {
                         state.feedback = Some("A bearing is already placed here".to_owned());
                     } else {
+                        let previous = EditorSnapshot::capture(&graph.0, &state);
                         state.placed_bearings.push(PlacedBearing {
                             source: hit.face,
                             anchor,
                         });
+                        history.commit(previous);
                         state.feedback =
                             Some("Bearing placed — select Block and hover it to attach".to_owned());
                         state.construction_mesh_dirty = true;
@@ -1189,6 +1391,10 @@ fn handle_build_actions(
         Tool::Hammer => {
             state.feedback = Some("Hammer is available while simulating — press Space".to_owned());
         }
+        Tool::JointXray => {
+            state.feedback =
+                Some("Joint X-ray shows every bearing through the creation".to_owned());
+        }
     }
     refresh_tool_preview(&graph.0, &mut state, selection.0);
 }
@@ -1197,6 +1403,7 @@ fn handle_block_actions(
     mouse: &ButtonInput<MouseButton>,
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
+    history: &mut EditorHistory,
 ) {
     if mouse.just_pressed(MouseButton::Left) {
         let Some(candidate) = state.preview else {
@@ -1261,6 +1468,7 @@ fn handle_block_actions(
         return;
     }
     let count = drag.specs.len();
+    let previous = EditorSnapshot::capture(graph, state);
     let staged = match drag.attachment {
         BlockAttachment::AutoWeld => stage_block_batch(graph, drag.start, &drag.specs),
         BlockAttachment::Bearing { source, anchor, .. } => {
@@ -1282,6 +1490,7 @@ fn handle_block_actions(
             {
                 state.placed_bearings.remove(index);
             }
+            history.commit(previous);
             state.feedback = Some(format!(
                 "Placed {count} block(s); added {weld_count} weld(s){}",
                 if matches!(drag.attachment, BlockAttachment::Bearing { .. }) {
@@ -1543,6 +1752,28 @@ fn sync_visual_meshes(
     state.construction_mesh_dirty = false;
 }
 
+fn joint_xray_is_visible(tool: Tool, simulating: bool, bearing_count: usize) -> bool {
+    tool == Tool::JointXray && !simulating && bearing_count > 0
+}
+
+fn update_joint_xray(
+    graph: Res<EditorGraph>,
+    state: Res<EditorState>,
+    simulation: Res<AppSimulation>,
+    selection: Res<SelectedTool>,
+    mut visibility: Single<&mut Visibility, With<JointXrayVisual>>,
+) {
+    **visibility = if joint_xray_is_visible(
+        selection.0,
+        simulation.is_running(),
+        graph.0.bearing_count() + state.placed_bearings.len(),
+    ) {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+}
+
 #[allow(
     clippy::type_complexity,
     clippy::too_many_arguments,
@@ -1557,6 +1788,8 @@ fn update_previews(
     mut meshes: ResMut<Assets<Mesh>>,
     mut rendered_block_revision: Local<u64>,
     mut rendered_delete_revision: Local<u64>,
+    mut rendered_weld_hover: Local<Option<PartId>>,
+    mut rendered_weld_selection: Local<Option<PartId>>,
     mut action: Single<
         (
             &mut Mesh3d,
@@ -1600,6 +1833,18 @@ fn update_previews(
     hide_preview(&mut action.2);
     hide_preview(&mut selection.2);
     hide_preview(&mut delete.2);
+
+    if selected_tool.0 == Tool::Weld {
+        if hovered_part(state.hovered).is_none() {
+            *rendered_weld_hover = None;
+        }
+        if !matches!(graph.0.pending(), Some(PendingOperation::Weld(_))) {
+            *rendered_weld_selection = None;
+        }
+    } else {
+        *rendered_weld_hover = None;
+        *rendered_weld_selection = None;
+    }
 
     if simulation.is_running() {
         return;
@@ -1685,28 +1930,39 @@ fn update_previews(
             }
         }
         (Tool::Weld, pending) => {
-            if let Some(part) = hovered_part(state.hovered)
-                && let Some(spec) = graph.0.part(part)
-            {
-                show_cuboid_preview(
-                    &mut action,
-                    &visuals.cube_preview_mesh,
-                    action_material,
-                    *spec,
-                    1.018,
-                );
+            if let Some(part) = hovered_part(state.hovered) {
+                if *rendered_weld_hover != Some(part) || graph.is_changed() {
+                    let specs = welded_body_parts(&graph.0, part)
+                        .into_iter()
+                        .filter_map(|member| graph.0.part(member).copied())
+                        .collect::<Vec<_>>();
+                    if let Some(mut mesh) = meshes.get_mut(&visuals.weld_hover_preview_mesh) {
+                        *mesh = combined_specs_mesh_scaled(&specs, 1.018);
+                    }
+                    *rendered_weld_hover = Some(part);
+                }
+                action.0.0 = visuals.weld_hover_preview_mesh.clone();
+                *action.1 = Transform::default();
+                action.3.0 = action_material.clone();
+                *action.2 = Visibility::Visible;
             }
             if let Some(PendingOperation::Weld(first)) = pending
                 && let FaceOwner::Part(part) = first.owner
-                && let Some(spec) = graph.0.part(part)
             {
-                show_cuboid_preview(
-                    &mut selection,
-                    &visuals.cube_preview_mesh,
-                    &visuals.white_preview_material,
-                    *spec,
-                    1.028,
-                );
+                if *rendered_weld_selection != Some(part) || graph.is_changed() {
+                    let specs = welded_body_parts(&graph.0, part)
+                        .into_iter()
+                        .filter_map(|member| graph.0.part(member).copied())
+                        .collect::<Vec<_>>();
+                    if let Some(mut mesh) = meshes.get_mut(&visuals.weld_selection_preview_mesh) {
+                        *mesh = combined_specs_mesh_scaled(&specs, 1.028);
+                    }
+                    *rendered_weld_selection = Some(part);
+                }
+                selection.0.0 = visuals.weld_selection_preview_mesh.clone();
+                *selection.1 = Transform::default();
+                selection.3.0 = visuals.white_preview_material.clone();
+                *selection.2 = Visibility::Visible;
             }
         }
         (Tool::Bearing, _) => {
@@ -1722,7 +1978,7 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Hammer, _) => {}
+        (Tool::Hammer | Tool::JointXray, _) => {}
     }
 }
 
@@ -1833,6 +2089,9 @@ fn update_help_text(
             (false, Tool::Hammer, _, _, _) => {
                 "Hammer is available while simulating — press Space".to_owned()
             }
+            (false, Tool::JointXray, _, _, _) => {
+                "All bearings are visible through the construction".to_owned()
+            }
         }
     };
     let mode = if simulation.is_running() {
@@ -1851,6 +2110,7 @@ fn update_help_text(
             (false, Tool::Block, true) => "Release Place   Right/Esc Cancel",
             (true, Tool::Hammer, _) => "Hold Left Hammer",
             (true, _, _) => "Left click No action",
+            (false, Tool::JointXray, _) => "Orbit/Pan Inspect   Right drag Delete",
             (false, _, _) => "Left click Action   Right drag Delete",
         }
     };
@@ -1868,7 +2128,8 @@ fn update_help_text(
     };
     text.0 = format!(
         "MECHANIC — {mode}\n\
-         {plane_controls}   P Load Showcase   Space Start/Stop\n\
+         {plane_controls}   P Open Creations   Space Start/Stop\n\
+         Ctrl/Cmd+Z Undo   Ctrl/Cmd+Shift+Z Redo\n\
          {action_controls}\n\
          Option+Left drag Orbit   Shift+Left drag Pan   Wheel Zoom\n\n\
          {tool_line}\n\
@@ -1956,11 +2217,22 @@ fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
 }
 
 fn combined_specs_mesh(specs: &[CuboidSpec]) -> Mesh {
+    combined_specs_mesh_scaled(specs, 1.0)
+}
+
+fn combined_specs_mesh_scaled(specs: &[CuboidSpec], scale_factor: f32) -> Mesh {
     let mut positions = Vec::with_capacity(specs.len() * CUBE_POSITIONS.len());
     let mut normals = Vec::with_capacity(specs.len() * CUBE_NORMALS.len());
     let mut indices = Vec::with_capacity(specs.len() * CUBE_INDICES.len());
     for spec in specs {
-        append_cuboid(spec, &mut positions, &mut normals, &mut indices);
+        append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.size_meters() * scale_factor,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
     }
 
     Mesh::new(
@@ -2181,8 +2453,9 @@ mod rendering_tests {
 
     use super::{
         BEARING_DEPTH, BEARING_DIAMETER, PlacedBearing, append_bearing_cylinder,
-        combined_bearing_mesh,
+        combined_bearing_mesh, joint_xray_is_visible,
     };
+    use crate::hotbar::Tool;
 
     #[test]
     fn bearing_visual_is_quarter_metre_wide_and_five_centimetres_each_side() {
@@ -2236,6 +2509,14 @@ mod rendering_tests {
         assert!(mesh.count_vertices() > 0);
         assert_eq!(graph.bearing_count(), 0);
     }
+
+    #[test]
+    fn joint_xray_is_build_only_and_requires_a_bearing() {
+        assert!(joint_xray_is_visible(Tool::JointXray, false, 1));
+        assert!(!joint_xray_is_visible(Tool::JointXray, true, 1));
+        assert!(!joint_xray_is_visible(Tool::JointXray, false, 0));
+        assert!(!joint_xray_is_visible(Tool::Block, false, 1));
+    }
 }
 
 #[cfg(test)]
@@ -2248,11 +2529,12 @@ mod interaction_tests {
     use mechanic_gpu::GpuTransform;
 
     use super::{
-        EditorGraph, EditorState, HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE,
-        PlacedBearing, PlacementPlane, SelectedTool, SurfaceHit, Tool,
-        bearing_attachment_candidate, candidate_from_hit, delete_sheet_parts,
-        hammer_impulse_magnitude, handle_block_actions, handle_tool_change, raycast_construction,
-        raycast_placed_bearings, raycast_simulation,
+        BlockAttachment, BlockDrag, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
+        HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, PlacedBearing, PlacementPlane,
+        SelectedTool, SurfaceHit, Tool, apply_history_action, bearing_attachment_candidate,
+        block_sheet_specs, candidate_from_hit, delete_sheet_parts, hammer_impulse_magnitude,
+        handle_block_actions, handle_tool_change, raycast_construction, raycast_placed_bearings,
+        raycast_simulation, welded_body_parts,
     };
 
     #[test]
@@ -2323,17 +2605,59 @@ mod interaction_tests {
 
         let mut app = App::new();
         app.insert_resource(EditorGraph(graph))
-            .insert_resource(EditorState {
-                showcase_replace_armed: true,
-                ..Default::default()
-            })
+            .insert_resource(EditorState::default())
             .insert_resource(SelectedTool(Tool::Bearing))
             .add_systems(Update, handle_tool_change);
 
         app.update();
 
         assert!(app.world().resource::<EditorGraph>().0.pending().is_none());
-        assert!(!app.world().resource::<EditorState>().showcase_replace_armed);
+    }
+
+    #[test]
+    fn weld_highlight_contains_the_entire_rigid_body_only() {
+        let mut graph = ConstructionGraph::new();
+        let specs = [
+            CuboidSpec::new(
+                [4, 4, 4],
+                BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+            )
+            .unwrap(),
+            CuboidSpec::new(
+                [4, 4, 4],
+                BuildPose::new(IVec3::new(0, 6, 0), GridRotation::default()),
+            )
+            .unwrap(),
+            CuboidSpec::new(
+                [4, 4, 4],
+                BuildPose::new(IVec3::new(0, 10, 0), GridRotation::default()),
+            )
+            .unwrap(),
+        ];
+        let parts = specs.map(|spec| {
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        graph
+            .apply(BuildCommand::Weld(mechanic_core::WeldSpec {
+                first: FaceRef::part(parts[0], FaceKind::PositiveY),
+                second: FaceRef::part(parts[1], FaceKind::NegativeY),
+            }))
+            .unwrap();
+        graph
+            .apply(BuildCommand::AddBearing(mechanic_core::BearingSpec::new(
+                FaceRef::part(parts[1], FaceKind::PositiveY),
+                FaceRef::part(parts[2], FaceKind::NegativeY),
+                Vec3::new(0.0, 2.0, 0.0),
+                Vec3::Y,
+            )))
+            .unwrap();
+
+        assert_eq!(welded_body_parts(&graph, parts[0]), parts[..2]);
+        assert_eq!(welded_body_parts(&graph, parts[2]), vec![parts[2]]);
     }
 
     #[test]
@@ -2351,17 +2675,63 @@ mod interaction_tests {
             ..Default::default()
         };
         let mut mouse = ButtonInput::default();
+        let mut history = EditorHistory::default();
 
         mouse.press(MouseButton::Left);
-        handle_block_actions(&mouse, &mut graph, &mut state);
+        handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 0);
         assert!(state.block_drag.is_some());
 
         mouse.clear();
         mouse.release(MouseButton::Left);
-        handle_block_actions(&mouse, &mut graph, &mut state);
+        handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 1);
         assert!(state.block_drag.is_none());
+        assert_eq!(history.undo.len(), 1);
+    }
+
+    #[test]
+    fn dragged_placement_is_one_atomic_history_step() {
+        let mut graph = ConstructionGraph::new();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: FaceRef::ground(),
+        };
+        let candidate = candidate_from_hit(&graph, hit);
+        let endpoint = candidate.spec.pose.translation_half_units() + IVec3::new(4, 0, 2);
+        let specs = block_sheet_specs(candidate.spec, endpoint, PlacementPlane::Xz).unwrap();
+        let mut state = EditorState {
+            block_drag: Some(BlockDrag {
+                start: candidate,
+                attachment: BlockAttachment::AutoWeld,
+                plane: PlacementPlane::Xz,
+                last_endpoint: Some((PlacementPlane::Xz, endpoint)),
+                specs,
+                error: None,
+            }),
+            ..Default::default()
+        };
+        let mut history = EditorHistory::default();
+        let mut mouse = ButtonInput::default();
+        mouse.press(MouseButton::Left);
+        mouse.clear();
+        mouse.release(MouseButton::Left);
+
+        handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
+
+        assert_eq!(graph.part_count(), 6);
+        assert_eq!(graph.weld_count(), 13);
+        assert_eq!(history.undo.len(), 1);
+        apply_history_action(
+            HistoryAction::Undo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+        assert_eq!(graph.part_count(), 0);
+        assert_eq!(graph.weld_count(), 0);
     }
 
     #[test]
@@ -2401,8 +2771,9 @@ mod interaction_tests {
         assert_eq!(graph.bearing_count(), 0);
 
         let mut mouse = ButtonInput::default();
+        let mut history = EditorHistory::default();
         mouse.press(MouseButton::Left);
-        handle_block_actions(&mouse, &mut graph, &mut state);
+        handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.bearing_count(), 0);
         assert_eq!(state.placed_bearings.len(), 1);
@@ -2410,7 +2781,7 @@ mod interaction_tests {
 
         mouse.clear();
         mouse.release(MouseButton::Left);
-        handle_block_actions(&mouse, &mut graph, &mut state);
+        handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
 
         assert!(state.placed_bearings.is_empty());
         assert_eq!(graph.part_count(), 2);
@@ -2452,6 +2823,274 @@ mod interaction_tests {
 }
 
 #[cfg(test)]
+mod history_tests {
+    use bevy::prelude::{ButtonInput, IVec3, KeyCode, Vec3};
+    use mechanic_core::{
+        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
+        FaceKind, FaceRef, GridRotation, PendingOperation, WeldSpec,
+    };
+
+    use super::{
+        BlockAttachment, BlockDrag, DeleteDrag, DeleteTarget, EditorHistory, EditorSnapshot,
+        EditorState, HISTORY_CAPACITY, HistoryAction, PlacedBearing, PlacementPlane, SurfaceHit,
+        apply_history_action, bearing_attachment_candidate, requested_history_action,
+        stage_bearing_attachment,
+    };
+
+    fn spawn_cube(graph: &mut ConstructionGraph, center: IVec3) -> mechanic_core::PartId {
+        let spec =
+            CuboidSpec::new([4; 3], BuildPose::new(center, GridRotation::default())).unwrap();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap() else {
+            unreachable!()
+        };
+        part
+    }
+
+    #[test]
+    fn control_and_command_z_choose_undo_and_shift_redo() {
+        for modifier in [
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+            KeyCode::SuperLeft,
+            KeyCode::SuperRight,
+        ] {
+            let mut keyboard = ButtonInput::default();
+            keyboard.press(modifier);
+            keyboard.press(KeyCode::KeyZ);
+            assert_eq!(
+                requested_history_action(&keyboard),
+                Some(HistoryAction::Undo)
+            );
+
+            keyboard.press(KeyCode::ShiftLeft);
+            assert_eq!(
+                requested_history_action(&keyboard),
+                Some(HistoryAction::Redo)
+            );
+        }
+
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::ControlLeft);
+        keyboard.press(KeyCode::KeyY);
+        assert_eq!(requested_history_action(&keyboard), None);
+    }
+
+    #[test]
+    fn bearing_attachment_round_trips_exact_ids_and_cancels_transients() {
+        let mut graph = ConstructionGraph::new();
+        let support = spawn_cube(&mut graph, IVec3::new(0, 2, 0));
+        let socket = PlacedBearing {
+            source: FaceRef::part(support, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+        };
+        let mut state = EditorState {
+            placed_bearings: vec![socket],
+            ..Default::default()
+        };
+        let mut history = EditorHistory::default();
+        let previous = EditorSnapshot::capture(&graph, &state);
+        let candidate = bearing_attachment_candidate(&graph, socket.source, socket.anchor);
+        graph = stage_bearing_attachment(&graph, candidate, socket.source, socket.anchor).unwrap();
+        state.placed_bearings.clear();
+        history.commit(previous);
+        let attached_parts = graph.parts().map(|(id, _)| id).collect::<Vec<_>>();
+        let attached_bearings = graph.bearings().map(|(id, _)| id).collect::<Vec<_>>();
+
+        graph
+            .apply(BuildCommand::BeginPending(PendingOperation::Weld(
+                FaceRef::part(support, FaceKind::PositiveX),
+            )))
+            .unwrap();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::Y,
+            face: FaceRef::part(support, FaceKind::PositiveY),
+        };
+        state.hovered = Some(hit);
+        state.preview = Some(candidate);
+        state.block_drag = Some(BlockDrag {
+            start: candidate,
+            attachment: BlockAttachment::AutoWeld,
+            plane: PlacementPlane::Xz,
+            last_endpoint: None,
+            specs: vec![candidate.spec],
+            error: None,
+        });
+        state.delete_drag = Some(DeleteDrag {
+            start: *graph.part(support).unwrap(),
+            plane: PlacementPlane::Xz,
+            last_endpoint: None,
+            parts: vec![support],
+            error: None,
+        });
+        state.delete_target = Some(DeleteTarget::PlacedBearing(0));
+
+        apply_history_action(
+            HistoryAction::Undo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+
+        assert_eq!(graph.part_count(), 1);
+        assert_eq!(graph.bearing_count(), 0);
+        assert_eq!(state.placed_bearings, vec![socket]);
+        assert!(graph.pending().is_none());
+        assert!(state.block_drag.is_none());
+        assert!(state.delete_drag.is_none());
+        assert!(state.delete_target.is_none());
+        assert!(state.hovered.is_none());
+        assert!(state.preview.is_none());
+        assert!(state.construction_mesh_dirty);
+
+        apply_history_action(
+            HistoryAction::Redo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+
+        assert_eq!(
+            graph.parts().map(|(id, _)| id).collect::<Vec<_>>(),
+            attached_parts
+        );
+        assert_eq!(
+            graph.bearings().map(|(id, _)| id).collect::<Vec<_>>(),
+            attached_bearings
+        );
+        assert!(state.placed_bearings.is_empty());
+    }
+
+    #[test]
+    fn dragged_deletion_restores_connections_atomically() {
+        let mut graph = ConstructionGraph::new();
+        let parts = [
+            spawn_cube(&mut graph, IVec3::new(0, 2, 0)),
+            spawn_cube(&mut graph, IVec3::new(0, 6, 0)),
+            spawn_cube(&mut graph, IVec3::new(0, 10, 0)),
+        ];
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::ground(),
+                second: FaceRef::part(parts[0], FaceKind::NegativeY),
+            }))
+            .unwrap();
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(parts[0], FaceKind::PositiveY),
+                second: FaceRef::part(parts[1], FaceKind::NegativeY),
+            }))
+            .unwrap();
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(parts[1], FaceKind::PositiveY),
+                FaceRef::part(parts[2], FaceKind::NegativeY),
+                Vec3::new(0.0, 2.0, 0.0),
+                Vec3::Y,
+            )))
+            .unwrap();
+        let original_part_ids = graph.parts().map(|(id, _)| id).collect::<Vec<_>>();
+        let original_weld_ids = graph.welds().map(|(id, _)| id).collect::<Vec<_>>();
+        let original_bearing_ids = graph.bearings().map(|(id, _)| id).collect::<Vec<_>>();
+        let mut state = EditorState::default();
+        let mut history = EditorHistory::default();
+        let previous = EditorSnapshot::capture(&graph, &state);
+
+        graph
+            .apply_batch(parts[..2].iter().copied().map(BuildCommand::Remove))
+            .unwrap();
+        history.commit(previous);
+        assert_eq!(history.undo.len(), 1);
+        assert_eq!(graph.part_count(), 1);
+        assert_eq!(graph.weld_count(), 0);
+        assert_eq!(graph.bearing_count(), 0);
+
+        apply_history_action(
+            HistoryAction::Undo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+        assert_eq!(
+            graph.parts().map(|(id, _)| id).collect::<Vec<_>>(),
+            original_part_ids
+        );
+        assert_eq!(
+            graph.welds().map(|(id, _)| id).collect::<Vec<_>>(),
+            original_weld_ids
+        );
+        assert_eq!(
+            graph.bearings().map(|(id, _)| id).collect::<Vec<_>>(),
+            original_bearing_ids
+        );
+    }
+
+    #[test]
+    fn history_is_bounded_and_new_edits_clear_only_redo() {
+        let graph = ConstructionGraph::new();
+        let mut state = EditorState::default();
+        let mut history = EditorHistory::default();
+        for _ in 0..=HISTORY_CAPACITY {
+            history.commit(EditorSnapshot::capture(&graph, &state));
+        }
+        assert_eq!(history.undo.len(), HISTORY_CAPACITY);
+
+        apply_history_action(
+            HistoryAction::Undo,
+            &mut graph.clone(),
+            &mut state,
+            &mut history,
+            false,
+        );
+        assert_eq!(history.redo.len(), 1);
+        state.feedback = Some("camera and tool changes are transient".to_owned());
+        assert_eq!(history.redo.len(), 1);
+
+        history.commit(EditorSnapshot::capture(&graph, &state));
+        assert!(history.redo.is_empty());
+        assert_eq!(history.undo.len(), HISTORY_CAPACITY);
+    }
+
+    #[test]
+    fn simulation_and_empty_stacks_report_guidance_without_mutation() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawn_cube(&mut graph, IVec3::new(0, 2, 0));
+        let mut state = EditorState::default();
+        let mut history = EditorHistory::default();
+
+        apply_history_action(
+            HistoryAction::Undo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            true,
+        );
+        assert_eq!(graph.parts().next().unwrap().0, part);
+        assert!(state.feedback.as_deref().unwrap().contains("build mode"));
+
+        apply_history_action(
+            HistoryAction::Undo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+        assert_eq!(state.feedback.as_deref(), Some("Nothing to undo"));
+        apply_history_action(
+            HistoryAction::Redo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+        assert_eq!(state.feedback.as_deref(), Some("Nothing to redo"));
+    }
+}
+
+#[cfg(test)]
 mod showcase_loading_tests {
     use std::time::Duration;
 
@@ -2460,8 +3099,8 @@ mod showcase_loading_tests {
     use mechanic_gpu::FixedStepScheduler;
 
     use super::{
-        ConstructionGraph, EditorState, install_editor_graph, is_showcase_graph,
-        next_simulation_tick, showcase, showcase_press_requests_load,
+        ConstructionGraph, EditorHistory, EditorSnapshot, EditorState, HistoryAction,
+        apply_history_action, install_editor_graph, next_simulation_tick, showcase,
     };
 
     #[test]
@@ -2481,35 +3120,35 @@ mod showcase_loading_tests {
     }
 
     #[test]
-    fn empty_editor_loads_without_confirmation() {
-        let mut armed = false;
-        assert!(showcase_press_requests_load(0, &mut armed));
-        assert!(!armed);
-
+    fn selected_creation_replaces_editor_and_round_trips_history() {
         let mut graph = ConstructionGraph::new();
-        let creation = install_editor_graph(&mut graph, showcase::build().unwrap()).unwrap();
-        assert_eq!(graph.part_count(), showcase::PART_COUNT);
-        assert_eq!(creation.compounds.len(), showcase::COMPOUND_COUNT);
-        assert!(is_showcase_graph(&graph));
-    }
+        let mut state = EditorState::default();
+        let mut history = EditorHistory::default();
+        let previous = EditorSnapshot::capture(&graph, &state);
+        let preset = showcase::CreationPreset::PendulumGarden256;
+        let creation =
+            install_editor_graph(&mut graph, showcase::build_preset(preset).unwrap()).unwrap();
+        history.commit(previous);
+        assert_eq!(graph.part_count(), preset.part_count());
+        assert_eq!(creation.compounds.len(), preset.part_count());
+        assert!(preset.matches(&graph));
 
-    #[test]
-    fn populated_editor_requires_two_consecutive_presses() {
-        let mut armed = false;
-        assert!(!showcase_press_requests_load(1, &mut armed));
-        assert!(armed);
-        assert!(showcase_press_requests_load(1, &mut armed));
-        assert!(!armed);
-    }
-
-    #[test]
-    fn another_editor_action_cancels_replacement() {
-        let mut state = EditorState {
-            showcase_replace_armed: true,
-            ..Default::default()
-        };
-        state.cancel_showcase_replacement();
-        assert!(!state.showcase_replace_armed);
+        apply_history_action(
+            HistoryAction::Undo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+        assert_eq!(graph.part_count(), 0);
+        apply_history_action(
+            HistoryAction::Redo,
+            &mut graph,
+            &mut state,
+            &mut history,
+            false,
+        );
+        assert!(preset.matches(&graph));
     }
 
     #[test]

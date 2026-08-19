@@ -1,4 +1,8 @@
-use std::{cmp::Ordering, fmt};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 use bevy::prelude::*;
 use mechanic_core::{
@@ -264,6 +268,11 @@ fn stage_connected_block_batch(
         )));
     }
     for (index, &part) in new_parts.iter().enumerate() {
+        if let Some((first, second)) =
+            touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Ground)
+        {
+            connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+        }
         for &other in existing_parts.iter().chain(&new_parts[..index]) {
             if bearing.is_some_and(|(source, _)| source.owner == FaceOwner::Part(other)) {
                 continue;
@@ -391,7 +400,7 @@ pub(crate) fn stage_weld_objects(
     if first == second {
         return Err(PlacementError::SameObject);
     }
-    let Some((first_face, second_face)) = touching_face_pair(graph, first, second) else {
+    let Some((first_face, second_face)) = touching_weld_face_pair(graph, first, second) else {
         return Err(PlacementError::ObjectsDoNotTouch);
     };
     let mut staged = graph.clone();
@@ -402,6 +411,59 @@ pub(crate) fn stage_weld_objects(
         }))
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
     Ok(staged)
+}
+
+fn touching_weld_face_pair(
+    graph: &ConstructionGraph,
+    first: FaceOwner,
+    second: FaceOwner,
+) -> Option<(FaceRef, FaceRef)> {
+    match (first, second) {
+        (FaceOwner::Ground, FaceOwner::Part(part)) => welded_body_parts(graph, part)
+            .into_iter()
+            .find_map(|member| {
+                touching_face_pair(graph, FaceOwner::Ground, FaceOwner::Part(member))
+            }),
+        (FaceOwner::Part(part), FaceOwner::Ground) => welded_body_parts(graph, part)
+            .into_iter()
+            .find_map(|member| {
+                touching_face_pair(graph, FaceOwner::Part(member), FaceOwner::Ground)
+            }),
+        _ => touching_face_pair(graph, first, second),
+    }
+}
+
+pub(crate) fn welded_body_parts(graph: &ConstructionGraph, seed: PartId) -> Vec<PartId> {
+    if graph.part(seed).is_none() {
+        return Vec::new();
+    }
+
+    let mut neighbours = HashMap::<PartId, Vec<PartId>>::new();
+    for (_, weld) in graph.welds() {
+        if let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+            (weld.first.owner, weld.second.owner)
+        {
+            neighbours.entry(first).or_default().push(second);
+            neighbours.entry(second).or_default().push(first);
+        }
+    }
+
+    let mut members = HashSet::from([seed]);
+    let mut pending = vec![seed];
+    while let Some(part) = pending.pop() {
+        if let Some(connected) = neighbours.get(&part) {
+            for &candidate in connected {
+                if members.insert(candidate) {
+                    pending.push(candidate);
+                }
+            }
+        }
+    }
+
+    graph
+        .parts()
+        .filter_map(|(part, _)| members.contains(&part).then_some(part))
+        .collect()
 }
 
 pub(crate) fn bearing_anchor_from_hit(
@@ -748,7 +810,7 @@ mod tests {
     use bevy::prelude::{IVec3, Vec3};
     use mechanic_core::{
         BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec, FaceKind, FaceOwner,
-        FaceRef, GridRotation, PendingOperation,
+        FaceRef, GridRotation, PendingOperation, WeldSpec,
     };
 
     use super::{
@@ -877,7 +939,7 @@ mod tests {
                 stage_bearing_attachment(&graph, bearing_candidate, source, source_face.center)
                     .unwrap();
             assert_eq!(attached.bearing_count(), 1);
-            assert_eq!(attached.weld_count(), 0);
+            assert_eq!(attached.weld_count(), 2);
         }
     }
 
@@ -912,6 +974,25 @@ mod tests {
     }
 
     #[test]
+    fn single_block_placed_on_ground_is_automatically_welded() {
+        let graph = ConstructionGraph::new();
+        let candidate = candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            },
+        );
+
+        let graph = stage_cuboid(&graph, candidate).unwrap();
+
+        assert_eq!(graph.part_count(), 1);
+        assert_eq!(graph.weld_count(), 1);
+        assert!(graph.compile().unwrap().compounds[0].is_static);
+    }
+
+    #[test]
     fn dragged_sheet_is_face_connected_and_welded() {
         let graph = ConstructionGraph::new();
         let start = candidate_from_hit(
@@ -928,8 +1009,10 @@ mod tests {
         let graph = stage_block_batch(&graph, start, &specs).unwrap();
 
         assert_eq!(graph.part_count(), 6);
-        assert_eq!(graph.weld_count(), 7);
-        assert_eq!(graph.compile().unwrap().compounds.len(), 1);
+        assert_eq!(graph.weld_count(), 13);
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.compounds.len(), 1);
+        assert!(compiled.compounds[0].is_static);
     }
 
     #[test]
@@ -996,6 +1079,37 @@ mod tests {
         let compiled = graph.compile().unwrap();
         assert_eq!(compiled.compounds.len(), 1);
         assert_eq!(compiled.compounds[0].source_parts.len(), 2);
+    }
+
+    #[test]
+    fn weld_to_ground_resolves_contact_across_the_selected_rigid_body() {
+        let mut graph = ConstructionGraph::new();
+        let parts = [IVec3::new(0, 1, 0), IVec3::new(0, 3, 0)].map(|center| {
+            let spec = CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let [bottom, top] = parts;
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(bottom, FaceKind::PositiveY),
+                second: FaceRef::part(top, FaceKind::NegativeY),
+            }))
+            .unwrap();
+
+        let grounded = stage_weld_objects(&graph, FaceOwner::Part(top), FaceOwner::Ground).unwrap();
+
+        assert_eq!(grounded.weld_count(), 2);
+        let compiled = grounded.compile().unwrap();
+        assert_eq!(compiled.compounds.len(), 1);
+        assert!(compiled.compounds[0].is_static);
     }
 
     #[test]

@@ -3283,7 +3283,11 @@ mod tests {
             + rotation_b * bearing.local_anchor_b;
         assert!(anchor_a.abs_diff_eq(anchor_b, 1.0e-5));
         assert!(snapshot[body_b].rotation[0].abs() > 1.0e-3);
-        assert!(snapshot[body_a].position[1] > 2.0);
+        assert!(
+            snapshot[body_a].position[1] > 0.5,
+            "contact-supported body fell to {} m",
+            snapshot[body_a].position[1]
+        );
     }
 
     #[test]

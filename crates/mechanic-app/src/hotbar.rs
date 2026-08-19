@@ -3,6 +3,8 @@ use bevy::{
     ui::{FocusPolicy, RelativeCursorPosition},
 };
 
+use crate::creation_menu::CreationMenuState;
+
 const SLOT_SIZE: f32 = 64.0;
 const ICON_COLOR: Color = Color::srgb(0.82, 0.90, 0.97);
 const BEARING_COLOR: Color = Color::srgb(0.95, 0.58, 0.08);
@@ -20,6 +22,7 @@ pub(crate) enum Tool {
     Bearing,
     Weld,
     Hammer,
+    JointXray,
 }
 
 impl Tool {
@@ -29,6 +32,7 @@ impl Tool {
             Self::Bearing => "Bearing",
             Self::Weld => "Weld",
             Self::Hammer => "Hammer",
+            Self::JointXray => "Joint X-ray",
         }
     }
 
@@ -38,6 +42,7 @@ impl Tool {
             Self::Bearing => "2",
             Self::Weld => "3",
             Self::Hammer => "4",
+            Self::JointXray => "5",
         }
     }
 
@@ -56,6 +61,7 @@ pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
         KeyCode::Digit2 => Some(Tool::Bearing),
         KeyCode::Digit3 => Some(Tool::Weld),
         KeyCode::Digit4 => Some(Tool::Hammer),
+        KeyCode::Digit5 => Some(Tool::JointXray),
         _ => None,
     }
 }
@@ -135,7 +141,13 @@ pub(crate) fn spawn(commands: &mut Commands) {
                 FocusPolicy::Pass,
             ))
             .with_children(|bar| {
-                for tool in [Tool::Block, Tool::Bearing, Tool::Weld, Tool::Hammer] {
+                for tool in [
+                    Tool::Block,
+                    Tool::Bearing,
+                    Tool::Weld,
+                    Tool::Hammer,
+                    Tool::JointXray,
+                ] {
                     spawn_slot(bar, tool);
                 }
             });
@@ -192,6 +204,7 @@ fn spawn_icon(parent: &mut ChildSpawnerCommands<'_>, tool: Tool) {
             Tool::Bearing => spawn_bearing_icon(icon),
             Tool::Weld => spawn_weld_icon(icon),
             Tool::Hammer => spawn_hammer_icon(icon),
+            Tool::JointXray => spawn_joint_xray_icon(icon),
         });
 }
 
@@ -237,6 +250,28 @@ fn spawn_bearing_icon(icon: &mut ChildSpawnerCommands<'_>) {
         },
         BorderColor::all(BEARING_COLOR),
     ));
+}
+
+fn spawn_joint_xray_icon(icon: &mut ChildSpawnerCommands<'_>) {
+    for inset in [3.0, 11.0] {
+        icon.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(inset),
+                top: px(inset),
+                width: px(40.0 - inset * 2.0),
+                height: px(40.0 - inset * 2.0),
+                border: UiRect::all(px(2)),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BorderColor::all(if inset < 10.0 {
+                Color::srgba(0.20, 0.88, 1.0, 0.55)
+            } else {
+                Color::srgb(0.20, 0.95, 1.0)
+            }),
+        ));
+    }
 }
 
 fn spawn_weld_icon(icon: &mut ChildSpawnerCommands<'_>) {
@@ -302,6 +337,7 @@ fn spawn_hammer_icon(icon: &mut ChildSpawnerCommands<'_>) {
 pub(crate) fn update(
     mut selection: ResMut<SelectedTool>,
     mut capture: ResMut<HotbarPointerCapture>,
+    menu: Res<CreationMenuState>,
     mut slots: Query<
         (
             &Interaction,
@@ -314,6 +350,11 @@ pub(crate) fn update(
     surface: Single<&RelativeCursorPosition, With<HotbarSurface>>,
     mut tooltip: Single<(&mut Text, &mut Visibility), With<HotbarTooltip>>,
 ) {
+    if menu.blocks_pointer() {
+        capture.0 = true;
+        *tooltip.1 = Visibility::Hidden;
+        return;
+    }
     capture.0 = surface.cursor_over();
     let mut hovered = None;
     let mut requested = None;
@@ -366,6 +407,7 @@ mod tests {
         HotbarPointerCapture, HotbarSlot, HotbarSurface, HotbarTooltip, SelectedTool, Tool,
         shortcut_tool, update,
     };
+    use crate::creation_menu::CreationMenuState;
 
     #[test]
     fn numbered_shortcuts_follow_hotbar_order() {
@@ -373,11 +415,12 @@ mod tests {
         assert_eq!(shortcut_tool(KeyCode::Digit2), Some(Tool::Bearing));
         assert_eq!(shortcut_tool(KeyCode::Digit3), Some(Tool::Weld));
         assert_eq!(shortcut_tool(KeyCode::Digit4), Some(Tool::Hammer));
+        assert_eq!(shortcut_tool(KeyCode::Digit5), Some(Tool::JointXray));
     }
 
     #[test]
     fn tools_act_only_in_their_supported_mode() {
-        for tool in [Tool::Block, Tool::Bearing, Tool::Weld] {
+        for tool in [Tool::Block, Tool::Bearing, Tool::Weld, Tool::JointXray] {
             assert!(tool.works_in_mode(false));
             assert!(!tool.works_in_mode(true));
         }
@@ -390,6 +433,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<SelectedTool>()
             .init_resource::<HotbarPointerCapture>()
+            .init_resource::<CreationMenuState>()
             .add_systems(Update, update);
         app.world_mut().spawn((
             Button,
@@ -421,6 +465,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<SelectedTool>()
             .init_resource::<HotbarPointerCapture>()
+            .init_resource::<CreationMenuState>()
             .add_systems(Update, update);
         app.world_mut().spawn((
             Button,
