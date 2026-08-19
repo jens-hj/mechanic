@@ -85,6 +85,7 @@ const MAX_MANIFOLD_PROBES: u32 = 256u;
 @group(0) @binding(24) var<storage, read> masses: array<Mass>;
 @group(0) @binding(25) var<storage, read_write> angular_velocities: array<vec4<f32>>;
 @group(0) @binding(26) var<storage, read_write> world_masses: array<WorldMass>;
+@group(0) @binding(27) var<storage, read> body_components: array<u32>;
 
 fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(
@@ -415,6 +416,41 @@ fn acquire_manifold(collider_a: u32, collider_b: u32) -> u32 {
     return INVALID_MANIFOLD_SLOT;
 }
 
+fn emit_narrowphase_contact(pair: vec2<u32>) {
+    let body_a = colliders[pair.x].metadata.x;
+    let body_b = colliders[pair.y].metadata.x;
+    let sat = obb_sat(pair.x, pair.y);
+    if sat.penetration < -1.0e-5 {
+        return;
+    }
+    let contact_point = (collider_center(pair.x) + collider_center(pair.y)) * 0.5;
+    let output = atomicAdd(&diagnostics[2], 1u);
+    if output < config.pair_capacity {
+        contacts[output].metadata = vec4<u32>(
+            body_a,
+            body_b,
+            pair.x,
+            pair.y,
+        );
+        contacts[output].normal_penetration = vec4<f32>(sat.normal, max(sat.penetration, 0.0));
+        if sat.near_face_axes >= 2u {
+            contacts[output].arm_a_impulse = vec4<f32>(0.0);
+            contacts[output].arm_b = vec4<f32>(0.0, 0.0, 0.0, f32(sat.near_face_axes));
+        } else {
+            contacts[output].arm_a_impulse = vec4<f32>(
+                contact_point - positions[colliders[pair.x].metadata.x].xyz,
+                0.0,
+            );
+            contacts[output].arm_b = vec4<f32>(
+                contact_point - positions[colliders[pair.y].metadata.x].xyz,
+                f32(sat.near_face_axes),
+            );
+        }
+    } else {
+        atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
+    }
+}
+
 @compute @workgroup_size(256)
 fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let pair_index = invocation.x;
@@ -452,6 +488,23 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
         }
     } else {
         atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
+    }
+}
+
+@compute @workgroup_size(256)
+fn narrowphase_without_mechanism_self_collisions(
+    @builtin(global_invocation_id) invocation: vec3<u32>,
+) {
+    let pair_index = invocation.x;
+    let pair_count = min(atomicLoad(&diagnostics[1]), config.pair_capacity);
+    if pair_index >= pair_count {
+        return;
+    }
+    let pair = pairs[pair_index];
+    let body_a = colliders[pair.x].metadata.x;
+    let body_b = colliders[pair.y].metadata.x;
+    if body_components[body_a] != body_components[body_b] {
+        emit_narrowphase_contact(pair);
     }
 }
 

@@ -11,6 +11,10 @@ const CONTACT_EPSILON: f32 = 1.0e-5;
 const GRID_UNIT_METERS: f32 = 0.25;
 pub(crate) const BEARING_DIAMETER: f32 = 0.25;
 pub(crate) const BEARING_DEPTH: f32 = 0.10;
+pub(crate) const MAX_DRAG_BLOCKS: usize = 4_096;
+pub(crate) const BLOCK_SIZE_METERS: f32 = GRID_UNIT_METERS;
+const BLOCK_SIZE_UNITS: u8 = 1;
+const HALF_GRID_UNIT_METERS: f32 = GRID_UNIT_METERS * 0.5;
 
 const ALL_FACES: [FaceKind; 6] = [
     FaceKind::PositiveX,
@@ -21,50 +25,52 @@ const ALL_FACES: [FaceKind; 6] = [
     FaceKind::NegativeZ,
 ];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum BuildTool {
-    #[default]
-    Cuboid,
-    Weld,
-    Bearing,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlacementPlane {
+    Xy,
+    Xz,
+    Yz,
 }
 
-impl BuildTool {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Cuboid => "Cuboid",
-            Self::Weld => "Weld",
-            Self::Bearing => "Bearing",
+impl PlacementPlane {
+    pub(crate) fn from_normal(normal: Vec3) -> Self {
+        match cardinal_axis(normal).0 {
+            0 => Self::Yz,
+            1 => Self::Xz,
+            _ => Self::Xy,
         }
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SizePreset(usize);
-
-impl Default for SizePreset {
-    fn default() -> Self {
-        Self(1)
-    }
-}
-
-impl SizePreset {
-    const UNITS: [u8; 3] = [2, 4, 8];
-
-    pub(crate) const fn units(self) -> u8 {
-        Self::UNITS[self.0]
+    pub(crate) const fn cycle(self) -> Self {
+        match self {
+            Self::Xz => Self::Xy,
+            Self::Xy => Self::Yz,
+            Self::Yz => Self::Xz,
+        }
     }
 
-    pub(crate) fn meters(self) -> f32 {
-        f32::from(self.units()) * GRID_UNIT_METERS
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Xy => "XY",
+            Self::Xz => "XZ",
+            Self::Yz => "YZ",
+        }
     }
 
-    pub(crate) fn smaller(&mut self) {
-        self.0 = self.0.saturating_sub(1);
+    const fn normal_axis(self) -> usize {
+        match self {
+            Self::Xy => 2,
+            Self::Xz => 1,
+            Self::Yz => 0,
+        }
     }
 
-    pub(crate) fn larger(&mut self) {
-        self.0 = (self.0 + 1).min(Self::UNITS.len() - 1);
+    const fn tangent_axes(self) -> [usize; 2] {
+        match self {
+            Self::Xy => [0, 1],
+            Self::Xz => [0, 2],
+            Self::Yz => [1, 2],
+        }
     }
 }
 
@@ -73,6 +79,13 @@ pub(crate) struct SurfaceHit {
     pub(crate) distance: f32,
     pub(crate) point: Vec3,
     pub(crate) face: FaceRef,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OrientedCuboidHit {
+    pub(crate) distance: f32,
+    pub(crate) point: Vec3,
+    pub(crate) local_normal: Vec3,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +104,10 @@ pub(crate) enum PlacementError {
     BearingOutsideFace,
     SameObject,
     ObjectsDoNotTouch,
+    EmptyBlockBatch,
+    BlocksOverlap,
+    DragPlaneUnavailable,
+    TooManyBlocks { count: usize, maximum: usize },
     Graph(String),
 }
 
@@ -106,6 +123,17 @@ impl fmt::Display for PlacementError {
             }
             Self::SameObject => formatter.write_str("select two different objects"),
             Self::ObjectsDoNotTouch => formatter.write_str("the selected objects do not touch"),
+            Self::EmptyBlockBatch => formatter.write_str("block drag did not produce any blocks"),
+            Self::BlocksOverlap => formatter.write_str("dragged blocks overlap one another"),
+            Self::DragPlaneUnavailable => {
+                formatter.write_str("camera ray does not reach the selected drag plane")
+            }
+            Self::TooManyBlocks { count, maximum } => {
+                write!(
+                    formatter,
+                    "drag would place {count} blocks; maximum is {maximum}"
+                )
+            }
             Self::Graph(error) => formatter.write_str(error),
         }
     }
@@ -143,23 +171,19 @@ pub(crate) fn raycast_construction(
         })
 }
 
-pub(crate) fn candidate_from_hit(
-    graph: &ConstructionGraph,
-    size: SizePreset,
-    hit: SurfaceHit,
-) -> PlacementCandidate {
+pub(crate) fn candidate_from_hit(graph: &ConstructionGraph, hit: SurfaceHit) -> PlacementCandidate {
     let support = face_geometry_from_ref(hit.face, Some(graph));
-    let half_units = i32::from(size.units()) / 2;
-    let mut center_units = snap_world_to_grid(hit.point);
-    let plane_units = snap_world_to_grid(support.center);
+    let support_center_half_units = snap_world_to_half_grid(support.center);
+    let mut center_half_units =
+        support_center_half_units + snap_world_to_grid(hit.point - support.center) * 2;
     let (axis, sign) = cardinal_axis(support.normal);
-    center_units[axis] = plane_units[axis] + sign * half_units;
+    center_half_units[axis] = support_center_half_units[axis] + sign;
 
     let spec = CuboidSpec::new(
-        [size.units(); 3],
-        BuildPose::new(center_units, GridRotation::default()),
+        [BLOCK_SIZE_UNITS; 3],
+        BuildPose::from_half_grid(center_half_units, GridRotation::default()),
     )
-    .expect("size presets are valid core dimensions");
+    .expect("the fixed block size is a valid core dimension");
     let attached_face = face_for_normal(-support.normal);
     let candidate_face = face_geometry(spec, attached_face);
     let anchor = overlap_center(support, candidate_face);
@@ -170,19 +194,183 @@ pub(crate) fn candidate_from_hit(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn stage_cuboid(
     graph: &ConstructionGraph,
     candidate: PlacementCandidate,
 ) -> Result<ConstructionGraph, PlacementError> {
-    validate_candidate(graph, candidate)?;
+    stage_block_batch(graph, candidate, &[candidate.spec])
+}
+
+pub(crate) fn stage_block_batch(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    specs: &[CuboidSpec],
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_block_batch(graph, start, specs, None)
+}
+
+pub(crate) fn stage_bearing_block_batch(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    specs: &[CuboidSpec],
+    source: FaceRef,
+    anchor: Vec3,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_block_batch(graph, start, specs, Some((source, anchor)))
+}
+
+fn stage_connected_block_batch(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    specs: &[CuboidSpec],
+    bearing: Option<(FaceRef, Vec3)>,
+) -> Result<ConstructionGraph, PlacementError> {
+    validate_block_batch(graph, start, specs)?;
+    for (index, spec) in specs.iter().enumerate() {
+        for other in &specs[..index] {
+            let (minimum, maximum) = world_bounds(*spec);
+            let (other_minimum, other_maximum) = world_bounds(*other);
+            if bounds_overlap_interior(minimum, maximum, other_minimum, other_maximum) {
+                return Err(PlacementError::BlocksOverlap);
+            }
+        }
+    }
+
+    let existing_parts = graph.parts().map(|(part, _)| part).collect::<Vec<_>>();
     let mut staged = graph.clone();
-    let BuildOutcome::Spawned(_) = staged
-        .apply(BuildCommand::Spawn(candidate.spec))
-        .map_err(|error| PlacementError::Graph(error.to_string()))?
-    else {
-        unreachable!("spawn commands always return a spawned part")
-    };
+    let outcomes = staged
+        .apply_batch(specs.iter().copied().map(BuildCommand::Spawn))
+        .map_err(|error| PlacementError::Graph(error.to_string()))?;
+    let new_parts = outcomes
+        .into_iter()
+        .map(|outcome| match outcome {
+            BuildOutcome::Spawned(part) => part,
+            _ => unreachable!("spawn batch contains only spawn commands"),
+        })
+        .collect::<Vec<_>>();
+
+    let mut connections = Vec::new();
+    if let Some((source, anchor)) = bearing {
+        let first = *new_parts
+            .first()
+            .expect("validated block batches are never empty");
+        let axis = face_geometry_from_ref(source, Some(graph)).normal;
+        connections.push(BuildCommand::AddBearing(BearingSpec::new(
+            source,
+            FaceRef::part(first, start.attached_face),
+            anchor,
+            axis,
+        )));
+    }
+    for (index, &part) in new_parts.iter().enumerate() {
+        for &other in existing_parts.iter().chain(&new_parts[..index]) {
+            if bearing.is_some_and(|(source, _)| source.owner == FaceOwner::Part(other)) {
+                continue;
+            }
+            if let Some((first, second)) =
+                touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Part(other))
+            {
+                connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+            }
+        }
+    }
+    staged
+        .apply_batch(connections)
+        .map_err(|error| PlacementError::Graph(error.to_string()))?;
     Ok(staged)
+}
+
+pub(crate) fn validate_block_batch(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    specs: &[CuboidSpec],
+) -> Result<(), PlacementError> {
+    validate_candidate(graph, start)?;
+    if specs.is_empty() {
+        return Err(PlacementError::EmptyBlockBatch);
+    }
+    for spec in specs {
+        validate_spec(graph, *spec)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn block_sheet_specs(
+    start: CuboidSpec,
+    endpoint_units: IVec3,
+    plane: PlacementPlane,
+) -> Result<Vec<CuboidSpec>, PlacementError> {
+    let start_units = start.pose.translation_half_units();
+    let dimension_units = start.dimensions[0].units();
+    let block_units = i32::from(dimension_units) * 2;
+    let axes = plane.tangent_axes();
+    let steps = axes.map(|axis| rounded_div(endpoint_units[axis] - start_units[axis], block_units));
+    let counts = steps.map(|step| step.unsigned_abs() as usize + 1);
+    let count = counts[0].saturating_mul(counts[1]);
+    if count > MAX_DRAG_BLOCKS {
+        return Err(PlacementError::TooManyBlocks {
+            count,
+            maximum: MAX_DRAG_BLOCKS,
+        });
+    }
+
+    let mut specs = Vec::with_capacity(count);
+    for first in inclusive_steps(steps[0]) {
+        for second in inclusive_steps(steps[1]) {
+            let mut center = start_units;
+            center[axes[0]] += first * block_units;
+            center[axes[1]] += second * block_units;
+            specs.push(
+                CuboidSpec::new(
+                    [dimension_units; 3],
+                    BuildPose::from_half_grid(center, GridRotation::default()),
+                )
+                .expect("dragged blocks retain the selected valid size"),
+            );
+        }
+    }
+    Ok(specs)
+}
+
+pub(crate) fn raycast_placement_plane(
+    origin: Vec3,
+    direction: Vec3,
+    start: CuboidSpec,
+    plane: PlacementPlane,
+) -> Option<IVec3> {
+    let axis = plane.normal_axis();
+    let denominator = direction[axis];
+    if !origin.is_finite() || !direction.is_finite() || denominator.abs() <= f32::EPSILON {
+        return None;
+    }
+    let coordinate = start.pose.translation()[axis];
+    let distance = (coordinate - origin[axis]) / denominator;
+    if distance < 0.0 || !distance.is_finite() {
+        return None;
+    }
+    let mut endpoint = snap_world_to_half_grid(origin + direction * distance);
+    endpoint[axis] = start.pose.translation_half_units()[axis];
+    Some(endpoint)
+}
+
+fn snap_world_to_half_grid(position: Vec3) -> IVec3 {
+    (position / HALF_GRID_UNIT_METERS).round().as_ivec3()
+}
+
+fn inclusive_steps(end: i32) -> impl Iterator<Item = i32> {
+    let direction = end.signum();
+    (0..=end.unsigned_abs())
+        .map(move |step| i32::try_from(step).expect("drag step count fits in i32") * direction)
+}
+
+fn rounded_div(value: i32, divisor: i32) -> i32 {
+    let half = divisor / 2;
+    if value >= 0 {
+        value.saturating_add(half) / divisor
+    } else {
+        value.saturating_sub(half) / divisor
+    }
 }
 
 pub(crate) fn begin_weld(
@@ -227,8 +415,14 @@ pub(crate) fn bearing_anchor_from_hit(
     let mut anchor = snap_world_to_grid(hit.point).as_vec3() * GRID_UNIT_METERS;
     let (normal_axis, _) = cardinal_axis(face.normal);
     anchor[normal_axis] = face.center[normal_axis];
-    let offset = anchor - face.center;
     let radius = BEARING_DIAMETER * 0.5;
+    if face.half_u <= radius + CONTACT_EPSILON {
+        anchor += face.tangent_u * (face.center - anchor).dot(face.tangent_u);
+    }
+    if face.half_v <= radius + CONTACT_EPSILON {
+        anchor += face.tangent_v * (face.center - anchor).dot(face.tangent_v);
+    }
+    let offset = anchor - face.center;
     if offset.dot(face.tangent_u).abs() > face.half_u - radius + CONTACT_EPSILON
         || offset.dot(face.tangent_v).abs() > face.half_v - radius + CONTACT_EPSILON
     {
@@ -237,29 +431,13 @@ pub(crate) fn bearing_anchor_from_hit(
     Ok(anchor)
 }
 
-pub(crate) fn begin_bearing(
-    graph: &mut ConstructionGraph,
-    source: FaceRef,
-    anchor: Vec3,
-) -> Result<(), PlacementError> {
-    graph
-        .apply(BuildCommand::BeginPending(PendingOperation::Bearing {
-            source,
-            anchor,
-        }))
-        .map_err(|error| PlacementError::Graph(error.to_string()))?;
-    Ok(())
-}
-
 pub(crate) fn bearing_attachment_candidate(
     graph: &ConstructionGraph,
-    size: SizePreset,
     source: FaceRef,
     anchor: Vec3,
 ) -> PlacementCandidate {
     candidate_from_hit(
         graph,
-        size,
         SurfaceHit {
             distance: 0.0,
             point: anchor,
@@ -274,24 +452,7 @@ pub(crate) fn stage_bearing_attachment(
     source: FaceRef,
     anchor: Vec3,
 ) -> Result<ConstructionGraph, PlacementError> {
-    validate_candidate(graph, candidate)?;
-    let mut staged = graph.clone();
-    let BuildOutcome::Spawned(part) = staged
-        .apply(BuildCommand::Spawn(candidate.spec))
-        .map_err(|error| PlacementError::Graph(error.to_string()))?
-    else {
-        unreachable!("spawn commands always return a spawned part")
-    };
-    let axis = face_geometry_from_ref(source, Some(graph)).normal;
-    staged
-        .apply(BuildCommand::AddBearing(BearingSpec::new(
-            source,
-            FaceRef::part(part, candidate.attached_face),
-            anchor,
-            axis,
-        )))
-        .map_err(|error| PlacementError::Graph(error.to_string()))?;
-    Ok(staged)
+    stage_bearing_block_batch(graph, candidate, &[candidate.spec], source, anchor)
 }
 
 pub(crate) fn face_geometry_from_ref(
@@ -343,7 +504,15 @@ fn validate_candidate(
     graph: &ConstructionGraph,
     candidate: PlacementCandidate,
 ) -> Result<(), PlacementError> {
-    let (minimum, maximum) = world_bounds(candidate.spec);
+    validate_spec(graph, candidate.spec)?;
+    if candidate.anchor.is_none() {
+        return Err(PlacementError::NoFaceOverlap);
+    }
+    Ok(())
+}
+
+fn validate_spec(graph: &ConstructionGraph, spec: CuboidSpec) -> Result<(), PlacementError> {
+    let (minimum, maximum) = world_bounds(spec);
     if minimum.x < -GROUND_HALF_SIZE - CONTACT_EPSILON
         || maximum.x > GROUND_HALF_SIZE + CONTACT_EPSILON
         || minimum.z < -GROUND_HALF_SIZE - CONTACT_EPSILON
@@ -357,9 +526,6 @@ fn validate_candidate(
         if bounds_overlap_interior(minimum, maximum, other_minimum, other_maximum) {
             return Err(PlacementError::OverlapsPart(part));
         }
-    }
-    if candidate.anchor.is_none() {
-        return Err(PlacementError::NoFaceOverlap);
     }
     Ok(())
 }
@@ -410,10 +576,41 @@ fn raycast_cuboid(
     part: PartId,
     spec: CuboidSpec,
 ) -> Option<SurfaceHit> {
-    let inverse_rotation = spec.pose.rotation.quaternion().inverse();
-    let local_origin = inverse_rotation * (origin - spec.pose.translation());
+    let hit = raycast_oriented_cuboid(
+        origin,
+        direction,
+        spec.pose.translation(),
+        spec.pose.rotation.quaternion(),
+        spec.size_meters() * 0.5,
+    )?;
+    Some(SurfaceHit {
+        distance: hit.distance,
+        point: hit.point,
+        face: FaceRef::part(part, face_for_normal(hit.local_normal)),
+    })
+}
+
+pub(crate) fn raycast_oriented_cuboid(
+    origin: Vec3,
+    direction: Vec3,
+    center: Vec3,
+    rotation: Quat,
+    half_extents: Vec3,
+) -> Option<OrientedCuboidHit> {
+    if !origin.is_finite()
+        || !direction.is_finite()
+        || direction.length_squared() < f32::EPSILON
+        || !center.is_finite()
+        || !rotation.is_finite()
+        || !half_extents.is_finite()
+        || half_extents.cmple(Vec3::ZERO).any()
+    {
+        return None;
+    }
+    let direction = direction.normalize();
+    let inverse_rotation = rotation.inverse();
+    let local_origin = inverse_rotation * (origin - center);
     let local_direction = inverse_rotation * direction;
-    let half = spec.size_meters() * 0.5;
     let mut near = f32::NEG_INFINITY;
     let mut far = f32::INFINITY;
     let mut hit_axis = 0;
@@ -421,14 +618,14 @@ fn raycast_cuboid(
 
     for axis in 0..3 {
         if local_direction[axis].abs() <= f32::EPSILON {
-            if local_origin[axis] < -half[axis] || local_origin[axis] > half[axis] {
+            if local_origin[axis] < -half_extents[axis] || local_origin[axis] > half_extents[axis] {
                 return None;
             }
             continue;
         }
         let inverse = local_direction[axis].recip();
-        let first = (-half[axis] - local_origin[axis]) * inverse;
-        let second = (half[axis] - local_origin[axis]) * inverse;
+        let first = (-half_extents[axis] - local_origin[axis]) * inverse;
+        let second = (half_extents[axis] - local_origin[axis]) * inverse;
         let axis_near = first.min(second);
         let axis_far = first.max(second);
         if axis_near > near {
@@ -450,10 +647,10 @@ fn raycast_cuboid(
         1 => [0.0, hit_sign, 0.0],
         _ => [0.0, 0.0, hit_sign],
     });
-    Some(SurfaceHit {
+    Some(OrientedCuboidHit {
         distance,
         point: origin + direction * distance,
-        face: FaceRef::part(part, face_for_normal(local_normal)),
+        local_normal,
     })
 }
 
@@ -555,9 +752,10 @@ mod tests {
     };
 
     use super::{
-        PlacementError, SizePreset, SurfaceHit, bearing_anchor_from_hit,
-        bearing_attachment_candidate, begin_bearing, begin_weld, candidate_from_hit,
-        raycast_construction, stage_bearing_attachment, stage_cuboid, stage_weld_objects,
+        BLOCK_SIZE_METERS, PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
+        bearing_attachment_candidate, begin_weld, block_sheet_specs, candidate_from_hit,
+        raycast_construction, raycast_placement_plane, stage_bearing_attachment,
+        stage_bearing_block_batch, stage_block_batch, stage_cuboid, stage_weld_objects,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -581,25 +779,29 @@ mod tests {
     }
 
     #[test]
-    fn preset_sizes_place_on_ground_and_cuboid_faces() {
-        for mut size in [SizePreset(0), SizePreset(1), SizePreset(2)] {
-            let graph = ConstructionGraph::new();
-            let ground_hit = SurfaceHit {
-                distance: 1.0,
-                point: Vec3::ZERO,
-                face: mechanic_core::FaceRef::ground(),
-            };
-            let candidate = candidate_from_hit(&graph, size, ground_hit);
-            assert!((candidate.spec.pose.translation().y - size.meters() * 0.5).abs() < 1.0e-6);
-            let graph = stage_cuboid(&graph, candidate).unwrap();
+    fn fixed_quarter_metre_blocks_place_flush_on_ground_and_faces() {
+        let graph = ConstructionGraph::new();
+        let ground_hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: mechanic_core::FaceRef::ground(),
+        };
+        let candidate = candidate_from_hit(&graph, ground_hit);
+        assert_eq!(
+            candidate
+                .spec
+                .dimensions
+                .map(mechanic_core::GridDimension::units),
+            [1; 3]
+        );
+        assert!((candidate.spec.pose.translation().y - BLOCK_SIZE_METERS * 0.5).abs() < 1.0e-6);
+        let graph = stage_cuboid(&graph, candidate).unwrap();
 
-            let top = raycast_construction(&graph, Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y)
-                .expect("placed cube is under ray");
-            size.larger();
-            size.smaller();
-            let attached = candidate_from_hit(&graph, size, top);
-            assert!(stage_cuboid(&graph, attached).is_ok());
-        }
+        let top = raycast_construction(&graph, Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y)
+            .expect("placed block is under ray");
+        let attached = candidate_from_hit(&graph, top);
+        assert!((attached.spec.pose.translation().y - 0.375).abs() < 1.0e-6);
+        assert!(stage_cuboid(&graph, attached).is_ok());
     }
 
     #[test]
@@ -623,8 +825,59 @@ mod tests {
             )
             .expect("ray reaches requested face");
             assert_eq!(hit.face.face, expected_face);
-            let candidate = candidate_from_hit(&graph, SizePreset::default(), hit);
+            let candidate = candidate_from_hit(&graph, hit);
             assert!(stage_cuboid(&graph, candidate).is_ok());
+        }
+    }
+
+    #[test]
+    fn side_placement_preserves_the_supporting_quarter_block_lattice() {
+        for face in [
+            FaceKind::PositiveX,
+            FaceKind::NegativeX,
+            FaceKind::PositiveZ,
+            FaceKind::NegativeZ,
+        ] {
+            let graph = ConstructionGraph::new();
+            let support = candidate_from_hit(
+                &graph,
+                SurfaceHit {
+                    distance: 1.0,
+                    point: Vec3::ZERO,
+                    face: FaceRef::ground(),
+                },
+            );
+            let graph = stage_cuboid(&graph, support).unwrap();
+            let part = graph.parts().next().unwrap().0;
+            let source = FaceRef::part(part, face);
+            let source_face = super::face_geometry_from_ref(source, Some(&graph));
+
+            let candidate = candidate_from_hit(
+                &graph,
+                SurfaceHit {
+                    distance: 1.0,
+                    point: source_face.center,
+                    face: source,
+                },
+            );
+
+            assert_eq!(
+                candidate.spec.pose.translation_half_units().y,
+                support.spec.pose.translation_half_units().y
+            );
+            assert!(stage_cuboid(&graph, candidate).is_ok());
+
+            let bearing_candidate =
+                bearing_attachment_candidate(&graph, source, source_face.center);
+            assert_eq!(
+                bearing_candidate.spec.pose.translation_half_units().y,
+                support.spec.pose.translation_half_units().y
+            );
+            let attached =
+                stage_bearing_attachment(&graph, bearing_candidate, source, source_face.center)
+                    .unwrap();
+            assert_eq!(attached.bearing_count(), 1);
+            assert_eq!(attached.weld_count(), 0);
         }
     }
 
@@ -636,11 +889,94 @@ mod tests {
             point: Vec3::new(super::GROUND_HALF_SIZE, 0.0, 0.0),
             face: mechanic_core::FaceRef::ground(),
         };
-        let candidate = candidate_from_hit(&graph, SizePreset(2), hit);
+        let candidate = candidate_from_hit(&graph, hit);
         assert!(matches!(
             stage_cuboid(&graph, candidate),
             Err(PlacementError::OutsidePlatform)
         ));
+    }
+
+    #[test]
+    fn single_block_automatically_welds_to_touching_block() {
+        let mut graph = ConstructionGraph::new();
+        spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
+        let hit = raycast_construction(&graph, Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y)
+            .expect("support block is under ray");
+        let candidate = candidate_from_hit(&graph, hit);
+
+        let graph = stage_cuboid(&graph, candidate).unwrap();
+
+        assert_eq!(graph.part_count(), 2);
+        assert_eq!(graph.weld_count(), 1);
+        assert_eq!(graph.compile().unwrap().compounds.len(), 1);
+    }
+
+    #[test]
+    fn dragged_sheet_is_face_connected_and_welded() {
+        let graph = ConstructionGraph::new();
+        let start = candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            },
+        );
+        let endpoint = start.spec.pose.translation_half_units() + IVec3::new(4, 0, 2);
+        let specs = block_sheet_specs(start.spec, endpoint, PlacementPlane::Xz).unwrap();
+
+        let graph = stage_block_batch(&graph, start, &specs).unwrap();
+
+        assert_eq!(graph.part_count(), 6);
+        assert_eq!(graph.weld_count(), 7);
+        assert_eq!(graph.compile().unwrap().compounds.len(), 1);
+    }
+
+    #[test]
+    fn invalid_drag_batch_preserves_graph() {
+        let graph = ConstructionGraph::new();
+        let start = candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            },
+        );
+        let endpoint = start.spec.pose.translation_half_units() + IVec3::new(96, 0, 0);
+        let specs = block_sheet_specs(start.spec, endpoint, PlacementPlane::Xz).unwrap();
+
+        assert!(matches!(
+            stage_block_batch(&graph, start, &specs),
+            Err(PlacementError::OutsidePlatform)
+        ));
+        assert_eq!(graph.part_count(), 0);
+        assert_eq!(graph.weld_count(), 0);
+    }
+
+    #[test]
+    fn drag_plane_projection_and_cycle_are_deterministic() {
+        let graph = ConstructionGraph::new();
+        let start = candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            },
+        );
+        let endpoint = raycast_placement_plane(
+            Vec3::new(2.0, 5.0, 3.0),
+            Vec3::NEG_Y,
+            start.spec,
+            PlacementPlane::Xz,
+        )
+        .unwrap();
+
+        assert_eq!(endpoint, IVec3::new(16, 1, 24));
+        assert_eq!(PlacementPlane::Xz.cycle(), PlacementPlane::Xy);
+        assert_eq!(PlacementPlane::Xy.cycle(), PlacementPlane::Yz);
+        assert_eq!(PlacementPlane::Yz.cycle(), PlacementPlane::Xz);
     }
 
     #[test]
@@ -679,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn bearing_first_click_places_only_a_snapped_connector() {
+    fn bearing_anchor_snaps_without_mutating_the_graph() {
         let mut graph = ConstructionGraph::new();
         let base = spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
         let hit = SurfaceHit {
@@ -690,14 +1026,9 @@ mod tests {
         let anchor = bearing_anchor_from_hit(&graph, hit).unwrap();
         assert_eq!(anchor, Vec3::new(0.25, 1.0, -0.25));
 
-        begin_bearing(&mut graph, hit.face, anchor).unwrap();
-
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.bearing_count(), 0);
-        assert!(matches!(
-            graph.pending(),
-            Some(PendingOperation::Bearing { .. })
-        ));
+        assert!(graph.pending().is_none());
     }
 
     #[test]
@@ -711,8 +1042,7 @@ mod tests {
             face: source,
         };
         let anchor = bearing_anchor_from_hit(&graph, hit).unwrap();
-        begin_bearing(&mut graph, source, anchor).unwrap();
-        let candidate = bearing_attachment_candidate(&graph, SizePreset::default(), source, anchor);
+        let candidate = bearing_attachment_candidate(&graph, source, anchor);
 
         let graph = stage_bearing_attachment(&graph, candidate, source, anchor).unwrap();
 
@@ -720,6 +1050,54 @@ mod tests {
         assert_eq!(graph.bearing_count(), 1);
         assert_eq!(graph.bearings().next().unwrap().1.shared_anchor, anchor);
         assert!(graph.pending().is_none());
+    }
+
+    #[test]
+    fn bearing_drag_attaches_one_internally_welded_sheet() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
+        let source = FaceRef::part(base, FaceKind::PositiveY);
+        let anchor = Vec3::Y;
+        let candidate = bearing_attachment_candidate(&graph, source, anchor);
+        let mut endpoint = candidate.spec.pose.translation_half_units();
+        endpoint.x += 2;
+        let specs = block_sheet_specs(candidate.spec, endpoint, PlacementPlane::Xz).unwrap();
+
+        let graph = stage_bearing_block_batch(&graph, candidate, &specs, source, anchor).unwrap();
+
+        assert_eq!(graph.part_count(), 3);
+        assert_eq!(graph.bearing_count(), 1);
+        assert_eq!(graph.weld_count(), 1);
+        assert_eq!(graph.compile().unwrap().compounds.len(), 2);
+    }
+
+    #[test]
+    fn bearing_centres_and_attaches_on_a_quarter_metre_block() {
+        let graph = ConstructionGraph::new();
+        let block = candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            },
+        );
+        let graph = stage_cuboid(&graph, block).unwrap();
+        let base = graph.parts().next().unwrap().0;
+        let source = FaceRef::part(base, FaceKind::PositiveY);
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::new(0.1, 0.25, -0.1),
+            face: source,
+        };
+
+        let anchor = bearing_anchor_from_hit(&graph, hit).unwrap();
+        assert!(anchor.abs_diff_eq(Vec3::new(0.0, 0.25, 0.0), 1.0e-6));
+        let candidate = bearing_attachment_candidate(&graph, source, anchor);
+        let graph = stage_bearing_attachment(&graph, candidate, source, anchor).unwrap();
+
+        assert_eq!(graph.part_count(), 2);
+        assert_eq!(graph.bearing_count(), 1);
     }
 
     #[test]
@@ -756,7 +1134,7 @@ mod tests {
             point: Vec3::ZERO,
             face: FaceRef::ground(),
         };
-        let candidate = candidate_from_hit(&graph, SizePreset::default(), base_hit);
+        let candidate = candidate_from_hit(&graph, base_hit);
         let graph = stage_cuboid(&graph, candidate).unwrap();
         assert!(matches!(
             stage_cuboid(&graph, candidate),
@@ -771,8 +1149,7 @@ mod tests {
         let base = spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
         let source = FaceRef::part(base, FaceKind::PositiveY);
         let anchor = Vec3::new(0.0, 1.0, 0.0);
-        begin_bearing(&mut graph, source, anchor).unwrap();
-        let candidate = bearing_attachment_candidate(&graph, SizePreset::default(), source, anchor);
+        let candidate = bearing_attachment_candidate(&graph, source, anchor);
         let graph = stage_bearing_attachment(&graph, candidate, source, anchor).unwrap();
         let top = raycast_construction(&graph, Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y).unwrap();
         let upper = match top.face.owner {

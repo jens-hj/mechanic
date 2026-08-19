@@ -2669,6 +2669,8 @@ dependencies = [
  "bevy",
  "mechanic-core",
  "mechanic-gpu",
+ "pollster",
+ "wgpu",
 ]
 
 [[package]]

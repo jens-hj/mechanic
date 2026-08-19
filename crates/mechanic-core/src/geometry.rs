@@ -113,13 +113,18 @@ impl GridRotation {
     }
 }
 
-/// Grid-aligned build pose. Translation is stored in quarter-metre units.
+/// Grid-aligned build pose.
+///
+/// The primary translation remains in quarter-metre units. An internal
+/// half-grid offset allows odd-sized cuboids to sit flush against grid-aligned
+/// faces without changing the positions produced by [`BuildPose::new`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct BuildPose {
     /// Translation in integer construction-grid units.
     pub translation_units: IVec3,
     /// Discrete 90-degree orientation.
     pub rotation: GridRotation,
+    half_grid_offset: [u8; 3],
 }
 
 impl BuildPose {
@@ -128,12 +133,42 @@ impl BuildPose {
         Self {
             translation_units,
             rotation,
+            half_grid_offset: [0; 3],
         }
+    }
+
+    /// Creates a build pose from integer eighth-metre centre coordinates.
+    ///
+    /// Half-grid coordinates are useful for odd-sized cuboids, whose centres
+    /// lie halfway between construction-grid lines when resting on a face.
+    pub fn from_half_grid(translation_half_units: IVec3, rotation: GridRotation) -> Self {
+        let mut translation_units = IVec3::ZERO;
+        let mut half_grid_offset = [0; 3];
+        for axis in 0..3 {
+            let remainder = translation_half_units[axis].rem_euclid(2);
+            translation_units[axis] = (translation_half_units[axis] - remainder) / 2;
+            half_grid_offset[axis] = u8::from(remainder != 0);
+        }
+        Self {
+            translation_units,
+            rotation,
+            half_grid_offset,
+        }
+    }
+
+    /// Translation in integer eighth-metre half-grid units.
+    pub fn translation_half_units(self) -> IVec3 {
+        self.translation_units * 2
+            + IVec3::new(
+                i32::from(self.half_grid_offset[0]),
+                i32::from(self.half_grid_offset[1]),
+                i32::from(self.half_grid_offset[2]),
+            )
     }
 
     /// Translation in metres.
     pub fn translation(self) -> Vec3 {
-        self.translation_units.as_vec3() * GRID_UNIT_METERS
+        self.translation_half_units().as_vec3() * (GRID_UNIT_METERS * 0.5)
     }
 }
 
@@ -322,6 +357,21 @@ mod tests {
         assert_eq!(
             snap_world_to_grid(Vec3::new(0.37, -0.13, 1.99)),
             IVec3::new(1, -1, 8)
+        );
+    }
+
+    #[test]
+    fn half_grid_pose_preserves_eighth_metre_centres_in_both_directions() {
+        let pose = BuildPose::from_half_grid(IVec3::new(-3, 1, 4), GridRotation::default());
+
+        assert_eq!(pose.translation_half_units(), IVec3::new(-3, 1, 4));
+        assert!(
+            pose.translation()
+                .abs_diff_eq(Vec3::new(-0.375, 0.125, 0.5), 1.0e-6)
+        );
+        assert_eq!(
+            BuildPose::new(IVec3::new(-3, 1, 4), GridRotation::default()).translation_half_units(),
+            IVec3::new(-6, 2, 8)
         );
     }
 

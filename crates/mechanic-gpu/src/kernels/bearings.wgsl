@@ -50,13 +50,17 @@ fn record_residual(
     anchor_b: vec3<f32>,
     axis_a: vec3<f32>,
     axis_b: vec3<f32>,
+    is_closure: bool,
 ) {
     let anchor_micrometers = u32(round(length(anchor_a - anchor_b) * 1000000.0));
-    let axis_degrees = acos(clamp(dot(axis_a, axis_b), -1.0, 1.0)) * 57.295779513;
+    let axis_degrees = atan2(
+        length(cross(axis_a, axis_b)),
+        clamp(dot(axis_a, axis_b), -1.0, 1.0),
+    ) * 57.295779513;
     let axis_microdegrees = u32(round(axis_degrees * 1000000.0));
     atomicMax(&diagnostics[3], anchor_micrometers);
     atomicMax(&diagnostics[4], axis_microdegrees);
-    if anchor_micrometers > 10u || axis_microdegrees > 1000u {
+    if is_closure && (anchor_micrometers > 10u || axis_microdegrees > 1000u) {
         atomicOr(&diagnostics[0], CONSTRAINT_NON_CONVERGENCE_FLAG);
     }
 }
@@ -76,7 +80,7 @@ fn validate_bearings(@builtin(global_invocation_id) invocation: vec3<u32>) {
         + quat_rotate(rotations[body_b], bearing.local_anchor_b.xyz);
     let axis_a = normalize(quat_rotate(rotations[body_a], bearing.local_axis_a.xyz));
     let axis_b = normalize(quat_rotate(rotations[body_b], bearing.local_axis_b.xyz));
-    record_residual(anchor_a, anchor_b, axis_a, axis_b);
+    record_residual(anchor_a, anchor_b, axis_a, axis_b, bearing.metadata.w != 0u);
 }
 
 @compute @workgroup_size(256)
@@ -94,5 +98,5 @@ fn validate_mechanism_bearings(@builtin(global_invocation_id) invocation: vec3<u
         + quat_rotate(pose_b.rotation, bearing.local_anchor_b.xyz);
     let axis_a = normalize(quat_rotate(pose_a.rotation, bearing.local_axis_a.xyz));
     let axis_b = normalize(quat_rotate(pose_b.rotation, bearing.local_axis_b.xyz));
-    record_residual(anchor_a, anchor_b, axis_a, axis_b);
+    record_residual(anchor_a, anchor_b, axis_a, axis_b, bearing.metadata.w != 0u);
 }

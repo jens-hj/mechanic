@@ -16,8 +16,8 @@ pub use collision::{
     ContactManifold, ContactPoint, Obb, SatContact, obb_contact_manifold, obb_sat,
 };
 pub use device::{
-    GpuKernelTimings, GpuPhysics, GpuPhysicsConfig, GpuPhysicsError, GpuReadbackError,
-    GpuTickReadback, GpuTickSubmission, SnapshotBuffers,
+    GpuImpulseError, GpuKernelTimings, GpuPhysics, GpuPhysicsConfig, GpuPhysicsError,
+    GpuReadbackError, GpuTickReadback, GpuTickSubmission, SnapshotBuffers,
 };
 pub use runtime::{
     CapacityKind, FailureStatus, PhysicsRuntime, PublishedGpuState, SimulationStatus,

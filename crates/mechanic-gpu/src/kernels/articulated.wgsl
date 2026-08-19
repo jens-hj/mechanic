@@ -45,6 +45,9 @@ struct Coordinate {
 };
 
 const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
+// Diagonal Jacobi rows share off-centre inertia terms and adjacent bodies.
+// Under-relaxation keeps their simultaneous impulses dissipative.
+const BEARING_PROJECTION_RELAXATION: f32 = 0.5;
 const INVALID_INDEX: u32 = 0xffffffffu;
 const INVALID_NUMERIC_FLAG: u32 = 2u;
 
@@ -106,7 +109,9 @@ fn solve_linear_axis(
     if denominator <= 1.0e-12 {
         return;
     }
-    let impulse = direction * (dot(relative, direction) / denominator);
+    let impulse = direction * (
+        BEARING_PROJECTION_RELAXATION * dot(relative, direction) / denominator
+    );
     add_delta(
         body_a,
         impulse * masses[body_a].inverse_mass.x,
@@ -126,7 +131,7 @@ fn solve_angular_axis(body_a: u32, body_b: u32, relative: vec3<f32>, axis: vec3<
     if denominator <= 1.0e-12 {
         return;
     }
-    let impulse = dot(relative, axis) / denominator;
+    let impulse = BEARING_PROJECTION_RELAXATION * dot(relative, axis) / denominator;
     add_delta(body_a, vec3<f32>(0.0), inverse_a * impulse);
     add_delta(body_b, vec3<f32>(0.0), -inverse_b * impulse);
 }

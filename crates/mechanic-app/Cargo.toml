@@ -23,5 +23,9 @@ bevy = { workspace = true, features = [
 mechanic-core = { path = "../mechanic-core" }
 mechanic-gpu = { path = "../mechanic-gpu" }
 
+[dev-dependencies]
+pollster.workspace = true
+wgpu.workspace = true
+
 [lints]
 workspace = true

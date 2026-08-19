@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
+use bevy_math::Vec3;
 use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
 use mechanic_core::CompiledCreation;
 use thiserror::Error;
@@ -19,6 +20,8 @@ use crate::{
 pub struct GpuPhysicsConfig {
     /// Whether broadphase, SAT, and projected contact impulses are dispatched.
     pub collisions_enabled: bool,
+    /// Whether colliders in the same articulated mechanism may contact.
+    pub mechanism_self_collisions: bool,
     /// Fixed number of projected impulse iterations.
     pub solver_iterations: u32,
 }
@@ -27,6 +30,7 @@ impl Default for GpuPhysicsConfig {
     fn default() -> Self {
         Self {
             collisions_enabled: true,
+            mechanism_self_collisions: true,
             solver_iterations: 8,
         }
     }
@@ -156,6 +160,30 @@ pub enum GpuPhysicsError {
     },
 }
 
+/// A requested external impulse cannot be submitted safely.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum GpuImpulseError {
+    /// The requested body row is outside the uploaded creation.
+    #[error("body index {body_index} is outside the uploaded body count {body_count}")]
+    BodyIndexOutOfRange {
+        /// Requested body row.
+        body_index: u32,
+        /// Uploaded row count.
+        body_count: u32,
+    },
+    /// The world point or impulse contains NaN or infinity.
+    #[error("external impulse point and vector must be finite")]
+    NonFinite,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct GpuExternalImpulse {
+    world_point: [f32; 4],
+    impulse: [f32; 4],
+    metadata: [u32; 4],
+}
+
 /// Custom compute resources backed by Bevy's shared wgpu device and queue.
 #[derive(Debug)]
 pub struct GpuPhysics {
@@ -178,6 +206,9 @@ pub struct GpuPhysics {
     _spatial_inertias: wgpu::Buffer,
     _colliders: wgpu::Buffer,
     _bearings: wgpu::Buffer,
+    external_impulse: wgpu::Buffer,
+    external_impulse_pipeline: wgpu::ComputePipeline,
+    external_impulse_bind_group: wgpu::BindGroup,
     snapshots: Vec<SnapshotBuffers>,
     bind_groups: Vec<wgpu::BindGroup>,
     integration_pipeline: wgpu::ComputePipeline,
@@ -193,6 +224,7 @@ pub struct GpuPhysics {
 #[derive(Debug)]
 struct CollisionResources {
     lbvh: LbvhResources,
+    _body_components: wgpu::Buffer,
     _pairs: wgpu::Buffer,
     _contacts: wgpu::Buffer,
     _manifold_keys: wgpu::Buffer,
@@ -395,6 +427,12 @@ impl GpuPhysics {
             .iter()
             .map(|compound| compound.mass_properties.inverse_mass)
             .collect::<Vec<_>>();
+        let body_components = creation
+            .loop_topology
+            .body_parents
+            .iter()
+            .map(|body| body.component_index)
+            .collect::<Vec<_>>();
         let masses = creation
             .compounds
             .iter()
@@ -542,6 +580,30 @@ impl GpuPhysics {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
+        let external_impulse = create_uniform_buffer(
+            device,
+            "mechanic external impulse",
+            &GpuExternalImpulse::zeroed(),
+        );
+        let external_impulse_pipeline = compute_pipeline(
+            device,
+            "mechanic apply external impulse",
+            &shader,
+            "apply_external_impulse",
+        );
+        let external_impulse_bind_group = bind_group(
+            device,
+            "mechanic external impulse bindings",
+            &external_impulse_pipeline,
+            &[
+                entry(1, &positions_buffer),
+                entry(2, &rotations_buffer),
+                entry(3, &linear_velocities),
+                entry(4, &angular_velocities),
+                entry(7, &masses),
+                entry(8, &external_impulse),
+            ],
+        );
         let layout = integration_pipeline.get_bind_group_layout(0);
         let snapshot_shader = shader_module(
             device,
@@ -639,6 +701,8 @@ impl GpuPhysics {
             &diagnostics,
             &colliders,
             &suppressed_pairs,
+            &body_components,
+            pipeline_config.mechanism_self_collisions,
         );
         let bearing_shader = shader_module(
             device,
@@ -710,6 +774,9 @@ impl GpuPhysics {
             _spatial_inertias: spatial_inertias,
             _colliders: colliders,
             _bearings: bearings,
+            external_impulse,
+            external_impulse_pipeline,
+            external_impulse_bind_group,
             snapshots,
             bind_groups,
             integration_pipeline,
@@ -721,6 +788,51 @@ impl GpuPhysics {
             snapshot_bind_groups,
             timestamps,
         })
+    }
+
+    /// Adds a world-space impulse at a world-space point on one compound body.
+    ///
+    /// Static bodies ignore the impulse. The submission is ordered before later
+    /// fixed ticks submitted to the same queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuImpulseError`] for an invalid body row or non-finite input.
+    pub fn apply_impulse(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        body_index: u32,
+        world_point: Vec3,
+        impulse: Vec3,
+    ) -> Result<wgpu::SubmissionIndex, GpuImpulseError> {
+        if body_index >= self.body_count {
+            return Err(GpuImpulseError::BodyIndexOutOfRange {
+                body_index,
+                body_count: self.body_count,
+            });
+        }
+        if !world_point.is_finite() || !impulse.is_finite() {
+            return Err(GpuImpulseError::NonFinite);
+        }
+        let row = GpuExternalImpulse {
+            world_point: [world_point.x, world_point.y, world_point.z, 0.0],
+            impulse: [impulse.x, impulse.y, impulse.z, 0.0],
+            metadata: [body_index, 0, 0, 0],
+        };
+        queue.write_buffer(&self.external_impulse, 0, bytes_of(&row));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("mechanic external impulse"),
+        });
+        direct_compute_pass(
+            &mut encoder,
+            "mechanic apply external impulse",
+            &self.external_impulse_pipeline,
+            &self.external_impulse_bind_group,
+            1,
+            None,
+        );
+        Ok(queue.submit([encoder.finish()]))
     }
 
     /// Encodes and submits one 60 Hz integration/publication pass.
@@ -2212,7 +2324,14 @@ fn create_collision_resources(
     diagnostics: &wgpu::Buffer,
     colliders: &wgpu::Buffer,
     suppressed_pairs: &wgpu::Buffer,
+    body_components: &[u32],
+    mechanism_self_collisions: bool,
 ) -> CollisionResources {
+    let body_components = create_readonly_storage_buffer(
+        device,
+        "mechanic body mechanism components",
+        body_components,
+    );
     let pairs = create_sized_buffer(
         device,
         "mechanic candidate pairs",
@@ -2296,20 +2415,30 @@ fn create_collision_resources(
             entry(26, &world_masses),
         ],
     );
-    let narrowphase_pipeline = compute_pipeline(device, "mechanic OBB SAT", &shader, "narrowphase");
+    let narrowphase_entry = if mechanism_self_collisions {
+        "narrowphase"
+    } else {
+        "narrowphase_without_mechanism_self_collisions"
+    };
+    let narrowphase_pipeline =
+        compute_pipeline(device, "mechanic OBB SAT", &shader, narrowphase_entry);
+    let mut narrowphase_bindings = vec![
+        entry(0, config),
+        entry(1, positions),
+        entry(2, rotations),
+        entry(5, diagnostics),
+        entry(6, colliders),
+        entry(9, &pairs),
+        entry(10, &contacts),
+    ];
+    if !mechanism_self_collisions {
+        narrowphase_bindings.push(entry(27, &body_components));
+    }
     let narrowphase_bind_group = bind_group(
         device,
         "mechanic narrowphase bindings",
         &narrowphase_pipeline,
-        &[
-            entry(0, config),
-            entry(1, positions),
-            entry(2, rotations),
-            entry(5, diagnostics),
-            entry(6, colliders),
-            entry(9, &pairs),
-            entry(10, &contacts),
-        ],
+        &narrowphase_bindings,
     );
     let ground_contacts_pipeline = compute_pipeline(
         device,
@@ -2463,6 +2592,7 @@ fn create_collision_resources(
     );
     CollisionResources {
         lbvh,
+        _body_components: body_components,
         _pairs: pairs,
         _contacts: contacts,
         _manifold_keys: manifold_keys,
@@ -2768,6 +2898,162 @@ mod tests {
         graph.compile().unwrap()
     }
 
+    fn tall_pendulum_creation(second_link: bool) -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        let (support, arm, child) = {
+            let mut spawn = |units| {
+                let spec =
+                    CuboidSpec::new([2, 2, 2], BuildPose::new(units, GridRotation::default()))
+                        .unwrap();
+                let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+                else {
+                    unreachable!()
+                };
+                part
+            };
+            let support = (0..7)
+                .map(|row| spawn(IVec3::new(0, row * 2 + 1, 0)))
+                .collect::<Vec<_>>();
+            let arm = (0..4)
+                .map(|column| spawn(IVec3::new(2, 13, column * 2)))
+                .collect::<Vec<_>>();
+            let child = second_link.then(|| {
+                (0..3)
+                    .map(|row| spawn(IVec3::new(2, row * 2 + 13, 8)))
+                    .collect::<Vec<_>>()
+            });
+            (support, arm, child)
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(support[0], FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+        for pair in support.windows(2) {
+            graph
+                .apply(BuildCommand::Weld(WeldSpec {
+                    first: FaceRef::part(pair[0], FaceKind::PositiveY),
+                    second: FaceRef::part(pair[1], FaceKind::NegativeY),
+                }))
+                .unwrap();
+        }
+        for pair in arm.windows(2) {
+            graph
+                .apply(BuildCommand::Weld(WeldSpec {
+                    first: FaceRef::part(pair[0], FaceKind::PositiveZ),
+                    second: FaceRef::part(pair[1], FaceKind::NegativeZ),
+                }))
+                .unwrap();
+        }
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(support[6], FaceKind::PositiveX),
+                FaceRef::part(arm[0], FaceKind::NegativeX),
+                Vec3::new(0.25, 3.25, 0.0),
+                Vec3::X,
+            )))
+            .unwrap();
+        if let Some(child) = child {
+            for pair in child.windows(2) {
+                graph
+                    .apply(BuildCommand::Weld(WeldSpec {
+                        first: FaceRef::part(pair[0], FaceKind::PositiveY),
+                        second: FaceRef::part(pair[1], FaceKind::NegativeY),
+                    }))
+                    .unwrap();
+            }
+            graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(arm[3], FaceKind::PositiveZ),
+                    FaceRef::part(child[0], FaceKind::NegativeZ),
+                    Vec3::new(0.5, 3.25, 1.75),
+                    Vec3::Z,
+                )))
+                .unwrap();
+        }
+        graph.compile().unwrap()
+    }
+
+    fn relative_bearing_rotation(
+        snapshot: &[crate::GpuTransform],
+        bearing: &mechanic_core::CompiledBearing,
+    ) -> bevy_math::Quat {
+        let a = bevy_math::Quat::from_array(snapshot[bearing.compound_a as usize].rotation);
+        let b = bevy_math::Quat::from_array(snapshot[bearing.compound_b as usize].rotation);
+        a.conjugate() * b
+    }
+
+    fn run_long_pendulum(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        creation: &mechanic_core::CompiledCreation,
+        collisions_enabled: bool,
+    ) -> (Vec<f32>, Vec<f32>, super::GpuTickReadback) {
+        let gpu = GpuPhysics::new_with_config(
+            device,
+            queue,
+            creation,
+            GpuPhysicsConfig {
+                collisions_enabled,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for tick in 1..=1_200 {
+            gpu.dispatch_tick(device, queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let current = gpu.read_snapshot_transforms(device, queue, 0).unwrap();
+        let previous = gpu.read_snapshot_transforms(device, queue, 2).unwrap();
+        let diagnostics = gpu.read_last_tick(device).unwrap();
+        let mut angles = Vec::with_capacity(creation.bearings.len());
+        let mut angular_speeds = Vec::with_capacity(creation.bearings.len());
+        for bearing in &creation.bearings {
+            let current_relative = relative_bearing_rotation(&current, bearing);
+            let previous_relative = relative_bearing_rotation(&previous, bearing);
+            angles.push(
+                2.0 * current_relative
+                    .xyz()
+                    .dot(bearing.local_axis_a)
+                    .atan2(current_relative.w),
+            );
+            let delta = previous_relative.conjugate() * current_relative;
+            angular_speeds.push(2.0 * delta.xyz().length().atan2(delta.w.abs()) * 60.0);
+        }
+        (angles, angular_speeds, diagnostics)
+    }
+
+    #[test]
+    fn tall_single_and_double_pendulums_dissipate_energy() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+
+        let single = tall_pendulum_creation(false);
+        assert_eq!(single.colliders.len(), 11);
+        let (single_angles, single_speeds, single_diagnostics) =
+            run_long_pendulum(&device, &queue, &single, true);
+        assert_eq!(single_diagnostics.error_flags, 0);
+        assert_eq!(single_diagnostics.active_contact_count, 0);
+        assert!((single_angles[0] - std::f32::consts::FRAC_PI_2).abs() < 0.02);
+        assert!(single_speeds[0] < 0.2);
+
+        let double = tall_pendulum_creation(true);
+        assert_eq!(double.colliders.len(), 14);
+        let (free_angles, free_speeds, free_diagnostics) =
+            run_long_pendulum(&device, &queue, &double, false);
+        assert_eq!(free_diagnostics.error_flags, 0);
+        assert!((free_angles[0] - std::f32::consts::FRAC_PI_2).abs() < 0.02);
+        assert!((free_angles[1] + std::f32::consts::FRAC_PI_2).abs() < 0.02);
+        assert!(free_speeds.iter().all(|speed| *speed < 0.5));
+
+        let (_, contact_speeds, contact_diagnostics) =
+            run_long_pendulum(&device, &queue, &double, true);
+        assert_eq!(contact_diagnostics.error_flags, 0);
+        assert!(contact_speeds.iter().all(|speed| *speed < 0.5));
+    }
+
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -2789,16 +3075,95 @@ mod tests {
             label: Some("mechanic pipeline validation device"),
             ..Default::default()
         });
-        GpuPhysics::new_with_config(
-            &device,
-            &queue,
-            &pendulum_creation(true),
-            GpuPhysicsConfig {
-                collisions_enabled: true,
-                solver_iterations: 8,
-            },
+        let creation = pendulum_creation(true);
+        for mechanism_self_collisions in [true, false] {
+            GpuPhysics::new_with_config(
+                &device,
+                &queue,
+                &creation,
+                GpuPhysicsConfig {
+                    collisions_enabled: true,
+                    mechanism_self_collisions,
+                    solver_iterations: 8,
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn off_centre_external_impulse_changes_linear_and_angular_motion() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let mut graph = ConstructionGraph::new();
+        let spec = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 8, 0), GridRotation::default()),
         )
         .unwrap();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap() else {
+            unreachable!()
+        };
+        let creation = graph.compile().unwrap();
+        let body = creation.part_to_compound[0].1;
+        let initial = creation.compounds[body as usize].root_translation;
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        gpu.apply_impulse(
+            &device,
+            &queue,
+            body,
+            initial + Vec3::Y * 0.5,
+            Vec3::X * 500.0,
+        )
+        .unwrap();
+        gpu.dispatch_tick(&device, &queue, 1);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let snapshot = gpu.read_snapshot_transforms(&device, &queue, 1).unwrap();
+        assert!(snapshot[body as usize].position[0] > initial.x + 0.01);
+        assert!(snapshot[body as usize].rotation[2] < -0.01);
+        assert_eq!(creation.part_to_compound[0].0, part);
+    }
+
+    #[test]
+    fn external_impulse_drives_a_bearing_coordinate() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let creation = pendulum_creation(true);
+        let child = creation.bearings[0].compound_b;
+        let run = |impulse: Option<Vec3>| {
+            let gpu = GpuPhysics::new_with_config(
+                &device,
+                &queue,
+                &creation,
+                GpuPhysicsConfig {
+                    collisions_enabled: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            if let Some(impulse) = impulse {
+                gpu.apply_impulse(
+                    &device,
+                    &queue,
+                    child,
+                    creation.compounds[child as usize].root_translation,
+                    impulse,
+                )
+                .unwrap();
+            }
+            for tick in 1..=10 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            gpu.read_snapshot_transforms(&device, &queue, 1).unwrap()[child as usize]
+        };
+        let baseline = run(None);
+        let struck = run(Some(Vec3::NEG_Y * 500.0));
+        let baseline_rotation = bevy_math::Quat::from_array(baseline.rotation);
+        let struck_rotation = bevy_math::Quat::from_array(struck.rotation);
+        assert!(baseline_rotation.angle_between(struck_rotation) > 0.01);
     }
 
     fn run_ticks(
@@ -2813,6 +3178,7 @@ mod tests {
             creation,
             GpuPhysicsConfig {
                 collisions_enabled,
+                mechanism_self_collisions: true,
                 solver_iterations: 16,
             },
         )

@@ -105,6 +105,7 @@ fn run() -> Result<bool, String> {
         &creation,
         GpuPhysicsConfig {
             collisions_enabled: matches!(options.scenario, Scenario::Smoke | Scenario::Dense100k),
+            mechanism_self_collisions: true,
             solver_iterations: 8,
         },
     )
