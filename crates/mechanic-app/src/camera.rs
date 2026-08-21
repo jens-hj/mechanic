@@ -5,6 +5,7 @@ use bevy::{
     prelude::*,
 };
 
+use crate::control_panel::ControlPanelState;
 use crate::creation_menu::CreationMenuState;
 use crate::hotbar::HotbarPointerCapture;
 
@@ -63,6 +64,7 @@ impl OrbitCamera {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters, not a call signature.
 pub(crate) fn update_orbit_camera(
     mut camera: Single<(&mut OrbitCamera, &mut Transform)>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -71,25 +73,25 @@ pub(crate) fn update_orbit_camera(
     scroll: Res<AccumulatedMouseScroll>,
     hotbar_capture: Res<HotbarPointerCapture>,
     creation_menu: Res<CreationMenuState>,
+    control_panel: Res<ControlPanelState>,
 ) {
     let (orbit, transform) = &mut *camera;
+    let pointer_blocked = creation_menu.blocks_pointer() || control_panel.blocks_pointer();
     let scroll_scale = match scroll.unit {
         MouseScrollUnit::Line => 1.0,
         MouseScrollUnit::Pixel => 0.02,
     };
     orbit.apply_input(
         motion.delta,
-        if hotbar_capture.active() || creation_menu.blocks_pointer() {
+        if hotbar_capture.active() || pointer_blocked {
             0.0
         } else {
             scroll.delta.y * scroll_scale
         },
         !hotbar_capture.active()
-            && !creation_menu.blocks_pointer()
+            && !pointer_blocked
             && orbit_input_active(&mouse_buttons, &keyboard),
-        !hotbar_capture.active()
-            && !creation_menu.blocks_pointer()
-            && pan_input_active(&mouse_buttons, &keyboard),
+        !hotbar_capture.active() && !pointer_blocked && pan_input_active(&mouse_buttons, &keyboard),
     );
     **transform = orbit.transform();
 }

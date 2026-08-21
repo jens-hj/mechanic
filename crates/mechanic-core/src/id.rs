@@ -49,6 +49,7 @@ define_id!(PartId);
 define_id!(WeldId);
 define_id!(RigidLinkId);
 define_id!(BearingId);
+define_id!(DriveLinkId);
 
 pub(crate) trait Handle: Copy {
     fn from_parts(index: u32, generation: u32) -> Self;
@@ -104,6 +105,14 @@ impl<T, I: Handle> Arena<T, I> {
         let slot = self.slots.get(index as usize)?;
         (slot.generation == generation)
             .then_some(slot.value.as_ref())
+            .flatten()
+    }
+
+    pub(crate) fn get_mut(&mut self, id: I) -> Option<&mut T> {
+        let (index, generation) = id.parts();
+        let slot = self.slots.get_mut(index as usize)?;
+        (slot.generation == generation)
+            .then_some(slot.value.as_mut())
             .flatten()
     }
 

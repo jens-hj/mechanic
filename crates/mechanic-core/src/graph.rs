@@ -1,9 +1,12 @@
+use std::collections::BTreeSet;
+
 use bevy_math::{Vec2, Vec3};
 use thiserror::Error;
 
 use crate::{
-    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, BearingId, CuboidSpec, CylinderSpec, FaceKind,
-    FaceOwner, FaceRef, PartId, PartSpec, RigidLinkId, WeldId,
+    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, BearingId, ControllerSpec, CuboidSpec,
+    CylinderSpec, DriveLimits, DriveLinkId, DriveProgram, DriveTarget, FaceKind, FaceOwner,
+    FaceRef, PartId, PartSpec, RigidLinkId, WeldId,
     geometry::{FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face},
     id::Arena,
 };
@@ -117,7 +120,53 @@ pub struct RigidLinkSpec {
     pub second: PartId,
 }
 
-/// Passive one-degree-of-freedom bearing between two faces.
+/// Wire from a control block to one bearing it drives.
+///
+/// The wire carries everything about how that one bearing behaves: its speed
+/// and torque envelope and the ordered states it moves through. A control block
+/// is only the identity that owns a set of wires, so two bearings on the same
+/// block can run entirely different programs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DriveLinkSpec {
+    /// Control-block part this wire belongs to.
+    pub controller: PartId,
+    /// Bearing driven through this wire.
+    pub bearing: BearingId,
+    /// Whether this bearing runs opposite the programmed direction.
+    pub reversed: bool,
+    /// Speed, torque, and travel envelope of this bearing.
+    pub limits: DriveLimits,
+    /// Ordered states this bearing moves through.
+    pub program: DriveProgram,
+}
+
+impl DriveLinkSpec {
+    /// Wires a bearing to a control block with default limits and a single
+    /// state that holds the bearing still.
+    pub fn new(controller: PartId, bearing: BearingId) -> Self {
+        Self {
+            controller,
+            bearing,
+            reversed: false,
+            limits: DriveLimits::default(),
+            program: DriveProgram::default(),
+        }
+    }
+
+    /// What this wire asks of its bearing in the given state, with reversal
+    /// applied.
+    pub fn resolved_target(&self, state: u8) -> Option<DriveTarget> {
+        let target = self.program.state(state)?.target();
+        Some(if self.reversed {
+            target.reversed()
+        } else {
+            target
+        })
+    }
+}
+
+/// One-degree-of-freedom bearing between two faces. It is passive unless a
+/// control block is wired to it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BearingSpec {
     /// Face whose outward normal establishes the bearing axis.
@@ -167,6 +216,8 @@ pub enum PendingOperation {
         /// Selected point on that face.
         anchor: Vec3,
     },
+    /// Control block selected as the first endpoint of a drive wire.
+    DriveLink(PartId),
 }
 
 /// Atomic edit request for a construction graph.
@@ -188,8 +239,23 @@ pub enum BuildCommand {
     Weld(WeldSpec),
     /// Merge two parts rigidly without requiring face contact.
     RigidLink(RigidLinkSpec),
+    /// Spawn a control block.
+    SpawnController(ControllerSpec),
     /// Add a passive bearing.
     AddBearing(BearingSpec),
+    /// Wire a control block to one bearing.
+    AddDriveLink(DriveLinkSpec),
+    /// Remove one control-block wire, leaving its endpoints intact.
+    RemoveDriveLink(DriveLinkId),
+    /// Replace one drive wire's limits and program.
+    SetDriveLink {
+        /// Wire being reprogrammed.
+        link: DriveLinkId,
+        /// Replacement speed, torque, and travel envelope.
+        limits: DriveLimits,
+        /// Replacement state program.
+        program: DriveProgram,
+    },
     /// Record a non-mutating first endpoint for a two-step tool.
     BeginPending(PendingOperation),
     /// Cancel the current incomplete tool operation.
@@ -209,6 +275,10 @@ pub enum BuildOutcome {
     RigidLinked(RigidLinkId),
     /// A bearing was created.
     BearingAdded(BearingId),
+    /// A control-block wire was created.
+    DriveLinked(DriveLinkId),
+    /// A drive wire's limits or program were replaced.
+    DriveUpdated,
     /// A pending operation was recorded.
     Pending,
     /// A pending operation was cancelled, or there was nothing to cancel.
@@ -230,6 +300,15 @@ pub enum GraphError {
     /// A bearing handle is stale or unknown.
     #[error("unknown or stale bearing handle {0:?}")]
     MissingBearing(BearingId),
+    /// A drive-link handle is stale or unknown.
+    #[error("unknown or stale drive-link handle {0:?}")]
+    MissingDriveLink(DriveLinkId),
+    /// A part referenced as a control block is a different kind of part.
+    #[error("part {0:?} is not a control block")]
+    NotAController(PartId),
+    /// A bearing already obeys another control block.
+    #[error("bearing {0:?} is already driven by a control block")]
+    BearingAlreadyDriven(BearingId),
     /// Only the positive-y ground face exists.
     #[error("the ground only exposes its positive-y face")]
     InvalidGroundFace,
@@ -266,6 +345,7 @@ pub struct ConstructionGraph {
     pub(crate) welds: Arena<WeldSpec, WeldId>,
     pub(crate) rigid_links: Arena<RigidLinkSpec, RigidLinkId>,
     pub(crate) bearings: Arena<BearingSpec, BearingId>,
+    pub(crate) drive_links: Arena<DriveLinkSpec, DriveLinkId>,
     pending: Option<PendingOperation>,
 }
 
@@ -326,6 +406,35 @@ impl ConstructionGraph {
         self.bearings.get(id)
     }
 
+    /// Retrieves a live control-block wire.
+    pub fn drive_link(&self, id: DriveLinkId) -> Option<&DriveLinkSpec> {
+        self.drive_links.get(id)
+    }
+
+    /// Whether a live part is a control block.
+    pub fn is_controller(&self, part: PartId) -> bool {
+        self.parts
+            .get(part)
+            .is_some_and(|spec| spec.as_controller().is_some())
+    }
+
+    /// The wire driving one bearing, when a control block owns it.
+    pub fn bearing_drive_link(&self, bearing: BearingId) -> Option<(DriveLinkId, &DriveLinkSpec)> {
+        self.drive_links
+            .iter()
+            .find(|(_, link)| link.bearing == bearing)
+    }
+
+    /// Every wire owned by one control block, in canonical slot order.
+    pub fn controller_links(
+        &self,
+        controller: PartId,
+    ) -> impl Iterator<Item = (DriveLinkId, &DriveLinkSpec)> {
+        self.drive_links
+            .iter()
+            .filter(move |(_, link)| link.controller == controller)
+    }
+
     /// Iterates live parts in canonical slot order.
     pub fn parts(&self) -> impl Iterator<Item = (PartId, &PartSpec)> {
         self.parts.iter()
@@ -344,6 +453,11 @@ impl ConstructionGraph {
     /// Iterates live bearings in canonical slot order.
     pub fn bearings(&self) -> impl Iterator<Item = (BearingId, &BearingSpec)> {
         self.bearings.iter()
+    }
+
+    /// Iterates live control-block wires in canonical slot order.
+    pub fn drive_links(&self) -> impl Iterator<Item = (DriveLinkId, &DriveLinkSpec)> {
+        self.drive_links.iter()
     }
 
     /// Current incomplete two-step operation, if any.
@@ -371,10 +485,16 @@ impl ConstructionGraph {
         self.bearings.len()
     }
 
+    /// Number of live control-block wires.
+    pub const fn drive_link_count(&self) -> usize {
+        self.drive_links.len()
+    }
+
     pub(crate) fn face_geometry(&self, face: FaceRef) -> Result<FaceGeometry, GraphError> {
         match face.owner {
             FaceOwner::Part(part) => match self.parts.get(part).copied() {
                 Some(PartSpec::Cuboid(spec)) => Ok(cuboid_face(spec, face.face)),
+                Some(PartSpec::Controller(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Cylinder(spec)) => {
                     cylinder_face(spec, face.face).ok_or(GraphError::InvalidCylinderFace)
                 }
@@ -385,6 +505,7 @@ impl ConstructionGraph {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // One exhaustive command dispatch reads better whole.
     fn apply_validated(&mut self, command: BuildCommand) -> Result<BuildOutcome, GraphError> {
         match command {
             BuildCommand::Spawn(spec) => {
@@ -392,6 +513,10 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnCylinder(spec) => {
+                let id = self.parts.insert(spec.into());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnController(spec) => {
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
@@ -416,11 +541,23 @@ impl ConstructionGraph {
                         rigid_link_references(*link, id).then_some(link_id)
                     })
                     .collect::<Vec<_>>();
+                let removed_bearings = bearings.iter().copied().collect::<BTreeSet<_>>();
+                let drive_links = self
+                    .drive_links
+                    .iter()
+                    .filter_map(|(link_id, link)| {
+                        (link.controller == id || removed_bearings.contains(&link.bearing))
+                            .then_some(link_id)
+                    })
+                    .collect::<Vec<_>>();
                 for weld in welds {
                     self.welds.remove(weld);
                 }
                 for link in rigid_links {
                     self.rigid_links.remove(link);
+                }
+                for link in drive_links {
+                    self.drive_links.remove(link);
                 }
                 for bearing in bearings {
                     self.bearings.remove(bearing);
@@ -445,6 +582,14 @@ impl ConstructionGraph {
                 self.bearings
                     .remove(id)
                     .ok_or(GraphError::MissingBearing(id))?;
+                let drive_links = self
+                    .drive_links
+                    .iter()
+                    .filter_map(|(link_id, link)| (link.bearing == id).then_some(link_id))
+                    .collect::<Vec<_>>();
+                for link in drive_links {
+                    self.drive_links.remove(link);
+                }
                 self.pending = None;
                 Ok(BuildOutcome::Removed)
             }
@@ -466,6 +611,32 @@ impl ConstructionGraph {
                 self.pending = None;
                 Ok(BuildOutcome::BearingAdded(id))
             }
+            BuildCommand::AddDriveLink(spec) => {
+                self.validate_drive_link(spec)?;
+                let id = self.drive_links.insert(spec);
+                self.pending = None;
+                Ok(BuildOutcome::DriveLinked(id))
+            }
+            BuildCommand::RemoveDriveLink(id) => {
+                self.drive_links
+                    .remove(id)
+                    .ok_or(GraphError::MissingDriveLink(id))?;
+                self.pending = None;
+                Ok(BuildOutcome::Removed)
+            }
+            BuildCommand::SetDriveLink {
+                link,
+                limits,
+                program,
+            } => {
+                let spec = self
+                    .drive_links
+                    .get_mut(link)
+                    .ok_or(GraphError::MissingDriveLink(link))?;
+                spec.limits = limits;
+                spec.program = program;
+                Ok(BuildOutcome::DriveUpdated)
+            }
             BuildCommand::BeginPending(pending) => {
                 match pending {
                     PendingOperation::Weld(face) => {
@@ -476,6 +647,14 @@ impl ConstructionGraph {
                         if !anchor.is_finite() || !point_on_face(anchor, geometry) {
                             return Err(GraphError::BearingAnchorOutsideFaces);
                         }
+                    }
+                    PendingOperation::DriveLink(controller) => {
+                        self.parts
+                            .get(controller)
+                            .copied()
+                            .ok_or(GraphError::MissingPart(controller))?
+                            .as_controller()
+                            .ok_or(GraphError::NotAController(controller))?;
                     }
                 }
                 self.pending = Some(pending);
@@ -510,6 +689,26 @@ impl ConstructionGraph {
             .ok_or(GraphError::MissingPart(spec.second))?;
         if spec.first == spec.second {
             return Err(GraphError::SameRigidLinkPart);
+        }
+        Ok(())
+    }
+
+    fn validate_drive_link(&self, spec: DriveLinkSpec) -> Result<(), GraphError> {
+        self.parts
+            .get(spec.controller)
+            .copied()
+            .ok_or(GraphError::MissingPart(spec.controller))?
+            .as_controller()
+            .ok_or(GraphError::NotAController(spec.controller))?;
+        self.bearings
+            .get(spec.bearing)
+            .ok_or(GraphError::MissingBearing(spec.bearing))?;
+        if self
+            .drive_links
+            .iter()
+            .any(|(_, link)| link.bearing == spec.bearing)
+        {
+            return Err(GraphError::BearingAlreadyDriven(spec.bearing));
         }
         Ok(())
     }
@@ -853,11 +1052,12 @@ mod tests {
 
     use super::{
         BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome,
-        ConstructionGraph, GraphError, PendingOperation, RigidLinkSpec, WeldSpec,
+        ConstructionGraph, DriveLinkSpec, GraphError, PendingOperation, RigidLinkSpec, WeldSpec,
     };
     use crate::{
-        BuildPose, CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceRef, GridRotation,
-        PartSpec,
+        BearingId, BuildPose, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
+        DriveLimits, DriveProgram, DriveState, DriveTarget, FaceKind, FaceRef, GridRotation,
+        PartId, PartSpec,
     };
 
     fn cube_at(x: i32) -> CuboidSpec {
@@ -1209,5 +1409,221 @@ mod tests {
             graph.apply(BuildCommand::RemoveBearing(bearing)),
             Err(GraphError::MissingBearing(bearing))
         );
+    }
+
+    fn controller_at(x: i32) -> ControllerSpec {
+        ControllerSpec::new(BuildPose::from_half_grid(
+            IVec3::new(x, 2, 0),
+            GridRotation::default(),
+        ))
+    }
+
+    fn hinged_pair(graph: &mut ConstructionGraph) -> BearingId {
+        let left = spawn(graph, cube_at(0));
+        let right = spawn(graph, cube_at(4));
+        let BuildOutcome::BearingAdded(bearing) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(left, FaceKind::PositiveX),
+                FaceRef::part(right, FaceKind::NegativeX),
+                Vec3::new(0.5, 0.5, 0.0),
+                Vec3::X,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        bearing
+    }
+
+    fn spawn_controller(graph: &mut ConstructionGraph, spec: ControllerSpec) -> PartId {
+        let BuildOutcome::Spawned(id) = graph.apply(BuildCommand::SpawnController(spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        id
+    }
+
+    #[test]
+    fn control_block_exposes_cuboid_faces_and_reprogrammable_wires() {
+        let mut graph = ConstructionGraph::new();
+        let bearing = hinged_pair(&mut graph);
+        let controller = spawn_controller(&mut graph, controller_at(20));
+        assert!(matches!(
+            graph.part(controller),
+            Some(PartSpec::Controller(_))
+        ));
+        assert!(
+            graph
+                .face_geometry(FaceRef::part(controller, FaceKind::PositiveX))
+                .is_ok()
+        );
+        assert!(graph.is_controller(controller));
+
+        let BuildOutcome::DriveLinked(link) = graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            graph.drive_link(link).map(|spec| spec.limits),
+            Some(DriveLimits::default())
+        );
+
+        let limits = DriveLimits::new(2.0, 12.0, Some((-0.5, 0.5))).unwrap();
+        let program =
+            DriveProgram::new(&[DriveState::new(DriveTarget::Angle(0.25)).unwrap()], false)
+                .unwrap();
+        assert_eq!(
+            graph.apply(BuildCommand::SetDriveLink {
+                link,
+                limits,
+                program,
+            }),
+            Ok(BuildOutcome::DriveUpdated)
+        );
+        let stored = graph.drive_link(link).copied().unwrap();
+        assert_eq!(stored.limits, limits);
+        assert_eq!(stored.program, program);
+
+        // A control block owns its wires, and reprogramming one leaves the
+        // block itself untouched.
+        assert_eq!(graph.controller_links(controller).count(), 1);
+    }
+
+    #[test]
+    fn drive_link_requires_a_controller_part_and_an_undriven_bearing() {
+        let mut graph = ConstructionGraph::new();
+        let bearing = hinged_pair(&mut graph);
+        let block = spawn(&mut graph, cube_at(12));
+        let controller = spawn_controller(&mut graph, controller_at(20));
+        let other = spawn_controller(&mut graph, controller_at(28));
+
+        assert_eq!(
+            graph.apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                block, bearing
+            ))),
+            Err(GraphError::NotAController(block))
+        );
+        assert_eq!(
+            graph.apply(BuildCommand::BeginPending(PendingOperation::DriveLink(
+                block
+            ))),
+            Err(GraphError::NotAController(block))
+        );
+
+        assert!(matches!(
+            graph.apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing
+            ))),
+            Ok(BuildOutcome::DriveLinked(_))
+        ));
+        assert_eq!(graph.drive_link_count(), 1);
+        assert_eq!(
+            graph.apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                other, bearing
+            ))),
+            Err(GraphError::BearingAlreadyDriven(bearing))
+        );
+    }
+
+    #[test]
+    fn reversed_wire_flips_the_programmed_direction() {
+        let mut graph = ConstructionGraph::new();
+        let bearing = hinged_pair(&mut graph);
+        let controller = spawn_controller(&mut graph, controller_at(20));
+        let program =
+            DriveProgram::new(&[DriveState::new(DriveTarget::Speed(2.0)).unwrap()], false).unwrap();
+
+        let mut spec = DriveLinkSpec::new(controller, bearing);
+        spec.program = program;
+        let BuildOutcome::DriveLinked(link) =
+            graph.apply(BuildCommand::AddDriveLink(spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            graph
+                .drive_link(link)
+                .and_then(|spec| spec.resolved_target(0)),
+            Some(DriveTarget::Speed(2.0))
+        );
+
+        graph.apply(BuildCommand::RemoveDriveLink(link)).unwrap();
+        assert!(graph.bearing_drive_link(bearing).is_none());
+
+        spec.reversed = true;
+        graph.apply(BuildCommand::AddDriveLink(spec)).unwrap();
+        assert_eq!(
+            graph
+                .bearing_drive_link(bearing)
+                .and_then(|(_, link)| link.resolved_target(0)),
+            Some(DriveTarget::Speed(-2.0))
+        );
+    }
+
+    #[test]
+    fn deleting_a_controller_or_bearing_cascades_its_drive_links() {
+        let mut graph = ConstructionGraph::new();
+        let bearing = hinged_pair(&mut graph);
+        let controller = spawn_controller(&mut graph, controller_at(20));
+        let BuildOutcome::DriveLinked(link) = graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        graph.apply(BuildCommand::RemoveBearing(bearing)).unwrap();
+        assert_eq!(graph.drive_link_count(), 0);
+        assert_eq!(
+            graph.apply(BuildCommand::RemoveDriveLink(link)),
+            Err(GraphError::MissingDriveLink(link))
+        );
+
+        let mut graph = ConstructionGraph::new();
+        let bearing = hinged_pair(&mut graph);
+        let controller = spawn_controller(&mut graph, controller_at(20));
+        graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .unwrap();
+        graph.apply(BuildCommand::Remove(controller)).unwrap();
+        assert_eq!(graph.drive_link_count(), 0);
+        assert_eq!(graph.bearing_count(), 1);
+    }
+
+    #[test]
+    fn deleting_a_bearings_support_part_also_drops_its_drive_wire() {
+        let mut graph = ConstructionGraph::new();
+        let left = spawn(&mut graph, cube_at(0));
+        let right = spawn(&mut graph, cube_at(4));
+        let BuildOutcome::BearingAdded(bearing) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(left, FaceKind::PositiveX),
+                FaceRef::part(right, FaceKind::NegativeX),
+                Vec3::new(0.5, 0.5, 0.0),
+                Vec3::X,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let controller = spawn_controller(&mut graph, controller_at(20));
+        graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .unwrap();
+
+        graph.apply(BuildCommand::Remove(left)).unwrap();
+
+        assert_eq!(graph.bearing_count(), 0);
+        assert_eq!(graph.drive_link_count(), 0);
     }
 }

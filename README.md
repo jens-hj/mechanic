@@ -35,8 +35,8 @@ cargo run -p mechanic-app
   cycles its plane like block placement, and releasing removes the selected
   cuboids atomically.
 - Use the clickable hotbar at the bottom of the window or press `1` for Block,
-  `2` for Cylinder, `3` for Bearing, `4` for Weld, `5` for Hammer, and `6` for
-  Joint X-ray.
+  `2` for Cylinder, `3` for Bearing, `4` for Weld, `5` for Hammer, `6` for
+  Joint X-ray, `7` for Control Block, and `8` for Connector.
   Hover an icon to see its tool name. Tool selection persists when the
   simulation mode changes.
 - With Block selected, click and release the white ghost to place one block, or
@@ -84,7 +84,72 @@ cargo run -p mechanic-app
   bearing's ownership to another block under the ring; the bearing disappears
   only when no covered support remains.
 - With Joint X-ray selected in build mode, every bearing socket is drawn
-  through the construction for inspection.
+  through the construction for inspection. Driven bearings additionally show a
+  teal spin arc pointing the way their active state turns them, a straight wire
+  back to the control block steering them, and two radial ticks at their travel
+  limits. The overlay also appears with Control Block or Connector selected so
+  wiring is visible while you work, and unlike the bearing rings it stays up
+  while the simulation runs — arcs and wires follow the moving bodies and the
+  arc flips as a joint changes state, so you can see which joint a key drives.
+- With Control Block selected, click the platform or a face to place a fixed
+  0.25 m teal control block. It welds, collides, and carries mass like an
+  ordinary block. A control block holds no settings of its own: what it does
+  lives on the wires running from it, one program per bearing. Clicking an
+  existing block selects it; press `E` to open its panel.
+- With Connector selected, press the left mouse button on a control block and
+  drag to a bearing, or start on the bearing and drag to the block — wiring runs
+  in either direction. Whatever the pointer is over that a wire can land on — a
+  joint or a control block — is drawn slightly oversized through the
+  construction, so the target is visible before the button goes down. The wire
+  follows the pointer and snaps to whichever end would complete it. Pressing and releasing without moving leaves the wire
+  armed, so click-then-click works too. Wiring aims at the whole joint, hole and
+  pin included, rather than at the thin ring. Dragging an already-wired pair
+  again reverses its direction, and right-clicking a wired bearing removes the
+  wire. A bearing with no part attached through it yet cannot be wired — attach
+  one first. Each
+  bearing obeys at most one control block, while one control block can drive
+  any number of bearings, each with its own program.
+- Press `E` over a control block, or with one selected, to open its panel. It
+  lists one row per wired joint. Each row carries its own maximum speed and
+  torque, optional travel limits, and a loop toggle, followed by its ordered
+  states. Click a cell to change it, or click a speed, torque, value, or dwell
+  cell and type a number — `Enter` commits, `Escape` cancels, `Backspace`
+  deletes. Angles are entered and shown in degrees. Torque and dwell also accept
+  `none` or `inf`, which is what an empty cell commits and what an empty cell
+  displays while you type: unlimited torque, and a state that never advances on
+  its own. An infinite dwell and no dwell are the same setting. A state with no
+  dwell is left when its key goes up instead, so its `then` cell names where it
+  hands off — `stay` keeps it latched, and `→S1` sends it back. That is the same
+  setting the `on release` cell shows, editable from either column. Escape closes the panel once nothing
+  is being edited. The panel works in both build and simulation mode, so a
+  machine can be reprogrammed while it runs.
+
+  Worked examples, one row each:
+
+  | Goal | Program |
+  |---|---|
+  | Steering | `S1 0°` · `S2 30°` key `A` ⇥S1 · `S3 -30°` key `D` ⇥S1 |
+  | Driving | `S1 0/s` · `S2 3/s` key `W` ⇥S1 · `S3 -3/s` key `S` ⇥S1 |
+  | Arm poses | `S1 30°` key `Q` · `S2 40°` key `W` · `S3 80°` key `R`, all holding |
+  | Procedure | `S1 0°` key `R` · `S2 90°` key `S`, 2 s →S3 · `S3 -90°`, 4 s →S2 |
+- A state sets the joint's target: an **angle** it seeks and holds, or a
+  **speed** it turns at. A state is entered by pressing its bound key, and left
+  either when a bound key is released or when its dwell time elapses. A key
+  cell arms capture — the next key you press is bound; clicking a bound key
+  clears it. Letters and digits bind, except `E`, which opens the panel. A
+  released key either holds the state or reverts to a named one, which is what
+  makes hold-to-steer work. A dwell hands off to the following
+  state by default, or to any state you pick, so a two-state cycle runs forever
+  while a reset key still interrupts it. The same key may drive several joints
+  at once, but not two states of one joint.
+- Motion is never instant. An angle state ramps toward its target within the
+  row's torque budget and brakes so it settles without overshooting; a speed
+  state accelerates into its target. Gravity and contacts can slow, stall, or
+  back-drive either, and a weak torque genuinely fails to lift a load. With
+  travel limits on, the joint stops and holds at the limit.
+- Drive programs are the only values editable while the simulation runs. They
+  change no topology, mass, or buffer size, so new targets are written straight
+  to the GPU without recompiling or restarting.
 - Press `P` in build mode to open the creation picker. It offers deterministic
   kinetic scenes with 256, 1,024, 4,096, or 20,000 parts. Pendulum Garden tests
   branched joints and counterweights, Mobile Workshop mixes welded compounds
@@ -117,6 +182,11 @@ so construction placed on the platform is fixed by default. When placement
 starts on a bearing-connected rigid group, its new blocks weld only to that
 clicked rotor and to each other; touching blocks outside that rotor remain
 physically separate.
+
+A driven bearing needs its own mechanism coordinate, so compilation prefers
+driven bearings as spanning-tree edges over passive ones. A driven bearing that
+can only be a loop-closure edge is rejected with an explicit error rather than
+silently losing its drive.
 
 Bearings require a cuboid face or flat annular or sector-shaped cylinder end;
 curved cylinder walls and radial slice walls never provide placement, weld, or

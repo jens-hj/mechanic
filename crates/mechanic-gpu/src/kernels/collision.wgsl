@@ -64,6 +64,12 @@ const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 const PROJECTED_RELAXATION: f32 = 0.125;
 const WARM_START_SCALE: f32 = 0.5;
 const CONTACT_FRICTION: f32 = 0.05;
+const PENETRATION_SLOP: f32 = 0.001;
+const MAX_PENETRATION_CORRECTION_SPEED: f32 = 1.0;
+const CACHED_NORMAL_ALIGNMENT: f32 = 0.98;
+const MAX_CACHED_POINT_MOVEMENT: f32 = 0.02;
+const CYLINDER_MANIFOLD_ALIGNMENT: f32 = 0.05;
+const MAX_SORTED_SERIAL_CONTACTS: u32 = 64u;
 const INVALID_MANIFOLD_SLOT: u32 = 0xffffffffu;
 const MAX_MANIFOLD_PROBES: u32 = 256u;
 
@@ -179,6 +185,53 @@ fn collider_support_point(index: u32, direction: vec3<f32>) -> vec3<f32> {
         let projection = dot(axes[axis], direction);
         if abs(projection) > 1.0e-5 {
             point += axes[axis] * collider.half_extents[axis] * sign(projection);
+        }
+    }
+    return point;
+}
+
+fn full_cylinder_contact_count(index: u32, direction: vec3<f32>) -> u32 {
+    let rotation = collider_rotation(index);
+    let cylinder_axis = quat_rotate(rotation, vec3<f32>(0.0, 1.0, 0.0));
+    let axial_projection = dot(cylinder_axis, direction);
+    let radial_length = length(direction - cylinder_axis * axial_projection);
+    if radial_length < CYLINDER_MANIFOLD_ALIGNMENT {
+        return 4u;
+    }
+    if abs(axial_projection) < CYLINDER_MANIFOLD_ALIGNMENT {
+        return 1u;
+    }
+    return 1u;
+}
+
+fn full_cylinder_support_point(index: u32, direction: vec3<f32>, role: u32) -> vec3<f32> {
+    let collider = colliders[index];
+    let rotation = collider_rotation(index);
+    let radial_axis = quat_rotate(rotation, vec3<f32>(1.0, 0.0, 0.0));
+    let cylinder_axis = quat_rotate(rotation, vec3<f32>(0.0, 1.0, 0.0));
+    var point = collider_center(index) - radial_axis * collider.local_center.w;
+    let axial_projection = dot(cylinder_axis, direction);
+    let radial_direction = direction - cylinder_axis * axial_projection;
+    let radial_length = length(radial_direction);
+    if radial_length < CYLINDER_MANIFOLD_ALIGNMENT {
+        point += cylinder_axis * sign(axial_projection) * collider.half_extents.y;
+        let tangent_a = normalize(
+            vec3<f32>(1.0, 0.0, 0.0) - cylinder_axis * cylinder_axis.x,
+        );
+        let tangent_b = normalize(cross(cylinder_axis, tangent_a));
+        if role == 1u {
+            point += tangent_a * collider.half_extents.w;
+        } else if role == 2u {
+            point -= tangent_a * collider.half_extents.w;
+        } else if role == 3u {
+            point += tangent_b * collider.half_extents.w;
+        } else {
+            point -= tangent_b * collider.half_extents.w;
+        }
+    } else {
+        point += radial_direction * (collider.half_extents.w / radial_length);
+        if abs(axial_projection) >= CYLINDER_MANIFOLD_ALIGNMENT {
+            point += cylinder_axis * sign(axial_projection) * collider.half_extents.y;
         }
     }
     return point;
@@ -501,19 +554,14 @@ fn emit_narrowphase_contact(pair: vec2<u32>) {
             pair.y,
         );
         contacts[output].normal_penetration = vec4<f32>(sat.normal, max(sat.penetration, 0.0));
-        if sat.near_face_axes >= 2u {
-            contacts[output].arm_a_impulse = vec4<f32>(0.0);
-            contacts[output].arm_b = vec4<f32>(0.0, 0.0, 0.0, f32(sat.near_face_axes));
-        } else {
-            contacts[output].arm_a_impulse = vec4<f32>(
-                contact_point - positions[colliders[pair.x].metadata.x].xyz,
-                0.0,
-            );
-            contacts[output].arm_b = vec4<f32>(
-                contact_point - positions[colliders[pair.y].metadata.x].xyz,
-                f32(sat.near_face_axes),
-            );
-        }
+        contacts[output].arm_a_impulse = vec4<f32>(
+            contact_point - positions[colliders[pair.x].metadata.x].xyz,
+            0.0,
+        );
+        contacts[output].arm_b = vec4<f32>(
+            contact_point - positions[colliders[pair.y].metadata.x].xyz,
+            f32(sat.near_face_axes),
+        );
     } else {
         atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
     }
@@ -541,19 +589,14 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
             pair.y,
         );
         contacts[output].normal_penetration = vec4<f32>(sat.normal, max(sat.penetration, 0.0));
-        if sat.near_face_axes >= 2u {
-            contacts[output].arm_a_impulse = vec4<f32>(0.0);
-            contacts[output].arm_b = vec4<f32>(0.0, 0.0, 0.0, f32(sat.near_face_axes));
-        } else {
-            contacts[output].arm_a_impulse = vec4<f32>(
-                contact_point - positions[colliders[pair.x].metadata.x].xyz,
-                0.0,
-            );
-            contacts[output].arm_b = vec4<f32>(
-                contact_point - positions[colliders[pair.y].metadata.x].xyz,
-                f32(sat.near_face_axes),
-            );
-        }
+        contacts[output].arm_a_impulse = vec4<f32>(
+            contact_point - positions[colliders[pair.x].metadata.x].xyz,
+            0.0,
+        );
+        contacts[output].arm_b = vec4<f32>(
+            contact_point - positions[colliders[pair.y].metadata.x].xyz,
+            f32(sat.near_face_axes),
+        );
     } else {
         atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
     }
@@ -583,15 +626,16 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
         return;
     }
     let collider = colliders[collider_index];
-    let rotation = collider_rotation(collider_index);
-    let axis_x = quat_rotate(rotation, vec3<f32>(1.0, 0.0, 0.0));
-    let axis_y = quat_rotate(rotation, vec3<f32>(0.0, 1.0, 0.0));
-    let axis_z = quat_rotate(rotation, vec3<f32>(0.0, 0.0, 1.0));
-    let vertical_radius = abs(axis_x.y) * collider.half_extents.x
-        + abs(axis_y.y) * collider.half_extents.y
-        + abs(axis_z.y) * collider.half_extents.z;
-    let center = collider_center(collider_index);
-    let bottom = center.y - vertical_radius;
+    let down = vec3<f32>(0.0, -1.0, 0.0);
+    var support_point = collider_support_point(collider_index, down);
+    if collider.metadata.w != 0u {
+        let contact_count = full_cylinder_contact_count(collider_index, down);
+        if collider.metadata.w > contact_count {
+            return;
+        }
+        support_point = full_cylinder_support_point(collider_index, down, collider.metadata.w);
+    }
+    let bottom = support_point.y;
     if bottom > 1.0e-5 {
         return;
     }
@@ -604,8 +648,16 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
             INVALID_MANIFOLD_SLOT,
         );
         contacts[output].normal_penetration = vec4<f32>(0.0, -1.0, 0.0, max(-bottom, 0.0));
-        contacts[output].arm_a_impulse = vec4<f32>(0.0, -vertical_radius, 0.0, 0.0);
-        contacts[output].arm_b = vec4<f32>(0.0);
+        contacts[output].arm_a_impulse = vec4<f32>(
+            support_point - positions[collider.metadata.x].xyz,
+            0.0,
+        );
+        contacts[output].arm_b = vec4<f32>(
+            0.0,
+            0.0,
+            0.0,
+            select(0.0, -1.0, collider.metadata.w != 0u),
+        );
     } else {
         atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
     }
@@ -654,10 +706,15 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
         return;
     }
     let cached = persistent_manifolds[manifold_slot];
+    let cache_matches = cached.pair_tick.z == config.tick_index - 1u
+        && dot(cached.normal_penetration.xyz, contact.normal_penetration.xyz)
+            >= CACHED_NORMAL_ALIGNMENT
+        && distance(cached.point_impulse.xyz, contact.arm_a_impulse.xyz)
+            <= MAX_CACHED_POINT_MOVEMENT;
     let cached_impulse = select(
         0.0,
         cached.point_impulse.w,
-        cached.pair_tick.z == config.tick_index - 1u,
+        cache_matches,
     );
     contacts[contact_index].metadata.z = manifold_slot;
     contacts[contact_index].metadata.w = 1u;
@@ -687,10 +744,21 @@ fn finalize_active_contacts() {
     indirect_args[9] = select(0u, (config.body_count + 255u) / 256u, active_count > 0u);
     indirect_args[10] = 1u;
     indirect_args[11] = 1u;
+    indirect_args[12] = select(0u, 1u, active_count > 0u);
+    indirect_args[13] = 1u;
+    indirect_args[14] = 1u;
 }
 
 fn contact_velocity(body: u32, arm: vec3<f32>) -> vec3<f32> {
     return linear_velocities[body].xyz + cross(angular_velocities[body].xyz, arm);
+}
+
+fn penetration_bias(penetration: f32, analytic_cylinder_ground: bool) -> f32 {
+    let recovery = select(0.2, 1.0, analytic_cylinder_ground);
+    return min(
+        max(penetration - PENETRATION_SLOP, 0.0) * recovery / config.delta_seconds,
+        MAX_PENETRATION_CORRECTION_SPEED,
+    );
 }
 
 fn add_velocity_delta(body: u32, linear: vec3<f32>, angular: vec3<f32>) {
@@ -734,8 +802,9 @@ fn warm_start(@builtin(global_invocation_id) invocation: vec3<u32>) {
         contacts[contact_index].arm_a_impulse.w = 0.0;
         return;
     }
-    let bias = contact.normal_penetration.w * 0.2 / config.delta_seconds;
-    let warmed_impulse = contact.arm_a_impulse.w * WARM_START_SCALE;
+    let bias = penetration_bias(contact.normal_penetration.w, contact.arm_b.w < 0.0);
+    let warm_start_scale = select(WARM_START_SCALE, 1.0, contact.arm_b.w < 0.0);
+    let warmed_impulse = contact.arm_a_impulse.w * warm_start_scale;
     let accumulated_impulse = max(
         warmed_impulse
             + PROJECTED_RELAXATION * (-normal_speed + bias) / denominator,
@@ -800,7 +869,7 @@ fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
         contacts[contact_index].arm_a_impulse.w = 0.0;
         return;
     }
-    let bias = contact.normal_penetration.w * 0.2 / config.delta_seconds;
+    let bias = penetration_bias(contact.normal_penetration.w, contact.arm_b.w < 0.0);
     let previous_impulse = max(contact.arm_a_impulse.w, 0.0);
     let accumulated_impulse = max(
         previous_impulse
@@ -833,6 +902,148 @@ fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
             impulse * world_masses[body_b].inverse_inertia_x_mass.w,
             inverse_inertia(body_b, cross(arm_b, impulse)),
         );
+    }
+}
+
+fn solve_contact_immediate(contact_index: u32) {
+    let contact = contacts[contact_index];
+    let body_a = contact.metadata.x;
+    let body_b = contact.metadata.y;
+    let arm_a = contact.arm_a_impulse.xyz;
+    let arm_b = contact.arm_b.xyz;
+    var velocity_b = vec3<f32>(0.0);
+    if body_b != INVALID_MANIFOLD_SLOT {
+        velocity_b = contact_velocity(body_b, arm_b);
+    }
+    let normal = contact.normal_penetration.xyz;
+    let denominator = impulse_denominator(body_a, body_b, arm_a, arm_b, normal);
+    if denominator <= 0.0 {
+        return;
+    }
+    let relative = velocity_b - contact_velocity(body_a, arm_a);
+    let normal_speed = dot(relative, normal);
+    if contact.normal_penetration.w <= 1.0e-5
+        && normal_speed >= -1.0e-5
+        && contact.arm_a_impulse.w <= 1.0e-6
+    {
+        contacts[contact_index].arm_a_impulse.w = 0.0;
+        return;
+    }
+    let previous_impulse = max(contact.arm_a_impulse.w, 0.0);
+    let accumulated_impulse = max(
+        previous_impulse
+            + (-normal_speed
+                + penetration_bias(contact.normal_penetration.w, contact.arm_b.w < 0.0))
+                / denominator,
+        0.0,
+    );
+    let impulse_delta = accumulated_impulse - previous_impulse;
+    contacts[contact_index].arm_a_impulse.w = accumulated_impulse;
+    let normal_impulse_vector = normal * impulse_delta;
+    var impulse = normal_impulse_vector;
+    let tangent_velocity = relative - normal * normal_speed;
+    let tangent_speed = length(tangent_velocity);
+    if tangent_speed > 1.0e-6 {
+        let tangent = tangent_velocity / tangent_speed;
+        let tangent_denominator = impulse_denominator(body_a, body_b, arm_a, arm_b, tangent);
+        let friction_impulse = min(
+            tangent_speed / tangent_denominator,
+            abs(impulse_delta) * CONTACT_FRICTION,
+        );
+        impulse -= tangent * friction_impulse;
+    }
+    linear_velocities[body_a] = vec4<f32>(
+        linear_velocities[body_a].xyz
+            - impulse * world_masses[body_a].inverse_inertia_x_mass.w,
+        0.0,
+    );
+    angular_velocities[body_a] = vec4<f32>(
+        angular_velocities[body_a].xyz
+            + inverse_inertia(body_a, cross(arm_a, -impulse)),
+        0.0,
+    );
+    if body_b != INVALID_MANIFOLD_SLOT {
+        linear_velocities[body_b] = vec4<f32>(
+            linear_velocities[body_b].xyz
+                + impulse * world_masses[body_b].inverse_inertia_x_mass.w,
+            0.0,
+        );
+        angular_velocities[body_b] = vec4<f32>(
+            angular_velocities[body_b].xyz
+                + inverse_inertia(body_b, cross(arm_b, impulse)),
+            0.0,
+        );
+    }
+}
+
+@compute @workgroup_size(1)
+fn solve_accumulate_serial() {
+    let active_count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
+    if active_count > MAX_SORTED_SERIAL_CONTACTS {
+        for (var active_index = 0u; active_index < active_count; active_index += 1u) {
+            solve_contact_immediate(active_contacts[active_index]);
+        }
+        for (var active_index = active_count; active_index > 0u; active_index -= 1u) {
+            solve_contact_immediate(active_contacts[active_index - 1u]);
+        }
+        return;
+    }
+    var previous_key = vec3<u32>(0u);
+    var has_previous = false;
+    for (var active_index = 0u; active_index < active_count; active_index += 1u) {
+        var selected = INVALID_MANIFOLD_SLOT;
+        var selected_key = vec3<u32>(INVALID_MANIFOLD_SLOT);
+        for (var candidate = 0u; candidate < active_count; candidate += 1u) {
+            let contact_index = active_contacts[candidate];
+            let contact = contacts[contact_index];
+            let key = vec3<u32>(contact.metadata.x, contact.metadata.y, contact.metadata.z);
+            let after_previous = !has_previous
+                || key.x > previous_key.x
+                || (key.x == previous_key.x && key.y > previous_key.y)
+                || (all(key.xy == previous_key.xy) && key.z > previous_key.z);
+            let before_selected = selected == INVALID_MANIFOLD_SLOT
+                || key.x < selected_key.x
+                || (key.x == selected_key.x && key.y < selected_key.y)
+                || (all(key.xy == selected_key.xy) && key.z < selected_key.z);
+            if after_previous && before_selected {
+                selected = contact_index;
+                selected_key = key;
+            }
+        }
+        if selected == INVALID_MANIFOLD_SLOT {
+            break;
+        }
+        solve_contact_immediate(selected);
+        previous_key = selected_key;
+        has_previous = true;
+    }
+    has_previous = false;
+    for (var active_index = active_count; active_index > 0u; active_index -= 1u) {
+        var selected = INVALID_MANIFOLD_SLOT;
+        var selected_key = vec3<u32>(0u);
+        for (var candidate = 0u; candidate < active_count; candidate += 1u) {
+            let contact_index = active_contacts[candidate];
+            let contact = contacts[contact_index];
+            let key = vec3<u32>(contact.metadata.x, contact.metadata.y, contact.metadata.z);
+            let before_previous = !has_previous
+                || key.x < previous_key.x
+                || (key.x == previous_key.x && key.y < previous_key.y)
+                || (all(key.xy == previous_key.xy) && key.z < previous_key.z);
+            let after_selected = selected == INVALID_MANIFOLD_SLOT
+                || key.x > selected_key.x
+                || (key.x == selected_key.x && key.y > selected_key.y)
+                || (all(key.xy == selected_key.xy) && key.z > selected_key.z);
+            if before_previous && after_selected {
+                selected = contact_index;
+                selected_key = key;
+            }
+        }
+        if selected == INVALID_MANIFOLD_SLOT {
+            break;
+        }
+        solve_contact_immediate(selected);
+        previous_key = selected_key;
+        has_previous = true;
     }
 }
 

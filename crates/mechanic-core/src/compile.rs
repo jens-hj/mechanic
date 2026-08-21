@@ -6,7 +6,10 @@ use std::{
 use bevy_math::{Mat3, Quat, Vec3};
 use thiserror::Error;
 
-use crate::{BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, FaceOwner, PartId, PartSpec};
+use crate::{
+    BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, DriveLimits, DriveTarget, FaceOwner,
+    PartId, PartSpec,
+};
 
 /// Number of cuboid colliders used for each cylinder.
 pub const CYLINDER_COLLIDER_COUNT: usize = 16;
@@ -101,7 +104,7 @@ pub struct MechanismBodyTopology {
 }
 
 /// Canonical forest and hard loop-closure partition.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoopTopology {
     /// Bearings that introduce independent one-dimensional coordinates.
     pub tree_bearings: Vec<BearingId>,
@@ -116,6 +119,13 @@ pub struct LoopTopology {
     pub body_parents: Vec<MechanismBodyTopology>,
     /// Deterministic leaf-to-root contraction rounds over non-root bodies.
     pub contraction_rounds: Vec<Vec<u32>>,
+    /// Child-subtree rotational inertia about each tree bearing's own axis, in
+    /// kg·m², indexed by coordinate. Infinite when the subtree is grounded.
+    pub coordinate_axis_inertia: Vec<f32>,
+    /// Every graph bearing, including rows collapsed into another as the same
+    /// physical joint, to the coordinate it moves. Bearings that close a loop
+    /// are absent.
+    pub bearing_coordinates: BTreeMap<BearingId, u32>,
 }
 
 /// Complete, immutable upload image for the GPU runtime.
@@ -133,6 +143,73 @@ pub struct CompiledCreation {
     pub collision_suppression: Vec<[u32; 2]>,
     /// Canonical source-part to compound-row lookup.
     pub part_to_compound: Vec<(PartId, u32)>,
+    /// Resolved drive rows, one per tree bearing, in coordinate-index order.
+    pub coordinate_drives: Vec<CoordinateDrive>,
+}
+
+/// How the solver drives one mechanism coordinate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DriveMode {
+    /// No control block drives this coordinate; it swings freely.
+    #[default]
+    Passive,
+    /// Hold a target speed.
+    Speed,
+    /// Seek and hold a target angle.
+    Angle,
+}
+
+impl DriveMode {
+    /// Discriminant uploaded to the GPU.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Passive => 0,
+            Self::Speed => 1,
+            Self::Angle => 2,
+        }
+    }
+}
+
+/// Resolved drive parameters for one mechanism coordinate.
+///
+/// A passive coordinate has a zero `max_acceleration` and infinite limits,
+/// which is exactly free-swinging behaviour in the solver.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoordinateDrive {
+    /// What the solver does with this coordinate.
+    pub mode: DriveMode,
+    /// Signed target speed in radians per second, with wire reversal applied.
+    pub target_speed: f32,
+    /// Target angle in radians, with wire reversal applied.
+    pub target_angle: f32,
+    /// Fastest the joint may turn, in radians per second.
+    pub max_speed: f32,
+    /// Largest permitted change in joint speed per second. Infinite when the
+    /// drive torque is unlimited.
+    pub max_acceleration: f32,
+    /// Lower angle limit in radians, or negative infinity.
+    pub min_angle: f32,
+    /// Upper angle limit in radians, or positive infinity.
+    pub max_angle: f32,
+}
+
+impl CoordinateDrive {
+    /// Row describing a coordinate no control block drives.
+    pub const PASSIVE: Self = Self {
+        mode: DriveMode::Passive,
+        target_speed: 0.0,
+        target_angle: 0.0,
+        max_speed: 0.0,
+        max_acceleration: 0.0,
+        min_angle: f32::NEG_INFINITY,
+        max_angle: f32::INFINITY,
+    };
+}
+
+impl Default for CoordinateDrive {
+    fn default() -> Self {
+        Self::PASSIVE
+    }
 }
 
 /// Construction topology cannot be represented by the exact-coordinate model.
@@ -148,6 +225,12 @@ pub enum TopologyError {
         bearing: BearingId,
         /// Collapsed compound row.
         compound: u32,
+    },
+    /// A driven bearing could not be given an independent coordinate.
+    #[error("driven bearing {bearing:?} closes a loop and cannot carry a drive")]
+    DrivenClosureBearing {
+        /// Offending bearing.
+        bearing: BearingId,
     },
     /// A computed mass or inertia was non-finite or singular.
     #[error("compound containing {part:?} has invalid mass properties")]
@@ -212,7 +295,7 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     let collider_capacity = part_rows
         .iter()
         .map(|(_, spec)| match spec {
-            PartSpec::Cuboid(_) => 1,
+            PartSpec::Cuboid(_) | PartSpec::Controller(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
         })
         .sum();
@@ -262,17 +345,23 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         .collect::<Vec<_>>();
     let compound_lookup = part_to_compound.iter().copied().collect::<BTreeMap<_, _>>();
 
-    let mut mechanism_forest = DisjointSet::new(compounds.len());
     let mut bearing_components = DisjointSet::new(compounds.len());
-    let mut forest_has_fixed_root = compounds
-        .iter()
-        .map(|compound| compound.is_static)
-        .collect::<Vec<_>>();
     let mut topology = LoopTopology::default();
     let mut bearings = Vec::with_capacity(graph.bearings.len());
-    let mut physical_bearing_keys = BTreeSet::new();
     let mut suppressed = BTreeSet::new();
 
+    let driven_bearings = graph
+        .drive_links
+        .iter()
+        .map(|(_, link)| link.bearing)
+        .collect::<BTreeSet<_>>();
+
+    // Collapse bearings that describe the same physical joint. When one of a
+    // duplicate group carries a drive, that row represents the group so its
+    // control block is not silently dropped.
+    let mut physical_order = Vec::new();
+    let mut physical_by_key = BTreeMap::new();
+    let mut bearing_keys = Vec::new();
     for (bearing_id, bearing) in graph.bearings.iter() {
         let FaceOwner::Part(part_a) = bearing.source.owner else {
             unreachable!("graph validation rejects ground bearings")
@@ -294,32 +383,76 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
             bearing.shared_anchor.to_array().map(f32::to_bits),
             bearing.axis.to_array().map(f32::to_bits),
         );
-        if !physical_bearing_keys.insert(physical_key) {
-            continue;
+        bearing_components.union(compound_a as usize, compound_b as usize);
+        suppressed.insert(ordered_pair(compound_a, compound_b));
+        bearing_keys.push((bearing_id, physical_key));
+        match physical_by_key.get(&physical_key).copied() {
+            None => {
+                physical_by_key.insert(physical_key, physical_order.len());
+                physical_order.push((bearing_id, compound_a, compound_b));
+            }
+            Some(existing) => {
+                let (kept, ..) = physical_order[existing];
+                if driven_bearings.contains(&bearing_id) && !driven_bearings.contains(&kept) {
+                    physical_order[existing].0 = bearing_id;
+                }
+            }
         }
+    }
 
-        let a = compound_a as usize;
-        let b = compound_b as usize;
-        bearing_components.union(a, b);
-        let root_a = mechanism_forest.find(a);
-        let root_b = mechanism_forest.find(b);
-        let joins_two_fixed_trees =
-            root_a != root_b && forest_has_fixed_root[root_a] && forest_has_fixed_root[root_b];
-        let coordinate_index = if root_a == root_b || joins_two_fixed_trees {
-            topology.closure_bearings.push(bearing_id);
-            None
-        } else {
+    // Choose the spanning forest with driven bearings considered first so a
+    // drive is never stranded on a loop-closure edge that a passive bearing
+    // could have taken instead.
+    let mut mechanism_forest = DisjointSet::new(compounds.len());
+    let mut forest_has_fixed_root = compounds
+        .iter()
+        .map(|compound| compound.is_static)
+        .collect::<Vec<_>>();
+    let mut tree_edges = BTreeSet::new();
+    for driven_pass in [true, false] {
+        for &(bearing_id, compound_a, compound_b) in &physical_order {
+            if driven_bearings.contains(&bearing_id) != driven_pass {
+                continue;
+            }
+            let root_a = mechanism_forest.find(compound_a as usize);
+            let root_b = mechanism_forest.find(compound_b as usize);
+            let joins_two_fixed_trees =
+                root_a != root_b && forest_has_fixed_root[root_a] && forest_has_fixed_root[root_b];
+            if root_a == root_b || joins_two_fixed_trees {
+                continue;
+            }
             let has_fixed_root = forest_has_fixed_root[root_a] || forest_has_fixed_root[root_b];
             mechanism_forest.union(root_a, root_b);
             let joined_root = mechanism_forest.find(root_a);
             forest_has_fixed_root[joined_root] = has_fixed_root;
+            tree_edges.insert(bearing_id);
+        }
+    }
+
+    let mut representative_coordinates = BTreeMap::new();
+    for &(bearing_id, compound_a, compound_b) in &physical_order {
+        let bearing = graph
+            .bearings
+            .get(bearing_id)
+            .copied()
+            .expect("physical bearing rows come from live graph handles");
+        let coordinate_index = if tree_edges.contains(&bearing_id) {
             let coordinate = u32::try_from(topology.tree_bearings.len())
                 .expect("bearing coordinate count fits u32");
             topology.tree_bearings.push(bearing_id);
+            representative_coordinates.insert(bearing_id, coordinate);
             Some(coordinate)
+        } else {
+            if driven_bearings.contains(&bearing_id) {
+                return Err(TopologyError::DrivenClosureBearing {
+                    bearing: bearing_id,
+                });
+            }
+            topology.closure_bearings.push(bearing_id);
+            None
         };
-        let root_a = compounds[a].root_translation;
-        let root_b = compounds[b].root_translation;
+        let root_a = compounds[compound_a as usize].root_translation;
+        let root_b = compounds[compound_b as usize].root_translation;
         bearings.push(CompiledBearing {
             source_bearing: bearing_id,
             compound_a,
@@ -330,8 +463,18 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
             local_axis_b: bearing.axis,
             coordinate_index,
         });
-        suppressed.insert(ordered_pair(compound_a, compound_b));
     }
+
+    // Duplicate rows describing one physical joint share that joint's
+    // coordinate, so a drive wired to any of them addresses the same row.
+    topology.bearing_coordinates = bearing_keys
+        .into_iter()
+        .filter_map(|(bearing_id, key)| {
+            let representative = physical_order[physical_by_key[&key]].0;
+            let coordinate = representative_coordinates.get(&representative)?;
+            Some((bearing_id, *coordinate))
+        })
+        .collect();
 
     let mut components = BTreeMap::<usize, Vec<u32>>::new();
     for compound in 0..compounds.len() {
@@ -342,6 +485,10 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     }
     topology.mechanism_components = components.into_values().collect();
     compile_tree_metadata(&compounds, &bearings, &mut topology);
+    topology.coordinate_axis_inertia =
+        compile_coordinate_axis_inertia(&compounds, &bearings, &topology);
+
+    let coordinate_drives = resolve_coordinate_drives(&topology, graph);
 
     Ok(CompiledCreation {
         compounds,
@@ -350,6 +497,7 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         loop_topology: topology,
         collision_suppression: suppressed.into_iter().collect(),
         part_to_compound,
+        coordinate_drives,
     })
 }
 
@@ -460,6 +608,163 @@ fn compile_tree_metadata(
     topology.body_parents = metadata;
 }
 
+/// Rotational inertia of each tree bearing's child subtree about that bearing's
+/// own axis, evaluated in the compile-time bind pose.
+fn compile_coordinate_axis_inertia(
+    compounds: &[CompiledCompound],
+    bearings: &[CompiledBearing],
+    topology: &LoopTopology,
+) -> Vec<f32> {
+    let mut children = vec![Vec::<usize>::new(); compounds.len()];
+    for (body, row) in topology.body_parents.iter().enumerate() {
+        if !row.is_root {
+            children[row.parent_body as usize].push(body);
+        }
+    }
+    let child_body_by_bearing = topology
+        .body_parents
+        .iter()
+        .enumerate()
+        .filter_map(|(body, row)| row.tree_bearing.map(|bearing| (bearing, body)))
+        .collect::<BTreeMap<_, _>>();
+
+    topology
+        .tree_bearings
+        .iter()
+        .map(|source_bearing| {
+            let Some(&child_body) = child_body_by_bearing.get(source_bearing) else {
+                return f32::INFINITY;
+            };
+            let Some(bearing) = bearings
+                .iter()
+                .find(|row| row.source_bearing == *source_bearing)
+            else {
+                return f32::INFINITY;
+            };
+            let axis = bearing.local_axis_a.normalize_or_zero();
+            if axis == Vec3::ZERO {
+                return f32::INFINITY;
+            }
+            let anchor =
+                compounds[bearing.compound_a as usize].root_translation + bearing.local_anchor_a;
+
+            let mut total = 0.0_f32;
+            let mut stack = vec![child_body];
+            while let Some(body) = stack.pop() {
+                let compound = &compounds[body];
+                if compound.is_static {
+                    return f32::INFINITY;
+                }
+                let properties = compound.mass_properties;
+                let offset = properties.center_of_mass - anchor;
+                let radial = offset - axis * offset.dot(axis);
+                total +=
+                    axis.dot(properties.inertia * axis) + properties.mass * radial.length_squared();
+                stack.extend(children[body].iter().copied());
+            }
+            if total.is_finite() && total > 0.0 {
+                total
+            } else {
+                f32::INFINITY
+            }
+        })
+        .collect()
+}
+
+fn resolve_coordinate_drives(
+    topology: &LoopTopology,
+    graph: &ConstructionGraph,
+) -> Vec<CoordinateDrive> {
+    topology
+        .tree_bearings
+        .iter()
+        .enumerate()
+        .map(|(coordinate, &bearing)| {
+            let Some((_, link)) = graph.bearing_drive_link(bearing) else {
+                return CoordinateDrive::PASSIVE;
+            };
+            let inertia = topology
+                .coordinate_axis_inertia
+                .get(coordinate)
+                .copied()
+                .unwrap_or(f32::INFINITY);
+            // A grounded child subtree has no finite inertia about the axis, so
+            // no torque can accelerate it. Report that as passive rather than
+            // as a drive with a zero budget, which would look wired but do
+            // nothing.
+            if !inertia.is_finite() {
+                return CoordinateDrive::PASSIVE;
+            }
+            let Some(target) = link.resolved_target(0) else {
+                return CoordinateDrive::PASSIVE;
+            };
+            coordinate_drive(target, link.limits, inertia)
+        })
+        .collect()
+}
+
+/// Builds one GPU-bound drive row from a resolved state target.
+fn coordinate_drive(
+    target: DriveTarget,
+    limits: DriveLimits,
+    axis_inertia: f32,
+) -> CoordinateDrive {
+    let torque = limits.max_torque_newton_meters();
+    let max_acceleration = if torque.is_infinite() {
+        f32::INFINITY
+    } else {
+        torque / axis_inertia
+    };
+    let (mode, target_speed, target_angle) = match target {
+        DriveTarget::Speed(speed) => (DriveMode::Speed, speed, 0.0),
+        DriveTarget::Angle(angle) => (DriveMode::Angle, 0.0, angle),
+    };
+    CoordinateDrive {
+        mode,
+        target_speed,
+        target_angle,
+        max_speed: limits.max_speed_rad_s(),
+        max_acceleration,
+        min_angle: limits.min_angle(),
+        max_angle: limits.max_angle(),
+    }
+}
+
+impl CompiledCreation {
+    /// Re-derives the drive rows from the graph's current control blocks.
+    ///
+    /// The graph must be the one this creation was compiled from; only drive
+    /// parameters may have changed since. This is how a running simulation is
+    /// retuned without recompiling topology.
+    pub fn resolve_coordinate_drives(&self, graph: &ConstructionGraph) -> Vec<CoordinateDrive> {
+        resolve_coordinate_drives(&self.loop_topology, graph)
+    }
+
+    /// Builds the drive row for one coordinate from a live state target.
+    ///
+    /// This is how a running sequencer turns the state a bearing has just
+    /// entered into an upload row, without recompiling anything. Returns
+    /// [`CoordinateDrive::PASSIVE`] for an unknown coordinate or a grounded
+    /// subtree that no torque can accelerate.
+    pub fn coordinate_drive_row(
+        &self,
+        coordinate: u32,
+        target: DriveTarget,
+        limits: DriveLimits,
+    ) -> CoordinateDrive {
+        let inertia = self
+            .loop_topology
+            .coordinate_axis_inertia
+            .get(coordinate as usize)
+            .copied()
+            .unwrap_or(f32::INFINITY);
+        if !inertia.is_finite() {
+            return CoordinateDrive::PASSIVE;
+        }
+        coordinate_drive(target, limits, inertia)
+    }
+}
+
 fn calculate_mass_properties<'a>(
     parts: impl Iterator<Item = (PartId, PartSpec)> + Clone + 'a,
     is_static: bool,
@@ -522,8 +827,17 @@ struct PartMassProperties {
     local_inertia: Vec3,
 }
 
-fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
+/// Resolves a part to the shape physics actually simulates. Control blocks are
+/// simulated as their fixed cube.
+fn physical_spec(spec: PartSpec) -> PartSpec {
     match spec {
+        PartSpec::Controller(controller) => PartSpec::Cuboid(controller.cuboid()),
+        other => other,
+    }
+}
+
+fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
+    match physical_spec(spec) {
         PartSpec::Cuboid(spec) => {
             let size = spec.size_meters();
             let mass = CUBOID_DENSITY_KG_M3 * size.x * size.y * size.z;
@@ -560,6 +874,7 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
                 ),
             }
         }
+        PartSpec::Controller(_) => unreachable!("control blocks resolve to their cube"),
     }
 }
 
@@ -570,7 +885,7 @@ fn append_part_colliders(
     spec: PartSpec,
     center_of_mass: Vec3,
 ) {
-    match spec {
+    match physical_spec(spec) {
         PartSpec::Cuboid(spec) => colliders.push(LocalCuboidCollider {
             source_part: part,
             compound_index,
@@ -609,6 +924,7 @@ fn append_part_colliders(
                 });
             }
         }
+        PartSpec::Controller(_) => unreachable!("control blocks resolve to their cube"),
     }
 }
 
@@ -664,9 +980,10 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
 
     use crate::{
-        BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceRef, GridRotation,
-        RigidLinkSpec, TopologyError, WeldSpec,
+        BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
+        ConstructionGraph, ControllerSpec, CoordinateDrive, CuboidSpec, CylinderDimensions,
+        CylinderSpec, DriveLimits, DriveLinkSpec, DriveMode, DriveProgram, DriveState, DriveTarget,
+        FaceKind, FaceRef, GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
     };
 
     fn cube_at(units: IVec3) -> CuboidSpec {
@@ -1113,5 +1430,345 @@ mod tests {
         assert!(topology.body_parents[0].is_root);
         assert_eq!(topology.body_parents[1].parent_body, 0);
         assert!(topology.body_parents[2].is_root);
+    }
+
+    fn add_bearing(
+        graph: &mut ConstructionGraph,
+        source: PartId,
+        source_face: FaceKind,
+        target: PartId,
+        target_face: FaceKind,
+        anchor: Vec3,
+        axis: Vec3,
+    ) -> BearingId {
+        let BuildOutcome::BearingAdded(bearing) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(source, source_face),
+                FaceRef::part(target, target_face),
+                anchor,
+                axis,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        bearing
+    }
+
+    fn wire_with(
+        graph: &mut ConstructionGraph,
+        bearing: BearingId,
+        limits: DriveLimits,
+        program: DriveProgram,
+        reversed: bool,
+    ) -> PartId {
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::new(0, 40, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut spec = DriveLinkSpec::new(controller, bearing);
+        spec.limits = limits;
+        spec.program = program;
+        spec.reversed = reversed;
+        graph.apply(BuildCommand::AddDriveLink(spec)).unwrap();
+        controller
+    }
+
+    fn wire(graph: &mut ConstructionGraph, bearing: BearingId, reversed: bool) -> PartId {
+        wire_with(
+            graph,
+            bearing,
+            DriveLimits::default(),
+            DriveProgram::default(),
+            reversed,
+        )
+    }
+
+    fn square_loop(graph: &mut ConstructionGraph) -> [BearingId; 4] {
+        let a = spawn(graph, IVec3::ZERO);
+        let b = spawn(graph, IVec3::new(4, 0, 0));
+        let c = spawn(graph, IVec3::new(4, 4, 0));
+        let d = spawn(graph, IVec3::new(0, 4, 0));
+        [
+            add_bearing(
+                graph,
+                a,
+                FaceKind::PositiveX,
+                b,
+                FaceKind::NegativeX,
+                Vec3::new(0.5, 0.0, 0.0),
+                Vec3::X,
+            ),
+            add_bearing(
+                graph,
+                b,
+                FaceKind::PositiveY,
+                c,
+                FaceKind::NegativeY,
+                Vec3::new(1.0, 0.5, 0.0),
+                Vec3::Y,
+            ),
+            add_bearing(
+                graph,
+                c,
+                FaceKind::NegativeX,
+                d,
+                FaceKind::PositiveX,
+                Vec3::new(0.5, 1.0, 0.0),
+                Vec3::NEG_X,
+            ),
+            add_bearing(
+                graph,
+                d,
+                FaceKind::NegativeY,
+                a,
+                FaceKind::PositiveY,
+                Vec3::new(0.0, 0.5, 0.0),
+                Vec3::NEG_Y,
+            ),
+        ]
+    }
+
+    #[test]
+    fn control_block_compiles_as_one_quarter_metre_cuboid_collider() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::default(),
+            )))
+            .unwrap();
+
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.colliders.len(), 1);
+        assert_eq!(compiled.colliders[0].half_extents, Vec3::splat(0.125));
+        let expected_mass = crate::CUBOID_DENSITY_KG_M3 * 0.25 * 0.25 * 0.25;
+        assert!((compiled.compounds[0].mass_properties.mass - expected_mass).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn driven_bearing_is_preferred_as_a_tree_edge_over_a_passive_one() {
+        // The last edge of the square would normally become the closure. Driving
+        // it must push the closure onto a passive edge instead.
+        let mut graph = ConstructionGraph::new();
+        let bearings = square_loop(&mut graph);
+        let driven = bearings[3];
+        wire(&mut graph, driven, false);
+
+        let compiled = graph.compile().unwrap();
+        assert!(compiled.loop_topology.tree_bearings.contains(&driven));
+        assert_eq!(compiled.loop_topology.closure_bearings.len(), 1);
+        assert!(!compiled.loop_topology.closure_bearings.contains(&driven));
+    }
+
+    #[test]
+    fn driven_bearing_forced_onto_a_closure_edge_is_rejected() {
+        let mut graph = ConstructionGraph::new();
+        let bearings = square_loop(&mut graph);
+        for bearing in bearings {
+            wire(&mut graph, bearing, false);
+        }
+
+        let Err(TopologyError::DrivenClosureBearing { bearing }) = graph.compile() else {
+            panic!("a fully driven loop cannot give every edge a coordinate")
+        };
+        assert!(bearings.contains(&bearing));
+    }
+
+    #[test]
+    fn coordinate_axis_inertia_matches_a_hand_computed_arm() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let arm = spawn(&mut graph, IVec3::new(4, 2, 0));
+        add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveX,
+            arm,
+            FaceKind::NegativeX,
+            Vec3::new(0.5, 0.5, 0.0),
+            Vec3::X,
+        );
+
+        let compiled = graph.compile().unwrap();
+        let inertia = compiled.loop_topology.coordinate_axis_inertia[0];
+        // The arm is a 1 m cube centred 0.5 m along the +x hinge axis, so the
+        // radial offset is zero and only its own x inertia contributes.
+        let mass = crate::CUBOID_DENSITY_KG_M3;
+        let expected = mass * (1.0 + 1.0) / 12.0;
+        assert!(
+            (inertia - expected).abs() < 1.0e-2,
+            "axis inertia {inertia} should be about {expected}"
+        );
+    }
+
+    #[test]
+    fn coordinate_axis_inertia_includes_the_whole_child_subtree() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let first = spawn(&mut graph, IVec3::new(0, 6, 0));
+        let second = spawn(&mut graph, IVec3::new(0, 10, 0));
+        add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveY,
+            first,
+            FaceKind::NegativeY,
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::Y,
+        );
+        add_bearing(
+            &mut graph,
+            first,
+            FaceKind::PositiveY,
+            second,
+            FaceKind::NegativeY,
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::Y,
+        );
+
+        let inertia = graph
+            .compile()
+            .unwrap()
+            .loop_topology
+            .coordinate_axis_inertia;
+        assert_eq!(inertia.len(), 2);
+        assert!(
+            inertia[0] > inertia[1],
+            "the lower joint carries both links: {inertia:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_bearing_rows_share_one_coordinate() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let arm = spawn(&mut graph, IVec3::new(4, 2, 0));
+        let first = add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveX,
+            arm,
+            FaceKind::NegativeX,
+            Vec3::new(0.5, 0.5, 0.0),
+            Vec3::X,
+        );
+        // A second row describing the same physical joint: same compounds, same
+        // anchor, same axis. Compilation collapses it, but a drive may still be
+        // wired to whichever row the app happens to hold.
+        let duplicate = add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveX,
+            arm,
+            FaceKind::NegativeX,
+            Vec3::new(0.5, 0.5, 0.0),
+            Vec3::X,
+        );
+
+        let compiled = graph.compile().unwrap();
+        let coordinates = &compiled.loop_topology.bearing_coordinates;
+        assert_eq!(compiled.loop_topology.tree_bearings.len(), 1);
+        assert_eq!(coordinates.get(&first), coordinates.get(&duplicate));
+        assert!(coordinates.contains_key(&duplicate));
+    }
+
+    #[test]
+    fn closure_bearings_have_no_coordinate_to_drive() {
+        let mut graph = ConstructionGraph::new();
+        let bearings = square_loop(&mut graph);
+        let compiled = graph.compile().unwrap();
+
+        let coordinates = &compiled.loop_topology.bearing_coordinates;
+        for closure in &compiled.loop_topology.closure_bearings {
+            assert!(!coordinates.contains_key(closure));
+        }
+        for tree in &compiled.loop_topology.tree_bearings {
+            assert!(coordinates.contains_key(tree));
+        }
+        assert_eq!(
+            coordinates.len(),
+            bearings.len() - compiled.loop_topology.closure_bearings.len()
+        );
+    }
+
+    #[test]
+    fn coordinate_drives_apply_per_wire_reverse_and_leave_undriven_rows_passive() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let first = spawn(&mut graph, IVec3::new(0, 6, 0));
+        let second = spawn(&mut graph, IVec3::new(0, 10, 0));
+        let lower = add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveY,
+            first,
+            FaceKind::NegativeY,
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::Y,
+        );
+        add_bearing(
+            &mut graph,
+            first,
+            FaceKind::PositiveY,
+            second,
+            FaceKind::NegativeY,
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::Y,
+        );
+        let limits = DriveLimits::new(4.0, 20.0, Some((-1.0, 1.0))).unwrap();
+        let program =
+            DriveProgram::new(&[DriveState::new(DriveTarget::Speed(3.0)).unwrap()], false).unwrap();
+        wire_with(&mut graph, lower, limits, program, true);
+
+        let compiled = graph.compile().unwrap();
+        let drives = compiled.resolve_coordinate_drives(&graph);
+        assert_eq!(drives.len(), 2);
+        let driven_index = compiled
+            .loop_topology
+            .tree_bearings
+            .iter()
+            .position(|&bearing| bearing == lower)
+            .unwrap();
+        let motor_row = drives[driven_index];
+        assert_eq!(motor_row.mode, DriveMode::Speed);
+        assert!((motor_row.target_speed + 3.0).abs() < f32::EPSILON);
+        assert!((motor_row.min_angle + 1.0).abs() < f32::EPSILON);
+        assert!((motor_row.max_angle - 1.0).abs() < f32::EPSILON);
+        let expected = 20.0 / compiled.loop_topology.coordinate_axis_inertia[driven_index];
+        assert!((motor_row.max_acceleration - expected).abs() < 1.0e-3);
+
+        let passive_index = 1 - driven_index;
+        assert_eq!(drives[passive_index], CoordinateDrive::PASSIVE);
+    }
+
+    #[test]
+    fn unlimited_torque_compiles_to_an_unbounded_acceleration_budget() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let arm = spawn(&mut graph, IVec3::new(4, 2, 0));
+        let bearing = add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveX,
+            arm,
+            FaceKind::NegativeX,
+            Vec3::new(0.5, 0.5, 0.0),
+            Vec3::X,
+        );
+        wire(&mut graph, bearing, false);
+
+        let compiled = graph.compile().unwrap();
+        let drives = compiled.resolve_coordinate_drives(&graph);
+        assert!(drives[0].max_acceleration.is_infinite());
+        assert!(drives[0].min_angle.is_infinite() && drives[0].min_angle < 0.0);
     }
 }

@@ -44,12 +44,28 @@ struct Coordinate {
     angular_velocity: f32,
 };
 
+struct Drive {
+    mode: u32,
+    max_acceleration: f32,
+    max_speed: f32,
+    target_speed: f32,
+    target_angle: f32,
+    min_angle: f32,
+    max_angle: f32,
+    padding: f32,
+};
+
 const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 // Diagonal Jacobi rows share off-centre inertia terms and adjacent bodies.
 // Under-relaxation keeps their simultaneous impulses dissipative.
 const BEARING_PROJECTION_RELAXATION: f32 = 0.5;
 const GRAVITY_ALIGNED_BEARING_SLEEP_SPEED: f32 = 0.005;
 const INVALID_INDEX: u32 = 0xffffffffu;
+const DRIVE_MODE_PASSIVE: u32 = 0u;
+const DRIVE_MODE_ANGLE: u32 = 2u;
+// Angle targets settle rather than hunt: inside this band the servo asks for
+// zero speed instead of chasing the last thousandth of a radian.
+const DRIVE_ANGLE_DEADBAND: f32 = 0.0005;
 const INVALID_NUMERIC_FLAG: u32 = 2u;
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
@@ -64,6 +80,7 @@ const INVALID_NUMERIC_FLAG: u32 = 2u;
 @group(0) @binding(9) var<storage, read_write> velocity_deltas: array<atomic<i32>>;
 @group(0) @binding(10) var<storage, read> preorder: array<u32>;
 @group(0) @binding(11) var<storage, read_write> diagnostics: array<atomic<u32>>;
+@group(0) @binding(12) var<storage, read> drives: array<Drive>;
 
 fn quat_rotate(rotation: vec4<f32>, vector: vec3<f32>) -> vec3<f32> {
     let t = 2.0 * cross(rotation.xyz, vector);
@@ -135,6 +152,136 @@ fn solve_angular_axis(body_a: u32, body_b: u32, relative: vec3<f32>, axis: vec3<
     let impulse = BEARING_PROJECTION_RELAXATION * dot(relative, axis) / denominator;
     add_delta(body_a, vec3<f32>(0.0), inverse_a * impulse);
     add_delta(body_b, vec3<f32>(0.0), -inverse_b * impulse);
+}
+
+fn solve_linear_axis_immediate(
+    body_a: u32,
+    body_b: u32,
+    arm_a: vec3<f32>,
+    arm_b: vec3<f32>,
+    relative: vec3<f32>,
+    direction: vec3<f32>,
+) {
+    let angular_a = cross(arm_a, direction);
+    let angular_b = cross(arm_b, direction);
+    let denominator = masses[body_a].inverse_mass.x + masses[body_b].inverse_mass.x
+        + dot(angular_a, world_inverse_inertia(body_a, angular_a))
+        + dot(angular_b, world_inverse_inertia(body_b, angular_b));
+    if denominator <= 1.0e-12 {
+        return;
+    }
+    let impulse = direction * (dot(relative, direction) / denominator);
+    linear_velocities[body_a] = vec4<f32>(
+        linear_velocities[body_a].xyz + impulse * masses[body_a].inverse_mass.x,
+        0.0,
+    );
+    angular_velocities[body_a] = vec4<f32>(
+        angular_velocities[body_a].xyz
+            + world_inverse_inertia(body_a, cross(arm_a, impulse)),
+        0.0,
+    );
+    linear_velocities[body_b] = vec4<f32>(
+        linear_velocities[body_b].xyz - impulse * masses[body_b].inverse_mass.x,
+        0.0,
+    );
+    angular_velocities[body_b] = vec4<f32>(
+        angular_velocities[body_b].xyz
+            + world_inverse_inertia(body_b, cross(arm_b, -impulse)),
+        0.0,
+    );
+}
+
+fn solve_angular_axis_immediate(
+    body_a: u32,
+    body_b: u32,
+    relative: vec3<f32>,
+    axis: vec3<f32>,
+) {
+    let inverse_a = world_inverse_inertia(body_a, axis);
+    let inverse_b = world_inverse_inertia(body_b, axis);
+    let denominator = dot(axis, inverse_a + inverse_b);
+    if denominator <= 1.0e-12 {
+        return;
+    }
+    let impulse = dot(relative, axis) / denominator;
+    angular_velocities[body_a] = vec4<f32>(
+        angular_velocities[body_a].xyz + inverse_a * impulse,
+        0.0,
+    );
+    angular_velocities[body_b] = vec4<f32>(
+        angular_velocities[body_b].xyz - inverse_b * impulse,
+        0.0,
+    );
+}
+
+fn project_bearing_velocity_row(index: u32) {
+    let bearing = bearings[index];
+    let body_a = bearing.metadata.x;
+    let body_b = bearing.metadata.y;
+    let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
+    let arm_b = quat_rotate(rotations[body_b], bearing.local_anchor_b.xyz);
+
+    var anchor_velocity_a = linear_velocities[body_a].xyz
+        + cross(angular_velocities[body_a].xyz, arm_a);
+    var anchor_velocity_b = linear_velocities[body_b].xyz
+        + cross(angular_velocities[body_b].xyz, arm_b);
+    solve_linear_axis_immediate(
+        body_a,
+        body_b,
+        arm_a,
+        arm_b,
+        anchor_velocity_b - anchor_velocity_a,
+        vec3<f32>(1.0, 0.0, 0.0),
+    );
+    anchor_velocity_a = linear_velocities[body_a].xyz
+        + cross(angular_velocities[body_a].xyz, arm_a);
+    anchor_velocity_b = linear_velocities[body_b].xyz
+        + cross(angular_velocities[body_b].xyz, arm_b);
+    solve_linear_axis_immediate(
+        body_a,
+        body_b,
+        arm_a,
+        arm_b,
+        anchor_velocity_b - anchor_velocity_a,
+        vec3<f32>(0.0, 1.0, 0.0),
+    );
+    anchor_velocity_a = linear_velocities[body_a].xyz
+        + cross(angular_velocities[body_a].xyz, arm_a);
+    anchor_velocity_b = linear_velocities[body_b].xyz
+        + cross(angular_velocities[body_b].xyz, arm_b);
+    solve_linear_axis_immediate(
+        body_a,
+        body_b,
+        arm_a,
+        arm_b,
+        anchor_velocity_b - anchor_velocity_a,
+        vec3<f32>(0.0, 0.0, 1.0),
+    );
+
+    let axis_a = normalize(quat_rotate(rotations[body_a], bearing.local_axis_a.xyz));
+    let axis_b = normalize(quat_rotate(rotations[body_b], bearing.local_axis_b.xyz));
+    let hinge_axis = normalize(axis_a + axis_b);
+    let helper = select(
+        vec3<f32>(1.0, 0.0, 0.0),
+        vec3<f32>(0.0, 1.0, 0.0),
+        abs(hinge_axis.x) > 0.8,
+    );
+    let tangent_a = normalize(cross(hinge_axis, helper));
+    let tangent_b = cross(hinge_axis, tangent_a);
+    var relative_angular = angular_velocities[body_b].xyz - angular_velocities[body_a].xyz;
+    solve_angular_axis_immediate(body_a, body_b, relative_angular, tangent_a);
+    relative_angular = angular_velocities[body_b].xyz - angular_velocities[body_a].xyz;
+    solve_angular_axis_immediate(body_a, body_b, relative_angular, tangent_b);
+}
+
+@compute @workgroup_size(1)
+fn project_bearing_velocities_serial() {
+    for (var index = 0u; index < config.bearing_count; index += 1u) {
+        project_bearing_velocity_row(index);
+    }
+    for (var index = config.bearing_count; index > 0u; index -= 1u) {
+        project_bearing_velocity_row(index - 1u);
+    }
 }
 
 @compute @workgroup_size(256)
@@ -230,9 +377,41 @@ fn advance_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     // Constraint projection can feed world-space body motion back into a permitted
     // coordinate after body damping. Damp the authoritative joint speed here so
     // coupled passive bearings cannot retain a numerical limit cycle.
-    let speed = stabilized_speed(body, permitted_speed(body) * config.angular_damping);
+    let measured = permitted_speed(body) * config.angular_damping;
+    let drive = drives[coordinate];
+    var speed = 0.0;
+    if drive.mode == DRIVE_MODE_PASSIVE {
+        speed = stabilized_speed(body, measured);
+    } else {
+        // A driven joint bypasses the gravity-aligned sleep clamp, which would
+        // otherwise zero any motor slower than its threshold. The measured speed
+        // still comes from real body motion, so gravity and contacts back-drive
+        // the joint and a weak motor stalls instead of holding its target.
+        var desired = clamp(drive.target_speed, -drive.max_speed, drive.max_speed);
+        if drive.mode == DRIVE_MODE_ANGLE {
+            let error = drive.target_angle - coordinates[coordinate].angle;
+            // Trapezoid profile: never ask for more speed than the torque budget
+            // can brake off within the remaining error, so the joint arrives and
+            // holds instead of overshooting and oscillating.
+            let brake = sqrt(2.0 * drive.max_acceleration * abs(error));
+            desired = sign(error) * min(brake, drive.max_speed);
+            if abs(error) < DRIVE_ANGLE_DEADBAND {
+                desired = 0.0;
+            }
+        }
+        let budget = drive.max_acceleration * config.delta_seconds;
+        speed = measured + clamp(desired - measured, -budget, budget);
+    }
+    var angle = coordinates[coordinate].angle + speed * config.delta_seconds;
+    if angle < drive.min_angle {
+        angle = drive.min_angle;
+        speed = 0.0;
+    } else if angle > drive.max_angle {
+        angle = drive.max_angle;
+        speed = 0.0;
+    }
     coordinates[coordinate].angular_velocity = speed;
-    coordinates[coordinate].angle += speed * config.delta_seconds;
+    coordinates[coordinate].angle = angle;
 }
 
 @compute @workgroup_size(256)

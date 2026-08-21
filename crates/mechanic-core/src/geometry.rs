@@ -368,6 +368,34 @@ impl CylinderSpec {
     }
 }
 
+/// Editable control block. Its shape is a fixed one-grid-unit cube; what it
+/// does lives on the drive links wired from it, one program per bearing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ControllerSpec {
+    /// Control-block centre and cardinal orientation.
+    pub pose: BuildPose,
+}
+
+impl ControllerSpec {
+    /// Fixed control-block side length in grid units.
+    pub const GRID_UNITS: u8 = 1;
+
+    /// Creates a control block with the given pose.
+    pub const fn new(pose: BuildPose) -> Self {
+        Self { pose }
+    }
+
+    /// Fixed cube shape backing every control block.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the fixed side length is a valid grid dimension.
+    pub fn cuboid(self) -> CuboidSpec {
+        CuboidSpec::new([Self::GRID_UNITS; 3], self.pose)
+            .expect("the fixed control-block size is a valid grid dimension")
+    }
+}
+
 /// A construction part with shape-specific dimensions and a shared build pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PartSpec {
@@ -375,6 +403,8 @@ pub enum PartSpec {
     Cuboid(CuboidSpec),
     /// Solid or hollow cylinder whose axis is local Y.
     Cylinder(CylinderSpec),
+    /// Fixed-size control block driving the bearings wired to it.
+    Controller(ControllerSpec),
 }
 
 impl PartSpec {
@@ -383,14 +413,25 @@ impl PartSpec {
         match self {
             Self::Cuboid(spec) => spec.pose,
             Self::Cylinder(spec) => spec.pose,
+            Self::Controller(spec) => spec.pose,
         }
     }
 
-    /// Returns the cuboid shape, when this part is a cuboid.
-    pub const fn as_cuboid(self) -> Option<CuboidSpec> {
+    /// Returns the cuboid shape backing this part, when it has one. Control
+    /// blocks report their fixed cube.
+    pub fn as_cuboid(self) -> Option<CuboidSpec> {
         match self {
             Self::Cuboid(spec) => Some(spec),
+            Self::Controller(spec) => Some(spec.cuboid()),
             Self::Cylinder(_) => None,
+        }
+    }
+
+    /// Returns the control-block shape, when this part is a control block.
+    pub const fn as_controller(self) -> Option<ControllerSpec> {
+        match self {
+            Self::Controller(spec) => Some(spec),
+            Self::Cuboid(_) | Self::Cylinder(_) => None,
         }
     }
 
@@ -398,7 +439,7 @@ impl PartSpec {
     pub const fn as_cylinder(self) -> Option<CylinderSpec> {
         match self {
             Self::Cylinder(spec) => Some(spec),
-            Self::Cuboid(_) => None,
+            Self::Cuboid(_) | Self::Controller(_) => None,
         }
     }
 
@@ -406,6 +447,7 @@ impl PartSpec {
     pub fn size_meters(self) -> Vec3 {
         match self {
             Self::Cuboid(spec) => spec.size_meters(),
+            Self::Controller(spec) => spec.cuboid().size_meters(),
             Self::Cylinder(spec) => Vec3::new(
                 spec.dimensions.outer_diameter(),
                 spec.dimensions.axial_length(),
@@ -430,6 +472,12 @@ impl From<CuboidSpec> for PartSpec {
 impl From<CylinderSpec> for PartSpec {
     fn from(value: CylinderSpec) -> Self {
         Self::Cylinder(value)
+    }
+}
+
+impl From<ControllerSpec> for PartSpec {
+    fn from(value: ControllerSpec) -> Self {
+        Self::Controller(value)
     }
 }
 

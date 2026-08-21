@@ -7,8 +7,8 @@ use std::{
 use bevy::prelude::*;
 use mechanic_core::{
     BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-    CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
-    PartId, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec, snap_world_to_grid,
+    ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef,
+    GridRotation, PartId, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec, snap_world_to_grid,
 };
 
 pub(crate) const GROUND_HALF_SIZE: f32 = 10.0;
@@ -231,7 +231,7 @@ pub(crate) fn raycast_construction_for_annulus(
             PartSpec::Cylinder(spec) => {
                 raycast_cylinder_bore_obstruction(origin, direction, part, *spec, placement_profile)
             }
-            PartSpec::Cuboid(_) => None,
+            PartSpec::Cuboid(_) | PartSpec::Controller(_) => None,
         }))
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
 }
@@ -373,6 +373,15 @@ pub(crate) fn stage_block_batch(
     stage_connected_block_batch(graph, start, specs, None, None)
 }
 
+/// Stages one control block, auto-welding it like an ordinary block.
+pub(crate) fn stage_controller_from_source(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    source: FaceOwner,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_part_batch(graph, start, &[start.spec], None, Some(source), true)
+}
+
 pub(crate) fn stage_block_batch_from_source(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
@@ -503,6 +512,18 @@ fn stage_connected_block_batch(
     bearing: Option<(FaceRef, Vec3, BearingDimensions, &[PartId])>,
     auto_weld_source: Option<FaceOwner>,
 ) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_part_batch(graph, start, specs, bearing, auto_weld_source, false)
+}
+
+#[allow(clippy::too_many_arguments)] // Placement, bearing attachment, and welding share one transaction.
+fn stage_connected_part_batch(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    specs: &[CuboidSpec],
+    bearing: Option<(FaceRef, Vec3, BearingDimensions, &[PartId])>,
+    auto_weld_source: Option<FaceOwner>,
+    is_controller: bool,
+) -> Result<ConstructionGraph, PlacementError> {
     validate_block_batch(graph, start, specs)?;
     for (index, spec) in specs.iter().enumerate() {
         for other in &specs[..index] {
@@ -519,7 +540,13 @@ fn stage_connected_block_batch(
         auto_weld_source.and_then(|source| bearing_connected_weld_scope(graph, source));
     let mut staged = graph.clone();
     let outcomes = staged
-        .apply_batch(specs.iter().copied().map(BuildCommand::Spawn))
+        .apply_batch(specs.iter().copied().map(|spec| {
+            if is_controller {
+                BuildCommand::SpawnController(ControllerSpec::new(spec.pose))
+            } else {
+                BuildCommand::Spawn(spec)
+            }
+        }))
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
     let new_parts = outcomes
         .into_iter()
@@ -1061,6 +1088,7 @@ fn cylinder_face_geometry(spec: CylinderSpec, face: FaceKind) -> Option<FaceGeom
 fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
     match spec {
         PartSpec::Cuboid(spec) => Some(face_geometry(spec, face)),
+        PartSpec::Controller(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Cylinder(spec) => cylinder_face_geometry(spec, face),
     }
 }
@@ -1122,7 +1150,7 @@ fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
     match owner {
         FaceOwner::Ground => vec![FaceRef::ground()],
         FaceOwner::Part(part) => match graph.part(part).copied() {
-            Some(PartSpec::Cuboid(_)) => ALL_FACES
+            Some(PartSpec::Cuboid(_) | PartSpec::Controller(_)) => ALL_FACES
                 .into_iter()
                 .map(|face| FaceRef::part(part, face))
                 .collect(),
@@ -1172,6 +1200,7 @@ fn raycast_cuboid(
 fn raycast_part(origin: Vec3, direction: Vec3, part: PartId, spec: PartSpec) -> Option<SurfaceHit> {
     match spec {
         PartSpec::Cuboid(spec) => raycast_cuboid(origin, direction, part, spec),
+        PartSpec::Controller(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Cylinder(spec) => raycast_cylinder(origin, direction, part, spec),
     }
 }
@@ -1609,6 +1638,7 @@ fn cuboid_world_bounds(spec: CuboidSpec) -> (Vec3, Vec3) {
 pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
     match spec {
         PartSpec::Cuboid(spec) => cuboid_world_bounds(spec),
+        PartSpec::Controller(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Cylinder(spec) => {
             let rotation = Mat3::from_quat(spec.pose.rotation.quaternion());
             let (local_minimum, local_maximum) = cylinder_local_bounds(spec.dimensions);
@@ -1678,6 +1708,7 @@ fn parts_overlap(first: PartSpec, second: PartSpec) -> bool {
 
 fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
     match spec {
+        PartSpec::Controller(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Cuboid(spec) => vec![CollisionBox {
             center: spec.pose.translation(),
             rotation: spec.pose.rotation.quaternion(),

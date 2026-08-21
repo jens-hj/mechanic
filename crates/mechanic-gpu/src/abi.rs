@@ -124,13 +124,13 @@ pub struct GpuSpatialInertia {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct GpuCollider {
-    /// xyz local centre; w is unused.
+    /// xyz local centre; w is the segment-centre radius for full-cylinder ground contact.
     pub local_center: [f32; 4],
     /// xyzw local rotation.
     pub local_rotation: [f32; 4],
-    /// xyz half extents; w is unused.
+    /// xyz half extents; w is the visual outer radius for full-cylinder ground contact.
     pub half_extents: [f32; 4],
-    /// compound index, source-part slot, source generation, flags.
+    /// compound index, source-part slot, source generation, ground-contact role.
     pub metadata: [u32; 4],
 }
 
@@ -210,6 +210,71 @@ pub struct GpuMechanismCoordinate {
     pub angular_velocity: f32,
 }
 
+/// Drive parameters for one tree-bearing coordinate.
+///
+/// A row in [`DRIVE_MODE_PASSIVE`] with infinite limits is exactly a free
+/// joint. The buffer must never be left zeroed: zeroed limits would clamp every
+/// joint angle to zero.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct GpuMechanismDrive {
+    /// What the solver does with this coordinate. See `DRIVE_MODE_*`.
+    pub mode: u32,
+    /// Largest permitted joint-speed change per second. Infinite when the drive
+    /// torque is unlimited.
+    pub max_acceleration: f32,
+    /// Fastest the joint may turn, in radians per second.
+    pub max_speed: f32,
+    /// Signed target speed in radians per second, used in speed mode.
+    pub target_speed: f32,
+    /// Target angle in radians, used in angle mode.
+    pub target_angle: f32,
+    /// Lower angle limit in radians, or negative infinity.
+    pub min_angle: f32,
+    /// Upper angle limit in radians, or positive infinity.
+    pub max_angle: f32,
+    /// Padding to a sixteen-byte multiple.
+    pub padding: f32,
+}
+
+impl From<mechanic_core::CoordinateDrive> for GpuMechanismDrive {
+    fn from(drive: mechanic_core::CoordinateDrive) -> Self {
+        Self {
+            mode: drive.mode.code(),
+            max_acceleration: drive.max_acceleration,
+            max_speed: drive.max_speed,
+            target_speed: drive.target_speed,
+            target_angle: drive.target_angle,
+            min_angle: drive.min_angle,
+            max_angle: drive.max_angle,
+            padding: 0.0,
+        }
+    }
+}
+
+/// Coordinate mode for a joint no control block drives.
+pub const DRIVE_MODE_PASSIVE: u32 = 0;
+
+/// Coordinate mode for a joint holding a target speed.
+pub const DRIVE_MODE_SPEED: u32 = 1;
+
+/// Coordinate mode for a joint seeking a target angle.
+pub const DRIVE_MODE_ANGLE: u32 = 2;
+
+impl GpuMechanismDrive {
+    /// Row describing a coordinate no control block drives.
+    pub const PASSIVE: Self = Self {
+        mode: DRIVE_MODE_PASSIVE,
+        max_acceleration: 0.0,
+        max_speed: 0.0,
+        target_speed: 0.0,
+        target_angle: 0.0,
+        min_angle: f32::NEG_INFINITY,
+        max_angle: f32::INFINITY,
+        padding: 0.0,
+    };
+}
+
 /// Temporary transform-to-ancestor row used by parallel pointer jumping.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
@@ -244,6 +309,7 @@ const _: () = {
     assert!(size_of::<GpuPersistentManifold>() == 48);
     assert!(size_of::<GpuMechanismBody>() == 64);
     assert!(size_of::<GpuMechanismCoordinate>() == 8);
+    assert!(size_of::<GpuMechanismDrive>() == 32);
     assert!(size_of::<GpuLinkState>() == 48);
     assert!(size_of::<GpuContractionNode>() == 16);
 };
@@ -251,9 +317,10 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::{
-        GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuLinkState,
-        GpuMass, GpuMechanismBody, GpuMechanismCoordinate, GpuPair, GpuPersistentManifold,
-        GpuSpatialInertia, GpuTickConfig, GpuTransform, GpuVelocity,
+        DRIVE_MODE_PASSIVE, GpuBearing, GpuCollider, GpuContact, GpuContractionNode,
+        GpuDiagnostics, GpuLinkState, GpuMass, GpuMechanismBody, GpuMechanismCoordinate,
+        GpuMechanismDrive, GpuPair, GpuPersistentManifold, GpuSpatialInertia, GpuTickConfig,
+        GpuTransform, GpuVelocity,
     };
 
     #[test]
@@ -272,10 +339,20 @@ mod tests {
             size_of::<GpuMechanismBody>(),
             size_of::<GpuLinkState>(),
             size_of::<GpuContractionNode>(),
+            size_of::<GpuMechanismDrive>(),
         ] {
             assert_eq!(size % 16, 0);
         }
         assert_eq!(size_of::<GpuPair>(), 8);
         assert_eq!(size_of::<GpuMechanismCoordinate>(), 8);
+    }
+
+    #[test]
+    fn passive_drive_rows_never_clamp_a_joint_angle() {
+        let passive = GpuMechanismDrive::PASSIVE;
+        assert_eq!(passive.mode, DRIVE_MODE_PASSIVE);
+        assert!(passive.max_acceleration.abs() < f32::EPSILON);
+        assert!(passive.min_angle.is_infinite() && passive.min_angle < 0.0);
+        assert!(passive.max_angle.is_infinite() && passive.max_angle > 0.0);
     }
 }

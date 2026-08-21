@@ -8,6 +8,7 @@ use crate::creation_menu::CreationMenuState;
 const SLOT_SIZE: f32 = 64.0;
 const ICON_COLOR: Color = Color::srgb(0.82, 0.90, 0.97);
 const BEARING_COLOR: Color = Color::srgb(0.95, 0.58, 0.08);
+const CONTROLLER_COLOR: Color = Color::srgb(0.16, 0.82, 0.72);
 const SLOT_BACKGROUND: Color = Color::srgba(0.025, 0.035, 0.05, 0.92);
 const SLOT_HOVER_BACKGROUND: Color = Color::srgba(0.08, 0.12, 0.16, 0.96);
 const SLOT_SELECTED_BACKGROUND: Color = Color::srgba(0.08, 0.20, 0.27, 0.98);
@@ -24,6 +25,8 @@ pub(crate) enum Tool {
     Weld,
     Hammer,
     JointXray,
+    Controller,
+    Connector,
 }
 
 impl Tool {
@@ -35,6 +38,8 @@ impl Tool {
             Self::Weld => "Weld",
             Self::Hammer => "Hammer",
             Self::JointXray => "Joint X-ray",
+            Self::Controller => "Control Block",
+            Self::Connector => "Connector",
         }
     }
 
@@ -46,11 +51,18 @@ impl Tool {
             Self::Weld => "4",
             Self::Hammer => "5",
             Self::JointXray => "6",
+            Self::Controller => "7",
+            Self::Connector => "8",
         }
     }
 
     pub(crate) const fn works_while_simulating(self) -> bool {
         matches!(self, Self::Hammer)
+    }
+
+    /// Whether this tool works with control blocks and their wires.
+    pub(crate) const fn edits_drives(self) -> bool {
+        matches!(self, Self::Controller | Self::Connector)
     }
 
     pub(crate) const fn works_in_mode(self, simulating: bool) -> bool {
@@ -66,6 +78,8 @@ pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
         KeyCode::Digit4 => Some(Tool::Weld),
         KeyCode::Digit5 => Some(Tool::Hammer),
         KeyCode::Digit6 => Some(Tool::JointXray),
+        KeyCode::Digit7 => Some(Tool::Controller),
+        KeyCode::Digit8 => Some(Tool::Connector),
         _ => None,
     }
 }
@@ -152,6 +166,8 @@ pub(crate) fn spawn(commands: &mut Commands) {
                     Tool::Weld,
                     Tool::Hammer,
                     Tool::JointXray,
+                    Tool::Controller,
+                    Tool::Connector,
                 ] {
                     spawn_slot(bar, tool);
                 }
@@ -211,6 +227,8 @@ fn spawn_icon(parent: &mut ChildSpawnerCommands<'_>, tool: Tool) {
             Tool::Weld => spawn_weld_icon(icon),
             Tool::Hammer => spawn_hammer_icon(icon),
             Tool::JointXray => spawn_joint_xray_icon(icon),
+            Tool::Controller => spawn_controller_icon(icon),
+            Tool::Connector => spawn_connector_icon(icon),
         });
 }
 
@@ -309,6 +327,76 @@ fn spawn_joint_xray_icon(icon: &mut ChildSpawnerCommands<'_>) {
     }
 }
 
+fn spawn_controller_icon(icon: &mut ChildSpawnerCommands<'_>) {
+    icon.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(7),
+            top: px(7),
+            width: px(26),
+            height: px(26),
+            border: UiRect::all(px(2)),
+            border_radius: BorderRadius::all(px(4)),
+            ..default()
+        },
+        BackgroundColor(CONTROLLER_COLOR),
+        BorderColor::all(ICON_COLOR),
+    ));
+    icon.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(15),
+            top: px(15),
+            width: px(10),
+            height: px(10),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BackgroundColor(SLOT_BACKGROUND),
+    ));
+}
+
+fn spawn_connector_icon(icon: &mut ChildSpawnerCommands<'_>) {
+    icon.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(4),
+            top: px(18),
+            width: px(32),
+            height: px(4),
+            border_radius: BorderRadius::all(px(2)),
+            ..default()
+        },
+        BackgroundColor(CONTROLLER_COLOR),
+        UiTransform::from_rotation(Rot2::degrees(-22.0)),
+    ));
+    icon.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(3),
+            top: px(23),
+            width: px(11),
+            height: px(11),
+            border_radius: BorderRadius::all(px(3)),
+            ..default()
+        },
+        BackgroundColor(CONTROLLER_COLOR),
+    ));
+    icon.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(25),
+            top: px(5),
+            width: px(12),
+            height: px(12),
+            border: UiRect::all(px(3)),
+            border_radius: BorderRadius::MAX,
+            ..default()
+        },
+        BorderColor::all(BEARING_COLOR),
+    ));
+}
+
 fn spawn_weld_icon(icon: &mut ChildSpawnerCommands<'_>) {
     for rotation in [-35.0, 35.0] {
         icon.spawn((
@@ -382,10 +470,11 @@ pub(crate) fn update(
         ),
         With<Button>,
     >,
+    panel: Res<crate::control_panel::ControlPanelState>,
     surface: Single<&RelativeCursorPosition, With<HotbarSurface>>,
     mut tooltip: Single<(&mut Text, &mut Visibility), With<HotbarTooltip>>,
 ) {
-    if menu.blocks_pointer() {
+    if menu.blocks_pointer() || panel.blocks_pointer() {
         capture.0 = true;
         *tooltip.1 = Visibility::Hidden;
         return;
@@ -452,6 +541,24 @@ mod tests {
         assert_eq!(shortcut_tool(KeyCode::Digit4), Some(Tool::Weld));
         assert_eq!(shortcut_tool(KeyCode::Digit5), Some(Tool::Hammer));
         assert_eq!(shortcut_tool(KeyCode::Digit6), Some(Tool::JointXray));
+        assert_eq!(shortcut_tool(KeyCode::Digit7), Some(Tool::Controller));
+        assert_eq!(shortcut_tool(KeyCode::Digit8), Some(Tool::Connector));
+    }
+
+    #[test]
+    fn only_control_block_tools_edit_drives() {
+        assert!(Tool::Controller.edits_drives());
+        assert!(Tool::Connector.edits_drives());
+        for tool in [
+            Tool::Block,
+            Tool::Cylinder,
+            Tool::Bearing,
+            Tool::Weld,
+            Tool::Hammer,
+            Tool::JointXray,
+        ] {
+            assert!(!tool.edits_drives());
+        }
     }
 
     #[test]
@@ -462,6 +569,8 @@ mod tests {
             Tool::Bearing,
             Tool::Weld,
             Tool::JointXray,
+            Tool::Controller,
+            Tool::Connector,
         ] {
             assert!(tool.works_in_mode(false));
             assert!(!tool.works_in_mode(true));
@@ -476,6 +585,7 @@ mod tests {
         app.init_resource::<SelectedTool>()
             .init_resource::<HotbarPointerCapture>()
             .init_resource::<CreationMenuState>()
+            .init_resource::<crate::control_panel::ControlPanelState>()
             .add_systems(Update, update);
         app.world_mut().spawn((
             Button,
@@ -508,6 +618,7 @@ mod tests {
         app.init_resource::<SelectedTool>()
             .init_resource::<HotbarPointerCapture>()
             .init_resource::<CreationMenuState>()
+            .init_resource::<crate::control_panel::ControlPanelState>()
             .add_systems(Update, update);
         app.world_mut().spawn((
             Button,

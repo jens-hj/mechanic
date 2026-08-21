@@ -54,6 +54,14 @@ physics exercise; the production renderer has not been started.
   combined committed part/bearing meshes, and geometry-shaped white/red ghosts.
 - Space-controlled GPU physics preview using the shared Bevy device, fixed 60 Hz
   scheduling, failure-checked snapshots, and synchronous CPU mesh readback.
+- Control blocks, a two-click connector tool, per-wire direction reversal, and
+  per-bearing state programs edited in a panel opened with `E`. A state holds a
+  target angle or speed and is entered by key or left after a dwell, so one
+  block can steer, drive, pose, and run timed procedures at once. Angle targets
+  ramp and settle within a torque budget; travel limits stop and hold. Programs
+  are re-derived from the graph and written to the GPU live, so a running
+  mechanism can be reprogrammed without recompiling. The joint x-ray gained
+  spin arcs, limit ticks, and controller wires.
 
 ## Gate-blocking work
 

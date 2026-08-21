@@ -7,10 +7,11 @@ mod runtime;
 mod scheduler;
 
 pub use abi::{
-    CONSTRAINT_NON_CONVERGENCE_FLAG, GpuBearing, GpuCollider, GpuContact, GpuContractionNode,
-    GpuDiagnostics, GpuLinkState, GpuMass, GpuMechanismBody, GpuMechanismCoordinate, GpuPair,
-    GpuPersistentManifold, GpuSpatialInertia, GpuTickConfig, GpuTransform, GpuVelocity,
-    INVALID_NUMERIC_FLAG, MANIFOLD_OVERFLOW_FLAG, PAIR_OVERFLOW_FLAG,
+    CONSTRAINT_NON_CONVERGENCE_FLAG, DRIVE_MODE_ANGLE, DRIVE_MODE_PASSIVE, DRIVE_MODE_SPEED,
+    GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuLinkState, GpuMass,
+    GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold,
+    GpuSpatialInertia, GpuTickConfig, GpuTransform, GpuVelocity, INVALID_NUMERIC_FLAG,
+    MANIFOLD_OVERFLOW_FLAG, PAIR_OVERFLOW_FLAG,
 };
 pub use collision::{
     ContactManifold, ContactPoint, Obb, SatContact, obb_contact_manifold, obb_sat,
