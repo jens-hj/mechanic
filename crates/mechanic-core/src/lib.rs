@@ -1,6 +1,7 @@
 //! Editable construction data and deterministic compilation into physics rows.
 
 mod compile;
+mod creation;
 mod drive;
 mod geometry;
 mod graph;
@@ -10,6 +11,12 @@ pub use compile::{
     CYLINDER_COLLIDER_COUNT, CompiledBearing, CompiledCompound, CompiledCreation, CoordinateDrive,
     DriveMode, LocalCuboidCollider, LoopTopology, MassProperties, MechanismBodyTopology,
     TopologyError,
+};
+pub use creation::{
+    BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, CreationDocument,
+    CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc, DriveStateDoc,
+    DriveTriggerDoc, FaceOwnerDoc, FaceRefDoc, LoadedCreation, PartDoc, PoseDoc, RigidLinkDoc,
+    WeldDoc,
 };
 pub use drive::{
     DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveProgram, DriveProgramError,

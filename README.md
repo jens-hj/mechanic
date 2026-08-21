@@ -86,8 +86,12 @@ cargo run -p mechanic-app
 - With Joint X-ray selected in build mode, every bearing socket is drawn
   through the construction for inspection. Driven bearings additionally show a
   teal spin arc pointing the way their active state turns them, a straight wire
-  back to the control block steering them, and two radial ticks at their travel
-  limits. The overlay also appears with Control Block or Connector selected so
+  back to the control block steering them, two radial ticks at their travel
+  limits, and a floating number naming the joint. That number is the row number
+  its control block's panel gives it, so `Joint 3` in the table is the joint
+  wearing a `3` in the world. Two wires reaching one physical joint share a
+  panel row, and so share one number.
+  The overlay also appears with Control Block or Connector selected so
   wiring is visible while you work, and unlike the bearing rings it stays up
   while the simulation runs — arcs and wires follow the moving bodies and the
   arc flips as a joint changes state, so you can see which joint a key drives.
@@ -122,7 +126,10 @@ cargo run -p mechanic-app
   hands off — `stay` keeps it latched, and `→S1` sends it back. That is the same
   setting the `on release` cell shows, editable from either column. Escape closes the panel once nothing
   is being edited. The panel works in both build and simulation mode, so a
-  machine can be reprogrammed while it runs.
+  machine can be reprogrammed while it runs. It is a fixed panel inset from the
+  window edges, so it neither resizes as values change nor runs off the bottom
+  of the screen: a block with more joints than fit scrolls with the mouse wheel,
+  and the title and hint line stay put above the table while it does.
 
   Worked examples, one row each:
 
@@ -150,12 +157,39 @@ cargo run -p mechanic-app
 - Drive programs are the only values editable while the simulation runs. They
   change no topology, mass, or buffer size, so new targets are written straight
   to the GPU without recompiling or restarting.
-- Press `P` in build mode to open the creation picker. It offers deterministic
-  kinetic scenes with 256, 1,024, 4,096, or 20,000 parts. Pendulum Garden tests
-  branched joints and counterweights, Mobile Workshop mixes welded compounds
-  with branching payloads, and Closure Lab combines hard loop closures with
-  falling contact stacks. Choosing one replaces the current construction as a
-  single undoable edit; every scene remains fully editable.
+- Press `P` in build mode to open the creations screen, or `Ctrl+S`/`Cmd+S` to
+  open it ready to save. It both saves the current creation and opens a saved
+  or preset one. While it is open it owns the keyboard, so letters and digits
+  type into its name field rather than firing shortcuts.
+  - Type a name and press `Enter` (or click **Save**) to write the current
+    construction to disk. Saving over an existing name asks once before it
+    replaces it. Saving changes no construction, so it adds no undo entry.
+  - Click a saved creation to open it. Its `×` asks once, then deletes the file
+    for good.
+  - Below the divider are the deterministic kinetic presets with 256, 1,024,
+    4,096, or 20,000 parts. Pendulum Garden tests branched joints and
+    counterweights, Mobile Workshop mixes welded compounds with branching
+    payloads, and Closure Lab combines hard loop closures with falling contact
+    stacks.
+  - Opening anything replaces the current construction as a single undoable
+    edit; every scene remains fully editable.
+  - `Escape` clears a half-typed name, then closes the screen.
+- Creations are stored where the app finds them by itself, with no path to
+  configure: `~/Library/Application Support/mechanic/creations` on macOS,
+  `$XDG_DATA_HOME/mechanic/creations` (or `~/.local/share/mechanic/creations`)
+  on Linux, and `%APPDATA%\mechanic\creations` on Windows. Set
+  `MECHANIC_CREATIONS_DIR` to put them somewhere else. The screen prints the
+  directory it is reading. Files are RON with a `.mech` extension, named after
+  the creation's slug; the display name lives inside the file, so renaming
+  either one is lossless. A save writes to a temporary file and renames it into
+  place, so an interrupted write cannot destroy an existing good save.
+- A saved creation holds exactly what the editor authors: parts, welds, rigid
+  links, bearings, drive wires with their limits and programs, and bearing
+  rings that nothing hangs from yet. Everything else — compiled bodies, mass
+  and inertia, loop topology, GPU buffers — is recomputed on load. The file
+  numbers its rows by position rather than by handle, and loading replays them
+  through the same validating constructors the editor uses, so a hand-edited
+  file cannot install an invalid construction.
 - In build mode, press `Ctrl+Z` or `Cmd+Z` to undo and add `Shift` to redo.
   History retains the latest 64 committed construction edits for the current
   launch. Starting or leaving simulation does not clear it.

@@ -2,12 +2,17 @@
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
 
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashSet, VecDeque},
+    error::Error,
+    path::Path,
+};
 
 mod builder;
 mod camera;
 mod control_panel;
 mod creation_menu;
+mod creation_store;
 mod hotbar;
 mod sequencer;
 mod showcase;
@@ -23,6 +28,8 @@ use bevy::{
         render_resource::PrimitiveTopology,
         renderer::{RenderDevice, RenderQueue},
     },
+    text::FontWeight,
+    ui::{UiTransform, Val2},
 };
 use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
@@ -38,20 +45,30 @@ use builder::{
 };
 use camera::OrbitCamera;
 use control_panel::ControlPanelState;
-use creation_menu::CreationMenuState;
+use creation_menu::{CreationMenuState, CreationRequest};
+use creation_store::CreationStore;
 use hotbar::{HotbarPointerCapture, SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
-    BearingDimensions, BearingId, BuildCommand, CYLINDER_SWEEP_STEP_DEGREES, CompiledCreation,
-    ConstructionGraph, CuboidSpec, CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget,
-    FaceOwner, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
-    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
-    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation,
-    TopologyError,
+    BearingDimensions, BearingId, BearingSocket, BuildCommand, CYLINDER_SWEEP_STEP_DEGREES,
+    CompiledCreation, ConstructionGraph, CreationDocument, CuboidSpec, CylinderDimensions,
+    DriveLinkSpec, DriveState, DriveTarget, FaceOwner, MAX_BEARING_OUTER_DIAMETER,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
+    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
+    MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation, TopologyError,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
 };
 use sequencer::{DriveKeyState, DriveSequencer, gpu_drive_rows};
+
+/// Point size of a floating joint number.
+const JOINT_NUMBER_FONT_SIZE: f32 = 16.0;
+/// Diameter of the chip a joint number sits on.
+const JOINT_NUMBER_CHIP_SIZE: f32 = 26.0;
+/// Chip fill. A joint number lands on top of orange rings, blue blocks, and the
+/// sky alike, so it carries its own dark background rather than relying on
+/// whatever is behind it. White on this reads at about 20:1.
+const JOINT_NUMBER_BACKGROUND: Color = Color::srgba(0.02, 0.03, 0.045, 0.96);
 
 const SIMULATION_VISUAL_TICK_INTERVAL: u32 = 2;
 const HAMMER_CHARGE_SECONDS: f32 = 1.5;
@@ -75,6 +92,11 @@ const HELP_ORANGE_COLOR: Color = Color::srgb(1.0, 0.65, 0.20);
 
 #[derive(Resource, Default)]
 struct EditorGraph(ConstructionGraph);
+
+/// Display name of the creation currently open, when one was saved or loaded.
+/// It prefills the modal's name field so re-saving keeps the same file.
+#[derive(Resource, Default)]
+struct CurrentCreation(Option<String>);
 
 #[derive(Resource, Default)]
 struct AppSimulation {
@@ -240,15 +262,15 @@ fn handle_simulation_shortcut(
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
     mut hammer: ResMut<HammerInteraction>,
-    mut menu: ResMut<CreationMenuState>,
+    menu: Res<CreationMenuState>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     panel: Res<ControlPanelState>,
 ) {
-    if panel.blocks_keyboard() {
+    if panel.blocks_keyboard() || menu.blocks_keyboard() {
         return;
     }
-    if keyboard.just_pressed(KeyCode::Escape) && simulation.is_running() && !menu.is_open() {
+    if keyboard.just_pressed(KeyCode::Escape) && simulation.is_running() {
         *simulation = AppSimulation::default();
         *hammer = HammerInteraction::default();
         state.construction_mesh_dirty = true;
@@ -258,11 +280,6 @@ fn handle_simulation_shortcut(
     let Some(shortcut) = requested_simulation_shortcut(&keyboard) else {
         return;
     };
-    if menu.is_open() {
-        menu.close();
-        state.feedback = Some("Creation menu closed".to_owned());
-        return;
-    }
     let restarting = simulation.is_running();
     if restarting && shortcut == SimulationShortcut::TogglePlayback {
         simulation.paused = !simulation.paused;
@@ -345,30 +362,60 @@ fn requested_simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<Simu
     })
 }
 
+/// Whether the primary modifier plus `S` was pressed this frame.
+///
+/// A modifier is required because a bare letter binds to a drive state, so
+/// plain `S` belongs to a machine rather than to the editor.
+fn save_shortcut_requested(keyboard: &ButtonInput<KeyCode>) -> bool {
+    keyboard.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]) && keyboard.just_pressed(KeyCode::KeyS)
+}
+
+/// Opens the creations modal with `P`, or with the primary modifier and `S`.
+///
+/// While it is open the modal owns the keyboard, so neither key reaches here:
+/// `p` and `s` type into its name field, and Escape is its own to handle. The
+/// control-block panel owns the keyboard the same way, and the two must never
+/// both be typing, so neither can open over the other.
+#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
 fn handle_creation_menu_shortcut(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     simulation: Res<AppSimulation>,
+    store: Res<CreationStore>,
+    current: Res<CurrentCreation>,
+    panel: Res<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
 ) {
     menu.begin_frame();
-    if menu.is_open() && keyboard.just_pressed(KeyCode::Escape) {
-        menu.close();
-        state.feedback = Some("Creation menu closed".to_owned());
-    } else if keyboard.just_pressed(KeyCode::KeyP) {
-        if simulation.is_running() {
-            state.feedback =
-                Some("Creations can be opened in build mode — press Escape first".to_owned());
-        } else if menu.is_open() {
-            menu.close();
-            state.feedback = Some("Creation menu closed".to_owned());
-        } else {
-            cancel_transient_editor_state(&mut graph.0, &mut state);
-            menu.open();
-            state.feedback = Some("Choose a creation to open".to_owned());
-        }
+    if menu.is_open() || panel.blocks_keyboard() {
+        return;
     }
+    let saving = save_shortcut_requested(&keyboard);
+    if !saving && !keyboard.just_pressed(KeyCode::KeyP) {
+        return;
+    }
+    if simulation.is_running() {
+        state.feedback =
+            Some("Creations are saved and opened in build mode — press Escape first".to_owned());
+        return;
+    }
+    cancel_transient_editor_state(&mut graph.0, &mut state);
+    menu.open(
+        store.list(),
+        current.0.clone().unwrap_or_default(),
+        store.directory().to_path_buf(),
+    );
+    state.feedback = Some(if saving {
+        "Type a name, then Enter to save".to_owned()
+    } else {
+        "Open a creation, or type a name to save this one".to_owned()
+    });
 }
 
 /// Opens or closes the control-block panel with `E`.
@@ -422,6 +469,7 @@ fn run_drive_sequencer(
     keyboard: Res<ButtonInput<KeyCode>>,
     graph: Res<EditorGraph>,
     panel: Res<ControlPanelState>,
+    menu: Res<CreationMenuState>,
     simulation: Res<AppSimulation>,
     mut sequencer: ResMut<DriveSequencer>,
     mut state: ResMut<EditorState>,
@@ -442,53 +490,158 @@ fn run_drive_sequencer(
     if simulation.is_paused() {
         return;
     }
-    let keys = DriveKeyState::from_keyboard(&keyboard, panel.blocks_keyboard());
+    let keys =
+        DriveKeyState::from_keyboard(&keyboard, panel.blocks_keyboard() || menu.blocks_keyboard());
     if sequencer.step(&graph.0, &keys, simulation.next_tick) {
         state.drive_rows_dirty = true;
     }
 }
 
+/// Applies whatever the creations modal decided this frame.
+#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
 fn handle_creation_request(
     mut menu: ResMut<CreationMenuState>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
+    mut current: ResMut<CurrentCreation>,
+    store: Res<CreationStore>,
     mut camera: Single<(&mut OrbitCamera, &mut Transform)>,
 ) {
-    let Some(preset) = menu.take_request() else {
+    let Some(request) = menu.take_request() else {
         return;
     };
-    let previous = EditorSnapshot::capture(&graph.0, &state);
-    let result = showcase::build_preset(preset).and_then(|candidate| {
-        install_editor_graph(&mut graph.0, candidate).map_err(showcase::ShowcaseError::from)
-    });
-    match result {
-        Ok(creation) => {
-            history.commit(previous);
-            debug_assert_eq!(creation.compounds.len(), preset.body_count());
-            clear_hover(&mut state);
-            state.block_drag = None;
-            state.delete_drag = None;
-            state.delete_target = None;
-            state.placed_bearings.clear();
-            state.selected_controller = None;
-            state.construction_mesh_dirty = true;
-            state.feedback = Some(format!(
-                "Opened {}: {} welds, {} bearings, {} bodies — Space to simulate",
-                preset.label(),
-                graph.0.weld_count(),
-                graph.0.bearing_count(),
-                creation.compounds.len(),
-            ));
-            if let Some((minimum, maximum)) = graph_bounds(&graph.0) {
-                let (orbit, transform) = &mut *camera;
-                orbit.frame_bounds(minimum, maximum);
-                **transform = orbit.transform();
+    match request {
+        CreationRequest::LoadPreset(preset) => {
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            match showcase::build_preset(preset).and_then(|candidate| {
+                install_editor_graph(&mut graph.0, candidate).map_err(showcase::ShowcaseError::from)
+            }) {
+                Ok(creation) => {
+                    debug_assert_eq!(creation.compounds.len(), preset.body_count());
+                    history.commit(previous);
+                    current.0 = None;
+                    adopt_loaded_creation(&mut state, &mut camera, &graph.0, Vec::new());
+                    state.feedback = Some(format!(
+                        "Opened {}: {} welds, {} bearings, {} bodies — Space to simulate",
+                        preset.label(),
+                        graph.0.weld_count(),
+                        graph.0.bearing_count(),
+                        creation.compounds.len(),
+                    ));
+                }
+                Err(error) => {
+                    state.feedback = Some(format!("Could not open creation: {error}"));
+                }
             }
         }
-        Err(error) => {
-            state.feedback = Some(format!("Could not open creation: {error}"));
+        CreationRequest::Load(path) => {
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            match load_creation(&mut graph.0, &path) {
+                Ok((name, sockets, creation)) => {
+                    history.commit(previous);
+                    let bodies = creation.compounds.len();
+                    let placed = sockets
+                        .into_iter()
+                        .map(|socket| PlacedBearing {
+                            source: socket.source,
+                            anchor: socket.anchor,
+                            dimensions: socket.dimensions,
+                        })
+                        .collect();
+                    adopt_loaded_creation(&mut state, &mut camera, &graph.0, placed);
+                    state.feedback = Some(format!(
+                        "Opened \"{name}\": {} parts, {} bearings, {bodies} bodies — Space to simulate",
+                        graph.0.part_count(),
+                        graph.0.bearing_count(),
+                    ));
+                    current.0 = Some(name);
+                }
+                Err(error) => {
+                    state.feedback = Some(format!("Could not open creation: {error}"));
+                }
+            }
         }
+        CreationRequest::Save(name) => {
+            // Saving reads the graph and writes a file; it changes no
+            // construction, so it commits no undo entry.
+            let document = capture_creation(&graph.0, &state, &name);
+            match store.save(&document) {
+                Ok(path) => {
+                    current.0 = Some(name.clone());
+                    state.feedback = Some(format!("Saved \"{name}\" to {}", path.display()));
+                }
+                Err(error) => {
+                    state.feedback = Some(format!("Could not save creation: {error}"));
+                }
+            }
+        }
+        CreationRequest::Delete(path) => match creation_store::delete(&path) {
+            Ok(()) => {
+                state.feedback = Some(format!("Deleted {}", path.display()));
+                if menu.is_open() {
+                    menu.set_entries(store.list());
+                }
+            }
+            Err(error) => {
+                state.feedback = Some(format!("Could not delete creation: {error}"));
+                if menu.is_open() {
+                    menu.notify(format!("Could not delete: {error}"));
+                }
+            }
+        },
+    }
+}
+
+/// Captures everything a creation is: the construction, plus the bearing rings
+/// the editor is holding that no part hangs from yet.
+fn capture_creation(
+    graph: &ConstructionGraph,
+    state: &EditorState,
+    name: &str,
+) -> CreationDocument {
+    let snapshot = EditorSnapshot::capture(graph, state);
+    let sockets = snapshot
+        .placed_bearings
+        .iter()
+        .map(|bearing| BearingSocket {
+            source: bearing.source,
+            anchor: bearing.anchor,
+            dimensions: bearing.dimensions,
+        })
+        .collect::<Vec<_>>();
+    CreationDocument::from_graph(&snapshot.graph, name, &sockets)
+}
+
+/// Reads a creation file and installs it, compiling before it commits.
+fn load_creation(
+    current: &mut ConstructionGraph,
+    path: &Path,
+) -> Result<(String, Vec<BearingSocket>, CompiledCreation), Box<dyn Error>> {
+    let loaded = creation_store::read_document(path)?.into_graph()?;
+    let creation = install_editor_graph(current, loaded.graph)?;
+    Ok((loaded.name, loaded.sockets, creation))
+}
+
+/// Clears the transient editing state a freshly opened creation invalidates,
+/// then frames the camera on what arrived.
+fn adopt_loaded_creation(
+    state: &mut EditorState,
+    camera: &mut Single<(&mut OrbitCamera, &mut Transform)>,
+    graph: &ConstructionGraph,
+    placed_bearings: Vec<PlacedBearing>,
+) {
+    clear_hover(state);
+    state.block_drag = None;
+    state.delete_drag = None;
+    state.delete_target = None;
+    state.selected_controller = None;
+    state.placed_bearings = placed_bearings;
+    state.construction_mesh_dirty = true;
+    if let Some((minimum, maximum)) = graph_bounds(graph) {
+        let (orbit, transform) = &mut **camera;
+        orbit.frame_bounds(minimum, maximum);
+        **transform = orbit.transform();
     }
 }
 
@@ -860,6 +1013,15 @@ struct WireDragVisual;
 #[derive(Component)]
 struct WireHoverVisual;
 
+/// A floating number over one driven joint, matching the row number its control
+/// block's panel gives it.
+#[derive(Component)]
+struct JointNumberLabel;
+
+/// The numeral inside a [`JointNumberLabel`] chip.
+#[derive(Component)]
+struct JointNumberText;
+
 #[derive(Component)]
 struct HelpText;
 
@@ -902,6 +1064,8 @@ fn main() {
         .init_resource::<EditorState>()
         .init_resource::<EditorHistory>()
         .init_resource::<CreationMenuState>()
+        .init_resource::<CreationStore>()
+        .init_resource::<CurrentCreation>()
         .init_resource::<AppSimulation>()
         .init_resource::<HammerInteraction>()
         .init_resource::<BearingToolSettings>()
@@ -943,6 +1107,7 @@ fn main() {
                 handle_build_actions,
                 handle_hammer_actions,
                 update_joint_xray,
+                update_joint_numbers,
                 sync_visual_meshes,
                 update_wire_drag_preview,
                 update_wire_hover_preview,
@@ -1270,9 +1435,10 @@ fn help_toggle_requested(keyboard: &ButtonInput<Key>) -> bool {
 fn toggle_help_text(
     keyboard: Res<ButtonInput<Key>>,
     panel: Res<ControlPanelState>,
+    menu: Res<CreationMenuState>,
     mut visibility: Single<&mut Visibility, With<HelpText>>,
 ) {
-    if panel.blocks_keyboard() || !help_toggle_requested(&keyboard) {
+    if panel.blocks_keyboard() || menu.blocks_keyboard() || !help_toggle_requested(&keyboard) {
         return;
     }
     **visibility = match **visibility {
@@ -1307,24 +1473,21 @@ fn handle_history_shortcut(
     mut history: ResMut<EditorHistory>,
     simulation: Res<AppSimulation>,
     panel: Res<ControlPanelState>,
-    mut menu: ResMut<CreationMenuState>,
+    menu: Res<CreationMenuState>,
 ) {
-    if panel.blocks_keyboard() {
+    if panel.blocks_keyboard() || menu.blocks_keyboard() {
         return;
     }
     let Some(action) = requested_history_action(&keyboard) else {
         return;
     };
-    let restored = apply_history_action(
+    apply_history_action(
         action,
         &mut graph.0,
         &mut state,
         &mut history,
         simulation.is_running(),
     );
-    if restored {
-        menu.close();
-    }
 }
 
 fn apply_history_action(
@@ -3674,6 +3837,149 @@ fn drive_xray_is_visible(tool: Tool, driven_count: usize) -> bool {
     matches!(tool, Tool::JointXray | Tool::Controller | Tool::Connector) && driven_count > 0
 }
 
+/// Number and world position of every driven joint.
+///
+/// Numbering comes from [`control_panel::panel_rows`], the same grouping the
+/// panel lists, so `Joint 3` in the table is the joint wearing a floating `3`.
+/// Two wires on one physical joint share a row, and so share one label.
+fn joint_number_labels(
+    graph: &ConstructionGraph,
+    anchor_of: impl Fn(&mechanic_core::BearingSpec) -> Option<Vec3>,
+) -> Vec<(usize, Vec3)> {
+    let mut labels = Vec::new();
+    for (controller, _) in graph.parts().filter(|(id, _)| graph.is_controller(*id)) {
+        for (index, row) in control_panel::panel_rows(graph, controller)
+            .iter()
+            .enumerate()
+        {
+            let Some(bearing) = graph
+                .drive_link(row.primary)
+                .and_then(|link| graph.bearing(link.bearing))
+            else {
+                continue;
+            };
+            if let Some(anchor) = anchor_of(bearing) {
+                labels.push((index + 1, anchor));
+            }
+        }
+    }
+    labels
+}
+
+/// Keeps one floating number over each driven joint.
+///
+/// The labels are UI text projected from world space rather than meshes, so
+/// they stay upright and legible at any camera angle. They appear exactly when
+/// the drive overlay does, so the wires that show which block owns a joint are
+/// on screen alongside the number that names it.
+#[allow(clippy::type_complexity)]
+fn update_joint_numbers(
+    mut commands: Commands,
+    graph: Res<EditorGraph>,
+    simulation: Res<AppSimulation>,
+    selection: Res<SelectedTool>,
+    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    mut labels: Query<(Entity, &mut Node, &mut Visibility, &Children), With<JointNumberLabel>>,
+    mut numerals: Query<&mut Text, With<JointNumberText>>,
+) {
+    let visible = drive_xray_is_visible(selection.0, driven_bearing_count(&graph.0));
+    let wanted = if visible {
+        match (simulation.creation.as_ref(), simulation.is_running()) {
+            (Some(creation), true) => joint_number_labels(&graph.0, |bearing| {
+                simulation_bearing_pose(&graph.0, creation, &simulation.transforms, bearing)
+                    .map(|(anchor, _)| anchor)
+            }),
+            _ => joint_number_labels(&graph.0, |bearing| Some(bearing.shared_anchor)),
+        }
+    } else {
+        Vec::new()
+    };
+
+    let (camera, camera_transform) = *camera;
+    let mut existing = labels.iter_mut().collect::<Vec<_>>();
+    for (slot, (number, anchor)) in wanted.iter().enumerate() {
+        let screen = camera.world_to_viewport(camera_transform, *anchor).ok();
+        match existing.get_mut(slot) {
+            Some((_, node, visibility, children)) => {
+                if let Some(screen) = screen {
+                    // The chip is centred on the joint by its own transform, so
+                    // this is the projected point itself, not a corner.
+                    node.left = px(screen.x);
+                    node.top = px(screen.y);
+                    **visibility = Visibility::Visible;
+                } else {
+                    // Behind the camera or off the near plane: hide it rather
+                    // than pin a stale number to the edge of the screen.
+                    **visibility = Visibility::Hidden;
+                }
+                let label = number.to_string();
+                if let Some(mut text) = children
+                    .first()
+                    .and_then(|child| numerals.get_mut(*child).ok())
+                    && text.0 != label
+                {
+                    text.0 = label;
+                }
+            }
+            None => spawn_joint_number(&mut commands, *number, screen),
+        }
+    }
+    // More joints than labels means the extras were just spawned and there is
+    // nothing surplus to clear, so the split point is clamped to what exists.
+    let surplus = wanted.len().min(existing.len());
+    for (entity, _, _, _) in existing.drain(surplus..) {
+        // Joints are removed far less often than the camera moves, so surplus
+        // labels are despawned rather than pooled forever.
+        commands.entity(entity).despawn();
+    }
+}
+
+fn spawn_joint_number(commands: &mut Commands, number: usize, screen: Option<Vec2>) {
+    commands.spawn((
+        Name::new("Joint number"),
+        JointNumberLabel,
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(screen.map_or(0.0, |screen| screen.x)),
+            top: px(screen.map_or(0.0, |screen| screen.y)),
+            min_width: px(JOINT_NUMBER_CHIP_SIZE),
+            height: px(JOINT_NUMBER_CHIP_SIZE),
+            padding: UiRect::horizontal(px(6)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            border: UiRect::all(px(2)),
+            border_radius: BorderRadius::all(px(JOINT_NUMBER_CHIP_SIZE * 0.5)),
+            ..default()
+        },
+        BackgroundColor(JOINT_NUMBER_BACKGROUND),
+        // Teal is what marks a joint as driven everywhere else in the overlay,
+        // and a joint number is a control-block idea, so the ring matches.
+        BorderColor::all(CONTROLLER_SURFACE_COLOR),
+        // Percent translation resolves against the chip's own size, so a
+        // two-digit number stays centred on its joint just as a one-digit does.
+        UiTransform {
+            translation: Val2::all(percent(-50)),
+            ..UiTransform::IDENTITY
+        },
+        GlobalZIndex(50),
+        if screen.is_some() {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        },
+        children![(
+            JointNumberText,
+            Text::new(number.to_string()),
+            TextFont {
+                font_size: FontSize::Px(JOINT_NUMBER_FONT_SIZE),
+                weight: FontWeight::BOLD,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+        )],
+    ));
+}
+
 fn driven_bearing_count(graph: &ConstructionGraph) -> usize {
     graph
         .drive_links()
@@ -4216,7 +4522,7 @@ fn update_help_text(
         (
             "BUILDING",
             HELP_BLUE_COLOR,
-            "SPACE  Start simulation     P  Open creations     ?  Hide help",
+            "SPACE  Start simulation     P  Creations     CTRL/CMD+S  Save     ?  Hide help",
         )
     };
     let title = format!("MECHANIC  •  {mode}");
@@ -4690,6 +4996,27 @@ fn combined_simulation_bearing_mesh(
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+/// Where one graph bearing sits in simulation space.
+///
+/// The published snapshot moves compounds, so a running mechanism's joint is
+/// found through its compiled row rather than through its build pose.
+fn simulation_bearing_pose(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    bearing: &mechanic_core::BearingSpec,
+) -> Option<(Vec3, Vec3)> {
+    let compiled = creation
+        .bearings
+        .iter()
+        .find(|compiled| graph.bearing(compiled.source_bearing) == Some(bearing))?;
+    Some(transform_bearing_pose(
+        *transforms.get(compiled.compound_a as usize)?,
+        compiled.local_anchor_a,
+        compiled.local_axis_a,
+    ))
 }
 
 fn transform_bearing_pose(
@@ -5183,15 +5510,7 @@ fn combined_simulation_drive_xray_mesh(
             .find_map(|(candidate, compound)| (*candidate == part).then_some(*compound))
     };
     drive_xray_mesh(graph, placed_bearings, sequencer, |bearing, controller| {
-        let compiled = creation
-            .bearings
-            .iter()
-            .find(|compiled| graph.bearing(compiled.source_bearing) == Some(bearing))?;
-        let (anchor, axis) = transform_bearing_pose(
-            *transforms.get(compiled.compound_a as usize)?,
-            compiled.local_anchor_a,
-            compiled.local_axis_a,
-        );
+        let (anchor, axis) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
         let block = *transforms.get(compound_of(controller)? as usize)?;
         let center = Vec3::new(block.position[0], block.position[1], block.position[2])
             + Quat::from_array(block.rotation)
@@ -6213,6 +6532,7 @@ mod interaction_tests {
         let mut app = App::new();
         app.init_resource::<ButtonInput<Key>>()
             .init_resource::<crate::control_panel::ControlPanelState>()
+            .init_resource::<crate::creation_menu::CreationMenuState>()
             .add_systems(Update, toggle_help_text);
         let help = app.world_mut().spawn((HelpText, Visibility::Hidden)).id();
         let question_mark = Key::Character("?".into());
@@ -7794,5 +8114,416 @@ mod showcase_loading_tests {
         assert!(matches!(result, Err(TopologyError::EmptyConstruction)));
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.parts().next().unwrap().1, &spec);
+    }
+}
+
+#[cfg(test)]
+mod joint_number_tests {
+    use mechanic_core::{
+        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, ControllerSpec,
+        CuboidSpec, DriveLinkSpec, FaceKind, FaceRef, GridRotation, PartId,
+    };
+
+    use bevy::prelude::*;
+
+    use super::{
+        AppSimulation, EditorGraph, JointNumberLabel, JointNumberText, OrbitCamera, SelectedTool,
+        control_panel, drive_xray_is_visible, driven_bearing_count, joint_number_labels,
+        update_joint_numbers,
+    };
+    use crate::hotbar::Tool;
+
+    fn spawned(outcome: BuildOutcome) -> PartId {
+        match outcome {
+            BuildOutcome::Spawned(part) => part,
+            other => panic!("expected a spawn, got {other:?}"),
+        }
+    }
+
+    fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
+        CuboidSpec::new(dimensions, BuildPose::new(units, GridRotation::default()))
+            .expect("test dimensions are in range")
+    }
+
+    /// One control block driving two joints, each on its own rotor.
+    fn two_driven_joints() -> (ConstructionGraph, PartId, [Vec3; 2]) {
+        let mut graph = ConstructionGraph::new();
+        let base = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([16, 2, 4], IVec3::new(0, 1, 0))))
+                .expect("the base spawns"),
+        );
+        let controller = spawned(
+            graph
+                .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                    BuildPose::from_half_grid(IVec3::new(0, 5, 0), GridRotation::default()),
+                )))
+                .expect("the control block spawns"),
+        );
+        let mut anchors = Vec::new();
+        for offset in [-6_i8, 6_i8] {
+            let rotor = spawned(
+                graph
+                    .apply(BuildCommand::Spawn(cuboid(
+                        [2, 2, 2],
+                        IVec3::new(i32::from(offset), 3, 0),
+                    )))
+                    .expect("the rotor spawns"),
+            );
+            let anchor = Vec3::new(f32::from(offset) * 0.25, 0.5, 0.0);
+            let BuildOutcome::BearingAdded(bearing) = graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(base, FaceKind::PositiveY),
+                    FaceRef::part(rotor, FaceKind::NegativeY),
+                    anchor,
+                    Vec3::Y,
+                )))
+                .expect("the bearing is added")
+            else {
+                panic!("expected a bearing outcome");
+            };
+            graph
+                .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                    controller, bearing,
+                )))
+                .expect("the wire is added");
+            anchors.push(anchor);
+        }
+        (graph, controller, [anchors[0], anchors[1]])
+    }
+
+    #[test]
+    fn floating_numbers_match_the_rows_the_panel_lists() {
+        let (graph, controller, anchors) = two_driven_joints();
+        let rows = control_panel::panel_rows(&graph, controller);
+        let labels = joint_number_labels(&graph, |bearing| Some(bearing.shared_anchor));
+
+        assert_eq!(rows.len(), 2, "each joint gets its own panel row");
+        assert_eq!(
+            labels,
+            vec![(1, anchors[0]), (2, anchors[1])],
+            "the number floating over a joint is the row number the panel shows"
+        );
+    }
+
+    #[test]
+    fn two_wires_on_one_joint_share_a_single_number() {
+        let (mut graph, controller, anchors) = two_driven_joints();
+        // A second group hung from the first joint's socket adds a wire
+        // describing the same physical joint, which the panel folds into one
+        // row and which therefore earns one number, not two.
+        let extra = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([2, 2, 2], IVec3::new(-6, 3, 0))))
+                .expect("the extra rotor spawns"),
+        );
+        let base = graph.parts().next().expect("the base is the first part").0;
+        let BuildOutcome::BearingAdded(bearing) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveY),
+                FaceRef::part(extra, FaceKind::NegativeY),
+                anchors[0],
+                Vec3::Y,
+            )))
+            .expect("the second bearing is added")
+        else {
+            panic!("expected a bearing outcome");
+        };
+        graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .expect("the second wire is added");
+
+        assert_eq!(driven_bearing_count(&graph), 3, "three wires exist");
+        assert_eq!(
+            control_panel::panel_rows(&graph, controller).len(),
+            2,
+            "but they describe two joints"
+        );
+        assert_eq!(
+            joint_number_labels(&graph, |bearing| Some(bearing.shared_anchor)),
+            vec![(1, anchors[0]), (2, anchors[1])],
+            "one joint carries one number no matter how many wires reach it"
+        );
+    }
+
+    /// Builds an app running `update_joint_numbers` over the given graph.
+    ///
+    /// The camera has no viewport, so every projection fails and the labels
+    /// stay hidden. That is deliberate: this exercises the spawn and despawn
+    /// bookkeeping, which is what breaks, without needing a render target.
+    fn labelling_app(graph: ConstructionGraph) -> App {
+        let mut app = App::new();
+        app.insert_resource(EditorGraph(graph))
+            .init_resource::<AppSimulation>()
+            .init_resource::<SelectedTool>()
+            .add_systems(Update, update_joint_numbers);
+        app.world_mut().resource_mut::<SelectedTool>().0 = Tool::Connector;
+        app.world_mut().spawn((
+            Camera::default(),
+            GlobalTransform::default(),
+            OrbitCamera::default(),
+        ));
+        app
+    }
+
+    fn label_count(app: &mut App) -> usize {
+        app.world_mut()
+            .query_filtered::<Entity, With<JointNumberLabel>>()
+            .iter(app.world())
+            .count()
+    }
+
+    #[test]
+    fn wiring_the_first_joint_spawns_its_label_without_panicking() {
+        // Regression: the surplus-label sweep split the existing labels at the
+        // wanted count, which is past the end the frame a joint first appears.
+        let (graph, _, _) = two_driven_joints();
+        let mut app = labelling_app(graph);
+
+        app.update();
+
+        assert_eq!(label_count(&mut app), 2, "each joint gets one label");
+    }
+
+    #[test]
+    fn labels_track_joints_appearing_and_disappearing() {
+        let (graph, _, _) = two_driven_joints();
+        let mut app = labelling_app(ConstructionGraph::new());
+
+        app.update();
+        assert_eq!(label_count(&mut app), 0, "nothing driven, nothing labelled");
+
+        app.world_mut().resource_mut::<EditorGraph>().0 = graph;
+        app.update();
+        assert_eq!(label_count(&mut app), 2);
+
+        // Idling must not accumulate a label per frame.
+        app.update();
+        app.update();
+        assert_eq!(label_count(&mut app), 2, "labels are reused, not stacked");
+
+        app.world_mut().resource_mut::<EditorGraph>().0 = ConstructionGraph::new();
+        app.update();
+        assert_eq!(label_count(&mut app), 0, "removing the joints clears them");
+    }
+
+    fn numerals(app: &mut App) -> Vec<String> {
+        let mut shown = app
+            .world_mut()
+            .query_filtered::<&Text, With<JointNumberText>>()
+            .iter(app.world())
+            .map(|text| text.0.clone())
+            .collect::<Vec<_>>();
+        shown.sort();
+        shown
+    }
+
+    #[test]
+    fn each_chip_shows_its_joints_number() {
+        let (graph, _, _) = two_driven_joints();
+        let mut app = labelling_app(graph);
+
+        app.update();
+
+        assert_eq!(
+            numerals(&mut app),
+            ["1", "2"],
+            "the numeral lives on a child of the chip, and has to be written there"
+        );
+    }
+
+    #[test]
+    fn a_chip_reused_for_another_joint_shows_the_new_number() {
+        // Labels are reused slot by slot, so one losing its joint must take on
+        // the number of whichever joint claims its slot rather than keep a
+        // stale numeral.
+        let (two_joints, _, _) = two_driven_joints();
+        let mut app = labelling_app(two_joints);
+        app.update();
+        assert_eq!(numerals(&mut app), ["1", "2"]);
+
+        let mut one_joint = ConstructionGraph::new();
+        let base = spawned(
+            one_joint
+                .apply(BuildCommand::Spawn(cuboid([16, 2, 4], IVec3::new(0, 1, 0))))
+                .expect("the base spawns"),
+        );
+        let controller = spawned(
+            one_joint
+                .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                    BuildPose::from_half_grid(IVec3::new(0, 5, 0), GridRotation::default()),
+                )))
+                .expect("the control block spawns"),
+        );
+        let rotor = spawned(
+            one_joint
+                .apply(BuildCommand::Spawn(cuboid([2, 2, 2], IVec3::new(6, 3, 0))))
+                .expect("the rotor spawns"),
+        );
+        let BuildOutcome::BearingAdded(bearing) = one_joint
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveY),
+                FaceRef::part(rotor, FaceKind::NegativeY),
+                Vec3::new(1.5, 0.5, 0.0),
+                Vec3::Y,
+            )))
+            .expect("the bearing is added")
+        else {
+            panic!("expected a bearing outcome");
+        };
+        one_joint
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .expect("the wire is added");
+
+        app.world_mut().resource_mut::<EditorGraph>().0 = one_joint;
+        app.update();
+
+        assert_eq!(
+            numerals(&mut app),
+            ["1"],
+            "the surviving chip shows the surviving joint's number"
+        );
+    }
+
+    #[test]
+    fn putting_away_the_connector_clears_the_labels() {
+        let (graph, _, _) = two_driven_joints();
+        let mut app = labelling_app(graph);
+        app.update();
+        assert_eq!(label_count(&mut app), 2);
+
+        app.world_mut().resource_mut::<SelectedTool>().0 = Tool::Block;
+        app.update();
+
+        assert_eq!(label_count(&mut app), 0, "a build tool hides the numbering");
+    }
+
+    #[test]
+    fn numbers_show_with_the_tools_that_show_the_wires() {
+        for tool in [Tool::Connector, Tool::Controller, Tool::JointXray] {
+            assert!(
+                drive_xray_is_visible(tool, 1),
+                "{tool:?} should show joint numbers"
+            );
+        }
+        for tool in [Tool::Block, Tool::Bearing, Tool::Weld, Tool::Hammer] {
+            assert!(
+                !drive_xray_is_visible(tool, 1),
+                "{tool:?} should not show joint numbers"
+            );
+        }
+        assert!(
+            !drive_xray_is_visible(Tool::Connector, 0),
+            "nothing driven means nothing to number"
+        );
+    }
+}
+
+#[cfg(test)]
+mod creation_file_tests {
+    use bevy::prelude::Vec3;
+    use mechanic_core::{BearingDimensions, FaceKind, FaceRef};
+
+    use super::{
+        ConstructionGraph, EditorState, PlacedBearing, capture_creation,
+        creation_store::{CreationStore, read_document},
+        install_editor_graph, showcase,
+    };
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("mechanic-creations-{}-{label}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A preset construction plus one bearing ring the editor is still holding.
+    fn editor_with_a_loose_ring() -> (ConstructionGraph, EditorState) {
+        let graph = showcase::build_preset(showcase::CreationPreset::PendulumGarden256)
+            .expect("the preset builds");
+        let (part, _) = graph.parts().next().expect("the preset has parts");
+        let mut state = EditorState::default();
+        state.placed_bearings.push(PlacedBearing {
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::new(0.25, 1.5, -0.75),
+            dimensions: BearingDimensions::new(0.4, 0.15).expect("the ring is in range"),
+        });
+        (graph, state)
+    }
+
+    #[test]
+    fn saving_then_opening_restores_the_construction_and_its_loose_rings() {
+        let temporary = TempDir::new("round-trip");
+        let store = CreationStore::new(&temporary.0);
+        let (graph, state) = editor_with_a_loose_ring();
+
+        let path = store
+            .save(&capture_creation(&graph, &state, "Pendulum Rig"))
+            .expect("the creation is written");
+
+        let loaded = read_document(&path)
+            .expect("the file parses")
+            .into_graph()
+            .expect("the document rebuilds");
+        let mut installed = ConstructionGraph::new();
+        let creation =
+            install_editor_graph(&mut installed, loaded.graph).expect("the rebuild compiles");
+
+        assert_eq!(loaded.name, "Pendulum Rig");
+        assert_eq!(installed.part_count(), graph.part_count());
+        assert_eq!(installed.weld_count(), graph.weld_count());
+        assert_eq!(installed.bearing_count(), graph.bearing_count());
+        assert_eq!(
+            creation.compounds.len(),
+            graph
+                .compile()
+                .expect("the original compiles")
+                .compounds
+                .len()
+        );
+
+        let restored = loaded.sockets.first().expect("the loose ring comes back");
+        let original = &state.placed_bearings[0];
+        assert_eq!(restored.anchor, original.anchor);
+        assert_eq!(restored.dimensions, original.dimensions);
+        assert_eq!(restored.source.face, original.source.face);
+        assert_eq!(
+            installed.parts().next().map(|(id, _)| id),
+            match restored.source.owner {
+                mechanic_core::FaceOwner::Part(part) => Some(part),
+                mechanic_core::FaceOwner::Ground => None,
+            },
+            "the ring still hangs off the first part"
+        );
+    }
+
+    #[test]
+    fn the_listing_summarises_what_a_saved_creation_holds() {
+        let temporary = TempDir::new("listing");
+        let store = CreationStore::new(&temporary.0);
+        let (graph, state) = editor_with_a_loose_ring();
+        store
+            .save(&capture_creation(&graph, &state, "Pendulum Rig"))
+            .expect("the creation is written");
+
+        let listed = store.list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Pendulum Rig");
+        assert_eq!(listed[0].part_count, graph.part_count());
+        assert_eq!(listed[0].joint_count, graph.bearing_count());
     }
 }

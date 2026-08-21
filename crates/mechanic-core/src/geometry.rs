@@ -1,4 +1,5 @@
 use bevy_math::{EulerRot, IVec3, Quat, Vec3};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::PartId;
@@ -510,7 +511,7 @@ impl CuboidSpec {
 }
 
 /// One of the six oriented local faces. Cylinders expose only their Y ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FaceKind {
     /// Positive local x face.
     PositiveX,

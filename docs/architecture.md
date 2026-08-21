@@ -32,6 +32,28 @@ rounds. An edge that would join two already-grounded trees is a closure rather
 than silently making one grounded body dynamic. There is no entity, transform,
 mesh, or material per part.
 
+## Persistence
+
+A saved creation is the authored graph and nothing derived from it: parts,
+welds, rigid links, bearings, drive wires with their limits and programs, and
+the bearing rings the editor holds that no part hangs from yet. That set is the
+same one the undo history snapshots, which is the definition of "the whole
+creation". Compiled bodies, mass and inertia, loop topology, GPU buffers, and
+sequencer cursors are all recomputed on load.
+
+Graph handles are generational and minted privately, so they are not stable
+across a rebuild and cannot appear in a file. A creation document numbers its
+rows by position instead, and loading replays them as `BuildCommand`s through
+`apply_batch`, remapping dense indices onto the handles the arenas return.
+Every value passes through the same validating constructors the editor uses,
+and the rebuilt graph is compiled before it replaces the current one, so
+neither a corrupt file nor a hand-edited one can install an invalid
+construction.
+
+`mechanic-core` owns the document and its conversions and performs no
+filesystem access; the app owns where files live, reads and writes them, and
+maps the editor's unattached rings to and from the document's sockets.
+
 ## Clocks and publication
 
 Physics advances at an explicit 60 Hz fixed step. A tick is published to the

@@ -2,3 +2,4 @@
 *.trace
 *.jsonl
 .DS_Store
+/design

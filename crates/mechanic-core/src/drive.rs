@@ -1,5 +1,6 @@
 use core::fmt;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Largest supported drive speed, in radians per second.
@@ -61,7 +62,7 @@ pub enum DriveProgramError {
 }
 
 /// What one drive state asks of its bearing.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DriveTarget {
     /// Hold a joint angle, in radians, measured from the built pose.
     Angle(f32),
@@ -161,7 +162,7 @@ impl fmt::Display for DriveKey {
 }
 
 /// What a triggered state does when its key is released.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DriveRelease {
     /// Stay in this state until something else changes it.
     #[default]

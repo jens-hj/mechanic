@@ -6,9 +6,12 @@
 //! wire changes no topology and no buffer size.
 
 use bevy::{
-    input::keyboard::{Key, KeyboardInput},
+    input::{
+        keyboard::{Key, KeyboardInput},
+        mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+    },
     prelude::*,
-    ui::FocusPolicy,
+    ui::{FocusPolicy, ScrollPosition},
 };
 use mechanic_core::{
     BuildCommand, ConstructionGraph, DriveDwell, DriveLimits, DriveLinkId, DriveProgram,
@@ -26,6 +29,14 @@ const CELL_FOCUSED: Color = Color::srgba(0.08, 0.30, 0.36, 0.99);
 const HEADING: Color = Color::srgb(0.72, 0.82, 0.86);
 /// Width of the `S1`, `S2`, ... gutter, so headers line up with their cells.
 const STATE_LABEL_WIDTH: u32 = 34;
+/// Fixed panel width. A state line is the gutter plus seven cells, and a cell
+/// grows past its minimum for wide words like `unlimited`, so this leaves room
+/// for the widest line rather than resizing the panel as values change.
+const PANEL_WIDTH: u32 = 700;
+/// Inset from the window edges on the left, top, and bottom.
+const PANEL_MARGIN: u32 = 24;
+/// Pixels one wheel line scrolls the table by.
+const SCROLL_LINE_PIXELS: f32 = 24.0;
 const LABEL: Color = Color::srgb(0.88, 0.92, 0.95);
 
 /// Which value one cell of the table edits.
@@ -103,6 +114,11 @@ pub(crate) struct DriveCell {
 #[derive(Component)]
 pub(crate) struct ControlPanelRoot;
 
+/// The scrolling table inside the panel. The title and the hint line sit
+/// outside it, so they stay put while the joints scroll under them.
+#[derive(Component)]
+pub(crate) struct ControlPanelScroll;
+
 /// What a keystroke does to the cell being typed into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NumberEntryAction {
@@ -170,6 +186,9 @@ pub(crate) struct ControlPanelState {
     /// Cell held down last frame. `Interaction::Pressed` stays set for as long
     /// as the button is held, so a cell would otherwise cycle every frame.
     held: Option<DriveCell>,
+    /// How far the table is scrolled. A rebuild respawns it, so the offset
+    /// lives here rather than only on the node.
+    scroll: Vec2,
     blocks_pointer: bool,
     dirty: bool,
 }
@@ -186,6 +205,7 @@ impl ControlPanelState {
         self.typing = None;
         self.capturing = None;
         self.held = None;
+        self.scroll = Vec2::ZERO;
         self.blocks_pointer = true;
         self.dirty = true;
     }
@@ -196,6 +216,7 @@ impl ControlPanelState {
         self.typing = None;
         self.capturing = None;
         self.held = None;
+        self.scroll = Vec2::ZERO;
         self.blocks_pointer = true;
         self.dirty = true;
     }
@@ -608,8 +629,10 @@ pub(crate) fn spawn(commands: &mut Commands) {
         ControlPanelRoot,
         Node {
             position_type: PositionType::Absolute,
-            left: px(24),
-            top: px(24),
+            left: px(PANEL_MARGIN),
+            top: px(PANEL_MARGIN),
+            bottom: px(PANEL_MARGIN),
+            width: px(PANEL_WIDTH),
             max_width: percent(94),
             padding: UiRect::all(px(18)),
             flex_direction: FlexDirection::Column,
@@ -639,6 +662,7 @@ pub(crate) fn rebuild(
     };
     let rows = panel_rows(graph, controller);
     let typing = state.typing();
+    let scroll = state.scroll;
     commands.entity(root).with_children(|panel| {
         panel.spawn((
             Text::new("CONTROL BLOCK"),
@@ -671,12 +695,29 @@ pub(crate) fn rebuild(
             },
             TextColor(HEADING),
         ));
-        for (index, row) in rows.iter().enumerate() {
-            let Some(spec) = graph.drive_link(row.primary) else {
-                continue;
-            };
-            spawn_row(panel, index, row.primary, spec.limits, spec.program, typing);
-        }
+        panel
+            .spawn((
+                ControlPanelScroll,
+                ScrollPosition(scroll),
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    // `flex_grow` claims the space the title and hint leave, and
+                    // a zero minimum lets it shrink to that instead of pushing
+                    // the table past the panel's fixed height.
+                    flex_grow: 1.0,
+                    min_height: px(0),
+                    overflow: Overflow::scroll(),
+                    ..default()
+                },
+            ))
+            .with_children(|table| {
+                for (index, row) in rows.iter().enumerate() {
+                    let Some(spec) = graph.drive_link(row.primary) else {
+                        continue;
+                    };
+                    spawn_row(table, index, row.primary, spec.limits, spec.program, typing);
+                }
+            });
     });
 }
 
@@ -861,7 +902,9 @@ pub(crate) fn update(
     simulation: Res<crate::AppSimulation>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut keystrokes: MessageReader<KeyboardInput>,
+    wheel: Res<AccumulatedMouseScroll>,
     root: Single<(Entity, &mut Visibility), With<ControlPanelRoot>>,
+    mut table: Query<&mut ScrollPosition, With<ControlPanelScroll>>,
     mut cells: Query<(&Interaction, &DriveCell, &mut BackgroundColor), With<Button>>,
 ) {
     let (root_entity, mut visibility) = root.into_inner();
@@ -906,6 +949,7 @@ pub(crate) fn update(
             &simulation,
             &mut cells,
         );
+        handle_scroll(&mut state, &wheel, &mut table);
     } else {
         keystrokes.clear();
     }
@@ -913,6 +957,30 @@ pub(crate) fn update(
     if state.take_dirty() {
         rebuild(&mut commands, root_entity, &state, &graph.0);
     }
+}
+
+/// Scrolls the table with the wheel.
+///
+/// The camera already ignores the wheel while the panel blocks the pointer, so
+/// the whole gesture belongs to the table. Layout clamps an offset past the
+/// end, so the clamped value is read back rather than tracked separately.
+fn handle_scroll(
+    state: &mut ControlPanelState,
+    wheel: &AccumulatedMouseScroll,
+    table: &mut Query<&mut ScrollPosition, With<ControlPanelScroll>>,
+) {
+    let Ok(mut position) = table.single_mut() else {
+        return;
+    };
+    let scale = match wheel.unit {
+        MouseScrollUnit::Line => SCROLL_LINE_PIXELS,
+        MouseScrollUnit::Pixel => 1.0,
+    };
+    let delta = wheel.delta * scale;
+    if delta != Vec2::ZERO {
+        position.0 = (position.0 - delta).max(Vec2::ZERO);
+    }
+    state.scroll = position.0;
 }
 
 fn handle_key_capture(
@@ -1121,14 +1189,19 @@ fn write_row(
 #[cfg(test)]
 mod tests {
     use super::{
-        DriveCellKind, NumberEntryAction, captured_key, cell_click_hint, cell_text, clicked_value,
-        committed_value, edited_buffer, number_entry_action,
+        ControlPanelRoot, ControlPanelScroll, ControlPanelState, DriveCell, DriveCellKind,
+        NumberEntryAction, SCROLL_LINE_PIXELS, captured_key, cell_click_hint, cell_text,
+        clicked_value, committed_value, edited_buffer, handle_scroll, number_entry_action, rebuild,
     };
+    use bevy::ecs::world::CommandQueue;
     use bevy::input::keyboard::Key;
-    use bevy::prelude::KeyCode;
+    use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
+    use bevy::prelude::*;
+    use bevy::ui::ScrollPosition;
     use mechanic_core::{
-        DriveDwell, DriveKey, DriveLimits, DriveProgram, DriveRelease, DriveState, DriveTarget,
-        DriveTrigger,
+        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, ControllerSpec,
+        CuboidSpec, DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveProgram, DriveRelease,
+        DriveState, DriveTarget, DriveTrigger, FaceKind, FaceRef, GridRotation, PartId,
     };
 
     fn program(states: &[DriveState]) -> DriveProgram {
@@ -1403,5 +1476,160 @@ mod tests {
         assert_eq!(cell_text(DriveCellKind::Next(0), limits, base), "→S1");
         assert_eq!(cell_text(DriveCellKind::Torque, limits, base), "40 N·m");
         assert_eq!(cell_text(DriveCellKind::ToggleLoop, limits, base), "once");
+    }
+
+    /// Runs `handle_scroll` once over a table node holding `start`.
+    fn scrolled(start: Vec2, delta: Vec2, unit: MouseScrollUnit) -> Vec2 {
+        let mut app = App::new();
+        app.insert_resource(AccumulatedMouseScroll { delta, unit })
+            .init_resource::<ControlPanelState>();
+        let table = app
+            .world_mut()
+            .spawn((ControlPanelScroll, ScrollPosition(start)))
+            .id();
+        app.add_systems(
+            Update,
+            |mut state: ResMut<ControlPanelState>,
+             wheel: Res<AccumulatedMouseScroll>,
+             mut table: Query<&mut ScrollPosition, With<ControlPanelScroll>>| {
+                handle_scroll(&mut state, &wheel, &mut table);
+            },
+        );
+        app.update();
+
+        let position = app
+            .world()
+            .entity(table)
+            .get::<ScrollPosition>()
+            .expect("the table keeps its scroll position");
+        assert_eq!(
+            app.world().resource::<ControlPanelState>().scroll,
+            position.0,
+            "the state must mirror the node"
+        );
+        position.0
+    }
+
+    #[test]
+    fn wheel_scrolls_the_table_a_line_at_a_time() {
+        assert_eq!(
+            scrolled(Vec2::ZERO, Vec2::new(0.0, -2.0), MouseScrollUnit::Line),
+            Vec2::new(0.0, 2.0 * SCROLL_LINE_PIXELS),
+        );
+        assert_eq!(
+            scrolled(Vec2::ZERO, Vec2::new(0.0, -30.0), MouseScrollUnit::Pixel),
+            Vec2::new(0.0, 30.0),
+        );
+    }
+
+    #[test]
+    fn scrolling_back_past_the_top_stops_there() {
+        assert_eq!(
+            scrolled(
+                Vec2::new(0.0, 10.0),
+                Vec2::new(0.0, 40.0),
+                MouseScrollUnit::Pixel,
+            ),
+            Vec2::ZERO,
+            "a wide panel must not drift above its first joint"
+        );
+    }
+
+    /// A control block wired to one bearing between a base and a rotor.
+    fn wired_control_block() -> (ConstructionGraph, PartId) {
+        fn spawned(outcome: BuildOutcome) -> PartId {
+            match outcome {
+                BuildOutcome::Spawned(part) => part,
+                other => panic!("expected a spawn, got {other:?}"),
+            }
+        }
+
+        let mut graph = ConstructionGraph::new();
+        let cuboid = |dimensions: [u8; 3], units: IVec3| {
+            CuboidSpec::new(dimensions, BuildPose::new(units, GridRotation::default()))
+                .expect("test dimensions are in range")
+        };
+        let base = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([4, 2, 4], IVec3::new(0, 1, 0))))
+                .expect("the base spawns"),
+        );
+        let rotor = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([2, 2, 2], IVec3::new(0, 3, 0))))
+                .expect("the rotor spawns"),
+        );
+        let controller = spawned(
+            graph
+                .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                    BuildPose::from_half_grid(IVec3::new(2, 5, 0), GridRotation::default()),
+                )))
+                .expect("the control block spawns"),
+        );
+        let BuildOutcome::BearingAdded(bearing) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveY),
+                FaceRef::part(rotor, FaceKind::NegativeY),
+                Vec3::new(0.0, 0.5, 0.0),
+                Vec3::Y,
+            )))
+            .expect("the bearing is added")
+        else {
+            panic!("expected a bearing outcome");
+        };
+        graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .expect("the wire is added");
+        (graph, controller)
+    }
+
+    /// Every entity beneath `root`, so a test can ask what a subtree contains.
+    fn descendants(world: &World, root: Entity) -> Vec<Entity> {
+        let mut found = Vec::new();
+        let mut pending = vec![root];
+        while let Some(entity) = pending.pop() {
+            if let Some(children) = world.entity(entity).get::<Children>() {
+                for &child in children {
+                    found.push(child);
+                    pending.push(child);
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_wired_block_puts_its_joints_inside_the_scrolling_table() {
+        let (graph, controller) = wired_control_block();
+        let mut app = App::new();
+        let root = app.world_mut().spawn(ControlPanelRoot).id();
+        let mut state = ControlPanelState::default();
+        state.open(controller);
+
+        let mut queue = CommandQueue::default();
+        rebuild(
+            &mut Commands::new(&mut queue, app.world()),
+            root,
+            &state,
+            &graph,
+        );
+        queue.apply(app.world_mut());
+
+        let table = descendants(app.world(), root)
+            .into_iter()
+            .find(|entity| app.world().entity(*entity).contains::<ControlPanelScroll>())
+            .expect("a wired block builds a scrolling table");
+        assert!(
+            app.world().entity(table).get::<ScrollPosition>().is_some(),
+            "the table carries a scroll position"
+        );
+        assert!(
+            descendants(app.world(), table)
+                .into_iter()
+                .any(|entity| app.world().entity(entity).contains::<DriveCell>()),
+            "the joint's cells must sit inside the table, so they scroll with it"
+        );
     }
 }
