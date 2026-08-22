@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/bevy_mosaic",
     "crates/mechanic-core",
     "crates/mechanic-gpu",
     "crates/mechanic-bench",
@@ -24,6 +25,18 @@ naga = { version = "29.0", features = ["wgsl-in"] }
 serde = { version = "1.0", features = ["derive"] }
 ron = "0.12"
 
+# Mosaic, the GUI framework the editor UI is moving onto. Pinned to a release
+# tag; the `[patch]` below points every one of these at the local checkout
+# while the embedding API (`WgpuRenderer::from_device` / `encode_into`) is
+# still unreleased. Drop the patch once a release carries it.
+mosaic-core = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", tag = "v0.28.0" }
+mosaic-layout = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", tag = "v0.28.0" }
+mosaic-macros = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", tag = "v0.28.0" }
+mosaic-render = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", tag = "v0.28.0" }
+mosaic-render-wgpu = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", tag = "v0.28.0" }
+mosaic-text = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", tag = "v0.28.0" }
+mosaic-widgets = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", tag = "v0.28.0" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
@@ -43,3 +56,16 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Local development against the mosaic working tree. Machine-specific by
+# nature: it is what lets a change land in mosaic and be used here in the same
+# breath. Remove it — and move the tag above — once mosaic releases the
+# embedding API.
+[patch."ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git"]
+mosaic-core = { path = "/Users/jens/repos/mosaic/mosaic/crates/mosaic-core" }
+mosaic-layout = { path = "/Users/jens/repos/mosaic/mosaic/crates/mosaic-layout" }
+mosaic-macros = { path = "/Users/jens/repos/mosaic/mosaic/crates/mosaic-macros" }
+mosaic-render = { path = "/Users/jens/repos/mosaic/mosaic/crates/mosaic-render" }
+mosaic-render-wgpu = { path = "/Users/jens/repos/mosaic/mosaic/crates/mosaic-render-wgpu" }
+mosaic-text = { path = "/Users/jens/repos/mosaic/mosaic/crates/mosaic-text" }
+mosaic-widgets = { path = "/Users/jens/repos/mosaic/mosaic/crates/mosaic-widgets" }

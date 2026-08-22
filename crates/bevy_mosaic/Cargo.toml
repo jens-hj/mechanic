@@ -1,0 +1,32 @@
+[package]
+name = "bevy_mosaic"
+description = "Run the Mosaic GUI framework inside a Bevy app."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy = { workspace = true, features = [
+    "bevy_core_pipeline",
+    "bevy_log",
+    "bevy_render",
+    "bevy_window",
+    "keyboard",
+    "mouse",
+    "std",
+] }
+mosaic-core.workspace = true
+mosaic-layout.workspace = true
+mosaic-macros.workspace = true
+mosaic-render.workspace = true
+mosaic-render-wgpu.workspace = true
+mosaic-text.workspace = true
+mosaic-widgets.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+bevy = { workspace = true, features = ["bevy_pbr", "bevy_winit", "default_app", "multi_threaded", "wayland", "x11"] }
+
+[lints]
+workspace = true
