@@ -18,9 +18,9 @@ use crate::{
     BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
     ConstructionGraph, ControllerSpec, CuboidSpec, CylinderDimensionError, CylinderDimensions,
     CylinderSpec, DimensionError, DriveDwell, DriveKey, DriveLimits, DriveLimitsError,
-    DriveLinkSpec, DriveProgram, DriveProgramError, DriveRelease, DriveState, DriveTarget,
-    DriveTrigger, FaceKind, FaceOwner, FaceRef, GraphError, GridDimension, GridRotation, PartId,
-    PartSpec, RigidLinkSpec, WeldSpec,
+    DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
+    DriveTarget, DriveTrigger, FaceKind, FaceOwner, FaceRef, GraphError, GridDimension,
+    GridRotation, PartId, PartSpec, RigidLinkSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
@@ -271,6 +271,10 @@ pub struct DriveLinkDoc {
     pub limits: DriveLimitsDoc,
     /// Ordered states this bearing moves through.
     pub program: DriveProgramDoc,
+    /// What the panel calls this joint. Absent in files written before joints
+    /// could be named, which read back as unnamed.
+    #[serde(default)]
+    pub name: String,
 }
 
 /// A whole saved creation: everything the editor authors, and nothing it
@@ -370,6 +374,7 @@ impl CreationDocument {
                     reversed: link.reversed,
                     limits: limits_doc(link.limits),
                     program: program_doc(&link.program),
+                    name: link.name.to_string(),
                 })
                 .collect(),
             sockets: sockets
@@ -457,6 +462,7 @@ impl CreationDocument {
                     reversed: link.reversed,
                     limits: resolve_limits(link.limits)?,
                     program: resolve_program(&link.program)?,
+                    name: DriveName::new(&link.name),
                 }))
             })
             .collect::<Result<Vec<_>, CreationError>>()?;
@@ -655,7 +661,7 @@ mod tests {
     use crate::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, DriveDwell, DriveKey,
-        DriveLimits, DriveLinkSpec, DriveProgram, DriveRelease, DriveState, DriveTarget,
+        DriveLimits, DriveLinkSpec, DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget,
         DriveTrigger, FaceKind, FaceRef, GridRotation, RigidLinkSpec, WeldSpec,
     };
 
@@ -773,6 +779,7 @@ mod tests {
                 limits: DriveLimits::new(4.0, f32::INFINITY, Some((-1.0, 1.0)))
                     .expect("the limits are in range"),
                 program,
+                name: DriveName::new("Tipper arm"),
             }))
             .expect("the wire is added");
 
@@ -848,6 +855,7 @@ mod tests {
             .expect("the rebuilt graph keeps its wire");
         assert!(link.limits.max_torque_newton_meters().is_infinite());
         assert_eq!(link.limits.angle_limits(), Some((-1.0, 1.0)));
+        assert_eq!(link.name.as_str(), "Tipper arm");
         assert!(link.reversed);
         assert!(link.program.loops());
         assert_eq!(link.program.len(), 2);

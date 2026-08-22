@@ -5,9 +5,7 @@ use bevy::{
     prelude::*,
 };
 
-use crate::control_panel::ControlPanelState;
-use crate::creation_menu::CreationMenuState;
-use crate::hotbar::HotbarPointerCapture;
+use crate::ui::UiInput;
 
 const MAX_PITCH: f32 = FRAC_PI_2 - 0.08;
 const MIN_PITCH: f32 = -MAX_PITCH;
@@ -64,34 +62,31 @@ impl OrbitCamera {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Bevy system parameters, not a call signature.
 pub(crate) fn update_orbit_camera(
     mut camera: Single<(&mut OrbitCamera, &mut Transform)>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    hotbar_capture: Res<HotbarPointerCapture>,
-    creation_menu: Res<CreationMenuState>,
-    control_panel: Res<ControlPanelState>,
+    overlay: Res<UiInput>,
 ) {
     let (orbit, transform) = &mut *camera;
-    let pointer_blocked = creation_menu.blocks_pointer() || control_panel.blocks_pointer();
+    // One question for the whole overlay: the pointer is either over a panel or
+    // over the machine, and the panels are the only ones who know which.
+    let pointer_blocked = overlay.blocks_pointer();
     let scroll_scale = match scroll.unit {
         MouseScrollUnit::Line => 1.0,
         MouseScrollUnit::Pixel => 0.02,
     };
     orbit.apply_input(
         motion.delta,
-        if hotbar_capture.active() || pointer_blocked {
+        if pointer_blocked {
             0.0
         } else {
             scroll.delta.y * scroll_scale
         },
-        !hotbar_capture.active()
-            && !pointer_blocked
-            && orbit_input_active(&mouse_buttons, &keyboard),
-        !hotbar_capture.active() && !pointer_blocked && pan_input_active(&mouse_buttons, &keyboard),
+        !pointer_blocked && orbit_input_active(&mouse_buttons, &keyboard),
+        !pointer_blocked && pan_input_active(&mouse_buttons, &keyboard),
     );
     **transform = orbit.transform();
 }

@@ -3899,6 +3899,7 @@ mod tests {
                 link,
                 limits: limits(3.0, f32::INFINITY),
                 program: holding(mechanic_core::DriveTarget::Speed(-2.0)),
+                name: mechanic_core::DriveName::EMPTY,
             })
             .unwrap();
         let rows = creation

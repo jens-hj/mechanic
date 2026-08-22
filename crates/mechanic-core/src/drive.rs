@@ -161,6 +161,92 @@ impl fmt::Display for DriveKey {
     }
 }
 
+/// Longest joint name a drive wire can carry, in bytes of UTF-8.
+pub const MAX_DRIVE_NAME_BYTES: usize = 48;
+
+/// Human-readable name for the joint one drive wire drives.
+///
+/// Stored inline rather than as a `String` so [`DriveLinkSpec`] stays `Copy`
+/// along with the rest of the drive model: a wire is a plain value the editor
+/// copies, snapshots for undo, and hands to the compiler without allocating.
+/// Names longer than [`MAX_DRIVE_NAME_BYTES`] are truncated on the nearest
+/// character boundary, so the buffer always holds valid UTF-8.
+///
+/// [`DriveLinkSpec`]: crate::DriveLinkSpec
+#[derive(Clone, Copy)]
+pub struct DriveName {
+    bytes: [u8; MAX_DRIVE_NAME_BYTES],
+    len: u8,
+}
+
+impl DriveName {
+    /// The empty name, which the panel displays as `Joint {n}`.
+    pub const EMPTY: Self = Self {
+        bytes: [0; MAX_DRIVE_NAME_BYTES],
+        len: 0,
+    };
+
+    /// Creates a name, truncating on a character boundary if it does not fit.
+    pub fn new(name: &str) -> Self {
+        let mut end = name.len().min(MAX_DRIVE_NAME_BYTES);
+        while end > 0 && !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bytes = [0; MAX_DRIVE_NAME_BYTES];
+        bytes[..end].copy_from_slice(&name.as_bytes()[..end]);
+        Self {
+            bytes,
+            // `end` is capped at MAX_DRIVE_NAME_BYTES, which fits in a `u8`.
+            #[allow(clippy::cast_possible_truncation)]
+            len: end as u8,
+        }
+    }
+
+    /// The name as text.
+    pub fn as_str(&self) -> &str {
+        // The only writer is `new`, which copies a truncated `&str`.
+        core::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+
+    /// Whether no name has been given, so a caller should fall back to the
+    /// joint's number.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Default for DriveName {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl PartialEq for DriveName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for DriveName {}
+
+impl fmt::Debug for DriveName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), formatter)
+    }
+}
+
+impl fmt::Display for DriveName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<&str> for DriveName {
+    fn from(name: &str) -> Self {
+        Self::new(name)
+    }
+}
+
 /// What a triggered state does when its key is released.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DriveRelease {
@@ -863,5 +949,40 @@ mod tests {
             limited.with_max_torque(-1.0),
             Err(DriveLimitsError::NonPositiveTorque)
         );
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::{DriveName, MAX_DRIVE_NAME_BYTES};
+
+    #[test]
+    fn an_unnamed_joint_reads_as_empty() {
+        assert!(DriveName::EMPTY.is_empty());
+        assert_eq!(DriveName::EMPTY.as_str(), "");
+        assert_eq!(DriveName::default(), DriveName::new(""));
+    }
+
+    #[test]
+    fn a_name_reads_back_exactly_as_it_was_written() {
+        let name = DriveName::new("Steer · front left");
+        assert_eq!(name.as_str(), "Steer · front left");
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn an_overlong_name_is_cut_on_a_character_boundary() {
+        // Every character is two bytes, so the cut lands mid-character unless
+        // the boundary is respected — the case that would corrupt the buffer.
+        let long = "é".repeat(MAX_DRIVE_NAME_BYTES);
+        let name = DriveName::new(&long);
+        assert_eq!(name.as_str().chars().count(), MAX_DRIVE_NAME_BYTES / 2);
+        assert!(name.as_str().chars().all(|character| character == 'é'));
+    }
+
+    #[test]
+    fn a_name_that_exactly_fills_the_buffer_keeps_every_byte() {
+        let full = "j".repeat(MAX_DRIVE_NAME_BYTES);
+        assert_eq!(DriveName::new(&full).as_str(), full);
     }
 }

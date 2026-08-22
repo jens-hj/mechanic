@@ -319,7 +319,6 @@ function_keys! {
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::{InputState, LINE_HEIGHT_PX, key_from, pointer_button_from, wheel_delta};
-    use std::rc::Rc;
     use bevy::input::ButtonState;
     use bevy::input::keyboard::{Key as BevyKey, KeyCode, KeyboardInput};
     use bevy::input::mouse::{MouseButton, MouseScrollUnit, MouseWheel};
@@ -331,6 +330,7 @@ mod tests {
     use mosaic_text::FontContext;
     use mosaic_widgets::Ui;
     use mosaic_widgets::input::{Key, PointerButton, PointerEventKind};
+    use std::rc::Rc;
 
     /// A tree filling the viewport, counting the pointer events that reach it.
     ///

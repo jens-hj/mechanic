@@ -19,9 +19,10 @@ pub use creation::{
     WeldDoc,
 };
 pub use drive::{
-    DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveProgram, DriveProgramError,
-    DriveRelease, DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_DWELL_SECONDS,
-    MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
+    DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveName, DriveProgram,
+    DriveProgramError, DriveRelease, DriveState, DriveTarget, DriveTrigger,
+    MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S,
+    MAX_DRIVE_STATES,
 };
 pub use geometry::{
     Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ControllerSpec, CuboidSpec,

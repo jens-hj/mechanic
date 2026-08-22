@@ -144,10 +144,10 @@ pub mod ui {
         FieldUniform, FilterChain, FilterLength, FilterScale, GaussianPlan, GeometrySpec,
         GradientSpec, GradientStop, InterpSpace, KindSpec, LayerSpec, LightKindSpec, LightPosition,
         LightRecordBase, LightSpec, LightSpill, LightTargets, LineCap, LineJoin, MarkerEnd,
-        MarkerShape, MarkerSpec, MaskComposite, MaskMode, MeshSpec, PaintSpec, PlannedFilter,
-        PointLight, PointSpec, Radius, Reach, Refraction, ShadowSpec, SpotLight, StopSpec,
-        StrokeEdges, StrokeSpec, SurfaceProfile, Theme, ThemedColor, ThemedF32, ThemedVec2,
-        even_stops, plan_gaussian,
+        MarkerShape, MarkerSpec, MaskComposite, MaskMode, MeshSpec, PaintCmd, PaintSpec,
+        PlannedFilter, PointLight, PointSpec, Radius, Reach, Refraction, Scene, ShadowSpec, Shape,
+        SpotLight, StopSpec, StrokeEdges, StrokeSpec, SurfaceProfile, Theme, ThemedColor,
+        ThemedF32, ThemedVec2, even_stops, plan_gaussian,
     };
     pub use mosaic_text::{
         FontFamily, FontStretch, FontStyle, IntoLineHeight, LineHeight, TextStyle, TextTransform,

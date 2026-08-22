@@ -6,13 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# No `bevy_ui_render` or `default_font`: every panel is drawn by Mosaic, and
+# `bevy_ui` draws after the overlay's render pass, so anything left on it would
+# sit on top of the panels rather than behind them.
 bevy = { workspace = true, features = [
     "bevy_gizmos_render",
     "bevy_pbr",
-    "bevy_ui_render",
     "bevy_winit",
     "default_app",
-    "default_font",
     "keyboard",
     "mouse",
     "multi_threaded",
@@ -20,8 +21,14 @@ bevy = { workspace = true, features = [
     "wayland",
     "x11",
 ] }
+bevy_mosaic = { path = "../bevy_mosaic" }
 mechanic-core = { path = "../mechanic-core" }
 mechanic-gpu = { path = "../mechanic-gpu" }
+# The control block's UI is written in Mosaic's `view!`, and the macro resolves
+# its paths through this crate's manifest rather than `bevy_mosaic`'s.
+mosaic-core.workspace = true
+mosaic-macros.workspace = true
+mosaic-widgets.workspace = true
 ron.workspace = true
 thiserror.workspace = true
 

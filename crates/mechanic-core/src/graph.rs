@@ -5,8 +5,8 @@ use thiserror::Error;
 
 use crate::{
     ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, BearingId, ControllerSpec, CuboidSpec,
-    CylinderSpec, DriveLimits, DriveLinkId, DriveProgram, DriveTarget, FaceKind, FaceOwner,
-    FaceRef, PartId, PartSpec, RigidLinkId, WeldId,
+    CylinderSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget, FaceKind,
+    FaceOwner, FaceRef, PartId, PartSpec, RigidLinkId, WeldId,
     geometry::{FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face},
     id::Arena,
 };
@@ -138,6 +138,9 @@ pub struct DriveLinkSpec {
     pub limits: DriveLimits,
     /// Ordered states this bearing moves through.
     pub program: DriveProgram,
+    /// What the panel calls the joint this wire drives. Empty means the panel
+    /// falls back to the joint's number.
+    pub name: DriveName,
 }
 
 impl DriveLinkSpec {
@@ -150,6 +153,7 @@ impl DriveLinkSpec {
             reversed: false,
             limits: DriveLimits::default(),
             program: DriveProgram::default(),
+            name: DriveName::EMPTY,
         }
     }
 
@@ -255,6 +259,8 @@ pub enum BuildCommand {
         limits: DriveLimits,
         /// Replacement state program.
         program: DriveProgram,
+        /// Replacement joint name.
+        name: DriveName,
     },
     /// Record a non-mutating first endpoint for a two-step tool.
     BeginPending(PendingOperation),
@@ -628,6 +634,7 @@ impl ConstructionGraph {
                 link,
                 limits,
                 program,
+                name,
             } => {
                 let spec = self
                     .drive_links
@@ -635,6 +642,7 @@ impl ConstructionGraph {
                     .ok_or(GraphError::MissingDriveLink(link))?;
                 spec.limits = limits;
                 spec.program = program;
+                spec.name = name;
                 Ok(BuildOutcome::DriveUpdated)
             }
             BuildCommand::BeginPending(pending) => {
@@ -1056,8 +1064,8 @@ mod tests {
     };
     use crate::{
         BearingId, BuildPose, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveLimits, DriveProgram, DriveState, DriveTarget, FaceKind, FaceRef, GridRotation,
-        PartId, PartSpec,
+        DriveLimits, DriveName, DriveProgram, DriveState, DriveTarget, FaceKind, FaceRef,
+        GridRotation, PartId, PartSpec,
     };
 
     fn cube_at(x: i32) -> CuboidSpec {
@@ -1481,12 +1489,14 @@ mod tests {
                 link,
                 limits,
                 program,
+                name: DriveName::new("Steer · front left"),
             }),
             Ok(BuildOutcome::DriveUpdated)
         );
         let stored = graph.drive_link(link).copied().unwrap();
         assert_eq!(stored.limits, limits);
         assert_eq!(stored.program, program);
+        assert_eq!(stored.name.as_str(), "Steer · front left");
 
         // A control block owns its wires, and reprogramming one leaves the
         // block itself untouched.

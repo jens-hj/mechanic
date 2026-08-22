@@ -12,7 +12,7 @@ pub(crate) const WELD_COUNT: usize = 14_704;
 pub(crate) const BEARING_COUNT: usize = 3_712;
 pub(crate) const COMPOUND_COUNT: usize = 5_297;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum CreationPreset {
     PendulumGarden256,
     MobileWorkshop1024,

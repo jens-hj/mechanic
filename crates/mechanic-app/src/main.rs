@@ -16,6 +16,7 @@ mod creation_store;
 mod hotbar;
 mod sequencer;
 mod showcase;
+mod ui;
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -28,8 +29,6 @@ use bevy::{
         render_resource::PrimitiveTopology,
         renderer::{RenderDevice, RenderQueue},
     },
-    text::FontWeight,
-    ui::{UiTransform, Val2},
 };
 use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
@@ -47,7 +46,7 @@ use camera::OrbitCamera;
 use control_panel::ControlPanelState;
 use creation_menu::{CreationMenuState, CreationRequest};
 use creation_store::CreationStore;
-use hotbar::{HotbarPointerCapture, SelectedTool, Tool, shortcut_tool};
+use hotbar::{SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
     BearingDimensions, BearingId, BearingSocket, BuildCommand, CYLINDER_SWEEP_STEP_DEGREES,
     CompiledCreation, ConstructionGraph, CreationDocument, CuboidSpec, CylinderDimensions,
@@ -61,15 +60,6 @@ use mechanic_gpu::{
 };
 use sequencer::{DriveKeyState, DriveSequencer, gpu_drive_rows};
 
-/// Point size of a floating joint number.
-const JOINT_NUMBER_FONT_SIZE: f32 = 16.0;
-/// Diameter of the chip a joint number sits on.
-const JOINT_NUMBER_CHIP_SIZE: f32 = 26.0;
-/// Chip fill. A joint number lands on top of orange rings, blue blocks, and the
-/// sky alike, so it carries its own dark background rather than relying on
-/// whatever is behind it. White on this reads at about 20:1.
-const JOINT_NUMBER_BACKGROUND: Color = Color::srgba(0.02, 0.03, 0.045, 0.96);
-
 const SIMULATION_VISUAL_TICK_INTERVAL: u32 = 2;
 const HAMMER_CHARGE_SECONDS: f32 = 1.5;
 const HAMMER_MIN_IMPULSE: f32 = 25.0;
@@ -80,15 +70,7 @@ const HISTORY_CAPACITY: usize = 64;
 const BEARING_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_LENGTH_STEP: f32 = 0.25;
-const HELP_TEXT_COLOR: Color = Color::srgb(0.88, 0.92, 0.96);
-const HELP_MUTED_COLOR: Color = Color::srgb(0.58, 0.66, 0.73);
-const HELP_BLUE_COLOR: Color = Color::srgb(0.30, 0.78, 1.0);
-const HELP_TEAL_COLOR: Color = Color::srgb(0.24, 0.92, 0.82);
 const CONTROLLER_SURFACE_COLOR: Color = Color::srgb(0.10, 0.78, 0.68);
-const HELP_GREEN_COLOR: Color = Color::srgb(0.35, 0.93, 0.60);
-const HELP_YELLOW_COLOR: Color = Color::srgb(1.0, 0.76, 0.28);
-const HELP_RED_COLOR: Color = Color::srgb(1.0, 0.40, 0.36);
-const HELP_ORANGE_COLOR: Color = Color::srgb(1.0, 0.65, 0.20);
 
 #[derive(Resource, Default)]
 struct EditorGraph(ConstructionGraph);
@@ -262,12 +244,11 @@ fn handle_simulation_shortcut(
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
     mut hammer: ResMut<HammerInteraction>,
-    menu: Res<CreationMenuState>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
-    panel: Res<ControlPanelState>,
+    overlay: Res<ui::UiInput>,
 ) {
-    if panel.blocks_keyboard() || menu.blocks_keyboard() {
+    if overlay.blocks_keyboard() {
         return;
     }
     if keyboard.just_pressed(KeyCode::Escape) && simulation.is_running() {
@@ -392,7 +373,6 @@ fn handle_creation_menu_shortcut(
     panel: Res<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
 ) {
-    menu.begin_frame();
     if menu.is_open() || panel.blocks_keyboard() {
         return;
     }
@@ -425,11 +405,11 @@ fn handle_creation_menu_shortcut(
 fn handle_control_panel_shortcut(
     keyboard: Res<ButtonInput<KeyCode>>,
     menu: Res<CreationMenuState>,
+    overlay: Res<ui::UiInput>,
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut panel: ResMut<ControlPanelState>,
 ) {
-    panel.begin_frame();
     if menu.is_open() {
         return;
     }
@@ -437,7 +417,7 @@ fn handle_control_panel_shortcut(
         // Escape backs out of a value being typed or a key being bound before
         // it closes the panel; the panel itself handles those, seeing the same
         // press later in the frame.
-        if keyboard.just_pressed(KeyCode::Escape) && !panel.escape_is_consumed() {
+        if keyboard.just_pressed(KeyCode::Escape) && !overlay.escape_is_consumed() {
             panel.close();
             state.feedback = Some("Control block panel closed".to_owned());
         }
@@ -468,8 +448,7 @@ fn handle_control_panel_shortcut(
 fn run_drive_sequencer(
     keyboard: Res<ButtonInput<KeyCode>>,
     graph: Res<EditorGraph>,
-    panel: Res<ControlPanelState>,
-    menu: Res<CreationMenuState>,
+    overlay: Res<ui::UiInput>,
     simulation: Res<AppSimulation>,
     mut sequencer: ResMut<DriveSequencer>,
     mut state: ResMut<EditorState>,
@@ -490,8 +469,7 @@ fn run_drive_sequencer(
     if simulation.is_paused() {
         return;
     }
-    let keys =
-        DriveKeyState::from_keyboard(&keyboard, panel.blocks_keyboard() || menu.blocks_keyboard());
+    let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
     if sequencer.step(&graph.0, &keys, simulation.next_tick) {
         state.drive_rows_dirty = true;
     }
@@ -1013,30 +991,6 @@ struct WireDragVisual;
 #[derive(Component)]
 struct WireHoverVisual;
 
-/// A floating number over one driven joint, matching the row number its control
-/// block's panel gives it.
-#[derive(Component)]
-struct JointNumberLabel;
-
-/// The numeral inside a [`JointNumberLabel`] chip.
-#[derive(Component)]
-struct JointNumberText;
-
-#[derive(Component)]
-struct HelpText;
-
-#[derive(Clone, Copy, Component)]
-enum HelpLine {
-    Title,
-    PrimaryControls,
-    EditControls,
-    PointerControls,
-    Tool,
-    Counts,
-    Hint,
-    Status,
-}
-
 const BEARING_RENDER_DEPTH_BIAS: f32 = 2.0;
 const BEARING_RENDER_RADIAL_SKIN: f32 = 0.001;
 
@@ -1060,6 +1014,9 @@ fn main() {
             }),
             ..default()
         }))
+        // After DefaultPlugins: the overlay's render pass installs into the
+        // render sub-app, which does not exist until RenderPlugin has run.
+        .add_plugins(bevy_mosaic::MosaicPlugin)
         .init_resource::<EditorGraph>()
         .init_resource::<EditorState>()
         .init_resource::<EditorHistory>()
@@ -1073,27 +1030,27 @@ fn main() {
         .init_resource::<DriveSequencer>()
         .init_resource::<CylinderToolSettings>()
         .init_resource::<SelectedTool>()
-        .init_resource::<HotbarPointerCapture>()
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.75, 0.80, 0.90),
             brightness: 350.0,
             ..default()
         })
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, ui::mount).chain())
         .add_systems(
             Update,
             (
                 (
                     handle_creation_menu_shortcut,
                     handle_control_panel_shortcut,
-                    control_panel::update,
-                    toggle_help_text,
+                    ui::drain,
+                    ui::push,
+                    ui::push_help,
+                    ui::push_markers,
+                    ui::sync_input,
                     handle_history_shortcut,
-                    creation_menu::update,
                     handle_creation_request,
                 )
                     .chain(),
-                hotbar::update,
                 camera::update_orbit_camera,
                 handle_simulation_shortcut,
                 handle_shortcuts,
@@ -1107,14 +1064,12 @@ fn main() {
                 handle_build_actions,
                 handle_hammer_actions,
                 update_joint_xray,
-                update_joint_numbers,
                 sync_visual_meshes,
                 update_wire_drag_preview,
                 update_wire_hover_preview,
                 run_drive_sequencer,
                 advance_simulation,
                 update_previews,
-                update_help_text,
             )
                 .chain(),
         )
@@ -1350,6 +1305,10 @@ fn setup(
             camera.spawn((
                 Name::new("Joint x-ray camera"),
                 Camera3d::default(),
+                // The overlay rides the camera that draws last. This pass loads
+                // rather than clears, so an overlay painted before it is drawn
+                // over by the joints showing through.
+                bevy_mosaic::MosaicCamera,
                 Camera {
                     order: 1,
                     clear_color: ClearColorConfig::None,
@@ -1360,91 +1319,12 @@ fn setup(
                 Transform::default(),
             ));
         });
-
-    commands
-        .spawn((
-            Name::new("Help and status panel"),
-            HelpText,
-            Node {
-                position_type: PositionType::Absolute,
-                top: px(16),
-                left: px(16),
-                width: px(720),
-                max_width: percent(94),
-                padding: UiRect::all(px(16)),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(7),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(10)),
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.015, 0.022, 0.032, 0.94)),
-            BorderColor::all(Color::srgba(0.24, 0.38, 0.48, 0.92)),
-            GlobalZIndex(20),
-            Visibility::Hidden,
-        ))
-        .with_children(|panel| {
-            for line in [
-                HelpLine::Title,
-                HelpLine::PrimaryControls,
-                HelpLine::EditControls,
-                HelpLine::PointerControls,
-                HelpLine::Tool,
-                HelpLine::Counts,
-                HelpLine::Hint,
-                HelpLine::Status,
-            ] {
-                let (font_size, color, margin) = match line {
-                    HelpLine::Title => (21.0, HELP_BLUE_COLOR, UiRect::bottom(px(3))),
-                    HelpLine::PrimaryControls => (15.0, HELP_TEXT_COLOR, UiRect::ZERO),
-                    HelpLine::EditControls | HelpLine::PointerControls => {
-                        (14.0, HELP_MUTED_COLOR, UiRect::ZERO)
-                    }
-                    HelpLine::Tool => (17.0, HELP_BLUE_COLOR, UiRect::top(px(6))),
-                    HelpLine::Counts => (14.0, HELP_MUTED_COLOR, UiRect::ZERO),
-                    HelpLine::Hint => (15.0, HELP_TEXT_COLOR, UiRect::top(px(4))),
-                    HelpLine::Status => (14.0, HELP_GREEN_COLOR, UiRect::ZERO),
-                };
-                panel.spawn((
-                    line,
-                    Text::new(""),
-                    TextFont {
-                        font_size: FontSize::Px(font_size),
-                        ..default()
-                    },
-                    TextColor(color),
-                    Node {
-                        width: percent(100),
-                        margin,
-                        ..default()
-                    },
-                ));
-            }
-        });
-    hotbar::spawn(&mut commands);
-    creation_menu::spawn(&mut commands);
-    control_panel::spawn(&mut commands);
 }
 
 fn help_toggle_requested(keyboard: &ButtonInput<Key>) -> bool {
     keyboard
         .get_just_pressed()
         .any(|key| matches!(key, Key::Character(character) if character == "?"))
-}
-
-fn toggle_help_text(
-    keyboard: Res<ButtonInput<Key>>,
-    panel: Res<ControlPanelState>,
-    menu: Res<CreationMenuState>,
-    mut visibility: Single<&mut Visibility, With<HelpText>>,
-) {
-    if panel.blocks_keyboard() || menu.blocks_keyboard() || !help_toggle_requested(&keyboard) {
-        return;
-    }
-    **visibility = match **visibility {
-        Visibility::Hidden => Visibility::Visible,
-        _ => Visibility::Hidden,
-    };
 }
 
 fn requested_history_action(keyboard: &ButtonInput<KeyCode>) -> Option<HistoryAction> {
@@ -1472,10 +1352,9 @@ fn handle_history_shortcut(
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
     simulation: Res<AppSimulation>,
-    panel: Res<ControlPanelState>,
-    menu: Res<CreationMenuState>,
+    overlay: Res<ui::UiInput>,
 ) {
-    if panel.blocks_keyboard() || menu.blocks_keyboard() {
+    if overlay.blocks_keyboard() {
         return;
     }
     let Some(action) = requested_history_action(&keyboard) else {
@@ -1550,10 +1429,9 @@ fn handle_shortcuts(
     mut state: ResMut<EditorState>,
     mut selection: ResMut<SelectedTool>,
     simulation: Res<AppSimulation>,
-    menu: Res<CreationMenuState>,
-    panel: Res<ControlPanelState>,
+    overlay: Res<ui::UiInput>,
 ) {
-    if menu.blocks_pointer() || panel.blocks_keyboard() {
+    if overlay.blocks_keyboard() {
         return;
     }
     for key in [
@@ -1671,7 +1549,7 @@ fn handle_bearing_dimension_shortcuts(
         &keyboard,
         selection.0,
         simulation.is_running(),
-        menu.blocks_pointer(),
+        menu.blocks_keyboard(),
     ) else {
         return;
     };
@@ -1800,7 +1678,7 @@ fn handle_cylinder_dimension_shortcuts(
         &keyboard,
         selection.0,
         simulation.is_running(),
-        menu.blocks_pointer(),
+        menu.blocks_keyboard(),
     ) else {
         return;
     };
@@ -1847,10 +1725,9 @@ fn update_hover(
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
-    hotbar_capture: Res<HotbarPointerCapture>,
-    panel: Res<ControlPanelState>,
+    overlay: Res<ui::UiInput>,
 ) {
-    if simulation.is_running() || panel.blocks_pointer() {
+    if simulation.is_running() || overlay.blocks_pointer() {
         clear_hover(&mut state);
         return;
     }
@@ -1870,7 +1747,7 @@ fn update_hover(
         );
         return;
     }
-    if hotbar_capture.active() {
+    if overlay.blocks_pointer() {
         clear_hover(&mut state);
         return;
     }
@@ -2288,13 +2165,12 @@ fn handle_build_actions(
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
-    hotbar_capture: Res<HotbarPointerCapture>,
-    panel: Res<ControlPanelState>,
+    overlay: Res<ui::UiInput>,
 ) {
-    if simulation.is_running() || panel.blocks_pointer() {
+    if simulation.is_running() || overlay.blocks_pointer() {
         return;
     }
-    if hotbar_capture.active() {
+    if overlay.blocks_pointer() {
         if mouse.just_released(MouseButton::Left) && state.block_drag.take().is_some() {
             clear_hover(&mut state);
             state.feedback = Some("Block drag cancelled over hotbar".to_owned());
@@ -3250,22 +3126,21 @@ fn handle_hammer_actions(
     mut hammer: ResMut<HammerInteraction>,
     mut state: ResMut<EditorState>,
     selection: Res<SelectedTool>,
-    hotbar_capture: Res<HotbarPointerCapture>,
-    panel: Res<ControlPanelState>,
+    overlay: Res<ui::UiInput>,
 ) {
     if !simulation.is_running() {
         hammer.charging = None;
         hammer.pending = None;
         return;
     }
-    if simulation.is_paused() || panel.blocks_pointer() {
+    if simulation.is_paused() || overlay.blocks_pointer() {
         hammer.charging = None;
         hammer.pending = None;
         return;
     }
     if !selection.0.works_in_mode(true) {
         hammer.charging = None;
-        if mouse.just_pressed(MouseButton::Left) && !hotbar_capture.active() {
+        if mouse.just_pressed(MouseButton::Left) && !overlay.blocks_pointer() {
             state.feedback = Some(format!(
                 "{} is available in build mode — press Escape first",
                 selection.0.label()
@@ -3273,7 +3148,7 @@ fn handle_hammer_actions(
         }
         return;
     }
-    if hotbar_capture.active() && hammer.charging.is_none() {
+    if overlay.blocks_pointer() && hammer.charging.is_none() {
         return;
     }
     if camera::camera_input_active(&mouse, &keyboard) {
@@ -3866,120 +3741,6 @@ fn joint_number_labels(
     labels
 }
 
-/// Keeps one floating number over each driven joint.
-///
-/// The labels are UI text projected from world space rather than meshes, so
-/// they stay upright and legible at any camera angle. They appear exactly when
-/// the drive overlay does, so the wires that show which block owns a joint are
-/// on screen alongside the number that names it.
-#[allow(clippy::type_complexity)]
-fn update_joint_numbers(
-    mut commands: Commands,
-    graph: Res<EditorGraph>,
-    simulation: Res<AppSimulation>,
-    selection: Res<SelectedTool>,
-    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
-    mut labels: Query<(Entity, &mut Node, &mut Visibility, &Children), With<JointNumberLabel>>,
-    mut numerals: Query<&mut Text, With<JointNumberText>>,
-) {
-    let visible = drive_xray_is_visible(selection.0, driven_bearing_count(&graph.0));
-    let wanted = if visible {
-        match (simulation.creation.as_ref(), simulation.is_running()) {
-            (Some(creation), true) => joint_number_labels(&graph.0, |bearing| {
-                simulation_bearing_pose(&graph.0, creation, &simulation.transforms, bearing)
-                    .map(|(anchor, _)| anchor)
-            }),
-            _ => joint_number_labels(&graph.0, |bearing| Some(bearing.shared_anchor)),
-        }
-    } else {
-        Vec::new()
-    };
-
-    let (camera, camera_transform) = *camera;
-    let mut existing = labels.iter_mut().collect::<Vec<_>>();
-    for (slot, (number, anchor)) in wanted.iter().enumerate() {
-        let screen = camera.world_to_viewport(camera_transform, *anchor).ok();
-        match existing.get_mut(slot) {
-            Some((_, node, visibility, children)) => {
-                if let Some(screen) = screen {
-                    // The chip is centred on the joint by its own transform, so
-                    // this is the projected point itself, not a corner.
-                    node.left = px(screen.x);
-                    node.top = px(screen.y);
-                    **visibility = Visibility::Visible;
-                } else {
-                    // Behind the camera or off the near plane: hide it rather
-                    // than pin a stale number to the edge of the screen.
-                    **visibility = Visibility::Hidden;
-                }
-                let label = number.to_string();
-                if let Some(mut text) = children
-                    .first()
-                    .and_then(|child| numerals.get_mut(*child).ok())
-                    && text.0 != label
-                {
-                    text.0 = label;
-                }
-            }
-            None => spawn_joint_number(&mut commands, *number, screen),
-        }
-    }
-    // More joints than labels means the extras were just spawned and there is
-    // nothing surplus to clear, so the split point is clamped to what exists.
-    let surplus = wanted.len().min(existing.len());
-    for (entity, _, _, _) in existing.drain(surplus..) {
-        // Joints are removed far less often than the camera moves, so surplus
-        // labels are despawned rather than pooled forever.
-        commands.entity(entity).despawn();
-    }
-}
-
-fn spawn_joint_number(commands: &mut Commands, number: usize, screen: Option<Vec2>) {
-    commands.spawn((
-        Name::new("Joint number"),
-        JointNumberLabel,
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(screen.map_or(0.0, |screen| screen.x)),
-            top: px(screen.map_or(0.0, |screen| screen.y)),
-            min_width: px(JOINT_NUMBER_CHIP_SIZE),
-            height: px(JOINT_NUMBER_CHIP_SIZE),
-            padding: UiRect::horizontal(px(6)),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            border: UiRect::all(px(2)),
-            border_radius: BorderRadius::all(px(JOINT_NUMBER_CHIP_SIZE * 0.5)),
-            ..default()
-        },
-        BackgroundColor(JOINT_NUMBER_BACKGROUND),
-        // Teal is what marks a joint as driven everywhere else in the overlay,
-        // and a joint number is a control-block idea, so the ring matches.
-        BorderColor::all(CONTROLLER_SURFACE_COLOR),
-        // Percent translation resolves against the chip's own size, so a
-        // two-digit number stays centred on its joint just as a one-digit does.
-        UiTransform {
-            translation: Val2::all(percent(-50)),
-            ..UiTransform::IDENTITY
-        },
-        GlobalZIndex(50),
-        if screen.is_some() {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        },
-        children![(
-            JointNumberText,
-            Text::new(number.to_string()),
-            TextFont {
-                font_size: FontSize::Px(JOINT_NUMBER_FONT_SIZE),
-                weight: FontWeight::BOLD,
-                ..default()
-            },
-            TextColor(Color::WHITE),
-        )],
-    ));
-}
-
 fn driven_bearing_count(graph: &ConstructionGraph) -> usize {
     graph
         .drive_links()
@@ -4396,211 +4157,6 @@ fn show_cylinder_preview(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 // Tool-specific guidance is kept together with its HUD layout.
-fn update_help_text(
-    graph: Res<EditorGraph>,
-    state: Res<EditorState>,
-    simulation: Res<AppSimulation>,
-    hammer: Res<HammerInteraction>,
-    selection: Res<SelectedTool>,
-    bearing_settings: Res<BearingToolSettings>,
-    cylinder_settings: Res<CylinderToolSettings>,
-    mut lines: Query<(&HelpLine, &mut Text, &mut TextColor)>,
-) {
-    let active_error = state
-        .delete_drag
-        .as_ref()
-        .and_then(|drag| drag.error.as_ref())
-        .or(state.preview_error.as_ref());
-    let status = if let Some(charge) = hammer.charging {
-        format!(
-            "Hammer charge: {:.0}% — release to strike",
-            charge.elapsed_seconds / HAMMER_CHARGE_SECONDS * 100.0
-        )
-    } else {
-        active_error.map_or_else(
-            || state.feedback.clone().unwrap_or_else(|| "Ready".to_owned()),
-            ToString::to_string,
-        )
-    };
-    let status_color = if hammer.charging.is_some() {
-        HELP_YELLOW_COLOR
-    } else if active_error.is_some()
-        || ["Cannot", "Could not", "Simulation stopped"]
-            .iter()
-            .any(|prefix| status.starts_with(prefix))
-    {
-        HELP_RED_COLOR
-    } else {
-        HELP_GREEN_COLOR
-    };
-    let tool_hint = if simulation.is_paused() {
-        "Simulation paused at the current pose — press Space to resume".to_owned()
-    } else if let Some(drag) = state.delete_drag.as_ref() {
-        format!(
-            "Release to delete {} cuboid(s) on the {} plane",
-            drag.parts.len(),
-            drag.plane.label()
-        )
-    } else {
-        match (
-            simulation.is_running(),
-            selection.0,
-            graph.0.pending(),
-            state.block_drag.as_ref(),
-            state.attachment_bearing,
-        ) {
-            (false, Tool::Block, _, Some(drag), _) => {
-                if matches!(drag.attachment, BlockAttachment::Bearing { .. }) {
-                    format!(
-                        "Green bearing attachment active — release to connect {} block(s)",
-                        drag.specs.len()
-                    )
-                } else {
-                    format!(
-                        "Release to place {} blocks on the {} plane",
-                        drag.specs.len(),
-                        drag.plane.label()
-                    )
-                }
-            }
-            (false, Tool::Block, _, None, Some(_)) => {
-                "Green bearing attachment active — click or drag to connect blocks".to_owned()
-            }
-            (false, Tool::Cylinder, _, _, Some(_)) => {
-                "Green bearing attachment active — click to connect cylinder".to_owned()
-            }
-            (true, Tool::Hammer, _, _, _) => {
-                "Hold left mouse on a moving cuboid; release to strike".to_owned()
-            }
-            (true, _, _, _, _) => {
-                "This tool is build-only — press Escape to return to build mode".to_owned()
-            }
-            (false, Tool::Block, _, _, _) => {
-                "Click for one block or drag to place a welded sheet".to_owned()
-            }
-            (false, Tool::Cylinder, _, _, _) => {
-                "Click a flat face to place; Shift+Down/Up changes the slice angle".to_owned()
-            }
-            (false, Tool::Weld, None, _, _) => "Left click selects the first object".to_owned(),
-            (false, Tool::Weld, Some(_), _, _) => "Left click a touching second object".to_owned(),
-            (false, Tool::Bearing, _, _, _) => {
-                "Left click places a bearing; use Block to attach it".to_owned()
-            }
-            (false, Tool::Hammer, _, _, _) => {
-                "Hammer is available while simulating — press Space to start".to_owned()
-            }
-            (false, Tool::JointXray, _, _, _) => {
-                "All bearings are visible through the construction".to_owned()
-            }
-            (false, Tool::Controller, _, _, _) => {
-                "Left click places a control block; click one to retune it".to_owned()
-            }
-            (false, Tool::Connector, _, _, _) => match state.wire_drag.map(|drag| drag.from) {
-                None => "Drag from a control block to a bearing, or from a bearing to a block"
-                    .to_owned(),
-                Some(WireEnd::Controller(_)) => {
-                    "Release on a bearing to wire it — drop it on the same block to reverse"
-                        .to_owned()
-                }
-                Some(WireEnd::Bearing(_)) => "Release on a control block to wire it".to_owned(),
-            },
-        }
-    };
-    let (mode, title_color, primary_controls) = if simulation.is_paused() {
-        (
-            "PAUSED",
-            HELP_YELLOW_COLOR,
-            "SPACE  Resume     SHIFT+SPACE  Restart     ESC  Build mode     ?  Hide help",
-        )
-    } else if simulation.is_running() {
-        (
-            "SIMULATING",
-            HELP_GREEN_COLOR,
-            "SPACE  Pause     SHIFT+SPACE  Restart     ESC  Build mode     ?  Hide help",
-        )
-    } else {
-        (
-            "BUILDING",
-            HELP_BLUE_COLOR,
-            "SPACE  Start simulation     P  Creations     CTRL/CMD+S  Save     ?  Hide help",
-        )
-    };
-    let title = format!("MECHANIC  •  {mode}");
-    let action_controls = if state.delete_drag.is_some() {
-        "RELEASE RIGHT  Delete     ESC  Cancel"
-    } else {
-        match (
-            simulation.is_running(),
-            selection.0,
-            state.block_drag.is_some(),
-        ) {
-            (false, Tool::Block, true) => "RELEASE  Place     RIGHT / ESC  Cancel",
-            (true, Tool::Hammer, _) if !simulation.is_paused() => "HOLD LEFT  Charge hammer",
-            (true, _, _) => "Construction actions unavailable",
-            (false, Tool::JointXray, _) => "ORBIT / PAN  Inspect     RIGHT DRAG  Delete",
-            (false, _, _) => "LEFT  Action     RIGHT DRAG  Delete",
-        }
-    };
-    let plane_controls = if let Some(drag) = state.block_drag.as_ref() {
-        format!("Q  Cycle plane ({})", drag.plane.label())
-    } else if let Some(drag) = state.delete_drag.as_ref() {
-        format!("Q  Cycle delete plane ({})", drag.plane.label())
-    } else {
-        "Q  Cycle plane while dragging or deleting".to_owned()
-    };
-    let edit_controls = if simulation.is_running() {
-        if simulation.is_paused() {
-            "Current pose is frozen; construction editing remains locked".to_owned()
-        } else {
-            "Physics is live; construction editing remains locked".to_owned()
-        }
-    } else {
-        format!("{plane_controls}     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo")
-    };
-    let pointer_controls =
-        format!("{action_controls}     ALT+LEFT  Orbit     SHIFT+LEFT  Pan     WHEEL  Zoom");
-    let selected_wires = state
-        .selected_controller
-        .filter(|&part| graph.0.is_controller(part))
-        .map(|part| graph.0.controller_links(part).count());
-    let tool = tool_status_line(
-        selection.0,
-        bearing_settings.dimensions,
-        cylinder_settings.dimensions,
-        selected_wires,
-    );
-    let tool_color = match selection.0 {
-        Tool::Bearing => HELP_ORANGE_COLOR,
-        Tool::Hammer => HELP_YELLOW_COLOR,
-        Tool::Weld => HELP_GREEN_COLOR,
-        Tool::Controller | Tool::Connector => HELP_TEAL_COLOR,
-        Tool::Block | Tool::Cylinder | Tool::JointXray => HELP_BLUE_COLOR,
-    };
-    let counts = format!(
-        "{} parts  •  {} welds  •  {} bearings",
-        graph.0.part_count(),
-        graph.0.weld_count(),
-        visible_bearing_count(&graph.0, &state.placed_bearings),
-    );
-    let status = format!("STATUS  •  {status}");
-
-    for (line, mut text, mut color) in &mut lines {
-        let (content, line_color): (&str, Color) = match line {
-            HelpLine::Title => (&title, title_color),
-            HelpLine::PrimaryControls => (primary_controls, HELP_TEXT_COLOR),
-            HelpLine::EditControls => (&edit_controls, HELP_MUTED_COLOR),
-            HelpLine::PointerControls => (&pointer_controls, HELP_MUTED_COLOR),
-            HelpLine::Tool => (&tool, tool_color),
-            HelpLine::Counts => (&counts, HELP_MUTED_COLOR),
-            HelpLine::Hint => (&tool_hint, HELP_TEXT_COLOR),
-            HelpLine::Status => (&status, status_color),
-        };
-        text.0.clear();
-        text.0.push_str(content);
-        color.0 = line_color;
-    }
-}
-
 fn tool_status_line(
     tool: Tool,
     bearing_dimensions: BearingDimensions,
@@ -6500,7 +6056,7 @@ mod rendering_tests {
 mod interaction_tests {
     use bevy::{
         input::keyboard::Key,
-        prelude::{App, ButtonInput, IVec3, KeyCode, MouseButton, Update, Vec3, Visibility},
+        prelude::{App, ButtonInput, IVec3, KeyCode, MouseButton, Update, Vec3},
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
@@ -6512,53 +6068,33 @@ mod interaction_tests {
     use super::{
         AppSimulation, BearingDimensionTarget, BearingToolSettings, BlockAttachment, BlockDrag,
         CylinderDimensionTarget, CylinderToolSettings, EditorGraph, EditorHistory, EditorState,
-        HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HelpText, HistoryAction,
-        HotbarPointerCapture, PlacedBearing, PlacementPlane, SelectedTool, SimulationShortcut,
-        SurfaceHit, Tool, adjusted_bearing_dimensions, adjusted_cylinder_dimensions,
-        apply_history_action, bearing_attachment_candidate, bearing_attachment_is_highlighted,
-        block_sheet_specs, candidate_from_hit, connect_drive_wire, delete_sheet_parts,
-        disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude, hammer_point_travel,
-        handle_block_actions, handle_build_actions, handle_tool_change, help_toggle_requested,
-        raycast_construction, raycast_placed_bearing_discs, raycast_placed_bearings,
-        raycast_simulation, refresh_tool_preview, requested_bearing_dimension_adjustment,
+        HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction,
+        PlacedBearing, PlacementPlane, SelectedTool, SimulationShortcut, SurfaceHit, Tool,
+        adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
+        bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_specs,
+        candidate_from_hit, connect_drive_wire, delete_sheet_parts, disconnect_drive_wires,
+        hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
+        handle_build_actions, handle_tool_change, help_toggle_requested, raycast_construction,
+        raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
+        refresh_tool_preview, requested_bearing_dimension_adjustment,
         requested_cylinder_dimension_adjustment, requested_simulation_shortcut, rigid_body_parts,
-        stage_part_deletion_preserving_bearings, toggle_help_text, tool_status_line,
-        wire_drag_step,
+        stage_part_deletion_preserving_bearings, tool_status_line, wire_drag_step,
     };
     use crate::{WireDrag, WireDragStep, WireEnd};
 
     #[test]
-    fn question_mark_toggles_the_hidden_help_overlay() {
-        let mut app = App::new();
-        app.init_resource::<ButtonInput<Key>>()
-            .init_resource::<crate::control_panel::ControlPanelState>()
-            .init_resource::<crate::creation_menu::CreationMenuState>()
-            .add_systems(Update, toggle_help_text);
-        let help = app.world_mut().spawn((HelpText, Visibility::Hidden)).id();
-        let question_mark = Key::Character("?".into());
+    fn question_mark_is_what_asks_for_the_help_panel() {
+        let mut keyboard = ButtonInput::default();
+        assert!(!help_toggle_requested(&keyboard));
 
-        app.world_mut()
-            .resource_mut::<ButtonInput<Key>>()
-            .press(question_mark.clone());
-        assert!(help_toggle_requested(
-            app.world().resource::<ButtonInput<Key>>()
-        ));
-        app.update();
-        assert_eq!(
-            app.world().entity(help).get::<Visibility>(),
-            Some(&Visibility::Visible)
-        );
+        keyboard.press(Key::Character("?".into()));
+        assert!(help_toggle_requested(&keyboard));
 
-        {
-            let mut keyboard = app.world_mut().resource_mut::<ButtonInput<Key>>();
-            keyboard.release(question_mark.clone());
-            keyboard.clear();
-            keyboard.press(question_mark);
-        }
-        app.update();
-        assert_eq!(
-            app.world().entity(help).get::<Visibility>(),
-            Some(&Visibility::Hidden)
+        keyboard.clear();
+        keyboard.press(Key::Character("a".into()));
+        assert!(
+            !help_toggle_requested(&keyboard),
+            "an ordinary letter is not a request for help",
         );
     }
 
@@ -7206,8 +6742,7 @@ mod interaction_tests {
             .insert_resource(SelectedTool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
             .insert_resource(CylinderToolSettings::default())
-            .insert_resource(HotbarPointerCapture::default())
-            .insert_resource(crate::control_panel::ControlPanelState::default())
+            .insert_resource(crate::ui::UiInput::default())
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -7362,8 +6897,7 @@ mod interaction_tests {
             .insert_resource(SelectedTool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
             .insert_resource(CylinderToolSettings::default())
-            .insert_resource(HotbarPointerCapture::default())
-            .insert_resource(crate::control_panel::ControlPanelState::default())
+            .insert_resource(crate::ui::UiInput::default())
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -7658,45 +7192,12 @@ mod interaction_tests {
         panel.open(controller);
         assert_eq!(panel.controller(), Some(controller));
         assert!(panel.blocks_keyboard(), "typing must not fire shortcuts");
-        assert!(panel.blocks_pointer());
 
         // One row per wired bearing, and none until the block is wired.
         assert!(crate::control_panel::panel_rows(&graph, controller).is_empty());
 
         panel.close();
         assert!(!panel.is_open());
-        // The pointer latch stays set for the closing frame so the click that
-        // closed the panel does not fall through into the world.
-        assert!(panel.blocks_pointer());
-    }
-
-    #[test]
-    fn escape_backs_out_of_an_edit_before_it_closes_the_panel() {
-        let (mut graph, socket, controller) = wired_socket_graph();
-        let mut state = EditorState {
-            hovered_bearing: Some(0),
-            placed_bearings: vec![socket],
-            ..Default::default()
-        };
-        let mut history = EditorHistory::default();
-        connect_drive_wire(&mut graph, &mut state, &mut history, controller, 0);
-        let link = graph.controller_links(controller).next().unwrap().0;
-
-        let mut panel = crate::control_panel::ControlPanelState::default();
-        panel.open(controller);
-        assert!(
-            !panel.escape_is_consumed(),
-            "with nothing being edited, Escape closes the panel"
-        );
-
-        panel.begin_typing(crate::control_panel::DriveCell {
-            link,
-            kind: crate::control_panel::DriveCellKind::Torque,
-        });
-        assert!(
-            panel.escape_is_consumed(),
-            "a half-typed value must cancel before the panel closes"
-        );
     }
 
     #[test]
@@ -7716,6 +7217,7 @@ mod interaction_tests {
             &rows[0],
             mechanic_core::DriveLimits::new(2.0, 30.0, None).unwrap(),
             mechanic_core::DriveProgram::default(),
+            mechanic_core::DriveName::new("Tipper arm"),
         );
         assert_eq!(commands.len(), rows[0].links.len());
         graph.apply_batch(commands).unwrap();
@@ -8127,11 +7629,11 @@ mod joint_number_tests {
     use bevy::prelude::*;
 
     use super::{
-        AppSimulation, EditorGraph, JointNumberLabel, JointNumberText, OrbitCamera, SelectedTool,
-        control_panel, drive_xray_is_visible, driven_bearing_count, joint_number_labels,
-        update_joint_numbers,
+        AppSimulation, EditorGraph, control_panel, drive_xray_is_visible, driven_bearing_count,
+        joint_number_labels,
     };
     use crate::hotbar::Tool;
+    use crate::ui::markers;
 
     fn spawned(outcome: BuildOutcome) -> PartId {
         match outcome {
@@ -8253,153 +7755,47 @@ mod joint_number_tests {
     /// The camera has no viewport, so every projection fails and the labels
     /// stay hidden. That is deliberate: this exercises the spawn and despawn
     /// bookkeeping, which is what breaks, without needing a render target.
-    fn labelling_app(graph: ConstructionGraph) -> App {
-        let mut app = App::new();
-        app.insert_resource(EditorGraph(graph))
-            .init_resource::<AppSimulation>()
-            .init_resource::<SelectedTool>()
-            .add_systems(Update, update_joint_numbers);
-        app.world_mut().resource_mut::<SelectedTool>().0 = Tool::Connector;
-        app.world_mut().spawn((
-            Camera::default(),
-            GlobalTransform::default(),
-            OrbitCamera::default(),
-        ));
-        app
-    }
-
-    fn label_count(app: &mut App) -> usize {
-        app.world_mut()
-            .query_filtered::<Entity, With<JointNumberLabel>>()
-            .iter(app.world())
-            .count()
+    /// What the overlay would number, with the connector in hand.
+    fn numbered(graph: &ConstructionGraph) -> Vec<usize> {
+        markers::wanted(
+            &EditorGraph(graph.clone()),
+            &AppSimulation::default(),
+            Tool::Connector,
+        )
+        .into_iter()
+        .map(|(number, _)| number)
+        .collect()
     }
 
     #[test]
-    fn wiring_the_first_joint_spawns_its_label_without_panicking() {
-        // Regression: the surplus-label sweep split the existing labels at the
-        // wanted count, which is past the end the frame a joint first appears.
+    fn every_driven_joint_is_numbered_once() {
         let (graph, _, _) = two_driven_joints();
-        let mut app = labelling_app(graph);
-
-        app.update();
-
-        assert_eq!(label_count(&mut app), 2, "each joint gets one label");
+        assert_eq!(numbered(&graph), vec![1, 2], "each joint gets one number");
     }
 
     #[test]
-    fn labels_track_joints_appearing_and_disappearing() {
+    fn numbers_track_joints_appearing_and_disappearing() {
         let (graph, _, _) = two_driven_joints();
-        let mut app = labelling_app(ConstructionGraph::new());
-
-        app.update();
-        assert_eq!(label_count(&mut app), 0, "nothing driven, nothing labelled");
-
-        app.world_mut().resource_mut::<EditorGraph>().0 = graph;
-        app.update();
-        assert_eq!(label_count(&mut app), 2);
-
-        // Idling must not accumulate a label per frame.
-        app.update();
-        app.update();
-        assert_eq!(label_count(&mut app), 2, "labels are reused, not stacked");
-
-        app.world_mut().resource_mut::<EditorGraph>().0 = ConstructionGraph::new();
-        app.update();
-        assert_eq!(label_count(&mut app), 0, "removing the joints clears them");
-    }
-
-    fn numerals(app: &mut App) -> Vec<String> {
-        let mut shown = app
-            .world_mut()
-            .query_filtered::<&Text, With<JointNumberText>>()
-            .iter(app.world())
-            .map(|text| text.0.clone())
-            .collect::<Vec<_>>();
-        shown.sort();
-        shown
+        assert!(
+            numbered(&ConstructionGraph::new()).is_empty(),
+            "nothing driven, nothing numbered",
+        );
+        assert_eq!(numbered(&graph).len(), 2);
+        assert!(
+            numbered(&ConstructionGraph::new()).is_empty(),
+            "removing the joints clears them",
+        );
     }
 
     #[test]
-    fn each_chip_shows_its_joints_number() {
+    fn putting_away_the_connector_clears_the_numbers() {
         let (graph, _, _) = two_driven_joints();
-        let mut app = labelling_app(graph);
-
-        app.update();
-
-        assert_eq!(
-            numerals(&mut app),
-            ["1", "2"],
-            "the numeral lives on a child of the chip, and has to be written there"
+        assert_eq!(numbered(&graph).len(), 2);
+        assert!(
+            markers::wanted(&EditorGraph(graph), &AppSimulation::default(), Tool::Hammer,)
+                .is_empty(),
+            "the numbers belong to the tools that show the wires",
         );
-    }
-
-    #[test]
-    fn a_chip_reused_for_another_joint_shows_the_new_number() {
-        // Labels are reused slot by slot, so one losing its joint must take on
-        // the number of whichever joint claims its slot rather than keep a
-        // stale numeral.
-        let (two_joints, _, _) = two_driven_joints();
-        let mut app = labelling_app(two_joints);
-        app.update();
-        assert_eq!(numerals(&mut app), ["1", "2"]);
-
-        let mut one_joint = ConstructionGraph::new();
-        let base = spawned(
-            one_joint
-                .apply(BuildCommand::Spawn(cuboid([16, 2, 4], IVec3::new(0, 1, 0))))
-                .expect("the base spawns"),
-        );
-        let controller = spawned(
-            one_joint
-                .apply(BuildCommand::SpawnController(ControllerSpec::new(
-                    BuildPose::from_half_grid(IVec3::new(0, 5, 0), GridRotation::default()),
-                )))
-                .expect("the control block spawns"),
-        );
-        let rotor = spawned(
-            one_joint
-                .apply(BuildCommand::Spawn(cuboid([2, 2, 2], IVec3::new(6, 3, 0))))
-                .expect("the rotor spawns"),
-        );
-        let BuildOutcome::BearingAdded(bearing) = one_joint
-            .apply(BuildCommand::AddBearing(BearingSpec::new(
-                FaceRef::part(base, FaceKind::PositiveY),
-                FaceRef::part(rotor, FaceKind::NegativeY),
-                Vec3::new(1.5, 0.5, 0.0),
-                Vec3::Y,
-            )))
-            .expect("the bearing is added")
-        else {
-            panic!("expected a bearing outcome");
-        };
-        one_joint
-            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
-                controller, bearing,
-            )))
-            .expect("the wire is added");
-
-        app.world_mut().resource_mut::<EditorGraph>().0 = one_joint;
-        app.update();
-
-        assert_eq!(
-            numerals(&mut app),
-            ["1"],
-            "the surviving chip shows the surviving joint's number"
-        );
-    }
-
-    #[test]
-    fn putting_away_the_connector_clears_the_labels() {
-        let (graph, _, _) = two_driven_joints();
-        let mut app = labelling_app(graph);
-        app.update();
-        assert_eq!(label_count(&mut app), 2);
-
-        app.world_mut().resource_mut::<SelectedTool>().0 = Tool::Block;
-        app.update();
-
-        assert_eq!(label_count(&mut app), 0, "a build tool hides the numbering");
     }
 
     #[test]
