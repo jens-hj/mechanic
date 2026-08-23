@@ -61,7 +61,7 @@ impl PlacementPlane {
         }
     }
 
-    const fn normal_axis(self) -> usize {
+    pub(crate) const fn normal_axis(self) -> usize {
         match self {
             Self::Xy => 2,
             Self::Xz => 1,
@@ -69,7 +69,7 @@ impl PlacementPlane {
         }
     }
 
-    const fn tangent_axes(self) -> [usize; 2] {
+    pub(crate) const fn tangent_axes(self) -> [usize; 2] {
         match self {
             Self::Xy => [0, 1],
             Self::Xz => [0, 2],
@@ -692,6 +692,23 @@ pub(crate) fn raycast_placement_plane(
     start: CuboidSpec,
     plane: PlacementPlane,
 ) -> Option<IVec3> {
+    let point = raycast_placement_plane_point(origin, direction, start, plane)?;
+    let mut endpoint = snap_world_to_half_grid(point);
+    endpoint[plane.normal_axis()] = start.pose.translation_half_units()[plane.normal_axis()];
+    Some(endpoint)
+}
+
+/// Intersects a pointer ray with the plane through the dragged block's centre.
+///
+/// This deliberately leaves the point unsnapped. Block dragging subtracts two
+/// such points before quantizing, so the press position rather than the snapped
+/// block centre is the gesture's origin.
+pub(crate) fn raycast_placement_plane_point(
+    origin: Vec3,
+    direction: Vec3,
+    start: CuboidSpec,
+    plane: PlacementPlane,
+) -> Option<Vec3> {
     let axis = plane.normal_axis();
     let denominator = direction[axis];
     if !origin.is_finite() || !direction.is_finite() || denominator.abs() <= f32::EPSILON {
@@ -702,8 +719,27 @@ pub(crate) fn raycast_placement_plane(
     if distance < 0.0 || !distance.is_finite() {
         return None;
     }
-    let mut endpoint = snap_world_to_half_grid(origin + direction * distance);
-    endpoint[axis] = start.pose.translation_half_units()[axis];
+    Some(origin + direction * distance)
+}
+
+/// Converts motion between two pointer rays into whole block steps.
+pub(crate) fn block_sheet_endpoint_from_rays(
+    start: CuboidSpec,
+    plane: PlacementPlane,
+    press_origin: Vec3,
+    press_direction: Vec3,
+    current_origin: Vec3,
+    current_direction: Vec3,
+) -> Option<IVec3> {
+    let press = raycast_placement_plane_point(press_origin, press_direction, start, plane)?;
+    let current = raycast_placement_plane_point(current_origin, current_direction, start, plane)?;
+    let mut endpoint = start.pose.translation_half_units();
+    let block_half_units = i32::from(start.dimensions[0].units()) * 2;
+    let steps = ((current - press) / BLOCK_SIZE_METERS).round().as_ivec3();
+    for axis in plane.tangent_axes() {
+        endpoint[axis] =
+            endpoint[axis].saturating_add(steps[axis].saturating_mul(block_half_units));
+    }
     Some(endpoint)
 }
 

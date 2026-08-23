@@ -34,13 +34,14 @@ use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
     PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
     bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
-    bearing_support_face, bearing_support_face_excluding, begin_weld, block_sheet_specs,
-    candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref, part_world_bounds,
-    raycast_construction, raycast_construction_for_annulus, raycast_oriented_cuboid,
-    raycast_placement_plane, rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch,
-    stage_bearing_cylinder, stage_block_batch_from_source, stage_controller_from_source,
-    stage_cylinder_from_source, stage_weld_objects, try_face_geometry_from_ref,
-    validate_block_batch, validate_cylinder_candidate,
+    bearing_support_face, bearing_support_face_excluding, begin_weld,
+    block_sheet_endpoint_from_rays, block_sheet_specs, candidate_from_hit,
+    cylinder_candidate_from_hit, face_geometry_from_ref, part_world_bounds, raycast_construction,
+    raycast_construction_for_annulus, raycast_oriented_cuboid, raycast_placement_plane,
+    rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch, stage_bearing_cylinder,
+    stage_block_batch_from_source, stage_controller_from_source, stage_cylinder_from_source,
+    stage_weld_objects, try_face_geometry_from_ref, validate_block_batch,
+    validate_cylinder_candidate,
 };
 use camera::OrbitCamera;
 use control_panel::ControlPanelState;
@@ -71,6 +72,7 @@ const BEARING_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_LENGTH_STEP: f32 = 0.25;
 const CONTROLLER_SURFACE_COLOR: Color = Color::srgb(0.10, 0.78, 0.68);
+const BLOCK_DRAG_DEAD_ZONE_PIXELS: f32 = 5.0;
 
 #[derive(Resource, Default)]
 struct EditorGraph(ConstructionGraph);
@@ -126,10 +128,18 @@ struct SimulationHit {
 struct BlockDrag {
     start: PlacementCandidate,
     attachment: BlockAttachment,
+    press: PointerSample,
     plane: PlacementPlane,
     last_endpoint: Option<(PlacementPlane, IVec3)>,
     specs: Vec<CuboidSpec>,
     error: Option<PlacementError>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PointerSample {
+    cursor: Vec2,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -932,6 +942,8 @@ struct EditorState {
     wire_drag: Option<WireDrag>,
     /// Latest pointer ray, so a dragged wire can follow the cursor.
     pointer_ray: Option<(Vec3, Vec3)>,
+    /// Latest pointer position paired with [`Self::pointer_ray`].
+    pointer_position: Option<Vec2>,
 }
 
 #[derive(Resource)]
@@ -993,6 +1005,10 @@ struct WireHoverVisual;
 
 const BEARING_RENDER_DEPTH_BIAS: f32 = 2.0;
 const BEARING_RENDER_RADIAL_SKIN: f32 = 0.001;
+const PREVIEW_RENDER_DEPTH_BIAS: f32 = 1.0;
+/// Matches the 0.992 scale of a single 0.25 m block preview without making
+/// large sheet previews shrink in proportion to their full width.
+const BLOCK_SHEET_PREVIEW_INSET_METERS: f32 = 0.001;
 
 fn bearing_surface_material() -> StandardMaterial {
     StandardMaterial {
@@ -1000,6 +1016,17 @@ fn bearing_surface_material() -> StandardMaterial {
         metallic: 0.35,
         perceptual_roughness: 0.55,
         depth_bias: BEARING_RENDER_DEPTH_BIAS,
+        ..default()
+    }
+}
+
+fn preview_material(base_color: Color) -> StandardMaterial {
+    StandardMaterial {
+        base_color,
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        unlit: true,
+        depth_bias: PREVIEW_RENDER_DEPTH_BIAS,
         ..default()
     }
 }
@@ -1062,6 +1089,7 @@ fn main() {
                 handle_tool_change,
                 update_hover,
                 handle_build_actions,
+                ui::push_dimensions,
                 handle_hammer_actions,
                 update_joint_xray,
                 sync_visual_meshes,
@@ -1128,27 +1156,10 @@ fn setup(
         unlit: true,
         ..default()
     });
-    let white_preview_material = materials.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 1.0, 1.0, 0.34),
-        alpha_mode: AlphaMode::Blend,
-        cull_mode: None,
-        unlit: true,
-        ..default()
-    });
-    let red_preview_material = materials.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 0.06, 0.04, 0.46),
-        alpha_mode: AlphaMode::Blend,
-        cull_mode: None,
-        unlit: true,
-        ..default()
-    });
-    let green_preview_material = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.12, 1.0, 0.28, 0.52),
-        alpha_mode: AlphaMode::Blend,
-        cull_mode: None,
-        unlit: true,
-        ..default()
-    });
+    let white_preview_material = materials.add(preview_material(Color::srgba(1.0, 1.0, 1.0, 0.34)));
+    let red_preview_material = materials.add(preview_material(Color::srgba(1.0, 0.06, 0.04, 0.46)));
+    let green_preview_material =
+        materials.add(preview_material(Color::srgba(0.12, 1.0, 0.28, 0.52)));
 
     commands.insert_resource(EditorVisuals {
         construction_mesh: construction_mesh.clone(),
@@ -1752,6 +1763,7 @@ fn update_hover(
         return;
     }
     let Some(cursor) = window.cursor_position() else {
+        state.pointer_position = None;
         if state.block_drag.is_some() {
             invalidate_block_drag(&mut state, PlacementError::DragPlaneUnavailable);
             return;
@@ -1771,6 +1783,7 @@ fn update_hover(
     };
     let (camera, camera_transform) = *camera;
     let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) else {
+        state.pointer_position = None;
         if state.block_drag.is_some() {
             invalidate_block_drag(&mut state, PlacementError::DragPlaneUnavailable);
             return;
@@ -1788,9 +1801,16 @@ fn update_hover(
         );
         return;
     };
+    state.pointer_position = Some(cursor);
     state.pointer_ray = Some((ray.origin, ray.direction.as_vec3()));
     if state.block_drag.is_some() {
-        refresh_block_drag(&graph.0, &mut state, ray.origin, ray.direction.as_vec3());
+        refresh_block_drag(
+            &graph.0,
+            &mut state,
+            cursor,
+            ray.origin,
+            ray.direction.as_vec3(),
+        );
         return;
     }
     if state.delete_drag.is_some() {
@@ -1878,20 +1898,32 @@ fn update_hover(
 fn refresh_block_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
+    cursor: Vec2,
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
-    let (start, plane, last_endpoint) = {
+    let (start, press, plane, last_endpoint) = {
         let drag = state
             .block_drag
             .as_ref()
             .expect("block drag was checked by caller");
-        (drag.start, drag.plane, drag.last_endpoint)
+        (drag.start, drag.press, drag.plane, drag.last_endpoint)
     };
-    let Some(endpoint) = raycast_placement_plane(ray_origin, ray_direction, start.spec, plane)
-    else {
-        invalidate_block_drag(state, PlacementError::DragPlaneUnavailable);
-        return;
+    let endpoint = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
+        start.spec.pose.translation_half_units()
+    } else {
+        let Some(endpoint) = block_sheet_endpoint_from_rays(
+            start.spec,
+            plane,
+            press.ray_origin,
+            press.ray_direction,
+            ray_origin,
+            ray_direction,
+        ) else {
+            invalidate_block_drag(state, PlacementError::DragPlaneUnavailable);
+            return;
+        };
+        endpoint
     };
     if last_endpoint == Some((plane, endpoint)) {
         return;
@@ -3032,9 +3064,22 @@ fn handle_block_actions(
             )
         };
         let plane = PlacementPlane::from_normal(normal);
+        let Some((ray_origin, ray_direction)) = state.pointer_ray else {
+            state.feedback = Some("Pointer ray is unavailable".to_owned());
+            return;
+        };
+        let Some(cursor) = state.pointer_position else {
+            state.feedback = Some("Pointer position is unavailable".to_owned());
+            return;
+        };
         state.block_drag = Some(BlockDrag {
             start: candidate,
             attachment,
+            press: PointerSample {
+                cursor,
+                ray_origin,
+                ray_direction,
+            },
             plane,
             last_endpoint: None,
             specs: vec![candidate.spec],
@@ -3963,7 +4008,7 @@ fn update_previews(
             if let Some(drag) = state.block_drag.as_ref() {
                 if *rendered_block_revision != state.block_preview_revision {
                     if let Some(mut mesh) = meshes.get_mut(&visuals.block_drag_preview_mesh) {
-                        *mesh = combined_specs_mesh(&drag.specs);
+                        *mesh = block_sheet_preview_mesh(&drag.specs);
                     }
                     *rendered_block_revision = state.block_preview_revision;
                 }
@@ -4323,25 +4368,38 @@ fn combined_parts_mesh_scaled(specs: &[PartSpec], scale_factor: f32) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
-fn combined_specs_mesh(specs: &[CuboidSpec]) -> Mesh {
-    combined_specs_mesh_scaled(specs, 1.0)
+/// Exact world bounds of a block sheet, including the outer half-block skin.
+pub(crate) fn block_sheet_bounds(specs: &[CuboidSpec]) -> Option<(Vec3, Vec3)> {
+    let mut minimum = Vec3::splat(f32::INFINITY);
+    let mut maximum = Vec3::splat(f32::NEG_INFINITY);
+    for &spec in specs {
+        let (part_minimum, part_maximum) = part_world_bounds(PartSpec::Cuboid(spec));
+        minimum = minimum.min(part_minimum);
+        maximum = maximum.max(part_maximum);
+    }
+    minimum.is_finite().then_some((minimum, maximum))
 }
 
-fn combined_specs_mesh_scaled(specs: &[CuboidSpec], scale_factor: f32) -> Mesh {
-    let mut positions = Vec::with_capacity(specs.len() * CUBE_POSITIONS.len());
-    let mut normals = Vec::with_capacity(specs.len() * CUBE_NORMALS.len());
-    let mut indices = Vec::with_capacity(specs.len() * CUBE_INDICES.len());
-    for spec in specs {
-        append_transformed_cuboid(
-            spec.pose.translation(),
-            spec.pose.rotation.quaternion(),
-            spec.size_meters() * scale_factor,
-            &mut positions,
-            &mut normals,
-            &mut indices,
-        );
-    }
-
+/// One exterior cuboid spanning the live sheet preview, inset just enough to
+/// keep its contact faces from being coplanar with opaque construction.
+///
+/// Built directly from bounds because a valid 4,096-block sheet can be wider
+/// than the construction API's per-cuboid dimension limit.
+fn block_sheet_preview_mesh(specs: &[CuboidSpec]) -> Mesh {
+    let (minimum, maximum) = block_sheet_bounds(specs).expect("a block drag contains a block");
+    let visual_minimum = minimum + Vec3::splat(BLOCK_SHEET_PREVIEW_INSET_METERS);
+    let visual_maximum = maximum - Vec3::splat(BLOCK_SHEET_PREVIEW_INSET_METERS);
+    let mut positions = Vec::with_capacity(CUBE_POSITIONS.len());
+    let mut normals = Vec::with_capacity(CUBE_NORMALS.len());
+    let mut indices = Vec::with_capacity(CUBE_INDICES.len());
+    append_transformed_cuboid(
+        (visual_minimum + visual_maximum) * 0.5,
+        Quat::IDENTITY,
+        visual_maximum - visual_minimum,
+        &mut positions,
+        &mut normals,
+        &mut indices,
+    );
     Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
@@ -5447,7 +5505,7 @@ fn append_transformed_cuboid(
 mod rendering_tests {
     use bevy::{
         mesh::VertexAttributeValues,
-        prelude::{IVec3, Mesh, Quat, Vec3},
+        prelude::{Color, IVec3, Mesh, Quat, Vec3},
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
@@ -5457,12 +5515,15 @@ mod rendering_tests {
     use mechanic_gpu::GpuTransform;
 
     use super::{
-        BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, PlacedBearing, SimulationMeshKind,
-        append_bearing_cylinder, append_cylinder_shape, bearing_preview_dimensions_changed,
-        bearing_surface_material, combined_bearing_mesh, combined_controller_mesh,
-        combined_drive_xray_mesh, combined_simulation_bearing_mesh, combined_simulation_mesh,
-        drive_xray_is_visible, joint_xray_is_visible, single_bearing_mesh, single_cylinder_mesh,
+        BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, BLOCK_SHEET_PREVIEW_INSET_METERS, PlacedBearing,
+        SimulationMeshKind, append_bearing_cylinder, append_cylinder_shape,
+        bearing_preview_dimensions_changed, bearing_surface_material, block_sheet_bounds,
+        block_sheet_preview_mesh, block_sheet_specs, combined_bearing_mesh,
+        combined_controller_mesh, combined_drive_xray_mesh, combined_simulation_bearing_mesh,
+        combined_simulation_mesh, drive_xray_is_visible, joint_xray_is_visible, preview_material,
+        single_bearing_mesh, single_cylinder_mesh,
     };
+    use crate::PlacementPlane;
     use crate::hotbar::Tool;
     use crate::sequencer::DriveSequencer;
 
@@ -5530,6 +5591,45 @@ mod rendering_tests {
     #[test]
     fn bearing_material_biases_coplanar_surfaces_toward_the_camera() {
         assert!(bearing_surface_material().depth_bias > 0.0);
+    }
+
+    #[test]
+    fn every_preview_material_biases_coplanar_surfaces_toward_the_camera() {
+        for color in [
+            Color::srgba(1.0, 1.0, 1.0, 0.34),
+            Color::srgba(1.0, 0.06, 0.04, 0.46),
+            Color::srgba(0.12, 1.0, 0.28, 0.52),
+        ] {
+            assert!(preview_material(color).depth_bias > 0.0);
+        }
+    }
+
+    #[test]
+    fn block_sheet_preview_is_one_cuboid_inset_from_every_logical_contact_plane() {
+        let start = CuboidSpec::new(
+            [1; 3],
+            BuildPose::from_half_grid(IVec3::ONE, GridRotation::default()),
+        )
+        .unwrap();
+        let endpoint = start.pose.translation_half_units() + IVec3::new(10, 0, -6);
+        let specs = block_sheet_specs(start, endpoint, PlacementPlane::Xz).unwrap();
+        let expected = block_sheet_bounds(&specs).unwrap();
+        let mesh = block_sheet_preview_mesh(&specs);
+        let vertices = positions(&mesh);
+        let actual_minimum = vertices
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+        let actual_maximum = vertices
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+
+        assert_eq!(vertices.len(), 24);
+        assert_eq!(mesh.indices().unwrap().len(), 36);
+        let inset = Vec3::splat(BLOCK_SHEET_PREVIEW_INSET_METERS);
+        assert!(actual_minimum.abs_diff_eq(expected.0 + inset, 1.0e-6));
+        assert!(actual_maximum.abs_diff_eq(expected.1 - inset, 1.0e-6));
     }
 
     #[test]
@@ -6056,7 +6156,7 @@ mod rendering_tests {
 mod interaction_tests {
     use bevy::{
         input::keyboard::Key,
-        prelude::{App, ButtonInput, IVec3, KeyCode, MouseButton, Update, Vec3},
+        prelude::{App, ButtonInput, IVec3, KeyCode, MouseButton, Update, Vec2, Vec3},
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
@@ -6069,18 +6169,26 @@ mod interaction_tests {
         AppSimulation, BearingDimensionTarget, BearingToolSettings, BlockAttachment, BlockDrag,
         CylinderDimensionTarget, CylinderToolSettings, EditorGraph, EditorHistory, EditorState,
         HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction,
-        PlacedBearing, PlacementPlane, SelectedTool, SimulationShortcut, SurfaceHit, Tool,
-        adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
+        PlacedBearing, PlacementPlane, PointerSample, SelectedTool, SimulationShortcut, SurfaceHit,
+        Tool, adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
         bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_specs,
         candidate_from_hit, connect_drive_wire, delete_sheet_parts, disconnect_drive_wires,
         hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
         handle_build_actions, handle_tool_change, help_toggle_requested, raycast_construction,
         raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
-        refresh_tool_preview, requested_bearing_dimension_adjustment,
+        refresh_block_drag, refresh_tool_preview, requested_bearing_dimension_adjustment,
         requested_cylinder_dimension_adjustment, requested_simulation_shortcut, rigid_body_parts,
         stage_part_deletion_preserving_bearings, tool_status_line, wire_drag_step,
     };
     use crate::{WireDrag, WireDragStep, WireEnd};
+
+    fn pointer_sample(cursor: Vec2, ray_origin: Vec3, ray_direction: Vec3) -> PointerSample {
+        PointerSample {
+            cursor,
+            ray_origin,
+            ray_direction,
+        }
+    }
 
     #[test]
     fn question_mark_is_what_asks_for_the_help_panel() {
@@ -6470,9 +6578,16 @@ mod interaction_tests {
             face: mechanic_core::FaceRef::ground(),
         };
         let candidate = candidate_from_hit(&graph, hit);
+        let press = pointer_sample(
+            Vec2::new(320.0, 240.0),
+            Vec3::new(-0.3, 2.0, -0.2),
+            Vec3::new(0.2, -1.0, 0.3),
+        );
         let mut state = EditorState {
             hovered: Some(hit),
             preview: Some(candidate),
+            pointer_position: Some(press.cursor),
+            pointer_ray: Some((press.ray_origin, press.ray_direction)),
             ..Default::default()
         };
         let mut mouse = ButtonInput::default();
@@ -6482,6 +6597,14 @@ mod interaction_tests {
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 0);
         assert!(state.block_drag.is_some());
+        refresh_block_drag(
+            &graph,
+            &mut state,
+            press.cursor,
+            press.ray_origin,
+            press.ray_direction,
+        );
+        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
 
         mouse.clear();
         mouse.release(MouseButton::Left);
@@ -6489,6 +6612,108 @@ mod interaction_tests {
         assert_eq!(graph.part_count(), 1);
         assert!(state.block_drag.is_none());
         assert_eq!(history.undo.len(), 1);
+    }
+
+    #[test]
+    fn block_drag_dead_zone_and_motion_are_relative_to_the_press() {
+        let graph = ConstructionGraph::new();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: FaceRef::ground(),
+        };
+        let candidate = candidate_from_hit(&graph, hit);
+        let press = pointer_sample(Vec2::ZERO, Vec3::new(0.0, 2.0, 0.0), Vec3::NEG_Y);
+        let mut state = EditorState {
+            block_drag: Some(BlockDrag {
+                start: candidate,
+                attachment: BlockAttachment::AutoWeld {
+                    source: FaceOwner::Ground,
+                },
+                press,
+                plane: PlacementPlane::Xz,
+                last_endpoint: None,
+                specs: vec![candidate.spec],
+                error: None,
+            }),
+            ..Default::default()
+        };
+
+        refresh_block_drag(
+            &graph,
+            &mut state,
+            Vec2::new(4.99, 0.0),
+            Vec3::new(4.0, 2.0, 4.0),
+            Vec3::NEG_Y,
+        );
+        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
+
+        for (target, expected) in [
+            (Vec3::new(0.50, 2.0, 0.25), 6),
+            (Vec3::new(-0.50, 2.0, -0.25), 6),
+            (Vec3::new(0.50, 2.0, 0.0), 3),
+            (Vec3::new(0.0, 2.0, -0.50), 3),
+        ] {
+            refresh_block_drag(
+                &graph,
+                &mut state,
+                Vec2::new(10.0, 0.0),
+                target,
+                Vec3::NEG_Y,
+            );
+            assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), expected);
+        }
+    }
+
+    #[test]
+    fn cycling_the_plane_without_pointer_motion_stays_one_by_one() {
+        let graph = ConstructionGraph::new();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: FaceRef::ground(),
+        };
+        let candidate = candidate_from_hit(&graph, hit);
+        let press = pointer_sample(
+            Vec2::new(100.0, 100.0),
+            Vec3::new(0.0, 2.0, 2.0),
+            Vec3::new(0.0, -1.0, -1.0),
+        );
+        let mut state = EditorState {
+            block_drag: Some(BlockDrag {
+                start: candidate,
+                attachment: BlockAttachment::AutoWeld {
+                    source: FaceOwner::Ground,
+                },
+                press,
+                plane: PlacementPlane::Xz,
+                last_endpoint: None,
+                specs: vec![candidate.spec],
+                error: None,
+            }),
+            ..Default::default()
+        };
+
+        let drag = state.block_drag.as_mut().unwrap();
+        drag.plane = drag.plane.cycle();
+        assert_eq!(drag.plane, PlacementPlane::Xy);
+        refresh_block_drag(
+            &graph,
+            &mut state,
+            press.cursor,
+            press.ray_origin,
+            press.ray_direction,
+        );
+        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
+
+        refresh_block_drag(
+            &graph,
+            &mut state,
+            Vec2::new(110.0, 100.0),
+            press.ray_origin + Vec3::new(0.5, 0.0, 0.0),
+            press.ray_direction,
+        );
+        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 3);
     }
 
     #[test]
@@ -6508,6 +6733,7 @@ mod interaction_tests {
                 attachment: BlockAttachment::AutoWeld {
                     source: FaceOwner::Ground,
                 },
+                press: pointer_sample(Vec2::ZERO, Vec3::Y, Vec3::NEG_Y),
                 plane: PlacementPlane::Xz,
                 last_endpoint: Some((PlacementPlane::Xz, endpoint)),
                 specs,
@@ -6588,6 +6814,8 @@ mod interaction_tests {
             placed_bearings: vec![bearing],
             hovered_bearing: Some(0),
             attachment_bearing: Some(0),
+            pointer_position: Some(Vec2::ZERO),
+            pointer_ray: Some((Vec3::new(0.1, 3.0, 0.0), Vec3::NEG_Y)),
             preview: Some(bearing_attachment_candidate(
                 &graph,
                 bearing.source,
@@ -6665,6 +6893,8 @@ mod interaction_tests {
                 face: bearing.source,
             }),
             placed_bearings: vec![bearing],
+            pointer_position: Some(Vec2::ZERO),
+            pointer_ray: Some((Vec3::new(0.36, 3.0, 0.0), Vec3::NEG_Y)),
             ..Default::default()
         };
 
@@ -7229,7 +7459,7 @@ mod interaction_tests {
 
 #[cfg(test)]
 mod history_tests {
-    use bevy::prelude::{ButtonInput, IVec3, KeyCode, Vec3};
+    use bevy::prelude::{ButtonInput, IVec3, KeyCode, Vec2, Vec3};
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         CuboidSpec, FaceKind, FaceRef, GridRotation, PendingOperation, WeldSpec,
@@ -7237,8 +7467,8 @@ mod history_tests {
 
     use super::{
         BlockAttachment, BlockDrag, DeleteDrag, DeleteTarget, EditorHistory, EditorSnapshot,
-        EditorState, HISTORY_CAPACITY, HistoryAction, PlacedBearing, PlacementPlane, SurfaceHit,
-        apply_history_action, bearing_attachment_candidate, requested_history_action,
+        EditorState, HISTORY_CAPACITY, HistoryAction, PlacedBearing, PlacementPlane, PointerSample,
+        SurfaceHit, apply_history_action, bearing_attachment_candidate, requested_history_action,
         stage_bearing_attachment,
     };
 
@@ -7281,6 +7511,7 @@ mod history_tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn bearing_attachment_round_trips_exact_ids_and_cancels_transients() {
         let mut graph = ConstructionGraph::new();
         let support = spawn_cube(&mut graph, IVec3::new(0, 2, 0));
@@ -7328,6 +7559,11 @@ mod history_tests {
             start: candidate,
             attachment: BlockAttachment::AutoWeld {
                 source: hit.face.owner,
+            },
+            press: PointerSample {
+                cursor: Vec2::ZERO,
+                ray_origin: Vec3::Y,
+                ray_direction: Vec3::NEG_Y,
             },
             plane: PlacementPlane::Xz,
             last_endpoint: None,

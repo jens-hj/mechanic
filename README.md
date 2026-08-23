@@ -40,10 +40,12 @@ cargo run -p mechanic-app
   Hover an icon to see its tool name. Tool selection persists when the
   simulation mode changes.
 - With Block selected, click and release the white ghost to place one block, or
-  hold and drag to preview a flat rectangular sheet of blocks. While dragging,
-  press `Q` to cycle the `XZ`, `XY`, and `YZ` planes; release to place the whole
-  sheet, or press `Escape`/right-click to cancel. A drag is limited to 4,096
-  blocks and commits atomically. Blocks have a fixed 0.25 m cube size.
+  hold and drag from the press position to preview a flat rectangular sheet of
+  blocks. The preview shows the sheet as one cuboid with block counts and metre
+  dimensions. While dragging, press `Q` to cycle the `XZ`, `XY`, and `YZ`
+  planes; release to place the whole sheet, or press `Escape`/right-click to
+  cancel. A drag is limited to 4,096 blocks and commits atomically. Blocks have
+  a fixed 0.25 m cube size.
 - With Cylinder selected, click a flat ground, cuboid, cylinder-end, or bearing
   socket face to place one load-bearing cylinder with its local Y axis along
   the face normal. Left/Right adjusts outer diameter by 0.05 m,

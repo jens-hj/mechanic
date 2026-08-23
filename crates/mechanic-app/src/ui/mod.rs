@@ -14,6 +14,7 @@
 
 mod control_block;
 mod creations;
+mod dimensions;
 mod help;
 mod hotbar;
 pub(crate) mod markers;
@@ -36,7 +37,7 @@ use crate::control_panel::ControlPanelState;
 use crate::creation_menu::CreationMenuState;
 use crate::hotbar::{SelectedTool, Tool};
 use crate::showcase::CreationPreset;
-use crate::{AppSimulation, EditorGraph, OrbitCamera};
+use crate::{AppSimulation, EditorGraph, EditorState, OrbitCamera};
 
 pub(crate) use control_block::{EditTarget, LocatedJoint};
 
@@ -100,6 +101,8 @@ pub(crate) struct Handles {
     creations: MosaicState<creations::Model>,
     /// Where each driven joint's number sits on screen.
     markers: MosaicState<Vec<markers::Marker>>,
+    /// Dimensions for the live block-sheet preview.
+    dimensions: MosaicState<dimensions::Model>,
     /// The control block's own state.
     block: control_block::Handles,
     /// What the overlay is asking for.
@@ -118,6 +121,7 @@ impl Handles {
             hovered: MosaicState::new(None),
             creations: MosaicState::new(creations::Model::default()),
             markers: MosaicState::new(Vec::new()),
+            dimensions: MosaicState::new(dimensions::Model::default()),
             block: control_block::Handles {
                 model: MosaicState::new(control_block::PanelModel::default()),
                 selected: MosaicState::new(None),
@@ -151,6 +155,7 @@ struct Pushed {
     help: help::Model,
     creations: creations::Model,
     markers: Vec<markers::Marker>,
+    dimensions: dimensions::Model,
     block: control_block::PanelModel,
 }
 
@@ -238,11 +243,13 @@ fn shell(handles: &Handles) -> Element {
     let help_panel = handles.clone();
     let hotbar_panel = handles.clone();
     let markers_panel = handles.clone();
+    let dimensions_panel = handles.clone();
     let block_panel = handles.clone();
     let creations_panel = handles.clone();
     view! {
         stack width:fill height:fill align:start justify:start {
             (markers::view(&markers_panel))
+            (dimensions::view(&dimensions_panel))
             if $help_open {
                 (help::view(&help_panel))
             }
@@ -389,6 +396,24 @@ pub(crate) fn push_markers(
     if next != ui.pushed.markers {
         ui.handles.markers.set(next.clone());
         ui.pushed.markers = next;
+    }
+}
+
+/// Projects live block-sheet dimensions onto the screen.
+#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+pub(crate) fn push_dimensions(
+    ui: Option<NonSendMut<AppUi>>,
+    state: Res<EditorState>,
+    simulation: Res<AppSimulation>,
+    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+) {
+    let Some(mut ui) = ui else {
+        return;
+    };
+    let next = dimensions::capture(&state, &simulation, &camera);
+    if next != ui.pushed.dimensions {
+        ui.handles.dimensions.set(next.clone());
+        ui.pushed.dimensions = next;
     }
 }
 
