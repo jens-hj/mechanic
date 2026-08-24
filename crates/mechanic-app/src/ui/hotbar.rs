@@ -1,4 +1,4 @@
-//! The tool hotbar: eight slots along the bottom of the window.
+//! The tool hotbar: seven slots along the bottom of the window.
 //!
 //! The icons are drawn rather than drawn *from* anything — each is a handful of
 //! rectangles, rings and bars in a 40×40 box, carrying across the numbers the
@@ -42,13 +42,12 @@ const BAR_PAD: f32 = 8.0;
 const BAR_RADIUS: f32 = SLOT_RADIUS + BAR_PAD;
 
 /// The tools, in the order their number keys run.
-const TOOLS: [Tool; 8] = [
+const TOOLS: [Tool; 7] = [
     Tool::Block,
     Tool::Cylinder,
     Tool::Bearing,
     Tool::Weld,
     Tool::Hammer,
-    Tool::JointXray,
     Tool::Controller,
     Tool::Connector,
 ];
@@ -85,7 +84,7 @@ pub(crate) fn view(handles: &Handles) -> Element {
                 }
             } } {
             if hovered.get().is_some() {
-                row width:min-content height:24px align:center justify:center
+                row width:max-content height:24px align:center justify:center
                     pad:(left:10px right:12px top:0px bottom:0px) radius:12px
                     fill:port.fill stroke:(width:1px color:accent.key) {
                     text font-size:12px text-wrap:none font-color:accent.key { named() }
@@ -144,7 +143,7 @@ fn slot(handles: &Handles, tool: Tool) -> Element {
 ///
 /// A fixed frame, because everything inside it is placed by coordinate: an
 /// unsized canvas shrinks onto its own drawing and slides it into the corner.
-#[allow(clippy::too_many_lines)] // Eight drawings, each a short list of coordinates.
+#[allow(clippy::too_many_lines)] // Seven drawings, each a short list of coordinates.
 fn icon(tool: Tool) -> Element {
     match tool {
         Tool::Block => view! {
@@ -187,14 +186,6 @@ fn icon(tool: Tool) -> Element {
                     stroke:(width:7px cap:round color:dial.grip)
                 line from:(x:11.61px y:14.96px) to:(x:28.39px y:6.04px)
                     stroke:(width:11px cap:round color:ink.fg)
-            }
-        },
-        Tool::JointXray => view! {
-            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                circle at:(x:20px y:20px) radius:16px
-                    stroke:(width:2px color:wash.speed)
-                circle at:(x:20px y:20px) radius:8px
-                    stroke:(width:2px color:accent.speed)
             }
         },
         Tool::Controller => view! {
@@ -310,6 +301,36 @@ mod tests {
             resting,
             "and goes away with the pointer",
         );
+    }
+
+    #[test]
+    fn multi_word_tooltips_enclose_their_label() {
+        let overlay = Overlay::mount();
+        let slots = slots(&overlay);
+        let control_block = TOOLS
+            .iter()
+            .position(|tool| *tool == Tool::Controller)
+            .expect("control block is in the hotbar");
+        overlay.dispatch(PointerEventKind::Move, slots[control_block].center());
+
+        let tree = overlay.rects();
+        let (tooltip_index, (tooltip_depth, tooltip)) = tree
+            .iter()
+            .enumerate()
+            .find(|(_, (_, rect))| {
+                (rect.size.height - 24.0).abs() < 0.5 && rect.max_y() < slots[0].origin.y
+            })
+            .expect("the tooltip is above the hotbar");
+        let labels = tree[tooltip_index + 1..]
+            .iter()
+            .take_while(|(depth, _)| depth > tooltip_depth)
+            .map(|(_, rect)| *rect);
+        for label in labels {
+            assert!(
+                label.origin.x >= tooltip.origin.x - 0.5 && label.max_x() <= tooltip.max_x() + 0.5,
+                "tooltip label {label:?} overflows {tooltip:?}",
+            );
+        }
     }
 
     /// The bug this guards against: an unsized canvas shrinks onto its own

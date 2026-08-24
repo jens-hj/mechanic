@@ -36,7 +36,7 @@ cargo run -p mechanic-app
   cuboids atomically.
 - Use the clickable hotbar at the bottom of the window or press `1` for Block,
   `2` for Cylinder, `3` for Bearing, `4` for Weld, `5` for Hammer, `6` for
-  Joint X-ray, `7` for Control Block, and `8` for Connector.
+  Control Block, and `7` for Connector.
   Hover an icon to see its tool name. Tool selection persists when the
   simulation mode changes.
 - With Block selected, click and release the white ghost to place one block, or
@@ -85,18 +85,16 @@ cargo run -p mechanic-app
   independently. Removing its current support block automatically moves the
   bearing's ownership to another block under the ring; the bearing disappears
   only when no covered support remains.
-- With Joint X-ray selected in build mode, every bearing socket is drawn
+- With Control Block or Connector selected, every bearing socket is drawn
   through the construction for inspection. Driven bearings additionally show a
   teal spin arc pointing the way their active state turns them, a straight wire
   back to the control block steering them, two radial ticks at their travel
   limits, and a floating number naming the joint. That number is the row number
   its control block's panel gives it, so `Joint 3` in the table is the joint
   wearing a `3` in the world. Two wires reaching one physical joint share a
-  panel row, and so share one number.
-  The overlay also appears with Control Block or Connector selected so
-  wiring is visible while you work, and unlike the bearing rings it stays up
-  while the simulation runs — arcs and wires follow the moving bodies and the
-  arc flips as a joint changes state, so you can see which joint a key drives.
+  panel row, and so share one number. The drive overlay stays visible while the
+  simulation runs — arcs and wires follow the moving bodies and the arc flips
+  as a joint changes state, so you can see which joint a key drives.
 - With Control Block selected, click the platform or a face to place a fixed
   0.25 m teal control block. It welds, collides, and carries mass like an
   ordinary block. A control block holds no settings of its own: what it does

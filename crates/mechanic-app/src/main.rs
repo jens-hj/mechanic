@@ -1453,7 +1453,6 @@ fn handle_shortcuts(
         KeyCode::Digit5,
         KeyCode::Digit6,
         KeyCode::Digit7,
-        KeyCode::Digit8,
     ] {
         if keyboard.just_pressed(key) {
             selection.0 = shortcut_tool(key).expect("numbered tool key has a mapping");
@@ -1836,12 +1835,9 @@ fn update_hover(
                 cylinder_settings.dimensions.inner_diameter(),
                 cylinder_settings.dimensions.outer_diameter(),
             ),
-            Tool::Block
-            | Tool::Weld
-            | Tool::Hammer
-            | Tool::JointXray
-            | Tool::Controller
-            | Tool::Connector => raycast_construction(&graph.0, ray.origin, ray_direction),
+            Tool::Block | Tool::Weld | Tool::Hammer | Tool::Controller | Tool::Connector => {
+                raycast_construction(&graph.0, ray.origin, ray_direction)
+            }
         }
     };
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
@@ -2169,7 +2165,7 @@ fn refresh_tool_preview_with_cylinder(
                 state.preview = Some(candidate);
                 error
             }),
-        (Tool::Weld | Tool::Hammer | Tool::JointXray | Tool::Connector, _) => None,
+        (Tool::Weld | Tool::Hammer | Tool::Connector, _) => None,
         (Tool::Bearing, _) => state.hovered.and_then(|hit| {
             if try_face_geometry_from_ref(hit.face, Some(graph)).is_none() {
                 Some(PlacementError::CurvedSurface)
@@ -2517,10 +2513,6 @@ fn handle_build_actions(
         }
         Tool::Hammer => {
             state.feedback = Some("Hammer is available while simulating — press Space".to_owned());
-        }
-        Tool::JointXray => {
-            state.feedback =
-                Some("Joint X-ray shows every bearing through the creation".to_owned());
         }
         Tool::Controller => {
             if let Some(hit) = state.hovered
@@ -3745,16 +3737,14 @@ fn sync_visual_meshes(
 /// The bearing x-ray is also shown while wiring, so a drive wire can be traced
 /// back through the construction to the block that owns it.
 fn joint_xray_is_visible(tool: Tool, simulating: bool, bearing_count: usize) -> bool {
-    matches!(tool, Tool::JointXray | Tool::Controller | Tool::Connector)
-        && !simulating
-        && bearing_count > 0
+    matches!(tool, Tool::Controller | Tool::Connector) && !simulating && bearing_count > 0
 }
 
 /// The drive overlay additionally stays up while simulating, so the joint a key
 /// is driving can be seen moving. Its meshes are rebuilt from each published
 /// snapshot, so the arcs and wires track the running bodies.
 fn drive_xray_is_visible(tool: Tool, driven_count: usize) -> bool {
-    matches!(tool, Tool::JointXray | Tool::Controller | Tool::Connector) && driven_count > 0
+    matches!(tool, Tool::Controller | Tool::Connector) && driven_count > 0
 }
 
 /// Number and world position of every driven joint.
@@ -4106,7 +4096,7 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Hammer | Tool::JointXray | Tool::Connector, _) => {}
+        (Tool::Hammer | Tool::Connector, _) => {}
     }
 }
 
@@ -6026,9 +6016,10 @@ mod rendering_tests {
 
     #[test]
     fn joint_xray_is_build_only_and_requires_a_bearing() {
-        assert!(joint_xray_is_visible(Tool::JointXray, false, 1));
-        assert!(!joint_xray_is_visible(Tool::JointXray, true, 1));
-        assert!(!joint_xray_is_visible(Tool::JointXray, false, 0));
+        assert!(joint_xray_is_visible(Tool::Controller, false, 1));
+        assert!(joint_xray_is_visible(Tool::Connector, false, 1));
+        assert!(!joint_xray_is_visible(Tool::Controller, true, 1));
+        assert!(!joint_xray_is_visible(Tool::Controller, false, 0));
         assert!(!joint_xray_is_visible(Tool::Block, false, 1));
     }
 
@@ -6126,8 +6117,8 @@ mod rendering_tests {
     }
 
     #[test]
-    fn drive_overlay_shows_for_the_xray_and_control_block_tools() {
-        for tool in [Tool::JointXray, Tool::Controller, Tool::Connector] {
+    fn drive_overlay_shows_for_the_control_block_tools() {
+        for tool in [Tool::Controller, Tool::Connector] {
             assert!(joint_xray_is_visible(tool, false, 1));
             // Unlike the bearing rings, the drive overlay does not depend on
             // the mode: it stays up while the simulation runs so a driven joint
@@ -8036,7 +8027,7 @@ mod joint_number_tests {
 
     #[test]
     fn numbers_show_with_the_tools_that_show_the_wires() {
-        for tool in [Tool::Connector, Tool::Controller, Tool::JointXray] {
+        for tool in [Tool::Connector, Tool::Controller] {
             assert!(
                 drive_xray_is_visible(tool, 1),
                 "{tool:?} should show joint numbers"

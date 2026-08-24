@@ -59,6 +59,11 @@ pub(crate) struct Handles {
 }
 
 impl Handles {
+    /// Asks the world to put this panel away.
+    fn close(&self) {
+        self.intents.borrow_mut().push(UiIntent::CloseControlPanel);
+    }
+
     /// Queues an edit against one joint.
     pub(crate) fn edit(&self, joint: DriveLinkId, edit: PanelEdit) {
         self.intents.borrow_mut().push(UiIntent::Drive(Intent {
@@ -129,6 +134,7 @@ pub(crate) fn panel(handles: &Handles) -> Element {
 /// mean.
 fn header(handles: &Handles) -> Element {
     let model = handles.model;
+    let close = handles.clone();
     view! {
         row height:min-content align:center justify:between
             pad:(horizontal:22px vertical:16px)
@@ -144,7 +150,20 @@ fn header(handles: &Handles) -> Element {
                         { $model.subtitle() }
                 }
             }
-            (legend())
+            row height:min-content align:center gap:18px {
+                (legend())
+                col width:32px height:32px align:center justify:center radius:8px
+                    stroke:(width:1px color:shell-rule) font-color:ink.muted
+                    hover { fill:reticle.fill-over stroke:(width:1px color:accent.key) }
+                    @click:{ close.close() } {
+                    canvas width:18px height:18px nohit {
+                        line from:(x:3px y:3px) to:(x:15px y:15px)
+                            stroke:(width:4px cap:square color:ink.muted)
+                        line from:(x:15px y:3px) to:(x:3px y:15px)
+                            stroke:(width:4px cap:square color:ink.muted)
+                    }
+                }
+            }
         }
     }
 }

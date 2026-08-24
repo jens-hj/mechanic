@@ -214,9 +214,6 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::Hammer, _, _, _) => {
                 "Hammer is available while simulating — press Space to start".to_owned()
             }
-            (false, Tool::JointXray, _, _, _) => {
-                "All bearings are visible through the construction".to_owned()
-            }
             (false, Tool::Controller, _, _, _) => {
                 "Left click places a control block; click one to retune it".to_owned()
             }
@@ -261,7 +258,6 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::Block, true) => "RELEASE  Place     RIGHT / ESC  Cancel",
             (true, Tool::Hammer, _) if !simulation.is_paused() => "HOLD LEFT  Charge hammer",
             (true, _, _) => "Construction actions unavailable",
-            (false, Tool::JointXray, _) => "ORBIT / PAN  Inspect     RIGHT DRAG  Delete",
             (false, _, _) => "LEFT  Action     RIGHT DRAG  Delete",
         }
     };
@@ -323,7 +319,7 @@ const fn tool_tone(tool: Tool) -> Tone {
     match tool {
         Tool::Bearing | Tool::Hammer => Tone::Angle,
         Tool::Weld | Tool::Controller | Tool::Connector => Tone::Key,
-        Tool::Block | Tool::Cylinder | Tool::JointXray => Tone::Speed,
+        Tool::Block | Tool::Cylinder => Tone::Speed,
     }
 }
 

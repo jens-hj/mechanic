@@ -1200,7 +1200,9 @@ fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
 }
 
 fn raycast_ground(origin: Vec3, direction: Vec3) -> Option<SurfaceHit> {
-    if direction.y.abs() <= f32::EPSILON {
+    // The platform is a build surface from above, not a wall that hides the
+    // construction when the camera is underneath it.
+    if direction.y >= -f32::EPSILON {
         return None;
     }
     let distance = -origin.y / direction.y;
@@ -2164,6 +2166,19 @@ mod tests {
         assert_eq!(hit.face.face, FaceKind::PositiveY);
         assert!(matches!(hit.face.owner, FaceOwner::Part(_)));
         assert!((hit.point.y - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn raycast_from_below_ignores_the_floor_and_reaches_the_underside() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawn_cube(&mut graph, IVec3::new(0, 4, 0), 1);
+
+        let hit = raycast_construction(&graph, Vec3::new(0.0, -1.0, 0.0), Vec3::Y)
+            .expect("the ray reaches the elevated block");
+
+        assert_eq!(hit.face.owner, FaceOwner::Part(part));
+        assert_eq!(hit.face.face, FaceKind::NegativeY);
+        assert!((hit.point.y - 0.875).abs() < 1.0e-6);
     }
 
     #[test]

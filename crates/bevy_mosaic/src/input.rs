@@ -257,14 +257,14 @@ fn pointer_button_from(button: MouseButton) -> Option<PointerButton> {
 
 /// Wheel deltas in logical pixels, whichever unit the device reports in.
 ///
-/// Bevy's y grows upward for a wheel and Mosaic's scroll offsets grow downward,
-/// which is why the sign flips here rather than in every scroll container.
+/// Bevy and Mosaic both describe the direction the content should move. The
+/// scroll widget converts that movement into its own opposite-growing offset.
 fn wheel_delta(wheel: &MouseWheel) -> Vector2 {
     let scale = match wheel.unit {
         MouseScrollUnit::Line => LINE_HEIGHT_PX,
         MouseScrollUnit::Pixel => 1.0,
     };
-    Vector2::new(-wheel.x * scale, -wheel.y * scale)
+    Vector2::new(wheel.x * scale, wheel.y * scale)
 }
 
 /// Bevy's logical key as one of Mosaic's, or `None` for a key Mosaic has no
@@ -458,7 +458,7 @@ mod tests {
     fn a_line_of_scroll_is_a_fixed_number_of_logical_pixels() {
         let delta = wheel_delta(&wheel(MouseScrollUnit::Line, 0.0, 1.0));
         assert_eq!(
-            delta.y, -LINE_HEIGHT_PX,
+            delta.y, LINE_HEIGHT_PX,
             "a wheel reports lines, and only a convention turns those into a distance",
         );
     }
@@ -466,15 +466,15 @@ mod tests {
     #[test]
     fn pixel_scroll_passes_through_at_its_own_scale() {
         let delta = wheel_delta(&wheel(MouseScrollUnit::Pixel, 3.0, 7.0));
-        assert_eq!((delta.x, delta.y), (-3.0, -7.0));
+        assert_eq!((delta.x, delta.y), (3.0, 7.0));
     }
 
     #[test]
     fn scrolling_the_wheel_up_moves_content_down() {
-        // Bevy's wheel y grows upward; Mosaic's scroll offsets grow downward.
-        // Getting this backwards inverts every scroll container at once.
+        // Mosaic subtracts this content-motion delta from its scroll offset,
+        // so a positive upward wheel moves the content down toward its start.
         let delta = wheel_delta(&wheel(MouseScrollUnit::Pixel, 0.0, 1.0));
-        assert!(delta.y < 0.0, "an upward wheel is a negative scroll offset");
+        assert!(delta.y > 0.0, "an upward wheel is positive content motion");
     }
 
     fn keyboard(logical_key: BevyKey) -> KeyboardInput {

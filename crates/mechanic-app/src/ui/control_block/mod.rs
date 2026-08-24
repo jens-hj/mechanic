@@ -304,6 +304,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_header_close_button_requests_that_the_panel_close() {
+        let (overlay, _link) = open();
+        let close = overlay
+            .reachable_boxes()
+            .into_iter()
+            .find(|rect| {
+                (rect.size.width - 32.0).abs() < 0.5 && (rect.size.height - 32.0).abs() < 0.5
+            })
+            .expect("the close button is reachable in the header");
+
+        overlay.click(close.center());
+
+        assert_eq!(overlay.intents(), vec![UiIntent::CloseControlPanel]);
+    }
+
+    #[test]
+    fn the_header_close_icon_is_geometrically_centred() {
+        let (overlay, _link) = open();
+        let tree = overlay.rects();
+        let (button_index, (button_depth, button)) = tree
+            .iter()
+            .enumerate()
+            .find(|(_, (_, rect))| {
+                (rect.size.width - 32.0).abs() < 0.5 && (rect.size.height - 32.0).abs() < 0.5
+            })
+            .expect("the close button is in the header");
+        let icon = tree[button_index + 1..]
+            .iter()
+            .take_while(|(depth, _)| depth > button_depth)
+            .find(|(_, rect)| {
+                (rect.size.width - 18.0).abs() < 0.5 && (rect.size.height - 18.0).abs() < 0.5
+            })
+            .expect("the close button contains its canvas")
+            .1;
+
+        assert!(away(icon.center(), button.center()) < 0.5);
+    }
+
     /// The bug this guards against: a canvas with no size of its own shrinks
     /// onto the drawing inside it and pulls that drawing flush with its own
     /// corner. The dial then sits off the number at its centre by however far

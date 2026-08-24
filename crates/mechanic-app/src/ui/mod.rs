@@ -58,6 +58,8 @@ pub(crate) enum UiIntent {
     Creations(CreationsAction),
     /// Change a joint's drive program.
     Drive(control_block::Intent),
+    /// Put away the control-block panel.
+    CloseControlPanel,
 }
 
 /// What was asked of the creation picker.
@@ -310,7 +312,7 @@ fn load_fonts(ui: &mosaic_widgets::Ui) {
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
 pub(crate) fn drain(
     ui: Option<NonSendMut<AppUi>>,
-    panel: Res<ControlPanelState>,
+    mut panel: ResMut<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
     mut selection: ResMut<SelectedTool>,
     mut target: EditTarget,
@@ -332,6 +334,11 @@ pub(crate) fn drain(
             UiIntent::Tool(tool) => selection.0 = tool,
             UiIntent::Creations(action) => menu.act(action),
             UiIntent::Drive(edit) => control_block::write_joint(&panel, &mut target, &edit),
+            UiIntent::CloseControlPanel => {
+                panel.close();
+                ui.handles.block.capturing.set(None);
+                ui.handles.block.located.set(None);
+            }
         }
     }
 }
@@ -445,20 +452,29 @@ pub(crate) fn sync_input(
     // A panel holds the keyboard for as long as it is open, not only while a
     // field has the focus: a digit typed into a name must never also pick up a
     // tool behind it.
-    let typing = mosaic.wants_keyboard() || menu.is_open() || panel.blocks_keyboard();
+    let mosaic_keyboard = mosaic.wants_keyboard();
+    let menu_open = menu.is_open();
+    let panel_keyboard = panel.blocks_keyboard();
+    let capturing = ui.handles.block.capturing.get_untracked().is_some();
     *input = UiInput {
         pointer: mosaic.wants_pointer(),
-        keyboard: typing,
-        escape: typing || ui.handles.block.capturing.get_untracked().is_some(),
+        keyboard: mosaic_keyboard || menu_open || panel_keyboard,
+        escape: escape_is_consumed(mosaic_keyboard, menu_open, capturing),
     };
+}
+
+fn escape_is_consumed(mosaic_keyboard: bool, menu_open: bool, capturing: bool) -> bool {
+    // An open control panel owns ordinary keys, but Escape is its way out.
+    // Only an active field, modal, or key capture gets the first Escape.
+    mosaic_keyboard || menu_open || capturing
 }
 
 #[cfg(test)]
 mod tests {
     use mosaic_core::Vector2;
 
-    use super::creations;
     use super::testing::{Overlay, VIEWPORT};
+    use super::{creations, escape_is_consumed};
 
     /// The bug this guards against: a `stack` child fills its parent unless it
     /// is told not to, and one full-bleed panel makes every point in the window
@@ -492,6 +508,14 @@ mod tests {
             .find(|rect| (rect.size.width - 64.0).abs() < 0.5)
             .expect("the hotbar is on screen");
         assert!(overlay.wants_pointer_at(bar.center()));
+    }
+
+    #[test]
+    fn escape_is_reserved_only_for_active_panel_editing() {
+        assert!(!escape_is_consumed(false, false, false));
+        assert!(escape_is_consumed(true, false, false));
+        assert!(escape_is_consumed(false, true, false));
+        assert!(escape_is_consumed(false, false, true));
     }
 
     /// The picker is the one panel that is meant to cover the window: while it

@@ -13,7 +13,6 @@ pub(crate) enum Tool {
     Bearing,
     Weld,
     Hammer,
-    JointXray,
     Controller,
     Connector,
 }
@@ -26,7 +25,6 @@ impl Tool {
             Self::Bearing => "Bearing",
             Self::Weld => "Weld",
             Self::Hammer => "Hammer",
-            Self::JointXray => "Joint X-ray",
             Self::Controller => "Control Block",
             Self::Connector => "Connector",
         }
@@ -39,9 +37,8 @@ impl Tool {
             Self::Bearing => "3",
             Self::Weld => "4",
             Self::Hammer => "5",
-            Self::JointXray => "6",
-            Self::Controller => "7",
-            Self::Connector => "8",
+            Self::Controller => "6",
+            Self::Connector => "7",
         }
     }
 
@@ -66,9 +63,8 @@ pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
         KeyCode::Digit3 => Some(Tool::Bearing),
         KeyCode::Digit4 => Some(Tool::Weld),
         KeyCode::Digit5 => Some(Tool::Hammer),
-        KeyCode::Digit6 => Some(Tool::JointXray),
-        KeyCode::Digit7 => Some(Tool::Controller),
-        KeyCode::Digit8 => Some(Tool::Connector),
+        KeyCode::Digit6 => Some(Tool::Controller),
+        KeyCode::Digit7 => Some(Tool::Connector),
         _ => None,
     }
 }
