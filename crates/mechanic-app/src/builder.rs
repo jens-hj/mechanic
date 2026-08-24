@@ -7,8 +7,9 @@ use std::{
 use bevy::prelude::*;
 use mechanic_core::{
     BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-    ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef,
-    GridRotation, PartId, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec, snap_world_to_grid,
+    ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, EngineSpec, FaceKind,
+    FaceOwner, FaceRef, GridRotation, PartId, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
+    snap_world_to_grid,
 };
 
 pub(crate) const GROUND_HALF_SIZE: f32 = 10.0;
@@ -231,7 +232,7 @@ pub(crate) fn raycast_construction_for_annulus(
             PartSpec::Cylinder(spec) => {
                 raycast_cylinder_bore_obstruction(origin, direction, part, *spec, placement_profile)
             }
-            PartSpec::Cuboid(_) | PartSpec::Controller(_) => None,
+            PartSpec::Cuboid(_) | PartSpec::Controller(_) | PartSpec::Engine(_) => None,
         }))
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
 }
@@ -291,19 +292,64 @@ fn raycast_cylinder_bore_obstruction(
 }
 
 pub(crate) fn candidate_from_hit(graph: &ConstructionGraph, hit: SurfaceHit) -> PlacementCandidate {
+    cuboid_candidate_from_hit(graph, hit, [BLOCK_SIZE_UNITS; 3])
+}
+
+/// Places a fixed-size authored cuboid flush with the face under the pointer.
+pub(crate) fn cuboid_candidate_from_hit(
+    graph: &ConstructionGraph,
+    hit: SurfaceHit,
+    dimensions: [u8; 3],
+) -> PlacementCandidate {
+    oriented_cuboid_candidate_from_hit(graph, hit, dimensions, 0)
+}
+
+/// Places a fixed-size cuboid with a quarter-turn yaw flush with a face.
+pub(crate) fn oriented_cuboid_candidate_from_hit(
+    graph: &ConstructionGraph,
+    hit: SurfaceHit,
+    dimensions: [u8; 3],
+    quarter_turns_y: u8,
+) -> PlacementCandidate {
+    let quarter_turns_y = quarter_turns_y % 4;
+    let rotation = GridRotation::new(0, quarter_turns_y, 0);
+    let world_dimensions = if quarter_turns_y.is_multiple_of(2) {
+        dimensions
+    } else {
+        [dimensions[2], dimensions[1], dimensions[0]]
+    };
     let support = face_geometry_from_ref(hit.face, Some(graph));
     let support_center_half_units = snap_world_to_half_grid(support.center);
     let mut center_half_units =
         support_center_half_units + snap_world_to_grid(hit.point - support.center) * 2;
     let (axis, sign) = cardinal_axis(support.normal);
-    center_half_units[axis] = support_center_half_units[axis] + sign;
+    for tangent_axis in 0..3 {
+        if tangent_axis == axis {
+            continue;
+        }
+        // Horizontal block cells are centred on quarter-metre grid lines,
+        // while vertical cells begin half a grid unit above the platform. An
+        // even span therefore needs a half-cell centre on X/Z and a whole-cell
+        // centre on Y. Preserve that lattice when the target and support have
+        // different dimension parity.
+        let desired_parity = if tangent_axis == 1 {
+            i32::from(world_dimensions[tangent_axis] % 2)
+        } else {
+            i32::from((world_dimensions[tangent_axis] + 1) % 2)
+        };
+        if center_half_units[tangent_axis].rem_euclid(2) != desired_parity {
+            center_half_units[tangent_axis] += 1;
+        }
+    }
+    center_half_units[axis] =
+        support_center_half_units[axis] + sign * i32::from(world_dimensions[axis]);
 
     let spec = CuboidSpec::new(
-        [BLOCK_SIZE_UNITS; 3],
-        BuildPose::from_half_grid(center_half_units, GridRotation::default()),
+        dimensions,
+        BuildPose::from_half_grid(center_half_units, rotation),
     )
     .expect("the fixed block size is a valid core dimension");
-    let attached_face = face_for_normal(-support.normal);
+    let attached_face = face_for_normal(rotation.quaternion().inverse() * -support.normal);
     let candidate_face = face_geometry(spec, attached_face);
     let anchor = overlap_center(support, candidate_face);
     PlacementCandidate {
@@ -379,7 +425,31 @@ pub(crate) fn stage_controller_from_source(
     start: PlacementCandidate,
     source: FaceOwner,
 ) -> Result<ConstructionGraph, PlacementError> {
-    stage_connected_part_batch(graph, start, &[start.spec], None, Some(source), true)
+    stage_connected_part_batch(
+        graph,
+        start,
+        &[start.spec],
+        None,
+        Some(source),
+        FixedPartSpawn::Controller,
+    )
+}
+
+/// Stages one inert engine, auto-welding it like an ordinary block.
+pub(crate) fn stage_engine_from_source(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    source: FaceOwner,
+    kind: EngineKind,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_part_batch(
+        graph,
+        start,
+        &[start.spec],
+        None,
+        Some(source),
+        FixedPartSpawn::Engine(kind),
+    )
 }
 
 pub(crate) fn stage_block_batch_from_source(
@@ -512,7 +582,21 @@ fn stage_connected_block_batch(
     bearing: Option<(FaceRef, Vec3, BearingDimensions, &[PartId])>,
     auto_weld_source: Option<FaceOwner>,
 ) -> Result<ConstructionGraph, PlacementError> {
-    stage_connected_part_batch(graph, start, specs, bearing, auto_weld_source, false)
+    stage_connected_part_batch(
+        graph,
+        start,
+        specs,
+        bearing,
+        auto_weld_source,
+        FixedPartSpawn::Cuboid,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum FixedPartSpawn {
+    Cuboid,
+    Controller,
+    Engine(EngineKind),
 }
 
 #[allow(clippy::too_many_arguments)] // Placement, bearing attachment, and welding share one transaction.
@@ -522,7 +606,7 @@ fn stage_connected_part_batch(
     specs: &[CuboidSpec],
     bearing: Option<(FaceRef, Vec3, BearingDimensions, &[PartId])>,
     auto_weld_source: Option<FaceOwner>,
-    is_controller: bool,
+    spawn: FixedPartSpawn,
 ) -> Result<ConstructionGraph, PlacementError> {
     validate_block_batch(graph, start, specs)?;
     for (index, spec) in specs.iter().enumerate() {
@@ -540,11 +624,13 @@ fn stage_connected_part_batch(
         auto_weld_source.and_then(|source| bearing_connected_weld_scope(graph, source));
     let mut staged = graph.clone();
     let outcomes = staged
-        .apply_batch(specs.iter().copied().map(|spec| {
-            if is_controller {
+        .apply_batch(specs.iter().copied().map(|spec| match spawn {
+            FixedPartSpawn::Cuboid => BuildCommand::Spawn(spec),
+            FixedPartSpawn::Controller => {
                 BuildCommand::SpawnController(ControllerSpec::new(spec.pose))
-            } else {
-                BuildCommand::Spawn(spec)
+            }
+            FixedPartSpawn::Engine(kind) => {
+                BuildCommand::SpawnEngine(EngineSpec::new(kind, spec.pose))
             }
         }))
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
@@ -1125,6 +1211,7 @@ fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
     match spec {
         PartSpec::Cuboid(spec) => Some(face_geometry(spec, face)),
         PartSpec::Controller(spec) => Some(face_geometry(spec.cuboid(), face)),
+        PartSpec::Engine(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Cylinder(spec) => cylinder_face_geometry(spec, face),
     }
 }
@@ -1186,7 +1273,7 @@ fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
     match owner {
         FaceOwner::Ground => vec![FaceRef::ground()],
         FaceOwner::Part(part) => match graph.part(part).copied() {
-            Some(PartSpec::Cuboid(_) | PartSpec::Controller(_)) => ALL_FACES
+            Some(PartSpec::Cuboid(_) | PartSpec::Controller(_) | PartSpec::Engine(_)) => ALL_FACES
                 .into_iter()
                 .map(|face| FaceRef::part(part, face))
                 .collect(),
@@ -1239,6 +1326,7 @@ fn raycast_part(origin: Vec3, direction: Vec3, part: PartId, spec: PartSpec) -> 
     match spec {
         PartSpec::Cuboid(spec) => raycast_cuboid(origin, direction, part, spec),
         PartSpec::Controller(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
+        PartSpec::Engine(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Cylinder(spec) => raycast_cylinder(origin, direction, part, spec),
     }
 }
@@ -1677,6 +1765,7 @@ pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
     match spec {
         PartSpec::Cuboid(spec) => cuboid_world_bounds(spec),
         PartSpec::Controller(spec) => cuboid_world_bounds(spec.cuboid()),
+        PartSpec::Engine(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Cylinder(spec) => {
             let rotation = Mat3::from_quat(spec.pose.rotation.quaternion());
             let (local_minimum, local_maximum) = cylinder_local_bounds(spec.dimensions);
@@ -1747,6 +1836,7 @@ fn parts_overlap(first: PartSpec, second: PartSpec) -> bool {
 fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
     match spec {
         PartSpec::Controller(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
+        PartSpec::Engine(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Cuboid(spec) => vec![CollisionBox {
             center: spec.pose.translation(),
             rotation: spec.pose.rotation.quaternion(),
@@ -1870,19 +1960,20 @@ mod tests {
     use bevy::prelude::{IVec3, Vec3};
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
-        PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
+        CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, FaceKind, FaceOwner, FaceRef,
+        GridRotation, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
     };
 
     use super::{
         BLOCK_SIZE_METERS, PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit,
         bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
         bearing_ring_overlaps_face, bearing_support_face, begin_weld, block_sheet_specs,
-        candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref,
-        raycast_construction, raycast_construction_for_annulus, raycast_placement_plane,
-        rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
+        candidate_from_hit, cuboid_candidate_from_hit, cylinder_candidate_from_hit,
+        face_geometry_from_ref, oriented_cuboid_candidate_from_hit, raycast_construction,
+        raycast_construction_for_annulus, raycast_placement_plane, rigid_body_parts,
+        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
         stage_block_batch_from_source, stage_cuboid, stage_cylinder_from_source,
-        stage_weld_objects, validate_part,
+        stage_engine_from_source, stage_weld_objects, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -2205,6 +2296,122 @@ mod tests {
         let attached = candidate_from_hit(&graph, top);
         assert!((attached.spec.pose.translation().y - 0.375).abs() < 1.0e-6);
         assert!(stage_cuboid(&graph, attached).is_ok());
+    }
+
+    #[test]
+    fn gas_engine_places_flush_with_its_authored_footprint_and_stays_semantic() {
+        let graph = ConstructionGraph::new();
+        let ground_hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: FaceRef::ground(),
+        };
+        let candidate = cuboid_candidate_from_hit(&graph, ground_hit, EngineKind::Gas.grid_units());
+
+        assert_eq!(
+            candidate.spec.pose.translation(),
+            Vec3::new(0.125, 0.25, 0.0)
+        );
+        assert_eq!(candidate.spec.size_meters(), Vec3::new(0.5, 0.5, 0.75));
+
+        let graph = stage_engine_from_source(&graph, candidate, FaceOwner::Ground, EngineKind::Gas)
+            .unwrap();
+        let (_, part) = graph.parts().next().expect("the engine was staged");
+        assert!(matches!(
+            part,
+            PartSpec::Engine(engine) if engine.kind == EngineKind::Gas
+        ));
+        assert_eq!(graph.welds().count(), 1);
+    }
+
+    #[test]
+    fn electric_engine_spans_two_by_two_ground_cells_without_a_half_block_offset() {
+        let graph = ConstructionGraph::new();
+        let candidate = cuboid_candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            },
+            EngineKind::Electric.grid_units(),
+        );
+
+        assert_eq!(
+            candidate.spec.pose.translation_half_units(),
+            IVec3::new(1, 2, 1)
+        );
+        assert_eq!(candidate.spec.size_meters(), Vec3::splat(0.5));
+        assert_eq!(
+            super::cuboid_world_bounds(candidate.spec),
+            (Vec3::new(-0.125, 0.0, -0.125), Vec3::new(0.375, 0.5, 0.375))
+        );
+    }
+
+    #[test]
+    fn quarter_turn_rotates_an_authored_footprint_and_survives_staging() {
+        let graph = ConstructionGraph::new();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: FaceRef::ground(),
+        };
+        let candidate =
+            oriented_cuboid_candidate_from_hit(&graph, hit, EngineKind::Gas.grid_units(), 1);
+
+        assert_eq!(candidate.spec.pose.rotation.quarter_turns_xyz(), [0, 1, 0]);
+        assert_eq!(
+            candidate.spec.pose.translation_half_units(),
+            IVec3::new(0, 2, 1)
+        );
+        assert_eq!(candidate.attached_face, FaceKind::NegativeY);
+        let (minimum, maximum) = super::cuboid_world_bounds(candidate.spec);
+        assert!((maximum.x - minimum.x - 0.75).abs() < 1.0e-6);
+        assert!((maximum.z - minimum.z - 0.50).abs() < 1.0e-6);
+
+        let staged =
+            stage_engine_from_source(&graph, candidate, FaceOwner::Ground, EngineKind::Gas)
+                .unwrap();
+        let (_, PartSpec::Engine(engine)) = staged.parts().next().unwrap() else {
+            panic!("the staged part must remain an engine")
+        };
+        assert_eq!(engine.pose.rotation.quarter_turns_xyz(), [0, 1, 0]);
+    }
+
+    #[test]
+    fn rotated_authored_parts_attach_flush_from_every_world_face() {
+        for outward in [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ] {
+            let mut graph = ConstructionGraph::new();
+            let support = spawn_cube(&mut graph, IVec3::new(0, 16, 0), 4);
+            let hit = super::raycast_cuboid(
+                Vec3::new(0.0, 4.0, 0.0) + outward * 5.0,
+                -outward,
+                support,
+                graph.part(support).copied().unwrap().as_cuboid().unwrap(),
+            )
+            .expect("ray reaches requested support face");
+            let candidate =
+                oriented_cuboid_candidate_from_hit(&graph, hit, EngineKind::Gas.grid_units(), 1);
+            let attached = super::face_geometry(candidate.spec, candidate.attached_face);
+
+            assert!(attached.normal.abs_diff_eq(-outward, 1.0e-6));
+            assert!(
+                stage_engine_from_source(
+                    &graph,
+                    candidate,
+                    FaceOwner::Part(support),
+                    EngineKind::Gas,
+                )
+                .is_ok()
+            );
+        }
     }
 
     #[test]

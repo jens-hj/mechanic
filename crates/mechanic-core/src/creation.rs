@@ -19,13 +19,14 @@ use crate::{
     ConstructionGraph, ControllerSpec, CuboidSpec, CylinderDimensionError, CylinderDimensions,
     CylinderSpec, DimensionError, DriveDwell, DriveKey, DriveLimits, DriveLimitsError,
     DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
-    DriveTarget, DriveTrigger, FaceKind, FaceOwner, FaceRef, GraphError, GridDimension,
-    GridRotation, PartId, PartSpec, RigidLinkSpec, WeldSpec,
+    DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GraphError,
+    GridDimension, GridRotation, PartId, PartSpec, RigidLinkSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 1;
+pub const CREATION_FORMAT_VERSION: u32 = 2;
+const OLDEST_CREATION_FORMAT_VERSION: u32 = 1;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
 ///
@@ -47,7 +48,7 @@ pub struct BearingSocket {
 pub enum CreationError {
     /// The file was written by a different format version.
     #[error(
-        "creation format version {0} is not supported; this build reads version {CREATION_FORMAT_VERSION}"
+        "creation format version {0} is not supported; this build reads versions {OLDEST_CREATION_FORMAT_VERSION} through {CREATION_FORMAT_VERSION}"
     )]
     UnsupportedVersion(u32),
     /// A record referenced a part the file does not define.
@@ -137,6 +138,13 @@ pub enum PartDoc {
     },
     /// Fixed-size control block.
     Controller {
+        /// Centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Fixed-size gas or electric engine.
+    Engine {
+        /// Authored engine family.
+        kind: EngineKind,
         /// Centre and orientation.
         pose: PoseDoc,
     },
@@ -400,7 +408,7 @@ impl CreationDocument {
     /// names a row the file does not define, a value is outside its supported
     /// range, or the replayed commands do not describe a valid construction.
     pub fn into_graph(self) -> Result<LoadedCreation, CreationError> {
-        if self.version != CREATION_FORMAT_VERSION {
+        if !(OLDEST_CREATION_FORMAT_VERSION..=CREATION_FORMAT_VERSION).contains(&self.version) {
             return Err(CreationError::UnsupportedVersion(self.version));
         }
 
@@ -532,6 +540,10 @@ fn part_doc(spec: PartSpec) -> PartDoc {
         PartSpec::Controller(controller) => PartDoc::Controller {
             pose: controller.pose.into(),
         },
+        PartSpec::Engine(engine) => PartDoc::Engine {
+            kind: engine.kind,
+            pose: engine.pose.into(),
+        },
     }
 }
 
@@ -587,6 +599,9 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
         )),
         PartDoc::Controller { pose } => {
             BuildCommand::SpawnController(ControllerSpec::new(pose.into()))
+        }
+        PartDoc::Engine { kind, pose } => {
+            BuildCommand::SpawnEngine(EngineSpec::new(kind, pose.into()))
         }
     })
 }
@@ -662,7 +677,8 @@ mod tests {
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, DriveDwell, DriveKey,
         DriveLimits, DriveLinkSpec, DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget,
-        DriveTrigger, FaceKind, FaceRef, GridRotation, RigidLinkSpec, WeldSpec,
+        DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceRef, GridRotation, PartSpec,
+        RigidLinkSpec, WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -703,7 +719,7 @@ mod tests {
         let controller = spawned(
             graph
                 .apply(BuildCommand::SpawnController(ControllerSpec::new(
-                    BuildPose::from_half_grid(IVec3::new(2, 5, 0), GridRotation::new(0, 1, 0)),
+                    BuildPose::from_half_grid(IVec3::new(2, 6, 0), GridRotation::new(0, 1, 0)),
                 )))
                 .expect("the control block spawns"),
         );
@@ -813,6 +829,47 @@ mod tests {
             document,
             "a second capture of the rebuilt graph must be byte-identical"
         );
+    }
+
+    #[test]
+    fn engine_kinds_survive_a_serialized_round_trip() {
+        let mut graph = ConstructionGraph::new();
+        for (kind, x) in [(EngineKind::Gas, -2), (EngineKind::Electric, 2)] {
+            graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    kind,
+                    BuildPose::new(IVec3::new(x, 2, 0), GridRotation::default()),
+                )))
+                .expect("the engine spawns");
+        }
+
+        let document = CreationDocument::from_graph(&graph, "Engines", &[]);
+        assert_eq!(document.version, CREATION_FORMAT_VERSION);
+        let restored = round_trip(&document)
+            .into_graph()
+            .expect("the engine document rebuilds");
+        let kinds = restored
+            .graph
+            .parts()
+            .map(|(_, spec)| match spec {
+                PartSpec::Engine(engine) => engine.kind,
+                _ => panic!("engine document rebuilt a different part kind"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, [EngineKind::Gas, EngineKind::Electric]);
+    }
+
+    #[test]
+    fn version_one_creation_remains_readable() {
+        let (graph, sockets) = sample();
+        let mut document = CreationDocument::from_graph(&graph, "Old Rig", &sockets);
+        document.version = 1;
+
+        let restored = round_trip(&document)
+            .into_graph()
+            .expect("version-one documents migrate on read");
+        assert_eq!(restored.name, "Old Rig");
+        assert_eq!(restored.graph.part_count(), graph.part_count());
     }
 
     #[test]

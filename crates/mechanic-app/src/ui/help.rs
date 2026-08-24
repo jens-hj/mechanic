@@ -215,7 +215,14 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Hammer is available while simulating — press Space to start".to_owned()
             }
             (false, Tool::Controller, _, _, _) => {
-                "Left click places a control block; click one to retune it".to_owned()
+                "Q rotates 90°; left click places a control block; click one to retune it"
+                    .to_owned()
+            }
+            (false, Tool::GasEngine, _, _, _) => {
+                "Q rotates 90°; left click places an inert gas engine".to_owned()
+            }
+            (false, Tool::ElectricEngine, _, _, _) => {
+                "Q rotates 90°; left click places an inert electric engine".to_owned()
             }
             (false, Tool::Connector, _, _, _) => match state.wire_drag.map(|drag| drag.from) {
                 None => "Drag from a control block to a bearing, or from a bearing to a block"
@@ -317,9 +324,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
 /// it is called: positions are amber, speeds cyan, connections teal.
 const fn tool_tone(tool: Tool) -> Tone {
     match tool {
-        Tool::Bearing | Tool::Hammer => Tone::Angle,
+        Tool::Bearing | Tool::Hammer | Tool::GasEngine => Tone::Angle,
         Tool::Weld | Tool::Controller | Tool::Connector => Tone::Key,
-        Tool::Block | Tool::Cylinder => Tone::Speed,
+        Tool::Block | Tool::Cylinder | Tool::ElectricEngine => Tone::Speed,
     }
 }
 

@@ -295,7 +295,7 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     let collider_capacity = part_rows
         .iter()
         .map(|(_, spec)| match spec {
-            PartSpec::Cuboid(_) | PartSpec::Controller(_) => 1,
+            PartSpec::Cuboid(_) | PartSpec::Controller(_) | PartSpec::Engine(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
         })
         .sum();
@@ -827,11 +827,11 @@ struct PartMassProperties {
     local_inertia: Vec3,
 }
 
-/// Resolves a part to the shape physics actually simulates. Control blocks are
-/// simulated as their fixed cube.
+/// Resolves authored fixed-size parts to the cuboids physics simulates.
 fn physical_spec(spec: PartSpec) -> PartSpec {
     match spec {
         PartSpec::Controller(controller) => PartSpec::Cuboid(controller.cuboid()),
+        PartSpec::Engine(engine) => PartSpec::Cuboid(engine.cuboid()),
         other => other,
     }
 }
@@ -874,7 +874,9 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
                 ),
             }
         }
-        PartSpec::Controller(_) => unreachable!("control blocks resolve to their cube"),
+        PartSpec::Controller(_) | PartSpec::Engine(_) => {
+            unreachable!("fixed-size authored parts resolve to cuboids")
+        }
     }
 }
 
@@ -924,7 +926,9 @@ fn append_part_colliders(
                 });
             }
         }
-        PartSpec::Controller(_) => unreachable!("control blocks resolve to their cube"),
+        PartSpec::Controller(_) | PartSpec::Engine(_) => {
+            unreachable!("fixed-size authored parts resolve to cuboids")
+        }
     }
 }
 
@@ -1534,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn control_block_compiles_as_one_quarter_metre_cuboid_collider() {
+    fn control_block_compiles_as_one_half_by_half_by_quarter_metre_collider() {
         let mut graph = ConstructionGraph::new();
         graph
             .apply(BuildCommand::SpawnController(ControllerSpec::new(
@@ -1544,8 +1548,11 @@ mod tests {
 
         let compiled = graph.compile().unwrap();
         assert_eq!(compiled.colliders.len(), 1);
-        assert_eq!(compiled.colliders[0].half_extents, Vec3::splat(0.125));
-        let expected_mass = crate::CUBOID_DENSITY_KG_M3 * 0.25 * 0.25 * 0.25;
+        assert_eq!(
+            compiled.colliders[0].half_extents,
+            Vec3::new(0.25, 0.25, 0.125)
+        );
+        let expected_mass = crate::CUBOID_DENSITY_KG_M3 * 0.5 * 0.5 * 0.25;
         assert!((compiled.compounds[0].mass_properties.mass - expected_mass).abs() < 1.0e-4);
     }
 

@@ -369,7 +369,7 @@ impl CylinderSpec {
     }
 }
 
-/// Editable control block. Its shape is a fixed one-grid-unit cube; what it
+/// Editable control block. Its shape is a fixed 2×2×1-grid-unit cuboid; what it
 /// does lives on the drive links wired from it, one program per bearing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControllerSpec {
@@ -378,22 +378,67 @@ pub struct ControllerSpec {
 }
 
 impl ControllerSpec {
-    /// Fixed control-block side length in grid units.
-    pub const GRID_UNITS: u8 = 1;
+    /// Fixed local x/y/z side lengths in grid units.
+    pub const GRID_UNITS: [u8; 3] = [2, 2, 1];
 
     /// Creates a control block with the given pose.
     pub const fn new(pose: BuildPose) -> Self {
         Self { pose }
     }
 
-    /// Fixed cube shape backing every control block.
+    /// Fixed cuboid shape backing every control block.
     ///
     /// # Panics
     ///
     /// Never in practice: the fixed side length is a valid grid dimension.
     pub fn cuboid(self) -> CuboidSpec {
-        CuboidSpec::new([Self::GRID_UNITS; 3], self.pose)
-            .expect("the fixed control-block size is a valid grid dimension")
+        CuboidSpec::new(Self::GRID_UNITS, self.pose)
+            .expect("the fixed control-block dimensions are valid")
+    }
+}
+
+/// Authored engine appearance and future behaviour family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EngineKind {
+    /// Combustion engine with a fixed 2×2×3-grid-unit envelope.
+    Gas,
+    /// Electric engine with a fixed 2×2×2-grid-unit envelope.
+    Electric,
+}
+
+impl EngineKind {
+    /// Fixed local x/y/z side lengths in grid units.
+    pub const fn grid_units(self) -> [u8; 3] {
+        match self {
+            Self::Gas => [2, 2, 3],
+            Self::Electric => [2, 2, 2],
+        }
+    }
+}
+
+/// Fixed-size engine part. Engines are inert until their behaviour is added.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineSpec {
+    /// Which authored engine this part represents.
+    pub kind: EngineKind,
+    /// Engine centre and cardinal orientation.
+    pub pose: BuildPose,
+}
+
+impl EngineSpec {
+    /// Creates an engine of `kind` with the given pose.
+    pub const fn new(kind: EngineKind, pose: BuildPose) -> Self {
+        Self { kind, pose }
+    }
+
+    /// Fixed cuboid shape backing this engine kind.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: both fixed engine envelopes use valid dimensions.
+    pub fn cuboid(self) -> CuboidSpec {
+        CuboidSpec::new(self.kind.grid_units(), self.pose)
+            .expect("the fixed engine dimensions are valid")
     }
 }
 
@@ -406,6 +451,8 @@ pub enum PartSpec {
     Cylinder(CylinderSpec),
     /// Fixed-size control block driving the bearings wired to it.
     Controller(ControllerSpec),
+    /// Fixed-size inert engine with an authored appearance.
+    Engine(EngineSpec),
 }
 
 impl PartSpec {
@@ -415,6 +462,7 @@ impl PartSpec {
             Self::Cuboid(spec) => spec.pose,
             Self::Cylinder(spec) => spec.pose,
             Self::Controller(spec) => spec.pose,
+            Self::Engine(spec) => spec.pose,
         }
     }
 
@@ -424,6 +472,7 @@ impl PartSpec {
         match self {
             Self::Cuboid(spec) => Some(spec),
             Self::Controller(spec) => Some(spec.cuboid()),
+            Self::Engine(spec) => Some(spec.cuboid()),
             Self::Cylinder(_) => None,
         }
     }
@@ -432,7 +481,7 @@ impl PartSpec {
     pub const fn as_controller(self) -> Option<ControllerSpec> {
         match self {
             Self::Controller(spec) => Some(spec),
-            Self::Cuboid(_) | Self::Cylinder(_) => None,
+            Self::Cuboid(_) | Self::Cylinder(_) | Self::Engine(_) => None,
         }
     }
 
@@ -440,7 +489,7 @@ impl PartSpec {
     pub const fn as_cylinder(self) -> Option<CylinderSpec> {
         match self {
             Self::Cylinder(spec) => Some(spec),
-            Self::Cuboid(_) | Self::Controller(_) => None,
+            Self::Cuboid(_) | Self::Controller(_) | Self::Engine(_) => None,
         }
     }
 
@@ -449,6 +498,7 @@ impl PartSpec {
         match self {
             Self::Cuboid(spec) => spec.size_meters(),
             Self::Controller(spec) => spec.cuboid().size_meters(),
+            Self::Engine(spec) => spec.cuboid().size_meters(),
             Self::Cylinder(spec) => Vec3::new(
                 spec.dimensions.outer_diameter(),
                 spec.dimensions.axial_length(),
@@ -479,6 +529,12 @@ impl From<CylinderSpec> for PartSpec {
 impl From<ControllerSpec> for PartSpec {
     fn from(value: ControllerSpec) -> Self {
         Self::Controller(value)
+    }
+}
+
+impl From<EngineSpec> for PartSpec {
+    fn from(value: EngineSpec) -> Self {
+        Self::Engine(value)
     }
 }
 
@@ -694,8 +750,8 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
 
     use super::{
-        BuildPose, CuboidSpec, CylinderDimensionError, CylinderDimensions, FaceKind, GridRotation,
-        cuboid_face, snap_world_to_grid,
+        BuildPose, ControllerSpec, CuboidSpec, CylinderDimensionError, CylinderDimensions,
+        EngineKind, EngineSpec, FaceKind, GridRotation, cuboid_face, snap_world_to_grid,
     };
 
     #[test]
@@ -726,6 +782,31 @@ mod tests {
         assert!(CuboidSpec::new([0, 4, 4], BuildPose::default()).is_err());
         assert!(CuboidSpec::new([33, 4, 4], BuildPose::default()).is_err());
         assert!(CuboidSpec::new([1, 32, 1], BuildPose::default()).is_ok());
+    }
+
+    #[test]
+    fn authored_parts_keep_their_fixed_grid_envelopes() {
+        assert_eq!(
+            ControllerSpec::new(BuildPose::default())
+                .cuboid()
+                .dimensions
+                .map(super::GridDimension::units),
+            [2, 2, 1]
+        );
+        assert_eq!(
+            EngineSpec::new(EngineKind::Gas, BuildPose::default())
+                .cuboid()
+                .dimensions
+                .map(super::GridDimension::units),
+            [2, 2, 3]
+        );
+        assert_eq!(
+            EngineSpec::new(EngineKind::Electric, BuildPose::default())
+                .cuboid()
+                .dimensions
+                .map(super::GridDimension::units),
+            [2, 2, 2]
+        );
     }
 
     #[test]

@@ -26,10 +26,11 @@ pub use drive::{
 };
 pub use geometry::{
     Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ControllerSpec, CuboidSpec,
-    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, FaceKind, FaceOwner,
-    FaceRef, GRID_UNIT_METERS, GridDimension, GridRotation, MAX_CYLINDER_OUTER_DIAMETER,
-    MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS, MIN_CYLINDER_DIAMETER_GAP,
-    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartSpec, snap_world_to_grid,
+    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, EngineKind,
+    EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridDimension, GridRotation,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS,
+    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartSpec,
+    snap_world_to_grid,
 };
 pub use graph::{
     BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome,

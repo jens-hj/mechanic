@@ -36,7 +36,8 @@ cargo run -p mechanic-app
   cuboids atomically.
 - Use the clickable hotbar at the bottom of the window or press `1` for Block,
   `2` for Cylinder, `3` for Bearing, `4` for Weld, `5` for Hammer, `6` for
-  Control Block, and `7` for Connector.
+  Control Block, `7` for Connector, `8` for Gas Engine, and `9` for Electric
+  Engine.
   Hover an icon to see its tool name. Tool selection persists when the
   simulation mode changes.
 - With Block selected, click and release the white ghost to place one block, or
@@ -96,10 +97,15 @@ cargo run -p mechanic-app
   simulation runs — arcs and wires follow the moving bodies and the arc flips
   as a joint changes state, so you can see which joint a key drives.
 - With Control Block selected, click the platform or a face to place a fixed
-  0.25 m teal control block. It welds, collides, and carries mass like an
-  ordinary block. A control block holds no settings of its own: what it does
-  lives on the wires running from it, one program per bearing. Clicking an
-  existing block selects it; press `E` to open its panel.
+  textured 2x2x1 control block (0.50 x 0.50 x 0.25 m). It welds, collides, and
+  carries mass like an ordinary block. A control block holds no settings of its
+  own: what it does lives on the wires running from it, one program per bearing.
+  Press `Q` before placement to rotate it by 90 degrees. Clicking an existing
+  block selects it; press `E` to open its panel.
+- With Gas Engine or Electric Engine selected, click the platform or a face to
+  place its textured 2x2x3 or 2x2x2 body. Engines currently weld, collide, and
+  carry mass, but do not drive the mechanism yet. Press `Q` to rotate the
+  placement preview by 90 degrees.
 - With Connector selected, press the left mouse button on a control block and
   drag to a bearing, or start on the bearing and drag to the block — wiring runs
   in either direction. Whatever the pointer is over that a wire can land on — a

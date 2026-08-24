@@ -1,4 +1,4 @@
-//! The tool hotbar: seven slots along the bottom of the window.
+//! The tool hotbar: nine slots along the bottom of the window.
 //!
 //! The icons are drawn rather than drawn *from* anything — each is a handful of
 //! rectangles, rings and bars in a 40×40 box, carrying across the numbers the
@@ -42,7 +42,7 @@ const BAR_PAD: f32 = 8.0;
 const BAR_RADIUS: f32 = SLOT_RADIUS + BAR_PAD;
 
 /// The tools, in the order their number keys run.
-const TOOLS: [Tool; 7] = [
+const TOOLS: [Tool; 9] = [
     Tool::Block,
     Tool::Cylinder,
     Tool::Bearing,
@@ -50,6 +50,8 @@ const TOOLS: [Tool; 7] = [
     Tool::Hammer,
     Tool::Controller,
     Tool::Connector,
+    Tool::GasEngine,
+    Tool::ElectricEngine,
 ];
 
 /// The bar, and the tooltip that rides above it.
@@ -143,7 +145,7 @@ fn slot(handles: &Handles, tool: Tool) -> Element {
 ///
 /// A fixed frame, because everything inside it is placed by coordinate: an
 /// unsized canvas shrinks onto its own drawing and slides it into the corner.
-#[allow(clippy::too_many_lines)] // Seven drawings, each a short list of coordinates.
+#[allow(clippy::too_many_lines)] // Nine drawings, each a short list of coordinates.
 fn icon(tool: Tool) -> Element {
     match tool {
         Tool::Block => view! {
@@ -203,6 +205,28 @@ fn icon(tool: Tool) -> Element {
                     fill:accent.key
                 circle at:(x:31px y:11px) radius:4.5px
                     stroke:(width:3px color:accent.angle)
+            }
+        },
+        Tool::GasEngine => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:20px) size:(w:30px h:24px) radius:3px
+                    fill:bar.slot stroke:(width:2px color:accent.angle)
+                circle at:(x:12px y:20px) radius:5px stroke:(width:2px color:accent.angle)
+                line from:(x:20px y:13px) to:(x:31px y:13px)
+                    stroke:(width:3px cap:round color:ink.fg)
+                line from:(x:20px y:20px) to:(x:31px y:20px)
+                    stroke:(width:3px cap:round color:ink.fg)
+                line from:(x:20px y:27px) to:(x:31px y:27px)
+                    stroke:(width:3px cap:round color:ink.fg)
+            }
+        },
+        Tool::ElectricEngine => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:20px) size:(w:28px h:28px) radius:4px
+                    fill:bar.slot stroke:(width:2px color:accent.speed)
+                circle at:(x:20px y:20px) radius:9px stroke:(width:3px color:accent.speed)
+                line from:(x:20px y:11px) to:(x:20px y:29px)
+                    stroke:(width:3px cap:round color:ink.fg)
             }
         },
     }

@@ -17,6 +17,7 @@ bevy = { workspace = true, features = [
     "keyboard",
     "mouse",
     "multi_threaded",
+    "png",
     "std",
     "wayland",
     "x11",

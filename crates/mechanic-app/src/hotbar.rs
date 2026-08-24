@@ -15,6 +15,8 @@ pub(crate) enum Tool {
     Hammer,
     Controller,
     Connector,
+    GasEngine,
+    ElectricEngine,
 }
 
 impl Tool {
@@ -27,6 +29,8 @@ impl Tool {
             Self::Hammer => "Hammer",
             Self::Controller => "Control Block",
             Self::Connector => "Connector",
+            Self::GasEngine => "Gas Engine",
+            Self::ElectricEngine => "Electric Engine",
         }
     }
 
@@ -39,6 +43,8 @@ impl Tool {
             Self::Hammer => "5",
             Self::Controller => "6",
             Self::Connector => "7",
+            Self::GasEngine => "8",
+            Self::ElectricEngine => "9",
         }
     }
 
@@ -65,6 +71,8 @@ pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
         KeyCode::Digit5 => Some(Tool::Hammer),
         KeyCode::Digit6 => Some(Tool::Controller),
         KeyCode::Digit7 => Some(Tool::Connector),
+        KeyCode::Digit8 => Some(Tool::GasEngine),
+        KeyCode::Digit9 => Some(Tool::ElectricEngine),
         _ => None,
     }
 }

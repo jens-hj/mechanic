@@ -22,6 +22,7 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::visibility::{NoFrustumCulling, RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
+    image::ImageLoaderSettings,
     input::keyboard::Key,
     mesh::Indices,
     prelude::*,
@@ -36,10 +37,11 @@ use builder::{
     bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
     bearing_support_face, bearing_support_face_excluding, begin_weld,
     block_sheet_endpoint_from_rays, block_sheet_specs, candidate_from_hit,
-    cylinder_candidate_from_hit, face_geometry_from_ref, part_world_bounds, raycast_construction,
-    raycast_construction_for_annulus, raycast_oriented_cuboid, raycast_placement_plane,
-    rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch, stage_bearing_cylinder,
-    stage_block_batch_from_source, stage_controller_from_source, stage_cylinder_from_source,
+    cylinder_candidate_from_hit, face_geometry_from_ref, oriented_cuboid_candidate_from_hit,
+    part_world_bounds, raycast_construction, raycast_construction_for_annulus,
+    raycast_oriented_cuboid, raycast_placement_plane, rigid_body_parts, stage_bearing_attachment,
+    stage_bearing_block_batch, stage_bearing_cylinder, stage_block_batch_from_source,
+    stage_controller_from_source, stage_cylinder_from_source, stage_engine_from_source,
     stage_weld_objects, try_face_geometry_from_ref, validate_block_batch,
     validate_cylinder_candidate,
 };
@@ -50,11 +52,12 @@ use creation_store::CreationStore;
 use hotbar::{SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
     BearingDimensions, BearingId, BearingSocket, BuildCommand, CYLINDER_SWEEP_STEP_DEGREES,
-    CompiledCreation, ConstructionGraph, CreationDocument, CuboidSpec, CylinderDimensions,
-    DriveLinkSpec, DriveState, DriveTarget, FaceOwner, MAX_BEARING_OUTER_DIAMETER,
-    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
-    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
-    MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation, TopologyError,
+    CompiledCreation, ConstructionGraph, ControllerSpec, CreationDocument, CuboidSpec,
+    CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceOwner,
+    MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
+    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
+    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation,
+    TopologyError,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
@@ -686,10 +689,9 @@ fn advance_simulation(
             Without<SimulationVisual>,
         ),
     >,
-    mut controller_visibility: Single<
-        &mut Visibility,
+    mut authored_visuals: Query<
+        (&AuthoredPartVisual, &mut Visibility),
         (
-            With<ControllerVisual>,
             Without<ConstructionVisual>,
             Without<BearingVisual>,
             Without<SimulationVisual>,
@@ -804,12 +806,12 @@ fn advance_simulation(
             .as_ref()
             .expect("running simulation has compiled creation");
         if let Some(mut mesh) = meshes.get_mut(&visuals.construction_mesh) {
-            *mesh = combined_simulation_mesh(
+            *mesh = renderable_mesh(combined_simulation_mesh(
                 &graph.0,
                 creation,
                 &simulation.transforms,
                 SimulationMeshKind::Static,
-            );
+            ));
         }
         **construction_visibility = Visibility::Visible;
         simulation.static_mesh_dirty = false;
@@ -823,28 +825,36 @@ fn advance_simulation(
         .as_ref()
         .expect("running simulation has compiled creation");
     if let Some(mut mesh) = meshes.get_mut(&visuals.simulation_mesh) {
-        *mesh = combined_simulation_mesh(
+        *mesh = renderable_mesh(combined_simulation_mesh(
             &graph.0,
             creation,
             &simulation.transforms,
             SimulationMeshKind::Dynamic,
-        );
+        ));
     }
     // Every mesh below is written only while its own visual is on screen. A
     // hidden mesh has no slab allocation, so writing to one both wastes the
     // rebuild and makes the renderer log a use-after-free every frame.
     let bearings_visible = graph.0.bearing_count() > 0 || !state.placed_bearings.is_empty();
-    let controllers_visible = graph
-        .0
-        .parts()
-        .any(|(_, spec)| matches!(spec, PartSpec::Controller(_)));
-    if controllers_visible && let Some(mut mesh) = meshes.get_mut(&visuals.controller_mesh) {
-        *mesh = combined_simulation_mesh(
-            &graph.0,
-            creation,
-            &simulation.transforms,
-            SimulationMeshKind::Controller,
-        );
+    for appearance in AuthoredPart::ALL {
+        let visible = graph.0.parts().any(|(_, spec)| appearance.matches(*spec));
+        if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
+            *mesh = combined_simulation_authored_mesh(
+                &graph.0,
+                creation,
+                &simulation.transforms,
+                appearance,
+            );
+        }
+        for (visual, mut visibility) in &mut authored_visuals {
+            if visual.0 == appearance {
+                *visibility = if visible {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+            }
+        }
     }
     if bearings_visible && let Some(mut mesh) = meshes.get_mut(&visuals.bearing_mesh) {
         *mesh = combined_simulation_bearing_mesh(
@@ -870,11 +880,6 @@ fn advance_simulation(
         );
     }
     **bearing_visibility = if bearings_visible {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
-    **controller_visibility = if controllers_visible {
         Visibility::Visible
     } else {
         Visibility::Hidden
@@ -926,6 +931,8 @@ struct EditorState {
     preview: Option<PlacementCandidate>,
     cylinder_preview: Option<CylinderPlacementCandidate>,
     preview_error: Option<PlacementError>,
+    /// Quarter-turn yaw used by controller and engine placement.
+    authored_quarter_turns_y: u8,
     feedback: Option<String>,
     construction_mesh_dirty: bool,
     delete_target: Option<DeleteTarget>,
@@ -953,6 +960,8 @@ struct EditorVisuals {
     bearing_mesh: Handle<Mesh>,
     joint_xray_mesh: Handle<Mesh>,
     controller_mesh: Handle<Mesh>,
+    gas_engine_mesh: Handle<Mesh>,
+    electric_engine_mesh: Handle<Mesh>,
     drive_xray_mesh: Handle<Mesh>,
     wire_drag_mesh: Handle<Mesh>,
     wire_hover_mesh: Handle<Mesh>,
@@ -966,6 +975,16 @@ struct EditorVisuals {
     delete_drag_preview_mesh: Handle<Mesh>,
     weld_hover_preview_mesh: Handle<Mesh>,
     weld_selection_preview_mesh: Handle<Mesh>,
+}
+
+impl EditorVisuals {
+    fn authored_mesh(&self, appearance: AuthoredPart) -> &Handle<Mesh> {
+        match appearance {
+            AuthoredPart::Controller => &self.controller_mesh,
+            AuthoredPart::GasEngine => &self.gas_engine_mesh,
+            AuthoredPart::ElectricEngine => &self.electric_engine_mesh,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -989,8 +1008,40 @@ struct BearingVisual;
 #[derive(Component)]
 struct JointXrayVisual;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthoredPart {
+    Controller,
+    GasEngine,
+    ElectricEngine,
+}
+
+impl AuthoredPart {
+    const ALL: [Self; 3] = [Self::Controller, Self::GasEngine, Self::ElectricEngine];
+
+    fn matches(self, spec: PartSpec) -> bool {
+        matches!(
+            (self, spec),
+            (Self::Controller, PartSpec::Controller(_))
+                | (
+                    Self::GasEngine,
+                    PartSpec::Engine(mechanic_core::EngineSpec {
+                        kind: EngineKind::Gas,
+                        ..
+                    }),
+                )
+                | (
+                    Self::ElectricEngine,
+                    PartSpec::Engine(mechanic_core::EngineSpec {
+                        kind: EngineKind::Electric,
+                        ..
+                    }),
+                )
+        )
+    }
+}
+
 #[derive(Component)]
-struct ControllerVisual;
+struct AuthoredPartVisual(AuthoredPart);
 
 #[derive(Component)]
 struct DriveXrayVisual;
@@ -1027,6 +1078,27 @@ fn preview_material(base_color: Color) -> StandardMaterial {
         cull_mode: None,
         unlit: true,
         depth_bias: PREVIEW_RENDER_DEPTH_BIAS,
+        ..default()
+    }
+}
+
+fn authored_part_material(asset_server: &AssetServer, stem: &str) -> StandardMaterial {
+    let linear_texture = |suffix: &str| {
+        asset_server
+            .load_builder()
+            .with_settings(|settings: &mut ImageLoaderSettings| settings.is_srgb = false)
+            .load(format!("{stem}_{suffix}.png"))
+    };
+    let orm = linear_texture("orm");
+    StandardMaterial {
+        base_color_texture: Some(asset_server.load(format!("{stem}_base_color.png"))),
+        metallic: 1.0,
+        perceptual_roughness: 1.0,
+        metallic_roughness_texture: Some(orm.clone()),
+        occlusion_texture: Some(orm),
+        normal_map_texture: Some(linear_texture("normal")),
+        emissive: LinearRgba::WHITE,
+        emissive_texture: Some(asset_server.load(format!("{stem}_emissive.png"))),
         ..default()
     }
 }
@@ -1107,6 +1179,7 @@ fn main() {
 #[allow(clippy::too_many_lines)] // One-time Bevy scene composition is clearest in declaration order.
 fn setup(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -1115,6 +1188,8 @@ fn setup(
     let bearing_mesh = meshes.add(Cuboid::default());
     let joint_xray_mesh = meshes.add(Cuboid::default());
     let controller_mesh = meshes.add(Cuboid::default());
+    let gas_engine_mesh = meshes.add(Cuboid::default());
+    let electric_engine_mesh = meshes.add(Cuboid::default());
     let drive_xray_mesh = meshes.add(Cuboid::default());
     let wire_drag_mesh = meshes.add(wire_drag_preview_mesh(Vec3::ZERO, Vec3::ZERO));
     let wire_hover_mesh = meshes.add(degenerate_overlay_mesh());
@@ -1131,12 +1206,18 @@ fn setup(
         ..default()
     });
     let bearing_material = materials.add(bearing_surface_material());
-    let controller_material = materials.add(StandardMaterial {
-        base_color: CONTROLLER_SURFACE_COLOR,
-        metallic: 0.25,
-        perceptual_roughness: 0.45,
-        ..default()
-    });
+    let controller_material = materials.add(authored_part_material(
+        &asset_server,
+        "machines/controller/controller",
+    ));
+    let gas_engine_material = materials.add(authored_part_material(
+        &asset_server,
+        "machines/gas_engine/gas_engine",
+    ));
+    let electric_engine_material = materials.add(authored_part_material(
+        &asset_server,
+        "machines/electric_engine/electric_engine",
+    ));
     let drive_xray_material = materials.add(StandardMaterial {
         base_color: CONTROLLER_SURFACE_COLOR,
         cull_mode: None,
@@ -1167,6 +1248,8 @@ fn setup(
         bearing_mesh: bearing_mesh.clone(),
         joint_xray_mesh: joint_xray_mesh.clone(),
         controller_mesh: controller_mesh.clone(),
+        gas_engine_mesh: gas_engine_mesh.clone(),
+        electric_engine_mesh: electric_engine_mesh.clone(),
         drive_xray_mesh: drive_xray_mesh.clone(),
         wire_drag_mesh: wire_drag_mesh.clone(),
         wire_hover_mesh: wire_hover_mesh.clone(),
@@ -1227,7 +1310,23 @@ fn setup(
         MeshMaterial3d(controller_material),
         NoFrustumCulling,
         Visibility::Hidden,
-        ControllerVisual,
+        AuthoredPartVisual(AuthoredPart::Controller),
+    ));
+    commands.spawn((
+        Name::new("Gas engine mesh"),
+        Mesh3d(gas_engine_mesh),
+        MeshMaterial3d(gas_engine_material),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::GasEngine),
+    ));
+    commands.spawn((
+        Name::new("Electric engine mesh"),
+        Mesh3d(electric_engine_mesh),
+        MeshMaterial3d(electric_engine_material),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::ElectricEngine),
     ));
     commands.spawn((
         Name::new("Joint x-ray mesh"),
@@ -1453,6 +1552,8 @@ fn handle_shortcuts(
         KeyCode::Digit5,
         KeyCode::Digit6,
         KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
     ] {
         if keyboard.just_pressed(key) {
             selection.0 = shortcut_tool(key).expect("numbered tool key has a mapping");
@@ -1484,8 +1585,20 @@ fn handle_shortcuts(
         } else if let Some(drag) = state.delete_drag.as_mut() {
             drag.plane = drag.plane.cycle();
             state.feedback = Some(format!("Delete plane: {}", drag.plane.label()));
+        } else if matches!(
+            selection.0,
+            Tool::Controller | Tool::GasEngine | Tool::ElectricEngine
+        ) {
+            state.authored_quarter_turns_y = (state.authored_quarter_turns_y + 1) % 4;
+            state.feedback = Some(format!(
+                "{} rotation: {}°",
+                selection.0.label(),
+                u16::from(state.authored_quarter_turns_y) * 90
+            ));
         } else {
-            state.feedback = Some("Q changes the plane during a block or delete drag".to_owned());
+            state.feedback = Some(
+                "Q rotates controllers and engines, or changes an active drag plane".to_owned(),
+            );
         }
     }
 }
@@ -1835,9 +1948,13 @@ fn update_hover(
                 cylinder_settings.dimensions.inner_diameter(),
                 cylinder_settings.dimensions.outer_diameter(),
             ),
-            Tool::Block | Tool::Weld | Tool::Hammer | Tool::Controller | Tool::Connector => {
-                raycast_construction(&graph.0, ray.origin, ray_direction)
-            }
+            Tool::Block
+            | Tool::Weld
+            | Tool::Hammer
+            | Tool::Controller
+            | Tool::Connector
+            | Tool::GasEngine
+            | Tool::ElectricEngine => raycast_construction(&graph.0, ray.origin, ray_direction),
         }
     };
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
@@ -2156,11 +2273,22 @@ fn refresh_tool_preview_with_cylinder(
                 error
             })
         }
-        (Tool::Controller, _) => state
+        (tool @ (Tool::Controller | Tool::GasEngine | Tool::ElectricEngine), _) => state
             .hovered
             .filter(|hit| try_face_geometry_from_ref(hit.face, Some(graph)).is_some())
             .and_then(|hit| {
-                let candidate = candidate_from_hit(graph, hit);
+                let dimensions = match tool {
+                    Tool::Controller => ControllerSpec::GRID_UNITS,
+                    Tool::GasEngine => EngineKind::Gas.grid_units(),
+                    Tool::ElectricEngine => EngineKind::Electric.grid_units(),
+                    _ => unreachable!(),
+                };
+                let candidate = oriented_cuboid_candidate_from_hit(
+                    graph,
+                    hit,
+                    dimensions,
+                    state.authored_quarter_turns_y,
+                );
                 let error = validate_block_batch(graph, candidate, &[candidate.spec]).err();
                 state.preview = Some(candidate);
                 error
@@ -2262,6 +2390,16 @@ fn handle_build_actions(
                 PartSpec::Controller(_) => {
                     state.delete_target = Some(DeleteTarget::Part(part));
                     state.feedback = Some("Release right mouse to delete control block".to_owned());
+                }
+                PartSpec::Engine(engine) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some(format!(
+                        "Release right mouse to delete {} engine",
+                        match engine.kind {
+                            EngineKind::Gas => "gas",
+                            EngineKind::Electric => "electric",
+                        }
+                    ));
                 }
             }
         }
@@ -2550,6 +2688,31 @@ fn handle_build_actions(
                         "Placed control block — with the Connector, drag it to a bearing, then press E"
                             .to_owned(),
                     );
+                    state.construction_mesh_dirty = true;
+                    clear_hover(&mut state);
+                }
+                Err(error) => state.feedback = Some(error.to_string()),
+            }
+        }
+        tool @ (Tool::GasEngine | Tool::ElectricEngine) => {
+            let Some(candidate) = state.preview else {
+                state.feedback = Some("Point at the platform or a face".to_owned());
+                return;
+            };
+            let Some(hit) = state.hovered else {
+                return;
+            };
+            let kind = if tool == Tool::GasEngine {
+                EngineKind::Gas
+            } else {
+                EngineKind::Electric
+            };
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            match stage_engine_from_source(&graph.0, candidate, hit.face.owner, kind) {
+                Ok(staged) => {
+                    graph.0 = staged;
+                    history.commit(previous);
+                    state.feedback = Some(format!("Placed {}", tool.label().to_lowercase()));
                     state.construction_mesh_dirty = true;
                     clear_hover(&mut state);
                 }
@@ -3390,7 +3553,7 @@ fn raycast_simulation(
                 position + rotation * (spec.pose().translation() - initial.root_translation);
             let part_rotation = rotation * spec.pose().rotation.quaternion();
             let (distance, point) = match spec {
-                PartSpec::Cuboid(_) | PartSpec::Controller(_) => {
+                PartSpec::Cuboid(_) | PartSpec::Controller(_) | PartSpec::Engine(_) => {
                     let hit = raycast_oriented_cuboid(
                         origin,
                         direction,
@@ -3674,10 +3837,9 @@ fn sync_visual_meshes(
             Without<BearingVisual>,
         ),
     >,
-    mut controller_visibility: Single<
-        &mut Visibility,
+    mut authored_visuals: Query<
+        (&AuthoredPartVisual, &mut Visibility),
         (
-            With<ControllerVisual>,
             Without<ConstructionVisual>,
             Without<BearingVisual>,
             Without<SimulationVisual>,
@@ -3691,23 +3853,25 @@ fn sync_visual_meshes(
         **construction_visibility = Visibility::Hidden;
     } else {
         if let Some(mut mesh) = meshes.get_mut(&visuals.construction_mesh) {
-            *mesh = combined_construction_mesh(&graph.0);
+            *mesh = renderable_mesh(combined_construction_mesh(&graph.0));
         }
         **construction_visibility = Visibility::Visible;
     }
     **simulation_visibility = Visibility::Hidden;
-    let controller_count = graph
-        .0
-        .parts()
-        .filter(|(_, spec)| matches!(spec, PartSpec::Controller(_)))
-        .count();
-    if controller_count == 0 {
-        **controller_visibility = Visibility::Hidden;
-    } else {
-        if let Some(mut mesh) = meshes.get_mut(&visuals.controller_mesh) {
-            *mesh = combined_controller_mesh(&graph.0);
+    for appearance in AuthoredPart::ALL {
+        let visible = graph.0.parts().any(|(_, spec)| appearance.matches(*spec));
+        if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
+            *mesh = combined_authored_construction_mesh(&graph.0, appearance);
         }
-        **controller_visibility = Visibility::Visible;
+        for (visual, mut visibility) in &mut authored_visuals {
+            if visual.0 == appearance {
+                *visibility = if visible {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+            }
+        }
     }
     if graph.0.bearing_count() == 0 && state.placed_bearings.is_empty() {
         **bearing_visibility = Visibility::Hidden;
@@ -4085,7 +4249,7 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Controller, _) => {
+        (Tool::Controller | Tool::GasEngine | Tool::ElectricEngine, _) => {
             if let Some(candidate) = state.preview {
                 show_cuboid_preview(
                     &mut action,
@@ -4210,7 +4374,7 @@ fn tool_status_line(
             ),
         ),
         Tool::Controller => format!(
-            "Tool: {}    {}    E opens its program",
+            "Tool: {}    Q Rotate 90°    {}    E opens its program",
             tool.label(),
             selected_wires.map_or_else(
                 || "No block selected — click one to select it".to_owned(),
@@ -4233,6 +4397,9 @@ fn tool_status_line(
             cylinder_dimensions.axial_length(),
             cylinder_dimensions.sweep_angle_degrees(),
         ),
+        Tool::GasEngine | Tool::ElectricEngine => {
+            format!("Tool: {}    Q Rotate 90°", tool.label())
+        }
         _ => format!("Tool: {}", tool.label()),
     }
 }
@@ -4294,13 +4461,190 @@ const CUBE_INDICES: [u32; 36] = [
     17, 19, 18, 20, 21, 23, 21, 22, 23,
 ];
 
+// Authored machine GLBs use +X, -X, +Y, -Y, +Z, -Z face order. Keeping that
+// template here lets their UV atlases stay exact while placed parts remain in
+// the app's batched meshes rather than becoming one entity per part.
+const AUTHORED_CUBE_POSITIONS: [[f32; 3]; 24] = [
+    [0.5, 0.5, 0.5],
+    [0.5, -0.5, 0.5],
+    [0.5, -0.5, -0.5],
+    [0.5, 0.5, -0.5],
+    [-0.5, 0.5, -0.5],
+    [-0.5, -0.5, -0.5],
+    [-0.5, -0.5, 0.5],
+    [-0.5, 0.5, 0.5],
+    [-0.5, 0.5, -0.5],
+    [-0.5, 0.5, 0.5],
+    [0.5, 0.5, 0.5],
+    [0.5, 0.5, -0.5],
+    [-0.5, -0.5, 0.5],
+    [-0.5, -0.5, -0.5],
+    [0.5, -0.5, -0.5],
+    [0.5, -0.5, 0.5],
+    [-0.5, 0.5, 0.5],
+    [-0.5, -0.5, 0.5],
+    [0.5, -0.5, 0.5],
+    [0.5, 0.5, 0.5],
+    [0.5, 0.5, -0.5],
+    [0.5, -0.5, -0.5],
+    [-0.5, -0.5, -0.5],
+    [-0.5, 0.5, -0.5],
+];
+const AUTHORED_CUBE_NORMALS: [[f32; 3]; 24] = [
+    [1.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, -1.0],
+    [0.0, 0.0, -1.0],
+    [0.0, 0.0, -1.0],
+    [0.0, 0.0, -1.0],
+];
+const AUTHORED_CUBE_TANGENTS: [[f32; 4]; 24] = [
+    [0.0, 0.0, -1.0, -1.0],
+    [0.0, 0.0, -1.0, -1.0],
+    [0.0, 0.0, -1.0, -1.0],
+    [0.0, 0.0, -1.0, -1.0],
+    [0.0, 0.0, 1.0, -1.0],
+    [0.0, 0.0, 1.0, -1.0],
+    [0.0, 0.0, 1.0, -1.0],
+    [0.0, 0.0, 1.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [1.0, 0.0, 0.0, -1.0],
+    [-1.0, 0.0, 0.0, -1.0],
+    [-1.0, 0.0, 0.0, -1.0],
+    [-1.0, 0.0, 0.0, -1.0],
+    [-1.0, 0.0, 0.0, -1.0],
+];
+const AUTHORED_CUBE_INDICES: [u32; 36] = [
+    0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15, 16, 17, 18,
+    16, 18, 19, 20, 21, 22, 20, 22, 23,
+];
+
+const CONTROLLER_UVS: [[f32; 2]; 24] = [
+    [0.0, 0.5],
+    [0.0, 0.0],
+    [0.25, 0.0],
+    [0.25, 0.5],
+    [0.25, 0.5],
+    [0.25, 0.0],
+    [0.5, 0.0],
+    [0.5, 0.5],
+    [0.5, 0.5],
+    [0.5, 0.25],
+    [1.0, 0.25],
+    [1.0, 0.5],
+    [0.5, 0.25],
+    [0.5, 0.0],
+    [1.0, 0.0],
+    [1.0, 0.25],
+    [0.0, 1.0],
+    [0.0, 0.5],
+    [0.5, 0.5],
+    [0.5, 1.0],
+    [0.5, 1.0],
+    [0.5, 0.5],
+    [1.0, 0.5],
+    [1.0, 1.0],
+];
+const GAS_ENGINE_UVS: [[f32; 2]; 24] = [
+    [0.0, 1.0],
+    [0.0, 0.666_667],
+    [0.5, 0.666_667],
+    [0.5, 1.0],
+    [0.5, 1.0],
+    [0.5, 0.666_667],
+    [1.0, 0.666_667],
+    [1.0, 1.0],
+    [0.0, 0.666_667],
+    [0.0, 0.166_667],
+    [0.333_333, 0.166_667],
+    [0.333_333, 0.666_667],
+    [0.333_333, 0.666_667],
+    [0.333_333, 0.166_667],
+    [0.666_667, 0.166_667],
+    [0.666_667, 0.666_667],
+    [0.666_667, 0.666_667],
+    [0.666_667, 0.333_333],
+    [1.0, 0.333_333],
+    [1.0, 0.666_667],
+    [0.666_667, 0.333_333],
+    [0.666_667, 0.0],
+    [1.0, 0.0],
+    [1.0, 0.333_333],
+];
+const ELECTRIC_ENGINE_UVS: [[f32; 2]; 24] = [
+    [0.666_667, 1.0],
+    [0.666_667, 0.5],
+    [1.0, 0.5],
+    [1.0, 1.0],
+    [0.0, 0.5],
+    [0.0, 0.0],
+    [0.333_333, 0.0],
+    [0.333_333, 0.5],
+    [0.333_333, 0.5],
+    [0.333_333, 0.0],
+    [0.666_667, 0.0],
+    [0.666_667, 0.5],
+    [0.666_667, 0.5],
+    [0.666_667, 0.0],
+    [1.0, 0.0],
+    [1.0, 0.5],
+    [0.0, 1.0],
+    [0.0, 0.5],
+    [0.333_333, 0.5],
+    [0.333_333, 1.0],
+    [0.333_333, 1.0],
+    [0.333_333, 0.5],
+    [0.666_667, 0.5],
+    [0.666_667, 1.0],
+];
+
+fn authored_uvs(appearance: AuthoredPart) -> [[f32; 2]; 24] {
+    let assimp_uvs = match appearance {
+        AuthoredPart::Controller => CONTROLLER_UVS,
+        AuthoredPart::GasEngine => GAS_ENGINE_UVS,
+        AuthoredPart::ElectricEngine => ELECTRIC_ENGINE_UVS,
+    };
+    // Assimp's dump uses an OpenGL-style bottom-left texture origin. Bevy
+    // samples the PNG atlases from the top left, matching the original glTF
+    // accessor, so restore that V coordinate before building the runtime mesh.
+    assimp_uvs.map(|[u, v]| [u, 1.0 - v])
+}
+
 fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut indices = Vec::new();
     for (_, spec) in graph
         .parts()
-        .filter(|(_, spec)| !matches!(spec, PartSpec::Controller(_)))
+        .filter(|(_, spec)| matches!(spec, PartSpec::Cuboid(_) | PartSpec::Cylinder(_)))
     {
         append_part(*spec, 1.0, &mut positions, &mut normals, &mut indices);
     }
@@ -4316,15 +4660,35 @@ fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
 
 /// Control blocks render as their own teal mesh so they stand out from the
 /// construction they steer.
+#[cfg(test)]
 fn combined_controller_mesh(graph: &ConstructionGraph) -> Mesh {
+    combined_authored_construction_mesh(graph, AuthoredPart::Controller)
+}
+
+fn combined_authored_construction_mesh(
+    graph: &ConstructionGraph,
+    appearance: AuthoredPart,
+) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut tangents = Vec::new();
     let mut indices = Vec::new();
-    for (_, spec) in graph
-        .parts()
-        .filter(|(_, spec)| matches!(spec, PartSpec::Controller(_)))
-    {
-        append_part(*spec, 1.0, &mut positions, &mut normals, &mut indices);
+    for (_, spec) in graph.parts().filter(|(_, spec)| appearance.matches(**spec)) {
+        let cuboid = spec
+            .as_cuboid()
+            .expect("authored machine appearances have cuboid envelopes");
+        append_authored_cuboid(
+            cuboid.pose.translation(),
+            cuboid.pose.rotation.quaternion(),
+            cuboid.size_meters(),
+            appearance,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut tangents,
+            &mut indices,
+        );
     }
 
     Mesh::new(
@@ -4333,6 +4697,8 @@ fn combined_controller_mesh(graph: &ConstructionGraph) -> Mesh {
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -4401,8 +4767,6 @@ fn block_sheet_preview_mesh(specs: &[CuboidSpec]) -> Mesh {
 
 #[derive(Clone, Copy)]
 enum SimulationMeshKind {
-    /// Every control block, whether its compound is static or dynamic.
-    Controller,
     Static,
     Dynamic,
 }
@@ -4417,14 +4781,13 @@ fn combined_simulation_mesh(
         .part_to_compound
         .iter()
         .filter(|(part, compound_index)| {
-            let is_controller = graph
+            let is_authored = graph
                 .part(*part)
-                .is_some_and(|spec| matches!(spec, PartSpec::Controller(_)));
+                .is_some_and(|spec| matches!(spec, PartSpec::Controller(_) | PartSpec::Engine(_)));
             let is_static = creation.compounds[*compound_index as usize].is_static;
             match kind {
-                SimulationMeshKind::Controller => is_controller,
-                SimulationMeshKind::Static => is_static && !is_controller,
-                SimulationMeshKind::Dynamic => !is_static && !is_controller,
+                SimulationMeshKind::Static => is_static && !is_authored,
+                SimulationMeshKind::Dynamic => !is_static && !is_authored,
             }
         });
     let mut positions = Vec::new();
@@ -4449,16 +4812,8 @@ fn combined_simulation_mesh(
                 );
                 continue;
             }
-            PartSpec::Controller(controller) => {
-                append_transformed_cuboid(
-                    root_translation + root_rotation * local_center,
-                    root_rotation * controller.pose.rotation.quaternion(),
-                    controller.cuboid().size_meters(),
-                    &mut positions,
-                    &mut normals,
-                    &mut indices,
-                );
-                continue;
+            PartSpec::Controller(_) | PartSpec::Engine(_) => {
+                unreachable!("authored parts render in their material-specific mesh")
             }
             PartSpec::Cylinder(cylinder) => cylinder,
         };
@@ -4479,6 +4834,54 @@ fn combined_simulation_mesh(
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
+fn combined_simulation_authored_mesh(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    appearance: AuthoredPart,
+) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut tangents = Vec::new();
+    let mut indices = Vec::new();
+    for &(part, compound_index) in creation.part_to_compound.iter().filter(|(part, _)| {
+        graph
+            .part(*part)
+            .is_some_and(|spec| appearance.matches(*spec))
+    }) {
+        let transform = transforms[compound_index as usize];
+        let root_translation = Vec3::from_array(transform.position[..3].try_into().unwrap());
+        let root_rotation = Quat::from_array(transform.rotation);
+        let initial = &creation.compounds[compound_index as usize];
+        let spec = *graph.part(part).expect("compiled source remains in graph");
+        let local_center = spec.pose().translation() - initial.root_translation;
+        let cuboid = spec
+            .as_cuboid()
+            .expect("authored machine appearances have cuboid envelopes");
+        append_authored_cuboid(
+            root_translation + root_rotation * local_center,
+            root_rotation * cuboid.pose.rotation.quaternion(),
+            cuboid.size_meters(),
+            appearance,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut tangents,
+            &mut indices,
+        );
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -4991,6 +5394,20 @@ fn degenerate_overlay_mesh() -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// Keeps an empty logical batch allocated in Bevy's GPU mesh slabs.
+///
+/// Bevy 0.19 frees a modified mesh's previous allocation before discovering
+/// that a zero-vertex replacement needs no new allocation, then still attempts
+/// to upload its vertex and index data. A zero-area triangle is invisible but
+/// preserves both allocations and avoids that renderer use-after-free path.
+fn renderable_mesh(mesh: Mesh) -> Mesh {
+    if mesh.count_vertices() == 0 {
+        degenerate_overlay_mesh()
+    } else {
+        mesh
+    }
+}
+
 /// How much bigger a wirable joint or block is drawn while the pointer is on
 /// it. The ring is thin, so it needs more than the solid block does.
 const WIRE_HOVER_BEARING_SCALE: f32 = 1.3;
@@ -5439,6 +5856,14 @@ fn append_part(
             normals,
             indices,
         ),
+        PartSpec::Engine(spec) => append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.cuboid().size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
         PartSpec::Cylinder(spec) => append_cylinder_shape(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
@@ -5491,6 +5916,35 @@ fn append_transformed_cuboid(
     indices.extend(CUBE_INDICES.map(|index| base_index + index));
 }
 
+#[allow(clippy::too_many_arguments)] // Appends every vertex stream of one authored cuboid.
+fn append_authored_cuboid(
+    translation: Vec3,
+    rotation: Quat,
+    size: Vec3,
+    appearance: AuthoredPart,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+) {
+    let base_index = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
+    positions.extend(
+        AUTHORED_CUBE_POSITIONS.map(|position| {
+            (translation + rotation * (Vec3::from_array(position) * size)).to_array()
+        }),
+    );
+    normals.extend(
+        AUTHORED_CUBE_NORMALS.map(|normal| (rotation * Vec3::from_array(normal)).to_array()),
+    );
+    uvs.extend(authored_uvs(appearance));
+    tangents.extend(AUTHORED_CUBE_TANGENTS.map(|tangent| {
+        let tangent_xyz = rotation * Vec3::from_array(tangent[..3].try_into().unwrap());
+        [tangent_xyz.x, tangent_xyz.y, tangent_xyz.z, tangent[3]]
+    }));
+    indices.extend(AUTHORED_CUBE_INDICES.map(|index| base_index + index));
+}
+
 #[cfg(test)]
 mod rendering_tests {
     use bevy::{
@@ -5500,17 +5954,19 @@ mod rendering_tests {
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
-        DriveProgram, DriveState, DriveTarget, FaceKind, FaceRef, GridRotation,
+        DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef,
+        GridRotation,
     };
     use mechanic_gpu::GpuTransform;
 
     use super::{
-        BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, BLOCK_SHEET_PREVIEW_INSET_METERS, PlacedBearing,
-        SimulationMeshKind, append_bearing_cylinder, append_cylinder_shape,
-        bearing_preview_dimensions_changed, bearing_surface_material, block_sheet_bounds,
-        block_sheet_preview_mesh, block_sheet_specs, combined_bearing_mesh,
-        combined_controller_mesh, combined_drive_xray_mesh, combined_simulation_bearing_mesh,
-        combined_simulation_mesh, drive_xray_is_visible, joint_xray_is_visible, preview_material,
+        AuthoredPart, BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, BLOCK_SHEET_PREVIEW_INSET_METERS,
+        PlacedBearing, SimulationMeshKind, append_bearing_cylinder, append_cylinder_shape,
+        authored_uvs, bearing_preview_dimensions_changed, bearing_surface_material,
+        block_sheet_bounds, block_sheet_preview_mesh, block_sheet_specs,
+        combined_authored_construction_mesh, combined_bearing_mesh, combined_controller_mesh,
+        combined_drive_xray_mesh, combined_simulation_bearing_mesh, combined_simulation_mesh,
+        drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
         single_bearing_mesh, single_cylinder_mesh,
     };
     use crate::PlacementPlane;
@@ -6071,14 +6527,99 @@ mod rendering_tests {
     }
 
     #[test]
-    fn control_blocks_render_in_their_own_mesh_not_the_construction_mesh() {
-        let graph = hinged_pair_with_control_block(false);
+    fn authored_parts_render_in_textured_meshes_not_the_construction_mesh() {
+        let mut graph = hinged_pair_with_control_block(false);
+        for (kind, x) in [(EngineKind::Gas, 20), (EngineKind::Electric, 24)] {
+            graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    kind,
+                    BuildPose::new(IVec3::new(x, 12, 0), GridRotation::default()),
+                )))
+                .unwrap();
+        }
         let construction = super::combined_construction_mesh(&graph);
         let controllers = combined_controller_mesh(&graph);
+        let gas = combined_authored_construction_mesh(&graph, AuthoredPart::GasEngine);
+        let electric = combined_authored_construction_mesh(&graph, AuthoredPart::ElectricEngine);
 
-        // Two hinged blocks in the construction mesh, the control block in its own.
+        // Two hinged blocks remain in the construction mesh; every authored part
+        // has an independent batch so its material can use its own texture set.
         assert_eq!(positions(&construction).len(), 24 * 2);
         assert_eq!(positions(&controllers).len(), 24);
+        assert_eq!(positions(&gas).len(), 24);
+        assert_eq!(positions(&electric).len(), 24);
+        for mesh in [&controllers, &gas, &electric] {
+            assert_eq!(
+                mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().len(),
+                positions(mesh).len()
+            );
+            assert_eq!(
+                mesh.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().len(),
+                positions(mesh).len()
+            );
+        }
+    }
+
+    #[test]
+    fn authored_uvs_assign_each_controller_atlas_tile_to_its_named_face() {
+        let uvs = authored_uvs(AuthoredPart::Controller);
+        let bounds = |face: usize| {
+            uvs[face * 4..face * 4 + 4].iter().fold(
+                ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]),
+                |(minimum, maximum), uv| {
+                    (
+                        [minimum[0].min(uv[0]), minimum[1].min(uv[1])],
+                        [maximum[0].max(uv[0]), maximum[1].max(uv[1])],
+                    )
+                },
+            )
+        };
+
+        // Vertex groups are +X, -X, +Y, -Y, +Z, -Z. These rectangles are the
+        // labelled tiles in controller_reference.png.
+        assert_eq!(bounds(0), ([0.0, 0.5], [0.25, 1.0]));
+        assert_eq!(bounds(1), ([0.25, 0.5], [0.5, 1.0]));
+        assert_eq!(bounds(2), ([0.5, 0.5], [1.0, 0.75]));
+        assert_eq!(bounds(3), ([0.5, 0.75], [1.0, 1.0]));
+        assert_eq!(bounds(4), ([0.0, 0.0], [0.5, 0.5]));
+        assert_eq!(bounds(5), ([0.5, 0.0], [1.0, 0.5]));
+
+        let approximately = |actual: [f32; 2], expected: [f32; 2]| {
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (*actual - expected).abs() < 1.0e-6)
+        };
+        assert!(approximately(
+            authored_uvs(AuthoredPart::GasEngine)[0],
+            [0.0, 0.0]
+        ));
+        assert!(approximately(
+            authored_uvs(AuthoredPart::ElectricEngine)[0],
+            [0.666_667, 0.0]
+        ));
+    }
+
+    #[test]
+    fn empty_logical_batches_keep_an_invisible_gpu_allocation() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::ZERO, GridRotation::default()),
+            )))
+            .unwrap();
+
+        let logical = super::combined_construction_mesh(&graph);
+        assert_eq!(logical.count_vertices(), 0);
+
+        let allocated = renderable_mesh(logical);
+        assert_eq!(allocated.count_vertices(), 3);
+        assert!(
+            positions(&allocated)
+                .iter()
+                .all(|position| position.length_squared() <= f32::EPSILON)
+        );
+        assert_eq!(allocated.indices().unwrap().len(), 3);
     }
 
     #[test]
@@ -6165,13 +6706,14 @@ mod interaction_tests {
         bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_specs,
         candidate_from_hit, connect_drive_wire, delete_sheet_parts, disconnect_drive_wires,
         hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
-        handle_build_actions, handle_tool_change, help_toggle_requested, raycast_construction,
-        raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
-        refresh_block_drag, refresh_tool_preview, requested_bearing_dimension_adjustment,
-        requested_cylinder_dimension_adjustment, requested_simulation_shortcut, rigid_body_parts,
-        stage_part_deletion_preserving_bearings, tool_status_line, wire_drag_step,
+        handle_build_actions, handle_shortcuts, handle_tool_change, help_toggle_requested,
+        raycast_construction, raycast_placed_bearing_discs, raycast_placed_bearings,
+        raycast_simulation, refresh_block_drag, refresh_tool_preview,
+        requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
+        requested_simulation_shortcut, rigid_body_parts, stage_part_deletion_preserving_bearings,
+        tool_status_line, wire_drag_step,
     };
-    use crate::{WireDrag, WireDragStep, WireEnd};
+    use crate::{WireDrag, WireDragStep, WireEnd, ui::UiInput};
 
     fn pointer_sample(cursor: Vec2, ray_origin: Vec3, ray_direction: Vec3) -> PointerSample {
         PointerSample {
@@ -6195,6 +6737,60 @@ mod interaction_tests {
             !help_toggle_requested(&keyboard),
             "an ordinary letter is not a request for help",
         );
+    }
+
+    #[test]
+    fn q_cycles_every_authored_tool_through_four_quarter_turns() {
+        for tool in [Tool::Controller, Tool::GasEngine, Tool::ElectricEngine] {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<EditorGraph>()
+                .init_resource::<EditorState>()
+                .init_resource::<AppSimulation>()
+                .init_resource::<UiInput>()
+                .insert_resource(SelectedTool(tool))
+                .add_systems(Update, handle_shortcuts);
+
+            for expected in [1, 2, 3, 0] {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(KeyCode::KeyQ);
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .resource::<EditorState>()
+                        .authored_quarter_turns_y,
+                    expected,
+                    "{} should rotate on Q",
+                    tool.label()
+                );
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .reset(KeyCode::KeyQ);
+            }
+        }
+    }
+
+    #[test]
+    fn authored_preview_uses_the_rotation_selected_with_q() {
+        let graph = ConstructionGraph::new();
+        let mut state = EditorState {
+            hovered: Some(SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::ground(),
+            }),
+            authored_quarter_turns_y: 1,
+            ..Default::default()
+        };
+
+        refresh_tool_preview(&graph, &mut state, Tool::GasEngine);
+
+        let preview = state.preview.expect("gas engine has a ground preview");
+        assert_eq!(preview.spec.pose.rotation.quarter_turns_xyz(), [0, 1, 0]);
+        let (minimum, maximum) = super::part_world_bounds(preview.spec.into());
+        assert!((maximum.x - minimum.x - 0.75).abs() < 1.0e-6);
+        assert!((maximum.z - minimum.z - 0.50).abs() < 1.0e-6);
     }
 
     #[test]

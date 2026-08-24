@@ -5,8 +5,8 @@ use thiserror::Error;
 
 use crate::{
     ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, BearingId, ControllerSpec, CuboidSpec,
-    CylinderSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget, FaceKind,
-    FaceOwner, FaceRef, PartId, PartSpec, RigidLinkId, WeldId,
+    CylinderSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineSpec,
+    FaceKind, FaceOwner, FaceRef, PartId, PartSpec, RigidLinkId, WeldId,
     geometry::{FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face},
     id::Arena,
 };
@@ -245,6 +245,8 @@ pub enum BuildCommand {
     RigidLink(RigidLinkSpec),
     /// Spawn a control block.
     SpawnController(ControllerSpec),
+    /// Spawn an inert engine.
+    SpawnEngine(EngineSpec),
     /// Add a passive bearing.
     AddBearing(BearingSpec),
     /// Wire a control block to one bearing.
@@ -501,6 +503,7 @@ impl ConstructionGraph {
             FaceOwner::Part(part) => match self.parts.get(part).copied() {
                 Some(PartSpec::Cuboid(spec)) => Ok(cuboid_face(spec, face.face)),
                 Some(PartSpec::Controller(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                Some(PartSpec::Engine(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Cylinder(spec)) => {
                     cylinder_face(spec, face.face).ok_or(GraphError::InvalidCylinderFace)
                 }
@@ -523,6 +526,10 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnController(spec) => {
+                let id = self.parts.insert(spec.into());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnEngine(spec) => {
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
