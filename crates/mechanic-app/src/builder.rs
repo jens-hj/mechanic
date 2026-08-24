@@ -827,7 +827,8 @@ pub(crate) fn block_sheet_specs(
                     [dimension_units; 3],
                     BuildPose::from_half_grid(center, GridRotation::default()),
                 )
-                .expect("dragged blocks retain the selected valid size"),
+                .expect("dragged blocks retain the selected valid size")
+                .with_material(start.material),
             );
         }
     }
@@ -2041,8 +2042,8 @@ mod tests {
     use bevy::prelude::{IVec3, Vec3};
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, FaceKind, FaceOwner, FaceRef,
-        GridRotation, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
+        ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, FaceKind,
+        FaceOwner, FaceRef, GridRotation, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
     };
 
     use super::{
@@ -2702,6 +2703,19 @@ mod tests {
         let compiled = graph.compile().unwrap();
         assert_eq!(compiled.compounds.len(), 1);
         assert!(compiled.compounds[0].is_static);
+    }
+
+    #[test]
+    fn dragged_sheet_keeps_one_selected_material_for_every_block() {
+        let start = CuboidSpec::new([1; 3], BuildPose::default())
+            .unwrap()
+            .with_material(ConstructionMaterial::Wood);
+        let specs = block_sheet_specs(start, IVec3::new(4, 0, 4), PlacementPlane::Xz).unwrap();
+        assert!(
+            specs
+                .iter()
+                .all(|spec| spec.material == ConstructionMaterial::Wood)
+        );
     }
 
     #[test]

@@ -132,6 +132,8 @@ pub struct GpuCollider {
     pub half_extents: [f32; 4],
     /// compound index, source-part slot, source generation, ground-contact role.
     pub metadata: [u32; 4],
+    /// friction, restitution, and two reserved lanes.
+    pub contact_properties: [f32; 4],
 }
 
 /// One exact passive-bearing row.
@@ -318,7 +320,7 @@ const _: () = {
     assert!(size_of::<GpuVelocity>() == 32);
     assert!(size_of::<GpuMass>() == 64);
     assert!(size_of::<GpuSpatialInertia>() == 64);
-    assert!(size_of::<GpuCollider>() == 64);
+    assert!(size_of::<GpuCollider>() == 80);
     assert!(size_of::<GpuBearing>() == 80);
     assert!(size_of::<GpuPair>() == 8);
     assert!(size_of::<GpuContact>() == 64);

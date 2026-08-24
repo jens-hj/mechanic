@@ -4,6 +4,11 @@
 
 Mechanic is a Rust 2024 Cargo workspace. Keep shared construction data structures, geometry, and compilation logic in `crates/mechanic-core`. GPU runtime code, ABI definitions, and compute shaders belong in `crates/mechanic-gpu`; WGSL kernels live under `crates/mechanic-gpu/src/kernels`. The interactive Bevy prototype is in `crates/mechanic-app`, while reproducible performance scenarios are in `crates/mechanic-bench`. Architectural decisions and milestone status are documented in `docs/`. Tests are generally colocated with their Rust modules in `#[cfg(test)]` blocks.
 
+## Domain Terminology
+
+- A construction "block" is one grid unit: 25 cm per side. An 8 × 8 block square is therefore 2 × 2 m.
+- Construction material textures allocate 512 × 512 pixels to each block. The current 3072 × 3072 maps span six blocks, or 1.5 m, per repeat.
+
 ## Build, Test, and Development Commands
 
 - `cargo build --workspace` builds every crate with the pinned toolchain.

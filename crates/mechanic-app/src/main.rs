@@ -20,9 +20,12 @@ mod ui;
 
 use bevy::{
     asset::RenderAssetUsages,
-    camera::visibility::{NoFrustumCulling, RenderLayers},
+    camera::{
+        Exposure,
+        visibility::{NoFrustumCulling, RenderLayers},
+    },
     core_pipeline::tonemapping::Tonemapping,
-    image::ImageLoaderSettings,
+    image::{ImageAddressMode, ImageLoaderSettings},
     input::keyboard::Key,
     mesh::Indices,
     prelude::*,
@@ -50,16 +53,16 @@ use camera::{OrbitCamera, SeatedView, seated_view_rotation};
 use control_panel::ControlPanelState;
 use creation_menu::{CreationMenuState, CreationRequest};
 use creation_store::CreationStore;
-use hotbar::{SelectedTool, Tool, shortcut_tool};
+use hotbar::{SelectedMaterial, SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
     ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand,
-    CYLINDER_SWEEP_STEP_DEGREES, CompiledCreation, ConstructionGraph, ControllerSpec,
-    CreationDocument, CuboidSpec, CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget,
-    EngineKind, FaceOwner, GridRotation, InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER,
-    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
-    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
-    MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation, SeatControllerLinkSpec,
-    SeatSpec, ServoSpec, TopologyError,
+    CYLINDER_SWEEP_STEP_DEGREES, CompiledCreation, ConstructionGraph, ConstructionMaterial,
+    ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions, DriveLinkSpec, DriveState,
+    DriveTarget, EngineKind, FaceOwner, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec,
+    InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
+    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
+    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation,
+    SeatControllerLinkSpec, SeatSpec, ServoSpec, TopologyError,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
@@ -783,13 +786,9 @@ fn advance_simulation(
     render_queue: Res<RenderQueue>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut construction_visibility: Single<
-        &mut Visibility,
-        (
-            With<ConstructionVisual>,
-            Without<BearingVisual>,
-            Without<SimulationVisual>,
-        ),
+    mut construction_visuals: Query<
+        (&ConstructionVisual, &mut Visibility),
+        (Without<BearingVisual>, Without<SimulationVisual>),
     >,
     mut bearing_visibility: Single<
         &mut Visibility,
@@ -807,13 +806,9 @@ fn advance_simulation(
             Without<SimulationVisual>,
         ),
     >,
-    mut simulation_visibility: Single<
-        &mut Visibility,
-        (
-            With<SimulationVisual>,
-            Without<ConstructionVisual>,
-            Without<BearingVisual>,
-        ),
+    mut simulation_visuals: Query<
+        (&SimulationVisual, &mut Visibility),
+        (Without<ConstructionVisual>, Without<BearingVisual>),
     >,
 ) {
     if !simulation.is_running() {
@@ -915,15 +910,30 @@ fn advance_simulation(
             .creation
             .as_ref()
             .expect("running simulation has compiled creation");
-        if let Some(mut mesh) = meshes.get_mut(&visuals.construction_mesh) {
-            *mesh = renderable_mesh(combined_simulation_mesh(
+        for material in ConstructionMaterial::ALL {
+            let mesh = combined_simulation_material_mesh(
                 &graph.0,
                 creation,
                 &simulation.transforms,
                 SimulationMeshKind::Static,
-            ));
+                material,
+            );
+            let visible = mesh.count_vertices() > 0;
+            if let Some(mut asset) =
+                meshes.get_mut(&visuals.construction_meshes[material_index(material)])
+            {
+                *asset = renderable_mesh(mesh);
+            }
+            for (visual, mut visibility) in &mut construction_visuals {
+                if visual.0 == material {
+                    *visibility = if visible {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Hidden
+                    };
+                }
+            }
         }
-        **construction_visibility = Visibility::Visible;
         simulation.static_mesh_dirty = false;
     }
 
@@ -934,13 +944,29 @@ fn advance_simulation(
         .creation
         .as_ref()
         .expect("running simulation has compiled creation");
-    if let Some(mut mesh) = meshes.get_mut(&visuals.simulation_mesh) {
-        *mesh = renderable_mesh(combined_simulation_mesh(
+    for material in ConstructionMaterial::ALL {
+        let mesh = combined_simulation_material_mesh(
             &graph.0,
             creation,
             &simulation.transforms,
             SimulationMeshKind::Dynamic,
-        ));
+            material,
+        );
+        let visible = mesh.count_vertices() > 0;
+        if let Some(mut asset) =
+            meshes.get_mut(&visuals.simulation_meshes[material_index(material)])
+        {
+            *asset = renderable_mesh(mesh);
+        }
+        for (visual, mut visibility) in &mut simulation_visuals {
+            if visual.0 == material {
+                *visibility = if visible {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+            }
+        }
     }
     // Every mesh below is written only while its own visual is on screen. A
     // hidden mesh has no slab allocation, so writing to one both wastes the
@@ -994,7 +1020,6 @@ fn advance_simulation(
     } else {
         Visibility::Hidden
     };
-    **simulation_visibility = Visibility::Visible;
     simulation.render_dirty = false;
 }
 
@@ -1065,8 +1090,8 @@ struct EditorState {
 
 #[derive(Resource)]
 struct EditorVisuals {
-    construction_mesh: Handle<Mesh>,
-    simulation_mesh: Handle<Mesh>,
+    construction_meshes: [Handle<Mesh>; 5],
+    simulation_meshes: [Handle<Mesh>; 5],
     bearing_mesh: Handle<Mesh>,
     joint_xray_mesh: Handle<Mesh>,
     controller_mesh: Handle<Mesh>,
@@ -1133,10 +1158,10 @@ struct SelectionPreview;
 struct DeletePreview;
 
 #[derive(Component)]
-struct ConstructionVisual;
+struct ConstructionVisual(ConstructionMaterial);
 
 #[derive(Component)]
-struct SimulationVisual;
+struct SimulationVisual(ConstructionMaterial);
 
 #[derive(Component)]
 struct BearingVisual;
@@ -1307,6 +1332,54 @@ fn authored_part_material(asset_server: &AssetServer, stem: &str) -> StandardMat
     }
 }
 
+const fn material_index(material: ConstructionMaterial) -> usize {
+    match material {
+        ConstructionMaterial::Aluminium => 0,
+        ConstructionMaterial::Concrete => 1,
+        ConstructionMaterial::Plastic => 2,
+        ConstructionMaterial::Steel => 3,
+        ConstructionMaterial::Wood => 4,
+    }
+}
+
+fn construction_material(
+    asset_server: &AssetServer,
+    material: ConstructionMaterial,
+) -> StandardMaterial {
+    let stem = match material {
+        ConstructionMaterial::Aluminium => "materials/aluminium/aluminium",
+        ConstructionMaterial::Concrete => "materials/concrete/concrete",
+        ConstructionMaterial::Plastic => "materials/plastic/plastic",
+        ConstructionMaterial::Steel => "materials/steel/steel",
+        ConstructionMaterial::Wood => "materials/wood/wood",
+    };
+    let texture = |suffix: &str, is_srgb: bool| {
+        asset_server
+            .load_builder()
+            .with_settings(move |settings: &mut ImageLoaderSettings| {
+                configure_repeating_texture(settings, is_srgb);
+            })
+            .load(format!("{stem}_{suffix}.png"))
+    };
+    let orm = texture("orm", false);
+    StandardMaterial {
+        base_color_texture: Some(texture("base_color", true)),
+        metallic: 1.0,
+        perceptual_roughness: 1.0,
+        metallic_roughness_texture: Some(orm.clone()),
+        occlusion_texture: Some(orm),
+        normal_map_texture: Some(texture("normal", false)),
+        ..default()
+    }
+}
+
+fn configure_repeating_texture(settings: &mut ImageLoaderSettings, is_srgb: bool) {
+    settings.is_srgb = is_srgb;
+    let sampler = settings.sampler.get_or_init_descriptor();
+    sampler.address_mode_u = ImageAddressMode::Repeat;
+    sampler.address_mode_v = ImageAddressMode::Repeat;
+}
+
 fn authored_preview_material(
     mut material: StandardMaterial,
     base_color: Color,
@@ -1344,10 +1417,11 @@ fn main() {
         .init_resource::<DriveSequencer>()
         .init_resource::<CylinderToolSettings>()
         .init_resource::<SelectedTool>()
+        .init_resource::<SelectedMaterial>()
         .init_resource::<SeatedView>()
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.75, 0.80, 0.90),
-            brightness: 350.0,
+            brightness: 80.0,
             ..default()
         })
         .add_systems(Startup, (setup, ui::mount).chain())
@@ -1400,8 +1474,8 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let construction_mesh = meshes.add(Cuboid::default());
-    let simulation_mesh = meshes.add(Cuboid::default());
+    let construction_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
+    let simulation_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
     let bearing_mesh = meshes.add(Cuboid::default());
     let joint_xray_mesh = meshes.add(Cuboid::default());
     let controller_mesh = meshes.add(Cuboid::default());
@@ -1422,11 +1496,8 @@ fn setup(
     let delete_drag_preview_mesh = meshes.add(Cuboid::default());
     let weld_hover_preview_mesh = meshes.add(Cuboid::default());
     let weld_selection_preview_mesh = meshes.add(Cuboid::default());
-    let construction_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.18, 0.48, 0.78),
-        perceptual_roughness: 0.8,
-        ..default()
-    });
+    let construction_materials = ConstructionMaterial::ALL
+        .map(|material| materials.add(construction_material(&asset_server, material)));
     let bearing_material = materials.add(bearing_surface_material());
     let authored_materials = [
         authored_part_material(&asset_server, "machines/controller/controller"),
@@ -1474,8 +1545,8 @@ fn setup(
         materials.add(preview_material(Color::srgba(0.12, 1.0, 0.28, 0.52)));
 
     commands.insert_resource(EditorVisuals {
-        construction_mesh: construction_mesh.clone(),
-        simulation_mesh: simulation_mesh.clone(),
+        construction_meshes: construction_meshes.clone(),
+        simulation_meshes: simulation_meshes.clone(),
         bearing_mesh: bearing_mesh.clone(),
         joint_xray_mesh: joint_xray_mesh.clone(),
         controller_mesh: controller_mesh.clone(),
@@ -1517,22 +1588,25 @@ fn setup(
             ..default()
         })),
     ));
-    commands.spawn((
-        Name::new("Construction mesh"),
-        Mesh3d(construction_mesh),
-        MeshMaterial3d(construction_material.clone()),
-        NoFrustumCulling,
-        Visibility::Hidden,
-        ConstructionVisual,
-    ));
-    commands.spawn((
-        Name::new("Simulation mesh"),
-        Mesh3d(simulation_mesh),
-        MeshMaterial3d(construction_material),
-        NoFrustumCulling,
-        Visibility::Hidden,
-        SimulationVisual,
-    ));
+    for material in ConstructionMaterial::ALL {
+        let index = material_index(material);
+        commands.spawn((
+            Name::new(format!("{} construction mesh", material.label())),
+            Mesh3d(construction_meshes[index].clone()),
+            MeshMaterial3d(construction_materials[index].clone()),
+            NoFrustumCulling,
+            Visibility::Hidden,
+            ConstructionVisual(material),
+        ));
+        commands.spawn((
+            Name::new(format!("{} simulation mesh", material.label())),
+            Mesh3d(simulation_meshes[index].clone()),
+            MeshMaterial3d(construction_materials[index].clone()),
+            NoFrustumCulling,
+            Visibility::Hidden,
+            SimulationVisual(material),
+        ));
+    }
     commands.spawn((
         Name::new("Bearing mesh"),
         Mesh3d(bearing_mesh.clone()),
@@ -1668,7 +1742,8 @@ fn setup(
         .spawn((
             Name::new("Orbital camera"),
             Camera3d::default(),
-            Tonemapping::None,
+            Exposure::OVERCAST,
+            Tonemapping::SomewhatBoringDisplayTransform,
             orbit.transform(),
             orbit,
         ))
@@ -2120,6 +2195,7 @@ fn update_hover(
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
+    selected_material: Option<Res<SelectedMaterial>>,
     overlay: Res<ui::UiInput>,
 ) {
     if simulation.is_running() || overlay.blocks_pointer() {
@@ -2139,6 +2215,9 @@ fn update_hover(
             &mut state,
             selection.0,
             cylinder_settings.dimensions,
+            selected_material
+                .as_deref()
+                .map_or(ConstructionMaterial::Steel, |value| value.0),
         );
         return;
     }
@@ -2162,6 +2241,9 @@ fn update_hover(
             &mut state,
             selection.0,
             cylinder_settings.dimensions,
+            selected_material
+                .as_deref()
+                .map_or(ConstructionMaterial::Steel, |value| value.0),
         );
         return;
     };
@@ -2182,6 +2264,9 @@ fn update_hover(
             &mut state,
             selection.0,
             cylinder_settings.dimensions,
+            selected_material
+                .as_deref()
+                .map_or(ConstructionMaterial::Steel, |value| value.0),
         );
         return;
     };
@@ -2260,6 +2345,9 @@ fn update_hover(
             &mut state,
             selection.0,
             cylinder_settings.dimensions,
+            selected_material
+                .as_deref()
+                .map_or(ConstructionMaterial::Steel, |value| value.0),
         );
         return;
     }
@@ -2270,6 +2358,9 @@ fn update_hover(
             &mut state,
             selection.0,
             cylinder_settings.dimensions,
+            selected_material
+                .as_deref()
+                .map_or(ConstructionMaterial::Steel, |value| value.0),
         );
         return;
     };
@@ -2280,6 +2371,9 @@ fn update_hover(
         &mut state,
         selection.0,
         cylinder_settings.dimensions,
+        selected_material
+            .as_deref()
+            .map_or(ConstructionMaterial::Steel, |value| value.0),
     );
 }
 
@@ -2432,6 +2526,7 @@ fn refresh_tool_preview_with_cylinder(
     state: &mut EditorState,
     tool: Tool,
     cylinder_dimensions: CylinderDimensions,
+    material: ConstructionMaterial,
 ) {
     state.preview = None;
     state.cylinder_preview = None;
@@ -2442,6 +2537,10 @@ fn refresh_tool_preview_with_cylinder(
                 try_face_geometry_from_ref(hit.face, Some(graph))
                     .is_some()
                     .then(|| candidate_from_hit(graph, hit))
+                    .map(|mut candidate| {
+                        candidate.spec = candidate.spec.with_material(material);
+                        candidate
+                    })
             });
             let direct_bearing = state.hovered_bearing.filter(|&index| {
                 state.placed_bearings.get(index).is_some_and(|bearing| {
@@ -2474,7 +2573,10 @@ fn refresh_tool_preview_with_cylinder(
                 bearing_index.and_then(|index| state.placed_bearings.get(index).copied())
             {
                 let candidate = surface_candidate.unwrap_or_else(|| {
-                    bearing_attachment_candidate(graph, bearing.source, bearing.anchor)
+                    let mut candidate =
+                        bearing_attachment_candidate(graph, bearing.source, bearing.anchor);
+                    candidate.spec = candidate.spec.with_material(material);
+                    candidate
                 });
                 let error = stage_bearing_attachment(
                     graph,
@@ -2500,7 +2602,11 @@ fn refresh_tool_preview_with_cylinder(
         (Tool::Cylinder, _) => {
             let surface_candidate = state
                 .hovered
-                .and_then(|hit| cylinder_candidate_from_hit(graph, hit, cylinder_dimensions).ok());
+                .and_then(|hit| cylinder_candidate_from_hit(graph, hit, cylinder_dimensions).ok())
+                .map(|mut candidate| {
+                    candidate.spec = candidate.spec.with_material(material);
+                    candidate
+                });
             let direct_bearing = state.hovered_bearing.filter(|&index| {
                 state.placed_bearings.get(index).is_some_and(|bearing| {
                     surface_candidate.is_none_or(|candidate| {
@@ -2537,7 +2643,12 @@ fn refresh_tool_preview_with_cylinder(
                         point: bearing.anchor,
                         face: bearing.source,
                     };
-                    cylinder_candidate_from_hit(graph, hit, cylinder_dimensions).ok()
+                    cylinder_candidate_from_hit(graph, hit, cylinder_dimensions)
+                        .ok()
+                        .map(|mut candidate| {
+                            candidate.spec = candidate.spec.with_material(material);
+                            candidate
+                        })
                 })
             } else {
                 surface_candidate
@@ -2592,7 +2703,13 @@ fn refresh_tool_preview_with_cylinder(
 
 #[cfg(test)]
 fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool: Tool) {
-    refresh_tool_preview_with_cylinder(graph, state, tool, CylinderDimensions::default());
+    refresh_tool_preview_with_cylinder(
+        graph,
+        state,
+        tool,
+        CylinderDimensions::default(),
+        ConstructionMaterial::Steel,
+    );
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -2607,6 +2724,7 @@ fn handle_build_actions(
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
+    selected_material: Option<Res<SelectedMaterial>>,
     overlay: Res<ui::UiInput>,
 ) {
     if simulation.is_running() || overlay.blocks_pointer() {
@@ -2939,8 +3057,10 @@ fn handle_build_actions(
                             dimensions: bearing_settings.dimensions,
                         });
                         history.commit(previous);
-                        state.feedback =
-                            Some("Bearing placed — select Block and hover it to attach".to_owned());
+                        state.feedback = Some(
+                            "Bearing placed — select Blocker Placer and hover it to attach"
+                                .to_owned(),
+                        );
                         state.construction_mesh_dirty = true;
                     }
                 }
@@ -3050,6 +3170,9 @@ fn handle_build_actions(
         &mut state,
         selection.0,
         cylinder_settings.dimensions,
+        selected_material
+            .as_deref()
+            .map_or(ConstructionMaterial::Steel, |value| value.0),
     );
 }
 
@@ -4234,13 +4357,9 @@ fn sync_visual_meshes(
     mut state: ResMut<EditorState>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut construction_visibility: Single<
-        &mut Visibility,
-        (
-            With<ConstructionVisual>,
-            Without<BearingVisual>,
-            Without<SimulationVisual>,
-        ),
+    mut construction_visuals: Query<
+        (&ConstructionVisual, &mut Visibility),
+        (Without<BearingVisual>, Without<SimulationVisual>),
     >,
     mut bearing_visibility: Single<
         &mut Visibility,
@@ -4250,13 +4369,9 @@ fn sync_visual_meshes(
             Without<SimulationVisual>,
         ),
     >,
-    mut simulation_visibility: Single<
-        &mut Visibility,
-        (
-            With<SimulationVisual>,
-            Without<ConstructionVisual>,
-            Without<BearingVisual>,
-        ),
+    mut simulation_visuals: Query<
+        (&SimulationVisual, &mut Visibility),
+        (Without<ConstructionVisual>, Without<BearingVisual>),
     >,
     mut authored_visuals: Query<
         (&AuthoredPartVisual, &mut Visibility),
@@ -4270,15 +4385,27 @@ fn sync_visual_meshes(
     if !state.construction_mesh_dirty {
         return;
     }
-    if graph.0.part_count() == 0 {
-        **construction_visibility = Visibility::Hidden;
-    } else {
-        if let Some(mut mesh) = meshes.get_mut(&visuals.construction_mesh) {
-            *mesh = renderable_mesh(combined_construction_mesh(&graph.0));
+    for material in ConstructionMaterial::ALL {
+        let mesh = combined_material_construction_mesh(&graph.0, material);
+        let visible = mesh.count_vertices() > 0;
+        if let Some(mut asset) =
+            meshes.get_mut(&visuals.construction_meshes[material_index(material)])
+        {
+            *asset = renderable_mesh(mesh);
         }
-        **construction_visibility = Visibility::Visible;
+        for (visual, mut visibility) in &mut construction_visuals {
+            if visual.0 == material {
+                *visibility = if visible {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+            }
+        }
     }
-    **simulation_visibility = Visibility::Hidden;
+    for (_, mut visibility) in &mut simulation_visuals {
+        *visibility = Visibility::Hidden;
+    }
     for appearance in AuthoredPart::ALL {
         let visible = graph.0.parts().any(|(_, spec)| appearance.matches(*spec));
         if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
@@ -4798,6 +4925,7 @@ fn tool_status_line(
     bearing_dimensions: BearingDimensions,
     cylinder_dimensions: CylinderDimensions,
     selected_wires: Option<usize>,
+    material: ConstructionMaterial,
 ) -> String {
     match tool {
         Tool::Connector => format!(
@@ -4821,14 +4949,18 @@ fn tool_status_line(
                 )
             ),
         ),
-        Tool::Block => format!("Tool: Block    Block size: {BLOCK_SIZE_METERS:.2} m"),
+        Tool::Block => format!(
+            "Tool: Blocker Placer    Material: {}    Block size: {BLOCK_SIZE_METERS:.2} m",
+            material.label(),
+        ),
         Tool::Bearing => format!(
             "Tool: Bearing    Outer: {:.2} m ←/→  Inner: {:.2} m Shift+←/→",
             bearing_dimensions.outer_diameter(),
             bearing_dimensions.inner_diameter(),
         ),
         Tool::Cylinder => format!(
-            "Tool: Cylinder    Outer: {:.2} m ←/→  Inner: {:.2} m Shift+←/→  Length: {:.2} m ↓/↑  Sweep: {}° Shift+↓/↑",
+            "Tool: Cylinder    Material: {}    Outer: {:.2} m ←/→  Inner: {:.2} m Shift+←/→  Length: {:.2} m ↓/↑  Sweep: {}° Shift+↓/↑",
+            material.label(),
             cylinder_dimensions.outer_diameter(),
             cylinder_dimensions.inner_diameter(),
             cylinder_dimensions.axial_length(),
@@ -5168,15 +5300,41 @@ fn single_authored_part_mesh(appearance: AuthoredPart) -> Mesh {
     .with_inserted_indices(Indices::U32(AUTHORED_CUBE_INDICES.to_vec()))
 }
 
+#[cfg(test)]
 fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
+    combined_construction_mesh_filtered(graph, None)
+}
+
+fn combined_material_construction_mesh(
+    graph: &ConstructionGraph,
+    material: ConstructionMaterial,
+) -> Mesh {
+    combined_construction_mesh_filtered(graph, Some(material))
+}
+
+fn combined_construction_mesh_filtered(
+    graph: &ConstructionGraph,
+    material: Option<ConstructionMaterial>,
+) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut tangents = Vec::new();
     let mut indices = Vec::new();
-    for (_, spec) in graph
-        .parts()
-        .filter(|(_, spec)| matches!(spec, PartSpec::Cuboid(_) | PartSpec::Cylinder(_)))
-    {
-        append_part(*spec, 1.0, &mut positions, &mut normals, &mut indices);
+    for (_, spec) in graph.parts().filter(|(_, spec)| {
+        ordinary_material(**spec)
+            .is_some_and(|part_material| material.is_none_or(|wanted| wanted == part_material))
+    }) {
+        append_textured_part(
+            *spec,
+            spec.pose().translation(),
+            spec.pose().rotation.quaternion(),
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut tangents,
+            &mut indices,
+        );
     }
 
     Mesh::new(
@@ -5185,7 +5343,21 @@ fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+const fn ordinary_material(spec: PartSpec) -> Option<ConstructionMaterial> {
+    match spec {
+        PartSpec::Cuboid(cuboid) => Some(cuboid.material),
+        PartSpec::Cylinder(cylinder) => Some(cylinder.material),
+        PartSpec::Controller(_)
+        | PartSpec::Engine(_)
+        | PartSpec::Servo(_)
+        | PartSpec::Seat(_)
+        | PartSpec::Input(_) => None,
+    }
 }
 
 /// Control blocks render as their own teal mesh so they stand out from the
@@ -5301,34 +5473,52 @@ enum SimulationMeshKind {
     Dynamic,
 }
 
+#[cfg(test)]
 fn combined_simulation_mesh(
     graph: &ConstructionGraph,
     creation: &CompiledCreation,
     transforms: &[GpuTransform],
     kind: SimulationMeshKind,
 ) -> Mesh {
+    combined_simulation_mesh_filtered(graph, creation, transforms, kind, None)
+}
+
+fn combined_simulation_material_mesh(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    kind: SimulationMeshKind,
+    material: ConstructionMaterial,
+) -> Mesh {
+    combined_simulation_mesh_filtered(graph, creation, transforms, kind, Some(material))
+}
+
+fn combined_simulation_mesh_filtered(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    kind: SimulationMeshKind,
+    material: Option<ConstructionMaterial>,
+) -> Mesh {
     let parts = creation
         .part_to_compound
         .iter()
         .filter(|(part, compound_index)| {
-            let is_authored = graph.part(*part).is_some_and(|spec| {
-                matches!(
-                    spec,
-                    PartSpec::Controller(_)
-                        | PartSpec::Engine(_)
-                        | PartSpec::Servo(_)
-                        | PartSpec::Seat(_)
-                        | PartSpec::Input(_)
-                )
-            });
+            let part_material = graph.part(*part).copied().and_then(ordinary_material);
             let is_static = creation.compounds[*compound_index as usize].is_static;
-            match kind {
-                SimulationMeshKind::Static => is_static && !is_authored,
-                SimulationMeshKind::Dynamic => !is_static && !is_authored,
-            }
+            let right_motion = match kind {
+                SimulationMeshKind::Static => is_static,
+                SimulationMeshKind::Dynamic => !is_static,
+            };
+            right_motion
+                && part_material.is_some_and(|part_material| {
+                    material.is_none_or(|wanted| wanted == part_material)
+                })
         });
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut tangents = Vec::new();
     let mut indices = Vec::new();
     for &(part, compound_index) in parts {
         let transform = transforms[compound_index as usize];
@@ -5337,34 +5527,14 @@ fn combined_simulation_mesh(
         let initial = &creation.compounds[compound_index as usize];
         let spec = *graph.part(part).expect("compiled source remains in graph");
         let local_center = spec.pose().translation() - initial.root_translation;
-        let world_spec = match spec {
-            PartSpec::Cuboid(cuboid) => {
-                append_transformed_cuboid(
-                    root_translation + root_rotation * local_center,
-                    root_rotation * cuboid.pose.rotation.quaternion(),
-                    cuboid.size_meters(),
-                    &mut positions,
-                    &mut normals,
-                    &mut indices,
-                );
-                continue;
-            }
-            PartSpec::Controller(_)
-            | PartSpec::Engine(_)
-            | PartSpec::Servo(_)
-            | PartSpec::Seat(_)
-            | PartSpec::Input(_) => {
-                unreachable!("authored parts render in their material-specific mesh")
-            }
-            PartSpec::Cylinder(cylinder) => cylinder,
-        };
-        append_cylinder_shape(
+        append_textured_part(
+            spec,
             root_translation + root_rotation * local_center,
-            root_rotation * world_spec.pose.rotation.quaternion(),
-            world_spec.dimensions,
-            1.0,
+            root_rotation * spec.pose().rotation.quaternion(),
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
     }
@@ -5375,6 +5545,8 @@ fn combined_simulation_mesh(
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -5943,10 +6115,20 @@ fn degenerate_overlay_mesh() -> Mesh {
 /// preserves both allocations and avoids that renderer use-after-free path.
 fn renderable_mesh(mesh: Mesh) -> Mesh {
     if mesh.count_vertices() == 0 {
-        degenerate_overlay_mesh()
+        if mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_some() {
+            degenerate_textured_mesh()
+        } else {
+            degenerate_overlay_mesh()
+        }
     } else {
         mesh
     }
+}
+
+fn degenerate_textured_mesh() -> Mesh {
+    degenerate_overlay_mesh()
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0, 0.0]; 3])
+        .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0, 0.0, 0.0, 1.0]; 3])
 }
 
 /// How much bigger a wirable joint or block is drawn while the pointer is on
@@ -6513,6 +6695,100 @@ fn append_transformed_cuboid(
     indices.extend(CUBE_INDICES.map(|index| base_index + index));
 }
 
+const MATERIAL_TEXTURE_PIXELS_PER_SIDE: f32 = 3_072.0;
+const MATERIAL_TEXTURE_PIXELS_PER_BLOCK: f32 = 512.0;
+const MATERIAL_TEXTURE_METERS_PER_REPEAT: f32 =
+    GRID_UNIT_METERS * MATERIAL_TEXTURE_PIXELS_PER_SIDE / MATERIAL_TEXTURE_PIXELS_PER_BLOCK;
+
+#[allow(clippy::too_many_arguments)]
+fn append_textured_part(
+    spec: PartSpec,
+    translation: Vec3,
+    rotation: Quat,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+) {
+    let first = positions.len();
+    match spec {
+        PartSpec::Cuboid(cuboid) => append_transformed_cuboid(
+            translation,
+            rotation,
+            cuboid.size_meters(),
+            positions,
+            normals,
+            indices,
+        ),
+        PartSpec::Cylinder(cylinder) => append_cylinder_shape(
+            translation,
+            rotation,
+            cylinder.dimensions,
+            1.0,
+            positions,
+            normals,
+            indices,
+        ),
+        PartSpec::Controller(_)
+        | PartSpec::Engine(_)
+        | PartSpec::Servo(_)
+        | PartSpec::Seat(_)
+        | PartSpec::Input(_) => {
+            unreachable!("authored parts render in their own texture batches")
+        }
+    }
+
+    match spec {
+        PartSpec::Cuboid(_) => {
+            for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
+                let position = Vec3::from_array(position);
+                let normal = Vec3::from_array(normal);
+                let absolute = normal.abs();
+                let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
+                    ([position.x, position.z], Vec3::X)
+                } else if absolute.x >= absolute.z {
+                    ([position.z, position.y], Vec3::Z)
+                } else {
+                    ([position.x, position.y], Vec3::X)
+                };
+                uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+                tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
+            }
+        }
+        PartSpec::Cylinder(_) => {
+            let inverse = rotation.inverse();
+            for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
+                let local = inverse * (Vec3::from_array(position) - translation);
+                let local_normal = inverse * Vec3::from_array(normal);
+                let radial = Vec3::new(local.x, 0.0, local.z);
+                let radial_direction = radial.normalize_or_zero();
+                let (uv, local_tangent) = if local_normal.y.abs() > 0.9 {
+                    ([local.x, local.z], Vec3::X)
+                } else if radial_direction != Vec3::ZERO
+                    && local_normal.dot(radial_direction).abs() > 0.5
+                {
+                    let angle = local.z.atan2(local.x);
+                    (
+                        [angle * radial.length(), local.y],
+                        Vec3::new(-angle.sin(), 0.0, angle.cos()),
+                    )
+                } else {
+                    ([radial.length(), local.y], radial_direction)
+                };
+                uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+                let tangent = rotation * local_tangent;
+                tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
+            }
+        }
+        PartSpec::Controller(_)
+        | PartSpec::Engine(_)
+        | PartSpec::Servo(_)
+        | PartSpec::Seat(_)
+        | PartSpec::Input(_) => unreachable!(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // Appends every vertex stream of one authored cuboid.
 fn append_authored_cuboid(
     translation: Vec3,
@@ -6545,24 +6821,28 @@ fn append_authored_cuboid(
 #[cfg(test)]
 mod rendering_tests {
     use bevy::{
+        image::{ImageAddressMode, ImageLoaderSettings},
         mesh::VertexAttributeValues,
         prelude::{AlphaMode, Color, Handle, IVec3, Image, Mesh, Quat, StandardMaterial, Vec3},
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
-        DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef,
-        GridRotation, InputSpec, SeatSpec, ServoSpec,
+        ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
+        DriveLimits, DriveLinkSpec, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec,
+        FaceKind, FaceRef, GridRotation, InputSpec, SeatSpec, ServoSpec,
     };
     use mechanic_gpu::GpuTransform;
 
     use super::{
         AuthoredPart, BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, BLOCK_SHEET_PREVIEW_INSET_METERS,
-        PlacedBearing, SimulationMeshKind, append_bearing_cylinder, append_cylinder_shape,
-        authored_preview_material, authored_uvs, bearing_preview_dimensions_changed,
-        bearing_surface_material, block_sheet_bounds, block_sheet_preview_mesh, block_sheet_specs,
-        combined_authored_construction_mesh, combined_bearing_mesh, combined_controller_mesh,
-        combined_drive_xray_mesh, combined_simulation_bearing_mesh, combined_simulation_mesh,
+        MATERIAL_TEXTURE_METERS_PER_REPEAT, MATERIAL_TEXTURE_PIXELS_PER_BLOCK,
+        MATERIAL_TEXTURE_PIXELS_PER_SIDE, PlacedBearing, SimulationMeshKind,
+        append_bearing_cylinder, append_cylinder_shape, authored_preview_material, authored_uvs,
+        bearing_preview_dimensions_changed, bearing_surface_material, block_sheet_bounds,
+        block_sheet_preview_mesh, block_sheet_specs, combined_authored_construction_mesh,
+        combined_bearing_mesh, combined_controller_mesh, combined_drive_xray_mesh,
+        combined_material_construction_mesh, combined_simulation_bearing_mesh,
+        combined_simulation_material_mesh, combined_simulation_mesh, configure_repeating_texture,
         drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
         single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
@@ -6577,6 +6857,110 @@ mod rendering_tests {
             panic!("mesh must have float3 positions")
         };
         values.iter().copied().map(Vec3::from_array).collect()
+    }
+
+    #[test]
+    fn ordinary_construction_uses_one_textured_batch_per_material() {
+        let mut graph = ConstructionGraph::new();
+        for (index, material) in ConstructionMaterial::ALL.into_iter().enumerate() {
+            let x = i32::try_from(index).unwrap() * 12;
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [4; 3],
+                        BuildPose::new(IVec3::new(x, 2, 0), GridRotation::default()),
+                    )
+                    .unwrap()
+                    .with_material(material),
+                ))
+                .unwrap();
+            graph
+                .apply(BuildCommand::SpawnCylinder(
+                    CylinderSpec::new(
+                        CylinderDimensions::new(1.0, 0.0, 1.0).unwrap(),
+                        BuildPose::new(IVec3::new(x, 2, 8), GridRotation::default()),
+                    )
+                    .with_material(material),
+                ))
+                .unwrap();
+        }
+
+        let creation = graph.compile().unwrap();
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|compound| GpuTransform {
+                position: [
+                    compound.root_translation.x,
+                    compound.root_translation.y,
+                    compound.root_translation.z,
+                    0.0,
+                ],
+                rotation: compound.root_rotation.to_array(),
+            })
+            .collect::<Vec<_>>();
+        for material in ConstructionMaterial::ALL {
+            let build = combined_material_construction_mesh(&graph, material);
+            let simulated = combined_simulation_material_mesh(
+                &graph,
+                &creation,
+                &transforms,
+                SimulationMeshKind::Dynamic,
+                material,
+            );
+            assert!(build.count_vertices() > 24);
+            assert_eq!(simulated.count_vertices(), build.count_vertices());
+            assert_eq!(
+                build.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().len(),
+                build.count_vertices(),
+            );
+            assert_eq!(
+                build.attribute(Mesh::ATTRIBUTE_TANGENT).unwrap().len(),
+                build.count_vertices(),
+            );
+        }
+    }
+
+    #[test]
+    fn cuboid_uvs_give_each_quarter_metre_block_512_texture_pixels() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::new(IVec3::new(40, 2, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let mesh = combined_material_construction_mesh(&graph, ConstructionMaterial::Steel);
+        let positions = positions(&mesh);
+        let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("material UVs use Float32x2")
+        };
+        assert!((uvs[1][0] - positions[1].x / MATERIAL_TEXTURE_METERS_PER_REPEAT).abs() < 1.0e-6);
+        assert!((uvs[0][0] - positions[0].x / MATERIAL_TEXTURE_METERS_PER_REPEAT).abs() < 1.0e-6);
+        let expected_span =
+            4.0 * MATERIAL_TEXTURE_PIXELS_PER_BLOCK / MATERIAL_TEXTURE_PIXELS_PER_SIDE;
+        assert!(((uvs[1][0] - uvs[0][0]).abs() - expected_span).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn material_maps_use_repeat_sampling_and_explicit_color_spaces() {
+        let mut base_color = ImageLoaderSettings::default();
+        configure_repeating_texture(&mut base_color, true);
+        assert!(base_color.is_srgb);
+        let base_sampler = base_color.sampler.get_or_init_descriptor();
+        assert_eq!(base_sampler.address_mode_u, ImageAddressMode::Repeat);
+        assert_eq!(base_sampler.address_mode_v, ImageAddressMode::Repeat);
+
+        let mut data_map = ImageLoaderSettings::default();
+        configure_repeating_texture(&mut data_map, false);
+        assert!(!data_map.is_srgb);
+        let data_sampler = data_map.sampler.get_or_init_descriptor();
+        assert_eq!(data_sampler.address_mode_u, ImageAddressMode::Repeat);
+        assert_eq!(data_sampler.address_mode_v, ImageAddressMode::Repeat);
     }
 
     #[test]
@@ -7620,6 +8004,7 @@ mod interaction_tests {
             settings.dimensions,
             CylinderDimensions::default(),
             None,
+            mechanic_core::ConstructionMaterial::Steel,
         );
         assert!(hud.contains("Outer: 0.15 m"));
         assert!(hud.contains("Inner: 0.10 m"));
@@ -8667,6 +9052,7 @@ mod interaction_tests {
             BearingDimensions::default(),
             CylinderDimensions::default(),
             Some(2),
+            mechanic_core::ConstructionMaterial::Steel,
         );
         assert!(selected.contains("2 bearings wired"), "{selected}");
         assert!(selected.contains("E opens its program"), "{selected}");
@@ -8676,6 +9062,7 @@ mod interaction_tests {
             BearingDimensions::default(),
             CylinderDimensions::default(),
             Some(1),
+            mechanic_core::ConstructionMaterial::Steel,
         );
         assert!(single.contains("1 bearing wired"), "{single}");
 
@@ -8684,6 +9071,7 @@ mod interaction_tests {
             BearingDimensions::default(),
             CylinderDimensions::default(),
             None,
+            mechanic_core::ConstructionMaterial::Steel,
         );
         assert!(none.contains("No block selected"), "{none}");
     }

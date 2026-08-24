@@ -10,9 +10,10 @@
 #![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
 
 use bevy_mosaic::ui::*;
-use mosaic_core::theme::color;
+use mechanic_core::ConstructionMaterial;
+use mosaic_core::{Rect, Vector2, theme::color};
 use mosaic_macros::view;
-use mosaic_widgets::input::EventCtx;
+use mosaic_widgets::input::{EventCtx, PointerButton};
 
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
@@ -41,6 +42,11 @@ const BAR_PAD: f32 = 8.0;
 /// the two curves stay parallel instead of pinching at the diagonal.
 const BAR_RADIUS: f32 = SLOT_RADIUS + BAR_PAD;
 
+const MATERIAL_MENU_WIDTH: f32 = 156.0;
+const MATERIAL_ROW_HEIGHT: f32 = 34.0;
+const MATERIAL_MENU_GAP: f32 = 8.0;
+const MATERIAL_MENU_OFFSET_Y: f32 = -((MATERIAL_ROW_HEIGHT * 5.0 + SLOT) * 0.5 + MATERIAL_MENU_GAP);
+
 /// The tools, in the order their number keys run.
 const TOOLS: [Tool; 12] = [
     Tool::Block,
@@ -65,12 +71,18 @@ const TOOLS: [Tool; 12] = [
 pub(crate) fn view(handles: &Handles) -> Element {
     let viewport = handles.viewport;
     let hovered = handles.hovered;
+    let selected_material = handles.material;
+    let material_menu = handles.material_menu;
     let slots = handles.clone();
     let size: State<Size> = State::new(Size::ZERO);
     let named = move || {
-        hovered
-            .get()
-            .map_or_else(String::new, |tool| tool.label().to_owned())
+        hovered.get().map_or_else(String::new, |tool| {
+            if matches!(tool, Tool::Block | Tool::Cylinder) {
+                format!("{} · {}", tool.label(), selected_material.get().label())
+            } else {
+                tool.label().to_owned()
+            }
+        })
     };
     let at = move || {
         let window = viewport.get();
@@ -88,7 +100,7 @@ pub(crate) fn view(handles: &Handles) -> Element {
                     size.set(bounds.size);
                 }
             } } {
-            if hovered.get().is_some() {
+            if hovered.get().is_some() && material_menu.get().is_none() {
                 row width:max-content height:24px align:center justify:center
                     pad:(left:10px right:12px top:0px bottom:0px) radius:12px
                     fill:port.fill stroke:(width:1px color:accent.key) {
@@ -117,6 +129,10 @@ fn slot(handles: &Handles, tool: Tool) -> Element {
     let handles = handles.clone();
     let selection = handles.hotbar;
     let hovered = handles.hovered;
+    let menu = handles.material_menu;
+    let material_hover = handles.material_hover;
+    let material_tool = matches!(tool, Tool::Block | Tool::Cylinder);
+    let gesture = handles.clone();
     let held = move || selection.get() == tool;
     let icon = icon(tool);
     view! {
@@ -136,11 +152,125 @@ fn slot(handles: &Handles, tool: Tool) -> Element {
                 }
                 _ => {}
             } }
-            @click:{ handles.ask(UiIntent::Tool(tool)) } {
+            @pointer:{ move |event: &PointerEvent, ctx: &mut EventCtx| {
+                if !material_tool {
+                    return;
+                }
+                match event.kind {
+                    PointerEventKind::Down(PointerButton::Primary) => {
+                        ctx.claim_pointer();
+                        ctx.suppress_click();
+                        menu.set(Some(tool));
+                        material_hover.set(material_at(event.position, ctx.target_rect()));
+                    }
+                    PointerEventKind::Move if menu.get_untracked() == Some(tool) => {
+                        material_hover.set(material_at(event.position, ctx.target_rect()));
+                    }
+                    PointerEventKind::Up(PointerButton::Primary)
+                        if menu.get_untracked() == Some(tool) => {
+                        if let Some(material) = material_at(event.position, ctx.target_rect()) {
+                            gesture.ask(UiIntent::MaterialTool(material, tool));
+                        } else if ctx.target_rect().contains(event.position) {
+                            gesture.ask(UiIntent::Tool(tool));
+                        }
+                        menu.set(None);
+                        material_hover.set(None);
+                    }
+                    PointerEventKind::Cancel if menu.get_untracked() == Some(tool) => {
+                        menu.set(None);
+                        material_hover.set(None);
+                    }
+                    _ => {}
+                }
+            } }
+            @click:{ if !material_tool { handles.ask(UiIntent::Tool(tool)); } } {
             (icon)
+            if menu.get() == Some(tool) {
+                col width:{ Length::px(MATERIAL_MENU_WIDTH) } height:min-content
+                    translate:(x:0px y:{ Length::px(MATERIAL_MENU_OFFSET_Y) })
+                    radius:8px clip fill:bar.fill stroke:(width:1px color:shell-edge) {
+                    for (material, ()) in { ConstructionMaterial::ALL.map(|material| (material, ())) } {
+                        (material_row(*material, material_hover))
+                    }
+                }
+            }
             text font-size:12px font-color:bar.shortcut
                 translate:(x:-22px y:-20px) (tool.shortcut())
         }
+    }
+}
+
+fn material_row(
+    material: ConstructionMaterial,
+    highlighted: State<Option<ConstructionMaterial>>,
+) -> Element {
+    view! {
+        row width:fill height:{ Length::px(MATERIAL_ROW_HEIGHT) }
+            align:center gap:8px pad:(left:5px right:10px top:4px bottom:4px)
+            fill:{ if highlighted.get() == Some(material) {
+                color(bar.slot_over)
+            } else {
+                color(bar.slot)
+            } } {
+            (material_thumbnail(material))
+            text font-size:12px font-color:ink.fg text-wrap:none { material.label() }
+        }
+    }
+}
+
+fn material_at(position: Vector2, slot: Rect) -> Option<ConstructionMaterial> {
+    let left = slot.origin.x + (slot.size.width - MATERIAL_MENU_WIDTH) * 0.5;
+    let top = slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_ROW_HEIGHT * 5.0;
+    if position.x < left
+        || position.x > left + MATERIAL_MENU_WIDTH
+        || position.y < top
+        || position.y >= top + MATERIAL_ROW_HEIGHT * 5.0
+    {
+        return None;
+    }
+    let mut row_top = top;
+    for material in ConstructionMaterial::ALL {
+        let row_bottom = row_top + MATERIAL_ROW_HEIGHT;
+        if position.y < row_bottom {
+            return Some(material);
+        }
+        row_top = row_bottom;
+    }
+    None
+}
+
+fn material_thumbnail(material: ConstructionMaterial) -> Element {
+    match material {
+        ConstructionMaterial::Aluminium => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/aluminium/aluminium_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Concrete => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/concrete/concrete_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Plastic => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/plastic/plastic_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Steel => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/steel/steel_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Wood => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/wood/wood_thumbnail.png"
+            }
+        },
     }
 }
 
@@ -264,10 +394,11 @@ fn icon(tool: Tool) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use mechanic_core::ConstructionMaterial;
     use mosaic_core::{Rect, Vector2};
-    use mosaic_widgets::input::PointerEventKind;
+    use mosaic_widgets::input::{PointerButton, PointerEventKind};
 
-    use super::{ICON, SLOT, TOOLS};
+    use super::{ICON, MATERIAL_MENU_GAP, MATERIAL_ROW_HEIGHT, SLOT, TOOLS};
     use crate::hotbar::Tool;
     use crate::ui::testing::{Overlay, VIEWPORT};
     use crate::ui::{UiIntent, testing};
@@ -324,6 +455,102 @@ mod tests {
                 "the slot at {index} is {tool:?}",
             );
         }
+    }
+
+    #[test]
+    fn material_tools_open_on_press_and_select_a_dragged_row() {
+        for (slot_index, tool) in [(0, Tool::Block), (1, Tool::Cylinder)] {
+            let overlay = Overlay::mount();
+            let slot = slots(&overlay)[slot_index];
+            overlay.dispatch(
+                PointerEventKind::Down(PointerButton::Primary),
+                slot.center(),
+            );
+            assert_eq!(overlay.handles.material_menu.get_untracked(), Some(tool));
+            assert_eq!(
+                overlay.handles.material.get_untracked(),
+                ConstructionMaterial::Steel
+            );
+
+            let concrete = Vector2::new(
+                slot.center().x,
+                slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_ROW_HEIGHT * 3.5,
+            );
+            overlay.dispatch(PointerEventKind::Move, concrete);
+            assert_eq!(
+                overlay.handles.material_hover.get_untracked(),
+                Some(ConstructionMaterial::Concrete),
+            );
+            overlay.dispatch(PointerEventKind::Up(PointerButton::Primary), concrete);
+            assert_eq!(
+                overlay.intents(),
+                vec![UiIntent::MaterialTool(ConstructionMaterial::Concrete, tool)],
+            );
+            assert_eq!(overlay.handles.material_menu.get_untracked(), None);
+        }
+    }
+
+    #[test]
+    fn material_menu_is_drawn_directly_above_its_slot() {
+        let overlay = Overlay::mount();
+        let slot = slots(&overlay)[0];
+        overlay.dispatch(
+            PointerEventKind::Down(PointerButton::Primary),
+            slot.center(),
+        );
+        overlay.settle();
+
+        let menu = overlay
+            .rects()
+            .into_iter()
+            .find(|(_, rect)| {
+                (rect.size.width - super::MATERIAL_MENU_WIDTH).abs() < 0.5
+                    && (rect.size.height - MATERIAL_ROW_HEIGHT * 5.0).abs() < 0.5
+            })
+            .expect("the material menu is laid out")
+            .1;
+
+        assert!(
+            (slot.origin.y - menu.max_y() - MATERIAL_MENU_GAP).abs() < 0.5,
+            "menu {menu:?} should sit {MATERIAL_MENU_GAP}px above slot {slot:?}",
+        );
+    }
+
+    #[test]
+    fn releasing_a_material_gesture_on_its_slot_selects_only_the_tool() {
+        let overlay = Overlay::mount();
+        let slot = slots(&overlay)[0];
+        overlay.dispatch(
+            PointerEventKind::Down(PointerButton::Primary),
+            slot.center(),
+        );
+        overlay.dispatch(PointerEventKind::Up(PointerButton::Primary), slot.center());
+        assert_eq!(overlay.intents(), vec![UiIntent::Tool(Tool::Block)]);
+        assert_eq!(
+            overlay.handles.material.get_untracked(),
+            ConstructionMaterial::Steel
+        );
+    }
+
+    #[test]
+    fn releasing_a_material_gesture_elsewhere_cancels_it() {
+        let overlay = Overlay::mount();
+        let slot = slots(&overlay)[1];
+        overlay.dispatch(
+            PointerEventKind::Down(PointerButton::Primary),
+            slot.center(),
+        );
+        overlay.dispatch(
+            PointerEventKind::Up(PointerButton::Primary),
+            Vector2::new(4.0, 4.0),
+        );
+        assert!(overlay.intents().is_empty());
+        assert_eq!(overlay.handles.material_menu.get_untracked(), None);
+    }
+
+    #[test]
+    fn block_tool_is_visibly_named_blocker_placer() {
+        assert_eq!(Tool::Block.label(), "Blocker Placer");
     }
 
     /// The tooltip is a sibling of the slots rather than a child, so hover
@@ -407,7 +634,9 @@ mod tests {
                 .iter()
                 .take_while(|(depth, _)| depth > slot_depth);
             let mut marks = inside.skip_while(|(_, rect)| (rect.size.width - ICON).abs() > 0.5);
-            let (canvas_depth, canvas) = marks.next().expect("the slot holds an icon");
+            let Some((canvas_depth, canvas)) = marks.next() else {
+                continue;
+            };
             canvases += 1;
             for (mark_depth, mark) in marks {
                 if mark_depth <= canvas_depth {

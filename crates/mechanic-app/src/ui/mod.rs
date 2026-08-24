@@ -35,9 +35,11 @@ use mosaic_core::{Size as MosaicSize, State as MosaicState};
 
 use crate::control_panel::ControlPanelState;
 use crate::creation_menu::CreationMenuState;
+use crate::hotbar::SelectedMaterial;
 use crate::hotbar::{SelectedTool, Tool};
 use crate::showcase::CreationPreset;
 use crate::{AppSimulation, EditorGraph, EditorState, OrbitCamera};
+use mechanic_core::ConstructionMaterial;
 
 pub(crate) use control_block::{EditTarget, LocatedJoint};
 
@@ -54,6 +56,8 @@ use mosaic_macros::view;
 pub(crate) enum UiIntent {
     /// Pick up a tool.
     Tool(Tool),
+    /// Pick a material and the material-capable tool that owns its menu.
+    MaterialTool(ConstructionMaterial, Tool),
     /// Something in the creation picker.
     Creations(CreationsAction),
     /// Change a joint's drive program.
@@ -97,6 +101,12 @@ pub(crate) struct Handles {
     help_open: MosaicState<bool>,
     /// Which tool is in hand.
     hotbar: MosaicState<Tool>,
+    /// Shared material used by both ordinary shape tools.
+    material: MosaicState<ConstructionMaterial>,
+    /// Material tool whose press-and-drag menu is open.
+    material_menu: MosaicState<Option<Tool>>,
+    /// Material row currently under the captured pointer.
+    material_hover: MosaicState<Option<ConstructionMaterial>>,
     /// Which tool the pointer is over, if any.
     hovered: MosaicState<Option<Tool>>,
     /// What the creation picker shows.
@@ -120,6 +130,9 @@ impl Handles {
             help: MosaicState::new(help::Model::default()),
             help_open: MosaicState::new(false),
             hotbar: MosaicState::new(Tool::default()),
+            material: MosaicState::new(ConstructionMaterial::Steel),
+            material_menu: MosaicState::new(None),
+            material_hover: MosaicState::new(None),
             hovered: MosaicState::new(None),
             creations: MosaicState::new(creations::Model::default()),
             markers: MosaicState::new(Vec::new()),
@@ -309,12 +322,18 @@ fn load_fonts(ui: &mosaic_widgets::Ui) {
 ///
 /// Runs before the pushes, so an edit made this frame is already in the snapshot
 /// the panels get: a dial under the pointer never lags the pointer by a frame.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct ToolSelection<'w> {
+    tool: ResMut<'w, SelectedTool>,
+    material: ResMut<'w, SelectedMaterial>,
+}
+
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
 pub(crate) fn drain(
     ui: Option<NonSendMut<AppUi>>,
     mut panel: ResMut<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
-    mut selection: ResMut<SelectedTool>,
+    mut selection: ToolSelection,
     mut target: EditTarget,
     keyboard: Res<ButtonInput<KeyCode>>,
     typed: Res<ButtonInput<Key>>,
@@ -331,7 +350,11 @@ pub(crate) fn drain(
     let intents: Vec<UiIntent> = ui.handles.intents.borrow_mut().drain(..).collect();
     for intent in intents {
         match intent {
-            UiIntent::Tool(tool) => selection.0 = tool,
+            UiIntent::Tool(tool) => selection.tool.0 = tool,
+            UiIntent::MaterialTool(next, tool) => {
+                selection.material.0 = next;
+                selection.tool.0 = tool;
+            }
             UiIntent::Creations(action) => menu.act(action),
             UiIntent::Drive(edit) => control_block::write_joint(&mut panel, &mut target, &edit),
             UiIntent::CloseControlPanel => {
@@ -350,6 +373,7 @@ pub(crate) fn push(
     panel: Res<ControlPanelState>,
     menu: Res<CreationMenuState>,
     selection: Res<SelectedTool>,
+    material: Res<SelectedMaterial>,
     graph: Res<EditorGraph>,
     mut located: ResMut<LocatedJoint>,
 ) {
@@ -357,6 +381,7 @@ pub(crate) fn push(
         return;
     };
     ui.handles.hotbar.set(selection.0);
+    ui.handles.material.set(material.0);
     let block = control_block::capture(&panel, &graph);
     if block != ui.pushed.block {
         ui.handles.block.model.set(block.clone());

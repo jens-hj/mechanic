@@ -4,6 +4,76 @@ use thiserror::Error;
 
 use crate::PartId;
 
+/// A selectable material for ordinary construction parts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ConstructionMaterial {
+    /// Lightweight aluminium alloy.
+    Aluminium,
+    /// Dense, high-friction concrete.
+    Concrete,
+    /// Lightweight resilient plastic.
+    Plastic,
+    /// General-purpose structural steel.
+    #[default]
+    Steel,
+    /// Lightweight timber.
+    Wood,
+}
+
+impl ConstructionMaterial {
+    /// Every selectable material in alphabetical display order.
+    pub const ALL: [Self; 5] = [
+        Self::Aluminium,
+        Self::Concrete,
+        Self::Plastic,
+        Self::Steel,
+        Self::Wood,
+    ];
+
+    /// Human-readable material name.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Aluminium => "Aluminium",
+            Self::Concrete => "Concrete",
+            Self::Plastic => "Plastic",
+            Self::Steel => "Steel",
+            Self::Wood => "Wood",
+        }
+    }
+
+    /// Density and contact response used by construction physics.
+    pub const fn properties(self) -> MaterialProperties {
+        match self {
+            Self::Aluminium => MaterialProperties::new(2_700.0, 0.45, 0.25),
+            Self::Concrete => MaterialProperties::new(2_400.0, 0.80, 0.05),
+            Self::Plastic => MaterialProperties::new(950.0, 0.35, 0.40),
+            Self::Steel => MaterialProperties::new(7_850.0, 0.60, 0.20),
+            Self::Wood => MaterialProperties::new(700.0, 0.55, 0.15),
+        }
+    }
+}
+
+/// Physical properties belonging to one construction material.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialProperties {
+    /// Density in kilograms per cubic metre.
+    pub density_kg_m3: f32,
+    /// Coulomb friction coefficient.
+    pub friction: f32,
+    /// Coefficient of restitution.
+    pub restitution: f32,
+}
+
+impl MaterialProperties {
+    const fn new(density_kg_m3: f32, friction: f32, restitution: f32) -> Self {
+        Self {
+            density_kg_m3,
+            friction,
+            restitution,
+        }
+    }
+}
+
 /// Construction-grid spacing in metres.
 pub const GRID_UNIT_METERS: f32 = 0.25;
 
@@ -198,6 +268,8 @@ pub struct CuboidSpec {
     pub dimensions: [GridDimension; 3],
     /// Cuboid centre and orientation.
     pub pose: BuildPose,
+    /// Material used for appearance, mass, and contact response.
+    pub material: ConstructionMaterial,
 }
 
 /// Invalid load-bearing cylinder dimensions.
@@ -360,12 +432,25 @@ pub struct CylinderSpec {
     pub dimensions: CylinderDimensions,
     /// Cylinder centre and cardinal orientation.
     pub pose: BuildPose,
+    /// Material used for appearance, mass, and contact response.
+    pub material: ConstructionMaterial,
 }
 
 impl CylinderSpec {
     /// Creates a cylinder from validated dimensions and a build pose.
     pub const fn new(dimensions: CylinderDimensions, pose: BuildPose) -> Self {
-        Self { dimensions, pose }
+        Self {
+            dimensions,
+            pose,
+            material: ConstructionMaterial::Steel,
+        }
+    }
+
+    /// Uses an explicit construction material.
+    #[must_use]
+    pub const fn with_material(mut self, material: ConstructionMaterial) -> Self {
+        self.material = material;
+        self
     }
 }
 
@@ -699,7 +784,15 @@ impl CuboidSpec {
                 GridDimension::new(z)?,
             ],
             pose,
+            material: ConstructionMaterial::Steel,
         })
+    }
+
+    /// Uses an explicit construction material.
+    #[must_use]
+    pub const fn with_material(mut self, material: ConstructionMaterial) -> Self {
+        self.material = material;
+        self
     }
 
     /// Cuboid side lengths in metres.
@@ -896,9 +989,9 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
 
     use super::{
-        BuildPose, ControllerSpec, CuboidSpec, CylinderDimensionError, CylinderDimensions,
-        EngineKind, EngineSpec, FaceKind, GridRotation, InputSpec, SeatSpec, ServoSpec,
-        cuboid_face, snap_world_to_grid,
+        BuildPose, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensionError,
+        CylinderDimensions, CylinderSpec, EngineKind, EngineSpec, FaceKind, GridRotation,
+        InputSpec, SeatSpec, ServoSpec, cuboid_face, snap_world_to_grid,
     };
 
     #[test]
@@ -929,6 +1022,41 @@ mod tests {
         assert!(CuboidSpec::new([0, 4, 4], BuildPose::default()).is_err());
         assert!(CuboidSpec::new([33, 4, 4], BuildPose::default()).is_err());
         assert!(CuboidSpec::new([1, 32, 1], BuildPose::default()).is_ok());
+    }
+
+    #[test]
+    fn construction_material_property_rows_are_exact() {
+        let expected: [(ConstructionMaterial, f32, f32, f32); 5] = [
+            (ConstructionMaterial::Aluminium, 2_700.0, 0.45, 0.25),
+            (ConstructionMaterial::Concrete, 2_400.0, 0.80, 0.05),
+            (ConstructionMaterial::Plastic, 950.0, 0.35, 0.40),
+            (ConstructionMaterial::Steel, 7_850.0, 0.60, 0.20),
+            (ConstructionMaterial::Wood, 700.0, 0.55, 0.15),
+        ];
+        for (material, density, friction, restitution) in expected {
+            let properties = material.properties();
+            assert_eq!(properties.density_kg_m3.to_bits(), density.to_bits());
+            assert_eq!(properties.friction.to_bits(), friction.to_bits());
+            assert_eq!(properties.restitution.to_bits(), restitution.to_bits());
+        }
+    }
+
+    #[test]
+    fn ordinary_part_specs_default_to_steel_and_accept_an_explicit_material() {
+        let cuboid = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
+        let cylinder = CylinderSpec::new(CylinderDimensions::default(), BuildPose::default());
+        assert_eq!(cuboid.material, ConstructionMaterial::Steel);
+        assert_eq!(cylinder.material, ConstructionMaterial::Steel);
+        assert_eq!(
+            cuboid.with_material(ConstructionMaterial::Wood).material,
+            ConstructionMaterial::Wood,
+        );
+        assert_eq!(
+            cylinder
+                .with_material(ConstructionMaterial::Plastic)
+                .material,
+            ConstructionMaterial::Plastic,
+        );
     }
 
     #[test]

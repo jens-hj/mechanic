@@ -4,6 +4,7 @@
 //! is, which key picks it, and what it may do in which mode.
 
 use bevy::prelude::*;
+use mechanic_core::ConstructionMaterial;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum Tool {
@@ -25,7 +26,7 @@ pub(crate) enum Tool {
 impl Tool {
     pub(crate) const fn label(self) -> &'static str {
         match self {
-            Self::Block => "Block",
+            Self::Block => "Blocker Placer",
             Self::Cylinder => "Cylinder",
             Self::Bearing => "Bearing",
             Self::Weld => "Weld",
@@ -91,3 +92,7 @@ pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
 
 #[derive(Resource, Debug, Default)]
 pub(crate) struct SelectedTool(pub(crate) Tool);
+
+/// Material shared by the Blocker Placer and Cylinder for this process.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SelectedMaterial(pub(crate) ConstructionMaterial);

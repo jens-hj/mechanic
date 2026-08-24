@@ -16,17 +16,17 @@ use thiserror::Error;
 
 use crate::{
     ActuatorAssignment, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
-    BuildOutcome, BuildPose, ConstructionGraph, ControllerSpec, CuboidSpec, CylinderDimensionError,
-    CylinderDimensions, CylinderSpec, DimensionError, DriveDwell, DriveKey, DriveLimits,
-    DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease,
-    DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
-    GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec, PartId, PartSpec,
-    RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, WeldSpec,
+    BuildOutcome, BuildPose, ConstructionGraph, ConstructionMaterial, ControllerSpec, CuboidSpec,
+    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, DriveDwell, DriveKey,
+    DriveLimits, DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram, DriveProgramError,
+    DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind,
+    FaceOwner, FaceRef, GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec,
+    PartId, PartSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 3;
+pub const CREATION_FORMAT_VERSION: u32 = 4;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = 1;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -123,6 +123,9 @@ pub enum PartDoc {
         dimensions: [u8; 3],
         /// Centre and orientation.
         pose: PoseDoc,
+        /// Appearance and physical properties. Older files default to steel.
+        #[serde(default)]
+        material: ConstructionMaterial,
     },
     /// Solid or hollow cylinder whose axis is local Y.
     Cylinder {
@@ -136,6 +139,9 @@ pub enum PartDoc {
         sweep_degrees: u16,
         /// Centre and orientation.
         pose: PoseDoc,
+        /// Appearance and physical properties. Older files default to steel.
+        #[serde(default)]
+        material: ConstructionMaterial,
     },
     /// Fixed-size control block.
     Controller {
@@ -609,6 +615,7 @@ fn part_doc(spec: PartSpec) -> PartDoc {
         PartSpec::Cuboid(cuboid) => PartDoc::Cuboid {
             dimensions: cuboid.dimensions.map(GridDimension::units),
             pose: cuboid.pose.into(),
+            material: cuboid.material,
         },
         PartSpec::Cylinder(cylinder) => PartDoc::Cylinder {
             outer_diameter: cylinder.dimensions.outer_diameter(),
@@ -616,6 +623,7 @@ fn part_doc(spec: PartSpec) -> PartDoc {
             length_units: cylinder.dimensions.axial_length_units(),
             sweep_degrees: cylinder.dimensions.sweep_angle_degrees(),
             pose: cylinder.pose.into(),
+            material: cylinder.material,
         },
         PartSpec::Controller(controller) => PartDoc::Controller {
             pose: controller.pose.into(),
@@ -668,24 +676,30 @@ fn program_doc(program: &DriveProgram) -> DriveProgramDoc {
 
 fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
     Ok(match part {
-        PartDoc::Cuboid { dimensions, pose } => {
-            BuildCommand::Spawn(CuboidSpec::new(dimensions, pose.into())?)
-        }
+        PartDoc::Cuboid {
+            dimensions,
+            pose,
+            material,
+        } => BuildCommand::Spawn(CuboidSpec::new(dimensions, pose.into())?.with_material(material)),
         PartDoc::Cylinder {
             outer_diameter,
             inner_diameter,
             length_units,
             sweep_degrees,
             pose,
-        } => BuildCommand::SpawnCylinder(CylinderSpec::new(
-            CylinderDimensions::new(
-                outer_diameter,
-                inner_diameter,
-                f32::from(length_units) * crate::GRID_UNIT_METERS,
-            )?
-            .with_sweep_angle_degrees(sweep_degrees)?,
-            pose.into(),
-        )),
+            material,
+        } => BuildCommand::SpawnCylinder(
+            CylinderSpec::new(
+                CylinderDimensions::new(
+                    outer_diameter,
+                    inner_diameter,
+                    f32::from(length_units) * crate::GRID_UNIT_METERS,
+                )?
+                .with_sweep_angle_degrees(sweep_degrees)?,
+                pose.into(),
+            )
+            .with_material(material),
+        ),
         PartDoc::Controller { pose } => {
             BuildCommand::SpawnController(ControllerSpec::new(pose.into()))
         }
@@ -767,10 +781,10 @@ mod tests {
     };
     use crate::{
         ActuatorAssignment, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
-        ConstructionGraph, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveName, DriveProgram, DriveRelease,
-        DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceRef,
-        GridRotation, InputSeatLinkSpec, InputSpec, PartSpec, RigidLinkSpec,
+        ConstructionGraph, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions,
+        CylinderSpec, DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveName, DriveProgram,
+        DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind,
+        FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, PartSpec, RigidLinkSpec,
         SeatControllerLinkSpec, SeatSpec, ServoSpec, WeldSpec,
     };
 
@@ -1047,6 +1061,58 @@ mod tests {
     }
 
     #[test]
+    fn version_four_round_trips_all_construction_materials() {
+        let mut graph = ConstructionGraph::new();
+        for (index, material) in ConstructionMaterial::ALL.into_iter().enumerate() {
+            let position = IVec3::new(i32::try_from(index).unwrap() * 8, 0, 0);
+            graph
+                .apply(BuildCommand::Spawn(
+                    cuboid([1, 1, 1], position).with_material(material),
+                ))
+                .unwrap();
+        }
+        let document = CreationDocument::from_graph(&graph, "Materials", &[]);
+        assert_eq!(document.version, 4);
+        let restored = round_trip(&document).into_graph().unwrap();
+        let materials = restored
+            .graph
+            .parts()
+            .filter_map(|(_, spec)| spec.as_cuboid().map(|cuboid| cuboid.material))
+            .collect::<Vec<_>>();
+        assert_eq!(materials, ConstructionMaterial::ALL);
+    }
+
+    #[test]
+    fn versions_one_through_three_default_missing_materials_to_steel() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(cuboid([1; 3], IVec3::ZERO)))
+            .unwrap();
+        graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                CylinderDimensions::default(),
+                BuildPose::new(IVec3::new(4, 0, 0), GridRotation::default()),
+            )))
+            .unwrap();
+
+        for version in 1..=3 {
+            let mut document = CreationDocument::from_graph(&graph, "Legacy Materials", &[]);
+            document.version = version;
+            let current =
+                ron::ser::to_string_pretty(&document, ron::ser::PrettyConfig::default()).unwrap();
+            let legacy = current.replace("material: Steel,", "");
+            assert_ne!(legacy, current);
+            let parsed: CreationDocument = ron::from_str(&legacy).unwrap();
+            let restored = parsed.into_graph().unwrap();
+            assert!(restored.graph.parts().all(|(_, spec)| match spec {
+                PartSpec::Cuboid(cuboid) => cuboid.material == ConstructionMaterial::Steel,
+                PartSpec::Cylinder(cylinder) => cylinder.material == ConstructionMaterial::Steel,
+                _ => true,
+            }));
+        }
+    }
+
+    #[test]
     fn rebuilt_creation_compiles_to_the_same_bodies() {
         let (graph, sockets) = sample();
         let expected = graph.compile().expect("the sample compiles");
@@ -1199,6 +1265,7 @@ mod tests {
                 translation_half_units: [0, 0, 0],
                 rotation: [0, 0, 0],
             },
+            material: crate::ConstructionMaterial::Steel,
         };
 
         assert!(matches!(

@@ -25,12 +25,12 @@ pub use drive::{
     MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
 };
 pub use geometry::{
-    Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ControllerSpec, CuboidSpec,
+    Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ConstructionMaterial, ControllerSpec, CuboidSpec,
     CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, EngineKind,
     EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridDimension, GridRotation,
     InputSpec, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS,
-    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartSpec,
-    SeatSpec, ServoSpec, snap_world_to_grid,
+    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES,
+    MaterialProperties, PartSpec, SeatSpec, ServoSpec, snap_world_to_grid,
 };
 pub use graph::{
     ActuatorInventory, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
@@ -42,7 +42,7 @@ pub use id::{
     BearingId, DriveLinkId, InputSeatLinkId, PartId, RigidLinkId, SeatControllerLinkId, WeldId,
 };
 
-/// Fixed construction-material density, in kg/m³.
+/// Legacy authored-machine density, in kg/m³.
 pub const CUBOID_DENSITY_KG_M3: f32 = 500.0;
 
 /// Maximum acceptable derived bearing-anchor separation, in metres.

@@ -16,7 +16,7 @@ use mosaic_macros::view;
 use super::Handles;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
-use crate::hotbar::{SelectedTool, Tool};
+use crate::hotbar::{SelectedMaterial, SelectedTool, Tool};
 use crate::{
     AppSimulation, BearingToolSettings, BlockAttachment, CylinderToolSettings, EditorGraph,
     EditorState, HAMMER_CHARGE_SECONDS, HammerInteraction, WireEnd, visible_bearing_count,
@@ -114,6 +114,7 @@ pub(crate) struct Sources<'w> {
     simulation: Res<'w, AppSimulation>,
     hammer: Res<'w, HammerInteraction>,
     selection: Res<'w, SelectedTool>,
+    material: Res<'w, SelectedMaterial>,
     bearing: Res<'w, BearingToolSettings>,
     cylinder: Res<'w, CylinderToolSettings>,
 }
@@ -127,6 +128,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         simulation,
         hammer,
         selection,
+        material,
         bearing,
         cylinder,
     } = sources;
@@ -209,7 +211,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::Weld, None, _, _) => "Left click selects the first object".to_owned(),
             (false, Tool::Weld, Some(_), _, _) => "Left click a touching second object".to_owned(),
             (false, Tool::Bearing, _, _, _) => {
-                "Left click places a bearing; use Block to attach it".to_owned()
+                "Left click places a bearing; use Blocker Placer to attach it".to_owned()
             }
             (false, Tool::Hammer, _, _, _) => {
                 "Hammer is available while simulating — press Space to start".to_owned()
@@ -318,6 +320,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 bearing.dimensions,
                 cylinder.dimensions,
                 selected_wires,
+                material.0,
             ),
             tool_tone(selection.0),
         ),
@@ -396,7 +399,7 @@ mod tests {
             primary: Line::new("SPACE  Start simulation", Tone::Body),
             edit: Line::new("Q  Cycle plane", Tone::Muted),
             pointer: Line::new("LEFT  Action", Tone::Muted),
-            tool: Line::new("Tool: Block", Tone::Speed),
+            tool: Line::new("Tool: Blocker Placer    Material: Steel", Tone::Speed),
             counts: Line::new("3 parts", Tone::Muted),
             hint: Line::new("Click for one block", Tone::Body),
             status: Line::new("STATUS  •  Ready", Tone::Good),

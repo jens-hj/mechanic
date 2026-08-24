@@ -494,6 +494,12 @@ impl GpuPhysics {
                         collider.source_part.generation(),
                         ground.role,
                     ],
+                    contact_properties: [
+                        collider.material_properties.friction,
+                        collider.material_properties.restitution,
+                        0.0,
+                        0.0,
+                    ],
                 }
             })
             .collect::<Vec<_>>();
@@ -3076,9 +3082,9 @@ fn read_vec4_buffer(
 mod tests {
     use bevy_math::{IVec3, Vec3};
     use mechanic_core::{
-        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-        CylinderDimensions, CylinderSpec, FaceKind, FaceRef, GridRotation, PartId, RigidLinkSpec,
-        WeldSpec,
+        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
+        ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceRef,
+        GridRotation, PartId, RigidLinkSpec, WeldSpec,
     };
 
     use crate::GpuMechanismCoordinate;
@@ -4542,6 +4548,120 @@ mod tests {
             .read_snapshot_transforms(&device, &queue, (ticks % 3) as u8)
             .ok()?;
         Some((snapshot, readback))
+    }
+
+    fn material_cube(
+        material: ConstructionMaterial,
+        center_half_units_y: i32,
+    ) -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::from_half_grid(
+                        IVec3::new(0, center_half_units_y, 0),
+                        GridRotation::default(),
+                    ),
+                )
+                .unwrap()
+                .with_material(material),
+            ))
+            .unwrap();
+        graph.compile().unwrap()
+    }
+
+    #[test]
+    fn higher_friction_material_loses_more_sliding_speed() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let slide = |material| {
+            let creation = material_cube(material, 4);
+            let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+            let mass = creation.compounds[0].mass_properties.mass;
+            gpu.apply_impulse(&device, &queue, 0, Vec3::new(0.0, 0.5, 0.0), Vec3::X * mass)
+                .unwrap();
+            for tick in 1..=90 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            gpu.read_snapshot_transforms(&device, &queue, 0).unwrap()[0].position[0]
+        };
+        let plastic_distance = slide(ConstructionMaterial::Plastic);
+        let concrete_distance = slide(ConstructionMaterial::Concrete);
+        assert!(
+            concrete_distance < plastic_distance - 0.02,
+            "concrete slid {concrete_distance} m while plastic slid {plastic_distance} m",
+        );
+    }
+
+    #[test]
+    fn plastic_rebounds_more_than_concrete() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let rebound_height = |material| {
+            let creation = material_cube(material, 16);
+            let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+            let mut maximum_after_impact = 0.5_f32;
+            for tick in 1..=100 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                if tick >= 40 {
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let y = gpu
+                        .read_snapshot_transforms(&device, &queue, (tick % 3) as u8)
+                        .unwrap()[0]
+                        .position[1];
+                    maximum_after_impact = maximum_after_impact.max(y);
+                }
+            }
+            maximum_after_impact
+        };
+        let plastic_height = rebound_height(ConstructionMaterial::Plastic);
+        let concrete_height = rebound_height(ConstructionMaterial::Concrete);
+        assert!(
+            plastic_height > concrete_height + 0.05,
+            "plastic rebounded to {plastic_height} m while concrete reached {concrete_height} m",
+        );
+    }
+
+    #[test]
+    fn sub_threshold_ground_contact_settles_without_repeated_bounce() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let creation = material_cube(ConstructionMaterial::Plastic, 4);
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        let mass = creation.compounds[0].mass_properties.mass;
+        gpu.apply_impulse(
+            &device,
+            &queue,
+            0,
+            Vec3::new(0.0, 0.5, 0.0),
+            Vec3::NEG_Y * mass * 0.5,
+        )
+        .unwrap();
+        let mut tail = Vec::new();
+        for tick in 1..=120 {
+            gpu.dispatch_tick(&device, &queue, tick);
+            if tick >= 100 {
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                tail.push(
+                    gpu.read_snapshot_transforms(&device, &queue, (tick % 3) as u8)
+                        .unwrap()[0]
+                        .position[1],
+                );
+            }
+        }
+        let movement = tail
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            movement < 1.0e-3,
+            "settled contact moved {movement} m per tick"
+        );
     }
 
     #[test]

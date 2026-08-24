@@ -22,6 +22,7 @@ struct Collider {
     local_rotation: vec4<f32>,
     half_extents: vec4<f32>,
     metadata: vec4<u32>,
+    contact_properties: vec4<f32>,
 };
 
 struct Contact {
@@ -63,7 +64,9 @@ const EMPTY_HASH_KEY: u32 = 0u;
 const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 const PROJECTED_RELAXATION: f32 = 0.125;
 const WARM_START_SCALE: f32 = 0.5;
-const CONTACT_FRICTION: f32 = 0.05;
+const CONCRETE_FRICTION: f32 = 0.8;
+const CONCRETE_RESTITUTION: f32 = 0.05;
+const RESTITUTION_SPEED_THRESHOLD: f32 = 1.0;
 const PENETRATION_SLOP: f32 = 0.001;
 const MAX_PENETRATION_CORRECTION_SPEED: f32 = 1.0;
 const CACHED_NORMAL_ALIGNMENT: f32 = 0.98;
@@ -72,6 +75,30 @@ const CYLINDER_MANIFOLD_ALIGNMENT: f32 = 0.05;
 const MAX_SORTED_SERIAL_CONTACTS: u32 = 64u;
 const INVALID_MANIFOLD_SLOT: u32 = 0xffffffffu;
 const MAX_MANIFOLD_PROBES: u32 = 256u;
+const ANALYTIC_CYLINDER_FLAG: u32 = 0x80000000u;
+
+fn mixed_contact_properties(collider_a: u32, collider_b: u32) -> vec2<f32> {
+    let first = colliders[collider_a].contact_properties.xy;
+    if collider_b == INVALID_MANIFOLD_SLOT {
+        return vec2<f32>(sqrt(first.x * CONCRETE_FRICTION), max(first.y, CONCRETE_RESTITUTION));
+    }
+    let second = colliders[collider_b].contact_properties.xy;
+    return vec2<f32>(sqrt(first.x * second.x), max(first.y, second.y));
+}
+
+fn pack_contact_response(friction: f32, restitution_or_bounce: f32, analytic: bool) -> f32 {
+    let packed = pack2x16float(vec2<f32>(friction, restitution_or_bounce))
+        | select(0u, ANALYTIC_CYLINDER_FLAG, analytic);
+    return bitcast<f32>(packed);
+}
+
+fn unpack_contact_response(value: f32) -> vec2<f32> {
+    return unpack2x16float(bitcast<u32>(value) & ~ANALYTIC_CYLINDER_FLAG);
+}
+
+fn is_analytic_cylinder(value: f32) -> bool {
+    return (bitcast<u32>(value) & ANALYTIC_CYLINDER_FLAG) != 0u;
+}
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
@@ -545,6 +572,7 @@ fn emit_narrowphase_contact(pair: vec2<u32>) {
         return;
     }
     let contact_point = calculate_contact_point(pair.x, pair.y, sat.normal);
+    let response = mixed_contact_properties(pair.x, pair.y);
     let output = atomicAdd(&diagnostics[2], 1u);
     if output < config.pair_capacity {
         contacts[output].metadata = vec4<u32>(
@@ -560,7 +588,7 @@ fn emit_narrowphase_contact(pair: vec2<u32>) {
         );
         contacts[output].arm_b = vec4<f32>(
             contact_point - positions[colliders[pair.y].metadata.x].xyz,
-            f32(sat.near_face_axes),
+            pack_contact_response(response.x, response.y, false),
         );
     } else {
         atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
@@ -580,6 +608,7 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
         return;
     }
     let contact_point = calculate_contact_point(pair.x, pair.y, sat.normal);
+    let response = mixed_contact_properties(pair.x, pair.y);
     let output = atomicAdd(&diagnostics[2], 1u);
     if output < config.pair_capacity {
         contacts[output].metadata = vec4<u32>(
@@ -595,7 +624,7 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
         );
         contacts[output].arm_b = vec4<f32>(
             contact_point - positions[colliders[pair.y].metadata.x].xyz,
-            f32(sat.near_face_axes),
+            pack_contact_response(response.x, response.y, false),
         );
     } else {
         atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
@@ -640,6 +669,7 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
         return;
     }
     let output = atomicAdd(&diagnostics[2], 1u);
+    let response = mixed_contact_properties(collider_index, INVALID_MANIFOLD_SLOT);
     if output < config.pair_capacity {
         contacts[output].metadata = vec4<u32>(
             collider.metadata.x,
@@ -656,7 +686,7 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
             0.0,
             0.0,
             0.0,
-            select(0.0, -1.0, collider.metadata.w != 0u),
+            pack_contact_response(response.x, response.y, collider.metadata.w != 0u),
         );
     } else {
         atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
@@ -694,6 +724,17 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
     let relative = velocity_b - contact_velocity(body_a, arm_a);
     let normal_speed = dot(relative, contact.normal_penetration.xyz);
+    let raw_response = unpack_contact_response(contact.arm_b.w);
+    let bounce_speed = select(
+        0.0,
+        -normal_speed * raw_response.y,
+        normal_speed < -RESTITUTION_SPEED_THRESHOLD,
+    );
+    contacts[contact_index].arm_b.w = pack_contact_response(
+        raw_response.x,
+        bounce_speed,
+        is_analytic_cylinder(contact.arm_b.w),
+    );
     if contact.normal_penetration.w <= 1.0e-6 && normal_speed >= 0.0 {
         contacts[contact_index].metadata.z = INVALID_MANIFOLD_SLOT;
         contacts[contact_index].metadata.w = 0u;
@@ -761,6 +802,12 @@ fn penetration_bias(penetration: f32, analytic_cylinder_ground: bool) -> f32 {
     );
 }
 
+fn contact_target_speed(contact: Contact) -> f32 {
+    let response = unpack_contact_response(contact.arm_b.w);
+    return penetration_bias(contact.normal_penetration.w, is_analytic_cylinder(contact.arm_b.w))
+        + response.y;
+}
+
 fn add_velocity_delta(body: u32, linear: vec3<f32>, angular: vec3<f32>) {
     let base = body * 6u;
     atomicAdd(&velocity_deltas[base], i32(round(linear.x * FIXED_VELOCITY_SCALE)));
@@ -802,8 +849,9 @@ fn warm_start(@builtin(global_invocation_id) invocation: vec3<u32>) {
         contacts[contact_index].arm_a_impulse.w = 0.0;
         return;
     }
-    let bias = penetration_bias(contact.normal_penetration.w, contact.arm_b.w < 0.0);
-    let warm_start_scale = select(WARM_START_SCALE, 1.0, contact.arm_b.w < 0.0);
+    let response = unpack_contact_response(contact.arm_b.w);
+    let bias = contact_target_speed(contact);
+    let warm_start_scale = select(WARM_START_SCALE, 1.0, is_analytic_cylinder(contact.arm_b.w));
     let warmed_impulse = contact.arm_a_impulse.w * warm_start_scale;
     let accumulated_impulse = max(
         warmed_impulse
@@ -820,7 +868,7 @@ fn warm_start(@builtin(global_invocation_id) invocation: vec3<u32>) {
         let tangent_denominator = impulse_denominator(body_a, body_b, arm_a, arm_b, tangent);
         let friction_impulse = min(
             tangent_speed / tangent_denominator,
-            accumulated_impulse * CONTACT_FRICTION,
+            accumulated_impulse * response.x,
         );
         impulse -= tangent * friction_impulse;
     }
@@ -869,7 +917,8 @@ fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
         contacts[contact_index].arm_a_impulse.w = 0.0;
         return;
     }
-    let bias = penetration_bias(contact.normal_penetration.w, contact.arm_b.w < 0.0);
+    let response = unpack_contact_response(contact.arm_b.w);
+    let bias = contact_target_speed(contact);
     let previous_impulse = max(contact.arm_a_impulse.w, 0.0);
     let accumulated_impulse = max(
         previous_impulse
@@ -887,7 +936,7 @@ fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
         let tangent_denominator = impulse_denominator(body_a, body_b, arm_a, arm_b, tangent);
         let friction_impulse = min(
             tangent_speed / tangent_denominator,
-            abs(impulse_delta) * CONTACT_FRICTION,
+            abs(impulse_delta) * response.x,
         );
         impulse -= tangent * friction_impulse;
     }
@@ -922,6 +971,7 @@ fn solve_contact_immediate(contact_index: u32) {
     }
     let relative = velocity_b - contact_velocity(body_a, arm_a);
     let normal_speed = dot(relative, normal);
+    let response = unpack_contact_response(contact.arm_b.w);
     if contact.normal_penetration.w <= 1.0e-5
         && normal_speed >= -1.0e-5
         && contact.arm_a_impulse.w <= 1.0e-6
@@ -932,8 +982,7 @@ fn solve_contact_immediate(contact_index: u32) {
     let previous_impulse = max(contact.arm_a_impulse.w, 0.0);
     let accumulated_impulse = max(
         previous_impulse
-            + (-normal_speed
-                + penetration_bias(contact.normal_penetration.w, contact.arm_b.w < 0.0))
+            + (-normal_speed + contact_target_speed(contact))
                 / denominator,
         0.0,
     );
@@ -948,7 +997,7 @@ fn solve_contact_immediate(contact_index: u32) {
         let tangent_denominator = impulse_denominator(body_a, body_b, arm_a, arm_b, tangent);
         let friction_impulse = min(
             tangent_speed / tangent_denominator,
-            abs(impulse_delta) * CONTACT_FRICTION,
+            abs(impulse_delta) * response.x,
         );
         impulse -= tangent * friction_impulse;
     }

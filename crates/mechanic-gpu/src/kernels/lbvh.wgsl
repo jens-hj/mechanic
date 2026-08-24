@@ -22,6 +22,7 @@ struct Collider {
     local_rotation: vec4<f32>,
     half_extents: vec4<f32>,
     metadata: vec4<u32>,
+    contact_properties: vec4<f32>,
 };
 
 struct Aabb {

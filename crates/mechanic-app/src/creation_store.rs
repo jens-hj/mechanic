@@ -254,6 +254,7 @@ mod tests {
                         translation_half_units: [index as i32 * 2, 1, 0],
                         rotation: [0, 0, 0],
                     },
+                    material: mechanic_core::ConstructionMaterial::Steel,
                 })
                 .collect(),
             welds: Vec::new(),

@@ -7,8 +7,9 @@ use bevy_math::{Mat3, Quat, Vec3};
 use thiserror::Error;
 
 use crate::{
-    ActuatorAssignment, BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, DriveLimits,
-    DriveTarget, EngineKind, FaceOwner, PartId, PartSpec, ServoSpec,
+    ActuatorAssignment, BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, CuboidSpec,
+    DriveLimits, DriveTarget, EngineKind, FaceOwner, MaterialProperties, PartId, PartSpec,
+    ServoSpec,
 };
 
 /// Number of cuboid colliders used for each cylinder.
@@ -59,6 +60,8 @@ pub struct LocalCuboidCollider {
     pub local_rotation: Quat,
     /// Cuboid half-extents in metres.
     pub half_extents: Vec3,
+    /// Source part's contact response.
+    pub material_properties: MaterialProperties,
 }
 
 /// Bearing row connecting two distinct compiled compounds.
@@ -1090,19 +1093,9 @@ fn physical_spec(spec: PartSpec) -> PartSpec {
 }
 
 fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
-    match physical_spec(spec) {
+    match spec {
         PartSpec::Cuboid(spec) => {
-            let size = spec.size_meters();
-            let mass = CUBOID_DENSITY_KG_M3 * size.x * size.y * size.z;
-            PartMassProperties {
-                mass,
-                local_center: Vec3::ZERO,
-                local_inertia: Vec3::new(
-                    mass * (size.y * size.y + size.z * size.z) / 12.0,
-                    mass * (size.x * size.x + size.z * size.z) / 12.0,
-                    mass * (size.x * size.x + size.y * size.y) / 12.0,
-                ),
-            }
+            cuboid_mass_properties(spec, spec.material.properties().density_kg_m3)
         }
         PartSpec::Cylinder(spec) => {
             let outer = spec.dimensions.outer_diameter() * 0.5;
@@ -1110,8 +1103,11 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
             let length = spec.dimensions.axial_length();
             let sweep = spec.dimensions.sweep_angle_radians();
             let radial_squared = outer * outer + inner * inner;
-            let mass =
-                CUBOID_DENSITY_KG_M3 * sweep * (outer * outer - inner * inner) * length * 0.5;
+            let mass = spec.material.properties().density_kg_m3
+                * sweep
+                * (outer * outer - inner * inner)
+                * length
+                * 0.5;
             let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
                 / (3.0 * sweep * (outer * outer - inner * inner));
             let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
@@ -1127,13 +1123,45 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
                 ),
             }
         }
+        PartSpec::Controller(controller) => {
+            cuboid_mass_properties(controller.cuboid(), CUBOID_DENSITY_KG_M3)
+        }
+        PartSpec::Engine(engine) => cuboid_mass_properties(engine.cuboid(), CUBOID_DENSITY_KG_M3),
+        PartSpec::Servo(servo) => cuboid_mass_properties(servo.cuboid(), CUBOID_DENSITY_KG_M3),
+        PartSpec::Seat(seat) => cuboid_mass_properties(seat.cuboid(), CUBOID_DENSITY_KG_M3),
+        PartSpec::Input(input) => cuboid_mass_properties(input.cuboid(), CUBOID_DENSITY_KG_M3),
+    }
+}
+
+fn cuboid_mass_properties(spec: CuboidSpec, density_kg_m3: f32) -> PartMassProperties {
+    let size = spec.size_meters();
+    let mass = density_kg_m3 * size.x * size.y * size.z;
+    PartMassProperties {
+        mass,
+        local_center: Vec3::ZERO,
+        local_inertia: Vec3::new(
+            mass * (size.y * size.y + size.z * size.z) / 12.0,
+            mass * (size.x * size.x + size.z * size.z) / 12.0,
+            mass * (size.x * size.x + size.y * size.y) / 12.0,
+        ),
+    }
+}
+
+const AUTHORED_CONTACT_PROPERTIES: MaterialProperties = MaterialProperties {
+    density_kg_m3: CUBOID_DENSITY_KG_M3,
+    friction: 0.05,
+    restitution: 0.0,
+};
+
+fn contact_properties(spec: PartSpec) -> MaterialProperties {
+    match spec {
+        PartSpec::Cuboid(cuboid) => cuboid.material.properties(),
+        PartSpec::Cylinder(cylinder) => cylinder.material.properties(),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
-        | PartSpec::Input(_) => {
-            unreachable!("fixed-size authored parts resolve to cuboids")
-        }
+        | PartSpec::Input(_) => AUTHORED_CONTACT_PROPERTIES,
     }
 }
 
@@ -1144,6 +1172,7 @@ fn append_part_colliders(
     spec: PartSpec,
     center_of_mass: Vec3,
 ) {
+    let material_properties = contact_properties(spec);
     match physical_spec(spec) {
         PartSpec::Cuboid(spec) => colliders.push(LocalCuboidCollider {
             source_part: part,
@@ -1151,6 +1180,7 @@ fn append_part_colliders(
             local_center: spec.pose.translation() - center_of_mass,
             local_rotation: spec.pose.rotation.quaternion(),
             half_extents: spec.size_meters() * 0.5,
+            material_properties,
         }),
         PartSpec::Cylinder(spec) => {
             let outer = spec.dimensions.outer_diameter() * 0.5;
@@ -1180,6 +1210,7 @@ fn append_part_colliders(
                         spec.dimensions.axial_length() * 0.5,
                         half_tangent,
                     ),
+                    material_properties,
                 });
             }
         }
@@ -1246,10 +1277,10 @@ mod tests {
 
     use crate::{
         ActuatorAssignment, BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome,
-        BuildPose, ConstructionGraph, ControllerSpec, CoordinateDrive, CuboidSpec,
-        CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec, DriveMode, DriveProgram,
-        DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef, GridRotation, PartId,
-        RigidLinkSpec, TopologyError, WeldSpec,
+        BuildPose, ConstructionGraph, ConstructionMaterial, ControllerSpec, CoordinateDrive,
+        CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec, DriveMode,
+        DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef,
+        GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
     };
 
     fn cube_at(units: IVec3) -> CuboidSpec {
@@ -1284,7 +1315,9 @@ mod tests {
         let properties = compiled.compounds[0].mass_properties;
         let outer = 0.5_f32;
         let inner = 0.25_f32;
-        let expected_mass = crate::CUBOID_DENSITY_KG_M3
+        let expected_mass = crate::ConstructionMaterial::Steel
+            .properties()
+            .density_kg_m3
             * core::f32::consts::PI
             * (outer * outer - inner * inner)
             * 2.0;
@@ -1323,8 +1356,13 @@ mod tests {
         let inner = 0.25_f32;
         let length = 2.0_f32;
         let sweep = core::f32::consts::FRAC_PI_2;
-        let expected_mass =
-            crate::CUBOID_DENSITY_KG_M3 * sweep * (outer * outer - inner * inner) * length * 0.5;
+        let expected_mass = crate::ConstructionMaterial::Steel
+            .properties()
+            .density_kg_m3
+            * sweep
+            * (outer * outer - inner * inner)
+            * length
+            * 0.5;
         let expected_center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
             / (3.0 * sweep * (outer * outer - inner * inner));
         let radial_squared = outer * outer + inner * inner;
@@ -1395,15 +1433,95 @@ mod tests {
         let properties = compiled.compounds[0].mass_properties;
         assert_eq!(compiled.compounds.len(), 1);
         assert_eq!(compiled.colliders.len(), 2);
-        assert!((properties.mass - 1000.0).abs() < 1.0e-3);
+        let cube_mass = crate::ConstructionMaterial::Steel
+            .properties()
+            .density_kg_m3;
+        assert!((properties.mass - cube_mass * 2.0).abs() < 1.0e-3);
         assert!(
             properties
                 .center_of_mass
                 .abs_diff_eq(Vec3::new(0.5, 0.0, 0.0), 1.0e-6)
         );
-        assert!((properties.inertia.x_axis.x - 166.666_67).abs() < 1.0e-3);
-        assert!((properties.inertia.y_axis.y - 416.666_7).abs() < 1.0e-3);
-        assert!((properties.inertia.z_axis.z - 416.666_7).abs() < 1.0e-3);
+        assert!((properties.inertia.x_axis.x - cube_mass / 3.0).abs() < 1.0e-3);
+        assert!((properties.inertia.y_axis.y - cube_mass * 5.0 / 6.0).abs() < 1.0e-3);
+        assert!((properties.inertia.z_axis.z - cube_mass * 5.0 / 6.0).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn every_material_scales_cuboid_and_cylinder_mass() {
+        for material in ConstructionMaterial::ALL {
+            let density = material.properties().density_kg_m3;
+            let mut cuboid_graph = ConstructionGraph::new();
+            cuboid_graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new([4; 3], BuildPose::default())
+                        .unwrap()
+                        .with_material(material),
+                ))
+                .unwrap();
+            let cuboid = cuboid_graph.compile().unwrap();
+            assert!((cuboid.compounds[0].mass_properties.mass - density).abs() < 1.0e-3);
+            assert!(
+                (cuboid.compounds[0].mass_properties.inertia.x_axis.x - density / 6.0).abs()
+                    < 1.0e-3
+            );
+
+            let mut cylinder_graph = ConstructionGraph::new();
+            cylinder_graph
+                .apply(BuildCommand::SpawnCylinder(
+                    CylinderSpec::new(
+                        CylinderDimensions::new(1.0, 0.0, 1.0).unwrap(),
+                        BuildPose::default(),
+                    )
+                    .with_material(material),
+                ))
+                .unwrap();
+            let cylinder = cylinder_graph.compile().unwrap();
+            let expected = density * core::f32::consts::PI * 0.25;
+            assert!((cylinder.compounds[0].mass_properties.mass - expected).abs() < 1.0e-3);
+        }
+    }
+
+    #[test]
+    fn mixed_material_welds_sum_mass_and_keep_collider_contact_properties() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(aluminium) = graph
+            .apply(BuildCommand::Spawn(
+                cube_at(IVec3::ZERO).with_material(ConstructionMaterial::Aluminium),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(wood) = graph
+            .apply(BuildCommand::Spawn(
+                cube_at(IVec3::new(4, 0, 0)).with_material(ConstructionMaterial::Wood),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(aluminium, FaceKind::PositiveX),
+                second: FaceRef::part(wood, FaceKind::NegativeX),
+            }))
+            .unwrap();
+
+        let compiled = graph.compile().unwrap();
+        let mass = compiled.compounds[0].mass_properties;
+        assert!((mass.mass - 3_400.0).abs() < 1.0e-3);
+        assert!(
+            mass.center_of_mass
+                .abs_diff_eq(Vec3::new(700.0 / 3_400.0, 0.0, 0.0), 1.0e-6)
+        );
+        let contacts = compiled
+            .colliders
+            .iter()
+            .map(|collider| collider.material_properties)
+            .collect::<Vec<_>>();
+        assert!(contacts.contains(&ConstructionMaterial::Aluminium.properties()));
+        assert!(contacts.contains(&ConstructionMaterial::Wood.properties()));
     }
 
     #[test]
@@ -1883,7 +2001,9 @@ mod tests {
         let inertia = compiled.loop_topology.coordinate_axis_inertia[0];
         // The arm is a 1 m cube centred 0.5 m along the +x hinge axis, so the
         // radial offset is zero and only its own x inertia contributes.
-        let mass = crate::CUBOID_DENSITY_KG_M3;
+        let mass = crate::ConstructionMaterial::Steel
+            .properties()
+            .density_kg_m3;
         let expected = mass * (1.0 + 1.0) / 12.0;
         assert!(
             (inertia - expected).abs() < 1.0e-2,
