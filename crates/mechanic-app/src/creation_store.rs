@@ -260,6 +260,8 @@ mod tests {
             rigid_links: Vec::new(),
             bearings: Vec::new(),
             drive_links: Vec::new(),
+            input_seat_links: Vec::new(),
+            seat_controller_links: Vec::new(),
             sockets: Vec::new(),
         }
     }

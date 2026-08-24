@@ -414,15 +414,118 @@ impl EngineKind {
             Self::Electric => [2, 2, 2],
         }
     }
+
+    /// Stall torque supplied by one engine, in newton metres.
+    pub const fn stall_torque_newton_meters(self) -> f32 {
+        match self {
+            Self::Gas => 200.0,
+            Self::Electric => 500.0,
+        }
+    }
+
+    /// No-load shaft speed supplied by one engine, in revolutions per minute.
+    pub const fn no_load_rpm(self) -> f32 {
+        match self {
+            Self::Gas => 220.0,
+            Self::Electric => 120.0,
+        }
+    }
+
+    /// Number of physical bearing coordinates one engine can feed.
+    pub const fn bearing_capacity(self) -> u32 {
+        4
+    }
 }
 
-/// Fixed-size engine part. Engines are inert until their behaviour is added.
+/// Fixed-size engine part.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EngineSpec {
     /// Which authored engine this part represents.
     pub kind: EngineKind,
     /// Engine centre and cardinal orientation.
     pub pose: BuildPose,
+}
+
+/// Fixed-size servo angle actuator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ServoSpec {
+    /// Servo centre and cardinal orientation.
+    pub pose: BuildPose,
+}
+
+impl ServoSpec {
+    /// Fixed local x/y/z side lengths in grid units.
+    pub const GRID_UNITS: [u8; 3] = [1, 1, 1];
+    /// Stall torque supplied by one servo, in newton metres.
+    pub const STALL_TORQUE_NEWTON_METERS: f32 = 150.0;
+    /// Maximum servo motion in revolutions per minute.
+    pub const NO_LOAD_RPM: f32 = 30.0;
+
+    /// Creates a servo with the given pose.
+    pub const fn new(pose: BuildPose) -> Self {
+        Self { pose }
+    }
+
+    /// Fixed cuboid envelope backing the servo.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixed dimensions are valid grid dimensions.
+    pub fn cuboid(self) -> CuboidSpec {
+        CuboidSpec::new(Self::GRID_UNITS, self.pose).expect("servo dimensions are valid")
+    }
+}
+
+/// Fixed-size seat cushion. Local positive Y is up and positive Z is forward.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SeatSpec {
+    /// Seat centre and cardinal orientation.
+    pub pose: BuildPose,
+}
+
+impl SeatSpec {
+    /// Two-by-two footprint and one-grid-unit cushion height.
+    pub const GRID_UNITS: [u8; 3] = [2, 1, 2];
+
+    /// Creates a seat cushion with the given pose.
+    pub const fn new(pose: BuildPose) -> Self {
+        Self { pose }
+    }
+
+    /// Fixed cuboid envelope backing the seat.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixed dimensions are valid grid dimensions.
+    pub fn cuboid(self) -> CuboidSpec {
+        CuboidSpec::new(Self::GRID_UNITS, self.pose).expect("seat dimensions are valid")
+    }
+}
+
+/// Fixed-size keyboard input router.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InputSpec {
+    /// Input centre and cardinal orientation.
+    pub pose: BuildPose,
+}
+
+impl InputSpec {
+    /// Fixed local x/y/z side lengths in grid units.
+    pub const GRID_UNITS: [u8; 3] = [2, 1, 1];
+
+    /// Creates an input with the given pose.
+    pub const fn new(pose: BuildPose) -> Self {
+        Self { pose }
+    }
+
+    /// Fixed cuboid envelope backing the input.
+    ///
+    /// # Panics
+    ///
+    /// Never: the fixed dimensions are valid grid dimensions.
+    pub fn cuboid(self) -> CuboidSpec {
+        CuboidSpec::new(Self::GRID_UNITS, self.pose).expect("input dimensions are valid")
+    }
 }
 
 impl EngineSpec {
@@ -453,6 +556,12 @@ pub enum PartSpec {
     Controller(ControllerSpec),
     /// Fixed-size inert engine with an authored appearance.
     Engine(EngineSpec),
+    /// Fixed-size servo angle actuator.
+    Servo(ServoSpec),
+    /// Fixed-size seat cushion.
+    Seat(SeatSpec),
+    /// Fixed-size keyboard input router.
+    Input(InputSpec),
 }
 
 impl PartSpec {
@@ -463,6 +572,9 @@ impl PartSpec {
             Self::Cylinder(spec) => spec.pose,
             Self::Controller(spec) => spec.pose,
             Self::Engine(spec) => spec.pose,
+            Self::Servo(spec) => spec.pose,
+            Self::Seat(spec) => spec.pose,
+            Self::Input(spec) => spec.pose,
         }
     }
 
@@ -473,6 +585,9 @@ impl PartSpec {
             Self::Cuboid(spec) => Some(spec),
             Self::Controller(spec) => Some(spec.cuboid()),
             Self::Engine(spec) => Some(spec.cuboid()),
+            Self::Servo(spec) => Some(spec.cuboid()),
+            Self::Seat(spec) => Some(spec.cuboid()),
+            Self::Input(spec) => Some(spec.cuboid()),
             Self::Cylinder(_) => None,
         }
     }
@@ -481,7 +596,12 @@ impl PartSpec {
     pub const fn as_controller(self) -> Option<ControllerSpec> {
         match self {
             Self::Controller(spec) => Some(spec),
-            Self::Cuboid(_) | Self::Cylinder(_) | Self::Engine(_) => None,
+            Self::Cuboid(_)
+            | Self::Cylinder(_)
+            | Self::Engine(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_) => None,
         }
     }
 
@@ -489,7 +609,12 @@ impl PartSpec {
     pub const fn as_cylinder(self) -> Option<CylinderSpec> {
         match self {
             Self::Cylinder(spec) => Some(spec),
-            Self::Cuboid(_) | Self::Controller(_) | Self::Engine(_) => None,
+            Self::Cuboid(_)
+            | Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_) => None,
         }
     }
 
@@ -499,6 +624,9 @@ impl PartSpec {
             Self::Cuboid(spec) => spec.size_meters(),
             Self::Controller(spec) => spec.cuboid().size_meters(),
             Self::Engine(spec) => spec.cuboid().size_meters(),
+            Self::Servo(spec) => spec.cuboid().size_meters(),
+            Self::Seat(spec) => spec.cuboid().size_meters(),
+            Self::Input(spec) => spec.cuboid().size_meters(),
             Self::Cylinder(spec) => Vec3::new(
                 spec.dimensions.outer_diameter(),
                 spec.dimensions.axial_length(),
@@ -535,6 +663,24 @@ impl From<ControllerSpec> for PartSpec {
 impl From<EngineSpec> for PartSpec {
     fn from(value: EngineSpec) -> Self {
         Self::Engine(value)
+    }
+}
+
+impl From<ServoSpec> for PartSpec {
+    fn from(value: ServoSpec) -> Self {
+        Self::Servo(value)
+    }
+}
+
+impl From<SeatSpec> for PartSpec {
+    fn from(value: SeatSpec) -> Self {
+        Self::Seat(value)
+    }
+}
+
+impl From<InputSpec> for PartSpec {
+    fn from(value: InputSpec) -> Self {
+        Self::Input(value)
     }
 }
 
@@ -751,7 +897,8 @@ mod tests {
 
     use super::{
         BuildPose, ControllerSpec, CuboidSpec, CylinderDimensionError, CylinderDimensions,
-        EngineKind, EngineSpec, FaceKind, GridRotation, cuboid_face, snap_world_to_grid,
+        EngineKind, EngineSpec, FaceKind, GridRotation, InputSpec, SeatSpec, ServoSpec,
+        cuboid_face, snap_world_to_grid,
     };
 
     #[test]
@@ -807,6 +954,37 @@ mod tests {
                 .map(super::GridDimension::units),
             [2, 2, 2]
         );
+        assert_eq!(
+            ServoSpec::new(BuildPose::default())
+                .cuboid()
+                .dimensions
+                .map(super::GridDimension::units),
+            [1, 1, 1]
+        );
+        assert_eq!(
+            SeatSpec::new(BuildPose::default())
+                .cuboid()
+                .dimensions
+                .map(super::GridDimension::units),
+            [2, 1, 2]
+        );
+        assert_eq!(
+            InputSpec::new(BuildPose::default())
+                .cuboid()
+                .dimensions
+                .map(super::GridDimension::units),
+            [2, 1, 1]
+        );
+        for (actual, expected) in [
+            (EngineKind::Electric.stall_torque_newton_meters(), 500.0),
+            (EngineKind::Electric.no_load_rpm(), 120.0),
+            (EngineKind::Gas.stall_torque_newton_meters(), 200.0),
+            (EngineKind::Gas.no_load_rpm(), 220.0),
+            (ServoSpec::STALL_TORQUE_NEWTON_METERS, 150.0),
+            (ServoSpec::NO_LOAD_RPM, 30.0),
+        ] {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
     }
 
     #[test]

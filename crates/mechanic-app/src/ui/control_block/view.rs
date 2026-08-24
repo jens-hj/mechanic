@@ -19,6 +19,7 @@ use mosaic_widgets::input::EventCtx;
 
 use super::geometry;
 use super::model::{Intent, LaneModel, Mode, PanelEdit, PanelModel, Preset, StateModel};
+use crate::control_panel::SpeedUnit;
 use crate::ui::UiIntent;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use crate::ui::theme::*;
@@ -765,6 +766,17 @@ impl Dial {
         lane_read(self.model, self.id, 1.0, |joint| joint.speed)
     }
 
+    /// Converts the displayed speed back to the degrees-per-second value the
+    /// graph-facing edit seam accepts.
+    fn stored_speed(self, displayed: f32) -> f32 {
+        match lane_read(self.model, self.id, SpeedUnit::Rpm, |joint| {
+            joint.speed_unit
+        }) {
+            SpeedUnit::Rpm => displayed * 6.0,
+            SpeedUnit::DegreesPerSecond => displayed,
+        }
+    }
+
     /// How far round the dial the reading sits.
     fn sweep(self) -> f32 {
         state_of(self.model, self.id, self.index).sweep(self.ceiling())
@@ -869,6 +881,11 @@ fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                     let detent = top / 20.0;
                     let reading = (degrees / 180.0).clamp(-1.0, 1.0) * top;
                     if detent > 0.0 { (reading / detent).round() * detent } else { 0.0 }
+                };
+                let value = if reading.angled() {
+                    value
+                } else {
+                    reading.stored_speed(value)
                 };
                 let edit = PanelEdit::SetValue { state: slot, value };
                 // Only the move that ends the gesture belongs in history.
@@ -983,6 +1000,7 @@ fn dial_readout(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let model = handles.model;
     let angled = move || angle_mode(model, id, index);
     let value = move || state_of(model, id, index).value;
+    let unit = move || lane_read(model, id, "RPM", LaneModel::speed_unit_text);
     view! {
         col width:fill height:fill align:center justify:center nohit {
             text font-size:21px font-weight:700
@@ -990,7 +1008,7 @@ fn dial_readout(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                 if angled() { format!("{:.0}°", value()) } else { format!("{:.0}", value()) }
             }
             text font-size:11px font-color:ink.faint margin:(top:2px) {
-                if angled() { "degrees" } else { "°/s" }
+                if angled() { "degrees" } else { unit() }
             }
         }
     }
@@ -1234,17 +1252,20 @@ fn name_field(handles: &Handles, id: DriveLinkId) -> Element {
     }
 }
 
-/// What the joint may do at all: how fast, how hard, how far, and whether the
-/// sequence repeats. Two of them are numbers, and two are switches.
+/// What the attached hardware lets the joint do, plus its program switches.
 fn chips(handles: &Handles, id: DriveLinkId) -> Element {
-    let speed = number_chip(handles, id, Chip::Speed);
-    let torque = number_chip(handles, id, Chip::Torque);
+    let speed = capability_chip(handles, id, Chip::Speed);
+    let actuator = capability_chip(handles, id, Chip::Actuator);
+    let electric = capability_chip(handles, id, Chip::Electric);
+    let gas = capability_chip(handles, id, Chip::Gas);
     let travel = switch_chip(handles, id, Chip::Travel);
     let repeat = switch_chip(handles, id, Chip::Repeat);
     view! {
         grid height:min-content cols:(repeat(2 minmax(0px 1fr))) col-gap:6px row-gap:6px {
             (speed)
-            (torque)
+            (actuator)
+            (electric)
+            (gas)
             (travel)
             (repeat)
         }
@@ -1256,72 +1277,47 @@ fn chips(handles: &Handles, id: DriveLinkId) -> Element {
 enum Chip {
     /// Fastest the joint may turn.
     Speed,
-    /// Strongest torque it may apply.
-    Torque,
+    /// Assigned actuator family and available torque.
+    Actuator,
+    /// Electric motor contribution.
+    Electric,
+    /// Gas motor contribution.
+    Gas,
     /// How far it may turn.
     Travel,
     /// Whether the sequence repeats.
     Repeat,
 }
 
-/// A chip holding a number, which clicking turns into a field.
-///
-/// The field is the same chip: it swaps its label for an input rather than
-/// opening anything, so the number is edited where it is read.
-fn number_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
+/// A hardware capability chip. Clicking speed toggles its unit; the remaining
+/// chips cycle assignments that can actually be supplied by the machine.
+fn capability_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
+    let handles = handles.clone();
     let model = handles.model;
-    let typing: State<bool> = State::new(false);
-    let buffer: State<String> = State::new(String::new());
-
-    let start = move || {
-        let current = match which {
-            Chip::Speed => lane_read(model, id, 0.0, |joint| joint.speed)
-                .round()
-                .to_string(),
-            // An unlimited joint opens on an empty field, which is itself the
-            // way to say unlimited.
-            _ => lane_read(model, id, String::new(), |joint| {
-                if joint.torque.is_infinite() {
-                    String::new()
-                } else {
-                    format!("{:.0}", joint.torque)
-                }
-            }),
-        };
-        buffer.set(current);
-        typing.set(true);
+    let edit = match which {
+        Chip::Speed => PanelEdit::ToggleSpeedUnit,
+        Chip::Actuator => PanelEdit::CycleActuator,
+        Chip::Electric => PanelEdit::CycleElectric,
+        Chip::Gas => PanelEdit::CycleGas,
+        Chip::Travel | Chip::Repeat => unreachable!("switches use switch_chip"),
     };
-    let commit: Rc<dyn Fn()> = Rc::new({
-        let handles = handles.clone();
-        move || {
-            let typed = buffer.get_untracked();
-            let edit = match which {
-                Chip::Speed => typed.trim().parse::<f32>().ok().map(PanelEdit::SetMaxSpeed),
-                _ => Some(PanelEdit::SetTorque(typed)),
-            };
-            if let Some(edit) = edit {
-                handles.edit(id, edit);
-            }
-            typing.set(false);
-        }
-    });
 
     view! {
         row height:44px align:center gap:8px pad:(horizontal:9px vertical:0px) radius:8px
             fill:chip.fill stroke:(width:1px color:chip.edge)
             font-color:{ if which == Chip::Speed { color(chip.speed) } else { color(chip.torque) } }
             hover { stroke:(width:1px color:chip.edge-over) }
-            @click:{ if !typing.get_untracked() { start(); } } {
+            @click:{ handles.edit(id, edit.clone()) } {
             if which == Chip::Speed { icon size:20px chip-speed } else { icon size:20px chip-torque }
-            if $typing {
-                (editable_field(buffer, Rc::clone(&commit), typing))
-            } else {
-                text width:1fr font-size:12px letter-spacing:-0.12px text-wrap:none {
-                    if which == Chip::Speed {
-                        lane_read(model, id, String::new(), LaneModel::speed_text)
-                    } else {
-                        lane_read(model, id, String::new(), LaneModel::torque_text)
-                    }
+            text width:1fr font-size:12px letter-spacing:-0.12px text-wrap:none {
+                if which == Chip::Speed {
+                    lane_read(model, id, String::new(), LaneModel::speed_text)
+                } else if which == Chip::Actuator {
+                    lane_read(model, id, String::new(), LaneModel::torque_text)
+                } else if which == Chip::Electric {
+                    lane_read(model, id, String::new(), LaneModel::electric_text)
+                } else {
+                    lane_read(model, id, String::new(), LaneModel::gas_text)
                 }
             }
         }

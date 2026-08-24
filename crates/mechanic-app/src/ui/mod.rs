@@ -333,7 +333,7 @@ pub(crate) fn drain(
         match intent {
             UiIntent::Tool(tool) => selection.0 = tool,
             UiIntent::Creations(action) => menu.act(action),
-            UiIntent::Drive(edit) => control_block::write_joint(&panel, &mut target, &edit),
+            UiIntent::Drive(edit) => control_block::write_joint(&mut panel, &mut target, &edit),
             UiIntent::CloseControlPanel => {
                 panel.close();
                 ui.handles.block.capturing.set(None);

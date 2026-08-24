@@ -1,4 +1,4 @@
-//! The tool hotbar: nine slots along the bottom of the window.
+//! The tool hotbar along the bottom of the window.
 //!
 //! The icons are drawn rather than drawn *from* anything — each is a handful of
 //! rectangles, rings and bars in a 40×40 box, carrying across the numbers the
@@ -42,7 +42,7 @@ const BAR_PAD: f32 = 8.0;
 const BAR_RADIUS: f32 = SLOT_RADIUS + BAR_PAD;
 
 /// The tools, in the order their number keys run.
-const TOOLS: [Tool; 9] = [
+const TOOLS: [Tool; 12] = [
     Tool::Block,
     Tool::Cylinder,
     Tool::Bearing,
@@ -52,6 +52,9 @@ const TOOLS: [Tool; 9] = [
     Tool::Connector,
     Tool::GasEngine,
     Tool::ElectricEngine,
+    Tool::Servo,
+    Tool::Seat,
+    Tool::Input,
 ];
 
 /// The bar, and the tooltip that rides above it.
@@ -227,6 +230,33 @@ fn icon(tool: Tool) -> Element {
                 circle at:(x:20px y:20px) radius:9px stroke:(width:3px color:accent.speed)
                 line from:(x:20px y:11px) to:(x:20px y:29px)
                     stroke:(width:3px cap:round color:ink.fg)
+            }
+        },
+        Tool::Servo => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:20px) size:(w:27px h:27px) radius:4px
+                    fill:bar.slot stroke:(width:2px color:accent.key)
+                circle at:(x:20px y:20px) radius:8px stroke:(width:3px color:accent.angle)
+                circle at:(x:20px y:20px) radius:2px fill:ink.fg
+            }
+        },
+        Tool::Seat => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:17px) size:(w:29px h:12px) radius:5px
+                    fill:accent.speed stroke:(width:2px color:ink.fg)
+                line from:(x:10px y:23px) to:(x:10px y:28px)
+                    stroke:(width:3px cap:round color:ink.fg)
+                line from:(x:30px y:23px) to:(x:30px y:28px)
+                    stroke:(width:3px cap:round color:ink.fg)
+            }
+        },
+        Tool::Input => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:20px) size:(w:31px h:21px) radius:4px
+                    fill:bar.slot stroke:(width:2px color:accent.key)
+                circle at:(x:12px y:20px) radius:2.5px fill:accent.key
+                circle at:(x:20px y:20px) radius:2.5px fill:accent.key
+                circle at:(x:28px y:20px) radius:2.5px fill:accent.key
             }
         },
     }

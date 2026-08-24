@@ -52,6 +52,10 @@ struct Drive {
     target_angle: f32,
     min_angle: f32,
     max_angle: f32,
+    source_a_max_acceleration: f32,
+    source_a_no_load_speed: f32,
+    source_b_max_acceleration: f32,
+    source_b_no_load_speed: f32,
     padding: f32,
 };
 
@@ -399,7 +403,20 @@ fn advance_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
                 desired = 0.0;
             }
         }
-        let budget = drive.max_acceleration * config.delta_seconds;
+        let source_a_fade = select(
+            0.0,
+            clamp(1.0 - abs(measured) / max(drive.source_a_no_load_speed, 0.0001), 0.0, 1.0),
+            drive.source_a_no_load_speed > 0.0,
+        );
+        let source_b_fade = select(
+            0.0,
+            clamp(1.0 - abs(measured) / max(drive.source_b_no_load_speed, 0.0001), 0.0, 1.0),
+            drive.source_b_no_load_speed > 0.0,
+        );
+        let available_acceleration =
+            drive.source_a_max_acceleration * source_a_fade
+            + drive.source_b_max_acceleration * source_b_fade;
+        let budget = available_acceleration * config.delta_seconds;
         speed = measured + clamp(desired - measured, -budget, budget);
     }
     var angle = coordinates[coordinate].angle + speed * config.delta_seconds;

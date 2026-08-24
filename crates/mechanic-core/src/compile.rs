@@ -7,8 +7,8 @@ use bevy_math::{Mat3, Quat, Vec3};
 use thiserror::Error;
 
 use crate::{
-    BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, DriveLimits, DriveTarget, FaceOwner,
-    PartId, PartSpec,
+    ActuatorAssignment, BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, DriveLimits,
+    DriveTarget, EngineKind, FaceOwner, PartId, PartSpec, ServoSpec,
 };
 
 /// Number of cuboid colliders used for each cylinder.
@@ -187,6 +187,14 @@ pub struct CoordinateDrive {
     /// Largest permitted change in joint speed per second. Infinite when the
     /// drive torque is unlimited.
     pub max_acceleration: f32,
+    /// Stall acceleration supplied by the first actuator family.
+    pub source_a_max_acceleration: f32,
+    /// No-load speed of the first actuator family, in radians per second.
+    pub source_a_no_load_speed: f32,
+    /// Stall acceleration supplied by the second actuator family.
+    pub source_b_max_acceleration: f32,
+    /// No-load speed of the second actuator family, in radians per second.
+    pub source_b_no_load_speed: f32,
     /// Lower angle limit in radians, or negative infinity.
     pub min_angle: f32,
     /// Upper angle limit in radians, or positive infinity.
@@ -201,6 +209,10 @@ impl CoordinateDrive {
         target_angle: 0.0,
         max_speed: 0.0,
         max_acceleration: 0.0,
+        source_a_max_acceleration: 0.0,
+        source_a_no_load_speed: 0.0,
+        source_b_max_acceleration: 0.0,
+        source_b_no_load_speed: 0.0,
         min_angle: f32::NEG_INFINITY,
         max_angle: f32::INFINITY,
     };
@@ -237,6 +249,42 @@ pub enum TopologyError {
     InvalidMassProperties {
         /// One source part identifying the group.
         part: PartId,
+    },
+    /// A power module has more electric-driven joints than electric ports.
+    #[error("control module at {controller:?} needs {required} electric ports but has {available}")]
+    InsufficientElectricPorts {
+        /// A controller identifying the module.
+        controller: PartId,
+        /// Number of assigned physical joints.
+        required: u32,
+        /// Number of available ports.
+        available: u32,
+    },
+    /// A power module has more gas-driven joints than gas ports.
+    #[error("control module at {controller:?} needs {required} gas ports but has {available}")]
+    InsufficientGasPorts {
+        /// A controller identifying the module.
+        controller: PartId,
+        /// Number of assigned physical joints.
+        required: u32,
+        /// Number of available ports.
+        available: u32,
+    },
+    /// A power module has more servo-driven joints than Servos.
+    #[error("control module at {controller:?} needs {required} Servos but has {available}")]
+    InsufficientServos {
+        /// A controller identifying the module.
+        controller: PartId,
+        /// Number of assigned physical joints.
+        required: u32,
+        /// Number of available Servos.
+        available: u32,
+    },
+    /// A motor was given an angle state or a Servo was given a speed state.
+    #[error("bearing {bearing:?} has a program incompatible with its assigned actuator")]
+    IncompatibleActuatorProgram {
+        /// Bearing carrying the incompatible program.
+        bearing: BearingId,
     },
 }
 
@@ -295,7 +343,12 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     let collider_capacity = part_rows
         .iter()
         .map(|(_, spec)| match spec {
-            PartSpec::Cuboid(_) | PartSpec::Controller(_) | PartSpec::Engine(_) => 1,
+            PartSpec::Cuboid(_)
+            | PartSpec::Controller(_)
+            | PartSpec::Engine(_)
+            | PartSpec::Servo(_)
+            | PartSpec::Seat(_)
+            | PartSpec::Input(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
         })
         .sum();
@@ -488,7 +541,9 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     topology.coordinate_axis_inertia =
         compile_coordinate_axis_inertia(&compounds, &bearings, &topology);
 
-    let coordinate_drives = resolve_coordinate_drives(&topology, graph);
+    validate_actuator_programs(graph)?;
+    let actuation = resolve_coordinate_actuation(&topology, graph)?;
+    let coordinate_drives = resolve_coordinate_drives(&topology, graph, &actuation);
 
     Ok(CompiledCreation {
         compounds,
@@ -671,9 +726,174 @@ fn compile_coordinate_axis_inertia(
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct CoordinateActuation {
+    source_a_torque: f32,
+    source_a_no_load_speed: f32,
+    source_b_torque: f32,
+    source_b_no_load_speed: f32,
+    max_speed: f32,
+}
+
+#[derive(Default)]
+struct ModuleBudget {
+    controller: Option<PartId>,
+    electric_engines: u32,
+    gas_engines: u32,
+    servos: u32,
+    electric_coordinates: BTreeSet<u32>,
+    gas_coordinates: BTreeSet<u32>,
+    servo_coordinates: BTreeSet<u32>,
+}
+
+fn validate_actuator_programs(graph: &ConstructionGraph) -> Result<(), TopologyError> {
+    for (_, link) in graph.drive_links() {
+        let compatible = link.program.states().iter().all(|state| {
+            matches!(
+                (link.actuator, state.target()),
+                (ActuatorAssignment::Unpowered, _)
+                    | (ActuatorAssignment::Motor { .. }, DriveTarget::Speed(_))
+                    | (ActuatorAssignment::Servo, DriveTarget::Angle(_))
+            )
+        });
+        if !compatible {
+            return Err(TopologyError::IncompatibleActuatorProgram {
+                bearing: link.bearing,
+            });
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+// Graph counts are far below f32's exact-integer range in any compilable
+// creation; converting them keeps the torque-sharing arithmetic readable.
+fn resolve_coordinate_actuation(
+    topology: &LoopTopology,
+    graph: &ConstructionGraph,
+) -> Result<Vec<CoordinateActuation>, TopologyError> {
+    let mut modules = BTreeMap::<PartId, ModuleBudget>::new();
+    let mut assignment_by_coordinate = BTreeMap::<u32, (PartId, ActuatorAssignment)>::new();
+
+    for (_, link) in graph.drive_links() {
+        let Some(&coordinate) = topology.bearing_coordinates.get(&link.bearing) else {
+            continue;
+        };
+        let members = graph.machine_module(link.controller);
+        let module_key = members.iter().next().copied().unwrap_or(link.controller);
+        let module = modules.entry(module_key).or_insert_with(|| {
+            let mut budget = ModuleBudget {
+                controller: Some(link.controller),
+                ..ModuleBudget::default()
+            };
+            for part in &members {
+                match graph.part(*part) {
+                    Some(PartSpec::Engine(engine)) => match engine.kind {
+                        EngineKind::Electric => budget.electric_engines += 1,
+                        EngineKind::Gas => budget.gas_engines += 1,
+                    },
+                    Some(PartSpec::Servo(_)) => budget.servos += 1,
+                    _ => {}
+                }
+            }
+            budget
+        });
+        if link.actuator.uses_electric() {
+            module.electric_coordinates.insert(coordinate);
+        }
+        if link.actuator.uses_gas() {
+            module.gas_coordinates.insert(coordinate);
+        }
+        if link.actuator.uses_servo() {
+            module.servo_coordinates.insert(coordinate);
+        }
+        assignment_by_coordinate
+            .entry(coordinate)
+            .or_insert((module_key, link.actuator));
+    }
+
+    for module in modules.values() {
+        let controller = module
+            .controller
+            .expect("a module budget is created from a controller link");
+        let electric_required =
+            u32::try_from(module.electric_coordinates.len()).expect("coordinate count fits u32");
+        let electric_available = module.electric_engines * EngineKind::Electric.bearing_capacity();
+        if electric_required > electric_available {
+            return Err(TopologyError::InsufficientElectricPorts {
+                controller,
+                required: electric_required,
+                available: electric_available,
+            });
+        }
+        let gas_required =
+            u32::try_from(module.gas_coordinates.len()).expect("coordinate count fits u32");
+        let gas_available = module.gas_engines * EngineKind::Gas.bearing_capacity();
+        if gas_required > gas_available {
+            return Err(TopologyError::InsufficientGasPorts {
+                controller,
+                required: gas_required,
+                available: gas_available,
+            });
+        }
+        let servo_required =
+            u32::try_from(module.servo_coordinates.len()).expect("coordinate count fits u32");
+        if servo_required > module.servos {
+            return Err(TopologyError::InsufficientServos {
+                controller,
+                required: servo_required,
+                available: module.servos,
+            });
+        }
+    }
+
+    let mut result = vec![CoordinateActuation::default(); topology.tree_bearings.len()];
+    for (coordinate, (module_key, assignment)) in assignment_by_coordinate {
+        let module = &modules[&module_key];
+        let row = &mut result[coordinate as usize];
+        match assignment {
+            ActuatorAssignment::Unpowered => {}
+            ActuatorAssignment::Motor {
+                electric_percent,
+                gas_percent,
+            } => {
+                if electric_percent != 0 {
+                    let consumers = module.electric_coordinates.len() as f32;
+                    row.source_a_torque = module.electric_engines as f32
+                        * EngineKind::Electric.stall_torque_newton_meters()
+                        / consumers
+                        * (f32::from(electric_percent) / 100.0);
+                    row.source_a_no_load_speed = rpm_to_rad_s(EngineKind::Electric.no_load_rpm());
+                    row.max_speed = row.max_speed.max(row.source_a_no_load_speed);
+                }
+                if gas_percent != 0 {
+                    let consumers = module.gas_coordinates.len() as f32;
+                    row.source_b_torque = module.gas_engines as f32
+                        * EngineKind::Gas.stall_torque_newton_meters()
+                        / consumers
+                        * (f32::from(gas_percent) / 100.0);
+                    row.source_b_no_load_speed = rpm_to_rad_s(EngineKind::Gas.no_load_rpm());
+                    row.max_speed = row.max_speed.max(row.source_b_no_load_speed);
+                }
+            }
+            ActuatorAssignment::Servo => {
+                row.source_a_torque = ServoSpec::STALL_TORQUE_NEWTON_METERS;
+                row.source_a_no_load_speed = rpm_to_rad_s(ServoSpec::NO_LOAD_RPM);
+                row.max_speed = row.source_a_no_load_speed;
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn rpm_to_rad_s(rpm: f32) -> f32 {
+    rpm * core::f32::consts::TAU / 60.0
+}
+
 fn resolve_coordinate_drives(
     topology: &LoopTopology,
     graph: &ConstructionGraph,
+    actuation: &[CoordinateActuation],
 ) -> Vec<CoordinateDrive> {
     topology
         .tree_bearings
@@ -698,7 +918,12 @@ fn resolve_coordinate_drives(
             let Some(target) = link.resolved_target(0) else {
                 return CoordinateDrive::PASSIVE;
             };
-            coordinate_drive(target, link.limits, inertia)
+            coordinate_drive(
+                target,
+                link.limits,
+                inertia,
+                actuation.get(coordinate).copied().unwrap_or_default(),
+            )
         })
         .collect()
 }
@@ -708,23 +933,30 @@ fn coordinate_drive(
     target: DriveTarget,
     limits: DriveLimits,
     axis_inertia: f32,
+    actuation: CoordinateActuation,
 ) -> CoordinateDrive {
-    let torque = limits.max_torque_newton_meters();
-    let max_acceleration = if torque.is_infinite() {
-        f32::INFINITY
-    } else {
-        torque / axis_inertia
-    };
+    if actuation.max_speed <= 0.0 {
+        return CoordinateDrive::PASSIVE;
+    }
+    let max_acceleration = (actuation.source_a_torque + actuation.source_b_torque) / axis_inertia;
     let (mode, target_speed, target_angle) = match target {
-        DriveTarget::Speed(speed) => (DriveMode::Speed, speed, 0.0),
+        DriveTarget::Speed(speed) => (
+            DriveMode::Speed,
+            speed.clamp(-actuation.max_speed, actuation.max_speed),
+            0.0,
+        ),
         DriveTarget::Angle(angle) => (DriveMode::Angle, 0.0, angle),
     };
     CoordinateDrive {
         mode,
         target_speed,
         target_angle,
-        max_speed: limits.max_speed_rad_s(),
+        max_speed: actuation.max_speed,
         max_acceleration,
+        source_a_max_acceleration: actuation.source_a_torque / axis_inertia,
+        source_a_no_load_speed: actuation.source_a_no_load_speed,
+        source_b_max_acceleration: actuation.source_b_torque / axis_inertia,
+        source_b_no_load_speed: actuation.source_b_no_load_speed,
         min_angle: limits.min_angle(),
         max_angle: limits.max_angle(),
     }
@@ -737,7 +969,9 @@ impl CompiledCreation {
     /// parameters may have changed since. This is how a running simulation is
     /// retuned without recompiling topology.
     pub fn resolve_coordinate_drives(&self, graph: &ConstructionGraph) -> Vec<CoordinateDrive> {
-        resolve_coordinate_drives(&self.loop_topology, graph)
+        let actuation = resolve_coordinate_actuation(&self.loop_topology, graph)
+            .unwrap_or_else(|_| vec![CoordinateActuation::default(); self.coordinate_drives.len()]);
+        resolve_coordinate_drives(&self.loop_topology, graph, &actuation)
     }
 
     /// Builds the drive row for one coordinate from a live state target.
@@ -761,7 +995,23 @@ impl CompiledCreation {
         if !inertia.is_finite() {
             return CoordinateDrive::PASSIVE;
         }
-        coordinate_drive(target, limits, inertia)
+        let template = self
+            .coordinate_drives
+            .get(coordinate as usize)
+            .copied()
+            .unwrap_or_default();
+        coordinate_drive(
+            target,
+            limits,
+            inertia,
+            CoordinateActuation {
+                source_a_torque: template.source_a_max_acceleration * inertia,
+                source_a_no_load_speed: template.source_a_no_load_speed,
+                source_b_torque: template.source_b_max_acceleration * inertia,
+                source_b_no_load_speed: template.source_b_no_load_speed,
+                max_speed: template.max_speed,
+            },
+        )
     }
 }
 
@@ -832,6 +1082,9 @@ fn physical_spec(spec: PartSpec) -> PartSpec {
     match spec {
         PartSpec::Controller(controller) => PartSpec::Cuboid(controller.cuboid()),
         PartSpec::Engine(engine) => PartSpec::Cuboid(engine.cuboid()),
+        PartSpec::Servo(servo) => PartSpec::Cuboid(servo.cuboid()),
+        PartSpec::Seat(seat) => PartSpec::Cuboid(seat.cuboid()),
+        PartSpec::Input(input) => PartSpec::Cuboid(input.cuboid()),
         other => other,
     }
 }
@@ -874,7 +1127,11 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
                 ),
             }
         }
-        PartSpec::Controller(_) | PartSpec::Engine(_) => {
+        PartSpec::Controller(_)
+        | PartSpec::Engine(_)
+        | PartSpec::Servo(_)
+        | PartSpec::Seat(_)
+        | PartSpec::Input(_) => {
             unreachable!("fixed-size authored parts resolve to cuboids")
         }
     }
@@ -926,7 +1183,11 @@ fn append_part_colliders(
                 });
             }
         }
-        PartSpec::Controller(_) | PartSpec::Engine(_) => {
+        PartSpec::Controller(_)
+        | PartSpec::Engine(_)
+        | PartSpec::Servo(_)
+        | PartSpec::Seat(_)
+        | PartSpec::Input(_) => {
             unreachable!("fixed-size authored parts resolve to cuboids")
         }
     }
@@ -984,10 +1245,11 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
 
     use crate::{
-        BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
-        ConstructionGraph, ControllerSpec, CoordinateDrive, CuboidSpec, CylinderDimensions,
-        CylinderSpec, DriveLimits, DriveLinkSpec, DriveMode, DriveProgram, DriveState, DriveTarget,
-        FaceKind, FaceRef, GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
+        ActuatorAssignment, BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome,
+        BuildPose, ConstructionGraph, ControllerSpec, CoordinateDrive, CuboidSpec,
+        CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec, DriveMode, DriveProgram,
+        DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef, GridRotation, PartId,
+        RigidLinkSpec, TopologyError, WeldSpec,
     };
 
     fn cube_at(units: IVec3) -> CuboidSpec {
@@ -1478,7 +1740,23 @@ mod tests {
         spec.limits = limits;
         spec.program = program;
         spec.reversed = reversed;
+        spec.actuator = ActuatorAssignment::motor(100, 0).unwrap();
         graph.apply(BuildCommand::AddDriveLink(spec)).unwrap();
+        let BuildOutcome::Spawned(engine) = graph
+            .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                EngineKind::Electric,
+                BuildPose::new(IVec3::new(0, 42, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(controller, FaceKind::PositiveY),
+                second: FaceRef::part(engine, FaceKind::NegativeY),
+            }))
+            .unwrap();
         controller
     }
 
@@ -1749,7 +2027,7 @@ mod tests {
         assert!((motor_row.target_speed + 3.0).abs() < f32::EPSILON);
         assert!((motor_row.min_angle + 1.0).abs() < f32::EPSILON);
         assert!((motor_row.max_angle - 1.0).abs() < f32::EPSILON);
-        let expected = 20.0 / compiled.loop_topology.coordinate_axis_inertia[driven_index];
+        let expected = 500.0 / compiled.loop_topology.coordinate_axis_inertia[driven_index];
         assert!((motor_row.max_acceleration - expected).abs() < 1.0e-3);
 
         let passive_index = 1 - driven_index;
@@ -1757,7 +2035,7 @@ mod tests {
     }
 
     #[test]
-    fn unlimited_torque_compiles_to_an_unbounded_acceleration_budget() {
+    fn hardware_torque_replaces_the_legacy_arbitrary_torque_limit() {
         let mut graph = ConstructionGraph::new();
         let base = spawn(&mut graph, IVec3::new(0, 2, 0));
         ground(&mut graph, base);
@@ -1775,7 +2053,118 @@ mod tests {
 
         let compiled = graph.compile().unwrap();
         let drives = compiled.resolve_coordinate_drives(&graph);
-        assert!(drives[0].max_acceleration.is_infinite());
+        assert!(drives[0].max_acceleration.is_finite());
+        assert!(drives[0].max_acceleration > 0.0);
         assert!(drives[0].min_angle.is_infinite() && drives[0].min_angle < 0.0);
+    }
+
+    #[test]
+    fn one_engine_splits_its_torque_across_its_assigned_coordinates() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let right = spawn(&mut graph, IVec3::new(4, 2, 0));
+        let left = spawn(&mut graph, IVec3::new(-4, 2, 0));
+        let bearings = [
+            add_bearing(
+                &mut graph,
+                base,
+                FaceKind::PositiveX,
+                right,
+                FaceKind::NegativeX,
+                Vec3::new(0.5, 0.5, 0.0),
+                Vec3::X,
+            ),
+            add_bearing(
+                &mut graph,
+                base,
+                FaceKind::NegativeX,
+                left,
+                FaceKind::PositiveX,
+                Vec3::new(-0.5, 0.5, 0.0),
+                -Vec3::X,
+            ),
+        ];
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::new(0, 40, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(engine) = graph
+            .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                EngineKind::Electric,
+                BuildPose::new(IVec3::new(0, 42, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(controller, FaceKind::PositiveY),
+                second: FaceRef::part(engine, FaceKind::NegativeY),
+            }))
+            .unwrap();
+        for bearing in bearings {
+            let mut link = DriveLinkSpec::new(controller, bearing);
+            link.actuator = ActuatorAssignment::motor(100, 0).unwrap();
+            link.program =
+                DriveProgram::new(&[DriveState::new(DriveTarget::Speed(20.0)).unwrap()], false)
+                    .unwrap();
+            graph.apply(BuildCommand::AddDriveLink(link)).unwrap();
+        }
+
+        let compiled = graph.compile().unwrap();
+        let drives = compiled.resolve_coordinate_drives(&graph);
+        assert_eq!(drives.len(), 2);
+        for (coordinate, drive) in drives.iter().enumerate() {
+            let torque = drive.source_a_max_acceleration
+                * compiled.loop_topology.coordinate_axis_inertia[coordinate];
+            assert!((torque - 250.0).abs() < 1.0e-3);
+            assert!((drive.max_speed - 4.0 * core::f32::consts::PI).abs() < 1.0e-5);
+            assert!((drive.target_speed - 4.0 * core::f32::consts::PI).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn assigned_motor_without_a_touching_engine_is_rejected() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let arm = spawn(&mut graph, IVec3::new(4, 2, 0));
+        let bearing = add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveX,
+            arm,
+            FaceKind::NegativeX,
+            Vec3::new(0.5, 0.5, 0.0),
+            Vec3::X,
+        );
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::new(0, 40, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut link = DriveLinkSpec::new(controller, bearing);
+        link.actuator = ActuatorAssignment::motor(100, 0).unwrap();
+        link.program =
+            DriveProgram::new(&[DriveState::new(DriveTarget::Speed(1.0)).unwrap()], false).unwrap();
+        graph.apply(BuildCommand::AddDriveLink(link)).unwrap();
+
+        assert_eq!(
+            graph.compile(),
+            Err(TopologyError::InsufficientElectricPorts {
+                controller,
+                required: 1,
+                available: 0,
+            })
+        );
     }
 }

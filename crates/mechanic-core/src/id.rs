@@ -50,6 +50,8 @@ define_id!(WeldId);
 define_id!(RigidLinkId);
 define_id!(BearingId);
 define_id!(DriveLinkId);
+define_id!(InputSeatLinkId);
+define_id!(SeatControllerLinkId);
 
 pub(crate) trait Handle: Copy {
     fn from_parts(index: u32, generation: u32) -> Self;

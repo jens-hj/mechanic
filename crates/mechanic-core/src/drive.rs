@@ -15,6 +15,93 @@ pub const MAX_DRIVE_STATES: usize = 8;
 /// Longest supported dwell time, in seconds.
 pub const MAX_DRIVE_DWELL_SECONDS: f32 = 600.0;
 
+/// Invalid percentage in a motor-family contribution.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[error("actuator contribution must be between 0 and 100 percent; got {0}")]
+pub struct ActuatorPercentageError(pub u8);
+
+/// Hardware family assigned to one physical bearing coordinate.
+///
+/// Motor percentages independently scale each family's share of its power
+/// module. A zero contribution consumes no engine port. Servos are exclusive
+/// angle actuators and never combine with a motor family.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActuatorAssignment {
+    /// Keep the program but apply no torque.
+    #[default]
+    Unpowered,
+    /// Continuous rotation powered by electric and/or gas engines.
+    Motor {
+        /// Electric torque contribution, from zero through one hundred.
+        electric_percent: u8,
+        /// Gas torque contribution, from zero through one hundred.
+        gas_percent: u8,
+    },
+    /// Position control powered by one servo.
+    Servo,
+}
+
+impl ActuatorAssignment {
+    /// Creates a motor assignment with independently validated contributions.
+    /// Zero plus zero is normalized to [`Self::Unpowered`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActuatorPercentageError`] when either value exceeds 100.
+    pub const fn motor(
+        electric_percent: u8,
+        gas_percent: u8,
+    ) -> Result<Self, ActuatorPercentageError> {
+        if electric_percent > 100 {
+            return Err(ActuatorPercentageError(electric_percent));
+        }
+        if gas_percent > 100 {
+            return Err(ActuatorPercentageError(gas_percent));
+        }
+        if electric_percent == 0 && gas_percent == 0 {
+            Ok(Self::Unpowered)
+        } else {
+            Ok(Self::Motor {
+                electric_percent,
+                gas_percent,
+            })
+        }
+    }
+
+    /// Electric percentage, or zero for non-motor assignments.
+    pub const fn electric_percent(self) -> u8 {
+        match self {
+            Self::Motor {
+                electric_percent, ..
+            } => electric_percent,
+            Self::Unpowered | Self::Servo => 0,
+        }
+    }
+
+    /// Gas percentage, or zero for non-motor assignments.
+    pub const fn gas_percent(self) -> u8 {
+        match self {
+            Self::Motor { gas_percent, .. } => gas_percent,
+            Self::Unpowered | Self::Servo => 0,
+        }
+    }
+
+    /// Whether this assignment consumes an electric-engine port.
+    pub const fn uses_electric(self) -> bool {
+        self.electric_percent() != 0
+    }
+
+    /// Whether this assignment consumes a gas-engine port.
+    pub const fn uses_gas(self) -> bool {
+        self.gas_percent() != 0
+    }
+
+    /// Whether this assignment consumes a servo.
+    pub const fn uses_servo(self) -> bool {
+        matches!(self, Self::Servo)
+    }
+}
+
 /// Invalid per-bearing drive limits.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum DriveLimitsError {
@@ -744,8 +831,9 @@ impl Default for DriveLimits {
 #[cfg(test)]
 mod tests {
     use super::{
-        DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveProgram, DriveProgramError,
-        DriveRelease, DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_STATES,
+        ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
+        DriveLimitsError, DriveProgram, DriveProgramError, DriveRelease, DriveState, DriveTarget,
+        DriveTrigger, MAX_DRIVE_STATES,
     };
 
     fn key(symbol: char) -> DriveKey {
@@ -763,6 +851,25 @@ mod tests {
         assert_eq!(DriveKey::new('7').map(DriveKey::symbol), Some('7'));
         assert_eq!(DriveKey::new('-'), None);
         assert_eq!(DriveKey::new(' '), None);
+    }
+
+    #[test]
+    fn motor_contributions_validate_and_zero_normalizes_to_unpowered() {
+        assert_eq!(
+            ActuatorAssignment::motor(0, 0),
+            Ok(ActuatorAssignment::Unpowered)
+        );
+        assert_eq!(
+            ActuatorAssignment::motor(50, 75),
+            Ok(ActuatorAssignment::Motor {
+                electric_percent: 50,
+                gas_percent: 75,
+            })
+        );
+        assert_eq!(
+            ActuatorAssignment::motor(101, 0),
+            Err(ActuatorPercentageError(101))
+        );
     }
 
     #[test]

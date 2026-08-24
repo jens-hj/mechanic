@@ -30,6 +30,7 @@ use bevy::{
         render_resource::PrimitiveTopology,
         renderer::{RenderDevice, RenderQueue},
     },
+    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
@@ -42,22 +43,23 @@ use builder::{
     raycast_oriented_cuboid, raycast_placement_plane, rigid_body_parts, stage_bearing_attachment,
     stage_bearing_block_batch, stage_bearing_cylinder, stage_block_batch_from_source,
     stage_controller_from_source, stage_cylinder_from_source, stage_engine_from_source,
-    stage_weld_objects, try_face_geometry_from_ref, validate_block_batch,
-    validate_cylinder_candidate,
+    stage_input_from_source, stage_seat_from_source, stage_servo_from_source, stage_weld_objects,
+    try_face_geometry_from_ref, validate_block_batch, validate_cylinder_candidate,
 };
-use camera::OrbitCamera;
+use camera::{OrbitCamera, SeatedView, seated_view_rotation};
 use control_panel::ControlPanelState;
 use creation_menu::{CreationMenuState, CreationRequest};
 use creation_store::CreationStore;
 use hotbar::{SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
-    BearingDimensions, BearingId, BearingSocket, BuildCommand, CYLINDER_SWEEP_STEP_DEGREES,
-    CompiledCreation, ConstructionGraph, ControllerSpec, CreationDocument, CuboidSpec,
-    CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceOwner,
-    MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
-    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
-    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation,
-    TopologyError,
+    ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand,
+    CYLINDER_SWEEP_STEP_DEGREES, CompiledCreation, ConstructionGraph, ControllerSpec,
+    CreationDocument, CuboidSpec, CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget,
+    EngineKind, FaceOwner, GridRotation, InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
+    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
+    MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation, SeatControllerLinkSpec,
+    SeatSpec, ServoSpec, TopologyError,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
@@ -122,6 +124,7 @@ struct HammerImpact {
 
 #[derive(Clone, Copy, Debug)]
 struct SimulationHit {
+    part: PartId,
     body_index: u32,
     distance: f32,
     point: Vec3,
@@ -422,6 +425,7 @@ fn handle_control_panel_shortcut(
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut panel: ResMut<ControlPanelState>,
+    simulation: Res<AppSimulation>,
 ) {
     if menu.is_open() {
         return;
@@ -434,6 +438,9 @@ fn handle_control_panel_shortcut(
             panel.close();
             state.feedback = Some("Control block panel closed".to_owned());
         }
+        return;
+    }
+    if simulation.is_running() {
         return;
     }
     if !keyboard.just_pressed(KeyCode::KeyE) {
@@ -454,6 +461,104 @@ fn handle_control_panel_shortcut(
     panel.open(controller);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn handle_seat_interaction(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    overlay: Res<ui::UiInput>,
+    graph: Res<EditorGraph>,
+    simulation: Res<AppSimulation>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
+    mut camera: Single<(&Camera, &GlobalTransform, &mut Transform), With<OrbitCamera>>,
+    mut seated: ResMut<SeatedView>,
+    mut state: ResMut<EditorState>,
+) {
+    if !simulation.is_running() {
+        if seated.seat.take().is_some() {
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+        }
+        return;
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyE) && !overlay.blocks_keyboard() {
+        if seated.seat.is_some() {
+            seated.leave();
+            cursor.grab_mode = CursorGrabMode::None;
+            cursor.visible = true;
+            state.feedback = Some("Left Seat".to_owned());
+            return;
+        }
+        let (camera_component, camera_global, _) = &mut *camera;
+        let cursor_position = Vec2::new(window.width() * 0.5, window.height() * 0.5);
+        let hit = camera_component
+            .viewport_to_world(camera_global, cursor_position)
+            .ok()
+            .and_then(|ray| {
+                raycast_simulation(
+                    &graph.0,
+                    simulation
+                        .creation
+                        .as_ref()
+                        .expect("running simulation has a compiled creation"),
+                    &simulation.transforms,
+                    ray.origin,
+                    ray.direction.as_vec3(),
+                )
+            });
+        if let Some(hit) = hit
+            && graph.0.is_seat(hit.part)
+        {
+            seated.seat = Some(hit.part);
+            seated.yaw = 0.0;
+            seated.pitch = 0.0;
+            cursor.grab_mode = CursorGrabMode::Locked;
+            cursor.visible = false;
+            state.feedback = Some("Seated — mouse looks around, E leaves the Seat".to_owned());
+        } else {
+            state.feedback = Some("Look at a Seat and press E".to_owned());
+        }
+    }
+
+    let Some(seat) = seated.seat else {
+        return;
+    };
+    let Some(creation) = simulation.creation.as_ref() else {
+        return;
+    };
+    let Some((_, compound)) = creation
+        .part_to_compound
+        .iter()
+        .find(|(part, _)| *part == seat)
+    else {
+        seated.leave();
+        return;
+    };
+    let Some(snapshot) = simulation.transforms.get(*compound as usize) else {
+        return;
+    };
+    let Some(PartSpec::Seat(spec)) = graph.0.part(seat).copied() else {
+        seated.leave();
+        return;
+    };
+    seated.yaw -= motion.delta.x * 0.0025;
+    seated.pitch = (seated.pitch - motion.delta.y * 0.0025).clamp(
+        -core::f32::consts::FRAC_PI_2 + 0.08,
+        core::f32::consts::FRAC_PI_2 - 0.08,
+    );
+    let root_position = Vec3::from_slice(&snapshot.position[..3]);
+    let root_rotation = Quat::from_array(snapshot.rotation);
+    let local_rotation = spec.pose.rotation.quaternion();
+    let seat_rotation = root_rotation * local_rotation;
+    let seat_center = root_position
+        + root_rotation
+            * (spec.pose.translation() - creation.compounds[*compound as usize].root_translation);
+    let (_, _, transform) = &mut *camera;
+    transform.translation = seat_center + seat_rotation * (Vec3::Y * 0.475);
+    transform.rotation = seated_view_rotation(seat_rotation, seated.yaw, seated.pitch);
+}
+
 /// Advances every driven bearing's program and pushes changed rows to the GPU.
 ///
 /// Runs immediately before the tick is dispatched, so a state entered this
@@ -465,6 +570,7 @@ fn run_drive_sequencer(
     simulation: Res<AppSimulation>,
     mut sequencer: ResMut<DriveSequencer>,
     mut state: ResMut<EditorState>,
+    seated: Res<SeatedView>,
 ) {
     if !simulation.is_running() {
         if sequencer.is_started() {
@@ -483,7 +589,11 @@ fn run_drive_sequencer(
         return;
     }
     let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
-    if sequencer.step(&graph.0, &keys, simulation.next_tick) {
+    let keyboard_controller = seated
+        .seat
+        .filter(|seat| graph.0.seat_input(*seat).is_some())
+        .and_then(|seat| graph.0.seat_controller(seat));
+    if sequencer.step(&graph.0, &keys, keyboard_controller, simulation.next_tick) {
         state.drive_rows_dirty = true;
     }
 }
@@ -868,7 +978,7 @@ fn advance_simulation(
     // from the same published snapshot -- but only while it is on screen. A
     // hidden mesh has no slab allocation, so writing to it every frame both
     // wastes the rebuild and makes the renderer log a use-after-free.
-    if drive_xray_is_visible(selection.0, driven_bearing_count(&graph.0))
+    if drive_xray_is_visible(selection.0, control_link_count(&graph.0))
         && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
     {
         *mesh = combined_simulation_drive_xray_mesh(
@@ -931,8 +1041,8 @@ struct EditorState {
     preview: Option<PlacementCandidate>,
     cylinder_preview: Option<CylinderPlacementCandidate>,
     preview_error: Option<PlacementError>,
-    /// Quarter-turn yaw used by controller and engine placement.
-    authored_quarter_turns_y: u8,
+    /// One of the 24 grid-aligned orientations used by authored parts.
+    authored_orientation: u8,
     feedback: Option<String>,
     construction_mesh_dirty: bool,
     delete_target: Option<DeleteTarget>,
@@ -962,6 +1072,12 @@ struct EditorVisuals {
     controller_mesh: Handle<Mesh>,
     gas_engine_mesh: Handle<Mesh>,
     electric_engine_mesh: Handle<Mesh>,
+    servo_mesh: Handle<Mesh>,
+    seat_mesh: Handle<Mesh>,
+    input_mesh: Handle<Mesh>,
+    authored_preview_meshes: [Handle<Mesh>; 6],
+    authored_preview_materials: [Handle<StandardMaterial>; 6],
+    invalid_authored_preview_materials: [Handle<StandardMaterial>; 6],
     drive_xray_mesh: Handle<Mesh>,
     wire_drag_mesh: Handle<Mesh>,
     wire_hover_mesh: Handle<Mesh>,
@@ -983,7 +1099,27 @@ impl EditorVisuals {
             AuthoredPart::Controller => &self.controller_mesh,
             AuthoredPart::GasEngine => &self.gas_engine_mesh,
             AuthoredPart::ElectricEngine => &self.electric_engine_mesh,
+            AuthoredPart::Servo => &self.servo_mesh,
+            AuthoredPart::Seat => &self.seat_mesh,
+            AuthoredPart::Input => &self.input_mesh,
         }
+    }
+
+    fn authored_preview_mesh(&self, appearance: AuthoredPart) -> &Handle<Mesh> {
+        &self.authored_preview_meshes[appearance.index()]
+    }
+
+    fn authored_preview_material(
+        &self,
+        appearance: AuthoredPart,
+        invalid: bool,
+    ) -> &Handle<StandardMaterial> {
+        let materials = if invalid {
+            &self.invalid_authored_preview_materials
+        } else {
+            &self.authored_preview_materials
+        };
+        &materials[appearance.index()]
     }
 }
 
@@ -1013,10 +1149,43 @@ enum AuthoredPart {
     Controller,
     GasEngine,
     ElectricEngine,
+    Servo,
+    Seat,
+    Input,
 }
 
 impl AuthoredPart {
-    const ALL: [Self; 3] = [Self::Controller, Self::GasEngine, Self::ElectricEngine];
+    const ALL: [Self; 6] = [
+        Self::Controller,
+        Self::GasEngine,
+        Self::ElectricEngine,
+        Self::Servo,
+        Self::Seat,
+        Self::Input,
+    ];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Controller => 0,
+            Self::GasEngine => 1,
+            Self::ElectricEngine => 2,
+            Self::Servo => 3,
+            Self::Seat => 4,
+            Self::Input => 5,
+        }
+    }
+
+    const fn from_tool(tool: Tool) -> Option<Self> {
+        match tool {
+            Tool::Controller => Some(Self::Controller),
+            Tool::GasEngine => Some(Self::GasEngine),
+            Tool::ElectricEngine => Some(Self::ElectricEngine),
+            Tool::Servo => Some(Self::Servo),
+            Tool::Seat => Some(Self::Seat),
+            Tool::Input => Some(Self::Input),
+            _ => None,
+        }
+    }
 
     fn matches(self, spec: PartSpec) -> bool {
         matches!(
@@ -1029,6 +1198,9 @@ impl AuthoredPart {
                         ..
                     }),
                 )
+                | (Self::Servo, PartSpec::Servo(_))
+                | (Self::Seat, PartSpec::Seat(_))
+                | (Self::Input, PartSpec::Input(_))
                 | (
                     Self::ElectricEngine,
                     PartSpec::Engine(mechanic_core::EngineSpec {
@@ -1038,6 +1210,38 @@ impl AuthoredPart {
                 )
         )
     }
+}
+
+const AUTHORED_ORIENTATION_COUNT: u8 = 24;
+const AUTHORED_ORIENTATIONS: [GridRotation; 24] = [
+    GridRotation::new(0, 0, 0),
+    GridRotation::new(0, 1, 0),
+    GridRotation::new(0, 2, 0),
+    GridRotation::new(0, 3, 0),
+    GridRotation::new(0, 0, 1),
+    GridRotation::new(0, 0, 2),
+    GridRotation::new(0, 0, 3),
+    GridRotation::new(0, 1, 1),
+    GridRotation::new(0, 1, 2),
+    GridRotation::new(0, 1, 3),
+    GridRotation::new(0, 2, 1),
+    GridRotation::new(0, 2, 2),
+    GridRotation::new(0, 2, 3),
+    GridRotation::new(0, 3, 1),
+    GridRotation::new(0, 3, 2),
+    GridRotation::new(0, 3, 3),
+    GridRotation::new(1, 0, 0),
+    GridRotation::new(1, 0, 1),
+    GridRotation::new(1, 0, 2),
+    GridRotation::new(1, 0, 3),
+    GridRotation::new(1, 2, 0),
+    GridRotation::new(1, 2, 1),
+    GridRotation::new(1, 2, 2),
+    GridRotation::new(1, 2, 3),
+];
+
+fn authored_orientation(index: u8) -> GridRotation {
+    AUTHORED_ORIENTATIONS[usize::from(index) % AUTHORED_ORIENTATIONS.len()]
 }
 
 #[derive(Component)]
@@ -1103,6 +1307,17 @@ fn authored_part_material(asset_server: &AssetServer, stem: &str) -> StandardMat
     }
 }
 
+fn authored_preview_material(
+    mut material: StandardMaterial,
+    base_color: Color,
+) -> StandardMaterial {
+    material.base_color = base_color;
+    material.alpha_mode = AlphaMode::Blend;
+    material.cull_mode = None;
+    material.depth_bias = PREVIEW_RENDER_DEPTH_BIAS;
+    material
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -1129,6 +1344,7 @@ fn main() {
         .init_resource::<DriveSequencer>()
         .init_resource::<CylinderToolSettings>()
         .init_resource::<SelectedTool>()
+        .init_resource::<SeatedView>()
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.75, 0.80, 0.90),
             brightness: 350.0,
@@ -1152,6 +1368,7 @@ fn main() {
                     .chain(),
                 camera::update_orbit_camera,
                 handle_simulation_shortcut,
+                handle_seat_interaction,
                 handle_shortcuts,
                 (
                     handle_bearing_dimension_shortcuts,
@@ -1190,6 +1407,11 @@ fn setup(
     let controller_mesh = meshes.add(Cuboid::default());
     let gas_engine_mesh = meshes.add(Cuboid::default());
     let electric_engine_mesh = meshes.add(Cuboid::default());
+    let servo_mesh = meshes.add(Cuboid::default());
+    let seat_mesh = meshes.add(Cuboid::default());
+    let input_mesh = meshes.add(Cuboid::default());
+    let authored_preview_meshes =
+        AuthoredPart::ALL.map(|appearance| meshes.add(single_authored_part_mesh(appearance)));
     let drive_xray_mesh = meshes.add(Cuboid::default());
     let wire_drag_mesh = meshes.add(wire_drag_preview_mesh(Vec3::ZERO, Vec3::ZERO));
     let wire_hover_mesh = meshes.add(degenerate_overlay_mesh());
@@ -1206,18 +1428,27 @@ fn setup(
         ..default()
     });
     let bearing_material = materials.add(bearing_surface_material());
-    let controller_material = materials.add(authored_part_material(
-        &asset_server,
-        "machines/controller/controller",
-    ));
-    let gas_engine_material = materials.add(authored_part_material(
-        &asset_server,
-        "machines/gas_engine/gas_engine",
-    ));
-    let electric_engine_material = materials.add(authored_part_material(
-        &asset_server,
-        "machines/electric_engine/electric_engine",
-    ));
+    let authored_materials = [
+        authored_part_material(&asset_server, "machines/controller/controller"),
+        authored_part_material(&asset_server, "machines/gas_engine/gas_engine"),
+        authored_part_material(&asset_server, "machines/electric_engine/electric_engine"),
+        authored_part_material(&asset_server, "machines/servo/servo"),
+        authored_part_material(&asset_server, "machines/seat/seat"),
+        authored_part_material(&asset_server, "machines/input/input"),
+    ];
+    let authored_preview_materials = std::array::from_fn(|index| {
+        materials.add(authored_preview_material(
+            authored_materials[index].clone(),
+            Color::srgba(1.0, 1.0, 1.0, 0.46),
+        ))
+    });
+    let invalid_authored_preview_materials = std::array::from_fn(|index| {
+        materials.add(authored_preview_material(
+            authored_materials[index].clone(),
+            Color::srgba(1.0, 0.18, 0.16, 0.52),
+        ))
+    });
+    let authored_materials = authored_materials.map(|material| materials.add(material));
     let drive_xray_material = materials.add(StandardMaterial {
         base_color: CONTROLLER_SURFACE_COLOR,
         cull_mode: None,
@@ -1250,6 +1481,12 @@ fn setup(
         controller_mesh: controller_mesh.clone(),
         gas_engine_mesh: gas_engine_mesh.clone(),
         electric_engine_mesh: electric_engine_mesh.clone(),
+        servo_mesh: servo_mesh.clone(),
+        seat_mesh: seat_mesh.clone(),
+        input_mesh: input_mesh.clone(),
+        authored_preview_meshes,
+        authored_preview_materials,
+        invalid_authored_preview_materials,
         drive_xray_mesh: drive_xray_mesh.clone(),
         wire_drag_mesh: wire_drag_mesh.clone(),
         wire_hover_mesh: wire_hover_mesh.clone(),
@@ -1307,7 +1544,7 @@ fn setup(
     commands.spawn((
         Name::new("Control block mesh"),
         Mesh3d(controller_mesh),
-        MeshMaterial3d(controller_material),
+        MeshMaterial3d(authored_materials[AuthoredPart::Controller.index()].clone()),
         NoFrustumCulling,
         Visibility::Hidden,
         AuthoredPartVisual(AuthoredPart::Controller),
@@ -1315,7 +1552,7 @@ fn setup(
     commands.spawn((
         Name::new("Gas engine mesh"),
         Mesh3d(gas_engine_mesh),
-        MeshMaterial3d(gas_engine_material),
+        MeshMaterial3d(authored_materials[AuthoredPart::GasEngine.index()].clone()),
         NoFrustumCulling,
         Visibility::Hidden,
         AuthoredPartVisual(AuthoredPart::GasEngine),
@@ -1323,10 +1560,34 @@ fn setup(
     commands.spawn((
         Name::new("Electric engine mesh"),
         Mesh3d(electric_engine_mesh),
-        MeshMaterial3d(electric_engine_material),
+        MeshMaterial3d(authored_materials[AuthoredPart::ElectricEngine.index()].clone()),
         NoFrustumCulling,
         Visibility::Hidden,
         AuthoredPartVisual(AuthoredPart::ElectricEngine),
+    ));
+    commands.spawn((
+        Name::new("Servo mesh"),
+        Mesh3d(servo_mesh),
+        MeshMaterial3d(authored_materials[AuthoredPart::Servo.index()].clone()),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::Servo),
+    ));
+    commands.spawn((
+        Name::new("Seat mesh"),
+        Mesh3d(seat_mesh),
+        MeshMaterial3d(authored_materials[AuthoredPart::Seat.index()].clone()),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::Seat),
+    ));
+    commands.spawn((
+        Name::new("Input mesh"),
+        Mesh3d(input_mesh),
+        MeshMaterial3d(authored_materials[AuthoredPart::Input.index()].clone()),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::Input),
     ));
     commands.spawn((
         Name::new("Joint x-ray mesh"),
@@ -1554,9 +1815,12 @@ fn handle_shortcuts(
         KeyCode::Digit7,
         KeyCode::Digit8,
         KeyCode::Digit9,
+        KeyCode::Digit0,
+        KeyCode::Minus,
+        KeyCode::Equal,
     ] {
         if keyboard.just_pressed(key) {
-            selection.0 = shortcut_tool(key).expect("numbered tool key has a mapping");
+            selection.0 = shortcut_tool(key).expect("tool shortcut has a mapping");
             break;
         }
     }
@@ -1587,17 +1851,25 @@ fn handle_shortcuts(
             state.feedback = Some(format!("Delete plane: {}", drag.plane.label()));
         } else if matches!(
             selection.0,
-            Tool::Controller | Tool::GasEngine | Tool::ElectricEngine
+            Tool::Controller
+                | Tool::GasEngine
+                | Tool::ElectricEngine
+                | Tool::Servo
+                | Tool::Seat
+                | Tool::Input
         ) {
-            state.authored_quarter_turns_y = (state.authored_quarter_turns_y + 1) % 4;
+            state.authored_orientation =
+                (state.authored_orientation + 1) % AUTHORED_ORIENTATION_COUNT;
             state.feedback = Some(format!(
-                "{} rotation: {}°",
+                "{} orientation: {}/{}",
                 selection.0.label(),
-                u16::from(state.authored_quarter_turns_y) * 90
+                state.authored_orientation + 1,
+                AUTHORED_ORIENTATION_COUNT,
             ));
         } else {
             state.feedback = Some(
-                "Q rotates controllers and engines, or changes an active drag plane".to_owned(),
+                "Q cycles machine, Seat, and Input orientations, or changes an active drag plane"
+                    .to_owned(),
             );
         }
     }
@@ -1954,7 +2226,10 @@ fn update_hover(
             | Tool::Controller
             | Tool::Connector
             | Tool::GasEngine
-            | Tool::ElectricEngine => raycast_construction(&graph.0, ray.origin, ray_direction),
+            | Tool::ElectricEngine
+            | Tool::Servo
+            | Tool::Seat
+            | Tool::Input => raycast_construction(&graph.0, ray.origin, ray_direction),
         }
     };
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
@@ -2273,7 +2548,15 @@ fn refresh_tool_preview_with_cylinder(
                 error
             })
         }
-        (tool @ (Tool::Controller | Tool::GasEngine | Tool::ElectricEngine), _) => state
+        (
+            tool @ (Tool::Controller
+            | Tool::GasEngine
+            | Tool::ElectricEngine
+            | Tool::Servo
+            | Tool::Seat
+            | Tool::Input),
+            _,
+        ) => state
             .hovered
             .filter(|hit| try_face_geometry_from_ref(hit.face, Some(graph)).is_some())
             .and_then(|hit| {
@@ -2281,13 +2564,16 @@ fn refresh_tool_preview_with_cylinder(
                     Tool::Controller => ControllerSpec::GRID_UNITS,
                     Tool::GasEngine => EngineKind::Gas.grid_units(),
                     Tool::ElectricEngine => EngineKind::Electric.grid_units(),
+                    Tool::Servo => ServoSpec::GRID_UNITS,
+                    Tool::Seat => SeatSpec::GRID_UNITS,
+                    Tool::Input => InputSpec::GRID_UNITS,
                     _ => unreachable!(),
                 };
                 let candidate = oriented_cuboid_candidate_from_hit(
                     graph,
                     hit,
                     dimensions,
-                    state.authored_quarter_turns_y,
+                    authored_orientation(state.authored_orientation),
                 );
                 let error = validate_block_batch(graph, candidate, &[candidate.spec]).err();
                 state.preview = Some(candidate);
@@ -2350,7 +2636,7 @@ fn handle_build_actions(
             state.feedback = Some("Drive wire cancelled".to_owned());
             return;
         }
-        state.feedback = Some(disconnect_drive_wires(
+        state.feedback = Some(disconnect_connector_links(
             &mut graph.0,
             &mut state,
             &mut history,
@@ -2400,6 +2686,18 @@ fn handle_build_actions(
                             EngineKind::Electric => "electric",
                         }
                     ));
+                }
+                PartSpec::Servo(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some("Release right mouse to delete servo".to_owned());
+                }
+                PartSpec::Seat(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some("Release right mouse to delete seat".to_owned());
+                }
+                PartSpec::Input(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some("Release right mouse to delete Input".to_owned());
                 }
             }
         }
@@ -2719,6 +3017,32 @@ fn handle_build_actions(
                 Err(error) => state.feedback = Some(error.to_string()),
             }
         }
+        Tool::Servo | Tool::Seat | Tool::Input => {
+            let Some(candidate) = state.preview else {
+                state.feedback = Some("Point at the platform or a face".to_owned());
+                return;
+            };
+            let Some(hit) = state.hovered else {
+                return;
+            };
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let staged = match selection.0 {
+                Tool::Servo => stage_servo_from_source(&graph.0, candidate, hit.face.owner),
+                Tool::Seat => stage_seat_from_source(&graph.0, candidate, hit.face.owner),
+                Tool::Input => stage_input_from_source(&graph.0, candidate, hit.face.owner),
+                _ => unreachable!(),
+            };
+            match staged {
+                Ok(staged) => {
+                    graph.0 = staged;
+                    history.commit(previous);
+                    state.feedback = Some(format!("Placed {}", selection.0.label()));
+                    state.construction_mesh_dirty = true;
+                    clear_hover(&mut state);
+                }
+                Err(error) => state.feedback = Some(error.to_string()),
+            }
+        }
         Tool::Connector => unreachable!("connector actions are handled before this match"),
     }
     refresh_tool_preview_with_cylinder(
@@ -2764,15 +3088,17 @@ fn socket_bearings(graph: &ConstructionGraph, socket: PlacedBearing) -> Vec<Bear
 
 /// One-line description of a wire's envelope and its first state.
 fn drive_summary(spec: &DriveLinkSpec) -> String {
-    let torque = if spec.limits.max_torque_newton_meters().is_infinite() {
-        "unlimited torque".to_owned()
-    } else {
-        format!("{:.0} N·m", spec.limits.max_torque_newton_meters())
+    let actuator = match spec.actuator {
+        ActuatorAssignment::Unpowered => "unpowered".to_owned(),
+        ActuatorAssignment::Servo => "Servo".to_owned(),
+        ActuatorAssignment::Motor {
+            electric_percent,
+            gas_percent,
+        } => format!("motor E{electric_percent}% / G{gas_percent}%"),
     };
     let states = spec.program.len();
     format!(
-        "{:.0}°/s, {torque}, {states} state{}",
-        spec.limits.max_speed_rad_s().to_degrees(),
+        "{actuator}, {states} state{}",
         if states == 1 { "" } else { "s" }
     )
 }
@@ -2782,20 +3108,40 @@ fn drive_summary(spec: &DriveLinkSpec) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WireEnd {
     Controller(PartId),
+    Input(PartId),
+    Seat(PartId),
     /// Index into [`EditorState::placed_bearings`].
     Bearing(usize),
 }
 
 impl WireEnd {
-    /// Resolves a control block and a bearing from two ends, in either order.
-    /// Two ends of the same kind cannot be wired together.
-    const fn paired_with(self, other: Self) -> Option<(PartId, usize)> {
+    /// Resolves a supported logical connection from two ends, in either order.
+    const fn paired_with(self, other: Self) -> Option<WireConnection> {
         match (self, other) {
             (Self::Controller(controller), Self::Bearing(bearing))
-            | (Self::Bearing(bearing), Self::Controller(controller)) => Some((controller, bearing)),
+            | (Self::Bearing(bearing), Self::Controller(controller)) => {
+                Some(WireConnection::Drive {
+                    controller,
+                    bearing,
+                })
+            }
+            (Self::Input(input), Self::Seat(seat)) | (Self::Seat(seat), Self::Input(input)) => {
+                Some(WireConnection::InputSeat { input, seat })
+            }
+            (Self::Seat(seat), Self::Controller(controller))
+            | (Self::Controller(controller), Self::Seat(seat)) => {
+                Some(WireConnection::SeatController { seat, controller })
+            }
             _ => None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WireConnection {
+    Drive { controller: PartId, bearing: usize },
+    InputSeat { input: PartId, seat: PartId },
+    SeatController { seat: PartId, controller: PartId },
 }
 
 /// A drive wire the pointer is dragging out.
@@ -2815,10 +3161,7 @@ enum WireDragStep {
     /// Nothing wirable under the pointer.
     Miss,
     Begin(WireEnd),
-    Connect {
-        controller: PartId,
-        bearing: usize,
-    },
+    Connect(WireConnection),
     /// Keep the started end, so a plain click can be finished by a second one.
     Arm,
     Cancel,
@@ -2835,12 +3178,9 @@ fn wire_drag_step(drag: Option<WireDrag>, under: Option<WireEnd>, pressed: bool)
         return under.map_or(WireDragStep::Miss, WireDragStep::Begin);
     };
     if let Some(under) = under
-        && let Some((controller, bearing)) = drag.from.paired_with(under)
+        && let Some(connection) = drag.from.paired_with(under)
     {
-        return WireDragStep::Connect {
-            controller,
-            bearing,
-        };
+        return WireDragStep::Connect(connection);
     }
     if pressed {
         // A press somewhere else restarts the wire there, or drops it.
@@ -2862,14 +3202,19 @@ fn wire_end_under_cursor(graph: &ConstructionGraph, state: &EditorState) -> Opti
     let FaceOwner::Part(part) = state.hovered?.face.owner else {
         return None;
     };
-    graph
-        .is_controller(part)
-        .then_some(WireEnd::Controller(part))
+    match graph.part(part) {
+        Some(PartSpec::Controller(_)) => Some(WireEnd::Controller(part)),
+        Some(PartSpec::Input(_)) => Some(WireEnd::Input(part)),
+        Some(PartSpec::Seat(_)) => Some(WireEnd::Seat(part)),
+        _ => None,
+    }
 }
 
 fn wire_end_position(graph: &ConstructionGraph, state: &EditorState, end: WireEnd) -> Option<Vec3> {
     match end {
-        WireEnd::Controller(part) => Some(graph.part(part)?.pose().translation()),
+        WireEnd::Controller(part) | WireEnd::Input(part) | WireEnd::Seat(part) => {
+            Some(graph.part(part)?.pose().translation())
+        }
         WireEnd::Bearing(index) => Some(state.placed_bearings.get(index)?.anchor),
     }
 }
@@ -2914,26 +3259,45 @@ fn handle_connector_actions(
         WireDragStep::Idle => {}
         WireDragStep::Miss => {
             state.feedback =
-                Some("Drag between a control block and a bearing, either way".to_owned());
+                Some("Drag Controller↔Bearing, Input↔Seat, or Seat↔Controller".to_owned());
         }
         WireDragStep::Begin(from) => {
             state.wire_drag = Some(WireDrag { from, armed: false });
             state.feedback = Some(match from {
                 WireEnd::Controller(controller) => {
                     state.selected_controller = Some(controller);
-                    "Drag to a bearing to wire it".to_owned()
+                    "Drag to a bearing or Seat".to_owned()
                 }
                 WireEnd::Bearing(_) => "Drag to a control block to wire it".to_owned(),
+                WireEnd::Input(_) => "Drag to a Seat".to_owned(),
+                WireEnd::Seat(_) => "Drag to an Input or Controller".to_owned(),
             });
         }
-        WireDragStep::Connect {
-            controller,
-            bearing,
-        } => {
+        WireDragStep::Connect(connection) => {
             state.wire_drag = None;
-            state.feedback = Some(connect_drive_wire(
-                graph, state, history, controller, bearing,
-            ));
+            state.feedback = Some(match connection {
+                WireConnection::Drive {
+                    controller,
+                    bearing,
+                } => connect_drive_wire(graph, state, history, controller, bearing),
+                WireConnection::InputSeat { input, seat } => connect_control_link(
+                    graph,
+                    state,
+                    history,
+                    BuildCommand::AddInputSeatLink(InputSeatLinkSpec { input, seat }),
+                    "Linked Input to Seat",
+                ),
+                WireConnection::SeatController { seat, controller } => connect_control_link(
+                    graph,
+                    state,
+                    history,
+                    BuildCommand::AddSeatControllerLink(SeatControllerLinkSpec {
+                        seat,
+                        controller,
+                    }),
+                    "Linked Seat to Controller",
+                ),
+            });
         }
         WireDragStep::Arm => {
             if let Some(drag) = state.wire_drag.as_mut() {
@@ -2945,6 +3309,23 @@ fn handle_connector_actions(
             state.wire_drag = None;
             state.feedback = Some("Drive wire cancelled".to_owned());
         }
+    }
+}
+
+fn connect_control_link(
+    graph: &mut ConstructionGraph,
+    state: &EditorState,
+    history: &mut EditorHistory,
+    command: BuildCommand,
+    success: &str,
+) -> String {
+    let previous = EditorSnapshot::capture(graph, state);
+    match graph.apply(command) {
+        Ok(_) => {
+            history.commit(previous);
+            success.to_owned()
+        }
+        Err(error) => error.to_string(),
     }
 }
 
@@ -3017,7 +3398,7 @@ fn connect_drive_wire(
 }
 
 /// Removes every drive wire on the hovered bearing. Returns the feedback line.
-fn disconnect_drive_wires(
+fn disconnect_connector_links(
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
@@ -3026,12 +3407,46 @@ fn disconnect_drive_wires(
         let _ = graph.apply(BuildCommand::CancelPending);
         return "Drive wire cancelled".to_owned();
     }
-    let Some(socket) = state
+    if let Some(socket) = state
         .hovered_bearing
         .and_then(|index| state.placed_bearings.get(index).copied())
-    else {
-        return "Right click a wired bearing to remove its drive".to_owned();
+    {
+        return disconnect_drive_wires(graph, state, history, socket);
+    }
+    let Some(part) = hovered_part(state.hovered) else {
+        return "Right click a linked bearing, Input, Seat, or Controller".to_owned();
     };
+    let commands = graph
+        .input_seat_links()
+        .filter_map(|(id, link)| {
+            (link.input == part || link.seat == part)
+                .then_some(BuildCommand::RemoveInputSeatLink(id))
+        })
+        .chain(graph.seat_controller_links().filter_map(|(id, link)| {
+            (link.seat == part || link.controller == part)
+                .then_some(BuildCommand::RemoveSeatControllerLink(id))
+        }))
+        .collect::<Vec<_>>();
+    if commands.is_empty() {
+        return "That part has no Input-chain links".to_owned();
+    }
+    let previous = EditorSnapshot::capture(graph, state);
+    match graph.apply_batch(commands) {
+        Ok(_) => {
+            history.commit(previous);
+            state.construction_mesh_dirty = true;
+            "Removed Input-chain link(s)".to_owned()
+        }
+        Err(error) => error.to_string(),
+    }
+}
+
+fn disconnect_drive_wires(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    socket: PlacedBearing,
+) -> String {
     let bearings = socket_bearings(graph, socket);
     let links = graph
         .drive_links()
@@ -3553,7 +3968,12 @@ fn raycast_simulation(
                 position + rotation * (spec.pose().translation() - initial.root_translation);
             let part_rotation = rotation * spec.pose().rotation.quaternion();
             let (distance, point) = match spec {
-                PartSpec::Cuboid(_) | PartSpec::Controller(_) | PartSpec::Engine(_) => {
+                PartSpec::Cuboid(_)
+                | PartSpec::Controller(_)
+                | PartSpec::Engine(_)
+                | PartSpec::Servo(_)
+                | PartSpec::Seat(_)
+                | PartSpec::Input(_) => {
                     let hit = raycast_oriented_cuboid(
                         origin,
                         direction,
@@ -3575,6 +3995,7 @@ fn raycast_simulation(
                 }
             };
             Some(SimulationHit {
+                part,
                 body_index,
                 distance,
                 point,
@@ -3890,7 +4311,7 @@ fn sync_visual_meshes(
         }
         **bearing_visibility = Visibility::Visible;
     }
-    if drive_xray_is_visible(selection.0, driven_bearing_count(&graph.0))
+    if drive_xray_is_visible(selection.0, control_link_count(&graph.0))
         && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
     {
         *mesh = combined_drive_xray_mesh(&graph.0, &state.placed_bearings, &sequencer);
@@ -3947,6 +4368,12 @@ fn driven_bearing_count(graph: &ConstructionGraph) -> usize {
         .count()
 }
 
+fn control_link_count(graph: &ConstructionGraph) -> usize {
+    driven_bearing_count(graph)
+        + graph.input_seat_links().count()
+        + graph.seat_controller_links().count()
+}
+
 #[allow(clippy::type_complexity)]
 fn update_joint_xray(
     graph: Res<EditorGraph>,
@@ -3959,7 +4386,7 @@ fn update_joint_xray(
     >,
     mut visibility: Single<&mut Visibility, (With<JointXrayVisual>, Without<DriveXrayVisual>)>,
 ) {
-    let drive_visible = drive_xray_is_visible(selection.0, driven_bearing_count(&graph.0));
+    let drive_visible = drive_xray_is_visible(selection.0, control_link_count(&graph.0));
     let joint_visible = joint_xray_is_visible(
         selection.0,
         simulation.is_running(),
@@ -4249,12 +4676,22 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Controller | Tool::GasEngine | Tool::ElectricEngine, _) => {
-            if let Some(candidate) = state.preview {
+        (
+            Tool::Controller
+            | Tool::GasEngine
+            | Tool::ElectricEngine
+            | Tool::Servo
+            | Tool::Seat
+            | Tool::Input,
+            _,
+        ) => {
+            if let (Some(candidate), Some(appearance)) =
+                (state.preview, AuthoredPart::from_tool(selected_tool.0))
+            {
                 show_cuboid_preview(
                     &mut action,
-                    &visuals.cube_preview_mesh,
-                    action_material,
+                    visuals.authored_preview_mesh(appearance),
+                    visuals.authored_preview_material(appearance, state.preview_error.is_some()),
                     candidate.spec,
                     0.992,
                 );
@@ -4397,7 +4834,7 @@ fn tool_status_line(
             cylinder_dimensions.axial_length(),
             cylinder_dimensions.sweep_angle_degrees(),
         ),
-        Tool::GasEngine | Tool::ElectricEngine => {
+        Tool::GasEngine | Tool::ElectricEngine | Tool::Servo | Tool::Seat | Tool::Input => {
             format!("Tool: {}    Q Rotate 90°", tool.label())
         }
         _ => format!("Tool: {}", tool.label()),
@@ -4625,17 +5062,110 @@ const ELECTRIC_ENGINE_UVS: [[f32; 2]; 24] = [
     [0.666_667, 0.5],
     [0.666_667, 1.0],
 ];
+const SERVO_UVS: [[f32; 2]; 24] = [
+    [0.666_667, 0.5],
+    [0.666_667, 1.0],
+    [1.0, 1.0],
+    [1.0, 0.5],
+    [0.0, 0.0],
+    [0.0, 0.5],
+    [0.333_333, 0.5],
+    [0.333_333, 0.0],
+    [0.333_333, 0.0],
+    [0.333_333, 0.5],
+    [0.666_667, 0.5],
+    [0.666_667, 0.0],
+    [0.666_667, 0.0],
+    [0.666_667, 0.5],
+    [1.0, 0.5],
+    [1.0, 0.0],
+    [0.0, 0.5],
+    [0.0, 1.0],
+    [0.333_333, 1.0],
+    [0.333_333, 0.5],
+    [0.333_333, 0.5],
+    [0.333_333, 1.0],
+    [0.666_667, 1.0],
+    [0.666_667, 0.5],
+];
+const SEAT_UVS: [[f32; 2]; 24] = [
+    [0.5, 0.25],
+    [0.5, 0.5],
+    [1.0, 0.5],
+    [1.0, 0.25],
+    [0.5, 0.0],
+    [0.5, 0.25],
+    [1.0, 0.25],
+    [1.0, 0.0],
+    [0.0, 0.5],
+    [0.0, 1.0],
+    [0.5, 1.0],
+    [0.5, 0.5],
+    [0.5, 0.5],
+    [0.5, 1.0],
+    [1.0, 1.0],
+    [1.0, 0.5],
+    [0.0, 0.25],
+    [0.0, 0.5],
+    [0.5, 0.5],
+    [0.5, 0.25],
+    [0.0, 0.0],
+    [0.0, 0.25],
+    [0.5, 0.25],
+    [0.5, 0.0],
+];
+const INPUT_UVS: [[f32; 2]; 24] = [
+    [0.0, 0.5],
+    [0.0, 0.25],
+    [0.25, 0.5],
+    [0.25, 0.25],
+    [0.25, 0.5],
+    [0.25, 0.25],
+    [0.5, 0.5],
+    [0.5, 0.25],
+    [0.0, 0.75],
+    [0.0, 0.5],
+    [0.5, 0.75],
+    [0.5, 0.5],
+    [0.5, 0.75],
+    [0.5, 0.5],
+    [1.0, 0.75],
+    [1.0, 0.5],
+    [0.0, 1.0],
+    [0.0, 0.75],
+    [0.5, 1.0],
+    [0.5, 0.75],
+    [0.5, 1.0],
+    [0.5, 0.75],
+    [1.0, 1.0],
+    [1.0, 0.75],
+];
 
 fn authored_uvs(appearance: AuthoredPart) -> [[f32; 2]; 24] {
     let assimp_uvs = match appearance {
         AuthoredPart::Controller => CONTROLLER_UVS,
         AuthoredPart::GasEngine => GAS_ENGINE_UVS,
         AuthoredPart::ElectricEngine => ELECTRIC_ENGINE_UVS,
+        AuthoredPart::Servo => SERVO_UVS,
+        AuthoredPart::Seat => SEAT_UVS,
+        AuthoredPart::Input => INPUT_UVS,
     };
     // Assimp's dump uses an OpenGL-style bottom-left texture origin. Bevy
     // samples the PNG atlases from the top left, matching the original glTF
     // accessor, so restore that V coordinate before building the runtime mesh.
     assimp_uvs.map(|[u, v]| [u, 1.0 - v])
+}
+
+fn single_authored_part_mesh(appearance: AuthoredPart) -> Mesh {
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, AUTHORED_CUBE_POSITIONS.to_vec())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, AUTHORED_CUBE_NORMALS.to_vec())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, authored_uvs(appearance).to_vec())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, AUTHORED_CUBE_TANGENTS.to_vec())
+    .with_inserted_indices(Indices::U32(AUTHORED_CUBE_INDICES.to_vec()))
 }
 
 fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
@@ -4781,9 +5311,16 @@ fn combined_simulation_mesh(
         .part_to_compound
         .iter()
         .filter(|(part, compound_index)| {
-            let is_authored = graph
-                .part(*part)
-                .is_some_and(|spec| matches!(spec, PartSpec::Controller(_) | PartSpec::Engine(_)));
+            let is_authored = graph.part(*part).is_some_and(|spec| {
+                matches!(
+                    spec,
+                    PartSpec::Controller(_)
+                        | PartSpec::Engine(_)
+                        | PartSpec::Servo(_)
+                        | PartSpec::Seat(_)
+                        | PartSpec::Input(_)
+                )
+            });
             let is_static = creation.compounds[*compound_index as usize].is_static;
             match kind {
                 SimulationMeshKind::Static => is_static && !is_authored,
@@ -4812,7 +5349,11 @@ fn combined_simulation_mesh(
                 );
                 continue;
             }
-            PartSpec::Controller(_) | PartSpec::Engine(_) => {
+            PartSpec::Controller(_)
+            | PartSpec::Engine(_)
+            | PartSpec::Servo(_)
+            | PartSpec::Seat(_)
+            | PartSpec::Input(_) => {
                 unreachable!("authored parts render in their material-specific mesh")
             }
             PartSpec::Cylinder(cylinder) => cylinder,
@@ -5438,12 +5979,11 @@ fn update_wire_hover_preview(
                 .with_rotation(Quat::from_rotation_arc(Vec3::Y, normal))
                 .with_scale(Vec3::splat(WIRE_HOVER_BEARING_SCALE))
         }),
-        Some(WireEnd::Controller(part)) => graph
+        Some(WireEnd::Controller(part) | WireEnd::Input(part) | WireEnd::Seat(part)) => graph
             .0
             .part(part)
-            .and_then(|spec| spec.as_controller())
-            .map(|spec| {
-                let block = spec.cuboid();
+            .and_then(|spec| spec.as_cuboid())
+            .map(|block| {
                 Transform::from_translation(block.pose.translation())
                     .with_rotation(block.pose.rotation.quaternion())
                     .with_scale(block.size_meters() * WIRE_HOVER_BLOCK_SCALE)
@@ -5461,7 +6001,9 @@ fn update_wire_hover_preview(
                 .map_or_else(degenerate_overlay_mesh, |socket| {
                     single_bearing_mesh(socket.dimensions)
                 }),
-            Some(WireEnd::Controller(_)) => Cuboid::default().into(),
+            Some(WireEnd::Controller(_) | WireEnd::Input(_) | WireEnd::Seat(_)) => {
+                Cuboid::default().into()
+            }
             None => degenerate_overlay_mesh(),
         };
     }
@@ -5504,13 +6046,19 @@ fn combined_drive_xray_mesh(
     placed_bearings: &[PlacedBearing],
     sequencer: &DriveSequencer,
 ) -> Mesh {
-    drive_xray_mesh(graph, placed_bearings, sequencer, |bearing, controller| {
-        Some((
-            bearing.shared_anchor,
-            bearing.axis,
-            graph.part(controller)?.pose().translation(),
-        ))
-    })
+    drive_xray_mesh(
+        graph,
+        placed_bearings,
+        sequencer,
+        |bearing, controller| {
+            Some((
+                bearing.shared_anchor,
+                bearing.axis,
+                graph.part(controller)?.pose().translation(),
+            ))
+        },
+        |part| Some(graph.part(part)?.pose().translation()),
+    )
 }
 
 /// The same overlay in simulation space, following the bodies as they move.
@@ -5530,15 +6078,26 @@ fn combined_simulation_drive_xray_mesh(
             .iter()
             .find_map(|(candidate, compound)| (*candidate == part).then_some(*compound))
     };
-    drive_xray_mesh(graph, placed_bearings, sequencer, |bearing, controller| {
-        let (anchor, axis) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
-        let block = *transforms.get(compound_of(controller)? as usize)?;
-        let center = Vec3::new(block.position[0], block.position[1], block.position[2])
-            + Quat::from_array(block.rotation)
-                * (graph.part(controller)?.pose().translation()
-                    - creation.compounds[compound_of(controller)? as usize].root_translation);
-        Some((anchor, axis, center))
-    })
+    let part_position = |part: PartId| {
+        let compound = compound_of(part)?;
+        let block = *transforms.get(compound as usize)?;
+        Some(
+            Vec3::new(block.position[0], block.position[1], block.position[2])
+                + Quat::from_array(block.rotation)
+                    * (graph.part(part)?.pose().translation()
+                        - creation.compounds[compound as usize].root_translation),
+        )
+    };
+    drive_xray_mesh(
+        graph,
+        placed_bearings,
+        sequencer,
+        |bearing, controller| {
+            let (anchor, axis) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
+            Some((anchor, axis, part_position(controller)?))
+        },
+        part_position,
+    )
 }
 
 /// Shared overlay builder. `pose` resolves one bearing and its control block to
@@ -5549,6 +6108,7 @@ fn drive_xray_mesh(
     placed_bearings: &[PlacedBearing],
     sequencer: &DriveSequencer,
     pose: impl Fn(&mechanic_core::BearingSpec, PartId) -> Option<(Vec3, Vec3, Vec3)>,
+    part_position: impl Fn(PartId) -> Option<Vec3>,
 ) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
@@ -5606,6 +6166,19 @@ fn drive_xray_mesh(
             &mut normals,
             &mut indices,
         );
+    }
+
+    for (_, link) in graph.input_seat_links() {
+        if let (Some(input), Some(seat)) = (part_position(link.input), part_position(link.seat)) {
+            append_drive_wire(input, seat, &mut positions, &mut normals, &mut indices);
+        }
+    }
+    for (_, link) in graph.seat_controller_links() {
+        if let (Some(seat), Some(controller)) =
+            (part_position(link.seat), part_position(link.controller))
+        {
+            append_drive_wire(seat, controller, &mut positions, &mut normals, &mut indices);
+        }
     }
 
     Mesh::new(
@@ -5864,6 +6437,30 @@ fn append_part(
             normals,
             indices,
         ),
+        PartSpec::Servo(spec) => append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.cuboid().size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
+        PartSpec::Seat(spec) => append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.cuboid().size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
+        PartSpec::Input(spec) => append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.cuboid().size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
         PartSpec::Cylinder(spec) => append_cylinder_shape(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
@@ -5949,25 +6546,25 @@ fn append_authored_cuboid(
 mod rendering_tests {
     use bevy::{
         mesh::VertexAttributeValues,
-        prelude::{Color, IVec3, Mesh, Quat, Vec3},
+        prelude::{AlphaMode, Color, Handle, IVec3, Image, Mesh, Quat, StandardMaterial, Vec3},
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
         DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef,
-        GridRotation,
+        GridRotation, InputSpec, SeatSpec, ServoSpec,
     };
     use mechanic_gpu::GpuTransform;
 
     use super::{
         AuthoredPart, BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, BLOCK_SHEET_PREVIEW_INSET_METERS,
         PlacedBearing, SimulationMeshKind, append_bearing_cylinder, append_cylinder_shape,
-        authored_uvs, bearing_preview_dimensions_changed, bearing_surface_material,
-        block_sheet_bounds, block_sheet_preview_mesh, block_sheet_specs,
+        authored_preview_material, authored_uvs, bearing_preview_dimensions_changed,
+        bearing_surface_material, block_sheet_bounds, block_sheet_preview_mesh, block_sheet_specs,
         combined_authored_construction_mesh, combined_bearing_mesh, combined_controller_mesh,
         combined_drive_xray_mesh, combined_simulation_bearing_mesh, combined_simulation_mesh,
         drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
-        single_bearing_mesh, single_cylinder_mesh,
+        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
     use crate::PlacementPlane;
     use crate::hotbar::Tool;
@@ -6537,10 +7134,31 @@ mod rendering_tests {
                 )))
                 .unwrap();
         }
+        graph
+            .apply(BuildCommand::SpawnServo(ServoSpec::new(BuildPose::new(
+                IVec3::new(28, 12, 0),
+                GridRotation::default(),
+            ))))
+            .unwrap();
+        graph
+            .apply(BuildCommand::SpawnSeat(SeatSpec::new(BuildPose::new(
+                IVec3::new(32, 12, 0),
+                GridRotation::default(),
+            ))))
+            .unwrap();
+        graph
+            .apply(BuildCommand::SpawnInput(InputSpec::new(BuildPose::new(
+                IVec3::new(36, 12, 0),
+                GridRotation::default(),
+            ))))
+            .unwrap();
         let construction = super::combined_construction_mesh(&graph);
         let controllers = combined_controller_mesh(&graph);
         let gas = combined_authored_construction_mesh(&graph, AuthoredPart::GasEngine);
         let electric = combined_authored_construction_mesh(&graph, AuthoredPart::ElectricEngine);
+        let servo = combined_authored_construction_mesh(&graph, AuthoredPart::Servo);
+        let seat = combined_authored_construction_mesh(&graph, AuthoredPart::Seat);
+        let input = combined_authored_construction_mesh(&graph, AuthoredPart::Input);
 
         // Two hinged blocks remain in the construction mesh; every authored part
         // has an independent batch so its material can use its own texture set.
@@ -6548,7 +7166,10 @@ mod rendering_tests {
         assert_eq!(positions(&controllers).len(), 24);
         assert_eq!(positions(&gas).len(), 24);
         assert_eq!(positions(&electric).len(), 24);
-        for mesh in [&controllers, &gas, &electric] {
+        assert_eq!(positions(&servo).len(), 24);
+        assert_eq!(positions(&seat).len(), 24);
+        assert_eq!(positions(&input).len(), 24);
+        for mesh in [&controllers, &gas, &electric, &servo, &seat, &input] {
             assert_eq!(
                 mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().len(),
                 positions(mesh).len()
@@ -6558,6 +7179,33 @@ mod rendering_tests {
                 positions(mesh).len()
             );
         }
+    }
+
+    #[test]
+    fn authored_preview_keeps_the_machine_uvs_and_texture_maps() {
+        let mesh = single_authored_part_mesh(AuthoredPart::GasEngine);
+        let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("authored preview mesh must have float2 UVs")
+        };
+        assert_eq!(uvs, &authored_uvs(AuthoredPart::GasEngine));
+
+        let texture = Handle::<Image>::default();
+        let material = authored_preview_material(
+            StandardMaterial {
+                base_color_texture: Some(texture.clone()),
+                normal_map_texture: Some(texture.clone()),
+                metallic_roughness_texture: Some(texture.clone()),
+                emissive_texture: Some(texture.clone()),
+                ..Default::default()
+            },
+            Color::srgba(1.0, 1.0, 1.0, 0.46),
+        );
+        assert_eq!(material.alpha_mode, AlphaMode::Blend);
+        assert_eq!(material.base_color_texture, Some(texture.clone()));
+        assert_eq!(material.normal_map_texture, Some(texture.clone()));
+        assert_eq!(material.metallic_roughness_texture, Some(texture.clone()));
+        assert_eq!(material.emissive_texture, Some(texture));
     }
 
     #[test]
@@ -6597,6 +7245,18 @@ mod rendering_tests {
         assert!(approximately(
             authored_uvs(AuthoredPart::ElectricEngine)[0],
             [0.666_667, 0.0]
+        ));
+        assert!(approximately(
+            authored_uvs(AuthoredPart::Servo)[0],
+            [0.666_667, 0.5]
+        ));
+        assert!(approximately(
+            authored_uvs(AuthoredPart::Seat)[0],
+            [0.5, 0.75]
+        ));
+        assert!(approximately(
+            authored_uvs(AuthoredPart::Input)[0],
+            [0.0, 0.5]
         ));
     }
 
@@ -6698,11 +7358,12 @@ mod interaction_tests {
     use mechanic_gpu::GpuTransform;
 
     use super::{
-        AppSimulation, BearingDimensionTarget, BearingToolSettings, BlockAttachment, BlockDrag,
-        CylinderDimensionTarget, CylinderToolSettings, EditorGraph, EditorHistory, EditorState,
-        HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction,
-        PlacedBearing, PlacementPlane, PointerSample, SelectedTool, SimulationShortcut, SurfaceHit,
-        Tool, adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
+        AUTHORED_ORIENTATION_COUNT, AUTHORED_ORIENTATIONS, AppSimulation, BearingDimensionTarget,
+        BearingToolSettings, BlockAttachment, BlockDrag, CylinderDimensionTarget,
+        CylinderToolSettings, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
+        HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, PlacedBearing, PlacementPlane,
+        PointerSample, SelectedTool, SimulationShortcut, SurfaceHit, Tool,
+        adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
         bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_specs,
         candidate_from_hit, connect_drive_wire, delete_sheet_parts, disconnect_drive_wires,
         hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
@@ -6713,7 +7374,7 @@ mod interaction_tests {
         requested_simulation_shortcut, rigid_body_parts, stage_part_deletion_preserving_bearings,
         tool_status_line, wire_drag_step,
     };
-    use crate::{WireDrag, WireDragStep, WireEnd, ui::UiInput};
+    use crate::{WireConnection, WireDrag, WireDragStep, WireEnd, ui::UiInput};
 
     fn pointer_sample(cursor: Vec2, ray_origin: Vec3, ray_direction: Vec3) -> PointerSample {
         PointerSample {
@@ -6740,7 +7401,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn q_cycles_every_authored_tool_through_four_quarter_turns() {
+    fn q_cycles_every_authored_tool_through_all_grid_orientations() {
         for tool in [Tool::Controller, Tool::GasEngine, Tool::ElectricEngine] {
             let mut app = App::new();
             app.init_resource::<ButtonInput<KeyCode>>()
@@ -6751,15 +7412,13 @@ mod interaction_tests {
                 .insert_resource(SelectedTool(tool))
                 .add_systems(Update, handle_shortcuts);
 
-            for expected in [1, 2, 3, 0] {
+            for expected in (1..AUTHORED_ORIENTATION_COUNT).chain(std::iter::once(0)) {
                 app.world_mut()
                     .resource_mut::<ButtonInput<KeyCode>>()
                     .press(KeyCode::KeyQ);
                 app.update();
                 assert_eq!(
-                    app.world()
-                        .resource::<EditorState>()
-                        .authored_quarter_turns_y,
+                    app.world().resource::<EditorState>().authored_orientation,
                     expected,
                     "{} should rotate on Q",
                     tool.label()
@@ -6772,7 +7431,20 @@ mod interaction_tests {
     }
 
     #[test]
-    fn authored_preview_uses_the_rotation_selected_with_q() {
+    fn authored_orientation_cycle_contains_all_24_cube_orientations_once() {
+        let mut signatures = Vec::new();
+        for rotation in AUTHORED_ORIENTATIONS {
+            let quaternion = rotation.quaternion();
+            let signature = [Vec3::X, Vec3::Y, Vec3::Z]
+                .map(|axis| (quaternion * axis).round().as_ivec3().to_array());
+            assert!(!signatures.contains(&signature));
+            signatures.push(signature);
+        }
+        assert_eq!(signatures.len(), 24);
+    }
+
+    #[test]
+    fn authored_preview_uses_a_tipped_rotation_selected_with_q() {
         let graph = ConstructionGraph::new();
         let mut state = EditorState {
             hovered: Some(SurfaceHit {
@@ -6780,16 +7452,16 @@ mod interaction_tests {
                 point: Vec3::ZERO,
                 face: FaceRef::ground(),
             }),
-            authored_quarter_turns_y: 1,
+            authored_orientation: 16,
             ..Default::default()
         };
 
         refresh_tool_preview(&graph, &mut state, Tool::GasEngine);
 
         let preview = state.preview.expect("gas engine has a ground preview");
-        assert_eq!(preview.spec.pose.rotation.quarter_turns_xyz(), [0, 1, 0]);
+        assert_eq!(preview.spec.pose.rotation.quarter_turns_xyz(), [1, 0, 0]);
         let (minimum, maximum) = super::part_world_bounds(preview.spec.into());
-        assert!((maximum.x - minimum.x - 0.75).abs() < 1.0e-6);
+        assert!((maximum.y - minimum.y - 0.75).abs() < 1.0e-6);
         assert!((maximum.z - minimum.z - 0.50).abs() < 1.0e-6);
     }
 
@@ -7834,10 +8506,10 @@ mod interaction_tests {
                 Some(WireEnd::Bearing(0)),
                 false
             ),
-            WireDragStep::Connect {
+            WireDragStep::Connect(WireConnection::Drive {
                 controller,
                 bearing: 0
-            }
+            })
         );
 
         let message = connect_drive_wire(&mut graph, &mut state, &mut history, controller, 0);
@@ -7855,10 +8527,10 @@ mod interaction_tests {
         });
         assert_eq!(
             wire_drag_step(drag, Some(WireEnd::Controller(controller)), false),
-            WireDragStep::Connect {
+            WireDragStep::Connect(WireConnection::Drive {
                 controller,
                 bearing: 0
-            }
+            })
         );
         // Two ends of the same kind never pair up.
         assert_eq!(
@@ -7889,10 +8561,10 @@ mod interaction_tests {
                 Some(WireEnd::Bearing(0)),
                 true
             ),
-            WireDragStep::Connect {
+            WireDragStep::Connect(WireConnection::Drive {
                 controller,
                 bearing: 0
-            }
+            })
         );
         // Letting go over empty space drops the wire instead.
         assert_eq!(
@@ -7927,7 +8599,7 @@ mod interaction_tests {
                 .is_some_and(|(_, link)| link.reversed)
         );
 
-        let message = disconnect_drive_wires(&mut graph, &mut state, &mut history);
+        let message = disconnect_drive_wires(&mut graph, &mut state, &mut history, socket);
         assert!(message.contains("Removed"), "{message}");
         assert_eq!(graph.drive_link_count(), 0);
     }
@@ -8035,6 +8707,7 @@ mod interaction_tests {
             mechanic_core::DriveLimits::new(2.0, 30.0, None).unwrap(),
             mechanic_core::DriveProgram::default(),
             mechanic_core::DriveName::new("Tipper arm"),
+            mechanic_core::ActuatorAssignment::Unpowered,
         );
         assert_eq!(commands.len(), rows[0].links.len());
         graph.apply_batch(commands).unwrap();

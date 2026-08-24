@@ -14,7 +14,10 @@ mod model;
 mod view;
 
 use bevy::prelude::*;
-use mechanic_core::{BuildCommand, DriveLinkId, PartId};
+use mechanic_core::{
+    ActuatorAssignment, BuildCommand, DriveLinkId, DriveProgram, DriveTarget, EngineKind, PartId,
+    ServoSpec,
+};
 
 use crate::control_panel::{ControlPanelState, panel_rows, set_row_commands};
 use crate::{AppSimulation, EditorGraph, EditorHistory, EditorSnapshot, EditorState};
@@ -46,7 +49,11 @@ pub(crate) struct EditTarget<'w> {
 /// through a drag: a drag writes on every pointer move, and only the move that
 /// ends it belongs in history. While simulating it skips history entirely and
 /// marks the drive rows dirty, which is the one write running GPU state takes.
-pub(crate) fn write_joint(panel: &ControlPanelState, target: &mut EditTarget, intent: &Intent) {
+pub(crate) fn write_joint(panel: &mut ControlPanelState, target: &mut EditTarget, intent: &Intent) {
+    if matches!(intent.edit, PanelEdit::ToggleSpeedUnit) {
+        panel.toggle_speed_unit();
+        return;
+    }
     let Some(controller) = panel.controller() else {
         return;
     };
@@ -62,15 +69,86 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
     let Some(spec) = target.graph.0.drive_link(row.primary).copied() else {
         return;
     };
-    let Some((limits, program, name)) =
-        apply_edit(spec.limits, spec.program, spec.name, &intent.edit)
-    else {
+    let inventory = target
+        .graph
+        .0
+        .actuator_inventory(controller)
+        .unwrap_or_default();
+    let mut actuator = spec.actuator;
+    let edited = match intent.edit {
+        PanelEdit::CycleActuator => {
+            actuator = match actuator {
+                ActuatorAssignment::Unpowered => default_motor(inventory).unwrap_or({
+                    if inventory.servos != 0 {
+                        ActuatorAssignment::Servo
+                    } else {
+                        ActuatorAssignment::Unpowered
+                    }
+                }),
+                ActuatorAssignment::Motor { .. } if inventory.servos != 0 => {
+                    ActuatorAssignment::Servo
+                }
+                ActuatorAssignment::Motor { .. } | ActuatorAssignment::Servo => {
+                    ActuatorAssignment::Unpowered
+                }
+            };
+            Some((spec.limits, spec.program, spec.name))
+        }
+        PanelEdit::CycleElectric => {
+            let next = stepped_percent(actuator.electric_percent());
+            actuator = ActuatorAssignment::motor(next, actuator.gas_percent())
+                .expect("stepped percentages are valid");
+            Some((spec.limits, spec.program, spec.name))
+        }
+        PanelEdit::CycleGas => {
+            let next = stepped_percent(actuator.gas_percent());
+            actuator = ActuatorAssignment::motor(actuator.electric_percent(), next)
+                .expect("stepped percentages are valid");
+            Some((spec.limits, spec.program, spec.name))
+        }
+        PanelEdit::ToggleSpeedUnit => unreachable!("handled before locating the row"),
+        _ => apply_edit(spec.limits, spec.program, spec.name, &intent.edit),
+    };
+    let Some((mut limits, mut program, name)) = edited else {
         return;
     };
-    let commands: Vec<BuildCommand> = set_row_commands(row, limits, program, name);
+    if let PanelEdit::ApplyPreset(preset) = intent.edit {
+        actuator = match preset {
+            model::Preset::Steer => ActuatorAssignment::Servo,
+            model::Preset::Drive | model::Preset::Spin => match actuator {
+                motor @ ActuatorAssignment::Motor { .. } => motor,
+                ActuatorAssignment::Unpowered | ActuatorAssignment::Servo => {
+                    default_motor(inventory).unwrap_or(ActuatorAssignment::Unpowered)
+                }
+            },
+        };
+    }
+    let (hardware_speed, _) = actuator_capability(actuator, inventory);
+    if hardware_speed > 0.0
+        && let Ok(hardware_limits) = limits.with_max_speed(hardware_speed)
+    {
+        limits = hardware_limits;
+    }
+    // Presets use the active hardware's actual ceiling, including the 70%
+    // reverse speed in the Drive preset.
+    if let PanelEdit::ApplyPreset(preset) = intent.edit
+        && let Some((next_limits, next_program, _)) =
+            apply_edit(limits, program, name, &PanelEdit::ApplyPreset(preset))
+    {
+        limits = next_limits;
+        program = next_program;
+    }
+    let program = compatible_program(program, actuator);
+    let commands: Vec<BuildCommand> = set_row_commands(row, limits, program, name, actuator);
     let previous = EditorSnapshot::capture(&target.graph.0, &target.editor);
-    match target.graph.0.apply_batch(commands) {
+    let mut staged = target.graph.0.clone();
+    match staged.apply_batch(commands) {
         Ok(_) => {
+            if let Some(error) = capacity_error(&staged, controller) {
+                target.editor.feedback = Some(error);
+                return;
+            }
+            target.graph.0 = staged;
             if target.simulation.is_running() {
                 target.editor.drive_rows_dirty = true;
             } else {
@@ -84,6 +162,71 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
     }
 }
 
+fn default_motor(inventory: mechanic_core::ActuatorInventory) -> Option<ActuatorAssignment> {
+    if inventory.electric_engines != 0 {
+        ActuatorAssignment::motor(100, 0).ok()
+    } else if inventory.gas_engines != 0 {
+        ActuatorAssignment::motor(0, 100).ok()
+    } else {
+        None
+    }
+}
+
+const fn stepped_percent(current: u8) -> u8 {
+    if current >= 100 { 0 } else { current + 25 }
+}
+
+fn compatible_program(program: DriveProgram, actuator: ActuatorAssignment) -> DriveProgram {
+    let mut result = program;
+    for index in 0..program.len() {
+        let Ok(index) = u8::try_from(index) else {
+            break;
+        };
+        let Some(state) = result.state(index) else {
+            break;
+        };
+        let replacement = match (actuator, state.target()) {
+            (ActuatorAssignment::Motor { .. }, DriveTarget::Angle(_)) => {
+                Some(DriveTarget::Speed(0.0))
+            }
+            (ActuatorAssignment::Servo, DriveTarget::Speed(_)) => Some(DriveTarget::Angle(0.0)),
+            _ => None,
+        };
+        if let Some(target) = replacement
+            && let Ok(state) = state.with_target(target)
+            && let Ok(next) = result.with_state(index, state)
+        {
+            result = next;
+        }
+    }
+    result
+}
+
+fn capacity_error(graph: &mechanic_core::ConstructionGraph, controller: PartId) -> Option<String> {
+    let inventory = graph.actuator_inventory(controller)?;
+    if inventory.electric_joints > inventory.electric_capacity() {
+        return Some(format!(
+            "Electric ports full: {} assigned, {} available",
+            inventory.electric_joints,
+            inventory.electric_capacity()
+        ));
+    }
+    if inventory.gas_joints > inventory.gas_capacity() {
+        return Some(format!(
+            "Gas ports full: {} assigned, {} available",
+            inventory.gas_joints,
+            inventory.gas_capacity()
+        ));
+    }
+    (inventory.servo_joints > inventory.servo_capacity()).then(|| {
+        format!(
+            "Servo ports full: {} assigned, {} available",
+            inventory.servo_joints,
+            inventory.servo_capacity()
+        )
+    })
+}
+
 /// Reads the open control block's wires into what the panel draws.
 pub(crate) fn capture(panel: &ControlPanelState, graph: &EditorGraph) -> PanelModel {
     let Some(controller) = panel.controller() else {
@@ -94,16 +237,67 @@ pub(crate) fn capture(panel: &ControlPanelState, graph: &EditorGraph) -> PanelMo
         .enumerate()
         .filter_map(|(index, row)| {
             let spec = graph.0.drive_link(row.primary)?;
+            let inventory = graph.0.actuator_inventory(controller).unwrap_or_default();
+            let (max_speed, torque) = actuator_capability(spec.actuator, inventory);
             Some(LaneModel::capture(
                 row.primary,
                 index + 1,
                 spec.limits,
                 &spec.program,
                 &spec.name,
+                spec.actuator,
+                panel.speed_unit(),
+                max_speed,
+                torque,
             ))
         })
         .collect();
     PanelModel { open: true, lanes }
+}
+
+#[allow(clippy::cast_precision_loss)]
+// Editor-scale part and joint counts remain far below f32's exact integer
+// range, and the result is display/physics scalar data.
+fn actuator_capability(
+    actuator: ActuatorAssignment,
+    inventory: mechanic_core::ActuatorInventory,
+) -> (f32, f32) {
+    let rpm_to_rad_s = |rpm: f32| rpm * core::f32::consts::TAU / 60.0;
+    match actuator {
+        ActuatorAssignment::Unpowered => (0.0, 0.0),
+        ActuatorAssignment::Servo => (
+            rpm_to_rad_s(ServoSpec::NO_LOAD_RPM),
+            ServoSpec::STALL_TORQUE_NEWTON_METERS,
+        ),
+        ActuatorAssignment::Motor {
+            electric_percent,
+            gas_percent,
+        } => {
+            let electric = if electric_percent == 0 || inventory.electric_joints == 0 {
+                0.0
+            } else {
+                inventory.electric_engines as f32
+                    * EngineKind::Electric.stall_torque_newton_meters()
+                    / inventory.electric_joints as f32
+                    * (f32::from(electric_percent) / 100.0)
+            };
+            let gas = if gas_percent == 0 || inventory.gas_joints == 0 {
+                0.0
+            } else {
+                inventory.gas_engines as f32 * EngineKind::Gas.stall_torque_newton_meters()
+                    / inventory.gas_joints as f32
+                    * (f32::from(gas_percent) / 100.0)
+            };
+            let rpm = if gas_percent != 0 {
+                EngineKind::Gas.no_load_rpm()
+            } else if electric_percent != 0 {
+                EngineKind::Electric.no_load_rpm()
+            } else {
+                0.0
+            };
+            (rpm_to_rad_s(rpm), electric + gas)
+        }
+    }
 }
 
 /// Binds the next key pressed while a keycap is waiting for one.
@@ -147,7 +341,7 @@ mod tests {
         CuboidSpec, DriveLinkId, DriveLinkSpec, FaceKind, FaceRef, GridRotation,
     };
     use mosaic_core::{Rect, Vector2};
-    use mosaic_widgets::input::{Key, PointerButton, PointerEventKind};
+    use mosaic_widgets::input::{PointerButton, PointerEventKind};
 
     use super::geometry;
     use super::model::{Mode, PanelEdit, StateModel};
@@ -547,12 +741,10 @@ mod tests {
         );
     }
 
-    /// The bug this guards against: an element built once and then adopted into
-    /// a branch is freed when that branch closes, so opening the field a second
-    /// time reaches a layout node that no longer exists and the whole app goes
-    /// down.
+    /// The speed capability is a stable control even while its displayed unit
+    /// changes beneath it.
     #[test]
-    fn a_number_chip_survives_being_opened_twice() {
+    fn the_speed_chip_survives_repeated_unit_toggles() {
         let (overlay, _link) = open();
         let chip = overlay
             .reachable_boxes()
@@ -562,25 +754,18 @@ mod tests {
             })
             .expect("the speed chip is reachable");
 
-        for _ in 0..2 {
-            // Opening the field, then putting the pointer in it so the keyboard
-            // reaches it, then giving up on the edit.
+        for _ in 0..3 {
             overlay.click(chip.center());
-            overlay.click(chip.center());
-            overlay.press(Key::Escape);
         }
 
-        // And the edit itself still lands, which is what the field is for.
-        overlay.click(chip.center());
-        overlay.click(chip.center());
-        overlay.press(Key::Character("3".to_owned()));
-        overlay.press(Key::Enter);
         let queued = edits(&overlay);
         assert!(
             queued
                 .iter()
-                .any(|edit| matches!(edit.edit, PanelEdit::SetMaxSpeed(_))),
-            "typing a number into the speed chip sets the joint's ceiling; got {queued:?}",
+                .filter(|edit| matches!(edit.edit, PanelEdit::ToggleSpeedUnit))
+                .count()
+                >= 3,
+            "clicking the hardware speed chip toggles its unit; got {queued:?}",
         );
     }
 

@@ -11,8 +11,7 @@ use bevy_mosaic::ui::PaintCmd;
 use mosaic_core::{Rect, Scope, Size, Vector2};
 use mosaic_widgets::Ui;
 use mosaic_widgets::input::{
-    Key, KeyEvent, KeyEventKind, Modifiers, PointerButton, PointerEvent, PointerEventKind,
-    PointerType,
+    Modifiers, PointerButton, PointerEvent, PointerEventKind, PointerType,
 };
 
 use super::{Handles, UiIntent, shell, theme};
@@ -194,18 +193,6 @@ impl Overlay {
             modifiers: Modifiers::default(),
             timestamp: std::time::Duration::ZERO,
         });
-        self.settle();
-    }
-
-    /// Presses and releases one key on whatever holds the focus.
-    pub(crate) fn press(&self, key: Key) {
-        for kind in [KeyEventKind::Down { repeat: false }, KeyEventKind::Up] {
-            self.ui.dispatch_key(KeyEvent {
-                kind,
-                key: key.clone(),
-                modifiers: Modifiers::default(),
-            });
-        }
         self.settle();
     }
 }

@@ -6,6 +6,7 @@ use bevy::{
 };
 
 use crate::ui::UiInput;
+use mechanic_core::PartId;
 
 const MAX_PITCH: f32 = FRAC_PI_2 - 0.08;
 const MIN_PITCH: f32 = -MAX_PITCH;
@@ -18,6 +19,30 @@ pub(crate) struct OrbitCamera {
     yaw: f32,
     pitch: f32,
     radius: f32,
+}
+
+/// Local player seat and free-look angles while viewing a running creation.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct SeatedView {
+    pub(crate) seat: Option<PartId>,
+    pub(crate) yaw: f32,
+    pub(crate) pitch: f32,
+}
+
+impl SeatedView {
+    pub(crate) fn leave(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Camera orientation for a Seat whose authored front is local positive Z.
+/// Bevy cameras look down local negative Z, so a half turn aligns the two
+/// conventions before applying occupant free-look.
+pub(crate) fn seated_view_rotation(seat_rotation: Quat, yaw: f32, pitch: f32) -> Quat {
+    seat_rotation
+        * Quat::from_rotation_y(core::f32::consts::PI)
+        * Quat::from_rotation_y(yaw)
+        * Quat::from_rotation_x(pitch)
 }
 
 impl Default for OrbitCamera {
@@ -69,7 +94,11 @@ pub(crate) fn update_orbit_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     overlay: Res<UiInput>,
+    seated: Res<SeatedView>,
 ) {
+    if seated.seat.is_some() {
+        return;
+    }
     let (orbit, transform) = &mut *camera;
     // One question for the whole overlay: the pointer is either over a panel or
     // over the machine, and the panels are the only ones who know which.
@@ -120,9 +149,9 @@ pub(crate) fn camera_input_active(
 mod tests {
     use super::{
         MAX_PITCH, MAX_RADIUS, MIN_PITCH, MIN_RADIUS, OrbitCamera, camera_input_active,
-        pan_input_active,
+        pan_input_active, seated_view_rotation,
     };
-    use bevy::prelude::{ButtonInput, KeyCode, MouseButton, Vec2, Vec3};
+    use bevy::prelude::{ButtonInput, KeyCode, MouseButton, Quat, Vec2, Vec3};
 
     use super::orbit_input_active;
 
@@ -175,6 +204,12 @@ mod tests {
         );
         assert!(transform.translation.y > camera.target.y);
         assert_ne!(transform.translation, Vec3::ZERO);
+    }
+
+    #[test]
+    fn neutral_seated_view_faces_the_authored_positive_z_front() {
+        let rotation = seated_view_rotation(Quat::IDENTITY, 0.0, 0.0);
+        assert!((rotation * -Vec3::Z).abs_diff_eq(Vec3::Z, 1.0e-6));
     }
 
     #[test]

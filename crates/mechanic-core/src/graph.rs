@@ -4,9 +4,10 @@ use bevy_math::{Vec2, Vec3};
 use thiserror::Error;
 
 use crate::{
-    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, BearingId, ControllerSpec, CuboidSpec,
-    CylinderSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineSpec,
-    FaceKind, FaceOwner, FaceRef, PartId, PartSpec, RigidLinkId, WeldId,
+    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, ActuatorAssignment, BearingId, ControllerSpec,
+    CuboidSpec, CylinderSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget,
+    EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, InputSeatLinkId, InputSpec, PartId,
+    PartSpec, RigidLinkId, SeatControllerLinkId, SeatSpec, ServoSpec, WeldId,
     geometry::{FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face},
     id::Arena,
 };
@@ -134,6 +135,8 @@ pub struct DriveLinkSpec {
     pub bearing: BearingId,
     /// Whether this bearing runs opposite the programmed direction.
     pub reversed: bool,
+    /// Physical actuator family assigned to this joint.
+    pub actuator: ActuatorAssignment,
     /// Speed, torque, and travel envelope of this bearing.
     pub limits: DriveLimits,
     /// Ordered states this bearing moves through.
@@ -151,6 +154,7 @@ impl DriveLinkSpec {
             controller,
             bearing,
             reversed: false,
+            actuator: ActuatorAssignment::Unpowered,
             limits: DriveLimits::default(),
             program: DriveProgram::default(),
             name: DriveName::EMPTY,
@@ -166,6 +170,58 @@ impl DriveLinkSpec {
         } else {
             target
         })
+    }
+}
+
+/// Logical keyboard route from one Input block to one Seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputSeatLinkSpec {
+    /// Input block producing keyboard events.
+    pub input: PartId,
+    /// Seat whose occupant owns those events.
+    pub seat: PartId,
+}
+
+/// Logical keyboard route from one Seat to one Controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeatControllerLinkSpec {
+    /// Seat whose occupant supplies keyboard events.
+    pub seat: PartId,
+    /// Controller receiving those events.
+    pub controller: PartId,
+}
+
+/// Actuator hardware and current assignment demand in one Controller module.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActuatorInventory {
+    /// Electric engines in the module.
+    pub electric_engines: u32,
+    /// Gas engines in the module.
+    pub gas_engines: u32,
+    /// Servos in the module.
+    pub servos: u32,
+    /// Physical joints using electric power.
+    pub electric_joints: u32,
+    /// Physical joints using gas power.
+    pub gas_joints: u32,
+    /// Physical joints using servo power.
+    pub servo_joints: u32,
+}
+
+impl ActuatorInventory {
+    /// Available electric bearing ports.
+    pub const fn electric_capacity(self) -> u32 {
+        self.electric_engines * EngineKind::Electric.bearing_capacity()
+    }
+
+    /// Available gas bearing ports.
+    pub const fn gas_capacity(self) -> u32 {
+        self.gas_engines * EngineKind::Gas.bearing_capacity()
+    }
+
+    /// Available dedicated servo ports.
+    pub const fn servo_capacity(self) -> u32 {
+        self.servos
     }
 }
 
@@ -247,12 +303,26 @@ pub enum BuildCommand {
     SpawnController(ControllerSpec),
     /// Spawn an inert engine.
     SpawnEngine(EngineSpec),
+    /// Spawn a servo.
+    SpawnServo(ServoSpec),
+    /// Spawn a seat cushion.
+    SpawnSeat(SeatSpec),
+    /// Spawn an Input block.
+    SpawnInput(InputSpec),
     /// Add a passive bearing.
     AddBearing(BearingSpec),
     /// Wire a control block to one bearing.
     AddDriveLink(DriveLinkSpec),
     /// Remove one control-block wire, leaving its endpoints intact.
     RemoveDriveLink(DriveLinkId),
+    /// Link one Input block to one Seat.
+    AddInputSeatLink(InputSeatLinkSpec),
+    /// Remove an Input-to-Seat link.
+    RemoveInputSeatLink(InputSeatLinkId),
+    /// Link one Seat to one Controller.
+    AddSeatControllerLink(SeatControllerLinkSpec),
+    /// Remove a Seat-to-Controller link.
+    RemoveSeatControllerLink(SeatControllerLinkId),
     /// Replace one drive wire's limits and program.
     SetDriveLink {
         /// Wire being reprogrammed.
@@ -263,6 +333,8 @@ pub enum BuildCommand {
         program: DriveProgram,
         /// Replacement joint name.
         name: DriveName,
+        /// Replacement actuator assignment.
+        actuator: ActuatorAssignment,
     },
     /// Record a non-mutating first endpoint for a two-step tool.
     BeginPending(PendingOperation),
@@ -285,6 +357,10 @@ pub enum BuildOutcome {
     BearingAdded(BearingId),
     /// A control-block wire was created.
     DriveLinked(DriveLinkId),
+    /// An Input-to-Seat link was created.
+    InputSeatLinked(InputSeatLinkId),
+    /// A Seat-to-Controller link was created.
+    SeatControllerLinked(SeatControllerLinkId),
     /// A drive wire's limits or program were replaced.
     DriveUpdated,
     /// A pending operation was recorded.
@@ -311,9 +387,30 @@ pub enum GraphError {
     /// A drive-link handle is stale or unknown.
     #[error("unknown or stale drive-link handle {0:?}")]
     MissingDriveLink(DriveLinkId),
+    /// An Input-to-Seat link handle is stale or unknown.
+    #[error("unknown or stale Input-to-Seat link handle {0:?}")]
+    MissingInputSeatLink(InputSeatLinkId),
+    /// A Seat-to-Controller link handle is stale or unknown.
+    #[error("unknown or stale Seat-to-Controller link handle {0:?}")]
+    MissingSeatControllerLink(SeatControllerLinkId),
     /// A part referenced as a control block is a different kind of part.
     #[error("part {0:?} is not a control block")]
     NotAController(PartId),
+    /// A part referenced as an Input block is a different kind of part.
+    #[error("part {0:?} is not an Input block")]
+    NotAnInput(PartId),
+    /// A part referenced as a Seat is a different kind of part.
+    #[error("part {0:?} is not a Seat")]
+    NotASeat(PartId),
+    /// An Input block already serves another Seat.
+    #[error("Input block {0:?} is already linked to a Seat")]
+    InputAlreadyLinked(PartId),
+    /// A Seat already has an Input block.
+    #[error("Seat {0:?} already has an Input link")]
+    SeatAlreadyHasInput(PartId),
+    /// A Seat already has a Controller.
+    #[error("Seat {0:?} already has a Controller link")]
+    SeatAlreadyHasController(PartId),
     /// A bearing already obeys another control block.
     #[error("bearing {0:?} is already driven by a control block")]
     BearingAlreadyDriven(BearingId),
@@ -354,6 +451,8 @@ pub struct ConstructionGraph {
     pub(crate) rigid_links: Arena<RigidLinkSpec, RigidLinkId>,
     pub(crate) bearings: Arena<BearingSpec, BearingId>,
     pub(crate) drive_links: Arena<DriveLinkSpec, DriveLinkId>,
+    pub(crate) input_seat_links: Arena<InputSeatLinkSpec, InputSeatLinkId>,
+    pub(crate) seat_controller_links: Arena<SeatControllerLinkSpec, SeatControllerLinkId>,
     pending: Option<PendingOperation>,
 }
 
@@ -419,11 +518,48 @@ impl ConstructionGraph {
         self.drive_links.get(id)
     }
 
+    /// Retrieves a live Input-to-Seat link.
+    pub fn input_seat_link(&self, id: InputSeatLinkId) -> Option<&InputSeatLinkSpec> {
+        self.input_seat_links.get(id)
+    }
+
+    /// Retrieves a live Seat-to-Controller link.
+    pub fn seat_controller_link(
+        &self,
+        id: SeatControllerLinkId,
+    ) -> Option<&SeatControllerLinkSpec> {
+        self.seat_controller_links.get(id)
+    }
+
     /// Whether a live part is a control block.
     pub fn is_controller(&self, part: PartId) -> bool {
         self.parts
             .get(part)
             .is_some_and(|spec| spec.as_controller().is_some())
+    }
+
+    /// Whether a live part is a Seat.
+    pub fn is_seat(&self, part: PartId) -> bool {
+        matches!(self.parts.get(part), Some(PartSpec::Seat(_)))
+    }
+
+    /// Whether a live part is an Input block.
+    pub fn is_input(&self, part: PartId) -> bool {
+        matches!(self.parts.get(part), Some(PartSpec::Input(_)))
+    }
+
+    /// Input block linked to a Seat, when present.
+    pub fn seat_input(&self, seat: PartId) -> Option<PartId> {
+        self.input_seat_links
+            .iter()
+            .find_map(|(_, link)| (link.seat == seat).then_some(link.input))
+    }
+
+    /// Controller linked to a Seat, when present.
+    pub fn seat_controller(&self, seat: PartId) -> Option<PartId> {
+        self.seat_controller_links
+            .iter()
+            .find_map(|(_, link)| (link.seat == seat).then_some(link.controller))
     }
 
     /// The wire driving one bearing, when a control block owns it.
@@ -468,6 +604,18 @@ impl ConstructionGraph {
         self.drive_links.iter()
     }
 
+    /// Iterates live Input-to-Seat links in canonical slot order.
+    pub fn input_seat_links(&self) -> impl Iterator<Item = (InputSeatLinkId, &InputSeatLinkSpec)> {
+        self.input_seat_links.iter()
+    }
+
+    /// Iterates live Seat-to-Controller links in canonical slot order.
+    pub fn seat_controller_links(
+        &self,
+    ) -> impl Iterator<Item = (SeatControllerLinkId, &SeatControllerLinkSpec)> {
+        self.seat_controller_links.iter()
+    }
+
     /// Current incomplete two-step operation, if any.
     pub const fn pending(&self) -> Option<PendingOperation> {
         self.pending
@@ -498,12 +646,100 @@ impl ConstructionGraph {
         self.drive_links.len()
     }
 
+    /// Actuator hardware and graph-level assignment demand in a Controller's
+    /// direct machine-only weld module.
+    pub fn actuator_inventory(&self, controller: PartId) -> Option<ActuatorInventory> {
+        self.is_controller(controller).then(|| {
+            let members = self.machine_module(controller);
+            let mut inventory = ActuatorInventory::default();
+            for part in &members {
+                match self.parts.get(*part) {
+                    Some(PartSpec::Engine(engine)) => match engine.kind {
+                        EngineKind::Electric => inventory.electric_engines += 1,
+                        EngineKind::Gas => inventory.gas_engines += 1,
+                    },
+                    Some(PartSpec::Servo(_)) => inventory.servos += 1,
+                    _ => {}
+                }
+            }
+            let mut electric_coordinates = Vec::<(Vec3, Vec3)>::new();
+            let mut gas_coordinates = Vec::<(Vec3, Vec3)>::new();
+            let mut servo_coordinates = Vec::<(Vec3, Vec3)>::new();
+            for (_, link) in self
+                .drive_links
+                .iter()
+                .filter(|(_, link)| members.contains(&link.controller))
+            {
+                let Some(bearing) = self.bearings.get(link.bearing) else {
+                    continue;
+                };
+                let coordinate = (bearing.shared_anchor, bearing.axis);
+                let contains = |coordinates: &[(Vec3, Vec3)]| {
+                    coordinates.iter().any(|(anchor, axis)| {
+                        anchor.abs_diff_eq(coordinate.0, 1.0e-5)
+                            && axis.abs_diff_eq(coordinate.1, 1.0e-5)
+                    })
+                };
+                if link.actuator.uses_electric() && !contains(&electric_coordinates) {
+                    electric_coordinates.push(coordinate);
+                }
+                if link.actuator.uses_gas() && !contains(&gas_coordinates) {
+                    gas_coordinates.push(coordinate);
+                }
+                if link.actuator.uses_servo() && !contains(&servo_coordinates) {
+                    servo_coordinates.push(coordinate);
+                }
+            }
+            inventory.electric_joints =
+                u32::try_from(electric_coordinates.len()).unwrap_or(u32::MAX);
+            inventory.gas_joints = u32::try_from(gas_coordinates.len()).unwrap_or(u32::MAX);
+            inventory.servo_joints = u32::try_from(servo_coordinates.len()).unwrap_or(u32::MAX);
+            inventory
+        })
+    }
+
+    /// Machine parts directly connected through machine-to-machine welds.
+    pub(crate) fn machine_module(&self, start: PartId) -> BTreeSet<PartId> {
+        let mut found = BTreeSet::from([start]);
+        let mut pending = vec![start];
+        while let Some(part) = pending.pop() {
+            for (_, weld) in self.welds.iter() {
+                let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+                    (weld.first.owner, weld.second.owner)
+                else {
+                    continue;
+                };
+                let next = if first == part {
+                    second
+                } else if second == part {
+                    first
+                } else {
+                    continue;
+                };
+                if self.is_machine_part(part) && self.is_machine_part(next) && found.insert(next) {
+                    pending.push(next);
+                }
+            }
+        }
+        found
+    }
+
+    fn is_machine_part(&self, part: PartId) -> bool {
+        matches!(
+            self.parts.get(part),
+            Some(PartSpec::Controller(_) | PartSpec::Engine(_) | PartSpec::Servo(_))
+        )
+    }
+
     pub(crate) fn face_geometry(&self, face: FaceRef) -> Result<FaceGeometry, GraphError> {
         match face.owner {
             FaceOwner::Part(part) => match self.parts.get(part).copied() {
                 Some(PartSpec::Cuboid(spec)) => Ok(cuboid_face(spec, face.face)),
                 Some(PartSpec::Controller(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Engine(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                Some(PartSpec::Servo(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                Some(PartSpec::Seat(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                Some(PartSpec::Input(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Cylinder(spec)) => {
                     cylinder_face(spec, face.face).ok_or(GraphError::InvalidCylinderFace)
                 }
@@ -530,6 +766,18 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnEngine(spec) => {
+                let id = self.parts.insert(spec.into());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnServo(spec) => {
+                let id = self.parts.insert(spec.into());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnSeat(spec) => {
+                let id = self.parts.insert(spec.into());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnInput(spec) => {
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
@@ -563,6 +811,20 @@ impl ConstructionGraph {
                             .then_some(link_id)
                     })
                     .collect::<Vec<_>>();
+                let input_seat_links = self
+                    .input_seat_links
+                    .iter()
+                    .filter_map(|(link_id, link)| {
+                        (link.input == id || link.seat == id).then_some(link_id)
+                    })
+                    .collect::<Vec<_>>();
+                let seat_controller_links = self
+                    .seat_controller_links
+                    .iter()
+                    .filter_map(|(link_id, link)| {
+                        (link.seat == id || link.controller == id).then_some(link_id)
+                    })
+                    .collect::<Vec<_>>();
                 for weld in welds {
                     self.welds.remove(weld);
                 }
@@ -571,6 +833,12 @@ impl ConstructionGraph {
                 }
                 for link in drive_links {
                     self.drive_links.remove(link);
+                }
+                for link in input_seat_links {
+                    self.input_seat_links.remove(link);
+                }
+                for link in seat_controller_links {
+                    self.seat_controller_links.remove(link);
                 }
                 for bearing in bearings {
                     self.bearings.remove(bearing);
@@ -637,11 +905,38 @@ impl ConstructionGraph {
                 self.pending = None;
                 Ok(BuildOutcome::Removed)
             }
+            BuildCommand::AddInputSeatLink(spec) => {
+                self.validate_input_seat_link(spec)?;
+                let id = self.input_seat_links.insert(spec);
+                self.pending = None;
+                Ok(BuildOutcome::InputSeatLinked(id))
+            }
+            BuildCommand::RemoveInputSeatLink(id) => {
+                self.input_seat_links
+                    .remove(id)
+                    .ok_or(GraphError::MissingInputSeatLink(id))?;
+                self.pending = None;
+                Ok(BuildOutcome::Removed)
+            }
+            BuildCommand::AddSeatControllerLink(spec) => {
+                self.validate_seat_controller_link(spec)?;
+                let id = self.seat_controller_links.insert(spec);
+                self.pending = None;
+                Ok(BuildOutcome::SeatControllerLinked(id))
+            }
+            BuildCommand::RemoveSeatControllerLink(id) => {
+                self.seat_controller_links
+                    .remove(id)
+                    .ok_or(GraphError::MissingSeatControllerLink(id))?;
+                self.pending = None;
+                Ok(BuildOutcome::Removed)
+            }
             BuildCommand::SetDriveLink {
                 link,
                 limits,
                 program,
                 name,
+                actuator,
             } => {
                 let spec = self
                     .drive_links
@@ -650,6 +945,7 @@ impl ConstructionGraph {
                 spec.limits = limits;
                 spec.program = program;
                 spec.name = name;
+                spec.actuator = actuator;
                 Ok(BuildOutcome::DriveUpdated)
             }
             BuildCommand::BeginPending(pending) => {
@@ -724,6 +1020,59 @@ impl ConstructionGraph {
             .any(|(_, link)| link.bearing == spec.bearing)
         {
             return Err(GraphError::BearingAlreadyDriven(spec.bearing));
+        }
+        Ok(())
+    }
+
+    fn validate_input_seat_link(&self, spec: InputSeatLinkSpec) -> Result<(), GraphError> {
+        match self.parts.get(spec.input) {
+            Some(PartSpec::Input(_)) => {}
+            Some(_) => return Err(GraphError::NotAnInput(spec.input)),
+            None => return Err(GraphError::MissingPart(spec.input)),
+        }
+        match self.parts.get(spec.seat) {
+            Some(PartSpec::Seat(_)) => {}
+            Some(_) => return Err(GraphError::NotASeat(spec.seat)),
+            None => return Err(GraphError::MissingPart(spec.seat)),
+        }
+        if self
+            .input_seat_links
+            .iter()
+            .any(|(_, link)| link.input == spec.input)
+        {
+            return Err(GraphError::InputAlreadyLinked(spec.input));
+        }
+        if self
+            .input_seat_links
+            .iter()
+            .any(|(_, link)| link.seat == spec.seat)
+        {
+            return Err(GraphError::SeatAlreadyHasInput(spec.seat));
+        }
+        Ok(())
+    }
+
+    fn validate_seat_controller_link(
+        &self,
+        spec: SeatControllerLinkSpec,
+    ) -> Result<(), GraphError> {
+        match self.parts.get(spec.seat) {
+            Some(PartSpec::Seat(_)) => {}
+            Some(_) => return Err(GraphError::NotASeat(spec.seat)),
+            None => return Err(GraphError::MissingPart(spec.seat)),
+        }
+        self.parts
+            .get(spec.controller)
+            .copied()
+            .ok_or(GraphError::MissingPart(spec.controller))?
+            .as_controller()
+            .ok_or(GraphError::NotAController(spec.controller))?;
+        if self
+            .seat_controller_links
+            .iter()
+            .any(|(_, link)| link.seat == spec.seat)
+        {
+            return Err(GraphError::SeatAlreadyHasController(spec.seat));
         }
         Ok(())
     }
@@ -1070,9 +1419,10 @@ mod tests {
         ConstructionGraph, DriveLinkSpec, GraphError, PendingOperation, RigidLinkSpec, WeldSpec,
     };
     use crate::{
-        BearingId, BuildPose, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveLimits, DriveName, DriveProgram, DriveState, DriveTarget, FaceKind, FaceRef,
-        GridRotation, PartId, PartSpec,
+        ActuatorAssignment, BearingId, BuildPose, ControllerSpec, CuboidSpec, CylinderDimensions,
+        CylinderSpec, DriveLimits, DriveName, DriveProgram, DriveState, DriveTarget, EngineKind,
+        EngineSpec, FaceKind, FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, PartId,
+        PartSpec, SeatControllerLinkSpec, SeatSpec,
     };
 
     fn cube_at(x: i32) -> CuboidSpec {
@@ -1104,6 +1454,101 @@ mod tests {
             unreachable!()
         };
         id
+    }
+
+    #[test]
+    fn input_routes_are_typed_cardinal_and_cascade_with_the_seat() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(input) = graph
+            .apply(BuildCommand::SpawnInput(InputSpec::new(
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(seat) = graph
+            .apply(BuildCommand::SpawnSeat(SeatSpec::new(BuildPose::default())))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        graph
+            .apply(BuildCommand::AddInputSeatLink(InputSeatLinkSpec {
+                input,
+                seat,
+            }))
+            .unwrap();
+        graph
+            .apply(BuildCommand::AddSeatControllerLink(
+                SeatControllerLinkSpec { seat, controller },
+            ))
+            .unwrap();
+        assert_eq!(graph.seat_input(seat), Some(input));
+        assert_eq!(graph.seat_controller(seat), Some(controller));
+        assert_eq!(
+            graph.apply(BuildCommand::AddInputSeatLink(InputSeatLinkSpec {
+                input,
+                seat,
+            })),
+            Err(GraphError::InputAlreadyLinked(input))
+        );
+
+        graph.apply(BuildCommand::Remove(seat)).unwrap();
+        assert_eq!(graph.input_seat_links().count(), 0);
+        assert_eq!(graph.seat_controller_links().count(), 0);
+        assert!(graph.part(input).is_some());
+        assert!(graph.part(controller).is_some());
+    }
+
+    #[test]
+    fn structural_blocks_do_not_bridge_controller_actuator_modules() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::from_half_grid(IVec3::ZERO, GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let bridge = spawn(
+            &mut graph,
+            CuboidSpec::new(
+                [1, 2, 1],
+                BuildPose::from_half_grid(IVec3::new(3, 0, 0), GridRotation::default()),
+            )
+            .unwrap(),
+        );
+        let BuildOutcome::Spawned(engine) = graph
+            .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                EngineKind::Electric,
+                BuildPose::from_half_grid(IVec3::new(6, 0, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        for (first, second) in [(controller, bridge), (bridge, engine)] {
+            graph
+                .apply(BuildCommand::Weld(WeldSpec {
+                    first: FaceRef::part(first, FaceKind::PositiveX),
+                    second: FaceRef::part(second, FaceKind::NegativeX),
+                }))
+                .unwrap();
+        }
+
+        let inventory = graph.actuator_inventory(controller).unwrap();
+        assert_eq!(inventory.electric_engines, 0);
     }
 
     #[test]
@@ -1497,6 +1942,7 @@ mod tests {
                 limits,
                 program,
                 name: DriveName::new("Steer · front left"),
+                actuator: ActuatorAssignment::Unpowered,
             }),
             Ok(BuildOutcome::DriveUpdated)
         );

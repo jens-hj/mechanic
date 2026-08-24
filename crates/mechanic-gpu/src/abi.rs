@@ -233,6 +233,14 @@ pub struct GpuMechanismDrive {
     pub min_angle: f32,
     /// Upper angle limit in radians, or positive infinity.
     pub max_angle: f32,
+    /// Stall acceleration supplied by the first actuator family.
+    pub source_a_max_acceleration: f32,
+    /// No-load speed of the first actuator family.
+    pub source_a_no_load_speed: f32,
+    /// Stall acceleration supplied by the second actuator family.
+    pub source_b_max_acceleration: f32,
+    /// No-load speed of the second actuator family.
+    pub source_b_no_load_speed: f32,
     /// Padding to a sixteen-byte multiple.
     pub padding: f32,
 }
@@ -247,6 +255,10 @@ impl From<mechanic_core::CoordinateDrive> for GpuMechanismDrive {
             target_angle: drive.target_angle,
             min_angle: drive.min_angle,
             max_angle: drive.max_angle,
+            source_a_max_acceleration: drive.source_a_max_acceleration,
+            source_a_no_load_speed: drive.source_a_no_load_speed,
+            source_b_max_acceleration: drive.source_b_max_acceleration,
+            source_b_no_load_speed: drive.source_b_no_load_speed,
             padding: 0.0,
         }
     }
@@ -271,6 +283,10 @@ impl GpuMechanismDrive {
         target_angle: 0.0,
         min_angle: f32::NEG_INFINITY,
         max_angle: f32::INFINITY,
+        source_a_max_acceleration: 0.0,
+        source_a_no_load_speed: 0.0,
+        source_b_max_acceleration: 0.0,
+        source_b_no_load_speed: 0.0,
         padding: 0.0,
     };
 }
@@ -309,7 +325,7 @@ const _: () = {
     assert!(size_of::<GpuPersistentManifold>() == 48);
     assert!(size_of::<GpuMechanismBody>() == 64);
     assert!(size_of::<GpuMechanismCoordinate>() == 8);
-    assert!(size_of::<GpuMechanismDrive>() == 32);
+    assert!(size_of::<GpuMechanismDrive>() == 48);
     assert!(size_of::<GpuLinkState>() == 48);
     assert!(size_of::<GpuContractionNode>() == 16);
 };

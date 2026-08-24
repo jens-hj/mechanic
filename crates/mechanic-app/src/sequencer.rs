@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 use mechanic_core::{
     CompiledCreation, ConstructionGraph, DriveKey, DriveLinkId, DriveProgram, DriveRelease,
+    DriveTarget,
 };
-use mechanic_gpu::{FIXED_DT_SECONDS, GpuMechanismDrive};
+use mechanic_gpu::{DRIVE_MODE_ANGLE, DRIVE_MODE_SPEED, FIXED_DT_SECONDS, GpuMechanismDrive};
 
 /// Which of a program's keys are down, and which went down this frame.
 #[derive(Clone, Debug, Default)]
@@ -178,14 +179,21 @@ impl DriveSequencer {
         &mut self,
         graph: &ConstructionGraph,
         keys: &DriveKeyState,
+        keyboard_controller: Option<mechanic_core::PartId>,
         tick: u64,
     ) -> bool {
         let mut changed = false;
+        let no_keys = DriveKeyState::default();
         for row in &mut self.rows {
             let Some(spec) = graph.drive_link(row.link) else {
                 continue;
             };
-            let stepped = stepped_cursor(row.cursor, &spec.program, keys, tick);
+            let routed_keys = if keyboard_controller == Some(spec.controller) {
+                keys
+            } else {
+                &no_keys
+            };
+            let stepped = stepped_cursor(row.cursor, &spec.program, routed_keys, tick);
             if stepped != row.cursor {
                 row.cursor = stepped;
                 changed = true;
@@ -281,9 +289,18 @@ pub(crate) fn gpu_drive_rows(
         let Some(slot) = rows.get_mut(row.coordinate as usize) else {
             continue;
         };
-        *slot = creation
-            .coordinate_drive_row(row.coordinate, target, spec.limits)
-            .into();
+        match target {
+            DriveTarget::Speed(speed) => {
+                slot.mode = DRIVE_MODE_SPEED;
+                slot.target_speed = speed;
+                slot.target_angle = 0.0;
+            }
+            DriveTarget::Angle(angle) => {
+                slot.mode = DRIVE_MODE_ANGLE;
+                slot.target_speed = 0.0;
+                slot.target_angle = angle;
+            }
+        }
     }
     rows
 }
@@ -468,6 +485,7 @@ mod tests {
     ) -> (
         mechanic_core::ConstructionGraph,
         mechanic_core::CompiledCreation,
+        mechanic_core::PartId,
     ) {
         use bevy::prelude::{IVec3, Vec3};
         use mechanic_core::{
@@ -516,7 +534,7 @@ mod tests {
         link.program = program;
         graph.apply(BuildCommand::AddDriveLink(link)).unwrap();
         let creation = graph.compile().unwrap();
-        (graph, creation)
+        (graph, creation, controller)
     }
 
     #[test]
@@ -530,7 +548,7 @@ mod tests {
         };
         let program = DriveProgram::new(&[latched(0.0, 'N'), latched(2.0, 'W')], false)
             .expect("driving program is valid");
-        let (graph, creation) = driven_arm(program);
+        let (graph, creation, controller) = driven_arm(program);
 
         let mut sequencer = super::DriveSequencer::default();
         sequencer.start(&creation, &graph);
@@ -541,14 +559,18 @@ mod tests {
         assert_eq!(idle.len(), creation.loop_topology.tree_bearings.len());
         assert!(idle[0].target_speed.abs() < f32::EPSILON);
 
+        // A key is ignored until an occupied Seat's Input route selects this
+        // controller.
+        assert!(!sequencer.step(&graph, &keys(&['W'], &['W']), None, 29));
+
         // Pressing W enters state 1, and that target reaches the same row.
-        assert!(sequencer.step(&graph, &keys(&['W'], &['W']), 30));
+        assert!(sequencer.step(&graph, &keys(&['W'], &['W']), Some(controller), 30));
         let driving = super::gpu_drive_rows(&creation, &graph, &sequencer);
         assert!((driving[0].target_speed - 2.0).abs() < 1.0e-5);
         assert_eq!(driving[0].mode, mechanic_gpu::DRIVE_MODE_SPEED);
 
         // Holding the same key changes nothing, so no needless GPU write.
-        assert!(!sequencer.step(&graph, &keys(&['W'], &[]), 31));
+        assert!(!sequencer.step(&graph, &keys(&['W'], &[]), Some(controller), 31));
     }
 
     #[test]
@@ -557,7 +579,7 @@ mod tests {
 
         let program =
             DriveProgram::new(&[DriveState::new(DriveTarget::Speed(2.0)).unwrap()], false).unwrap();
-        let (mut graph, creation) = driven_arm(program);
+        let (mut graph, creation, _) = driven_arm(program);
         let (link, spec) = graph
             .drive_links()
             .map(|(id, spec)| (id, *spec))

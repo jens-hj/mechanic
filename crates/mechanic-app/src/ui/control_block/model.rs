@@ -10,10 +10,11 @@
 //! radians per second; the panel reads degrees, because a joint's travel is
 //! something a person describes in degrees.
 
+use crate::control_panel::SpeedUnit;
 use mechanic_core::{
-    DriveDwell, DriveKey, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveRelease,
-    DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
-    MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
+    ActuatorAssignment, DriveDwell, DriveKey, DriveLimits, DriveLinkId, DriveName, DriveProgram,
+    DriveRelease, DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_DWELL_SECONDS,
+    MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
 };
 
 /// Smallest travel range the grips may close to, in degrees. Two limits that
@@ -55,11 +56,14 @@ pub(crate) enum Preset {
 pub(crate) enum PanelEdit {
     /// Rename the joint.
     SetName(String),
-    /// Fastest the joint may turn, in degrees per second.
-    SetMaxSpeed(f32),
-    /// Strongest torque it may apply. Empty or an open-ended word means
-    /// unlimited.
-    SetTorque(String),
+    /// Toggle speed readouts between RPM and degrees per second.
+    ToggleSpeedUnit,
+    /// Step unpowered, motor, and Servo assignment modes.
+    CycleActuator,
+    /// Step the electric contribution through 0, 25, 50, 75, and 100 percent.
+    CycleElectric,
+    /// Step the gas contribution through 0, 25, 50, 75, and 100 percent.
+    CycleGas,
     /// Turn travel limits on at a default range, or off.
     ToggleTravel,
     /// Move both travel limits, in degrees.
@@ -104,14 +108,6 @@ pub(crate) struct Intent {
     pub(crate) transient: bool,
 }
 
-/// Words that all mean "do not limit this".
-fn is_open_ended(text: &str) -> bool {
-    matches!(
-        text.trim().to_ascii_lowercase().as_str(),
-        "" | "inf" | "infinite" | "infinity" | "unlimited" | "none" | "never"
-    )
-}
-
 /// The joint's whole configuration, as the graph stores it.
 type Wire = (DriveLimits, DriveProgram, DriveName);
 
@@ -131,21 +127,10 @@ pub(crate) fn apply_edit(
     match edit {
         PanelEdit::SetName(text) => Some((limits, program, DriveName::new(text))),
 
-        PanelEdit::SetMaxSpeed(degrees) => {
-            let limits = limits.with_max_speed(degrees.to_radians()).ok()?;
-            // A state may have been spinning faster than the joint's new
-            // ceiling, which would leave the dial reading past its own end.
-            Some((limits, clamped_speeds(&program, limits), name))
-        }
-
-        PanelEdit::SetTorque(text) => {
-            let torque = if is_open_ended(text) {
-                f32::INFINITY
-            } else {
-                text.trim().parse::<f32>().ok()?
-            };
-            Some((limits.with_max_torque(torque).ok()?, program, name))
-        }
+        PanelEdit::ToggleSpeedUnit
+        | PanelEdit::CycleActuator
+        | PanelEdit::CycleElectric
+        | PanelEdit::CycleGas => None,
 
         PanelEdit::ToggleTravel => {
             let travel = if limits.angle_limits().is_some() {
@@ -206,10 +191,11 @@ pub(crate) fn apply_edit(
                         .unwrap_or((-MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_LIMIT_RADIANS));
                     DriveTarget::Angle(radians.clamp(low, high))
                 }
-                DriveTarget::Speed(_) => {
-                    let ceiling = limits.max_speed_rad_s();
-                    DriveTarget::Speed(value.to_radians().clamp(-ceiling, ceiling))
-                }
+                DriveTarget::Speed(_) => DriveTarget::Speed(
+                    value
+                        .to_radians()
+                        .clamp(-MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_SPEED_RAD_S),
+                ),
             };
             Some((
                 limits,
@@ -400,17 +386,6 @@ fn clamped_angles(program: &DriveProgram, limits: DriveLimits) -> DriveProgram {
     })
 }
 
-/// Pulls every spin back inside the joint's speed ceiling.
-fn clamped_speeds(program: &DriveProgram, limits: DriveLimits) -> DriveProgram {
-    let ceiling = limits.max_speed_rad_s();
-    fold_states(program, |state| match state.target() {
-        DriveTarget::Speed(speed) => state
-            .with_target(DriveTarget::Speed(speed.clamp(-ceiling, ceiling)))
-            .ok(),
-        DriveTarget::Angle(_) => None,
-    })
-}
-
 /// Rewrites every state a mapping has an opinion about, keeping the rest.
 ///
 /// A rewrite that fails validation is dropped rather than failing the whole
@@ -551,6 +526,10 @@ pub(crate) struct LaneModel {
     pub(crate) speed: f32,
     /// Strongest torque it may apply. Infinite means unlimited.
     pub(crate) torque: f32,
+    /// Hardware family assigned to this joint.
+    pub(crate) actuator: ActuatorAssignment,
+    /// Unit used by continuous speed readouts.
+    pub(crate) speed_unit: SpeedUnit,
     /// Travel limits in degrees, or `None` when the joint turns freely.
     pub(crate) travel: Option<(f32, f32)>,
     /// Whether the sequence repeats.
@@ -565,12 +544,17 @@ pub(crate) struct LaneModel {
 
 impl LaneModel {
     /// Reads one joint's configuration into what the panel draws.
+    #[allow(clippy::too_many_arguments)] // A flat immutable snapshot at the graph/UI seam.
     pub(crate) fn capture(
         id: DriveLinkId,
         number: usize,
         limits: DriveLimits,
         program: &DriveProgram,
         name: &DriveName,
+        actuator: ActuatorAssignment,
+        speed_unit: SpeedUnit,
+        max_speed_rad_s: f32,
+        effective_torque: f32,
     ) -> Self {
         let states: Vec<StateModel> = program
             .states()
@@ -580,7 +564,13 @@ impl LaneModel {
                     DriveTarget::Angle(_) => Mode::Angle,
                     DriveTarget::Speed(_) => Mode::Speed,
                 },
-                value: reading(state.target()).to_degrees(),
+                value: match state.target() {
+                    DriveTarget::Angle(angle) => angle.to_degrees(),
+                    DriveTarget::Speed(speed) => match speed_unit {
+                        SpeedUnit::Rpm => speed * 60.0 / core::f32::consts::TAU,
+                        SpeedUnit::DegreesPerSecond => speed.to_degrees(),
+                    },
+                },
                 key: state.trigger().map(|trigger| trigger.key().symbol()),
                 release: state
                     .trigger()
@@ -598,8 +588,13 @@ impl LaneModel {
             id,
             number,
             name: name.as_str().to_owned(),
-            speed: limits.max_speed_rad_s().to_degrees(),
-            torque: limits.max_torque_newton_meters(),
+            speed: match speed_unit {
+                SpeedUnit::Rpm => max_speed_rad_s * 60.0 / core::f32::consts::TAU,
+                SpeedUnit::DegreesPerSecond => max_speed_rad_s.to_degrees(),
+            },
+            torque: effective_torque,
+            actuator,
+            speed_unit,
             travel: limits
                 .angle_limits()
                 .map(|(low, high)| (low.to_degrees(), high.to_degrees())),
@@ -612,17 +607,35 @@ impl LaneModel {
 
     /// What the speed chip reads.
     pub(crate) fn speed_text(&self) -> String {
-        format!("{:.0} °/s", self.speed)
+        match self.speed_unit {
+            SpeedUnit::Rpm => format!("{:.0} RPM", self.speed),
+            SpeedUnit::DegreesPerSecond => format!("{:.0} °/s", self.speed),
+        }
     }
 
     /// What the torque chip reads. An unlimited joint says so in words rather
     /// than showing an infinity.
     pub(crate) fn torque_text(&self) -> String {
-        if self.torque.is_infinite() {
-            "unlimited".to_owned()
-        } else {
-            format!("{:.0} N·m", self.torque)
+        match self.actuator {
+            ActuatorAssignment::Unpowered => "unpowered".to_owned(),
+            ActuatorAssignment::Servo => format!("Servo · {:.0} N·m", self.torque),
+            ActuatorAssignment::Motor { .. } => format!("Motor · {:.0} N·m", self.torque),
         }
+    }
+
+    pub(crate) const fn speed_unit_text(&self) -> &'static str {
+        match self.speed_unit {
+            SpeedUnit::Rpm => "RPM",
+            SpeedUnit::DegreesPerSecond => "°/s",
+        }
+    }
+
+    pub(crate) fn electric_text(&self) -> String {
+        format!("Electric {}%", self.actuator.electric_percent())
+    }
+
+    pub(crate) fn gas_text(&self) -> String {
+        format!("Gas {}%", self.actuator.gas_percent())
     }
 
     /// What the travel chip reads.
@@ -804,48 +817,6 @@ mod tests {
     fn a_named_joint_keeps_its_name_and_an_overlong_one_is_cut() {
         let named = apply(steering(), &PanelEdit::SetName("Tipper arm".to_owned()));
         assert_eq!(named.2.as_str(), "Tipper arm");
-    }
-
-    #[test]
-    fn typing_a_speed_is_read_as_degrees_a_second() {
-        let faster = apply(steering(), &PanelEdit::SetMaxSpeed(360.0));
-        assert!((faster.0.max_speed_rad_s() - std::f32::consts::TAU).abs() < 1.0e-4);
-    }
-
-    #[test]
-    fn a_speed_out_of_range_leaves_the_joint_alone() {
-        let (limits, program, name) = steering();
-        assert!(
-            apply_edit(limits, program, name, &PanelEdit::SetMaxSpeed(100_000.0)).is_none(),
-            "a speed past the ceiling is not a speed the joint can hold"
-        );
-        assert!(
-            apply_edit(limits, program, name, &PanelEdit::SetMaxSpeed(-5.0)).is_none(),
-            "a joint cannot have a negative ceiling"
-        );
-    }
-
-    #[test]
-    fn lowering_the_ceiling_pulls_a_faster_state_back_under_it() {
-        let quick = apply(driving(), &PanelEdit::SetMaxSpeed(f32::to_degrees(1.0)));
-        let spun = quick.1.state(1).expect("the second state exists");
-        assert!(
-            matches!(spun.target(), DriveTarget::Speed(speed) if speed <= 1.0 + 1.0e-4),
-            "a state may not ask for more speed than the joint has",
-        );
-    }
-
-    #[test]
-    fn an_empty_or_open_ended_torque_means_unlimited() {
-        for text in ["", "none", "inf", "unlimited", "never", " Infinity "] {
-            let wire = apply(driving(), &PanelEdit::SetTorque(text.to_owned()));
-            assert!(
-                wire.0.max_torque_newton_meters().is_infinite(),
-                "{text:?} must read as unlimited",
-            );
-        }
-        let finite = apply(driving(), &PanelEdit::SetTorque("240".to_owned()));
-        assert!((finite.0.max_torque_newton_meters() - 240.0).abs() < f32::EPSILON);
     }
 
     #[test]

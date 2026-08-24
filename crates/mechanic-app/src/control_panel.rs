@@ -7,13 +7,34 @@
 
 use bevy::prelude::*;
 use mechanic_core::{
-    BuildCommand, ConstructionGraph, DriveLimits, DriveLinkId, DriveName, DriveProgram, PartId,
+    ActuatorAssignment, BuildCommand, ConstructionGraph, DriveLimits, DriveLinkId, DriveName,
+    DriveProgram, PartId,
 };
 
 /// Which control block is open, and what it is holding onto.
 #[derive(Resource, Debug, Default)]
 pub(crate) struct ControlPanelState {
     controller: Option<PartId>,
+    speed_unit: SpeedUnit,
+}
+
+/// Display unit for continuous rotation targets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SpeedUnit {
+    /// Revolutions per minute.
+    #[default]
+    Rpm,
+    /// Degrees per second.
+    DegreesPerSecond,
+}
+
+impl SpeedUnit {
+    pub(crate) const fn toggled(self) -> Self {
+        match self {
+            Self::Rpm => Self::DegreesPerSecond,
+            Self::DegreesPerSecond => Self::Rpm,
+        }
+    }
 }
 
 impl ControlPanelState {
@@ -44,6 +65,14 @@ impl ControlPanelState {
     /// and fire a global shortcut.
     pub(crate) const fn blocks_keyboard(&self) -> bool {
         self.controller.is_some()
+    }
+
+    pub(crate) const fn speed_unit(&self) -> SpeedUnit {
+        self.speed_unit
+    }
+
+    pub(crate) fn toggle_speed_unit(&mut self) {
+        self.speed_unit = self.speed_unit.toggled();
     }
 }
 
@@ -94,6 +123,7 @@ pub(crate) fn set_row_commands(
     limits: DriveLimits,
     program: DriveProgram,
     name: DriveName,
+    actuator: ActuatorAssignment,
 ) -> Vec<BuildCommand> {
     row.links
         .iter()
@@ -102,6 +132,7 @@ pub(crate) fn set_row_commands(
             limits,
             program,
             name,
+            actuator,
         })
         .collect()
 }

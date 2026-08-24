@@ -215,23 +215,38 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Hammer is available while simulating — press Space to start".to_owned()
             }
             (false, Tool::Controller, _, _, _) => {
-                "Q rotates 90°; left click places a control block; click one to retune it"
+                "Q cycles all 24 orientations; left click places a control block; click one to retune it"
                     .to_owned()
             }
             (false, Tool::GasEngine, _, _, _) => {
-                "Q rotates 90°; left click places an inert gas engine".to_owned()
+                "Q rotates; place a 200 N·m, 220 RPM gas engine (4 bearing ports)".to_owned()
             }
             (false, Tool::ElectricEngine, _, _, _) => {
-                "Q rotates 90°; left click places an inert electric engine".to_owned()
+                "Q rotates; place a 500 N·m, 120 RPM electric engine (4 bearing ports)"
+                    .to_owned()
+            }
+            (false, Tool::Servo, _, _, _) => {
+                "Q rotates; place a 150 N·m, 30 RPM Servo (one angle-controlled bearing)"
+                    .to_owned()
+            }
+            (false, Tool::Seat, _, _, _) => {
+                "Q cycles all 24 orientations; place a cushion, then wire it with Connector"
+                    .to_owned()
+            }
+            (false, Tool::Input, _, _, _) => {
+                "Q cycles all 24 orientations; place Input, then wire it to a Seat".to_owned()
             }
             (false, Tool::Connector, _, _, _) => match state.wire_drag.map(|drag| drag.from) {
-                None => "Drag from a control block to a bearing, or from a bearing to a block"
-                    .to_owned(),
+                None => "Wire Controller↔Bearing, Input↔Seat, or Seat↔Controller".to_owned(),
                 Some(WireEnd::Controller(_)) => {
                     "Release on a bearing to wire it — drop it on the same block to reverse"
                         .to_owned()
                 }
                 Some(WireEnd::Bearing(_)) => "Release on a control block to wire it".to_owned(),
+                Some(WireEnd::Input(_)) => "Release on a Seat to link keyboard input".to_owned(),
+                Some(WireEnd::Seat(_)) => {
+                    "Release on an Input or Controller to complete the chain".to_owned()
+                }
             },
         }
     };
@@ -324,9 +339,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
 /// it is called: positions are amber, speeds cyan, connections teal.
 const fn tool_tone(tool: Tool) -> Tone {
     match tool {
-        Tool::Bearing | Tool::Hammer | Tool::GasEngine => Tone::Angle,
-        Tool::Weld | Tool::Controller | Tool::Connector => Tone::Key,
-        Tool::Block | Tool::Cylinder | Tool::ElectricEngine => Tone::Speed,
+        Tool::Bearing | Tool::Hammer | Tool::GasEngine | Tool::Servo => Tone::Angle,
+        Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input => Tone::Key,
+        Tool::Block | Tool::Cylinder | Tool::ElectricEngine | Tool::Seat => Tone::Speed,
     }
 }
 

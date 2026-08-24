@@ -15,17 +15,18 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
-    ConstructionGraph, ControllerSpec, CuboidSpec, CylinderDimensionError, CylinderDimensions,
-    CylinderSpec, DimensionError, DriveDwell, DriveKey, DriveLimits, DriveLimitsError,
-    DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
-    DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GraphError,
-    GridDimension, GridRotation, PartId, PartSpec, RigidLinkSpec, WeldSpec,
+    ActuatorAssignment, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
+    BuildOutcome, BuildPose, ConstructionGraph, ControllerSpec, CuboidSpec, CylinderDimensionError,
+    CylinderDimensions, CylinderSpec, DimensionError, DriveDwell, DriveKey, DriveLimits,
+    DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease,
+    DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
+    GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec, PartId, PartSpec,
+    RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 2;
+pub const CREATION_FORMAT_VERSION: u32 = 3;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = 1;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -145,6 +146,21 @@ pub enum PartDoc {
     Engine {
         /// Authored engine family.
         kind: EngineKind,
+        /// Centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Fixed-size servo.
+    Servo {
+        /// Centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Fixed-size seat cushion.
+    Seat {
+        /// Centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Fixed-size keyboard Input block.
+    Input {
         /// Centre and orientation.
         pose: PoseDoc,
     },
@@ -275,6 +291,9 @@ pub struct DriveLinkDoc {
     pub bearing: u32,
     /// Whether this bearing runs opposite the programmed direction.
     pub reversed: bool,
+    /// Hardware family assigned to this joint. Older files load unpowered.
+    #[serde(default)]
+    pub actuator: ActuatorAssignment,
     /// Speed, torque, and travel envelope.
     pub limits: DriveLimitsDoc,
     /// Ordered states this bearing moves through.
@@ -283,6 +302,24 @@ pub struct DriveLinkDoc {
     /// could be named, which read back as unnamed.
     #[serde(default)]
     pub name: String,
+}
+
+/// Logical link from an Input block to a Seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputSeatLinkDoc {
+    /// Index of the Input part.
+    pub input: u32,
+    /// Index of the Seat part.
+    pub seat: u32,
+}
+
+/// Logical link from a Seat to a Controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatControllerLinkDoc {
+    /// Index of the Seat part.
+    pub seat: u32,
+    /// Index of the Controller part.
+    pub controller: u32,
 }
 
 /// A whole saved creation: everything the editor authors, and nothing it
@@ -308,6 +345,12 @@ pub struct CreationDocument {
     /// Control-block wires.
     #[serde(default)]
     pub drive_links: Vec<DriveLinkDoc>,
+    /// Logical Input-to-Seat links.
+    #[serde(default)]
+    pub input_seat_links: Vec<InputSeatLinkDoc>,
+    /// Logical Seat-to-Controller links.
+    #[serde(default)]
+    pub seat_controller_links: Vec<SeatControllerLinkDoc>,
     /// Bearing rings placed but not yet attached through.
     #[serde(default)]
     pub sockets: Vec<BearingSocketDoc>,
@@ -380,9 +423,24 @@ impl CreationDocument {
                         .get(&link.bearing)
                         .expect("every wired bearing is live in the graph it came from"),
                     reversed: link.reversed,
+                    actuator: link.actuator,
                     limits: limits_doc(link.limits),
                     program: program_doc(&link.program),
                     name: link.name.to_string(),
+                })
+                .collect(),
+            input_seat_links: graph
+                .input_seat_links()
+                .map(|(_, link)| InputSeatLinkDoc {
+                    input: part(link.input),
+                    seat: part(link.seat),
+                })
+                .collect(),
+            seat_controller_links: graph
+                .seat_controller_links()
+                .map(|(_, link)| SeatControllerLinkDoc {
+                    seat: part(link.seat),
+                    controller: part(link.controller),
                 })
                 .collect(),
             sockets: sockets
@@ -407,6 +465,7 @@ impl CreationDocument {
     /// Returns [`CreationError`] when the version is unsupported, an index
     /// names a row the file does not define, a value is outside its supported
     /// range, or the replayed commands do not describe a valid construction.
+    #[allow(clippy::too_many_lines)] // One replay pass per serialized record family.
     pub fn into_graph(self) -> Result<LoadedCreation, CreationError> {
         if !(OLDEST_CREATION_FORMAT_VERSION..=CREATION_FORMAT_VERSION).contains(&self.version) {
             return Err(CreationError::UnsupportedVersion(self.version));
@@ -468,6 +527,7 @@ impl CreationDocument {
                         .get(link.bearing as usize)
                         .ok_or(CreationError::MissingBearing(link.bearing))?,
                     reversed: link.reversed,
+                    actuator: link.actuator,
                     limits: resolve_limits(link.limits)?,
                     program: resolve_program(&link.program)?,
                     name: DriveName::new(&link.name),
@@ -475,6 +535,26 @@ impl CreationDocument {
             })
             .collect::<Result<Vec<_>, CreationError>>()?;
         graph.apply_batch(wires)?;
+
+        let logical_links = self
+            .input_seat_links
+            .iter()
+            .map(|link| {
+                Ok(BuildCommand::AddInputSeatLink(InputSeatLinkSpec {
+                    input: resolve_part(link.input, &part_ids)?,
+                    seat: resolve_part(link.seat, &part_ids)?,
+                }))
+            })
+            .chain(self.seat_controller_links.iter().map(|link| {
+                Ok(BuildCommand::AddSeatControllerLink(
+                    SeatControllerLinkSpec {
+                        seat: resolve_part(link.seat, &part_ids)?,
+                        controller: resolve_part(link.controller, &part_ids)?,
+                    },
+                ))
+            }))
+            .collect::<Result<Vec<_>, CreationError>>()?;
+        graph.apply_batch(logical_links)?;
 
         let sockets = self
             .sockets
@@ -544,6 +624,15 @@ fn part_doc(spec: PartSpec) -> PartDoc {
             kind: engine.kind,
             pose: engine.pose.into(),
         },
+        PartSpec::Servo(servo) => PartDoc::Servo {
+            pose: servo.pose.into(),
+        },
+        PartSpec::Seat(seat) => PartDoc::Seat {
+            pose: seat.pose.into(),
+        },
+        PartSpec::Input(input) => PartDoc::Input {
+            pose: input.pose.into(),
+        },
     }
 }
 
@@ -603,6 +692,9 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
         PartDoc::Engine { kind, pose } => {
             BuildCommand::SpawnEngine(EngineSpec::new(kind, pose.into()))
         }
+        PartDoc::Servo { pose } => BuildCommand::SpawnServo(ServoSpec::new(pose.into())),
+        PartDoc::Seat { pose } => BuildCommand::SpawnSeat(SeatSpec::new(pose.into())),
+        PartDoc::Input { pose } => BuildCommand::SpawnInput(InputSpec::new(pose.into())),
     })
 }
 
@@ -674,11 +766,12 @@ mod tests {
         BearingSocket, CREATION_FORMAT_VERSION, CreationDocument, CreationError, FaceOwnerDoc,
     };
     use crate::{
-        BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, DriveDwell, DriveKey,
-        DriveLimits, DriveLinkSpec, DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget,
-        DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceRef, GridRotation, PartSpec,
-        RigidLinkSpec, WeldSpec,
+        ActuatorAssignment, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
+        ConstructionGraph, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
+        DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveName, DriveProgram, DriveRelease,
+        DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceRef,
+        GridRotation, InputSeatLinkSpec, InputSpec, PartSpec, RigidLinkSpec,
+        SeatControllerLinkSpec, SeatSpec, ServoSpec, WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -792,6 +885,7 @@ mod tests {
                 controller,
                 bearing,
                 reversed: true,
+                actuator: ActuatorAssignment::Unpowered,
                 limits: DriveLimits::new(4.0, f32::INFINITY, Some((-1.0, 1.0)))
                     .expect("the limits are in range"),
                 program,
@@ -857,6 +951,86 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(kinds, [EngineKind::Gas, EngineKind::Electric]);
+    }
+
+    #[test]
+    fn servo_seat_input_and_their_routes_survive_a_round_trip() {
+        let mut graph = ConstructionGraph::new();
+        let servo = spawned(
+            graph
+                .apply(BuildCommand::SpawnServo(ServoSpec::new(
+                    BuildPose::default(),
+                )))
+                .unwrap(),
+        );
+        let input = spawned(
+            graph
+                .apply(BuildCommand::SpawnInput(InputSpec::new(
+                    BuildPose::default(),
+                )))
+                .unwrap(),
+        );
+        let seat = spawned(
+            graph
+                .apply(BuildCommand::SpawnSeat(SeatSpec::new(BuildPose::default())))
+                .unwrap(),
+        );
+        let controller = spawned(
+            graph
+                .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                    BuildPose::default(),
+                )))
+                .unwrap(),
+        );
+        graph
+            .apply(BuildCommand::AddInputSeatLink(InputSeatLinkSpec {
+                input,
+                seat,
+            }))
+            .unwrap();
+        graph
+            .apply(BuildCommand::AddSeatControllerLink(
+                SeatControllerLinkSpec { seat, controller },
+            ))
+            .unwrap();
+
+        let restored = round_trip(&CreationDocument::from_graph(&graph, "Controls", &[]))
+            .into_graph()
+            .unwrap()
+            .graph;
+        assert_eq!(
+            restored
+                .parts()
+                .filter(|(_, part)| matches!(part, PartSpec::Servo(_)))
+                .count(),
+            1
+        );
+        assert_eq!(restored.input_seat_links().count(), 1);
+        assert_eq!(restored.seat_controller_links().count(), 1);
+        assert!(
+            restored.part(servo).is_some(),
+            "canonical replay keeps part ids"
+        );
+    }
+
+    #[test]
+    fn version_two_drive_links_without_assignments_load_unpowered() {
+        let (graph, sockets) = sample();
+        let mut document = CreationDocument::from_graph(&graph, "Old Drives", &sockets);
+        document.version = 2;
+        let text =
+            ron::ser::to_string_pretty(&document, ron::ser::PrettyConfig::default()).unwrap();
+        let legacy = text.replace("actuator: Unpowered,", "");
+        assert_ne!(legacy, text, "the fixture removed the version-three field");
+
+        let restored: CreationDocument = ron::from_str(&legacy).unwrap();
+        assert!(
+            restored
+                .drive_links
+                .iter()
+                .all(|link| link.actuator == ActuatorAssignment::Unpowered)
+        );
+        restored.into_graph().unwrap();
     }
 
     #[test]
