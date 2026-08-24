@@ -12,9 +12,9 @@
 
 use crate::control_panel::SpeedUnit;
 use mechanic_core::{
-    ActuatorAssignment, DriveDwell, DriveKey, DriveLimits, DriveLinkId, DriveName, DriveProgram,
-    DriveRelease, DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_DWELL_SECONDS,
-    MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
+    ActuatorAssignment, ActuatorInventory, DriveDwell, DriveKey, DriveLimits, DriveLinkId,
+    DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget, DriveTrigger,
+    MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
 };
 
 /// Smallest travel range the grips may close to, in degrees. Two limits that
@@ -735,6 +735,43 @@ pub(crate) struct PanelModel {
     pub(crate) open: bool,
     /// One lane per joint the control block drives.
     pub(crate) lanes: Vec<LaneModel>,
+    /// Bearing-port usage supplied by the controller's attached actuators.
+    pub(crate) hardware: HardwareModel,
+}
+
+/// Bearing-port usage for every actuator family in a Controller module.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HardwareModel {
+    pub(crate) electric: BearingSlots,
+    pub(crate) gas: BearingSlots,
+    pub(crate) servo: BearingSlots,
+}
+
+impl From<ActuatorInventory> for HardwareModel {
+    fn from(inventory: ActuatorInventory) -> Self {
+        Self {
+            electric: BearingSlots::new(inventory.electric_joints, inventory.electric_capacity()),
+            gas: BearingSlots::new(inventory.gas_joints, inventory.gas_capacity()),
+            servo: BearingSlots::new(inventory.servo_joints, inventory.servo_capacity()),
+        }
+    }
+}
+
+/// Used and total bearing ports for one actuator family.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BearingSlots {
+    pub(crate) used: u32,
+    pub(crate) capacity: u32,
+}
+
+impl BearingSlots {
+    const fn new(used: u32, capacity: u32) -> Self {
+        Self { used, capacity }
+    }
+
+    pub(crate) fn text(self) -> String {
+        format!("{} / {} slots", self.used, self.capacity)
+    }
 }
 
 impl PanelModel {
@@ -768,11 +805,27 @@ impl PanelModel {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, PanelEdit, Preset, apply_edit};
+    use super::{HardwareModel, Mode, PanelEdit, Preset, apply_edit};
     use mechanic_core::{
-        DriveDwell, DriveKey, DriveLimits, DriveName, DriveProgram, DriveRelease, DriveState,
-        DriveTarget, DriveTrigger, MAX_DRIVE_SPEED_RAD_S,
+        ActuatorInventory, DriveDwell, DriveKey, DriveLimits, DriveName, DriveProgram,
+        DriveRelease, DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_SPEED_RAD_S,
     };
+
+    #[test]
+    fn hardware_stats_report_used_and_available_bearing_slots() {
+        let hardware = HardwareModel::from(ActuatorInventory {
+            electric_engines: 2,
+            gas_engines: 1,
+            servos: 3,
+            electric_joints: 5,
+            gas_joints: 1,
+            servo_joints: 2,
+        });
+
+        assert_eq!(hardware.electric.text(), "5 / 8 slots");
+        assert_eq!(hardware.gas.text(), "1 / 4 slots");
+        assert_eq!(hardware.servo.text(), "2 / 3 slots");
+    }
 
     /// A joint holding three angles, the middle two bound to keys.
     fn steering() -> (DriveLimits, DriveProgram, DriveName) {

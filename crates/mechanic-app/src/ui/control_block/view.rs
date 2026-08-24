@@ -18,7 +18,9 @@ use mosaic_macros::view;
 use mosaic_widgets::input::EventCtx;
 
 use super::geometry;
-use super::model::{Intent, LaneModel, Mode, PanelEdit, PanelModel, Preset, StateModel};
+use super::model::{
+    BearingSlots, Intent, LaneModel, Mode, PanelEdit, PanelModel, Preset, StateModel,
+};
 use crate::control_panel::SpeedUnit;
 use crate::ui::UiIntent;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
@@ -136,6 +138,7 @@ pub(crate) fn panel(handles: &Handles) -> Element {
 fn header(handles: &Handles) -> Element {
     let model = handles.model;
     let close = handles.clone();
+    let capacity = capacity_strip(model);
     view! {
         row height:min-content align:center justify:between
             pad:(horizontal:22px vertical:16px)
@@ -151,6 +154,7 @@ fn header(handles: &Handles) -> Element {
                         { $model.subtitle() }
                 }
             }
+            (capacity)
             row height:min-content align:center gap:18px {
                 (legend())
                 col width:32px height:32px align:center justify:center radius:8px
@@ -164,6 +168,89 @@ fn header(handles: &Handles) -> Element {
                             stroke:(width:4px cap:square color:ink.muted)
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Attached actuator ports, always present so absent capabilities stay clear.
+fn capacity_strip(model: State<PanelModel>) -> Element {
+    let electric = capacity_item(model, CapacityKind::Electric);
+    let gas = capacity_item(model, CapacityKind::Gas);
+    let servo = capacity_item(model, CapacityKind::Servo);
+    view! {
+        row height:min-content align:center gap:8px {
+            (electric)
+            (gas)
+            (servo)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CapacityKind {
+    Electric,
+    Gas,
+    Servo,
+}
+
+impl CapacityKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Electric => "ELECTRIC",
+            Self::Gas => "GAS",
+            Self::Servo => "SERVO",
+        }
+    }
+
+    const fn initial(self) -> &'static str {
+        match self {
+            Self::Electric => "E",
+            Self::Gas => "G",
+            Self::Servo => "S",
+        }
+    }
+}
+
+fn capacity_read(model: State<PanelModel>, kind: CapacityKind) -> BearingSlots {
+    model.with(|panel| match kind {
+        CapacityKind::Electric => panel.hardware.electric,
+        CapacityKind::Gas => panel.hardware.gas,
+        CapacityKind::Servo => panel.hardware.servo,
+    })
+}
+
+fn capacity_item(model: State<PanelModel>, kind: CapacityKind) -> Element {
+    let active = move || capacity_read(model, kind).capacity != 0;
+    let text = move || capacity_read(model, kind).text();
+    let label = kind.label();
+    let initial = kind.initial();
+    view! {
+        row width:104px height:38px align:center gap:8px pad:(horizontal:8px vertical:0px)
+            radius:8px fill:chip.fill stroke:(width:1px color:chip.edge)
+            opacity:{ if active() { 1.0 } else { 0.32 } } {
+            col width:22px height:22px align:center justify:center radius:6px
+                fill:{
+                    match kind {
+                        CapacityKind::Electric => color(wash.speed),
+                        CapacityKind::Gas => color(wash.angle),
+                        CapacityKind::Servo => color(wash.time),
+                    }
+                }
+                font-color:{
+                    match kind {
+                        CapacityKind::Electric => color(accent.speed),
+                        CapacityKind::Gas => color(accent.angle),
+                        CapacityKind::Servo => color(accent.time),
+                    }
+                } {
+                text font-size:11px font-weight:700 { initial }
+            }
+            col width:1fr height:min-content gap:0px {
+                text font-size:8px font-weight:700 letter-spacing:0.8px font-color:ink.dim {
+                    label
+                }
+                text font-size:10px text-wrap:none font-color:ink.fg { text() }
             }
         }
     }

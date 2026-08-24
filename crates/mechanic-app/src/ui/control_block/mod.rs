@@ -25,7 +25,7 @@ use crate::{AppSimulation, EditorGraph, EditorHistory, EditorSnapshot, EditorSta
 pub(crate) use model::{Intent, PanelEdit, PanelModel};
 pub(crate) use view::{Handles, panel};
 
-use model::{LaneModel, apply_edit};
+use model::{HardwareModel, LaneModel, apply_edit};
 
 /// The joint the panel is pointing out in the world, if any.
 ///
@@ -232,12 +232,12 @@ pub(crate) fn capture(panel: &ControlPanelState, graph: &EditorGraph) -> PanelMo
     let Some(controller) = panel.controller() else {
         return PanelModel::default();
     };
+    let inventory = graph.0.actuator_inventory(controller).unwrap_or_default();
     let lanes = panel_rows(&graph.0, controller)
         .iter()
         .enumerate()
         .filter_map(|(index, row)| {
             let spec = graph.0.drive_link(row.primary)?;
-            let inventory = graph.0.actuator_inventory(controller).unwrap_or_default();
             let (max_speed, torque) = actuator_capability(spec.actuator, inventory);
             Some(LaneModel::capture(
                 row.primary,
@@ -252,7 +252,11 @@ pub(crate) fn capture(panel: &ControlPanelState, graph: &EditorGraph) -> PanelMo
             ))
         })
         .collect();
-    PanelModel { open: true, lanes }
+    PanelModel {
+        open: true,
+        lanes,
+        hardware: HardwareModel::from(inventory),
+    }
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -535,6 +539,20 @@ mod tests {
             .1;
 
         assert!(away(icon.center(), button.center()) < 0.5);
+    }
+
+    #[test]
+    fn the_header_keeps_all_three_capacity_stats_without_hardware() {
+        let (overlay, _link) = open();
+        let stats = overlay
+            .rects()
+            .into_iter()
+            .filter(|(_, rect)| {
+                (rect.size.width - 104.0).abs() < 0.5 && (rect.size.height - 38.0).abs() < 0.5
+            })
+            .count();
+
+        assert_eq!(stats, 3, "electric, gas, and Servo stats stay visible");
     }
 
     /// The bug this guards against: a canvas with no size of its own shrinks
