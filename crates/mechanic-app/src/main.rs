@@ -5115,28 +5115,28 @@ const SEAT_UVS: [[f32; 2]; 24] = [
     [0.5, 0.0],
 ];
 const INPUT_UVS: [[f32; 2]; 24] = [
-    [0.0, 0.5],
     [0.0, 0.25],
+    [0.0, 0.5],
     [0.25, 0.5],
     [0.25, 0.25],
-    [0.25, 0.5],
     [0.25, 0.25],
+    [0.25, 0.5],
     [0.5, 0.5],
     [0.5, 0.25],
-    [0.0, 0.75],
     [0.0, 0.5],
+    [0.0, 0.75],
     [0.5, 0.75],
     [0.5, 0.5],
-    [0.5, 0.75],
     [0.5, 0.5],
+    [0.5, 0.75],
     [1.0, 0.75],
     [1.0, 0.5],
-    [0.0, 1.0],
     [0.0, 0.75],
+    [0.0, 1.0],
     [0.5, 1.0],
     [0.5, 0.75],
-    [0.5, 1.0],
     [0.5, 0.75],
+    [0.5, 1.0],
     [1.0, 1.0],
     [1.0, 0.75],
 ];
@@ -7256,8 +7256,25 @@ mod rendering_tests {
         ));
         assert!(approximately(
             authored_uvs(AuthoredPart::Input)[0],
-            [0.0, 0.5]
+            [0.0, 0.75]
         ));
+    }
+
+    #[test]
+    fn input_uvs_do_not_fold_either_triangle_of_a_face() {
+        let uvs = authored_uvs(AuthoredPart::Input);
+        let signed_area = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| {
+            (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        };
+
+        for face in uvs.chunks_exact(4) {
+            let first = signed_area(face[0], face[1], face[2]);
+            let second = signed_area(face[0], face[2], face[3]);
+            assert!(
+                first * second > 0.0,
+                "both triangles must map the same way around the atlas tile"
+            );
+        }
     }
 
     #[test]
