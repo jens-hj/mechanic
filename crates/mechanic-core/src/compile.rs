@@ -276,8 +276,9 @@ pub enum TopologyError {
     /// Simulation requires at least one part.
     #[error("construction contains no parts")]
     EmptyConstruction,
-    /// A bearing's endpoints were welded into the same compound.
-    #[error("bearing {bearing:?} connects compound {compound} to itself after weld compilation")]
+    /// A driven bearing's endpoints were welded into the same compound, so the
+    /// drive has no coordinate left to turn.
+    #[error("driven bearing {bearing:?} is welded solid to compound {compound}")]
     SelfBearing {
         /// Offending bearing.
         bearing: BearingId,
@@ -535,10 +536,19 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         let compound_a = compound_lookup[&part_a];
         let compound_b = compound_lookup[&part_b];
         if compound_a == compound_b {
-            return Err(TopologyError::SelfBearing {
-                bearing: bearing_id,
-                compound: compound_a,
-            });
+            // Welding a loop shut can leave a bearing with both sides in one
+            // rigid body. The weld already fixes their relative pose, so the
+            // joint constrains nothing and simply does not compile to one —
+            // the player gets a locked bearing, not a build that will not run.
+            // A drive is the exception: dropping the joint would kill the
+            // motor with nothing to show for it.
+            if driven_bearings.contains(&bearing_id) {
+                return Err(TopologyError::SelfBearing {
+                    bearing: bearing_id,
+                    compound: compound_a,
+                });
+            }
+            continue;
         }
         let physical_key = (
             compound_a,
@@ -2107,8 +2117,8 @@ mod tests {
         assert!(!compiled.compounds[1].is_static);
     }
 
-    #[test]
-    fn bearing_collapsed_by_later_weld_is_rejected() {
+    /// Two blocks on a bearing, then welded to each other as well.
+    fn bearing_welded_shut() -> (ConstructionGraph, BearingId) {
         let mut graph = ConstructionGraph::new();
         let a = spawn(&mut graph, IVec3::ZERO);
         let b = spawn(&mut graph, IVec3::new(4, 0, 0));
@@ -2129,6 +2139,33 @@ mod tests {
                 second: FaceRef::part(b, FaceKind::NegativeX),
             }))
             .unwrap();
+        (graph, bearing)
+    }
+
+    #[test]
+    fn bearing_collapsed_by_a_later_weld_stops_being_a_joint() {
+        let (graph, _) = bearing_welded_shut();
+
+        let compiled = graph.compile().unwrap();
+
+        // The weld already holds the two sides together, so the bearing adds
+        // no coordinate and no constraint — it is locked, not unbuildable.
+        assert_eq!(compiled.compounds.len(), 1);
+        assert!(compiled.bearings.is_empty());
+        assert!(compiled.loop_topology.tree_bearings.is_empty());
+        assert!(compiled.loop_topology.closure_bearings.is_empty());
+    }
+
+    #[test]
+    fn a_driven_bearing_collapsed_by_a_later_weld_is_rejected() {
+        let (mut graph, bearing) = bearing_welded_shut();
+        wire_with(
+            &mut graph,
+            bearing,
+            DriveLimits::default(),
+            DriveProgram::default(),
+            false,
+        );
 
         assert_eq!(
             graph.compile(),

@@ -15,6 +15,13 @@ Compilation also records every graph bearing's coordinate, including rows
 collapsed as the same physical joint, so a wire on any of them addresses the
 right row.
 
+Welds may close a loop through a bearing. A bearing whose two sides land in one
+compound is locked by construction: the weld already fixes their relative pose,
+so the bearing compiles to no joint, no coordinate, and no constraint rather
+than failing the build. Only a *driven* collapsed bearing is an error
+(`TopologyError::SelfBearing`), because silently dropping that joint would leave
+a control block wired to nothing.
+
 A sequencer in the app advances each wire's program while the simulation ticks.
 Time is counted in dispatched physics ticks rather than frames, so pausing
 freezes every dwell and a slow frame never skips one.
