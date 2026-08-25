@@ -238,6 +238,10 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::Input, _, _, _) => {
                 "Q cycles all 24 orientations; place Input, then wire it to a Seat".to_owned()
             }
+            (false, Tool::Shape, _, _, _) => {
+                "Drag an area of blocks (Q changes plane), then drag its corners; arrows/WASD nudge; G sets the step"
+                    .to_owned()
+            }
             (false, Tool::Connector, _, _, _) => match state.wire_drag.map(|drag| drag.from) {
                 None => "Wire Controller↔Bearing, Input↔Seat, or Seat↔Controller".to_owned(),
                 Some(WireEnd::Controller(_)) => {
@@ -344,7 +348,9 @@ const fn tool_tone(tool: Tool) -> Tone {
     match tool {
         Tool::Bearing | Tool::Hammer | Tool::GasEngine | Tool::Servo => Tone::Angle,
         Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input => Tone::Key,
-        Tool::Block | Tool::Cylinder | Tool::ElectricEngine | Tool::Seat => Tone::Speed,
+        Tool::Block | Tool::Cylinder | Tool::ElectricEngine | Tool::Seat | Tool::Shape => {
+            Tone::Speed
+        }
     }
 }
 

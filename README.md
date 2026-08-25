@@ -37,16 +37,64 @@ cargo run -p mechanic-app
 - Use the clickable hotbar at the bottom of the window or press `1` for Block,
   `2` for Cylinder, `3` for Bearing, `4` for Weld, `5` for Hammer, `6` for
   Control Block, `7` for Connector, `8` for Gas Engine, and `9` for Electric
-  Engine.
+  Engine. `[` selects Shape.
   Hover an icon to see its tool name. Tool selection persists when the
   simulation mode changes.
 - With Block selected, click and release the white ghost to place one block, or
-  hold and drag from the press position to preview a flat rectangular sheet of
-  blocks. The preview shows the sheet as one cuboid with block counts and metre
-  dimensions. While dragging, press `Q` to cycle the `XZ`, `XY`, and `YZ`
-  planes; release to place the whole sheet, or press `Escape`/right-click to
-  cancel. A drag is limited to 4,096 blocks and commits atomically. Blocks have
+  hold and drag from the press position to preview a rectangle of blocks. The
+  preview shows it as one cuboid with block counts and metre dimensions. While
+  dragging, press `Q` to rotate the drag into another plane **keeping the extent
+  already dragged**, so a rectangle plus one `Q` plus more motion is a solid
+  cuboid of blocks. The plane the pointer is sliding along is drawn as a
+  translucent sheet through the blocks, with arrows naming its two axes, so `Q`
+  visibly rotates something. Release to place the whole box, or press
+  `Escape`/right-click to cancel. A drag is limited to 4,096 blocks and commits atomically. Blocks have
   a fixed 0.25 m cube size.
+- With Shape selected, first choose an **editable area**: drag across blocks the
+  same way the Block tool places them — `Q` mid-drag rotates the plane and keeps
+  the extent already dragged, so one gesture claims a whole cuboid. The outline
+  shows what is being claimed, cyan while it is claimable, with the same plane
+  sheet and axis arrows the Block tool draws and the area's size labelled on all
+  three axes. A region must be
+  filled on every cell, be one material throughout, contain each of its blocks
+  whole, and lie within one rigid body; anything else is refused with the reason
+  in the HUD, and clicking a block that is already in a region reopens it. The region merges into a single shape
+  with eight corners to edit, and the rest of the build fades back so the area
+  under the cursor is the only thing reading as solid. `Escape` leaves it.
+  Drag a corner to shape it. Movement is constrained to a fraction of a block
+  rather than running free, so two corners line up because they landed on the
+  same sub-grid rather than because they were matched by eye. `G` cycles the step
+  through one block, a half, a quarter (the default, 62.5 mm), and fine 12.5 mm
+  detail. **No corner may leave the region's original bounding box**, so a corner
+  can only ever be drawn inward and one region can never grow into its
+  neighbours. Driving a corner the whole way onto its neighbour collapses that
+  edge — two collapsed corners turn a box into a wedge, four into a pyramid —
+  while driving two corners through each other is refused.
+  Click a corner to select it, or shift-click to build a set. A selected corner
+  turns the overlay's cyan and grows, so a selection reads at a glance. Drag from
+  empty space to sweep out a selection rectangle, drawn in the same cyan. The
+  arrow keys and `WASD` then nudge the whole selection one step at a time: the
+  keys read as screen directions and resolve to whichever grid axis lies nearest,
+  so a nudge goes where it looks like it should while still landing on the grid.
+  Orbiting the camera is how the third axis is reached.
+  Bring the pointer near a region **edge** and it offers a new corner at the
+  nearest grid position along it; taking it inserts a whole cage plane with
+  every new corner interpolated from its neighbours, so the surface does not
+  move — the cage simply gains a row of handles. `X` and `Z` mirror across the region's own
+  centre planes, independently, and a corner on an active centre plane keeps its
+  offset along that normal at zero. A whole mirrored edit, group included, is one
+  undo entry.
+  Shaping is exact rather than cosmetic: a region's mass, centre of mass, and full
+  inertia tensor are integrated from the same geometry that is drawn, and its
+  collision uses convex polytope rows built from that same decomposition, so the
+  hitbox always matches what is on screen. The blocks a region covers stop
+  emitting geometry of their own, and deleting one of them deletes the region.
+  Only ordinary blocks can be claimed; cylinders, engines, servos, seats, control
+  blocks, and Input blocks are machined components and keep their shape.
+- Parts can only be placed on **flat** surfaces. A face that has been shaped is
+  no longer an axis-aligned rectangle, so nothing can sit flush on it until its
+  corners are brought back onto the grid — which is also how a mounting surface
+  is made somewhere there was not one before.
 - With Cylinder selected, click a flat ground, cuboid, cylinder-end, or bearing
   socket face to place one load-bearing cylinder with its local Y axis along
   the face normal. Left/Right adjusts outer diameter by 0.05 m,

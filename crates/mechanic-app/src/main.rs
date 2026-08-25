@@ -15,6 +15,7 @@ mod creation_menu;
 mod creation_store;
 mod hotbar;
 mod sequencer;
+mod shape_tool;
 mod showcase;
 mod ui;
 
@@ -39,14 +40,14 @@ use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
     PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
     bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
-    bearing_support_face, bearing_support_face_excluding, begin_weld,
-    block_sheet_endpoint_from_rays, block_sheet_specs, candidate_from_hit,
-    cylinder_candidate_from_hit, face_geometry_from_ref, oriented_cuboid_candidate_from_hit,
-    part_world_bounds, raycast_construction, raycast_construction_for_annulus,
-    raycast_oriented_cuboid, raycast_placement_plane, rigid_body_parts, stage_bearing_attachment,
-    stage_bearing_block_batch, stage_bearing_cylinder, stage_block_batch_from_source,
-    stage_controller_from_source, stage_cylinder_from_source, stage_engine_from_source,
-    stage_input_from_source, stage_seat_from_source, stage_servo_from_source, stage_weld_objects,
+    bearing_support_face, bearing_support_face_excluding, begin_weld, block_box_specs,
+    block_sheet_specs, block_span_from_rays, candidate_from_hit, cylinder_candidate_from_hit,
+    face_geometry_from_ref, oriented_cuboid_candidate_from_hit, part_world_bounds,
+    raycast_construction, raycast_construction_for_annulus, raycast_oriented_cuboid,
+    raycast_placement_plane, rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch,
+    stage_bearing_cylinder, stage_block_batch_from_source, stage_controller_from_source,
+    stage_cylinder_from_source, stage_engine_from_source, stage_input_from_source,
+    stage_seat_from_source, stage_servo_from_source, stage_weld_objects,
     try_face_geometry_from_ref, validate_block_batch, validate_cylinder_candidate,
 };
 use camera::{OrbitCamera, SeatedView, seated_view_rotation};
@@ -55,14 +56,15 @@ use creation_menu::{CreationMenuState, CreationRequest};
 use creation_store::CreationStore;
 use hotbar::{SelectedMaterial, SelectedTool, Tool, shortcut_tool};
 use mechanic_core::{
-    ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand,
-    CYLINDER_SWEEP_STEP_DEGREES, CompiledCreation, ConstructionGraph, ConstructionMaterial,
-    ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions, DriveLinkSpec, DriveState,
-    DriveTarget, EngineKind, FaceOwner, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec,
-    InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
-    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
-    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartSpec, PendingOperation,
-    SeatControllerLinkSpec, SeatSpec, ServoSpec, TopologyError,
+    ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand, BuildOutcome,
+    CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, CompiledCreation, ConstructionGraph,
+    ConstructionMaterial, ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions,
+    DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceOwner, GRID_UNIT_METERS, GridRotation,
+    InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER,
+    MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER,
+    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId,
+    PartPiece, PartSpec, PendingOperation, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec,
+    ServoSpec, ShapeRegion, TopologyError, face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
@@ -80,6 +82,10 @@ const BEARING_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_LENGTH_STEP: f32 = 0.25;
 const CONTROLLER_SURFACE_COLOR: Color = Color::srgb(0.10, 0.78, 0.68);
+
+/// The overlay's cyan, matching the `accent.speed` the panels use. Selected
+/// shape corners take it so a selection reads by colour and not only by size.
+const SHAPE_SELECTION_COLOR: Color = Color::srgb(0.247, 0.796, 0.878);
 const BLOCK_DRAG_DEAD_ZONE_PIXELS: f32 = 5.0;
 
 #[derive(Resource, Default)]
@@ -137,11 +143,39 @@ struct SimulationHit {
 struct BlockDrag {
     start: PlacementCandidate,
     attachment: BlockAttachment,
+    /// Re-anchored whenever the plane rotates, so motion after a `Q` is
+    /// measured from that moment rather than from the original press.
     press: PointerSample,
     plane: PlacementPlane,
-    last_endpoint: Option<(PlacementPlane, IVec3)>,
+    /// Span at the last press or plane rotation. The plane's own two axes grow
+    /// from here; the third keeps what it already had.
+    anchor_span: IVec3,
+    /// Blocks beyond the start block along each axis, signed.
+    span: IVec3,
+    last_span: Option<IVec3>,
     specs: Vec<CuboidSpec>,
     error: Option<PlacementError>,
+}
+
+/// A drag that claims an area of existing blocks for the Shape tool, using the
+/// same gesture the Block tool places with.
+#[derive(Clone, Debug)]
+struct RegionDrag {
+    /// The block first clicked, which anchors the area.
+    start: CuboidSpec,
+    /// Re-anchored whenever the plane rotates, so motion after a `Q` is
+    /// measured from that moment rather than from the original press.
+    press: PointerSample,
+    plane: PlacementPlane,
+    /// Span at the last press or plane rotation.
+    anchor_span: IVec3,
+    /// Cells beyond the start block along each axis, signed.
+    span: IVec3,
+    last_span: Option<IVec3>,
+    /// The area as it currently stands, whether or not it is claimable.
+    region: ShapeRegion,
+    /// Why the area cannot be claimed, if it cannot.
+    error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1086,14 +1120,35 @@ struct EditorState {
     pointer_ray: Option<(Vec3, Vec3)>,
     /// Latest pointer position paired with [`Self::pointer_ray`].
     pointer_position: Option<Vec2>,
+    /// The region the Shape tool is editing. Nothing can be shaped until one is
+    /// chosen, and while one is, everything else fades back.
+    active_region: Option<RegionId>,
+    /// Area being dragged out to become a region.
+    region_drag: Option<RegionDrag>,
+    /// Cage vertex the pointer is over.
+    hovered_vertex: Option<CageIndex>,
+    /// Vertex the pointer is dragging.
+    vertex_drag: Option<shape_tool::VertexDrag>,
+    /// Vertices picked out by a rectangle, moved together by one drag.
+    selected_vertices: Vec<CageIndex>,
+    /// Selection rectangle being dragged out.
+    box_select: Option<shape_tool::BoxSelect>,
+    /// The new cage vertex the pointer is currently being offered.
+    edge_offer: Option<shape_tool::EdgeInsertion>,
 }
 
 #[derive(Resource)]
 struct EditorVisuals {
     construction_meshes: [Handle<Mesh>; 5],
+    construction_materials: [Handle<StandardMaterial>; 5],
+    ghost_materials: [Handle<StandardMaterial>; 5],
     simulation_meshes: [Handle<Mesh>; 5],
     bearing_mesh: Handle<Mesh>,
     joint_xray_mesh: Handle<Mesh>,
+    shape_node_mesh: Handle<Mesh>,
+    shape_selected_mesh: Handle<Mesh>,
+    shape_plane_mesh: Handle<Mesh>,
+    shape_arrow_mesh: Handle<Mesh>,
     controller_mesh: Handle<Mesh>,
     gas_engine_mesh: Handle<Mesh>,
     electric_engine_mesh: Handle<Mesh>,
@@ -1168,6 +1223,25 @@ struct BearingVisual;
 
 #[derive(Component)]
 struct JointXrayVisual;
+
+#[derive(Component)]
+struct ShapeNodeVisual;
+
+#[derive(Component)]
+struct ShapeSelectedVisual;
+
+/// The plane a drag is currently sliding along.
+#[derive(Component)]
+struct ShapePlaneVisual;
+
+/// The arrows naming that plane's two axes.
+#[derive(Component)]
+struct ShapeArrowVisual;
+
+/// One of the Shape tool's three overlay batches, each excluding the others so
+/// the three `Single` parameters can be held at once.
+type ShapeOverlay<'w, 's, Own, First, Second> =
+    Single<'w, 's, &'static mut Visibility, (With<Own>, Without<First>, Without<Second>)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthoredPart {
@@ -1416,6 +1490,8 @@ fn main() {
         .init_resource::<ControlPanelState>()
         .init_resource::<DriveSequencer>()
         .init_resource::<CylinderToolSettings>()
+        .init_resource::<shape_tool::ShapeMirror>()
+        .init_resource::<shape_tool::ShapeSnap>()
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
         .init_resource::<SeatedView>()
@@ -1452,10 +1528,12 @@ fn main() {
                 handle_tool_change,
                 update_hover,
                 handle_build_actions,
+                handle_shape_actions,
                 ui::push_dimensions,
                 handle_hammer_actions,
                 update_joint_xray,
                 sync_visual_meshes,
+                (sync_shape_nodes, sync_region_focus, sync_drag_plane).chain(),
                 update_wire_drag_preview,
                 update_wire_hover_preview,
                 run_drive_sequencer,
@@ -1478,6 +1556,10 @@ fn setup(
     let simulation_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
     let bearing_mesh = meshes.add(Cuboid::default());
     let joint_xray_mesh = meshes.add(Cuboid::default());
+    let shape_node_mesh = meshes.add(degenerate_overlay_mesh());
+    let shape_selected_mesh = meshes.add(degenerate_overlay_mesh());
+    let shape_plane_mesh = meshes.add(degenerate_overlay_mesh());
+    let shape_arrow_mesh = meshes.add(degenerate_overlay_mesh());
     let controller_mesh = meshes.add(Cuboid::default());
     let gas_engine_mesh = meshes.add(Cuboid::default());
     let electric_engine_mesh = meshes.add(Cuboid::default());
@@ -1498,6 +1580,14 @@ fn setup(
     let weld_selection_preview_mesh = meshes.add(Cuboid::default());
     let construction_materials = ConstructionMaterial::ALL
         .map(|material| materials.add(construction_material(&asset_server, material)));
+    // Faded copies, swapped in while a region is being edited so the area under
+    // the cursor is the only thing that reads as solid.
+    let ghost_materials = ConstructionMaterial::ALL.map(|material| {
+        let mut ghost = construction_material(&asset_server, material);
+        ghost.base_color = ghost.base_color.with_alpha(0.16);
+        ghost.alpha_mode = AlphaMode::Blend;
+        materials.add(ghost)
+    });
     let bearing_material = materials.add(bearing_surface_material());
     let authored_materials = [
         authored_part_material(&asset_server, "machines/controller/controller"),
@@ -1546,9 +1636,15 @@ fn setup(
 
     commands.insert_resource(EditorVisuals {
         construction_meshes: construction_meshes.clone(),
+        construction_materials: construction_materials.clone(),
+        ghost_materials: ghost_materials.clone(),
         simulation_meshes: simulation_meshes.clone(),
         bearing_mesh: bearing_mesh.clone(),
         joint_xray_mesh: joint_xray_mesh.clone(),
+        shape_node_mesh: shape_node_mesh.clone(),
+        shape_selected_mesh: shape_selected_mesh.clone(),
+        shape_plane_mesh: shape_plane_mesh.clone(),
+        shape_arrow_mesh: shape_arrow_mesh.clone(),
         controller_mesh: controller_mesh.clone(),
         gas_engine_mesh: gas_engine_mesh.clone(),
         electric_engine_mesh: electric_engine_mesh.clone(),
@@ -1666,11 +1762,60 @@ fn setup(
     commands.spawn((
         Name::new("Joint x-ray mesh"),
         Mesh3d(joint_xray_mesh),
-        MeshMaterial3d(joint_xray_material),
+        MeshMaterial3d(joint_xray_material.clone()),
         RenderLayers::layer(1),
         NoFrustumCulling,
         Visibility::Hidden,
         JointXrayVisual,
+    ));
+    let shape_selected_material = materials.add(StandardMaterial {
+        base_color: SHAPE_SELECTION_COLOR,
+        cull_mode: None,
+        unlit: true,
+        ..default()
+    });
+    commands.spawn((
+        Name::new("Selected shape node markers"),
+        Mesh3d(shape_selected_mesh),
+        MeshMaterial3d(shape_selected_material.clone()),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        ShapeSelectedVisual,
+    ));
+    let shape_plane_material = materials.add(StandardMaterial {
+        base_color: SHAPE_SELECTION_COLOR.with_alpha(0.14),
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        unlit: true,
+        ..default()
+    });
+    commands.spawn((
+        Name::new("Drag plane"),
+        Mesh3d(shape_plane_mesh),
+        MeshMaterial3d(shape_plane_material),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        ShapePlaneVisual,
+    ));
+    commands.spawn((
+        Name::new("Drag plane arrows"),
+        Mesh3d(shape_arrow_mesh),
+        MeshMaterial3d(shape_selected_material),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        ShapeArrowVisual,
+    ));
+    commands.spawn((
+        Name::new("Shape node markers"),
+        Mesh3d(shape_node_mesh),
+        MeshMaterial3d(joint_xray_material.clone()),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        ShapeNodeVisual,
     ));
     commands.spawn((
         Name::new("Drive x-ray mesh"),
@@ -1866,7 +2011,17 @@ fn cancel_transient_editor_state(graph: &mut ConstructionGraph, state: &mut Edit
     state.block_drag = None;
     state.delete_drag = None;
     state.delete_target = None;
+    state.region_drag = None;
     clear_hover(state);
+}
+
+/// Whether the Shape tool has something of its own for `Escape` to unwind.
+fn shape_tool_is_busy(tool: Tool, state: &EditorState) -> bool {
+    tool == Tool::Shape
+        && (state.region_drag.is_some()
+            || state.active_region.is_some()
+            || state.vertex_drag.is_some()
+            || !state.selected_vertices.is_empty())
 }
 
 fn handle_shortcuts(
@@ -1912,42 +2067,70 @@ fn handle_shortcuts(
         } else if graph.0.pending().is_some() {
             let _ = graph.0.apply(BuildCommand::CancelPending);
             state.feedback = Some("Selection cancelled".to_owned());
-        } else {
+        } else if !shape_tool_is_busy(selection.0, &state) {
+            // The Shape tool unwinds its own state on Escape; dropping back to
+            // the Block tool in the same press would skip a step.
             selection.0 = Tool::Block;
             state.feedback = None;
         }
     }
     if keyboard.just_pressed(KeyCode::KeyQ) {
-        if let Some(drag) = state.block_drag.as_mut() {
-            drag.plane = drag.plane.cycle();
-            state.feedback = Some(format!("Drag plane: {}", drag.plane.label()));
-        } else if let Some(drag) = state.delete_drag.as_mut() {
-            drag.plane = drag.plane.cycle();
-            state.feedback = Some(format!("Delete plane: {}", drag.plane.label()));
-        } else if matches!(
-            selection.0,
-            Tool::Controller
-                | Tool::GasEngine
-                | Tool::ElectricEngine
-                | Tool::Servo
-                | Tool::Seat
-                | Tool::Input
-        ) {
-            state.authored_orientation =
-                (state.authored_orientation + 1) % AUTHORED_ORIENTATION_COUNT;
-            state.feedback = Some(format!(
-                "{} orientation: {}/{}",
-                selection.0.label(),
-                state.authored_orientation + 1,
-                AUTHORED_ORIENTATION_COUNT,
-            ));
-        } else {
-            state.feedback = Some(
-                "Q cycles machine, Seat, and Input orientations, or changes an active drag plane"
-                    .to_owned(),
-            );
-        }
+        state.feedback = Some(cycle_orientation(&mut state, selection.0));
     }
+}
+
+/// What `Q` does: rotate whichever drag plane is open, or step an authored
+/// part's orientation, reporting what to say about it.
+fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
+    let sample = state.pointer_position.zip(state.pointer_ray).map(
+        |(cursor, (ray_origin, ray_direction))| PointerSample {
+            cursor,
+            ray_origin,
+            ray_direction,
+        },
+    );
+    // Both drags freeze what has been dragged so far and measure from here, so
+    // a rectangle plus a rotation extrudes into a box instead of starting over.
+    if let Some(drag) = state.block_drag.as_mut() {
+        drag.plane = drag.plane.cycle();
+        drag.anchor_span = drag.span;
+        if let Some(press) = sample {
+            drag.press = press;
+        }
+        drag.last_span = None;
+        return format!("Drag plane: {}", drag.plane.label());
+    }
+    if let Some(drag) = state.region_drag.as_mut() {
+        drag.plane = drag.plane.cycle();
+        drag.anchor_span = drag.span;
+        if let Some(press) = sample {
+            drag.press = press;
+        }
+        drag.last_span = None;
+        return format!("Area plane: {}", drag.plane.label());
+    }
+    if let Some(drag) = state.delete_drag.as_mut() {
+        drag.plane = drag.plane.cycle();
+        return format!("Delete plane: {}", drag.plane.label());
+    }
+    if matches!(
+        tool,
+        Tool::Controller
+            | Tool::GasEngine
+            | Tool::ElectricEngine
+            | Tool::Servo
+            | Tool::Seat
+            | Tool::Input
+    ) {
+        state.authored_orientation = (state.authored_orientation + 1) % AUTHORED_ORIENTATION_COUNT;
+        return format!(
+            "{} orientation: {}/{}",
+            tool.label(),
+            state.authored_orientation + 1,
+            AUTHORED_ORIENTATION_COUNT,
+        );
+    }
+    "Q cycles machine, Seat, and Input orientations, or changes an active drag plane".to_owned()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2314,7 +2497,8 @@ fn update_hover(
             | Tool::ElectricEngine
             | Tool::Servo
             | Tool::Seat
-            | Tool::Input => raycast_construction(&graph.0, ray.origin, ray_direction),
+            | Tool::Input
+            | Tool::Shape => raycast_construction(&graph.0, ray.origin, ray_direction),
         }
     };
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
@@ -2384,19 +2568,26 @@ fn refresh_block_drag(
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
-    let (start, press, plane, last_endpoint) = {
+    let (start, press, plane, anchor_span, last_span) = {
         let drag = state
             .block_drag
             .as_ref()
             .expect("block drag was checked by caller");
-        (drag.start, drag.press, drag.plane, drag.last_endpoint)
+        (
+            drag.start,
+            drag.press,
+            drag.plane,
+            drag.anchor_span,
+            drag.last_span,
+        )
     };
-    let endpoint = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
-        start.spec.pose.translation_half_units()
+    let span = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
+        anchor_span
     } else {
-        let Some(endpoint) = block_sheet_endpoint_from_rays(
+        let Some(span) = block_span_from_rays(
             start.spec,
             plane,
+            anchor_span,
             press.ray_origin,
             press.ray_direction,
             ray_origin,
@@ -2405,12 +2596,12 @@ fn refresh_block_drag(
             invalidate_block_drag(state, PlacementError::DragPlaneUnavailable);
             return;
         };
-        endpoint
+        span
     };
-    if last_endpoint == Some((plane, endpoint)) {
+    if last_span == Some(span) {
         return;
     }
-    let result = block_sheet_specs(start.spec, endpoint, plane).and_then(|specs| {
+    let result = block_box_specs(start.spec, span).and_then(|specs| {
         validate_block_batch(graph, start, &specs)?;
         Ok(specs)
     });
@@ -2418,7 +2609,8 @@ fn refresh_block_drag(
         .block_drag
         .as_mut()
         .expect("block drag remains active while refreshing");
-    drag.last_endpoint = Some((plane, endpoint));
+    drag.span = span;
+    drag.last_span = Some(span);
     match result {
         Ok(specs) => {
             drag.specs = specs;
@@ -2531,6 +2723,15 @@ fn refresh_tool_preview_with_cylinder(
     state.preview = None;
     state.cylinder_preview = None;
     state.attachment_bearing = None;
+    // A shaped face is no longer an axis-aligned rectangle, so nothing can sit
+    // flush on it until it is flattened back onto the grid.
+    if let Some(hit) = state.hovered
+        && !builder::face_is_flat(graph, hit.face)
+        && !matches!(tool, Tool::Shape | Tool::Hammer)
+    {
+        state.preview_error = Some(PlacementError::SurfaceNotFlat);
+        return;
+    }
     state.preview_error = match (tool, graph.pending()) {
         (Tool::Block, _) => {
             let surface_candidate = state.hovered.and_then(|hit| {
@@ -2690,7 +2891,9 @@ fn refresh_tool_preview_with_cylinder(
                 state.preview = Some(candidate);
                 error
             }),
-        (Tool::Weld | Tool::Hammer | Tool::Connector, _) => None,
+        // Shaping edits the grid rather than placing anything, so like these
+        // it has no placement ghost of its own.
+        (Tool::Weld | Tool::Hammer | Tool::Connector | Tool::Shape, _) => None,
         (Tool::Bearing, _) => state.hovered.and_then(|hit| {
             if try_face_geometry_from_ref(hit.face, Some(graph)).is_none() {
                 Some(PlacementError::CurvedSurface)
@@ -2710,6 +2913,929 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
         CylinderDimensions::default(),
         ConstructionMaterial::Steel,
     );
+}
+
+/// Selecting an editable area, then hovering, dragging, and mirroring its cage.
+///
+/// Shaping edits a region rather than a part, so it runs beside the placement
+/// tools rather than through them. A drag previews live by rebuilding the
+/// construction mesh each frame and commits one batched command on release,
+/// which keeps a whole symmetric edit to a single undo entry.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn handle_shape_actions(
+    mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut graph: ResMut<EditorGraph>,
+    mut state: ResMut<EditorState>,
+    mut history: ResMut<EditorHistory>,
+    mut mirror: ResMut<shape_tool::ShapeMirror>,
+    mut snap: ResMut<shape_tool::ShapeSnap>,
+    simulation: Res<AppSimulation>,
+    selection: Res<SelectedTool>,
+    overlay: Res<ui::UiInput>,
+    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+) {
+    let (camera, camera_transform) = *camera;
+    if selection.0 != Tool::Shape || simulation.is_running() {
+        if state.vertex_drag.take().is_some() {
+            state.construction_mesh_dirty = true;
+        }
+        leave_region(&mut state);
+        return;
+    }
+    // Regions can vanish under the tool when their blocks are deleted.
+    if state
+        .active_region
+        .is_some_and(|id| graph.0.region(id).is_none())
+    {
+        leave_region(&mut state);
+    }
+    if handle_shape_keyboard(
+        &keyboard,
+        camera_transform,
+        &mut graph.0,
+        &mut state,
+        &mut history,
+        &mut mirror,
+        &mut snap,
+    ) {
+        return;
+    }
+    if overlay.blocks_pointer() || camera::camera_input_active(&mouse, &keyboard) {
+        return;
+    }
+    let Some((ray_origin, ray_direction)) = state.pointer_ray else {
+        return;
+    };
+    let pointer_position = state.pointer_position;
+
+    if mouse.just_pressed(MouseButton::Right) || keyboard.just_pressed(KeyCode::Escape) {
+        if state.region_drag.take().is_some() {
+            state.feedback = Some("Area selection cancelled".to_owned());
+        } else if state.vertex_drag.take().is_some() {
+            state.construction_mesh_dirty = true;
+            state.feedback = Some("Shape drag cancelled".to_owned());
+        } else if state.box_select.take().is_some() || !state.selected_vertices.is_empty() {
+            state.selected_vertices.clear();
+            state.feedback = Some("Selection cleared".to_owned());
+        } else if state.active_region.take().is_some() {
+            state.construction_mesh_dirty = true;
+            state.feedback = Some("Left the region".to_owned());
+        }
+        return;
+    }
+
+    // Without a region in hand the tool is a chooser: the same drag the Block
+    // tool uses, claiming an area instead of filling one.
+    let Some(region_id) = state.active_region else {
+        choose_region(
+            &mouse,
+            &mut graph.0,
+            &mut state,
+            &mut history,
+            pointer_position,
+            ray_origin,
+            ray_direction,
+        );
+        return;
+    };
+    let Some(region) = graph.0.region(region_id).cloned() else {
+        return;
+    };
+
+    if let Some(selection) = state.box_select.as_mut() {
+        if let Some(at) = pointer_position {
+            selection.current = at;
+        }
+        if mouse.just_released(MouseButton::Left) {
+            let selection = state.box_select.take().expect("a selection is open");
+            state.selected_vertices = if selection.is_meaningful() {
+                shape_tool::vertices_in_rect(&region, selection.bounds(), |point| {
+                    camera.world_to_viewport(camera_transform, point).ok()
+                })
+            } else {
+                Vec::new()
+            };
+            state.feedback = Some(match state.selected_vertices.len() {
+                0 => "Selection cleared".to_owned(),
+                count => format!("Selected {count} corners"),
+            });
+        }
+        return;
+    }
+
+    if let Some(drag) = state.vertex_drag.as_mut() {
+        let offset = shape_tool::drag_offset(&region, drag, *snap, ray_origin, ray_direction);
+        if offset != drag.offset {
+            drag.offset = offset;
+            state.construction_mesh_dirty = true;
+        }
+        if mouse.just_released(MouseButton::Left) {
+            let drag = state.vertex_drag.take().expect("a drag is in progress");
+            if drag.offset == drag.start_offset {
+                select_clicked_vertex(&mut state, drag.index, shift_held(&keyboard));
+            } else {
+                commit_vertex_drag(
+                    &mut graph.0,
+                    &mut state,
+                    &mut history,
+                    region_id,
+                    &region,
+                    &drag,
+                    *mirror,
+                );
+            }
+        }
+        return;
+    }
+
+    state.hovered_vertex = shape_tool::hovered_vertex(&region, ray_origin, ray_direction);
+    state.edge_offer = state
+        .hovered_vertex
+        .is_none()
+        .then(|| shape_tool::edge_insertion(&region, ray_origin, ray_direction))
+        .flatten();
+
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    if let Some(index) = state.hovered_vertex {
+        let drag = shape_tool::begin_group_drag(
+            &region,
+            index,
+            &state.selected_vertices,
+            ray_origin,
+            ray_direction,
+        );
+        // Grabbing a vertex outside the selection abandons it, which is what
+        // makes starting over cost nothing.
+        if drag.group.is_empty() {
+            state.selected_vertices.clear();
+        }
+        state.vertex_drag = Some(drag);
+    } else if let Some(offer) = state.edge_offer {
+        subdivide_region(&mut graph.0, &mut state, &mut history, region_id, offer);
+    } else if let Some(at) = pointer_position {
+        state.box_select = Some(shape_tool::BoxSelect {
+            start: at,
+            current: at,
+        });
+    }
+}
+
+/// Drops everything that only makes sense while a region is being edited.
+fn leave_region(state: &mut EditorState) {
+    if state.active_region.take().is_some() {
+        state.construction_mesh_dirty = true;
+    }
+    state.hovered_vertex = None;
+    state.box_select = None;
+    state.edge_offer = None;
+    state.region_drag = None;
+    state.selected_vertices.clear();
+}
+
+/// The area a drag covers: the block it started on, grown by `span` cells.
+fn region_area(start: CuboidSpec, span: IVec3) -> ShapeRegion {
+    let cells = part_cells(start);
+    ShapeRegion::new(
+        cells.corner_half_units(IVec3::ZERO, 0) + span.min(IVec3::ZERO) * 2,
+        cells.counts() + span.abs(),
+        start.material,
+    )
+    .expect("a drag area is at least the block it started on")
+}
+
+/// Drags an area of blocks out and claims it as an editable region, using the
+/// same gesture the Block tool places with — `Q` included.
+fn choose_region(
+    mouse: &ButtonInput<MouseButton>,
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    cursor: Option<Vec2>,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) {
+    if state.region_drag.is_some() {
+        if let Some(cursor) = cursor {
+            refresh_region_drag(graph, state, cursor, ray_origin, ray_direction);
+        }
+        if mouse.just_released(MouseButton::Left) {
+            commit_region_drag(graph, state, history);
+        }
+        return;
+    }
+    if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(hit) = builder::raycast_construction(graph, ray_origin, ray_direction) else {
+        state.feedback = Some("Aim at a block to choose an area".to_owned());
+        return;
+    };
+    let FaceOwner::Part(part) = hit.face.owner else {
+        state.feedback = Some("The ground cannot be shaped".to_owned());
+        return;
+    };
+    // Clicking a block already inside a region reopens it rather than refusing.
+    if let Some(existing) = graph.region_of(part) {
+        state.active_region = Some(existing);
+        state.construction_mesh_dirty = true;
+        state.feedback = Some("Editing region — drag its corners".to_owned());
+        return;
+    }
+    let Some(start) = graph.part(part).and_then(|spec| spec.as_cuboid()) else {
+        state.feedback = Some("Only blocks can be shaped".to_owned());
+        return;
+    };
+    let Some(cursor) = cursor else {
+        state.feedback = Some("Pointer position is unavailable".to_owned());
+        return;
+    };
+    let plane =
+        PlacementPlane::from_normal(builder::face_geometry_from_ref(hit.face, Some(graph)).normal);
+    let region = region_area(start, IVec3::ZERO);
+    let error = graph
+        .check_region_area(&region)
+        .err()
+        .map(|error| error.to_string());
+    state.region_drag = Some(RegionDrag {
+        start,
+        press: PointerSample {
+            cursor,
+            ray_origin,
+            ray_direction,
+        },
+        plane,
+        anchor_span: IVec3::ZERO,
+        span: IVec3::ZERO,
+        last_span: Some(IVec3::ZERO),
+        region,
+        error,
+    });
+    state.feedback = Some(format!(
+        "Choosing an area on {} plane — release to shape it, Q changes plane",
+        plane.label()
+    ));
+}
+
+/// Re-measures the dragged area against the pointer and re-checks the rules.
+fn refresh_region_drag(
+    graph: &ConstructionGraph,
+    state: &mut EditorState,
+    cursor: Vec2,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) {
+    let (start, press, plane, anchor_span, last_span) = {
+        let drag = state
+            .region_drag
+            .as_ref()
+            .expect("a region drag was checked by the caller");
+        (
+            drag.start,
+            drag.press,
+            drag.plane,
+            drag.anchor_span,
+            drag.last_span,
+        )
+    };
+    let span = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
+        anchor_span
+    } else {
+        // A plane the pointer cannot reach leaves the last good area standing
+        // rather than collapsing the drag.
+        let Some(span) = builder::block_span_from_rays(
+            start,
+            plane,
+            anchor_span,
+            press.ray_origin,
+            press.ray_direction,
+            ray_origin,
+            ray_direction,
+        ) else {
+            return;
+        };
+        span
+    };
+    if last_span == Some(span) {
+        return;
+    }
+    let region = region_area(start, span);
+    let cells = region.size_cells().element_product();
+    let error = if cells > i32::try_from(builder::MAX_DRAG_BLOCKS).expect("the cap fits in i32") {
+        Some(format!(
+            "an area is limited to {} blocks",
+            builder::MAX_DRAG_BLOCKS
+        ))
+    } else {
+        graph
+            .check_region_area(&region)
+            .err()
+            .map(|error| error.to_string())
+    };
+    let drag = state
+        .region_drag
+        .as_mut()
+        .expect("the region drag stays open while refreshing");
+    drag.span = span;
+    drag.last_span = Some(span);
+    drag.region = region;
+    drag.error = error;
+}
+
+/// Claims the dragged area, if it broke no rule.
+fn commit_region_drag(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+) {
+    let drag = state
+        .region_drag
+        .take()
+        .expect("a region drag was checked by the caller");
+    if let Some(error) = drag.error {
+        state.feedback = Some(format!("Cannot shape: {error}"));
+        return;
+    }
+    let cells = drag.region.size_cells();
+    let snapshot = EditorSnapshot::capture(graph, state);
+    match graph.apply(BuildCommand::AddRegion(drag.region)) {
+        Ok(BuildOutcome::RegionAdded(id)) => {
+            history.commit(snapshot);
+            state.active_region = Some(id);
+            state.construction_mesh_dirty = true;
+            state.feedback = Some(format!(
+                "Editing {}x{}x{} region — drag its corners",
+                cells.x, cells.y, cells.z
+            ));
+        }
+        Ok(_) => unreachable!("adding a region reports the region it added"),
+        Err(error) => state.feedback = Some(format!("Cannot shape: {error}")),
+    }
+}
+
+/// Inserts a cage plane where the pointer offered one.
+fn subdivide_region(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    region: RegionId,
+    offer: shape_tool::EdgeInsertion,
+) {
+    let snapshot = EditorSnapshot::capture(graph, state);
+    match graph.apply(BuildCommand::SubdivideRegion {
+        region,
+        axis: offer.axis,
+        position: offer.position,
+    }) {
+        Ok(_) => {
+            history.commit(snapshot);
+            state.construction_mesh_dirty = true;
+            state.edge_offer = None;
+            state.feedback = Some("Added a cage vertex".to_owned());
+        }
+        Err(error) => state.feedback = Some(format!("Cannot subdivide: {error}")),
+    }
+}
+
+/// The Shape tool's keyboard: mirror planes, the step size, and nudging.
+///
+/// Returns whether it consumed the frame, which a nudge does so the pointer
+/// does not also act on the same input.
+#[allow(clippy::too_many_arguments)]
+fn handle_shape_keyboard(
+    keyboard: &ButtonInput<KeyCode>,
+    camera_transform: &GlobalTransform,
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    mirror: &mut shape_tool::ShapeMirror,
+    snap: &mut shape_tool::ShapeSnap,
+) -> bool {
+    if keyboard.just_pressed(KeyCode::KeyX) {
+        mirror.x = !mirror.x;
+        state.feedback = Some(mirror.label());
+    }
+    if keyboard.just_pressed(KeyCode::KeyZ) {
+        mirror.z = !mirror.z;
+        state.feedback = Some(mirror.label());
+    }
+    if keyboard.just_pressed(KeyCode::KeyG) {
+        snap.cycle();
+        state.feedback = Some(snap.label());
+    }
+    let Some((axis, direction)) = nudge_request(keyboard, camera_transform) else {
+        return false;
+    };
+    nudge_selection(graph, state, history, axis, direction, *snap, *mirror);
+    true
+}
+
+/// Which way the arrow or WASD keys are asking the selection to move.
+///
+/// The keys read as screen directions and resolve to whichever world axis lies
+/// nearest, so a nudge goes where it looks like it should while still landing
+/// on the grid. Depth is deliberately absent: orbiting the camera is how the
+/// third axis is reached.
+fn nudge_request(
+    keyboard: &ButtonInput<KeyCode>,
+    camera_transform: &GlobalTransform,
+) -> Option<(usize, i32)> {
+    let (right, up) = (
+        camera_transform.right().as_vec3(),
+        camera_transform.up().as_vec3(),
+    );
+    let pressed = |keys: [KeyCode; 2]| keys.iter().any(|key| keyboard.just_pressed(*key));
+    let (basis, sign) = if pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
+        (right, 1)
+    } else if pressed([KeyCode::ArrowLeft, KeyCode::KeyA]) {
+        (right, -1)
+    } else if pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
+        (up, 1)
+    } else if pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
+        (up, -1)
+    } else {
+        return None;
+    };
+    let (axis, axis_sign) = shape_tool::screen_axis(basis);
+    Some((axis, axis_sign * sign))
+}
+
+/// Moves every selected cage vertex one increment, as one undo entry.
+fn nudge_selection(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    axis: usize,
+    direction: i32,
+    snap: shape_tool::ShapeSnap,
+    mirror: shape_tool::ShapeMirror,
+) {
+    let Some(region_id) = state.active_region else {
+        return;
+    };
+    if state.selected_vertices.is_empty() {
+        state.feedback = Some("Select a corner first — click one or drag a box".to_owned());
+        return;
+    }
+    let Some(region) = graph.region(region_id).cloned() else {
+        return;
+    };
+    let edits = shape_tool::nudge_edits(
+        &region,
+        &state.selected_vertices,
+        axis,
+        direction,
+        snap,
+        mirror,
+    );
+    if edits.is_empty() {
+        state.feedback = Some("Corner is already as far as it goes".to_owned());
+        return;
+    }
+    let snapshot = EditorSnapshot::capture(graph, state);
+    match graph.apply(BuildCommand::SetRegionVertices {
+        region: region_id,
+        vertices: edits,
+    }) {
+        Ok(_) => {
+            history.commit(snapshot);
+            state.construction_mesh_dirty = true;
+            state.feedback = Some(format!(
+                "Nudged {} corner(s) — {}",
+                state.selected_vertices.len(),
+                snap.label()
+            ));
+        }
+        Err(error) => state.feedback = Some(format!("Cannot shape: {error}")),
+    }
+}
+
+/// A click on a vertex picks it for the keyboard; holding shift builds a set up
+/// one corner at a time.
+fn select_clicked_vertex(state: &mut EditorState, index: CageIndex, extend: bool) {
+    if extend {
+        if let Some(at) = state
+            .selected_vertices
+            .iter()
+            .position(|&other| other == index)
+        {
+            state.selected_vertices.remove(at);
+        } else {
+            state.selected_vertices.push(index);
+        }
+    } else {
+        state.selected_vertices = vec![index];
+    }
+    state.feedback = Some(match state.selected_vertices.len() {
+        0 => "Selection cleared".to_owned(),
+        1 => "Corner selected — arrows or WASD nudge it".to_owned(),
+        count => format!("Selected {count} corners"),
+    });
+}
+
+fn shift_held(keyboard: &ButtonInput<KeyCode>) -> bool {
+    keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
+}
+
+/// Commits a finished drag, expanded across the active mirror planes.
+fn commit_vertex_drag(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    region_id: RegionId,
+    region: &ShapeRegion,
+    drag: &shape_tool::VertexDrag,
+    mirror: shape_tool::ShapeMirror,
+) {
+    state.construction_mesh_dirty = true;
+    if drag.offset == drag.start_offset {
+        return;
+    }
+    let snapshot = EditorSnapshot::capture(graph, state);
+    let edits = shape_tool::drag_edits(region, drag, mirror);
+    let count = edits.len();
+    match graph.apply(BuildCommand::SetRegionVertices {
+        region: region_id,
+        vertices: edits,
+    }) {
+        Ok(_) => {
+            history.commit(snapshot);
+            state.feedback = Some(if count > 1 {
+                format!("Shaped {count} corners")
+            } else {
+                "Shaped a corner".to_owned()
+            });
+        }
+        Err(error) => {
+            state.feedback = Some(format!("Cannot shape: {error}"));
+        }
+    }
+}
+
+/// Fades everything outside the region being edited.
+///
+/// With a region in hand the rest of the build drops back to a ghost so the
+/// area under the cursor is the only thing reading as solid. Leaving the region
+/// puts every material back.
+fn sync_region_focus(
+    state: Res<EditorState>,
+    selection: Res<SelectedTool>,
+    visuals: Res<EditorVisuals>,
+    mut construction_visuals: Query<(&ConstructionVisual, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    let editing = selection.0 == Tool::Shape && state.active_region.is_some();
+    for (visual, mut material) in &mut construction_visuals {
+        let index = material_index(visual.0);
+        let wanted = if editing {
+            &visuals.ghost_materials[index]
+        } else {
+            &visuals.construction_materials[index]
+        };
+        if material.0.id() != wanted.id() {
+            material.0 = wanted.clone();
+        }
+    }
+}
+
+/// Draws the active region's cage: its vertices, the edges between them, and
+/// the new vertex the pointer is being offered.
+///
+/// Only vertices near the pointer appear, so choosing the tool does not bury the
+/// build in handles.
+#[allow(clippy::too_many_arguments)]
+fn sync_shape_nodes(
+    graph: Res<EditorGraph>,
+    state: Res<EditorState>,
+    mirror: Res<shape_tool::ShapeMirror>,
+    selection: Res<SelectedTool>,
+    simulation: Res<AppSimulation>,
+    visuals: Res<EditorVisuals>,
+    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut markers: ShapeOverlay<ShapeNodeVisual, ShapeSelectedVisual, ShapePlaneVisual>,
+    mut selected_markers: ShapeOverlay<ShapeSelectedVisual, ShapeNodeVisual, ShapePlaneVisual>,
+) {
+    let (camera, camera_transform) = *camera;
+    let hide = selection.0 != Tool::Shape || simulation.is_running();
+
+    // Two batches rather than one: a selected corner reads by colour as well as
+    // by size, which size alone was not carrying.
+    let mut plain = OverlayGeometry::default();
+    let mut chosen = OverlayGeometry::default();
+
+    // The area being dragged out, cyan while it is claimable and plain while a
+    // rule refuses it, so the outline itself carries the verdict.
+    if !hide && let Some(drag) = state.region_drag.as_ref() {
+        let target = if drag.error.is_some() {
+            &mut plain
+        } else {
+            &mut chosen
+        };
+        append_region_outline(&drag.region, target);
+    }
+
+    let Some((_, region)) = (if hide {
+        None
+    } else {
+        preview_region(&graph.0, &state, *mirror)
+    }) else {
+        **markers = write_overlay(&mut meshes, &visuals.shape_node_mesh, plain);
+        **selected_markers = write_overlay(&mut meshes, &visuals.shape_selected_mesh, chosen);
+        return;
+    };
+    let Some((ray_origin, ray_direction)) = state.pointer_ray else {
+        **markers = write_overlay(&mut meshes, &visuals.shape_node_mesh, plain);
+        **selected_markers = write_overlay(&mut meshes, &visuals.shape_selected_mesh, chosen);
+        return;
+    };
+    let dragged = state.vertex_drag.as_ref().map(|drag| drag.index);
+    for (index, position, distance) in
+        shape_tool::revealed_vertices(&region, ray_origin, ray_direction)
+    {
+        let selected = state.selected_vertices.contains(&index);
+        let mut size = shape_tool::vertex_marker_size(distance);
+        if selected {
+            size *= 1.5;
+        }
+        if state.hovered_vertex == Some(index) || dragged == Some(index) {
+            size *= 1.8;
+        }
+        let target = if selected { &mut chosen } else { &mut plain };
+        append_transformed_cuboid(
+            position,
+            Quat::IDENTITY,
+            Vec3::splat(size),
+            &mut target.positions,
+            &mut target.normals,
+            &mut target.indices,
+        );
+    }
+    // The vertex the pointer is being offered on an edge, shown in the same
+    // cyan as a selection because taking it is what it becomes.
+    if let Some(offer) = state.edge_offer {
+        append_transformed_cuboid(
+            offer.at,
+            Quat::IDENTITY,
+            Vec3::splat(0.024),
+            &mut chosen.positions,
+            &mut chosen.normals,
+            &mut chosen.indices,
+        );
+    }
+    if let Some(selection) = state.box_select
+        && selection.is_meaningful()
+    {
+        append_selection_frame(
+            camera,
+            camera_transform,
+            selection,
+            &mut chosen.positions,
+            &mut chosen.normals,
+            &mut chosen.indices,
+        );
+    }
+    **markers = write_overlay(&mut meshes, &visuals.shape_node_mesh, plain);
+    **selected_markers = write_overlay(&mut meshes, &visuals.shape_selected_mesh, chosen);
+}
+
+/// Draws the plane an open drag is sliding along, and the arrows naming its two
+/// axes.
+///
+/// Shared by placing blocks and choosing a shape area, because both measure the
+/// pointer against a plane and both rotate it with `Q`.
+fn sync_drag_plane(
+    state: Res<EditorState>,
+    simulation: Res<AppSimulation>,
+    visuals: Res<EditorVisuals>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut plane_marker: ShapeOverlay<ShapePlaneVisual, ShapeArrowVisual, ShapeSelectedVisual>,
+    mut arrow_marker: ShapeOverlay<ShapeArrowVisual, ShapePlaneVisual, ShapeSelectedVisual>,
+) {
+    let mut sheet = OverlayGeometry::default();
+    let mut arrows = OverlayGeometry::default();
+    if let Some((low, high, plane)) = active_drag_plane(&state, &simulation) {
+        append_drag_plane(low, high, plane, &mut sheet);
+        append_plane_arrows(low, high, plane, &mut arrows);
+    }
+    **plane_marker = write_overlay(&mut meshes, &visuals.shape_plane_mesh, sheet);
+    **arrow_marker = write_overlay(&mut meshes, &visuals.shape_arrow_mesh, arrows);
+}
+
+/// The bounds and plane of whichever drag is open, if one is.
+fn active_drag_plane(
+    state: &EditorState,
+    simulation: &AppSimulation,
+) -> Option<(Vec3, Vec3, PlacementPlane)> {
+    if simulation.is_running() {
+        return None;
+    }
+    if let Some(drag) = state.region_drag.as_ref() {
+        let (low, high) = region_world_bounds(&drag.region);
+        return Some((low, high, drag.plane));
+    }
+    let drag = state.block_drag.as_ref()?;
+    let (low, high) = block_sheet_bounds(&drag.specs)?;
+    Some((low, high, drag.plane))
+}
+
+/// One overlay batch being assembled.
+#[derive(Default)]
+struct OverlayGeometry {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    indices: Vec<u32>,
+}
+
+/// Writes one overlay batch into its mesh, reporting whether it has anything to
+/// draw.
+fn write_overlay(
+    meshes: &mut Assets<Mesh>,
+    handle: &Handle<Mesh>,
+    geometry: OverlayGeometry,
+) -> Visibility {
+    if geometry.positions.is_empty() {
+        return Visibility::Hidden;
+    }
+    if let Some(mut mesh) = meshes.get_mut(handle) {
+        *mesh = renderable_mesh(
+            Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+            )
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, geometry.positions)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, geometry.normals)
+            .with_inserted_indices(Indices::U32(geometry.indices)),
+        );
+    }
+    Visibility::Visible
+}
+
+/// Draws a region's bounding box as twelve thin bars, so a dragged area reads
+/// as a volume rather than a face.
+fn append_region_outline(region: &ShapeRegion, geometry: &mut OverlayGeometry) {
+    const THICKNESS: f32 = 0.012;
+    let (low_steps, high_steps) = region.bounds_steps();
+    let low = low_steps.as_vec3() * STEP_METERS;
+    let high = high_steps.as_vec3() * STEP_METERS;
+    let centre = (low + high) * 0.5;
+    let extent = high - low;
+    for axis in 0..3 {
+        let (first, second) = ((axis + 1) % 3, (axis + 2) % 3);
+        let mut size = Vec3::splat(THICKNESS);
+        // The bar runs the full length of its axis and overshoots at the ends
+        // by its own width, which is what closes the corners.
+        size[axis] = extent[axis] + THICKNESS;
+        for (a, b) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let mut at = centre;
+            at[first] += a * extent[first] * 0.5;
+            at[second] += b * extent[second] * 0.5;
+            append_transformed_cuboid(
+                at,
+                Quat::IDENTITY,
+                size * 0.5,
+                &mut geometry.positions,
+                &mut geometry.normals,
+                &mut geometry.indices,
+            );
+        }
+    }
+}
+
+/// Draws the plane an area drag is sliding along, as a translucent sheet through
+/// the block the drag started on — the same plane the pointer is measured
+/// against, so `Q` visibly rotates it.
+fn append_drag_plane(low: Vec3, high: Vec3, plane: PlacementPlane, geometry: &mut OverlayGeometry) {
+    const THICKNESS: f32 = 0.004;
+    /// Overhang past the area, so the sheet reads as a plane rather than a lid.
+    const MARGIN: f32 = GRID_UNIT_METERS;
+    let normal_axis = plane.normal_axis();
+    let mut size = (high - low) + Vec3::splat(MARGIN * 2.0);
+    size[normal_axis] = THICKNESS;
+    append_transformed_cuboid(
+        (low + high) * 0.5,
+        Quat::IDENTITY,
+        size * 0.5,
+        &mut geometry.positions,
+        &mut geometry.normals,
+        &mut geometry.indices,
+    );
+}
+
+/// Draws an arrow along each of the drag plane's four cardinal directions, so
+/// the plane says which two axes the pointer is driving.
+fn append_plane_arrows(
+    low: Vec3,
+    high: Vec3,
+    plane: PlacementPlane,
+    geometry: &mut OverlayGeometry,
+) {
+    /// Clear of the sheet's own slab, so the arrows never fight it for depth.
+    const LIFT: f32 = 0.005;
+    const SHAFT_HALF_WIDTH: f32 = 0.008;
+    const HEAD_HALF_WIDTH: f32 = 0.026;
+    const HEAD_LENGTH: f32 = 0.06;
+    /// How far an arrow reaches, kept between these so it reads as a gizmo on a
+    /// single block and does not span the whole sheet on a large area.
+    const MIN_REACH: f32 = 0.14;
+    const MAX_REACH: f32 = 0.55;
+
+    let centre = (low + high) * 0.5;
+    let extents = (high - low) * 0.5;
+    let normal_axis = plane.normal_axis();
+    let normal = Vec3::AXES[normal_axis];
+    for (index, axis) in plane.tangent_axes().into_iter().enumerate() {
+        let along = Vec3::AXES[axis];
+        let across = Vec3::AXES[plane.tangent_axes()[1 - index]];
+        let reach = (extents[axis] + GRID_UNIT_METERS * 0.5).clamp(MIN_REACH, MAX_REACH);
+        let shaft = (reach - HEAD_LENGTH).max(HEAD_LENGTH * 0.5);
+        for direction in [1.0_f32, -1.0] {
+            let tip = along * (direction * reach);
+            let neck = along * (direction * shaft);
+            // One copy either side of the sheet, so the arrow reads whichever
+            // face of the plane the camera is looking at.
+            for side in [1.0_f32, -1.0] {
+                let base = centre + normal * (side * LIFT);
+                let facing = normal * side;
+                append_mesh_quad(
+                    [
+                        base - across * SHAFT_HALF_WIDTH,
+                        base + across * SHAFT_HALF_WIDTH,
+                        base + neck + across * SHAFT_HALF_WIDTH,
+                        base + neck - across * SHAFT_HALF_WIDTH,
+                    ],
+                    facing,
+                    &mut geometry.positions,
+                    &mut geometry.normals,
+                    &mut geometry.indices,
+                );
+                append_mesh_triangle(
+                    [
+                        base + neck - across * HEAD_HALF_WIDTH,
+                        base + neck + across * HEAD_HALF_WIDTH,
+                        base + tip,
+                    ],
+                    facing,
+                    &mut geometry.positions,
+                    &mut geometry.normals,
+                    &mut geometry.indices,
+                );
+            }
+        }
+    }
+}
+
+/// A region's bounding box in world metres.
+fn region_world_bounds(region: &ShapeRegion) -> (Vec3, Vec3) {
+    let (low, high) = region.bounds_steps();
+    (low.as_vec3() * STEP_METERS, high.as_vec3() * STEP_METERS)
+}
+
+/// Draws the selection rectangle as a frame floating just in front of the
+/// camera, so it lines up with the screen rectangle it represents.
+fn append_selection_frame(
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    selection: shape_tool::BoxSelect,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    const DEPTH: f32 = 1.0;
+    let (low, high) = selection.bounds();
+    let at = |x: f32, y: f32| {
+        camera
+            .viewport_to_world(camera_transform, Vec2::new(x, y))
+            .ok()
+            .map(|ray| ray.origin + ray.direction.as_vec3() * DEPTH)
+    };
+    let Some(corners) = (|| {
+        Some([
+            at(low.x, low.y)?,
+            at(high.x, low.y)?,
+            at(high.x, high.y)?,
+            at(low.x, high.y)?,
+        ])
+    })() else {
+        return;
+    };
+    let normal = camera_transform.forward().as_vec3();
+    // Thickness in world units at this depth, so the frame reads the same
+    // however far the camera is from the build.
+    let thickness = (corners[1] - corners[0]).length().max(1.0e-4) * 0.004;
+    for edge in 0..4 {
+        let start = corners[edge];
+        let end = corners[(edge + 1) % 4];
+        let along = (end - start).normalize_or_zero();
+        let across = along.cross(normal).normalize_or_zero() * thickness;
+        let base = u32::try_from(positions.len()).expect("overlay fits 32-bit indices");
+        for corner in [start - across, end - across, end + across, start + across] {
+            positions.push(corner.to_array());
+            normals.push((-normal).to_array());
+        }
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -2742,6 +3868,9 @@ fn handle_build_actions(
         return;
     }
     if camera::camera_input_active(&mouse, &keyboard) {
+        return;
+    }
+    if selection.0 == Tool::Shape {
         return;
     }
     if mouse.just_pressed(MouseButton::Right) && state.block_drag.take().is_some() {
@@ -2983,6 +4112,7 @@ fn handle_build_actions(
     }
 
     match selection.0 {
+        Tool::Shape => unreachable!("shape actions are handled by handle_shape_actions"),
         Tool::Block => unreachable!("block actions are handled before this match"),
         Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),
         Tool::Weld => {
@@ -3774,7 +4904,9 @@ fn handle_block_actions(
                 ray_direction,
             },
             plane,
-            last_endpoint: None,
+            anchor_span: IVec3::ZERO,
+            span: IVec3::ZERO,
+            last_span: None,
             specs: vec![candidate.spec],
             error: None,
         });
@@ -4066,9 +5198,21 @@ fn hammer_point_travel(
         .colliders
         .iter()
         .filter(|collider| collider.compound_index == body_index)
-        .map(|collider| collider.local_center.length() + collider.half_extents.length())
+        .map(|collider| collider.local_center.length() + collider_reach(collider))
         .fold(0.0_f32, f32::max);
     (linear_delta.length() + angular_delta.length() * maximum_radius) * FIXED_DT_SECONDS
+}
+
+/// How far one collider extends from its own centre.
+fn collider_reach(collider: &mechanic_core::LocalCollider) -> f32 {
+    match &collider.shape {
+        mechanic_core::ColliderShape::Cuboid { half_extents, .. } => half_extents.length(),
+        mechanic_core::ColliderShape::Convex(convex) => convex
+            .vertices
+            .iter()
+            .map(|vertex| (*vertex - collider.local_center).length())
+            .fold(0.0_f32, f32::max),
+    }
 }
 
 fn raycast_simulation(
@@ -4351,6 +5495,7 @@ fn raycast_bearing_annulus(
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn sync_visual_meshes(
     graph: Res<EditorGraph>,
+    mirror: Res<shape_tool::ShapeMirror>,
     sequencer: Res<DriveSequencer>,
     selection: Res<SelectedTool>,
     simulation: Res<AppSimulation>,
@@ -4385,8 +5530,9 @@ fn sync_visual_meshes(
     if !state.construction_mesh_dirty {
         return;
     }
+    let preview = preview_region(&graph.0, &state, *mirror);
     for material in ConstructionMaterial::ALL {
-        let mesh = combined_material_construction_mesh(&graph.0, material);
+        let mesh = combined_material_construction_mesh(&graph.0, preview.as_ref(), material);
         let visible = mesh.count_vertices() > 0;
         if let Some(mut asset) =
             meshes.get_mut(&visuals.construction_meshes[material_index(material)])
@@ -4712,6 +5858,9 @@ fn update_previews(
         selection.1.scale = Vec3::splat(1.12);
     }
     match (selected_tool.0, graph.0.pending()) {
+        (Tool::Shape, _) => {
+            *action.2 = Visibility::Hidden;
+        }
         (Tool::Block, _) => {
             if let Some(drag) = state.block_drag.as_ref() {
                 if *rendered_block_revision != state.block_preview_revision {
@@ -5300,20 +6449,45 @@ fn single_authored_part_mesh(appearance: AuthoredPart) -> Mesh {
     .with_inserted_indices(Indices::U32(AUTHORED_CUBE_INDICES.to_vec()))
 }
 
+/// The region as it would look with the current cage drag applied.
+///
+/// A drag is not in the graph until it is released, so previewing it means
+/// folding the proposed offsets — mirrors included — into a copy.
+fn preview_region(
+    graph: &ConstructionGraph,
+    state: &EditorState,
+    mirror: shape_tool::ShapeMirror,
+) -> Option<(RegionId, ShapeRegion)> {
+    let id = state.active_region?;
+    let mut region = graph.region(id)?.clone();
+    if let Some(drag) = state.vertex_drag.as_ref() {
+        for (index, offset) in shape_tool::drag_edits(&region, drag, mirror) {
+            // A drag that would leave the box simply does not preview; the
+            // command would reject it anyway.
+            let _ = region.set_offset(index, offset);
+        }
+    }
+    Some((id, region))
+}
+
 #[cfg(test)]
 fn combined_construction_mesh(graph: &ConstructionGraph) -> Mesh {
-    combined_construction_mesh_filtered(graph, None)
+    combined_construction_mesh_filtered(graph, None, None)
 }
 
 fn combined_material_construction_mesh(
     graph: &ConstructionGraph,
+    preview: Option<&(RegionId, ShapeRegion)>,
     material: ConstructionMaterial,
 ) -> Mesh {
-    combined_construction_mesh_filtered(graph, Some(material))
+    combined_construction_mesh_filtered(graph, preview, Some(material))
 }
 
+/// Builds the construction mesh, substituting `preview` for the region it names
+/// so a cage drag can be seen before it is committed.
 fn combined_construction_mesh_filtered(
     graph: &ConstructionGraph,
+    preview: Option<&(RegionId, ShapeRegion)>,
     material: Option<ConstructionMaterial>,
 ) -> Mesh {
     let mut positions = Vec::new();
@@ -5321,14 +6495,38 @@ fn combined_construction_mesh_filtered(
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
-    for (_, spec) in graph.parts().filter(|(_, spec)| {
+    // A part inside a region hands its surface to that region, so drawing both
+    // would render the same material twice.
+    for (part, spec) in graph.parts().filter(|(_, spec)| {
         ordinary_material(**spec)
             .is_some_and(|part_material| material.is_none_or(|wanted| wanted == part_material))
     }) {
+        if graph.region_of(part).is_some() {
+            continue;
+        }
         append_textured_part(
             *spec,
             spec.pose().translation(),
             spec.pose().rotation.quaternion(),
+            BuildTransform::IDENTITY,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut tangents,
+            &mut indices,
+        );
+    }
+    for (id, region) in graph.regions() {
+        if material.is_some_and(|wanted| wanted != region.material()) {
+            continue;
+        }
+        let shown = match preview {
+            Some((preview_id, previewed)) if *preview_id == id => previewed,
+            _ => region,
+        };
+        append_region(
+            shown,
+            BuildTransform::IDENTITY,
             &mut positions,
             &mut normals,
             &mut uvs,
@@ -5520,17 +6718,43 @@ fn combined_simulation_mesh_filtered(
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
+    let mut drawn_regions: Vec<mechanic_core::RegionId> = Vec::new();
     for &(part, compound_index) in parts {
         let transform = transforms[compound_index as usize];
         let root_translation = Vec3::from_array(transform.position[..3].try_into().unwrap());
         let root_rotation = Quat::from_array(transform.rotation);
         let initial = &creation.compounds[compound_index as usize];
         let spec = *graph.part(part).expect("compiled source remains in graph");
+        let placement = BuildTransform {
+            origin: initial.root_translation,
+            rotation: root_rotation,
+            translation: root_translation,
+        };
+        // A part inside a region is drawn once, as its region.
+        if let Some(id) = graph.region_of(part) {
+            if drawn_regions.contains(&id) {
+                continue;
+            }
+            drawn_regions.push(id);
+            if let Some(region) = graph.region(id) {
+                append_region(
+                    region,
+                    placement,
+                    &mut positions,
+                    &mut normals,
+                    &mut uvs,
+                    &mut tangents,
+                    &mut indices,
+                );
+            }
+            continue;
+        }
         let local_center = spec.pose().translation() - initial.root_translation;
         append_textured_part(
             spec,
             root_translation + root_rotation * local_center,
             root_rotation * spec.pose().rotation.quaternion(),
+            placement,
             &mut positions,
             &mut normals,
             &mut uvs,
@@ -6695,6 +7919,194 @@ fn append_transformed_cuboid(
     indices.extend(CUBE_INDICES.map(|index| base_index + index));
 }
 
+/// Maps build-space geometry into the space a mesh is being drawn in.
+///
+/// The construction view draws parts where they were authored; the simulation
+/// view draws them where their compound has moved to. Shaped geometry is
+/// generated in build space either way, so it needs this to follow a body.
+#[derive(Clone, Copy)]
+struct BuildTransform {
+    /// Build-space point that maps onto `translation`.
+    origin: Vec3,
+    /// Rotation applied about `origin`.
+    rotation: Quat,
+    /// Where `origin` ends up.
+    translation: Vec3,
+}
+
+impl BuildTransform {
+    /// Draws build-space geometry exactly where it was authored.
+    const IDENTITY: Self = Self {
+        origin: Vec3::ZERO,
+        rotation: Quat::IDENTITY,
+        translation: Vec3::ZERO,
+    };
+
+    fn point(self, point: Vec3) -> Vec3 {
+        self.translation + self.rotation * (point - self.origin)
+    }
+
+    fn direction(self, direction: Vec3) -> Vec3 {
+        self.rotation * direction
+    }
+}
+
+/// Emits the exterior surface of a shaped region, with UVs and tangents.
+///
+/// The geometry comes from the same decomposition the colliders come from, so
+/// what is drawn and what is collided against cannot drift apart. Faces
+/// interior to the region are dropped: a cell face whose neighbour is also part
+/// of the region is inside the solid, and a piece face with no grid provenance
+/// is interior to its own cell.
+#[allow(clippy::too_many_arguments)]
+fn append_region(
+    region: &ShapeRegion,
+    placement: BuildTransform,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+) {
+    let first = positions.len();
+    append_region_surface(region, placement, positions, normals, indices);
+    // The same triplanar projection ordinary blocks use, so a shaped face keeps
+    // the material's scale.
+    for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
+        let position = Vec3::from_array(position);
+        let normal = Vec3::from_array(normal);
+        let absolute = normal.abs();
+        let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
+            ([position.x, position.z], Vec3::X)
+        } else if absolute.x >= absolute.z {
+            ([position.z, position.y], Vec3::Z)
+        } else {
+            ([position.x, position.y], Vec3::X)
+        };
+        uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+        tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
+    }
+}
+
+/// Emits just the positions, normals, and indices of a region's surface.
+fn append_region_surface(
+    region: &ShapeRegion,
+    placement: BuildTransform,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    let grid = region.grid();
+    for piece in builder::region_pieces(region) {
+        match piece {
+            PartPiece::Cuboid {
+                center,
+                half_extents,
+                cell_min,
+                cell_span,
+                ..
+            } => {
+                for (axis, sign) in (0..3).flat_map(|axis| [(axis, 1_i32), (axis, -1_i32)]) {
+                    if box_face_is_interior(&grid, cell_min, cell_span, axis, sign) {
+                        continue;
+                    }
+                    append_axis_quad(
+                        center,
+                        half_extents,
+                        axis,
+                        sign,
+                        placement,
+                        positions,
+                        normals,
+                        indices,
+                    );
+                }
+            }
+            PartPiece::Convex(convex) => {
+                for face in &convex.faces {
+                    let Some(gridface) = face.grid_face else {
+                        continue;
+                    };
+                    if grid.contains(gridface.cell + face_neighbour_offset(gridface.face)) {
+                        continue;
+                    }
+                    let base = u32::try_from(positions.len())
+                        .expect("construction mesh fits 32-bit indices");
+                    for &index in &face.indices {
+                        positions.push(placement.point(convex.vertices[index as usize]).to_array());
+                        normals.push(placement.direction(face.normal).to_array());
+                    }
+                    for step in 1..face.indices.len() - 1 {
+                        let step = u32::try_from(step).expect("a piece face has few vertices");
+                        indices.extend([base, base + step, base + step + 1]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whether every cell across one side of a box-cover box is still inside the
+/// part, which makes that whole side interior geometry.
+fn box_face_is_interior(
+    grid: &CellGrid,
+    cell_min: IVec3,
+    cell_span: IVec3,
+    axis: usize,
+    sign: i32,
+) -> bool {
+    let mut neighbour = cell_min;
+    neighbour[axis] += if sign > 0 { cell_span[axis] } else { -1 };
+    let tangents = [(axis + 1) % 3, (axis + 2) % 3];
+    (0..cell_span[tangents[0]]).all(|first| {
+        (0..cell_span[tangents[1]]).all(|second| {
+            let mut cell = neighbour;
+            cell[tangents[0]] += first;
+            cell[tangents[1]] += second;
+            grid.contains(cell)
+        })
+    })
+}
+
+/// Emits one axis-aligned face of a box, wound outward.
+#[allow(clippy::too_many_arguments)]
+fn append_axis_quad(
+    center: Vec3,
+    half_extents: Vec3,
+    axis: usize,
+    sign: i32,
+    placement: BuildTransform,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    let mut normal = Vec3::ZERO;
+    normal[axis] = if sign > 0 { 1.0 } else { -1.0 };
+    let tangents = [(axis + 1) % 3, (axis + 2) % 3];
+    let mut first = Vec3::ZERO;
+    first[tangents[0]] = half_extents[tangents[0]];
+    let mut second = Vec3::ZERO;
+    second[tangents[1]] = half_extents[tangents[1]];
+    // Flip the winding on negative faces so every quad faces outward.
+    if sign < 0 {
+        core::mem::swap(&mut first, &mut second);
+    }
+    let anchor = center + normal * half_extents[axis];
+    let corners = [
+        anchor - first - second,
+        anchor + first - second,
+        anchor + first + second,
+        anchor - first + second,
+    ];
+    let base = u32::try_from(positions.len()).expect("construction mesh fits 32-bit indices");
+    let world_normal = placement.direction(normal).to_array();
+    for corner in corners {
+        positions.push(placement.point(corner).to_array());
+        normals.push(world_normal);
+    }
+    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
 const MATERIAL_TEXTURE_PIXELS_PER_SIDE: f32 = 3_072.0;
 const MATERIAL_TEXTURE_PIXELS_PER_BLOCK: f32 = 512.0;
 const MATERIAL_TEXTURE_METERS_PER_REPEAT: f32 =
@@ -6705,12 +8117,14 @@ fn append_textured_part(
     spec: PartSpec,
     translation: Vec3,
     rotation: Quat,
+    placement: BuildTransform,
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
     uvs: &mut Vec<[f32; 2]>,
     tangents: &mut Vec<[f32; 4]>,
     indices: &mut Vec<u32>,
 ) {
+    let _ = placement;
     let first = positions.len();
     match spec {
         PartSpec::Cuboid(cuboid) => append_transformed_cuboid(
@@ -6846,6 +8260,7 @@ mod rendering_tests {
         drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
         single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
+    use super::{OverlayGeometry, append_drag_plane, append_plane_arrows, region_world_bounds};
     use crate::PlacementPlane;
     use crate::hotbar::Tool;
     use crate::sequencer::DriveSequencer;
@@ -6857,6 +8272,84 @@ mod rendering_tests {
             panic!("mesh must have float3 positions")
         };
         values.iter().copied().map(Vec3::from_array).collect()
+    }
+
+    /// A region offset from the origin, so a centred overlay cannot pass by
+    /// sitting at zero.
+    fn offset_region() -> mechanic_core::ShapeRegion {
+        mechanic_core::ShapeRegion::new(
+            IVec3::new(2, 4, 0),
+            IVec3::new(3, 2, 1),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap()
+    }
+
+    fn overlay_bounds(geometry: &OverlayGeometry) -> (Vec3, Vec3) {
+        geometry.positions.iter().fold(
+            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+            |(low, high), position| {
+                let at = Vec3::from_array(*position);
+                (low.min(at), high.max(at))
+            },
+        )
+    }
+
+    #[test]
+    fn the_drag_plane_sits_in_the_middle_of_the_area() {
+        let region = offset_region();
+        // The area runs y = 0.50 m to 1.00 m, so its middle is 0.75 m.
+        for (plane, normal_axis, middle) in [
+            (PlacementPlane::Xz, 1, 0.75),
+            (PlacementPlane::Xy, 2, 0.125),
+            (PlacementPlane::Yz, 0, 0.625),
+        ] {
+            let (low, high) = region_world_bounds(&region);
+            let mut geometry = OverlayGeometry::default();
+            append_drag_plane(low, high, plane, &mut geometry);
+            let (low, high) = overlay_bounds(&geometry);
+            assert!(
+                (f32::midpoint(low[normal_axis], high[normal_axis]) - middle).abs() < 1.0e-5,
+                "{plane:?} sheet is centred on the area"
+            );
+            assert!(
+                high[normal_axis] - low[normal_axis] < 0.01,
+                "{plane:?} sheet is a sheet, not a slab"
+            );
+        }
+    }
+
+    #[test]
+    fn the_drag_plane_points_along_both_of_its_axes() {
+        let region = offset_region();
+        for plane in [PlacementPlane::Xy, PlacementPlane::Xz, PlacementPlane::Yz] {
+            let (low, high) = region_world_bounds(&region);
+            let mut geometry = OverlayGeometry::default();
+            append_plane_arrows(low, high, plane, &mut geometry);
+            let (low, high) = overlay_bounds(&geometry);
+            let centre = (
+                f32::midpoint(0.25, 1.0),
+                f32::midpoint(0.5, 1.0),
+                f32::midpoint(0.0, 0.25),
+            );
+            let centre = Vec3::new(centre.0, centre.1, centre.2);
+            for axis in plane.tangent_axes() {
+                assert!(
+                    low[axis] < centre[axis] - 0.1 && high[axis] > centre[axis] + 0.1,
+                    "{plane:?} reaches out along axis {axis} in both directions"
+                );
+            }
+            let normal_axis = plane.normal_axis();
+            assert!(
+                high[normal_axis] - low[normal_axis] < 0.02,
+                "{plane:?} arrows lie flat on the plane"
+            );
+            assert!(
+                (f32::midpoint(low[normal_axis], high[normal_axis]) - centre[normal_axis]).abs()
+                    < 1.0e-5,
+                "{plane:?} arrows are centred on the area with the sheet"
+            );
+        }
     }
 
     #[test]
@@ -6900,7 +8393,7 @@ mod rendering_tests {
             })
             .collect::<Vec<_>>();
         for material in ConstructionMaterial::ALL {
-            let build = combined_material_construction_mesh(&graph, material);
+            let build = combined_material_construction_mesh(&graph, None, material);
             let simulated = combined_simulation_material_mesh(
                 &graph,
                 &creation,
@@ -6933,7 +8426,7 @@ mod rendering_tests {
                 .unwrap(),
             ))
             .unwrap();
-        let mesh = combined_material_construction_mesh(&graph, ConstructionMaterial::Steel);
+        let mesh = combined_material_construction_mesh(&graph, None, ConstructionMaterial::Steel);
         let positions = positions(&mesh);
         let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0)
         else {
@@ -7763,18 +9256,19 @@ mod interaction_tests {
         BearingToolSettings, BlockAttachment, BlockDrag, CylinderDimensionTarget,
         CylinderToolSettings, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
         HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, PlacedBearing, PlacementPlane,
-        PointerSample, SelectedTool, SimulationShortcut, SurfaceHit, Tool,
+        PointerSample, SelectedTool, SimulationShortcut, SurfaceHit, Tool, active_drag_plane,
         adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
-        bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_specs,
-        candidate_from_hit, connect_drive_wire, delete_sheet_parts, disconnect_drive_wires,
-        hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
-        handle_build_actions, handle_shortcuts, handle_tool_change, help_toggle_requested,
-        raycast_construction, raycast_placed_bearing_discs, raycast_placed_bearings,
-        raycast_simulation, refresh_block_drag, refresh_tool_preview,
-        requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
-        requested_simulation_shortcut, rigid_body_parts, stage_part_deletion_preserving_bearings,
-        tool_status_line, wire_drag_step,
+        bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_bounds,
+        block_sheet_specs, candidate_from_hit, connect_drive_wire, delete_sheet_parts,
+        disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude, hammer_point_travel,
+        handle_block_actions, handle_build_actions, handle_shortcuts, handle_tool_change,
+        help_toggle_requested, raycast_construction, raycast_placed_bearing_discs,
+        raycast_placed_bearings, raycast_simulation, refresh_block_drag, refresh_region_drag,
+        refresh_tool_preview, requested_bearing_dimension_adjustment,
+        requested_cylinder_dimension_adjustment, requested_simulation_shortcut, rigid_body_parts,
+        stage_part_deletion_preserving_bearings, tool_status_line, wire_drag_step,
     };
+    use super::{RegionDrag, commit_region_drag, region_area};
     use crate::{WireConnection, WireDrag, WireDragStep, WireEnd, ui::UiInput};
 
     fn pointer_sample(cursor: Vec2, ray_origin: Vec3, ray_direction: Vec3) -> PointerSample {
@@ -8156,6 +9650,220 @@ mod interaction_tests {
         );
     }
 
+    /// A solid, welded slab of one-cell blocks with its minimum corner at the
+    /// origin, which is what a region drag needs underneath it.
+    fn welded_slab(size: IVec3) -> ConstructionGraph {
+        let mut graph = ConstructionGraph::new();
+        let mut previous: Option<PartId> = None;
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    let spec = CuboidSpec::new(
+                        [1, 1, 1],
+                        BuildPose::from_half_grid(
+                            IVec3::ONE + IVec3::new(x, y, z) * 2,
+                            GridRotation::default(),
+                        ),
+                    )
+                    .unwrap();
+                    let BuildOutcome::Spawned(id) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+                    else {
+                        unreachable!()
+                    };
+                    if let Some(first) = previous {
+                        graph
+                            .apply(BuildCommand::RigidLink(RigidLinkSpec { first, second: id }))
+                            .unwrap();
+                    }
+                    previous = Some(id);
+                }
+            }
+        }
+        graph
+    }
+
+    fn region_drag_on(
+        graph: &ConstructionGraph,
+        plane: PlacementPlane,
+        press: PointerSample,
+    ) -> RegionDrag {
+        let (_, spec) = graph.parts().next().expect("the slab has blocks");
+        let start = spec.as_cuboid().expect("the slab is made of blocks");
+        RegionDrag {
+            start,
+            press,
+            plane,
+            anchor_span: IVec3::ZERO,
+            span: IVec3::ZERO,
+            last_span: None,
+            region: region_area(start, IVec3::ZERO),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn dragging_across_blocks_claims_all_of_them_as_one_region() {
+        let graph = welded_slab(IVec3::new(3, 2, 1));
+        // Straight down onto the top of the first block, which is the XZ plane
+        // the pointer then slides along.
+        let press = pointer_sample(Vec2::ZERO, Vec3::new(0.125, 2.0, 0.125), Vec3::NEG_Y);
+        let mut state = EditorState {
+            region_drag: Some(region_drag_on(&graph, PlacementPlane::Xz, press)),
+            ..Default::default()
+        };
+
+        refresh_region_drag(
+            &graph,
+            &mut state,
+            Vec2::new(100.0, 0.0),
+            Vec3::new(0.625, 2.0, 0.125),
+            Vec3::NEG_Y,
+        );
+
+        let drag = state.region_drag.as_ref().unwrap();
+        assert_eq!(drag.span, IVec3::new(2, 0, 0));
+        assert_eq!(drag.region.size_cells(), IVec3::new(3, 1, 1));
+        assert_eq!(drag.error, None, "three welded blocks are a valid area");
+    }
+
+    #[test]
+    fn q_mid_area_drag_extrudes_the_selection_into_a_box() {
+        let graph = welded_slab(IVec3::new(3, 2, 1));
+        let press = pointer_sample(Vec2::ZERO, Vec3::new(0.125, 2.0, 0.125), Vec3::NEG_Y);
+        let mut state = EditorState {
+            region_drag: Some(region_drag_on(&graph, PlacementPlane::Xz, press)),
+            ..Default::default()
+        };
+        refresh_region_drag(
+            &graph,
+            &mut state,
+            Vec2::new(100.0, 0.0),
+            Vec3::new(0.625, 2.0, 0.125),
+            Vec3::NEG_Y,
+        );
+
+        // What `Q` does: keep the rectangle already dragged and re-anchor here.
+        let rotated = pointer_sample(Vec2::ZERO, Vec3::new(0.125, 0.125, 2.0), Vec3::NEG_Z);
+        {
+            let drag = state.region_drag.as_mut().unwrap();
+            drag.plane = drag.plane.cycle();
+            assert_eq!(drag.plane, PlacementPlane::Xy);
+            drag.anchor_span = drag.span;
+            drag.press = rotated;
+            drag.last_span = None;
+        }
+
+        refresh_region_drag(
+            &graph,
+            &mut state,
+            Vec2::new(0.0, 100.0),
+            Vec3::new(0.125, 0.375, 2.0),
+            Vec3::NEG_Z,
+        );
+
+        let drag = state.region_drag.as_ref().unwrap();
+        assert_eq!(
+            drag.span,
+            IVec3::new(2, 1, 0),
+            "the rotation keeps the extent and grows the third axis"
+        );
+        assert_eq!(drag.region.size_cells(), IVec3::new(3, 2, 1));
+        assert_eq!(drag.error, None);
+    }
+
+    #[test]
+    fn releasing_a_valid_area_opens_it_for_editing() {
+        let mut graph = welded_slab(IVec3::new(2, 1, 1));
+        let press = pointer_sample(Vec2::ZERO, Vec3::new(0.125, 2.0, 0.125), Vec3::NEG_Y);
+        let mut state = EditorState {
+            region_drag: Some(region_drag_on(&graph, PlacementPlane::Xz, press)),
+            ..Default::default()
+        };
+        refresh_region_drag(
+            &graph,
+            &mut state,
+            Vec2::new(100.0, 0.0),
+            Vec3::new(0.375, 2.0, 0.125),
+            Vec3::NEG_Y,
+        );
+        let mut history = EditorHistory::default();
+
+        commit_region_drag(&mut graph, &mut state, &mut history);
+
+        assert!(state.region_drag.is_none());
+        let region = state.active_region.and_then(|id| graph.region(id)).unwrap();
+        assert_eq!(region.size_cells(), IVec3::new(2, 1, 1));
+        assert_eq!(history.undo.len(), 1);
+    }
+
+    #[test]
+    fn an_area_reaching_past_the_blocks_is_refused_rather_than_claimed() {
+        let mut graph = welded_slab(IVec3::new(2, 1, 1));
+        let press = pointer_sample(Vec2::ZERO, Vec3::new(0.125, 2.0, 0.125), Vec3::NEG_Y);
+        let mut state = EditorState {
+            region_drag: Some(region_drag_on(&graph, PlacementPlane::Xz, press)),
+            ..Default::default()
+        };
+        // Three cells wide over a two-block slab: the far cell is empty.
+        refresh_region_drag(
+            &graph,
+            &mut state,
+            Vec2::new(100.0, 0.0),
+            Vec3::new(0.625, 2.0, 0.125),
+            Vec3::NEG_Y,
+        );
+        assert!(state.region_drag.as_ref().unwrap().error.is_some());
+
+        let mut history = EditorHistory::default();
+        commit_region_drag(&mut graph, &mut state, &mut history);
+
+        assert_eq!(graph.regions().count(), 0);
+        assert!(state.active_region.is_none());
+        assert!(history.undo.is_empty());
+    }
+
+    #[test]
+    fn placing_blocks_shows_the_same_plane_as_choosing_an_area() {
+        let graph = ConstructionGraph::new();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: FaceRef::ground(),
+        };
+        let candidate = candidate_from_hit(&graph, hit);
+        let specs =
+            block_sheet_specs(candidate.spec, IVec3::new(4, 1, 2), PlacementPlane::Xz).unwrap();
+        let state = EditorState {
+            block_drag: Some(BlockDrag {
+                start: candidate,
+                attachment: BlockAttachment::AutoWeld {
+                    source: FaceOwner::Ground,
+                },
+                press: pointer_sample(Vec2::ZERO, Vec3::Y, Vec3::NEG_Y),
+                plane: PlacementPlane::Xz,
+                anchor_span: IVec3::ZERO,
+                span: IVec3::new(2, 0, 1),
+                last_span: Some(IVec3::new(2, 0, 1)),
+                specs: specs.clone(),
+                error: None,
+            }),
+            ..Default::default()
+        };
+
+        let (low, high, plane) =
+            active_drag_plane(&state, &AppSimulation::default()).expect("a block drag has a plane");
+        assert_eq!(plane, PlacementPlane::Xz);
+        // Centred on the blocks about to be placed, exactly as an area is.
+        let (sheet_low, sheet_high) = block_sheet_bounds(&specs).unwrap();
+        assert!(low.abs_diff_eq(sheet_low, 1.0e-6));
+        assert!(high.abs_diff_eq(sheet_high, 1.0e-6));
+
+        assert!(
+            active_drag_plane(&EditorState::default(), &AppSimulation::default()).is_none(),
+            "no drag, no plane"
+        );
+    }
+
     #[test]
     fn selecting_a_tool_cancels_pending_editor_state() {
         let mut graph = ConstructionGraph::new();
@@ -8293,7 +10001,9 @@ mod interaction_tests {
                 },
                 press,
                 plane: PlacementPlane::Xz,
-                last_endpoint: None,
+                anchor_span: IVec3::ZERO,
+                span: IVec3::ZERO,
+                last_span: None,
                 specs: vec![candidate.spec],
                 error: None,
             }),
@@ -8348,7 +10058,9 @@ mod interaction_tests {
                 },
                 press,
                 plane: PlacementPlane::Xz,
-                last_endpoint: None,
+                anchor_span: IVec3::ZERO,
+                span: IVec3::ZERO,
+                last_span: None,
                 specs: vec![candidate.spec],
                 error: None,
             }),
@@ -8396,7 +10108,9 @@ mod interaction_tests {
                 },
                 press: pointer_sample(Vec2::ZERO, Vec3::Y, Vec3::NEG_Y),
                 plane: PlacementPlane::Xz,
-                last_endpoint: Some((PlacementPlane::Xz, endpoint)),
+                anchor_span: IVec3::ZERO,
+                span: IVec3::new(2, 0, 1),
+                last_span: Some(IVec3::new(2, 0, 1)),
                 specs,
                 error: None,
             }),
@@ -9231,7 +10945,9 @@ mod history_tests {
                 ray_direction: Vec3::NEG_Y,
             },
             plane: PlacementPlane::Xz,
-            last_endpoint: None,
+            anchor_span: IVec3::ZERO,
+            span: IVec3::ZERO,
+            last_span: None,
             specs: vec![candidate.spec],
             error: None,
         });

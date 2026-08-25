@@ -47,6 +47,7 @@ macro_rules! define_id {
 
 define_id!(PartId);
 define_id!(WeldId);
+define_id!(RegionId);
 define_id!(RigidLinkId);
 define_id!(BearingId);
 define_id!(DriveLinkId);

@@ -54,6 +54,20 @@ physics exercise; the production renderer has not been started.
   combined committed part/bearing meshes, and geometry-shaped white/red ghosts.
 - Space-controlled GPU physics preview using the shared Bevy device, fixed 60 Hz
   scheduling, failure-checked snapshots, and synchronous CPU mesh readback.
+- Editable shape regions. A solid cuboid of blocks is claimed for editing and
+  merges into one shape with eight cage corners; the rest of the build fades
+  back. No vertex may leave the region's original bounding box. Subdividing an
+  edge inserts a whole cage plane without moving the surface. One decomposition
+  feeds the colliders, the render mesh, and the editor raycast, so the hitbox
+  matches what is drawn. Unshaped parts still compile to one box each. Shaped
+  cells split by Freudenthal and fuse back into convex pieces, compile to exact
+  mass, centre of mass, and full inertia tensors, and upload as convex polytope
+  collider rows with their own separating-axis path; the box-versus-box path is
+  untouched. Placement is restricted to faces that are still flat.
+- A block drag that rotates into a third axis with `Q` while keeping the extent
+  already dragged, so a solid cuboid of blocks is one gesture. The Shape tool
+  claims a region with the same gesture, outlining the area and refusing one
+  that is not solid, is mixed, spans two bodies, or holds only part of a block.
 - Control blocks, a two-click connector tool, per-wire direction reversal, and
   per-bearing state programs edited in a panel opened with `E`. A state holds a
   target angle or speed and is entered by key or left after a dwell, so one

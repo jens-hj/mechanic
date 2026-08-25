@@ -23,7 +23,11 @@ struct Collider {
     half_extents: vec4<f32>,
     metadata: vec4<u32>,
     contact_properties: vec4<f32>,
+    // shape kind, convex-buffer offset, packed element counts, reserved.
+    shape: vec4<u32>,
 };
+
+const COLLIDER_SHAPE_CONVEX: u32 = 1u;
 
 struct Aabb {
     minimum: vec4<f32>,
@@ -56,6 +60,7 @@ const SORT_BLOCK_SIZE: u32 = 256u;
 @group(0) @binding(21) var<storage, read_write> node_parents: array<u32>;
 @group(0) @binding(22) var<storage, read_write> node_visits: array<atomic<u32>>;
 @group(0) @binding(23) var<uniform> sort_params: SortParams;
+@group(0) @binding(28) var<storage, read> convex_shapes: array<vec4<f32>>;
 
 var<workgroup> shared_entries: array<vec2<u32>, 256>;
 
@@ -118,6 +123,23 @@ fn compute_morton(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
     let collider = colliders[index];
     let center = collider_center(index);
+    if collider.shape.x == COLLIDER_SHAPE_CONVEX {
+        // A polytope has no half extents; bound it by its own vertices.
+        let body = collider.metadata.x;
+        let count = collider.shape.z & 0xffu;
+        var minimum = vec3<f32>(3.402823e+38);
+        var maximum = vec3<f32>(-3.402823e+38);
+        for (var vertex = 0u; vertex < count; vertex += 1u) {
+            let point = positions[body].xyz
+                + quat_rotate(rotations[body], convex_shapes[collider.shape.y + vertex].xyz);
+            minimum = min(minimum, point);
+            maximum = max(maximum, point);
+        }
+        collider_aabbs[index].minimum = vec4<f32>(minimum, 0.0);
+        collider_aabbs[index].maximum = vec4<f32>(maximum, 0.0);
+        morton_entries[index] = vec2<u32>(morton_code(center), index);
+        return;
+    }
     let rotation = collider_rotation(index);
     let axis_x = quat_rotate(rotation, vec3<f32>(1.0, 0.0, 0.0));
     let axis_y = quat_rotate(rotation, vec3<f32>(0.0, 1.0, 0.0));

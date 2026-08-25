@@ -6,17 +6,19 @@ mod drive;
 mod geometry;
 mod graph;
 mod id;
+mod region;
+mod shape;
 
 pub use compile::{
-    CYLINDER_COLLIDER_COUNT, CompiledBearing, CompiledCompound, CompiledCreation, CoordinateDrive,
-    DriveMode, LocalCuboidCollider, LoopTopology, MassProperties, MechanismBodyTopology,
-    TopologyError,
+    CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
+    CompiledCreation, CoordinateDrive, DriveMode, LocalCollider, LoopTopology,
+    MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology, TopologyError,
 };
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, CreationDocument,
     CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc, DriveStateDoc,
     DriveTriggerDoc, FaceOwnerDoc, FaceRefDoc, InputSeatLinkDoc, LoadedCreation, PartDoc, PoseDoc,
-    RigidLinkDoc, SeatControllerLinkDoc, WeldDoc,
+    RegionDoc, RigidLinkDoc, SeatControllerLinkDoc, WeldDoc,
 };
 pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
@@ -39,7 +41,15 @@ pub use graph::{
     PendingOperation, RigidLinkSpec, SeatControllerLinkSpec, WeldSpec,
 };
 pub use id::{
-    BearingId, DriveLinkId, InputSeatLinkId, PartId, RigidLinkId, SeatControllerLinkId, WeldId,
+    BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
+    WeldId,
+};
+pub use region::{CageIndex, RegionError, ShapeRegion};
+pub use shape::{
+    CellGrid, ConvexFace, ConvexPiece, GridFace, MAX_PIECE_EDGES, MAX_PIECE_FACES,
+    MAX_PIECE_VERTICES, PartPiece, STEP_METERS, STEPS_PER_CELL, STEPS_PER_HALF_UNIT, decompose,
+    decompose_part, face_neighbour_offset, has_inverted_cell, part_cells, steps_to_meters,
+    undisplaced_steps,
 };
 
 /// Legacy authored-machine density, in kg/m³.

@@ -32,11 +32,47 @@ rounds. An edge that would join two already-grounded trees is a closure rather
 than silently making one grounded body dynamic. There is no entity, transform,
 mesh, or material per part.
 
+An editable area is a *shape region*: a solid cuboid of blocks claimed for
+editing. A region owns the geometry of the blocks it covers, so those blocks stop
+emitting colliders, mass, and mesh of their own and the region emits one merged
+shape instead. Claiming an area requires every cell filled, one material
+throughout, one rigid body, and no overlap with an existing region; deleting any
+of its blocks deletes the region, the way deleting a part already cascades its
+welds.
+
+A region's geometry is its *control cage*, a grid of vertices. A fresh region has
+two planes per axis — eight corners, one hexahedron. Subdividing inserts a whole
+plane, never a lone vertex, so the cage stays a valid grid of hexahedra and the
+decomposition keeps holding. Every vertex is clamped to the region's original
+bounding box, so a corner can only be drawn inward and one region can never grow
+into its neighbours.
+
+One decomposition turns a grid of cells into convex pieces, and the compiler, the
+render mesh, and the editor raycast all consume it. Because they share it, the
+collider, the visible surface, and the cursor cannot drift apart. Cells with no
+displaced corner are covered by as few boxes as possible, so an unshaped part
+still compiles to the single box it always did and the box-versus-box solver path
+is untouched. Shaped cells are split by the Freudenthal scheme, whose corner
+labelling makes two neighbouring cells triangulate their shared face identically,
+and the resulting tetrahedra are then fused back into the largest convex pieces
+that reproduce their union exactly. Fusing is refused where it would
+re-triangulate a non-planar grid face, because a convex hull would pick the
+opposite diagonal from the neighbouring cell and split the surface open.
+
+Two cage vertices driven through each other would turn a cell inside out, and
+`SetRegionVertices` rejects that rather than letting self-intersecting geometry
+reach the solver.
+
+Parts may only be placed on faces that are still flat: every cage vertex on that
+face resting on the grid. A shaped face is no longer an axis-aligned rectangle,
+so nothing could sit flush on it.
+
 ## Persistence
 
 A saved creation is the authored graph and nothing derived from it: parts,
-welds, rigid links, bearings, drive wires with their limits and programs, and
-the bearing rings the editor holds that no part hangs from yet. That set is the
+welds, rigid links, bearings, drive wires with their limits and programs, the
+shape regions with their cage planes and displaced vertices, and the bearing
+rings the editor holds that no part hangs from yet. That set is the
 same one the undo history snapshots, which is the definition of "the whole
 creation". Compiled bodies, mass and inertia, loop topology, GPU buffers, and
 sequencer cursors are all recomputed on load.

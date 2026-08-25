@@ -1,13 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use bevy_math::{Vec2, Vec3};
+use bevy_math::{IVec3, Vec2, Vec3};
 use thiserror::Error;
 
 use crate::{
-    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, ActuatorAssignment, BearingId, ControllerSpec,
-    CuboidSpec, CylinderSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget,
-    EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, InputSeatLinkId, InputSpec, PartId,
-    PartSpec, RigidLinkId, SeatControllerLinkId, SeatSpec, ServoSpec, WeldId,
+    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, ActuatorAssignment, BearingId, CageIndex,
+    ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderSpec, DriveLimits, DriveLinkId,
+    DriveName, DriveProgram, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
+    InputSeatLinkId, InputSpec, PartId, PartSpec, RegionError, RegionId, RigidLinkId,
+    SeatControllerLinkId, SeatSpec, ServoSpec, ShapeRegion, WeldId,
     geometry::{FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face},
     id::Arena,
 };
@@ -281,7 +282,7 @@ pub enum PendingOperation {
 }
 
 /// Atomic edit request for a construction graph.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BuildCommand {
     /// Spawn a standalone cuboid.
     Spawn(CuboidSpec),
@@ -336,6 +337,27 @@ pub enum BuildCommand {
         /// Replacement actuator assignment.
         actuator: ActuatorAssignment,
     },
+    /// Claim a solid cuboid of blocks as an editable shape region.
+    AddRegion(ShapeRegion),
+    /// Release a region, returning its blocks to their own box geometry.
+    RemoveRegion(RegionId),
+    /// Move cage vertices. Applied as one batch so a group drag, or an edit
+    /// expanded across the mirror planes, stays a single undo entry.
+    SetRegionVertices {
+        /// Region being shaped.
+        region: RegionId,
+        /// Vertices and their new displacements.
+        vertices: Vec<(CageIndex, [i16; 3])>,
+    },
+    /// Insert a cage plane, giving the region a new row of handles.
+    SubdivideRegion {
+        /// Region being subdivided.
+        region: RegionId,
+        /// Axis to split.
+        axis: usize,
+        /// Position along that axis, in cells from the region origin.
+        position: i32,
+    },
     /// Record a non-mutating first endpoint for a two-step tool.
     BeginPending(PendingOperation),
     /// Cancel the current incomplete tool operation.
@@ -363,6 +385,10 @@ pub enum BuildOutcome {
     SeatControllerLinked(SeatControllerLinkId),
     /// A drive wire's limits or program were replaced.
     DriveUpdated,
+    /// A region was claimed.
+    RegionAdded(RegionId),
+    /// A region's cage changed.
+    RegionUpdated,
     /// A pending operation was recorded.
     Pending,
     /// A pending operation was cancelled, or there was nothing to cancel.
@@ -441,6 +467,30 @@ pub enum GraphError {
     /// A bearing cannot connect a face to the ground in this milestone.
     #[error("bearings require two part endpoints")]
     BearingOnGround,
+    /// A region handle is stale or unknown.
+    #[error("region {0:?} is not live")]
+    MissingRegion(RegionId),
+    /// A region rejected the change.
+    #[error(transparent)]
+    InvalidRegion(#[from] RegionError),
+    /// The chosen area is not a solid cuboid of blocks.
+    #[error("a region needs every cell filled by a block; {0} are empty")]
+    RegionNotSolid(usize),
+    /// The chosen area mixes materials.
+    #[error("a region must be one material throughout")]
+    RegionMixedMaterials,
+    /// The chosen area spans more than one rigid body.
+    #[error("a region must lie within one rigid body")]
+    RegionSpansBodies,
+    /// The chosen area overlaps a region that already exists.
+    #[error("that area overlaps region {0:?}")]
+    RegionOverlaps(RegionId),
+    /// The chosen area holds part of a block but not all of it.
+    #[error("a region must contain each of its blocks whole")]
+    RegionSplitsPart,
+    /// A cage move would turn one of the region's cells inside out.
+    #[error("region {0:?} would have a cell turned inside out")]
+    InvertedCell(RegionId),
 }
 
 /// Editable, CPU-owned construction topology.
@@ -453,6 +503,9 @@ pub struct ConstructionGraph {
     pub(crate) drive_links: Arena<DriveLinkSpec, DriveLinkId>,
     pub(crate) input_seat_links: Arena<InputSeatLinkSpec, InputSeatLinkId>,
     pub(crate) seat_controller_links: Arena<SeatControllerLinkSpec, SeatControllerLinkId>,
+    /// Editable shape regions. A region owns the geometry of the blocks it
+    /// covers, so those blocks stop emitting boxes of their own.
+    pub(crate) regions: Arena<ShapeRegion, RegionId>,
     pending: Option<PendingOperation>,
 }
 
@@ -491,6 +544,27 @@ impl ConstructionGraph {
             .collect::<Result<Vec<_>, _>>()?;
         *self = staged;
         Ok(outcomes)
+    }
+
+    /// Every live shape region.
+    pub fn regions(&self) -> impl Iterator<Item = (RegionId, &ShapeRegion)> {
+        self.regions.iter()
+    }
+
+    /// One live shape region.
+    pub fn region(&self, id: RegionId) -> Option<&ShapeRegion> {
+        self.regions.get(id)
+    }
+
+    /// The region covering this part, when one does.
+    pub fn region_of(&self, part: PartId) -> Option<RegionId> {
+        let spec = self.parts.get(part)?;
+        let cuboid = spec.as_cuboid()?;
+        let cells = crate::part_cells(cuboid);
+        let origin = cells.corner_half_units(IVec3::ZERO, 0);
+        self.regions
+            .iter()
+            .find_map(|(id, region)| region.covers_cell(origin).then_some(id))
     }
 
     /// Retrieves a live construction part.
@@ -750,6 +824,152 @@ impl ConstructionGraph {
         }
     }
 
+    /// Whether a region's cage has turned any of its cells inside out.
+    fn reject_inverted_region(&self, region: RegionId) -> Result<(), GraphError> {
+        let shape = self
+            .regions
+            .get(region)
+            .ok_or(GraphError::MissingRegion(region))?;
+        let grid = shape.grid();
+        if crate::shape::has_inverted_cell(&grid, &|cell, corner| shape.corner_steps(cell, corner))
+        {
+            return Err(GraphError::InvertedCell(region));
+        }
+        Ok(())
+    }
+
+    /// Checks the rules an area must satisfy before it can become a region,
+    /// without adding one, so a drag can preview whether it would be accepted.
+    ///
+    /// # Errors
+    ///
+    /// Reports the first rule the area breaks.
+    pub fn check_region_area(&self, region: &ShapeRegion) -> Result<(), GraphError> {
+        self.validate_region_area(region)
+    }
+
+    /// Checks the rules an area must satisfy before it can become a region:
+    /// every cell filled, one material, one rigid body, whole blocks only, and
+    /// nothing already claiming the space.
+    fn validate_region_area(&self, region: &ShapeRegion) -> Result<(), GraphError> {
+        if let Some((id, _)) = self
+            .regions
+            .iter()
+            .find(|(_, existing)| existing.overlaps(region))
+        {
+            return Err(GraphError::RegionOverlaps(id));
+        }
+
+        let mut occupants: BTreeMap<[i32; 3], (PartId, ConstructionMaterial)> = BTreeMap::new();
+        for (id, spec) in self.parts.iter() {
+            let Some(cuboid) = spec.as_cuboid() else {
+                continue;
+            };
+            // Only ordinary blocks make up a region; the fixed authored machine
+            // parts are components, not material.
+            if !matches!(spec, PartSpec::Cuboid(_)) {
+                continue;
+            }
+            let cells = crate::part_cells(cuboid);
+            let counts = cells.counts();
+            for z in 0..counts.z {
+                for y in 0..counts.y {
+                    for x in 0..counts.x {
+                        let corner = cells.corner_half_units(IVec3::new(x, y, z), 0);
+                        occupants.insert(corner.to_array(), (id, cuboid.material));
+                    }
+                }
+            }
+        }
+
+        let size = region.size_cells();
+        let origin = region.origin_half_units();
+        let mut material: Option<ConstructionMaterial> = None;
+        let mut members: Vec<PartId> = Vec::new();
+        let mut claimed: BTreeMap<PartId, i32> = BTreeMap::new();
+        let mut empty = 0_usize;
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    let corner = origin + IVec3::new(x, y, z) * 2;
+                    let Some(&(part, cell_material)) = occupants.get(&corner.to_array()) else {
+                        empty += 1;
+                        continue;
+                    };
+                    if *material.get_or_insert(cell_material) != cell_material {
+                        return Err(GraphError::RegionMixedMaterials);
+                    }
+                    if !members.contains(&part) {
+                        members.push(part);
+                    }
+                    *claimed.entry(part).or_default() += 1;
+                }
+            }
+        }
+        if empty > 0 {
+            return Err(GraphError::RegionNotSolid(empty));
+        }
+        if material != Some(region.material()) {
+            return Err(GraphError::RegionMixedMaterials);
+        }
+
+        // A member hands its whole surface and mass to the region, so an area
+        // that holds only some of a block's cells would lose the rest.
+        for (&part, &cells) in &claimed {
+            let whole = self
+                .parts
+                .get(part)
+                .and_then(|spec| spec.as_cuboid())
+                .map_or(0, |cuboid| {
+                    crate::part_cells(cuboid).counts().element_product()
+                });
+            if cells != whole {
+                return Err(GraphError::RegionSplitsPart);
+            }
+        }
+
+        // One rigid body: walking the welds from any member must reach them all.
+        if let Some(&seed) = members.first() {
+            let body = self.rigid_group(seed);
+            if !members.iter().all(|part| body.contains(part)) {
+                return Err(GraphError::RegionSpansBodies);
+            }
+        }
+        Ok(())
+    }
+
+    /// Every part welded, directly or transitively, to `seed`.
+    fn rigid_group(&self, seed: PartId) -> BTreeSet<PartId> {
+        let mut reached = BTreeSet::from([seed]);
+        let mut frontier = vec![seed];
+        while let Some(part) = frontier.pop() {
+            let mut visit = |other: PartId| {
+                if reached.insert(other) {
+                    frontier.push(other);
+                }
+            };
+            for (_, weld) in self.welds.iter() {
+                if let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+                    (weld.first.owner, weld.second.owner)
+                {
+                    if first == part {
+                        visit(second);
+                    } else if second == part {
+                        visit(first);
+                    }
+                }
+            }
+            for (_, link) in self.rigid_links.iter() {
+                if link.first == part {
+                    visit(link.second);
+                } else if link.second == part {
+                    visit(link.first);
+                }
+            }
+        }
+        reached
+    }
+
     #[allow(clippy::too_many_lines)] // One exhaustive command dispatch reads better whole.
     fn apply_validated(&mut self, command: BuildCommand) -> Result<BuildOutcome, GraphError> {
         match command {
@@ -842,6 +1062,11 @@ impl ConstructionGraph {
                 }
                 for bearing in bearings {
                     self.bearings.remove(bearing);
+                }
+                // A region needs every cell filled, so losing one of its blocks
+                // ends it — the same cascade welds already get.
+                if let Some(region) = self.region_of(id) {
+                    self.regions.remove(region);
                 }
                 self.parts.remove(id);
                 self.pending = None;
@@ -947,6 +1172,44 @@ impl ConstructionGraph {
                 spec.name = name;
                 spec.actuator = actuator;
                 Ok(BuildOutcome::DriveUpdated)
+            }
+            BuildCommand::AddRegion(region) => {
+                self.validate_region_area(&region)?;
+                let id = self.regions.insert(region);
+                Ok(BuildOutcome::RegionAdded(id))
+            }
+            BuildCommand::RemoveRegion(id) => {
+                self.regions
+                    .remove(id)
+                    .ok_or(GraphError::MissingRegion(id))?;
+                Ok(BuildOutcome::Removed)
+            }
+            BuildCommand::SetRegionVertices { region, vertices } => {
+                let shape = self
+                    .regions
+                    .get_mut(region)
+                    .ok_or(GraphError::MissingRegion(region))?;
+                for (index, offset) in vertices {
+                    shape.set_offset(index, offset)?;
+                }
+                // Two vertices driven through each other would turn a cell
+                // inside out. The caller applied this to a staged clone, so
+                // rejecting here leaves the live graph untouched.
+                self.reject_inverted_region(region)?;
+                Ok(BuildOutcome::RegionUpdated)
+            }
+            BuildCommand::SubdivideRegion {
+                region,
+                axis,
+                position,
+            } => {
+                let shape = self
+                    .regions
+                    .get_mut(region)
+                    .ok_or(GraphError::MissingRegion(region))?;
+                shape.subdivide(axis, position)?;
+                self.reject_inverted_region(region)?;
+                Ok(BuildOutcome::RegionUpdated)
             }
             BuildCommand::BeginPending(pending) => {
                 match pending {
@@ -1419,10 +1682,11 @@ mod tests {
         ConstructionGraph, DriveLinkSpec, GraphError, PendingOperation, RigidLinkSpec, WeldSpec,
     };
     use crate::{
-        ActuatorAssignment, BearingId, BuildPose, ControllerSpec, CuboidSpec, CylinderDimensions,
-        CylinderSpec, DriveLimits, DriveName, DriveProgram, DriveState, DriveTarget, EngineKind,
-        EngineSpec, FaceKind, FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, PartId,
-        PartSpec, SeatControllerLinkSpec, SeatSpec,
+        ActuatorAssignment, BearingId, BuildPose, ConstructionMaterial, ControllerSpec, CuboidSpec,
+        CylinderDimensions, CylinderSpec, DriveLimits, DriveName, DriveProgram, DriveState,
+        DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef, GridRotation, InputSeatLinkSpec,
+        InputSpec, PartId, PartSpec, RegionError, RegionId, SeatControllerLinkSpec, SeatSpec,
+        ShapeRegion,
     };
 
     fn cube_at(x: i32) -> CuboidSpec {
@@ -2088,5 +2352,252 @@ mod tests {
 
         assert_eq!(graph.bearing_count(), 0);
         assert_eq!(graph.drive_link_count(), 0);
+    }
+
+    /// One construction cell, in the steps a cage vertex moves in.
+    fn cell_steps() -> i16 {
+        i16::try_from(crate::STEPS_PER_CELL).expect("a cell is twenty steps")
+    }
+
+    /// A solid run of `size` one-cell blocks welded together from the origin.
+    fn welded_blocks(size: IVec3, material: ConstructionMaterial) -> ConstructionGraph {
+        let mut graph = ConstructionGraph::new();
+        let mut previous: Option<(PartId, IVec3)> = None;
+        for z in 0..size.z {
+            for y in 0..size.y {
+                for x in 0..size.x {
+                    let at = IVec3::new(x, y, z);
+                    let spec = CuboidSpec::new(
+                        [1, 1, 1],
+                        BuildPose::from_half_grid(IVec3::ONE + at * 2, GridRotation::default()),
+                    )
+                    .unwrap()
+                    .with_material(material);
+                    let BuildOutcome::Spawned(id) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+                    else {
+                        panic!("wrong spawn outcome")
+                    };
+                    // Weld everything into one body so a region may claim it.
+                    if let Some((earlier, _)) = previous {
+                        graph
+                            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                                first: earlier,
+                                second: id,
+                            }))
+                            .unwrap();
+                    }
+                    previous = Some((id, at));
+                }
+            }
+        }
+        graph
+    }
+
+    fn add_region(
+        graph: &mut ConstructionGraph,
+        size: IVec3,
+        material: ConstructionMaterial,
+    ) -> Result<RegionId, GraphError> {
+        let region = ShapeRegion::new(IVec3::ZERO, size, material).unwrap();
+        match graph.apply(BuildCommand::AddRegion(region))? {
+            BuildOutcome::RegionAdded(id) => Ok(id),
+            other => panic!("wrong outcome {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fresh_region_has_eight_cage_vertices() {
+        let mut graph = welded_blocks(IVec3::new(2, 2, 2), ConstructionMaterial::Steel);
+        let id = add_region(&mut graph, IVec3::new(2, 2, 2), ConstructionMaterial::Steel).unwrap();
+        let region = graph.region(id).unwrap();
+        assert_eq!(region.plane_counts(), [2, 2, 2]);
+        assert_eq!(region.vertices().count(), 8, "a fresh cage is a box");
+        assert!(region.is_unshaped());
+    }
+
+    #[test]
+    fn a_region_refuses_an_area_with_a_hole() {
+        // Two of the four cells filled: the area is not solid.
+        let mut graph = welded_blocks(IVec3::new(2, 1, 1), ConstructionMaterial::Steel);
+        assert!(matches!(
+            add_region(&mut graph, IVec3::new(2, 2, 1), ConstructionMaterial::Steel),
+            Err(GraphError::RegionNotSolid(2))
+        ));
+        assert_eq!(graph.regions().count(), 0);
+    }
+
+    #[test]
+    fn a_region_can_span_a_whole_run_of_welded_blocks() {
+        let mut graph = welded_blocks(IVec3::new(3, 2, 2), ConstructionMaterial::Steel);
+        let id = add_region(&mut graph, IVec3::new(3, 2, 2), ConstructionMaterial::Steel).unwrap();
+        let region = graph.region(id).unwrap();
+        assert_eq!(region.size_cells(), IVec3::new(3, 2, 2));
+        // Twelve blocks, one shape: the cage still has only its eight corners.
+        assert_eq!(region.vertices().count(), 8);
+    }
+
+    #[test]
+    fn a_region_refuses_to_hold_only_part_of_a_block() {
+        // One two-cell beam, and an area covering just one of its cells.
+        let mut graph = ConstructionGraph::new();
+        let spec = CuboidSpec::new(
+            [2, 1, 1],
+            BuildPose::from_half_grid(IVec3::new(2, 1, 1), GridRotation::default()),
+        )
+        .unwrap()
+        .with_material(ConstructionMaterial::Steel);
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        assert!(matches!(
+            add_region(&mut graph, IVec3::ONE, ConstructionMaterial::Steel),
+            Err(GraphError::RegionSplitsPart)
+        ));
+        // The whole beam is fine.
+        add_region(&mut graph, IVec3::new(2, 1, 1), ConstructionMaterial::Steel).unwrap();
+    }
+
+    #[test]
+    fn a_region_refuses_mixed_materials() {
+        let mut graph = welded_blocks(IVec3::new(1, 1, 1), ConstructionMaterial::Steel);
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::new(3, 1, 1), GridRotation::default()),
+        )
+        .unwrap()
+        .with_material(ConstructionMaterial::Wood);
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        assert!(matches!(
+            add_region(&mut graph, IVec3::new(2, 1, 1), ConstructionMaterial::Steel),
+            Err(GraphError::RegionMixedMaterials)
+        ));
+    }
+
+    #[test]
+    fn a_region_refuses_overlapping_another() {
+        let mut graph = welded_blocks(IVec3::new(3, 1, 1), ConstructionMaterial::Steel);
+        add_region(&mut graph, IVec3::new(2, 1, 1), ConstructionMaterial::Steel).unwrap();
+        let overlapping = ShapeRegion::new(
+            IVec3::new(2, 0, 0),
+            IVec3::new(2, 1, 1),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        assert!(matches!(
+            graph.apply(BuildCommand::AddRegion(overlapping)),
+            Err(GraphError::RegionOverlaps(_))
+        ));
+        assert_eq!(graph.regions().count(), 1);
+    }
+
+    #[test]
+    fn deleting_a_block_deletes_the_region_it_belonged_to() {
+        // A region needs every cell filled, so it cannot outlive its blocks.
+        let mut graph = welded_blocks(IVec3::new(2, 1, 1), ConstructionMaterial::Steel);
+        add_region(&mut graph, IVec3::new(2, 1, 1), ConstructionMaterial::Steel).unwrap();
+        let victim = graph.parts().next().expect("the graph has blocks").0;
+        graph.apply(BuildCommand::Remove(victim)).unwrap();
+        assert_eq!(graph.regions().count(), 0);
+    }
+
+    #[test]
+    fn a_cage_vertex_cannot_leave_the_regions_bounding_box() {
+        let mut graph = welded_blocks(IVec3::new(1, 1, 1), ConstructionMaterial::Steel);
+        let id = add_region(&mut graph, IVec3::ONE, ConstructionMaterial::Steel).unwrap();
+        // Corner [0,0,0] sits at the minimum, so it can only move inward.
+        assert!(matches!(
+            graph.apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 0, 0], [-1, 0, 0])],
+            }),
+            Err(GraphError::InvalidRegion(RegionError::OutsideBounds))
+        ));
+        assert!(
+            graph.region(id).unwrap().is_unshaped(),
+            "a rejected move must leave the graph byte-for-byte equivalent"
+        );
+        // Inward as far as the far face is fine.
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 0, 0], [cell_steps(), 0, 0])],
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_cage_move_that_would_invert_a_cell_is_rejected_and_changes_nothing() {
+        let mut graph = welded_blocks(IVec3::new(1, 1, 1), ConstructionMaterial::Steel);
+        let id = add_region(&mut graph, IVec3::ONE, ConstructionMaterial::Steel).unwrap();
+        let cell = cell_steps();
+        assert!(matches!(
+            graph.apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 0, 0], [cell, 0, 0]), ([1, 0, 0], [-cell, 0, 0])],
+            }),
+            Err(GraphError::InvertedCell(_))
+        ));
+        assert!(graph.region(id).unwrap().is_unshaped());
+    }
+
+    #[test]
+    fn collapsing_an_edge_into_a_wedge_is_accepted() {
+        let mut graph = welded_blocks(IVec3::new(1, 1, 1), ConstructionMaterial::Steel);
+        let id = add_region(&mut graph, IVec3::ONE, ConstructionMaterial::Steel).unwrap();
+        let cell = cell_steps();
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 1, 1], [0, -cell, 0]), ([1, 1, 1], [0, -cell, 0])],
+            })
+            .expect("collapsing an edge makes a wedge");
+        assert_eq!(graph.region(id).unwrap().offsets().count(), 2);
+    }
+
+    #[test]
+    fn subdividing_inserts_a_whole_plane_without_moving_the_surface() {
+        let mut graph = welded_blocks(IVec3::new(2, 1, 1), ConstructionMaterial::Steel);
+        let id = add_region(&mut graph, IVec3::new(2, 1, 1), ConstructionMaterial::Steel).unwrap();
+        let cell = cell_steps();
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([1, 1, 0], [0, -cell, 0]), ([1, 1, 1], [0, -cell, 0])],
+            })
+            .unwrap();
+        let before = surface_corners(graph.region(id).unwrap());
+
+        graph
+            .apply(BuildCommand::SubdivideRegion {
+                region: id,
+                axis: 0,
+                position: 1,
+            })
+            .unwrap();
+        let region = graph.region(id).unwrap();
+        assert_eq!(
+            region.plane_counts(),
+            [3, 2, 2],
+            "a whole plane is inserted"
+        );
+        assert_eq!(
+            surface_corners(region),
+            before,
+            "the cage gains handles; the surface must not move"
+        );
+    }
+
+    /// The eight outer cage corners, for comparing a surface before and after.
+    fn surface_corners(region: &ShapeRegion) -> Vec<[i32; 3]> {
+        let [x, y, z] = region.plane_counts();
+        let last = [x - 1, y - 1, z - 1];
+        let mut corners = Vec::new();
+        for corner in 0..8_usize {
+            let index = [
+                u16::try_from(if corner & 1 == 0 { 0 } else { last[0] }).unwrap(),
+                u16::try_from(if corner & 2 == 0 { 0 } else { last[1] }).unwrap(),
+                u16::try_from(if corner & 4 == 0 { 0 } else { last[2] }).unwrap(),
+            ];
+            corners.push(region.vertex_steps(index).unwrap().to_array());
+        }
+        corners
     }
 }

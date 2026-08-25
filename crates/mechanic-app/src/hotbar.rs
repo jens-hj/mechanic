@@ -21,6 +21,7 @@ pub(crate) enum Tool {
     Servo,
     Seat,
     Input,
+    Shape,
 }
 
 impl Tool {
@@ -38,6 +39,7 @@ impl Tool {
             Self::Servo => "Servo",
             Self::Seat => "Seat",
             Self::Input => "Input",
+            Self::Shape => "Shape",
         }
     }
 
@@ -55,6 +57,7 @@ impl Tool {
             Self::Servo => "0",
             Self::Seat => "-",
             Self::Input => "=",
+            Self::Shape => "[",
         }
     }
 
@@ -86,6 +89,7 @@ pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
         KeyCode::Digit0 => Some(Tool::Servo),
         KeyCode::Minus => Some(Tool::Seat),
         KeyCode::Equal => Some(Tool::Input),
+        KeyCode::BracketLeft => Some(Tool::Shape),
         _ => None,
     }
 }

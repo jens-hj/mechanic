@@ -3,17 +3,25 @@ use std::{
     ops::Range,
 };
 
-use bevy_math::{Mat3, Quat, Vec3};
+use bevy_math::{Mat3, Quat, Vec3, Vec4};
 use thiserror::Error;
 
 use crate::{
     ActuatorAssignment, BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, CuboidSpec,
     DriveLimits, DriveTarget, EngineKind, FaceOwner, MaterialProperties, PartId, PartSpec,
-    ServoSpec,
+    RegionId, ServoSpec, ShapeRegion,
+    shape::{ConvexPiece, PartPiece, decompose, decompose_part},
 };
 
 /// Number of cuboid colliders used for each cylinder.
 pub const CYLINDER_COLLIDER_COUNT: usize = 16;
+
+/// Largest number of collider rows one compiled creation may produce.
+///
+/// Shaping multiplies collider rows on the cells it touches, so a creation that
+/// would swamp the solver must fail loudly at compile time rather than quietly
+/// sinking the tick rate.
+pub const MAX_COMPILED_COLLIDERS: usize = 131_072;
 
 /// Aggregate mass properties expressed in the compiled root frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,20 +56,55 @@ pub struct CompiledCompound {
 }
 
 /// Cuboid collider expressed relative to its compound root.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LocalCuboidCollider {
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalCollider {
     /// Source editable part.
     pub source_part: PartId,
     /// Owning compound row.
     pub compound_index: u32,
-    /// Collider centre in compound-local coordinates.
+    /// Collider centroid in compound-local coordinates.
     pub local_center: Vec3,
-    /// Collider orientation relative to the compound root.
-    pub local_rotation: Quat,
-    /// Cuboid half-extents in metres.
-    pub half_extents: Vec3,
     /// Source part's contact response.
     pub material_properties: MaterialProperties,
+    /// Geometry this collider presents to the solver.
+    pub shape: ColliderShape,
+}
+
+/// Geometry backing one compiled collider row.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColliderShape {
+    /// A box. Unshaped parts and cylinder segments stay boxes so the solver's
+    /// fast path is untouched by shaping existing anywhere else.
+    Cuboid {
+        /// Orientation relative to the compound root.
+        local_rotation: Quat,
+        /// Half-extents in metres.
+        half_extents: Vec3,
+    },
+    /// A shaped cell, or a convex part of one.
+    Convex(CompiledConvex),
+}
+
+impl ColliderShape {
+    /// Whether this is a box.
+    pub const fn is_cuboid(&self) -> bool {
+        matches!(self, Self::Cuboid { .. })
+    }
+}
+
+/// A convex polytope collider in compound-local coordinates.
+///
+/// Face normals and edge directions arrive already deduplicated, so a sheared
+/// box presents the same three face axes and three edge axes an ordinary box
+/// does and costs the separating-axis test exactly as much.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledConvex {
+    /// Distinct vertices, relative to the compound centre of mass.
+    pub vertices: Vec<Vec3>,
+    /// Distinct face planes: `xyz` outward normal, `w` plane offset.
+    pub face_planes: Vec<Vec4>,
+    /// Distinct edge directions.
+    pub edge_directions: Vec<Vec3>,
 }
 
 /// Bearing row connecting two distinct compiled compounds.
@@ -137,7 +180,7 @@ pub struct CompiledCreation {
     /// Compound bodies.
     pub compounds: Vec<CompiledCompound>,
     /// Cuboid collider rows.
-    pub colliders: Vec<LocalCuboidCollider>,
+    pub colliders: Vec<LocalCollider>,
     /// Passive bearing rows.
     pub bearings: Vec<CompiledBearing>,
     /// Canonical mechanism topology.
@@ -273,6 +316,14 @@ pub enum TopologyError {
         /// Number of available ports.
         available: u32,
     },
+    /// A creation needs more collider rows than the solver accepts.
+    #[error("creation needs {required} collider rows but the budget is {available}")]
+    ColliderBudgetExceeded {
+        /// Rows the decomposition produced.
+        required: usize,
+        /// Largest supported row count.
+        available: usize,
+    },
     /// A power module has more servo-driven joints than Servos.
     #[error("control module at {controller:?} needs {required} Servos but has {available}")]
     InsufficientServos {
@@ -346,17 +397,40 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     let collider_capacity = part_rows
         .iter()
         .map(|(_, spec)| match spec {
-            PartSpec::Cuboid(_)
-            | PartSpec::Controller(_)
+            PartSpec::Controller(_)
             | PartSpec::Engine(_)
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
-            | PartSpec::Input(_) => 1,
+            | PartSpec::Input(_)
+            | PartSpec::Cuboid(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
         })
-        .sum();
+        .sum::<usize>()
+        // A region emits one row per fused convex piece, so the count is only
+        // known by running its decomposition; its blocks emit nothing.
+        + graph
+            .regions()
+            .map(|(_, region)| region_pieces(region).len())
+            .sum::<usize>();
+    if collider_capacity > MAX_COMPILED_COLLIDERS {
+        return Err(TopologyError::ColliderBudgetExceeded {
+            required: collider_capacity,
+            available: MAX_COMPILED_COLLIDERS,
+        });
+    }
     let mut colliders = Vec::with_capacity(collider_capacity);
     let mut compound_by_dense_part = vec![0_u32; part_rows.len()];
+
+    // A part inside a region hands its geometry over to that region, so it must
+    // not emit a box or a mass of its own as well.
+    let mut covered: BTreeSet<PartId> = BTreeSet::new();
+    let mut region_of_part: BTreeMap<PartId, RegionId> = BTreeMap::new();
+    for (id, _) in graph.parts() {
+        if let Some(region) = graph.region_of(id) {
+            covered.insert(id);
+            region_of_part.insert(id, region);
+        }
+    }
 
     for member_rows in grouped.values() {
         let compound_index = u32::try_from(compounds.len()).expect("compound count fits u32");
@@ -365,22 +439,55 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
             .iter()
             .map(|&row| part_rows[row].0)
             .collect::<Vec<_>>();
+        // Regions whose blocks live in this compound, each counted once.
+        let mut member_regions: Vec<RegionId> = Vec::new();
+        for &row in member_rows {
+            if let Some(&region) = region_of_part.get(&part_rows[row].0)
+                && !member_regions.contains(&region)
+            {
+                member_regions.push(region);
+            }
+        }
+        let region_shapes = member_regions
+            .iter()
+            .filter_map(|&id| graph.region(id))
+            .collect::<Vec<_>>();
+
         let mass_properties = calculate_mass_properties(
             member_rows
                 .iter()
                 .map(|&row| (part_rows[row].0, *part_rows[row].1)),
             is_static,
+            &covered,
+            &region_shapes,
         )?;
         let collider_start = u32::try_from(colliders.len()).expect("collider count fits u32");
         for &row in member_rows {
             let (part, spec) = part_rows[row];
             compound_by_dense_part[row] = compound_index;
+            if covered.contains(&part) {
+                continue;
+            }
             append_part_colliders(
                 &mut colliders,
                 part,
                 compound_index,
                 *spec,
                 mass_properties.center_of_mass,
+            );
+        }
+        for (&id, region) in member_regions.iter().zip(&region_shapes) {
+            append_region_colliders(
+                &mut colliders,
+                id,
+                region,
+                compound_index,
+                mass_properties.center_of_mass,
+                member_rows
+                    .iter()
+                    .map(|&row| part_rows[row].0)
+                    .find(|part| region_of_part.get(part) == Some(&id))
+                    .expect("a region in this compound has a member part"),
             );
         }
         let collider_end = u32::try_from(colliders.len()).expect("collider count fits u32");
@@ -1021,30 +1128,29 @@ impl CompiledCreation {
 fn calculate_mass_properties<'a>(
     parts: impl Iterator<Item = (PartId, PartSpec)> + Clone + 'a,
     is_static: bool,
+    covered: &BTreeSet<PartId>,
+    regions: &[&ShapeRegion],
 ) -> Result<MassProperties, TopologyError> {
-    let mut total_mass = 0.0;
-    let mut weighted_center = Vec3::ZERO;
     let identifying_part = parts.clone().next().expect("weld groups are non-empty").0;
-    for (_, spec) in parts.clone() {
-        let properties = part_mass_properties(spec);
-        let world_center =
-            spec.pose().translation() + spec.pose().rotation.quaternion() * properties.local_center;
-        total_mass += properties.mass;
-        weighted_center += world_center * properties.mass;
-    }
-    let center_of_mass = weighted_center / total_mass;
+    // A part inside a region has no mass of its own: the region owns its
+    // geometry, so counting both would weigh the build twice.
+    let contributions = parts
+        .filter(|(id, _)| !covered.contains(id))
+        .map(|(_, spec)| part_world_mass(spec))
+        .chain(regions.iter().map(|region| region_world_mass(region)))
+        .collect::<Vec<_>>();
+
+    let total_mass = contributions.iter().map(|body| body.mass).sum::<f32>();
+    let center_of_mass = contributions
+        .iter()
+        .map(|body| body.center * body.mass)
+        .sum::<Vec3>()
+        / total_mass;
     let mut inertia = Mat3::ZERO;
-    for (_, spec) in parts {
-        let properties = part_mass_properties(spec);
-        let rotation = Mat3::from_quat(spec.pose().rotation.quaternion());
-        let own_inertia =
-            rotation * Mat3::from_diagonal(properties.local_inertia) * rotation.transpose();
-        let world_part_center =
-            spec.pose().translation() + spec.pose().rotation.quaternion() * properties.local_center;
-        let offset = world_part_center - center_of_mass;
+    for body in &contributions {
+        let offset = body.center - center_of_mass;
         let outer = Mat3::from_cols(offset * offset.x, offset * offset.y, offset * offset.z);
-        inertia +=
-            own_inertia + properties.mass * (Mat3::IDENTITY * offset.length_squared() - outer);
+        inertia += body.inertia + body.mass * (Mat3::IDENTITY * offset.length_squared() - outer);
     }
 
     let determinant = inertia.determinant();
@@ -1073,11 +1179,32 @@ fn calculate_mass_properties<'a>(
     })
 }
 
+/// Mass, centre, and inertia about that centre, all in build space.
+#[derive(Clone, Copy)]
+struct WorldMassProperties {
+    mass: f32,
+    center: Vec3,
+    inertia: Mat3,
+}
+
+fn part_world_mass(spec: PartSpec) -> WorldMassProperties {
+    let properties = part_mass_properties(spec);
+    let rotation = spec.pose().rotation.quaternion();
+    let basis = Mat3::from_quat(rotation);
+    WorldMassProperties {
+        mass: properties.mass,
+        center: spec.pose().translation() + rotation * properties.local_center,
+        inertia: basis * properties.local_inertia * basis.transpose(),
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PartMassProperties {
     mass: f32,
     local_center: Vec3,
-    local_inertia: Vec3,
+    /// Inertia about `local_center`, in the part's local frame. A shaped part
+    /// has products of inertia, so this cannot be a diagonal.
+    local_inertia: Mat3,
 }
 
 /// Resolves authored fixed-size parts to the cuboids physics simulates.
@@ -1116,11 +1243,11 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
             PartMassProperties {
                 mass,
                 local_center: Vec3::new(center_x, 0.0, 0.0),
-                local_inertia: Vec3::new(
+                local_inertia: Mat3::from_diagonal(Vec3::new(
                     mass * (axial_variance + radial_perpendicular),
                     mass * (radial_parallel + radial_perpendicular - center_x * center_x),
                     mass * (radial_parallel + axial_variance - center_x * center_x),
-                ),
+                )),
             }
         }
         PartSpec::Controller(controller) => {
@@ -1139,12 +1266,113 @@ fn cuboid_mass_properties(spec: CuboidSpec, density_kg_m3: f32) -> PartMassPrope
     PartMassProperties {
         mass,
         local_center: Vec3::ZERO,
-        local_inertia: Vec3::new(
+        local_inertia: Mat3::from_diagonal(Vec3::new(
             mass * (size.y * size.y + size.z * size.z) / 12.0,
             mass * (size.x * size.x + size.z * size.z) / 12.0,
             mass * (size.x * size.x + size.y * size.y) / 12.0,
-        ),
+        )),
     }
+}
+
+/// Exact mass, centre of mass, and inertia of a shaped region.
+///
+/// Every piece is integrated over its own closed surface by the divergence
+/// theorem, fanning each face into tetrahedra from one reference point. Signed
+/// volumes make the sum independent of where that reference sits.
+///
+/// For a simplex, `∫ x⊗x dV = (V/20)(Σᵢ wᵢ⊗wᵢ + (Σᵢ wᵢ)⊗(Σᵢ wᵢ))`.
+#[allow(clippy::cast_precision_loss)]
+fn region_world_mass(region: &ShapeRegion) -> WorldMassProperties {
+    let mut volume = 0.0_f32;
+    let mut first_moment = Vec3::ZERO;
+    let mut second_moment = Mat3::ZERO;
+    for piece in region_pieces(region) {
+        match piece {
+            PartPiece::Cuboid {
+                center,
+                half_extents,
+                rotation,
+                ..
+            } => {
+                let size = half_extents * 2.0;
+                let box_volume = size.x * size.y * size.z;
+                let basis = Mat3::from_quat(rotation);
+                let local = Mat3::from_diagonal(
+                    Vec3::new(size.x * size.x, size.y * size.y, size.z * size.z)
+                        * (box_volume / 12.0),
+                );
+                volume += box_volume;
+                first_moment += center * box_volume;
+                second_moment +=
+                    basis * local * basis.transpose() + outer_product(center, center) * box_volume;
+            }
+            PartPiece::Convex(convex) => {
+                accumulate_convex_moments(
+                    &convex,
+                    &mut volume,
+                    &mut first_moment,
+                    &mut second_moment,
+                );
+            }
+        }
+    }
+
+    let density = region.material().properties().density_kg_m3;
+    let mass = density * volume;
+    let center = if volume.abs() > f32::EPSILON {
+        first_moment / volume
+    } else {
+        Vec3::ZERO
+    };
+    let about_center = second_moment - outer_product(center, center) * volume;
+    WorldMassProperties {
+        mass,
+        center,
+        inertia: (Mat3::IDENTITY * trace(about_center) - about_center) * density,
+    }
+}
+
+/// The convex pieces one region's cage describes.
+fn region_pieces(region: &ShapeRegion) -> Vec<PartPiece> {
+    let grid = region.grid();
+    decompose(&grid, &|cell, corner| region.corner_steps(cell, corner))
+}
+
+fn accumulate_convex_moments(
+    piece: &ConvexPiece,
+    volume: &mut f32,
+    first_moment: &mut Vec3,
+    second_moment: &mut Mat3,
+) {
+    let origin = piece.vertices[0];
+    for face in &piece.faces {
+        for index in 1..face.indices.len() - 1 {
+            let a = piece.vertices[face.indices[0] as usize];
+            let b = piece.vertices[face.indices[index] as usize];
+            let c = piece.vertices[face.indices[index + 1] as usize];
+            let signed = (a - origin).dot((b - origin).cross(c - origin)) / 6.0;
+            if signed == 0.0 {
+                continue;
+            }
+            let corners = [origin, a, b, c];
+            let sum = corners.iter().copied().sum::<Vec3>();
+            let squares = corners
+                .iter()
+                .map(|&corner| outer_product(corner, corner))
+                .fold(Mat3::ZERO, |total, term| total + term);
+            *volume += signed;
+            *first_moment += sum * (signed / 4.0);
+            *second_moment += (squares + outer_product(sum, sum)) * (signed / 20.0);
+        }
+    }
+}
+
+fn outer_product(left: Vec3, right: Vec3) -> Mat3 {
+    Mat3::from_cols(left * right.x, left * right.y, left * right.z)
+}
+
+fn trace(matrix: Mat3) -> f32 {
+    matrix.x_axis.x + matrix.y_axis.y + matrix.z_axis.z
 }
 
 const AUTHORED_CONTACT_PROPERTIES: MaterialProperties = MaterialProperties {
@@ -1166,7 +1394,7 @@ fn contact_properties(spec: PartSpec) -> MaterialProperties {
 }
 
 fn append_part_colliders(
-    colliders: &mut Vec<LocalCuboidCollider>,
+    colliders: &mut Vec<LocalCollider>,
     part: PartId,
     compound_index: u32,
     spec: PartSpec,
@@ -1174,14 +1402,34 @@ fn append_part_colliders(
 ) {
     let material_properties = contact_properties(spec);
     match physical_spec(spec) {
-        PartSpec::Cuboid(spec) => colliders.push(LocalCuboidCollider {
-            source_part: part,
-            compound_index,
-            local_center: spec.pose.translation() - center_of_mass,
-            local_rotation: spec.pose.rotation.quaternion(),
-            half_extents: spec.size_meters() * 0.5,
-            material_properties,
-        }),
+        PartSpec::Cuboid(spec) => {
+            for piece in decompose_part(spec) {
+                colliders.push(match piece {
+                    PartPiece::Cuboid {
+                        center,
+                        half_extents,
+                        rotation,
+                        ..
+                    } => LocalCollider {
+                        source_part: part,
+                        compound_index,
+                        local_center: center - center_of_mass,
+                        material_properties,
+                        shape: ColliderShape::Cuboid {
+                            local_rotation: rotation,
+                            half_extents,
+                        },
+                    },
+                    PartPiece::Convex(convex) => LocalCollider {
+                        source_part: part,
+                        compound_index,
+                        local_center: convex.centroid - center_of_mass,
+                        material_properties,
+                        shape: ColliderShape::Convex(compile_convex(&convex, center_of_mass)),
+                    },
+                });
+            }
+        }
         PartSpec::Cylinder(spec) => {
             let outer = spec.dimensions.outer_diameter() * 0.5;
             let inner = spec.dimensions.inner_diameter() * 0.5;
@@ -1199,18 +1447,20 @@ fn append_part_colliders(
             for segment in 0_u16..16 {
                 let angle = start_angle + segment_angle * (f32::from(segment) + 0.5);
                 let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
-                colliders.push(LocalCuboidCollider {
+                colliders.push(LocalCollider {
                     source_part: part,
                     compound_index,
                     local_center: spec.pose.translation() - center_of_mass
                         + part_rotation * (radial * center_radius),
-                    local_rotation: part_rotation * Quat::from_rotation_y(-angle),
-                    half_extents: Vec3::new(
-                        half_radial,
-                        spec.dimensions.axial_length() * 0.5,
-                        half_tangent,
-                    ),
                     material_properties,
+                    shape: ColliderShape::Cuboid {
+                        local_rotation: part_rotation * Quat::from_rotation_y(-angle),
+                        half_extents: Vec3::new(
+                            half_radial,
+                            spec.dimensions.axial_length() * 0.5,
+                            half_tangent,
+                        ),
+                    },
                 });
             }
         }
@@ -1221,6 +1471,67 @@ fn append_part_colliders(
         | PartSpec::Input(_) => {
             unreachable!("fixed-size authored parts resolve to cuboids")
         }
+    }
+}
+
+/// Emits one region's colliders, which stand in for every block it covers.
+fn append_region_colliders(
+    colliders: &mut Vec<LocalCollider>,
+    region_id: RegionId,
+    region: &ShapeRegion,
+    compound_index: u32,
+    center_of_mass: Vec3,
+    source_part: PartId,
+) {
+    let _ = region_id;
+    let material_properties = region.material().properties();
+    for piece in region_pieces(region) {
+        colliders.push(match piece {
+            PartPiece::Cuboid {
+                center,
+                half_extents,
+                rotation,
+                ..
+            } => LocalCollider {
+                source_part,
+                compound_index,
+                local_center: center - center_of_mass,
+                material_properties,
+                shape: ColliderShape::Cuboid {
+                    local_rotation: rotation,
+                    half_extents,
+                },
+            },
+            PartPiece::Convex(convex) => LocalCollider {
+                source_part,
+                compound_index,
+                local_center: convex.centroid - center_of_mass,
+                material_properties,
+                shape: ColliderShape::Convex(compile_convex(&convex, center_of_mass)),
+            },
+        });
+    }
+}
+
+/// Rebases one decomposed piece onto the compound centre of mass.
+fn compile_convex(piece: &ConvexPiece, center_of_mass: Vec3) -> CompiledConvex {
+    CompiledConvex {
+        vertices: piece
+            .vertices
+            .iter()
+            .map(|vertex| *vertex - center_of_mass)
+            .collect(),
+        face_planes: piece
+            .faces
+            .iter()
+            .map(|face| {
+                // Shifting the origin moves a plane's offset by the normal's
+                // component along the shift.
+                face.normal
+                    .extend(face.offset - face.normal.dot(center_of_mass))
+            })
+            .collect(),
+        edge_directions: piece.edge_directions.clone(),
     }
 }
 
@@ -1275,13 +1586,15 @@ impl DisjointSet {
 mod tests {
     use bevy_math::{IVec3, Vec3};
 
+    use super::{PartPiece, outer_product};
     use crate::{
         ActuatorAssignment, BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome,
-        BuildPose, ConstructionGraph, ConstructionMaterial, ControllerSpec, CoordinateDrive,
-        CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec, DriveMode,
-        DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef,
-        GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
+        BuildPose, ColliderShape, ConstructionGraph, ConstructionMaterial, ControllerSpec,
+        CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
+        DriveMode, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind,
+        FaceRef, GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
     };
+    use bevy_math::{Mat3, Quat};
 
     fn cube_at(units: IVec3) -> CuboidSpec {
         CuboidSpec::new([4, 4, 4], BuildPose::new(units, GridRotation::default())).unwrap()
@@ -1331,7 +1644,10 @@ mod tests {
         assert!((properties.inertia.y_axis.y - expected_axial).abs() < 1.0e-3);
         assert!((properties.inertia.z_axis.z - expected_transverse).abs() < 1.0e-3);
         assert!(compiled.colliders.iter().all(|collider| {
-            (collider.half_extents.y - 1.0).abs() < 1.0e-6
+            let ColliderShape::Cuboid { half_extents, .. } = collider.shape else {
+                return false;
+            };
+            (half_extents.y - 1.0).abs() < 1.0e-6
                 && collider.local_center.length() >= inner - 1.0e-6
         }));
     }
@@ -1415,6 +1731,195 @@ mod tests {
                 axis,
             )))
             .unwrap();
+    }
+
+    /// One steel block at the origin, claimed as a region.
+    fn region_over_one_block() -> (ConstructionGraph, crate::RegionId) {
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::ONE, GridRotation::default()),
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let region =
+            crate::ShapeRegion::new(IVec3::ZERO, IVec3::ONE, ConstructionMaterial::Steel).unwrap();
+        let BuildOutcome::RegionAdded(id) = graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            panic!("wrong outcome")
+        };
+        (graph, id)
+    }
+
+    #[test]
+    fn a_regions_blocks_contribute_no_colliders_of_their_own() {
+        // The region owns the geometry; counting the block too would render and
+        // collide the same material twice.
+        let (graph, _) = region_over_one_block();
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.colliders.len(), 1);
+        let expected = ConstructionMaterial::Steel.properties().density_kg_m3 * 0.25_f32.powi(3);
+        assert!(
+            (compiled.compounds[0].mass_properties.mass - expected).abs() < 1.0e-3,
+            "the region's mass must replace its block's, not add to it"
+        );
+    }
+
+    #[test]
+    fn collapsing_a_region_edge_halves_its_mass_and_moves_its_centroid() {
+        // The bounding box means a corner can only move inward, so the exact
+        // case to check is a collapse rather than a shear: the top +z edge
+        // driven down onto the bottom leaves a wedge of half the material,
+        // whose centroid is the triangle's.
+        let (mut graph, id) = region_over_one_block();
+        let cell = i16::try_from(crate::STEPS_PER_CELL).unwrap();
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 1, 1], [0, -cell, 0]), ([1, 1, 1], [0, -cell, 0])],
+            })
+            .unwrap();
+
+        let properties = graph.compile().unwrap().compounds[0].mass_properties;
+        let density = ConstructionMaterial::Steel.properties().density_kg_m3;
+        let expected_mass = density * 0.25_f32.powi(3) * 0.5;
+        assert!(
+            (properties.mass - expected_mass).abs() < 1.0e-3,
+            "a wedge holds half a cell: {} vs {expected_mass}",
+            properties.mass
+        );
+        let third = 0.25_f32 / 3.0;
+        let expected_center = Vec3::new(0.125, third, third);
+        assert!(
+            properties
+                .center_of_mass
+                .abs_diff_eq(expected_center, 1.0e-4),
+            "wedge centroid should be the triangle's: {} vs {expected_center}",
+            properties.center_of_mass
+        );
+    }
+
+    #[test]
+    fn a_cage_vertex_cannot_be_pushed_out_of_the_region() {
+        // Shearing a face outward is exactly what the bounding box forbids.
+        let (mut graph, id) = region_over_one_block();
+        assert!(
+            graph
+                .apply(BuildCommand::SetRegionVertices {
+                    region: id,
+                    vertices: vec![([1, 1, 1], [5, 0, 0])],
+                })
+                .is_err(),
+            "a corner already at the maximum has nowhere outward to go"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::similar_names)]
+    fn region_inertia_matches_numerical_integration_of_the_same_pieces() {
+        // The analytic integration is derived, so check it against a brute-force
+        // sum over a dense sample of the solid it claims to describe.
+        let (mut graph, id) = region_over_one_block();
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![
+                    ([1, 1, 1], [-8, -6, -4]),
+                    ([1, 1, 0], [-4, 0, 2]),
+                    ([0, 0, 1], [2, 3, -5]),
+                ],
+            })
+            .unwrap();
+        let properties = graph.compile().unwrap().compounds[0].mass_properties;
+
+        let region = graph.region(id).unwrap();
+        let pieces = super::region_pieces(region);
+        let inside = |point: Vec3| {
+            pieces.iter().any(|piece| match piece {
+                PartPiece::Cuboid {
+                    center,
+                    half_extents,
+                    rotation,
+                    ..
+                } => {
+                    let local = rotation.inverse() * (point - *center);
+                    local.abs().cmple(*half_extents).all()
+                }
+                PartPiece::Convex(convex) => convex
+                    .faces
+                    .iter()
+                    .all(|face| face.normal.dot(point) <= face.offset + 1.0e-7),
+            })
+        };
+
+        let steps = 90;
+        let low = Vec3::splat(-0.05);
+        let cell = 0.35_f32 / steps as f32;
+        let cell_volume = cell * cell * cell;
+        let density = ConstructionMaterial::Steel.properties().density_kg_m3;
+        let mut mass = 0.0_f32;
+        let mut moment = Vec3::ZERO;
+        let mut samples = Vec::new();
+        for ix in 0..steps {
+            for iy in 0..steps {
+                for iz in 0..steps {
+                    let point =
+                        low + Vec3::new(ix as f32 + 0.5, iy as f32 + 0.5, iz as f32 + 0.5) * cell;
+                    if inside(point) {
+                        mass += density * cell_volume;
+                        moment += point * (density * cell_volume);
+                        samples.push(point);
+                    }
+                }
+            }
+        }
+        assert!(!samples.is_empty(), "the shaped solid must contain samples");
+        let center = moment / mass;
+        let mut inertia = Mat3::ZERO;
+        for point in &samples {
+            let arm = *point - center;
+            inertia += (Mat3::IDENTITY * arm.length_squared() - outer_product(arm, arm))
+                * (density * cell_volume);
+        }
+
+        assert!(
+            (properties.mass - mass).abs() < mass * 0.02,
+            "mass {} vs sampled {mass}",
+            properties.mass
+        );
+        assert!(
+            properties.center_of_mass.abs_diff_eq(center, 2.0e-3),
+            "centre {} vs sampled {center}",
+            properties.center_of_mass
+        );
+        for axis in 0..3 {
+            let analytic = properties.inertia.col(axis)[axis];
+            let sampled = inertia.col(axis)[axis];
+            assert!(
+                (analytic - sampled).abs() < sampled.abs() * 0.05,
+                "inertia axis {axis}: {analytic} vs sampled {sampled}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unshaped_creation_still_compiles_to_one_collider_per_block() {
+        // The regression guard: regions must cost nothing where none exist.
+        let mut graph = ConstructionGraph::new();
+        for offset in 0..4 {
+            graph
+                .apply(BuildCommand::Spawn(cube_at(IVec3::new(offset * 4, 0, 0))))
+                .unwrap();
+        }
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.colliders.len(), 4);
+        assert!(
+            compiled
+                .colliders
+                .iter()
+                .all(|collider| collider.shape.is_cuboid()),
+            "an unshaped creation must produce only boxes"
+        );
     }
 
     #[test]
@@ -1945,8 +2450,11 @@ mod tests {
         let compiled = graph.compile().unwrap();
         assert_eq!(compiled.colliders.len(), 1);
         assert_eq!(
-            compiled.colliders[0].half_extents,
-            Vec3::new(0.25, 0.25, 0.125)
+            compiled.colliders[0].shape,
+            ColliderShape::Cuboid {
+                local_rotation: Quat::IDENTITY,
+                half_extents: Vec3::new(0.25, 0.25, 0.125),
+            }
         );
         let expected_mass = crate::CUBOID_DENSITY_KG_M3 * 0.5 * 0.5 * 0.25;
         assert!((compiled.compounds[0].mass_properties.mass - expected_mass).abs() < 1.0e-4);

@@ -7,11 +7,12 @@ mod runtime;
 mod scheduler;
 
 pub use abi::{
-    CONSTRAINT_NON_CONVERGENCE_FLAG, DRIVE_MODE_ANGLE, DRIVE_MODE_PASSIVE, DRIVE_MODE_SPEED,
-    GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuLinkState, GpuMass,
-    GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold,
-    GpuSpatialInertia, GpuTickConfig, GpuTransform, GpuVelocity, INVALID_NUMERIC_FLAG,
-    MANIFOLD_OVERFLOW_FLAG, PAIR_OVERFLOW_FLAG,
+    COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, CONSTRAINT_NON_CONVERGENCE_FLAG,
+    DRIVE_MODE_ANGLE, DRIVE_MODE_PASSIVE, DRIVE_MODE_SPEED, GpuBearing, GpuCollider, GpuContact,
+    GpuContractionNode, GpuDiagnostics, GpuLinkState, GpuMass, GpuMechanismBody,
+    GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold, GpuSpatialInertia,
+    GpuTickConfig, GpuTransform, GpuVelocity, INVALID_NUMERIC_FLAG, MANIFOLD_OVERFLOW_FLAG,
+    PAIR_OVERFLOW_FLAG, pack_convex_counts,
 };
 pub use collision::{
     ContactManifold, ContactPoint, Obb, SatContact, obb_contact_manifold, obb_sat,
@@ -38,8 +39,15 @@ pub const MAX_BODIES: usize = 131_072;
 /// Maximum number of passive bearings accepted by the milestone runtime.
 pub const MAX_BEARINGS: usize = 262_144;
 
-/// Maximum uploaded cuboid collider rows.
+/// Maximum uploaded collider rows.
 pub const MAX_COLLIDERS: usize = 131_072;
+
+/// Maximum `vec4` slots in the packed convex-shape buffer.
+///
+/// One shaped piece needs at most eight vertices, twelve face planes, and
+/// eighteen edge directions, so this holds a large shaped creation while
+/// staying a fixed allocation like every other buffer here.
+pub const MAX_CONVEX_SHAPE_SLOTS: usize = 1_048_576;
 
 /// Fixed candidate/contact capacity. Overflow blocks publication.
 pub const MAX_CONTACT_PAIRS: usize = 2_097_152;

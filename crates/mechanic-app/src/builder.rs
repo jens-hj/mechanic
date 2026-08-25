@@ -7,9 +7,10 @@ use std::{
 use bevy::prelude::*;
 use mechanic_core::{
     BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-    ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, EngineSpec, FaceKind,
-    FaceOwner, FaceRef, GridRotation, InputSpec, PartId, PartSpec, PendingOperation, RigidLinkSpec,
-    SeatSpec, ServoSpec, WeldSpec, snap_world_to_grid,
+    ControllerSpec, ConvexPiece, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind,
+    EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartId, PartPiece, PartSpec,
+    PendingOperation, RigidLinkSpec, SeatSpec, ServoSpec, ShapeRegion, WeldSpec,
+    snap_world_to_grid,
 };
 
 pub(crate) const GROUND_HALF_SIZE: f32 = 10.0;
@@ -109,6 +110,8 @@ pub(crate) struct CylinderPlacementCandidate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PlacementError {
+    /// The surface has been shaped, so nothing can sit flush on it.
+    SurfaceNotFlat,
     OutsidePlatform,
     NoFaceOverlap,
     OverlapsPart(PartId),
@@ -120,13 +123,19 @@ pub(crate) enum PlacementError {
     EmptyBlockBatch,
     BlocksOverlap,
     DragPlaneUnavailable,
-    TooManyBlocks { count: usize, maximum: usize },
+    TooManyBlocks {
+        count: usize,
+        maximum: usize,
+    },
     Graph(String),
 }
 
 impl fmt::Display for PlacementError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SurfaceNotFlat => {
+                formatter.write_str("that surface is not flat — flatten it before building on it")
+            }
             Self::OutsidePlatform => formatter.write_str("part would extend beyond the platform"),
             Self::NoFaceOverlap => formatter.write_str("cube does not overlap the selected face"),
             Self::OverlapsPart(part) => write!(formatter, "part overlaps {part:?}"),
@@ -194,7 +203,15 @@ pub(crate) fn raycast_construction(
     let ground = raycast_ground(origin, direction);
     graph
         .parts()
-        .filter_map(|(part, spec)| raycast_part(origin, direction, part, *spec))
+        // A part inside a region hands its surface to that region, so it must
+        // not also be hit as a plain box.
+        .filter_map(|(part, spec)| {
+            if let Some(id) = graph.region_of(part) {
+                let region = graph.region(id)?;
+                return raycast_region(origin, direction, part, region);
+            }
+            raycast_part(origin, direction, part, *spec)
+        })
         .chain(ground)
         .filter(|hit| hit.distance >= 0.0 && hit.distance.is_finite())
         .min_by(|left, right| {
@@ -871,10 +888,59 @@ pub(crate) fn raycast_placement_plane_point(
     Some(origin + direction * distance)
 }
 
-/// Converts motion between two pointer rays into whole block steps.
-pub(crate) fn block_sheet_endpoint_from_rays(
+/// Every block in the solid cuboid spanning `span` blocks from `start`.
+///
+/// `span` counts blocks *beyond* the start block along each axis and may be
+/// negative, so a zero span is the single starting block. This is what a drag
+/// produces once `Q` has rotated it into a third axis.
+pub(crate) fn block_box_specs(
+    start: CuboidSpec,
+    span: IVec3,
+) -> Result<Vec<CuboidSpec>, PlacementError> {
+    let start_units = start.pose.translation_half_units();
+    let dimension_units = start.dimensions[0].units();
+    let block_units = i32::from(dimension_units) * 2;
+    let counts = span
+        .to_array()
+        .map(|steps| steps.unsigned_abs() as usize + 1);
+    let count = counts[0]
+        .saturating_mul(counts[1])
+        .saturating_mul(counts[2]);
+    if count > MAX_DRAG_BLOCKS {
+        return Err(PlacementError::TooManyBlocks {
+            count,
+            maximum: MAX_DRAG_BLOCKS,
+        });
+    }
+
+    let mut specs = Vec::with_capacity(count);
+    for x in inclusive_steps(span.x) {
+        for y in inclusive_steps(span.y) {
+            for z in inclusive_steps(span.z) {
+                let center = start_units + IVec3::new(x, y, z) * block_units;
+                specs.push(
+                    CuboidSpec::new(
+                        [dimension_units; 3],
+                        BuildPose::from_half_grid(center, GridRotation::default()),
+                    )
+                    .expect("dragged blocks retain the selected valid size")
+                    .with_material(start.material),
+                );
+            }
+        }
+    }
+    Ok(specs)
+}
+
+/// Extends a drag's span by the pointer's motion within the active plane.
+///
+/// Only the plane's own two axes move; the third keeps whatever it already had.
+/// That is what lets `Q` rotate the drag into a new plane without discarding the
+/// extent already dragged, turning a rectangle into a box.
+pub(crate) fn block_span_from_rays(
     start: CuboidSpec,
     plane: PlacementPlane,
+    anchor_span: IVec3,
     press_origin: Vec3,
     press_direction: Vec3,
     current_origin: Vec3,
@@ -882,14 +948,12 @@ pub(crate) fn block_sheet_endpoint_from_rays(
 ) -> Option<IVec3> {
     let press = raycast_placement_plane_point(press_origin, press_direction, start, plane)?;
     let current = raycast_placement_plane_point(current_origin, current_direction, start, plane)?;
-    let mut endpoint = start.pose.translation_half_units();
-    let block_half_units = i32::from(start.dimensions[0].units()) * 2;
     let steps = ((current - press) / BLOCK_SIZE_METERS).round().as_ivec3();
+    let mut span = anchor_span;
     for axis in plane.tangent_axes() {
-        endpoint[axis] =
-            endpoint[axis].saturating_add(steps[axis].saturating_mul(block_half_units));
+        span[axis] = anchor_span[axis].saturating_add(steps[axis]);
     }
-    Some(endpoint)
+    Some(span)
 }
 
 fn snap_world_to_half_grid(position: Vec3) -> IVec3 {
@@ -1282,6 +1346,43 @@ fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
     }
 }
 
+/// Whether something can be mounted on this face.
+///
+/// Only genuinely flat surfaces take a new part: a shaped face is no longer an
+/// axis-aligned rectangle, so a grid-aligned block could not sit flush on it.
+/// Flattening the face back onto the grid makes it placeable again.
+pub(crate) fn face_is_flat(graph: &ConstructionGraph, face: FaceRef) -> bool {
+    let FaceOwner::Part(part) = face.owner else {
+        return true;
+    };
+    let Some(id) = graph.region_of(part) else {
+        return true;
+    };
+    let Some(region) = graph.region(id) else {
+        return true;
+    };
+    let Some(spec) = graph.part(part).and_then(|spec| spec.as_cuboid()) else {
+        return true;
+    };
+    // The face is named in the part's own frame, so rotate it into the world
+    // before asking the region, whose cage is world-aligned.
+    let normal = spec.pose.rotation.quaternion() * face_normal(face.face);
+    let (axis, sign) = cardinal_axis(normal);
+    region.face_is_flat(axis, sign > 0)
+}
+
+/// Outward normal of one local face.
+const fn face_normal(face: FaceKind) -> Vec3 {
+    match face {
+        FaceKind::PositiveX => Vec3::X,
+        FaceKind::NegativeX => Vec3::NEG_X,
+        FaceKind::PositiveY => Vec3::Y,
+        FaceKind::NegativeY => Vec3::NEG_Y,
+        FaceKind::PositiveZ => Vec3::Z,
+        FaceKind::NegativeZ => Vec3::NEG_Z,
+    }
+}
+
 fn validate_candidate(
     graph: &ConstructionGraph,
     candidate: PlacementCandidate,
@@ -1393,6 +1494,101 @@ fn raycast_cuboid(
         point: hit.point,
         face: FaceRef::part(part, face_for_normal(hit.local_normal)),
     })
+}
+
+/// Raycasts one shaped region against the same pieces its colliders and its
+/// mesh come from, so the cursor lands where the surface actually is.
+///
+/// The reported face is still the grid face the surface came from, not the
+/// tilted plane the ray met. Placement, welding, and face snapping therefore go
+/// on working in grid coordinates: the grid stays the grid, and only the hit
+/// test gets truthful.
+pub(crate) fn raycast_region(
+    origin: Vec3,
+    direction: Vec3,
+    part: PartId,
+    region: &ShapeRegion,
+) -> Option<SurfaceHit> {
+    let direction = direction.normalize();
+    let inverse_rotation = Quat::IDENTITY;
+    let mut best: Option<SurfaceHit> = None;
+    for piece in region_pieces(region) {
+        let hit =
+            match piece {
+                PartPiece::Cuboid {
+                    center,
+                    half_extents,
+                    rotation,
+                    ..
+                } => raycast_oriented_cuboid(origin, direction, center, rotation, half_extents)
+                    .map(|hit| SurfaceHit {
+                        distance: hit.distance,
+                        point: hit.point,
+                        face: FaceRef::part(
+                            part,
+                            face_for_normal(inverse_rotation * (rotation * hit.local_normal)),
+                        ),
+                    }),
+                PartPiece::Convex(convex) => raycast_convex_piece(origin, direction, &convex).map(
+                    |(distance, point, normal)| SurfaceHit {
+                        distance,
+                        point,
+                        face: FaceRef::part(part, face_for_normal(inverse_rotation * normal)),
+                    },
+                ),
+            };
+        let Some(hit) = hit else {
+            continue;
+        };
+        if best.is_none_or(|best| hit.distance < best.distance) {
+            best = Some(hit);
+        }
+    }
+    best
+}
+
+/// Slab-clips a ray against a convex piece, returning where it enters.
+fn raycast_convex_piece(
+    origin: Vec3,
+    direction: Vec3,
+    piece: &ConvexPiece,
+) -> Option<(f32, Vec3, Vec3)> {
+    let mut near = f32::NEG_INFINITY;
+    let mut far = f32::INFINITY;
+    let mut entry_normal = Vec3::Y;
+    for face in &piece.faces {
+        let denominator = direction.dot(face.normal);
+        let distance = face.offset - origin.dot(face.normal);
+        if denominator.abs() <= f32::EPSILON {
+            // Parallel to this plane: outside it means the ray misses entirely.
+            if distance < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let crossing = distance / denominator;
+        if denominator < 0.0 {
+            if crossing > near {
+                near = crossing;
+                entry_normal = face.normal;
+            }
+        } else {
+            far = far.min(crossing);
+        }
+        if near > far {
+            return None;
+        }
+    }
+    if !near.is_finite() || near < 0.0 {
+        return None;
+    }
+    Some((near, origin + direction * near, entry_normal))
+}
+
+/// The convex pieces one region's cage describes.
+pub(crate) fn region_pieces(region: &ShapeRegion) -> Vec<PartPiece> {
+    let grid = region.grid();
+    mechanic_core::decompose(&grid, &|cell, corner| region.corner_steps(cell, corner))
 }
 
 fn raycast_part(origin: Vec3, direction: Vec3, part: PartId, spec: PartSpec) -> Option<SurfaceHit> {
@@ -2049,13 +2245,13 @@ mod tests {
     use super::{
         BLOCK_SIZE_METERS, PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit,
         bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
-        bearing_ring_overlaps_face, bearing_support_face, begin_weld, block_sheet_specs,
-        candidate_from_hit, cuboid_candidate_from_hit, cylinder_candidate_from_hit,
-        face_geometry_from_ref, oriented_cuboid_candidate_from_hit, raycast_construction,
-        raycast_construction_for_annulus, raycast_placement_plane, rigid_body_parts,
-        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
-        stage_block_batch_from_source, stage_cuboid, stage_cylinder_from_source,
-        stage_engine_from_source, stage_weld_objects, validate_part,
+        bearing_ring_overlaps_face, bearing_support_face, begin_weld, block_box_specs,
+        block_sheet_specs, block_span_from_rays, candidate_from_hit, cuboid_candidate_from_hit,
+        cylinder_candidate_from_hit, face_geometry_from_ref, face_is_flat,
+        oriented_cuboid_candidate_from_hit, raycast_construction, raycast_construction_for_annulus,
+        raycast_placement_plane, rigid_body_parts, stage_bearing_attachment,
+        stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source, stage_cuboid,
+        stage_cylinder_from_source, stage_engine_from_source, stage_weld_objects, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -2706,6 +2902,98 @@ mod tests {
     }
 
     #[test]
+    fn a_box_drag_places_a_solid_cuboid() {
+        let start = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
+        let specs = block_box_specs(start, IVec3::new(2, 1, 3)).unwrap();
+        assert_eq!(
+            specs.len(),
+            3 * 2 * 4,
+            "span counts blocks beyond the start"
+        );
+
+        // Every cell of the cuboid is filled exactly once: solid, no gaps and
+        // no duplicates, which is what a region will later be able to claim.
+        let mut centres = specs
+            .iter()
+            .map(|spec| spec.pose.translation_half_units().to_array())
+            .collect::<Vec<_>>();
+        centres.sort_unstable();
+        let unique = {
+            let mut copy = centres.clone();
+            copy.dedup();
+            copy
+        };
+        assert_eq!(centres, unique, "a box drag must not stack blocks");
+    }
+
+    #[test]
+    fn a_zero_span_box_drag_is_the_single_starting_block() {
+        let start = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
+        let specs = block_box_specs(start, IVec3::ZERO).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].pose.translation_half_units(), IVec3::ZERO);
+    }
+
+    #[test]
+    fn a_box_drag_keeps_the_selected_material_and_respects_the_cap() {
+        let start = CuboidSpec::new([1; 3], BuildPose::default())
+            .unwrap()
+            .with_material(ConstructionMaterial::Wood);
+        let specs = block_box_specs(start, IVec3::new(3, 3, 3)).unwrap();
+        assert!(
+            specs
+                .iter()
+                .all(|spec| spec.material == ConstructionMaterial::Wood)
+        );
+        assert!(matches!(
+            block_box_specs(start, IVec3::new(31, 31, 31)),
+            Err(PlacementError::TooManyBlocks { .. })
+        ));
+    }
+
+    #[test]
+    fn rotating_the_plane_keeps_the_extent_and_extends_the_third_axis() {
+        // This is what makes a big cuboid easy: drag a rectangle, press Q, and
+        // carry on into the axis the first plane could not reach.
+        let start = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
+        let down = Vec3::NEG_Y;
+        let press_origin = Vec3::new(0.0, 4.0, 0.0);
+
+        // A rectangle in XZ.
+        let flat = block_span_from_rays(
+            start,
+            PlacementPlane::Xz,
+            IVec3::ZERO,
+            press_origin,
+            down,
+            press_origin + Vec3::new(BLOCK_SIZE_METERS * 3.0, 0.0, BLOCK_SIZE_METERS * 2.0),
+            down,
+        )
+        .expect("the XZ plane is reachable from above");
+        assert_eq!(flat, IVec3::new(3, 0, 2));
+
+        // Q rotates into a plane containing Y; the frozen span carries over and
+        // only the new plane's axes move.
+        let horizontal = Vec3::new(1.0, 0.0, 0.0);
+        let side_origin = Vec3::new(-4.0, 0.0, 0.0);
+        let boxed = block_span_from_rays(
+            start,
+            PlacementPlane::Yz,
+            flat,
+            side_origin,
+            horizontal,
+            side_origin + Vec3::new(0.0, BLOCK_SIZE_METERS * 4.0, 0.0),
+            horizontal,
+        )
+        .expect("the YZ plane is reachable from the side");
+        assert_eq!(
+            boxed.x, 3,
+            "the axis the new plane does not own must keep its extent"
+        );
+        assert_eq!(boxed.y, 4, "the new axis grows from the rotation onward");
+    }
+
+    #[test]
     fn dragged_sheet_keeps_one_selected_material_for_every_block() {
         let start = CuboidSpec::new([1; 3], BuildPose::default())
             .unwrap()
@@ -3250,5 +3538,145 @@ mod tests {
         graph.apply(BuildCommand::Remove(upper)).unwrap();
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.bearing_count(), 0);
+    }
+
+    #[test]
+    fn a_ray_meets_a_shaped_face_where_the_surface_actually_is() {
+        // A wedge's sloped face sits well inside the block's old box, so a hit
+        // that still lands on the box would put the cursor in mid-air.
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::new(1, 1, 1), GridRotation::default()),
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let region = mechanic_core::ShapeRegion::new(
+            IVec3::ZERO,
+            IVec3::ONE,
+            mechanic_core::ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let BuildOutcome::RegionAdded(id) = graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            panic!("wrong outcome")
+        };
+        let cell = i16::try_from(mechanic_core::STEPS_PER_CELL).unwrap();
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 1, 1], [0, -cell, 0]), ([1, 1, 1], [0, -cell, 0])],
+            })
+            .expect("collapsing an edge makes a wedge");
+
+        // Straight down onto the sloped half of the top face.
+        let origin = Vec3::new(0.125, 2.0, 0.1875);
+        let hit =
+            raycast_construction(&graph, origin, Vec3::NEG_Y).expect("the wedge is under the ray");
+        assert!(
+            matches!(hit.face.owner, FaceOwner::Part(_)),
+            "the ray should meet the block, not the ground"
+        );
+        assert!(
+            hit.point.y < 0.25 - 1.0e-3,
+            "the slope is below the old box top; hit at y={}",
+            hit.point.y
+        );
+        assert!(
+            hit.point.y > 0.0,
+            "the hit should still be on the wedge, not through it"
+        );
+    }
+
+    #[test]
+    fn an_unshaped_part_still_reports_its_grid_face() {
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::new(1, 1, 1), GridRotation::default()),
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let hit = raycast_construction(&graph, Vec3::new(0.125, 2.0, 0.125), Vec3::NEG_Y)
+            .expect("the block is under the ray");
+        assert_eq!(hit.face.face, FaceKind::PositiveY);
+        assert!((hit.point.y - 0.25).abs() < 1.0e-4);
+    }
+
+    /// One block claimed as a region, with its top +z edge optionally collapsed.
+    fn block_with_region(shaped: bool) -> (ConstructionGraph, FaceRef) {
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::new(1, 1, 1), GridRotation::default()),
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap() else {
+            panic!("wrong spawn outcome")
+        };
+        let region = mechanic_core::ShapeRegion::new(
+            IVec3::ZERO,
+            IVec3::ONE,
+            mechanic_core::ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let BuildOutcome::RegionAdded(id) = graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            panic!("wrong outcome")
+        };
+        if shaped {
+            let cell = i16::try_from(mechanic_core::STEPS_PER_CELL).unwrap();
+            graph
+                .apply(BuildCommand::SetRegionVertices {
+                    region: id,
+                    vertices: vec![([0, 1, 1], [0, -cell, 0]), ([1, 1, 1], [0, -cell, 0])],
+                })
+                .unwrap();
+        }
+        (graph, FaceRef::part(part, FaceKind::PositiveY))
+    }
+
+    #[test]
+    fn placement_is_refused_on_a_shaped_face() {
+        // The top face has been sloped, so nothing can sit flush on it.
+        let (graph, top) = block_with_region(true);
+        assert!(!face_is_flat(&graph, top));
+    }
+
+    #[test]
+    fn flattening_a_shaped_face_makes_it_placeable_again() {
+        // Bringing those corners back onto the grid is how a mounting surface
+        // is made where the shaping had removed one.
+        let (mut graph, top) = block_with_region(true);
+        assert!(!face_is_flat(&graph, top));
+        let id = graph.regions().next().unwrap().0;
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 1, 1], [0, 0, 0]), ([1, 1, 1], [0, 0, 0])],
+            })
+            .unwrap();
+        assert!(face_is_flat(&graph, top));
+    }
+
+    #[test]
+    fn an_unshaped_face_is_always_placeable() {
+        let (graph, top) = block_with_region(false);
+        assert!(face_is_flat(&graph, top));
+        assert!(
+            face_is_flat(&graph, FaceRef::ground()),
+            "the ground is always flat"
+        );
+    }
+
+    #[test]
+    fn shaping_one_face_leaves_the_others_placeable() {
+        // Only the face that moved loses its mounting surface.
+        let (graph, _) = block_with_region(true);
+        let part = graph.parts().next().unwrap().0;
+        assert!(
+            face_is_flat(&graph, FaceRef::part(part, FaceKind::NegativeY)),
+            "the untouched underside must still take a block"
+        );
     }
 }

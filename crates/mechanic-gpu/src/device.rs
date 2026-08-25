@@ -9,12 +9,13 @@ use thiserror::Error;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    BROADPHASE_HASH_CAPACITY, FIXED_DT_SECONDS, GpuBearing, GpuCollider, GpuContact,
-    GpuContractionNode, GpuDiagnostics, GpuLinkState, GpuMass, GpuMechanismBody,
-    GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold, GpuSpatialInertia,
-    GpuTickConfig, GpuTransform, MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS, MAX_CONTACT_PAIRS,
-    SNAPSHOT_RING_SIZE,
+    BROADPHASE_HASH_CAPACITY, COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, FIXED_DT_SECONDS,
+    GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuLinkState, GpuMass,
+    GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold,
+    GpuSpatialInertia, GpuTickConfig, GpuTransform, MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS,
+    MAX_CONTACT_PAIRS, MAX_CONVEX_SHAPE_SLOTS, SNAPSHOT_RING_SIZE, pack_convex_counts,
 };
+use mechanic_core::ColliderShape;
 
 const SERIAL_MECHANISM_BEARING_LIMIT: u32 = 64;
 const SERIAL_MECHANISM_SOLVER_MULTIPLIER: u32 = 12;
@@ -152,6 +153,14 @@ pub enum GpuPhysicsError {
         /// Required rows.
         required: usize,
         /// Allocated rows.
+        capacity: usize,
+    },
+    /// Scene exceeds the fixed convex-shape buffer.
+    #[error("scene requires {required} convex-shape slots but capacity is {capacity}")]
+    ConvexShapeCapacity {
+        /// Required slots.
+        required: usize,
+        /// Allocated slots.
         capacity: usize,
     },
     /// Replacement drive rows do not match the compiled coordinate count.
@@ -478,16 +487,56 @@ impl GpuPhysics {
             })
             .collect::<Vec<_>>();
         let cylinder_ground_data = full_cylinder_ground_data(&creation.colliders);
+        let mut convex_shapes: Vec<[f32; 4]> = Vec::new();
         let colliders = creation
             .colliders
             .iter()
             .zip(cylinder_ground_data)
             .map(|(collider, ground)| {
-                let rotation = collider.local_rotation;
+                let (local_rotation, half_extents, shape) = match &collider.shape {
+                    ColliderShape::Cuboid {
+                        local_rotation,
+                        half_extents,
+                    } => (
+                        [
+                            local_rotation.x,
+                            local_rotation.y,
+                            local_rotation.z,
+                            local_rotation.w,
+                        ],
+                        vec4(*half_extents, ground.outer_radius),
+                        [COLLIDER_SHAPE_CUBOID, 0, 0, 0],
+                    ),
+                    ColliderShape::Convex(convex) => {
+                        let offset =
+                            u32::try_from(convex_shapes.len()).expect("convex slot fits u32");
+                        convex_shapes
+                            .extend(convex.vertices.iter().map(|vertex| vec4(*vertex, 0.0)));
+                        convex_shapes.extend(
+                            convex
+                                .face_planes
+                                .iter()
+                                .map(|plane| [plane.x, plane.y, plane.z, plane.w]),
+                        );
+                        convex_shapes
+                            .extend(convex.edge_directions.iter().map(|edge| vec4(*edge, 0.0)));
+                        let counts = pack_convex_counts(
+                            u32::try_from(convex.vertices.len()).expect("vertex count fits u32"),
+                            u32::try_from(convex.face_planes.len()).expect("face count fits u32"),
+                            u32::try_from(convex.edge_directions.len())
+                                .expect("edge count fits u32"),
+                        );
+                        (
+                            [0.0, 0.0, 0.0, 1.0],
+                            [0.0, 0.0, 0.0, 0.0],
+                            [COLLIDER_SHAPE_CONVEX, offset, counts, 0],
+                        )
+                    }
+                };
                 GpuCollider {
                     local_center: vec4(collider.local_center, ground.center_radius),
-                    local_rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
-                    half_extents: vec4(collider.half_extents, ground.outer_radius),
+                    local_rotation,
+                    half_extents,
                     metadata: [
                         collider.compound_index,
                         collider.source_part.index(),
@@ -500,9 +549,20 @@ impl GpuPhysics {
                         0.0,
                         0.0,
                     ],
+                    shape,
                 }
             })
             .collect::<Vec<_>>();
+        if convex_shapes.len() > MAX_CONVEX_SHAPE_SLOTS {
+            return Err(GpuPhysicsError::ConvexShapeCapacity {
+                required: convex_shapes.len(),
+                capacity: MAX_CONVEX_SHAPE_SLOTS,
+            });
+        }
+        // The buffer is fixed size, so an empty scene still needs one slot.
+        if convex_shapes.is_empty() {
+            convex_shapes.push([0.0; 4]);
+        }
         let bearings = creation
             .bearings
             .iter()
@@ -572,6 +632,8 @@ impl GpuPhysics {
             &spatial_inertias,
         );
         let colliders = create_readonly_storage_buffer(device, "mechanic colliders", &colliders);
+        let convex_shapes =
+            create_readonly_storage_buffer(device, "mechanic convex shapes", &convex_shapes);
         let bearings = create_readonly_storage_buffer(device, "mechanic bearings", &bearings);
         let suppressed_pairs = create_readonly_storage_buffer(
             device,
@@ -726,6 +788,7 @@ impl GpuPhysics {
             &masses,
             &diagnostics,
             &colliders,
+            &convex_shapes,
             &suppressed_pairs,
             &body_components,
             pipeline_config.mechanism_self_collisions,
@@ -2249,6 +2312,7 @@ fn create_lbvh_resources(
     rotations: &wgpu::Buffer,
     diagnostics: &wgpu::Buffer,
     colliders: &wgpu::Buffer,
+    convex_shapes: &wgpu::Buffer,
     pairs: &wgpu::Buffer,
     suppressed_pairs: &wgpu::Buffer,
     indirect_args: &wgpu::Buffer,
@@ -2339,6 +2403,7 @@ fn create_lbvh_resources(
             entry(6, colliders),
             entry(17, &collider_aabbs),
             entry(18, &morton_entries),
+            entry(28, convex_shapes),
         ],
     );
     let sort_local_initial_pipeline = compute_pipeline(
@@ -2504,6 +2569,7 @@ fn create_collision_resources(
     masses: &wgpu::Buffer,
     diagnostics: &wgpu::Buffer,
     colliders: &wgpu::Buffer,
+    convex_shapes: &wgpu::Buffer,
     suppressed_pairs: &wgpu::Buffer,
     body_components: &[u32],
     mechanism_self_collisions: bool,
@@ -2569,6 +2635,7 @@ fn create_collision_resources(
         rotations,
         diagnostics,
         colliders,
+        convex_shapes,
         &pairs,
         suppressed_pairs,
         &indirect_args,
@@ -2611,6 +2678,7 @@ fn create_collision_resources(
         entry(6, colliders),
         entry(9, &pairs),
         entry(10, &contacts),
+        entry(28, convex_shapes),
     ];
     if !mechanism_self_collisions {
         narrowphase_bindings.push(entry(27, &body_components));
@@ -2638,6 +2706,7 @@ fn create_collision_resources(
             entry(5, diagnostics),
             entry(6, colliders),
             entry(10, &contacts),
+            entry(28, convex_shapes),
         ],
     );
     let finalize_contacts_pipeline = compute_pipeline(
@@ -3012,7 +3081,7 @@ struct CylinderGroundData {
 }
 
 fn full_cylinder_ground_data(
-    colliders: &[mechanic_core::LocalCuboidCollider],
+    colliders: &[mechanic_core::LocalCollider],
 ) -> Vec<CylinderGroundData> {
     let mut result = vec![CylinderGroundData::default(); colliders.len()];
     let mut start = 0;
@@ -3023,10 +3092,25 @@ fn full_cylinder_ground_data(
             end += 1;
         }
         let group = &colliders[start..end];
-        if group.len() == mechanic_core::CYLINDER_COLLIDER_COUNT {
+        // Gate on the compiled shape, never on the run length: a shaped cuboid
+        // that happened to fuse into sixteen pieces would otherwise be mistaken
+        // for a cylinder and given analytic ground contacts.
+        let cuboid_extents = |collider: &mechanic_core::LocalCollider| match &collider.shape {
+            mechanic_core::ColliderShape::Cuboid {
+                local_rotation,
+                half_extents,
+            } => Some((*local_rotation, *half_extents)),
+            mechanic_core::ColliderShape::Convex(_) => None,
+        };
+        if group.len() == mechanic_core::CYLINDER_COLLIDER_COUNT
+            && group
+                .iter()
+                .all(|collider| cuboid_extents(collider).is_some())
+        {
             let radial_sum = group
                 .iter()
-                .map(|collider| collider.local_rotation * Vec3::X)
+                .filter_map(cuboid_extents)
+                .map(|(rotation, _)| rotation * Vec3::X)
                 .sum::<Vec3>();
             if radial_sum.length_squared() < 1.0e-8 {
                 let cylinder_center = group
@@ -3035,7 +3119,11 @@ fn full_cylinder_ground_data(
                     .sum::<Vec3>()
                     * (1.0 / 16.0);
                 let center_radius = (group[0].local_center - cylinder_center).length();
-                let outer_radius = center_radius + group[0].half_extents.x;
+                let outer_radius = center_radius
+                    + cuboid_extents(&group[0])
+                        .expect("every row in a cylinder run is a box")
+                        .1
+                        .x;
                 for (segment, row) in result[start..end].iter_mut().enumerate() {
                     *row = CylinderGroundData {
                         center_radius,
@@ -4569,6 +4657,92 @@ mod tests {
             ))
             .unwrap();
         graph.compile().unwrap()
+    }
+
+    /// A block whose top +z edge is collapsed onto the bottom, dropped from
+    /// `center_half_units_y`.
+    fn shaped_wedge(center_half_units_y: i32) -> mechanic_core::CompiledCreation {
+        let spec = CuboidSpec::new(
+            [4; 3],
+            BuildPose::from_half_grid(
+                IVec3::new(0, center_half_units_y, 0),
+                GridRotation::default(),
+            ),
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let cells = mechanic_core::part_cells(spec);
+        let region = mechanic_core::ShapeRegion::new(
+            cells.corner_half_units(IVec3::ZERO, 0),
+            cells.counts(),
+            ConstructionMaterial::Steel,
+        )
+        .expect("the block spans at least one cell");
+        let mechanic_core::BuildOutcome::RegionAdded(id) =
+            graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            panic!("adding a region reports the region it added")
+        };
+        // Drop the top pair of cage corners on +z a whole cell onto the corners
+        // below them, which slopes the whole top face.
+        let cell = i16::try_from(mechanic_core::STEPS_PER_CELL).expect("a cell is twenty steps");
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([0, 1, 1], [0, -cell, 0]), ([1, 1, 1], [0, -cell, 0])],
+            })
+            .expect("collapsing an edge is a legal shape");
+        graph.compile().unwrap()
+    }
+
+    #[test]
+    fn a_shaped_part_compiles_to_convex_collider_rows() {
+        let creation = shaped_wedge(8);
+        assert!(
+            creation
+                .colliders
+                .iter()
+                .any(|collider| !collider.shape.is_cuboid()),
+            "shaping must produce convex collider rows, not boxes"
+        );
+        assert!(
+            creation.colliders.len() < 64,
+            "fusing should keep the row count small; got {}",
+            creation.colliders.len()
+        );
+    }
+
+    #[test]
+    fn a_shaped_wedge_settles_on_the_ground_without_failing() {
+        // The whole point of shaping being truthful: the solver has to accept
+        // convex rows and bring them to rest like any other body.
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let creation = shaped_wedge(8);
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        for tick in 1..=180 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        assert_eq!(
+            gpu.read_last_tick(&device).unwrap().error_flags,
+            0,
+            "convex colliders must not raise a failure flag"
+        );
+        let y = gpu
+            .read_snapshot_transforms(&device, &queue, (180 % 3) as u8)
+            .unwrap()[0]
+            .position[1];
+        assert!(
+            y.is_finite() && y > -0.1,
+            "the wedge should rest on the ground rather than sink; y={y}"
+        );
+        assert!(
+            y < 1.0,
+            "the wedge should have fallen from its 1 m drop; y={y}"
+        );
     }
 
     #[test]

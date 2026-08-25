@@ -120,7 +120,19 @@ pub struct GpuSpatialInertia {
     pub inertia_z: [f32; 4],
 }
 
-/// One cuboid collider row.
+/// Shape kind for a box collider.
+pub const COLLIDER_SHAPE_CUBOID: u32 = 0;
+
+/// Shape kind for a convex polytope collider, whose geometry lives in the
+/// packed convex-shape buffer.
+pub const COLLIDER_SHAPE_CONVEX: u32 = 1;
+
+/// Packs a convex shape's element counts into one lane.
+pub const fn pack_convex_counts(vertices: u32, faces: u32, edges: u32) -> u32 {
+    vertices | (faces << 8) | (edges << 16)
+}
+
+/// One collider row.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct GpuCollider {
@@ -134,6 +146,9 @@ pub struct GpuCollider {
     pub metadata: [u32; 4],
     /// friction, restitution, and two reserved lanes.
     pub contact_properties: [f32; 4],
+    /// shape kind, offset into the convex-shape buffer, packed element counts,
+    /// and one reserved lane. A box ignores every lane but the kind.
+    pub shape: [u32; 4],
 }
 
 /// One exact passive-bearing row.
@@ -320,7 +335,7 @@ const _: () = {
     assert!(size_of::<GpuVelocity>() == 32);
     assert!(size_of::<GpuMass>() == 64);
     assert!(size_of::<GpuSpatialInertia>() == 64);
-    assert!(size_of::<GpuCollider>() == 80);
+    assert!(size_of::<GpuCollider>() == 96);
     assert!(size_of::<GpuBearing>() == 80);
     assert!(size_of::<GpuPair>() == 8);
     assert!(size_of::<GpuContact>() == 64);

@@ -10,18 +10,19 @@
 
 use std::collections::HashMap;
 
-use bevy_math::Vec3;
+use bevy_math::{IVec3, Vec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     ActuatorAssignment, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
-    BuildOutcome, BuildPose, ConstructionGraph, ConstructionMaterial, ControllerSpec, CuboidSpec,
-    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, DriveDwell, DriveKey,
-    DriveLimits, DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram, DriveProgramError,
-    DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind,
-    FaceOwner, FaceRef, GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec,
-    PartId, PartSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, WeldSpec,
+    BuildOutcome, BuildPose, CageIndex, ConstructionGraph, ConstructionMaterial, ControllerSpec,
+    CuboidSpec, CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError,
+    DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram,
+    DriveProgramError, DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec,
+    FaceKind, FaceOwner, FaceRef, GraphError, GridDimension, GridRotation, InputSeatLinkSpec,
+    InputSpec, PartId, PartSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec,
+    ShapeRegion, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
@@ -170,6 +171,23 @@ pub enum PartDoc {
         /// Centre and orientation.
         pose: PoseDoc,
     },
+}
+
+/// One shape region in its serialized form.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionDoc {
+    /// Minimum corner in half-grid units.
+    pub origin_half_units: [i32; 3],
+    /// Extent in construction cells.
+    pub size_cells: [i32; 3],
+    /// Material every block in the region shares.
+    pub material: ConstructionMaterial,
+    /// Cage planes beyond the two the extent implies, in cells, per axis.
+    #[serde(default)]
+    pub divisions: [Vec<i32>; 3],
+    /// Displaced cage vertices.
+    #[serde(default)]
+    pub vertices: Vec<(CageIndex, [i16; 3])>,
 }
 
 /// Owner of a serialized face: a part index, or the ground plane.
@@ -357,6 +375,9 @@ pub struct CreationDocument {
     /// Logical Seat-to-Controller links.
     #[serde(default)]
     pub seat_controller_links: Vec<SeatControllerLinkDoc>,
+    /// Editable shape regions. Absent in files written before regions existed.
+    #[serde(default)]
+    pub regions: Vec<RegionDoc>,
     /// Bearing rings placed but not yet attached through.
     #[serde(default)]
     pub sockets: Vec<BearingSocketDoc>,
@@ -396,6 +417,22 @@ impl CreationDocument {
             version: CREATION_FORMAT_VERSION,
             name: name.to_owned(),
             parts: graph.parts().map(|(_, spec)| part_doc(*spec)).collect(),
+            regions: graph
+                .regions()
+                .map(|(_, region)| RegionDoc {
+                    origin_half_units: region.origin_half_units().to_array(),
+                    size_cells: region.size_cells().to_array(),
+                    material: region.material(),
+                    divisions: core::array::from_fn(|axis| {
+                        // The first and last planes are implied by the extent.
+                        region.grid().planes(axis)[1..region.grid().planes(axis).len() - 1]
+                            .iter()
+                            .map(|half_units| (half_units - region.origin_half_units()[axis]) / 2)
+                            .collect()
+                    }),
+                    vertices: region.offsets().collect(),
+                })
+                .collect(),
             welds: graph
                 .welds()
                 .map(|(_, weld)| WeldDoc {
@@ -515,6 +552,34 @@ impl CreationDocument {
             ));
         }
         let outcomes = graph.apply_batch(connections)?;
+        for document in &self.regions {
+            let region = ShapeRegion::new(
+                IVec3::from_array(document.origin_half_units),
+                IVec3::from_array(document.size_cells),
+                document.material,
+            )
+            .map_err(GraphError::from)?;
+            let BuildOutcome::RegionAdded(id) = graph.apply(BuildCommand::AddRegion(region))?
+            else {
+                unreachable!("adding a region reports the region it added")
+            };
+            for (axis, positions) in document.divisions.iter().enumerate() {
+                for &position in positions {
+                    graph.apply(BuildCommand::SubdivideRegion {
+                        region: id,
+                        axis,
+                        position,
+                    })?;
+                }
+            }
+            if !document.vertices.is_empty() {
+                graph.apply(BuildCommand::SetRegionVertices {
+                    region: id,
+                    vertices: document.vertices.clone(),
+                })?;
+            }
+        }
+
         let bearing_ids = outcomes[first_bearing..]
             .iter()
             .map(|outcome| match outcome {
@@ -785,7 +850,7 @@ mod tests {
         CylinderSpec, DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveName, DriveProgram,
         DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind,
         FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, PartSpec, RigidLinkSpec,
-        SeatControllerLinkSpec, SeatSpec, ServoSpec, WeldSpec,
+        SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -1272,5 +1337,86 @@ mod tests {
             document.into_graph(),
             Err(CreationError::Dimension(_))
         ));
+    }
+
+    #[test]
+    fn a_shaped_creation_round_trips_its_regions() {
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::ONE, GridRotation::default()),
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let region =
+            ShapeRegion::new(IVec3::ZERO, IVec3::ONE, ConstructionMaterial::Steel).unwrap();
+        let BuildOutcome::RegionAdded(id) = graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            panic!("wrong outcome")
+        };
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region: id,
+                vertices: vec![([1, 1, 1], [-3, -4, -5])],
+            })
+            .unwrap();
+
+        let document = CreationDocument::from_graph(&graph, "shaped", &[]);
+        assert_eq!(document.regions.len(), 1);
+        let restored = document.into_graph().unwrap().graph;
+        let (_, original) = graph.regions().next().unwrap();
+        let (_, replayed) = restored.regions().next().unwrap();
+        assert_eq!(replayed, original);
+    }
+
+    #[test]
+    fn a_subdivided_region_round_trips_its_cage_planes() {
+        let mut graph = ConstructionGraph::new();
+        for x in 0..2 {
+            let spec = CuboidSpec::new(
+                [1, 1, 1],
+                BuildPose::from_half_grid(IVec3::new(1 + x * 2, 1, 1), GridRotation::default()),
+            )
+            .unwrap();
+            graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        }
+        let parts = graph.parts().map(|(id, _)| id).collect::<Vec<_>>();
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: parts[0],
+                second: parts[1],
+            }))
+            .unwrap();
+        let region = ShapeRegion::new(
+            IVec3::ZERO,
+            IVec3::new(2, 1, 1),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let BuildOutcome::RegionAdded(id) = graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            panic!("wrong outcome")
+        };
+        graph
+            .apply(BuildCommand::SubdivideRegion {
+                region: id,
+                axis: 0,
+                position: 1,
+            })
+            .unwrap();
+
+        let document = CreationDocument::from_graph(&graph, "subdivided", &[]);
+        let restored = document.into_graph().unwrap().graph;
+        let (_, replayed) = restored.regions().next().unwrap();
+        assert_eq!(replayed.plane_counts(), [3, 2, 2]);
+    }
+
+    #[test]
+    fn a_file_written_before_regions_loads_without_any() {
+        // The regions field defaults, so existing saves keep working untouched.
+        let text = r#"(version: 1, name: "legacy", parts: [])"#;
+        let document: CreationDocument = ron::from_str(text).unwrap();
+        assert!(document.regions.is_empty());
+        assert_eq!(document.into_graph().unwrap().graph.regions().count(), 0);
     }
 }

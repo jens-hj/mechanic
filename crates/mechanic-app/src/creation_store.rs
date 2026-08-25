@@ -257,6 +257,7 @@ mod tests {
                     material: mechanic_core::ConstructionMaterial::Steel,
                 })
                 .collect(),
+            regions: Vec::new(),
             welds: Vec::new(),
             rigid_links: Vec::new(),
             bearings: Vec::new(),

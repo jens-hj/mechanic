@@ -23,6 +23,13 @@ struct Collider {
     half_extents: vec4<f32>,
     metadata: vec4<u32>,
     contact_properties: vec4<f32>,
+    // shape kind, convex-buffer offset, packed element counts, reserved.
+    shape: vec4<u32>,
+};
+
+struct Interval {
+    minimum: f32,
+    maximum: f32,
 };
 
 struct Contact {
@@ -76,6 +83,8 @@ const MAX_SORTED_SERIAL_CONTACTS: u32 = 64u;
 const INVALID_MANIFOLD_SLOT: u32 = 0xffffffffu;
 const MAX_MANIFOLD_PROBES: u32 = 256u;
 const ANALYTIC_CYLINDER_FLAG: u32 = 0x80000000u;
+const COLLIDER_SHAPE_CUBOID: u32 = 0u;
+const COLLIDER_SHAPE_CONVEX: u32 = 1u;
 
 fn mixed_contact_properties(collider_a: u32, collider_b: u32) -> vec2<f32> {
     let first = colliders[collider_a].contact_properties.xy;
@@ -120,6 +129,7 @@ fn is_analytic_cylinder(value: f32) -> bool {
 @group(0) @binding(25) var<storage, read_write> angular_velocities: array<vec4<f32>>;
 @group(0) @binding(26) var<storage, read_write> world_masses: array<WorldMass>;
 @group(0) @binding(27) var<storage, read> body_components: array<u32>;
+@group(0) @binding(28) var<storage, read> convex_shapes: array<vec4<f32>>;
 
 fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(
@@ -199,7 +209,148 @@ fn collider_rotation(index: u32) -> vec4<f32> {
     return quat_multiply(rotations[collider.metadata.x], collider.local_rotation);
 }
 
+
+fn collider_is_convex(index: u32) -> bool {
+    return colliders[index].shape.x == COLLIDER_SHAPE_CONVEX;
+}
+
+fn convex_vertex_count(index: u32) -> u32 {
+    return colliders[index].shape.z & 0xffu;
+}
+
+fn convex_face_count(index: u32) -> u32 {
+    return (colliders[index].shape.z >> 8u) & 0xffu;
+}
+
+fn convex_edge_count(index: u32) -> u32 {
+    return (colliders[index].shape.z >> 16u) & 0xffu;
+}
+
+/// One convex vertex in world space. Stored relative to the compound centre of
+/// mass, exactly like a box collider's centre.
+fn convex_vertex(index: u32, vertex: u32) -> vec3<f32> {
+    let collider = colliders[index];
+    let body = collider.metadata.x;
+    let local = convex_shapes[collider.shape.y + vertex].xyz;
+    return positions[body].xyz + quat_rotate(rotations[body], local);
+}
+
+/// One convex face plane in world space: `xyz` outward normal, `w` offset.
+///
+/// Rotating the body turns the normal; translating it shifts the offset by the
+/// normal's component along the translation.
+fn convex_face_plane(index: u32, face: u32) -> vec4<f32> {
+    let collider = colliders[index];
+    let body = collider.metadata.x;
+    let slot = collider.shape.y + convex_vertex_count(index) + face;
+    let plane = convex_shapes[slot];
+    let normal = quat_rotate(rotations[body], plane.xyz);
+    return vec4<f32>(normal, plane.w + dot(normal, positions[body].xyz));
+}
+
+fn convex_edge_direction(index: u32, edge: u32) -> vec3<f32> {
+    let collider = colliders[index];
+    let slot = collider.shape.y + convex_vertex_count(index) + convex_face_count(index) + edge;
+    return quat_rotate(rotations[collider.metadata.x], convex_shapes[slot].xyz);
+}
+
+/// Vertices a collider presents to manifold generation.
+fn collider_vertex_count(index: u32) -> u32 {
+    if collider_is_convex(index) {
+        return convex_vertex_count(index);
+    }
+    return 8u;
+}
+
+/// Separating axes contributed by a collider's own faces.
+fn collider_face_axis_count(index: u32) -> u32 {
+    if collider_is_convex(index) {
+        return convex_face_count(index);
+    }
+    return 3u;
+}
+
+fn collider_face_axis(index: u32, axis: u32) -> vec3<f32> {
+    if collider_is_convex(index) {
+        return convex_face_plane(index, axis).xyz;
+    }
+    let rotation = collider_rotation(index);
+    if axis == 0u {
+        return quat_rotate(rotation, vec3<f32>(1.0, 0.0, 0.0));
+    }
+    if axis == 1u {
+        return quat_rotate(rotation, vec3<f32>(0.0, 1.0, 0.0));
+    }
+    return quat_rotate(rotation, vec3<f32>(0.0, 0.0, 1.0));
+}
+
+/// Separating axes contributed by a collider's own edge directions.
+fn collider_edge_axis_count(index: u32) -> u32 {
+    if collider_is_convex(index) {
+        return convex_edge_count(index);
+    }
+    return 3u;
+}
+
+fn collider_edge_axis(index: u32, axis: u32) -> vec3<f32> {
+    if collider_is_convex(index) {
+        return convex_edge_direction(index, axis);
+    }
+    return collider_face_axis(index, axis);
+}
+
+/// Projection of a collider onto an axis.
+fn project_collider(index: u32, axis: vec3<f32>) -> Interval {
+    var interval = Interval(3.402823e+38, -3.402823e+38);
+    let count = collider_vertex_count(index);
+    for (var vertex = 0u; vertex < count; vertex += 1u) {
+        let distance = dot(collider_vertex(index, vertex), axis);
+        interval.minimum = min(interval.minimum, distance);
+        interval.maximum = max(interval.maximum, distance);
+    }
+    return interval;
+}
+
+/// Lowest point a convex piece presents to the ground, averaged across every
+/// vertex sharing that height.
+///
+/// A box resting flat already reports its bottom-face centre, because the
+/// horizontal axes drop out of its support function. Taking a single lowest
+/// vertex instead would put the whole ground reaction on one corner and make a
+/// shaped part rock on it, so the flat case has to be reproduced here.
+fn convex_ground_support(index: u32) -> vec3<f32> {
+    let count = convex_vertex_count(index);
+    var lowest = convex_vertex(index, 0u).y;
+    for (var vertex = 1u; vertex < count; vertex += 1u) {
+        lowest = min(lowest, convex_vertex(index, vertex).y);
+    }
+    var sum = vec3<f32>(0.0);
+    var coplanar = 0.0;
+    for (var vertex = 0u; vertex < count; vertex += 1u) {
+        let point = convex_vertex(index, vertex);
+        if point.y <= lowest + 1.0e-4 {
+            sum += point;
+            coplanar += 1.0;
+        }
+    }
+    return sum / coplanar;
+}
+
 fn collider_support_point(index: u32, direction: vec3<f32>) -> vec3<f32> {
+    if collider_is_convex(index) {
+        let count = convex_vertex_count(index);
+        var best = convex_vertex(index, 0u);
+        var best_distance = dot(best, direction);
+        for (var vertex = 1u; vertex < count; vertex += 1u) {
+            let point = convex_vertex(index, vertex);
+            let distance = dot(point, direction);
+            if distance > best_distance {
+                best_distance = distance;
+                best = point;
+            }
+        }
+        return best;
+    }
     let collider = colliders[index];
     let rotation = collider_rotation(index);
     let axes = array<vec3<f32>, 3>(
@@ -265,6 +416,9 @@ fn full_cylinder_support_point(index: u32, direction: vec3<f32>, role: u32) -> v
 }
 
 fn collider_vertex(index: u32, vertex: u32) -> vec3<f32> {
+    if collider_is_convex(index) {
+        return convex_vertex(index, vertex);
+    }
     let collider = colliders[index];
     let rotation = collider_rotation(index);
     let axes = array<vec3<f32>, 3>(
@@ -281,6 +435,16 @@ fn collider_vertex(index: u32, vertex: u32) -> vec3<f32> {
 }
 
 fn collider_contains_point(index: u32, point: vec3<f32>) -> bool {
+    if collider_is_convex(index) {
+        let count = convex_face_count(index);
+        for (var face = 0u; face < count; face += 1u) {
+            let plane = convex_face_plane(index, face);
+            if dot(plane.xyz, point) > plane.w + 1.0e-5 {
+                return false;
+            }
+        }
+        return true;
+    }
     let collider = colliders[index];
     let rotation = collider_rotation(index);
     let local = quat_rotate(
@@ -293,12 +457,16 @@ fn collider_contains_point(index: u32, point: vec3<f32>) -> bool {
 fn calculate_contact_point(collider_a: u32, collider_b: u32, normal: vec3<f32>) -> vec3<f32> {
     var sum = vec3<f32>(0.0);
     var count = 0.0;
-    for (var vertex = 0u; vertex < 8u; vertex += 1u) {
+    let count_a = collider_vertex_count(collider_a);
+    for (var vertex = 0u; vertex < count_a; vertex += 1u) {
         let point_a = collider_vertex(collider_a, vertex);
         if collider_contains_point(collider_b, point_a) {
             sum += point_a;
             count += 1.0;
         }
+    }
+    let count_b = collider_vertex_count(collider_b);
+    for (var vertex = 0u; vertex < count_b; vertex += 1u) {
         let point_b = collider_vertex(collider_b, vertex);
         if collider_contains_point(collider_a, point_b) {
             sum += point_b;
@@ -512,6 +680,107 @@ fn obb_sat(collider_a: u32, collider_b: u32) -> SatResult {
     return minimum;
 }
 
+
+/// Separating-axis test for any pair involving a convex polytope.
+///
+/// Axes are the face normals of both shapes plus every cross product of their
+/// edge directions. Both lists arrive already deduplicated by the compiler, so a
+/// sheared box presents three face axes and three edge axes and costs exactly
+/// what a box costs here. The loop keeps `obb_sat`'s early-out on the first
+/// separating axis, which is what bounds the cost for the pairs that do not
+/// touch.
+fn polytope_sat(collider_a: u32, collider_b: u32) -> SatResult {
+    let center_delta = collider_center(collider_b) - collider_center(collider_a);
+    var minimum = SatResult(vec3<f32>(1.0, 0.0, 0.0), 3.402823e+38, 0u);
+    var near_face_axes = 0u;
+
+    let faces_a = collider_face_axis_count(collider_a);
+    for (var index = 0u; index < faces_a; index += 1u) {
+        let result = test_polytope_axis(
+            collider_a, collider_b, center_delta, collider_face_axis(collider_a, index),
+        );
+        if result.penetration < 0.0 {
+            return result;
+        }
+        if result.penetration <= 1.0e-4 {
+            near_face_axes += 1u;
+        }
+        if result.penetration < minimum.penetration {
+            minimum = result;
+        }
+    }
+    let faces_b = collider_face_axis_count(collider_b);
+    for (var index = 0u; index < faces_b; index += 1u) {
+        let result = test_polytope_axis(
+            collider_a, collider_b, center_delta, collider_face_axis(collider_b, index),
+        );
+        if result.penetration < 0.0 {
+            return result;
+        }
+        if result.penetration <= 1.0e-4 {
+            near_face_axes += 1u;
+        }
+        if result.penetration < minimum.penetration {
+            minimum = result;
+        }
+    }
+
+    let edges_a = collider_edge_axis_count(collider_a);
+    let edges_b = collider_edge_axis_count(collider_b);
+    for (var first = 0u; first < edges_a; first += 1u) {
+        let axis_a = collider_edge_axis(collider_a, first);
+        for (var second = 0u; second < edges_b; second += 1u) {
+            let result = test_polytope_axis(
+                collider_a,
+                collider_b,
+                center_delta,
+                cross(axis_a, collider_edge_axis(collider_b, second)),
+            );
+            if result.penetration < 0.0 {
+                return result;
+            }
+            if result.penetration < minimum.penetration {
+                minimum = result;
+            }
+        }
+    }
+
+    minimum.near_face_axes = near_face_axes;
+    return minimum;
+}
+
+fn test_polytope_axis(
+    collider_a: u32,
+    collider_b: u32,
+    center_delta: vec3<f32>,
+    raw_axis: vec3<f32>,
+) -> SatResult {
+    let axis_length_squared = dot(raw_axis, raw_axis);
+    if axis_length_squared < 1.0e-10 {
+        // Parallel edges give no axis; skip it rather than let it win the
+        // minimum.
+        return SatResult(vec3<f32>(1.0, 0.0, 0.0), 3.402823e+38, 0u);
+    }
+    var axis = raw_axis * inverseSqrt(axis_length_squared);
+    let interval_a = project_collider(collider_a, axis);
+    let interval_b = project_collider(collider_b, axis);
+    let penetration = min(interval_a.maximum, interval_b.maximum)
+        - max(interval_a.minimum, interval_b.minimum);
+    if dot(center_delta, axis) < 0.0 {
+        axis = -axis;
+    }
+    return SatResult(axis, penetration, 0u);
+}
+
+/// Narrowphase entry: boxes keep the dedicated path untouched.
+fn collider_pair_sat(collider_a: u32, collider_b: u32) -> SatResult {
+    if colliders[collider_a].shape.x == COLLIDER_SHAPE_CUBOID
+        && colliders[collider_b].shape.x == COLLIDER_SHAPE_CUBOID {
+        return obb_sat(collider_a, collider_b);
+    }
+    return polytope_sat(collider_a, collider_b);
+}
+
 fn pair_hash(collider_a: u32, collider_b: u32) -> u32 {
     var value = collider_a * 0x9e3779b9u;
     value ^= collider_b * 0x85ebca6bu;
@@ -567,7 +836,7 @@ fn acquire_manifold(collider_a: u32, collider_b: u32) -> u32 {
 fn emit_narrowphase_contact(pair: vec2<u32>) {
     let body_a = colliders[pair.x].metadata.x;
     let body_b = colliders[pair.y].metadata.x;
-    let sat = obb_sat(pair.x, pair.y);
+    let sat = collider_pair_sat(pair.x, pair.y);
     if sat.penetration < -1.0e-5 {
         return;
     }
@@ -603,7 +872,7 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
         return;
     }
     let pair = pairs[pair_index];
-    let sat = obb_sat(pair.x, pair.y);
+    let sat = collider_pair_sat(pair.x, pair.y);
     if sat.penetration < -1.0e-5 {
         return;
     }
@@ -657,6 +926,9 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
     let collider = colliders[collider_index];
     let down = vec3<f32>(0.0, -1.0, 0.0);
     var support_point = collider_support_point(collider_index, down);
+    if collider_is_convex(collider_index) {
+        support_point = convex_ground_support(collider_index);
+    }
     if collider.metadata.w != 0u {
         let contact_count = full_cylinder_contact_count(collider_index, down);
         if collider.metadata.w > contact_count {

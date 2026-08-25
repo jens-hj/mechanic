@@ -48,7 +48,7 @@ const MATERIAL_MENU_GAP: f32 = 8.0;
 const MATERIAL_MENU_OFFSET_Y: f32 = -((MATERIAL_ROW_HEIGHT * 5.0 + SLOT) * 0.5 + MATERIAL_MENU_GAP);
 
 /// The tools, in the order their number keys run.
-const TOOLS: [Tool; 12] = [
+const TOOLS: [Tool; 13] = [
     Tool::Block,
     Tool::Cylinder,
     Tool::Bearing,
@@ -61,6 +61,7 @@ const TOOLS: [Tool; 12] = [
     Tool::Servo,
     Tool::Seat,
     Tool::Input,
+    Tool::Shape,
 ];
 
 /// The bar, and the tooltip that rides above it.
@@ -387,6 +388,21 @@ fn icon(tool: Tool) -> Element {
                 circle at:(x:12px y:20px) radius:2.5px fill:accent.key
                 circle at:(x:20px y:20px) radius:2.5px fill:accent.key
                 circle at:(x:28px y:20px) radius:2.5px fill:accent.key
+            }
+        },
+        // A block with one corner pulled away, and handles on the corners that
+        // move: the wedge is what shaping is for.
+        Tool::Shape => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                line from:(x:10px y:30px) to:(x:30px y:30px)
+                    stroke:(width:2px color:ink.fg)
+                line from:(x:10px y:30px) to:(x:10px y:14px)
+                    stroke:(width:2px color:ink.fg)
+                line from:(x:30px y:30px) to:(x:10px y:14px)
+                    stroke:(width:2px color:accent.key)
+                circle at:(x:10px y:14px) radius:3.5px fill:accent.key
+                circle at:(x:30px y:30px) radius:3px fill:ink.fg
+                circle at:(x:10px y:30px) radius:3px fill:ink.fg
             }
         },
     }
