@@ -45,7 +45,16 @@ const BAR_RADIUS: f32 = SLOT_RADIUS + BAR_PAD;
 const MATERIAL_MENU_WIDTH: f32 = 156.0;
 const MATERIAL_ROW_HEIGHT: f32 = 34.0;
 const MATERIAL_MENU_GAP: f32 = 8.0;
-const MATERIAL_MENU_OFFSET_Y: f32 = -((MATERIAL_ROW_HEIGHT * 5.0 + SLOT) * 0.5 + MATERIAL_MENU_GAP);
+const MATERIAL_MENU_HEIGHT: f32 = {
+    let mut height = 0.0;
+    let mut row = 0;
+    while row < ConstructionMaterial::ALL.len() {
+        height += MATERIAL_ROW_HEIGHT;
+        row += 1;
+    }
+    height
+};
+const MATERIAL_MENU_OFFSET_Y: f32 = -((MATERIAL_MENU_HEIGHT + SLOT) * 0.5 + MATERIAL_MENU_GAP);
 
 /// The tools, in the order their number keys run.
 const TOOLS: [Tool; 13] = [
@@ -221,11 +230,11 @@ fn material_row(
 
 fn material_at(position: Vector2, slot: Rect) -> Option<ConstructionMaterial> {
     let left = slot.origin.x + (slot.size.width - MATERIAL_MENU_WIDTH) * 0.5;
-    let top = slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_ROW_HEIGHT * 5.0;
+    let top = slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_MENU_HEIGHT;
     if position.x < left
         || position.x > left + MATERIAL_MENU_WIDTH
         || position.y < top
-        || position.y >= top + MATERIAL_ROW_HEIGHT * 5.0
+        || position.y >= top + MATERIAL_MENU_HEIGHT
     {
         return None;
     }
@@ -258,6 +267,12 @@ fn material_thumbnail(material: ConstructionMaterial) -> Element {
             el width:26px height:26px radius:4px clip {
                 img fit:cover width:fill height:fill
                     "assets/materials/plastic/plastic_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Rubber => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/rubber/rubber_thumbnail.png"
             }
         },
         ConstructionMaterial::Steel => view! {
@@ -414,7 +429,7 @@ mod tests {
     use mosaic_core::{Rect, Vector2};
     use mosaic_widgets::input::{PointerButton, PointerEventKind};
 
-    use super::{ICON, MATERIAL_MENU_GAP, MATERIAL_ROW_HEIGHT, SLOT, TOOLS};
+    use super::{ICON, MATERIAL_MENU_GAP, MATERIAL_MENU_HEIGHT, MATERIAL_ROW_HEIGHT, SLOT, TOOLS};
     use crate::hotbar::Tool;
     use crate::ui::testing::{Overlay, VIEWPORT};
     use crate::ui::{UiIntent, testing};
@@ -490,7 +505,8 @@ mod tests {
 
             let concrete = Vector2::new(
                 slot.center().x,
-                slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_ROW_HEIGHT * 3.5,
+                slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_MENU_HEIGHT
+                    + MATERIAL_ROW_HEIGHT * 1.5,
             );
             overlay.dispatch(PointerEventKind::Move, concrete);
             assert_eq!(
@@ -503,6 +519,20 @@ mod tests {
                 vec![UiIntent::MaterialTool(ConstructionMaterial::Concrete, tool)],
             );
             assert_eq!(overlay.handles.material_menu.get_untracked(), None);
+        }
+    }
+
+    #[test]
+    fn every_material_has_a_selectable_picker_row() {
+        let overlay = Overlay::mount();
+        let slot = slots(&overlay)[0];
+        let top = slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_MENU_HEIGHT;
+
+        let mut row_center_y = top + MATERIAL_ROW_HEIGHT * 0.5;
+        for material in ConstructionMaterial::ALL {
+            let row_center = Vector2::new(slot.center().x, row_center_y);
+            assert_eq!(super::material_at(row_center, slot), Some(material));
+            row_center_y += MATERIAL_ROW_HEIGHT;
         }
     }
 
@@ -521,7 +551,7 @@ mod tests {
             .into_iter()
             .find(|(_, rect)| {
                 (rect.size.width - super::MATERIAL_MENU_WIDTH).abs() < 0.5
-                    && (rect.size.height - MATERIAL_ROW_HEIGHT * 5.0).abs() < 0.5
+                    && (rect.size.height - super::MATERIAL_MENU_HEIGHT).abs() < 0.5
             })
             .expect("the material menu is laid out")
             .1;

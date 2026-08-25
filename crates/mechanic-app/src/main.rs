@@ -1139,10 +1139,10 @@ struct EditorState {
 
 #[derive(Resource)]
 struct EditorVisuals {
-    construction_meshes: [Handle<Mesh>; 5],
-    construction_materials: [Handle<StandardMaterial>; 5],
-    ghost_materials: [Handle<StandardMaterial>; 5],
-    simulation_meshes: [Handle<Mesh>; 5],
+    construction_meshes: [Handle<Mesh>; ConstructionMaterial::ALL.len()],
+    construction_materials: [Handle<StandardMaterial>; ConstructionMaterial::ALL.len()],
+    ghost_materials: [Handle<StandardMaterial>; ConstructionMaterial::ALL.len()],
+    simulation_meshes: [Handle<Mesh>; ConstructionMaterial::ALL.len()],
     bearing_mesh: Handle<Mesh>,
     joint_xray_mesh: Handle<Mesh>,
     shape_node_mesh: Handle<Mesh>,
@@ -1411,8 +1411,9 @@ const fn material_index(material: ConstructionMaterial) -> usize {
         ConstructionMaterial::Aluminium => 0,
         ConstructionMaterial::Concrete => 1,
         ConstructionMaterial::Plastic => 2,
-        ConstructionMaterial::Steel => 3,
-        ConstructionMaterial::Wood => 4,
+        ConstructionMaterial::Rubber => 3,
+        ConstructionMaterial::Steel => 4,
+        ConstructionMaterial::Wood => 5,
     }
 }
 
@@ -1424,6 +1425,7 @@ fn construction_material(
         ConstructionMaterial::Aluminium => "materials/aluminium/aluminium",
         ConstructionMaterial::Concrete => "materials/concrete/concrete",
         ConstructionMaterial::Plastic => "materials/plastic/plastic",
+        ConstructionMaterial::Rubber => "materials/rubber/rubber",
         ConstructionMaterial::Steel => "materials/steel/steel",
         ConstructionMaterial::Wood => "materials/wood/wood",
     };

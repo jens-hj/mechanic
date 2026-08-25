@@ -13,6 +13,8 @@ pub enum ConstructionMaterial {
     Concrete,
     /// Lightweight resilient plastic.
     Plastic,
+    /// Compliant high-grip rubber.
+    Rubber,
     /// General-purpose structural steel.
     #[default]
     Steel,
@@ -22,10 +24,11 @@ pub enum ConstructionMaterial {
 
 impl ConstructionMaterial {
     /// Every selectable material in alphabetical display order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Aluminium,
         Self::Concrete,
         Self::Plastic,
+        Self::Rubber,
         Self::Steel,
         Self::Wood,
     ];
@@ -36,6 +39,7 @@ impl ConstructionMaterial {
             Self::Aluminium => "Aluminium",
             Self::Concrete => "Concrete",
             Self::Plastic => "Plastic",
+            Self::Rubber => "Rubber",
             Self::Steel => "Steel",
             Self::Wood => "Wood",
         }
@@ -47,6 +51,7 @@ impl ConstructionMaterial {
             Self::Aluminium => MaterialProperties::new(2_700.0, 0.45, 0.25),
             Self::Concrete => MaterialProperties::new(2_400.0, 0.80, 0.05),
             Self::Plastic => MaterialProperties::new(950.0, 0.35, 0.40),
+            Self::Rubber => MaterialProperties::new(1_100.0, 0.90, 0.70),
             Self::Steel => MaterialProperties::new(7_850.0, 0.60, 0.20),
             Self::Wood => MaterialProperties::new(700.0, 0.55, 0.15),
         }
@@ -1026,10 +1031,11 @@ mod tests {
 
     #[test]
     fn construction_material_property_rows_are_exact() {
-        let expected: [(ConstructionMaterial, f32, f32, f32); 5] = [
+        let expected: [(ConstructionMaterial, f32, f32, f32); 6] = [
             (ConstructionMaterial::Aluminium, 2_700.0, 0.45, 0.25),
             (ConstructionMaterial::Concrete, 2_400.0, 0.80, 0.05),
             (ConstructionMaterial::Plastic, 950.0, 0.35, 0.40),
+            (ConstructionMaterial::Rubber, 1_100.0, 0.90, 0.70),
             (ConstructionMaterial::Steel, 7_850.0, 0.60, 0.20),
             (ConstructionMaterial::Wood, 700.0, 0.55, 0.15),
         ];
