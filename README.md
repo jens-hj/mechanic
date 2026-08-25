@@ -45,7 +45,8 @@ cargo run -p mechanic-app
   preview shows it as one cuboid with block counts and metre dimensions. While
   dragging, press `Q` to rotate the drag into another plane **keeping the extent
   already dragged**, so a rectangle plus one `Q` plus more motion is a solid
-  cuboid of blocks. The plane the pointer is sliding along is drawn as a
+  cuboid of blocks. Right-drag deletes the same way, `Q` and all. The plane the
+  pointer is sliding along is drawn as a
   translucent sheet through the blocks, with arrows naming its two axes, so `Q`
   visibly rotates something. Release to place the whole box, or press
   `Escape`/right-click to cancel. A drag is limited to 4,096 blocks and commits atomically. Blocks have
@@ -109,6 +110,14 @@ cargo run -p mechanic-app
   but do not add undo-history entries.
 - With Weld selected, left-click two touching existing objects. The weld
   compiles both objects into one rigid compound without spawning geometry.
+  An object here is a whole rigid body, which is what the highlight shows:
+  contact anywhere between the two bodies is enough, and two parts of one body
+  cannot be welded to each other. A weld may close a loop through a bearing.
+  When that leaves a bearing with both sides in one body the ghost turns amber
+  and the HUD says how many bearings the weld locks; the weld still goes
+  through, and a locked bearing compiles to no joint at all rather than
+  blocking the build. A bearing driven by a control block is the exception,
+  because dropping its joint would silently kill the drive.
 - With Bearing selected, Left/Right adjusts the outer diameter by 0.05 m,
   while Shift+Left/Right adjusts the inner diameter by 0.05 m. Up/Down have no
   bearing action because bearings have no adjustable axial length.

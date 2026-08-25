@@ -31,7 +31,10 @@ use bevy::{
     mesh::Indices,
     prelude::*,
     render::{
-        render_resource::PrimitiveTopology,
+        render_resource::{
+            Extent3d, PrimitiveTopology, TextureDimension, TextureFormat, TextureViewDescriptor,
+            TextureViewDimension,
+        },
         renderer::{RenderDevice, RenderQueue},
     },
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
@@ -40,15 +43,15 @@ use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
     PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
     bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
-    bearing_support_face, bearing_support_face_excluding, begin_weld, block_box_specs,
-    block_sheet_specs, block_span_from_rays, candidate_from_hit, cylinder_candidate_from_hit,
+    bearing_support_face, bearing_support_face_excluding, begin_weld, block_box_bounds,
+    block_box_specs, block_span_from_rays, candidate_from_hit, cylinder_candidate_from_hit,
     face_geometry_from_ref, oriented_cuboid_candidate_from_hit, part_world_bounds,
     raycast_construction, raycast_construction_for_annulus, raycast_oriented_cuboid,
-    raycast_placement_plane, rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch,
-    stage_bearing_cylinder, stage_block_batch_from_source, stage_controller_from_source,
-    stage_cylinder_from_source, stage_engine_from_source, stage_input_from_source,
-    stage_seat_from_source, stage_servo_from_source, stage_weld_objects,
-    try_face_geometry_from_ref, validate_block_batch, validate_cylinder_candidate,
+    rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch, stage_bearing_cylinder,
+    stage_block_batch_from_source, stage_controller_from_source, stage_cylinder_from_source,
+    stage_engine_from_source, stage_input_from_source, stage_seat_from_source,
+    stage_servo_from_source, stage_weld_objects, try_face_geometry_from_ref, validate_block_batch,
+    validate_cylinder_candidate,
 };
 use camera::{OrbitCamera, SeatedView, seated_view_rotation};
 use control_panel::ControlPanelState;
@@ -200,8 +203,15 @@ enum BlockAttachment {
 #[derive(Clone, Debug)]
 struct DeleteDrag {
     start: CuboidSpec,
+    /// Re-anchored whenever the plane rotates, so motion after a `Q` is
+    /// measured from that moment rather than from the original press.
+    press: PointerSample,
     plane: PlacementPlane,
-    last_endpoint: Option<(PlacementPlane, IVec3)>,
+    /// Span at the last press or plane rotation.
+    anchor_span: IVec3,
+    /// Blocks beyond the start block along each axis, signed.
+    span: IVec3,
+    last_span: Option<IVec3>,
     parts: Vec<PartId>,
     error: Option<PlacementError>,
 }
@@ -498,6 +508,16 @@ fn handle_control_panel_shortcut(
     panel.open(controller);
 }
 
+/// Where the ray that looks for a Seat is aimed.
+///
+/// The pointer, the way every other tool in the editor aims, because there is
+/// no reticle to aim by: the cursor is free and visible whenever a running
+/// creation is not being sat in. The window centre is the fallback for a
+/// pointer that has left the window entirely.
+fn seat_aim_position(cursor: Option<Vec2>, viewport: Vec2) -> Vec2 {
+    cursor.unwrap_or(viewport * 0.5)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_seat_interaction(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -528,7 +548,10 @@ fn handle_seat_interaction(
             return;
         }
         let (camera_component, camera_global, _) = &mut *camera;
-        let cursor_position = Vec2::new(window.width() * 0.5, window.height() * 0.5);
+        let cursor_position = seat_aim_position(
+            window.cursor_position(),
+            Vec2::new(window.width(), window.height()),
+        );
         let hit = camera_component
             .viewport_to_world(camera_global, cursor_position)
             .ok()
@@ -554,7 +577,11 @@ fn handle_seat_interaction(
             cursor.visible = false;
             state.feedback = Some("Seated — mouse looks around, E leaves the Seat".to_owned());
         } else {
-            state.feedback = Some("Look at a Seat and press E".to_owned());
+            state.feedback = Some(if hit.is_some() {
+                "That is not a Seat — point at the Seat and press E".to_owned()
+            } else {
+                "Point at a Seat and press E".to_owned()
+            });
         }
     }
 
@@ -1100,6 +1127,9 @@ struct EditorState {
     preview: Option<PlacementCandidate>,
     cylinder_preview: Option<CylinderPlacementCandidate>,
     preview_error: Option<PlacementError>,
+    /// A staged action that is allowed but costs something the player should
+    /// see first — currently a weld that locks a bearing solid.
+    preview_warning: Option<String>,
     /// One of the 24 grid-aligned orientations used by authored parts.
     authored_orientation: u8,
     feedback: Option<String>,
@@ -1167,6 +1197,8 @@ struct EditorVisuals {
     white_preview_material: Handle<StandardMaterial>,
     green_preview_material: Handle<StandardMaterial>,
     red_preview_material: Handle<StandardMaterial>,
+    /// Allowed, but with a consequence worth seeing first.
+    amber_preview_material: Handle<StandardMaterial>,
     block_drag_preview_mesh: Handle<Mesh>,
     delete_drag_preview_mesh: Handle<Mesh>,
     weld_hover_preview_mesh: Handle<Mesh>,
@@ -1497,9 +1529,11 @@ fn main() {
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
         .init_resource::<SeatedView>()
+        // A floor so deep cavities are not pure black. Everything else now
+        // comes from the sky environment map, which has direction.
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.75, 0.80, 0.90),
-            brightness: 80.0,
+            brightness: 20.0,
             ..default()
         })
         .add_systems(Startup, (setup, ui::mount).chain())
@@ -1553,6 +1587,7 @@ fn setup(
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let construction_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
     let simulation_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
@@ -1633,6 +1668,8 @@ fn setup(
     });
     let white_preview_material = materials.add(preview_material(Color::srgba(1.0, 1.0, 1.0, 0.34)));
     let red_preview_material = materials.add(preview_material(Color::srgba(1.0, 0.06, 0.04, 0.46)));
+    let amber_preview_material =
+        materials.add(preview_material(Color::srgba(1.0, 0.60, 0.06, 0.46)));
     let green_preview_material =
         materials.add(preview_material(Color::srgba(0.12, 1.0, 0.28, 0.52)));
 
@@ -1665,6 +1702,7 @@ fn setup(
         white_preview_material: white_preview_material.clone(),
         green_preview_material,
         red_preview_material: red_preview_material.clone(),
+        amber_preview_material,
         block_drag_preview_mesh,
         delete_drag_preview_mesh,
         weld_hover_preview_mesh,
@@ -1884,6 +1922,11 @@ fn setup(
         Transform::from_xyz(8.0, 14.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
+    // Light arriving from the whole sky, not one lamp: undersides pick up warm
+    // bounce off the platform and vertical faces catch the sky at a graze, so
+    // the build reads round without the key light being cranked into clipping.
+    let environment_map = images.add(sky_cubemap(SKY_CUBEMAP_SIZE));
+
     let orbit = OrbitCamera::default();
     commands
         .spawn((
@@ -1891,6 +1934,11 @@ fn setup(
             Camera3d::default(),
             Exposure::OVERCAST,
             Tonemapping::SomewhatBoringDisplayTransform,
+            GeneratedEnvironmentMapLight {
+                environment_map,
+                intensity: SKY_ENVIRONMENT_INTENSITY,
+                ..default()
+            },
             orbit.transform(),
             orbit,
         ))
@@ -1912,6 +1960,110 @@ fn setup(
                 Transform::default(),
             ));
         });
+}
+
+/// Edge of each cubemap face, in texels. The generator filters this down to a
+/// 32x32 diffuse map, so a modest source is plenty for a smooth gradient.
+const SKY_CUBEMAP_SIZE: u32 = 64;
+
+/// Radiance the sky cubemap is scaled to, in cd/m². A uniform hemisphere of
+/// radiance `L` delivers `pi * L` lux, so this is roughly two thousand lux of
+/// fill against the key light's twelve thousand — enough to open the shadows
+/// up, far short of flattening them.
+const SKY_ENVIRONMENT_INTENSITY: f32 = 700.0;
+
+/// Straight up: cool and bright, the way an overcast sky reads.
+const SKY_ZENITH: Vec3 = Vec3::new(0.62, 0.74, 1.0);
+/// The band around the horizon, paler than the zenith and near neutral.
+const SKY_HORIZON: Vec3 = Vec3::new(0.80, 0.82, 0.88);
+/// Straight down: dim and warm, standing in for bounce off the platform.
+const SKY_GROUND: Vec3 = Vec3::new(0.26, 0.22, 0.18);
+
+/// Builds a cubemap of sky above and warm ground below, for image-based
+/// lighting.
+///
+/// Cheaper and more controllable than shipping an HDRI, and unlike a flat
+/// ambient term it carries direction, which is what makes a face read as
+/// facing up or down.
+fn sky_cubemap(size: u32) -> Image {
+    let edge = f32::from(u16::try_from(size).expect("a cubemap face is a modest number of texels"));
+    let mut texels: Vec<u8> =
+        Vec::with_capacity(usize::try_from(6 * size * size * 8).expect("the sky map fits memory"));
+    for face in 0..6_usize {
+        for row in 0..size {
+            for column in 0..size {
+                // Texel centres across the face, in [-1, 1].
+                let along = |index: u32| {
+                    let index =
+                        f32::from(u16::try_from(index).expect("a texel index is within its face"));
+                    2.0f32.mul_add(index + 0.5, -edge) / edge
+                };
+                let (u, v) = (along(column), along(row));
+                let colour = sky_colour(cubemap_direction(face, u, v));
+                for channel in [colour.x, colour.y, colour.z, 1.0] {
+                    texels.extend_from_slice(&half_bits(channel).to_le_bytes());
+                }
+            }
+        }
+    }
+    Image {
+        texture_view_descriptor: Some(TextureViewDescriptor {
+            dimension: Some(TextureViewDimension::Cube),
+            ..default()
+        }),
+        ..Image::new(
+            Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 6,
+            },
+            TextureDimension::D2,
+            texels,
+            TextureFormat::Rgba16Float,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+    }
+}
+
+/// The direction a texel of one cubemap face looks along, in the +X, -X, +Y,
+/// -Y, +Z, -Z order the graphics API expects.
+fn cubemap_direction(face: usize, u: f32, v: f32) -> Vec3 {
+    match face {
+        0 => Vec3::new(1.0, -v, -u),
+        1 => Vec3::new(-1.0, -v, u),
+        2 => Vec3::new(u, 1.0, v),
+        3 => Vec3::new(u, -1.0, -v),
+        4 => Vec3::new(u, -v, 1.0),
+        _ => Vec3::new(-u, -v, -1.0),
+    }
+    .normalize()
+}
+
+/// Sky above, ground below, meeting at the horizon.
+fn sky_colour(direction: Vec3) -> Vec3 {
+    let height = direction.y;
+    if height >= 0.0 {
+        // The square root keeps the sky bright well down towards the horizon
+        // rather than fading away over the top half of the view.
+        SKY_HORIZON.lerp(SKY_ZENITH, height.sqrt())
+    } else {
+        SKY_HORIZON.lerp(SKY_GROUND, (-height).powf(0.7))
+    }
+}
+
+/// Encodes a finite, non-negative value as IEEE 754 binary16.
+///
+/// The sky map is authored in the 0 to 1 range, so this handles neither
+/// negatives nor the subnormal and infinite ends of the format.
+fn half_bits(value: f32) -> u16 {
+    let bits = value.clamp(0.0, 65_504.0).to_bits();
+    let exponent = i32::try_from((bits >> 23) & 0xff).expect("a float exponent fits in i32") - 127;
+    if exponent < -14 {
+        return 0;
+    }
+    let exponent = u16::try_from(exponent + 15).expect("a clamped exponent is in range");
+    let mantissa = u16::try_from((bits & 0x007f_ffff) >> 13).expect("ten mantissa bits fit in u16");
+    (exponent << 10) | mantissa
 }
 
 fn help_toggle_requested(keyboard: &ButtonInput<Key>) -> bool {
@@ -2113,6 +2265,11 @@ fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
     }
     if let Some(drag) = state.delete_drag.as_mut() {
         drag.plane = drag.plane.cycle();
+        drag.anchor_span = drag.span;
+        if let Some(press) = sample {
+            drag.press = press;
+        }
+        drag.last_span = None;
         return format!("Delete plane: {}", drag.plane.label());
     }
     if matches!(
@@ -2468,7 +2625,13 @@ fn update_hover(
         return;
     }
     if state.delete_drag.is_some() {
-        refresh_delete_drag(&graph.0, &mut state, ray.origin, ray.direction.as_vec3());
+        refresh_delete_drag(
+            &graph.0,
+            &mut state,
+            cursor,
+            ray.origin,
+            ray.direction.as_vec3(),
+        );
         return;
     }
     let ray_direction = ray.direction.as_vec3();
@@ -2641,29 +2804,50 @@ fn invalidate_block_drag(state: &mut EditorState, error: PlacementError) {
 fn refresh_delete_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
+    cursor: Vec2,
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
-    let (start, plane, last_endpoint) = {
+    let (start, press, plane, anchor_span, last_span) = {
         let drag = state
             .delete_drag
             .as_ref()
             .expect("delete drag was checked by caller");
-        (drag.start, drag.plane, drag.last_endpoint)
+        (
+            drag.start,
+            drag.press,
+            drag.plane,
+            drag.anchor_span,
+            drag.last_span,
+        )
     };
-    let Some(endpoint) = raycast_placement_plane(ray_origin, ray_direction, start, plane) else {
-        invalidate_delete_drag(state, PlacementError::DragPlaneUnavailable);
-        return;
+    let span = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
+        anchor_span
+    } else {
+        let Some(span) = block_span_from_rays(
+            start,
+            plane,
+            anchor_span,
+            press.ray_origin,
+            press.ray_direction,
+            ray_origin,
+            ray_direction,
+        ) else {
+            invalidate_delete_drag(state, PlacementError::DragPlaneUnavailable);
+            return;
+        };
+        span
     };
-    if last_endpoint == Some((plane, endpoint)) {
+    if last_span == Some(span) {
         return;
     }
-    let result = delete_sheet_parts(graph, start, endpoint, plane);
+    let result = delete_box_parts(graph, start, span);
     let drag = state
         .delete_drag
         .as_mut()
         .expect("delete drag remains active while refreshing");
-    drag.last_endpoint = Some((plane, endpoint));
+    drag.span = span;
+    drag.last_span = Some(span);
     match result {
         Ok(parts) => {
             drag.parts = parts;
@@ -2684,13 +2868,13 @@ fn invalidate_delete_drag(state: &mut EditorState, error: PlacementError) {
     }
 }
 
-fn delete_sheet_parts(
+/// Every block whose centre falls inside the cuboid a delete drag spans.
+fn delete_box_parts(
     graph: &ConstructionGraph,
     start: CuboidSpec,
-    endpoint: IVec3,
-    plane: PlacementPlane,
+    span: IVec3,
 ) -> Result<Vec<PartId>, PlacementError> {
-    let centers = block_sheet_specs(start, endpoint, plane)?
+    let centers = block_box_specs(start, span)?
         .into_iter()
         .map(|spec| spec.pose.translation_half_units())
         .collect::<HashSet<_>>();
@@ -2705,6 +2889,15 @@ fn delete_sheet_parts(
         .collect())
 }
 
+/// Describes what a staged weld costs, or nothing when it costs nothing.
+fn weld_lockup_warning(before: &ConstructionGraph, after: &ConstructionGraph) -> Option<String> {
+    match builder::newly_locked_bearings(before, after) {
+        0 => None,
+        1 => Some("This weld locks 1 bearing solid".to_owned()),
+        count => Some(format!("This weld locks {count} bearings solid")),
+    }
+}
+
 fn clear_hover(state: &mut EditorState) {
     state.hovered = None;
     state.hovered_bearing = None;
@@ -2712,6 +2905,7 @@ fn clear_hover(state: &mut EditorState) {
     state.preview = None;
     state.cylinder_preview = None;
     state.preview_error = None;
+    state.preview_warning = None;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2725,6 +2919,7 @@ fn refresh_tool_preview_with_cylinder(
     state.preview = None;
     state.cylinder_preview = None;
     state.attachment_bearing = None;
+    state.preview_warning = None;
     // A shaped face is no longer an axis-aligned rectangle, so nothing can sit
     // flush on it until it is flattened back onto the grid.
     if let Some(hit) = state.hovered
@@ -2799,9 +2994,21 @@ fn refresh_tool_preview_with_cylinder(
                 })
             }
         }
-        (Tool::Weld, Some(PendingOperation::Weld(first))) => state
-            .hovered
-            .and_then(|hit| stage_weld_objects(graph, first.owner, hit.face.owner).err()),
+        (Tool::Weld, Some(PendingOperation::Weld(first))) => {
+            state.hovered.and_then(|hit| {
+                match stage_weld_objects(graph, first.owner, hit.face.owner) {
+                    // A weld that closes a loop is allowed; if it also leaves a
+                    // bearing with both sides in one body, say so before the
+                    // click rather than leaving the player to wonder why
+                    // nothing turns.
+                    Ok(staged) => {
+                        state.preview_warning = weld_lockup_warning(graph, &staged);
+                        None
+                    }
+                    Err(error) => Some(error),
+                }
+            })
+        }
         (Tool::Cylinder, _) => {
             let surface_candidate = state
                 .hovered
@@ -3637,6 +3844,10 @@ fn active_drag_plane(
         let (low, high) = region_world_bounds(&drag.region);
         return Some((low, high, drag.plane));
     }
+    if let Some(drag) = state.delete_drag.as_ref() {
+        let (low, high) = block_box_bounds(drag.start, drag.span);
+        return Some((low, high, drag.plane));
+    }
     let drag = state.block_drag.as_ref()?;
     let (low, high) = block_sheet_bounds(&drag.specs)?;
     Some((low, high, drag.plane))
@@ -3905,10 +4116,23 @@ fn handle_build_actions(
                     let plane = PlacementPlane::from_normal(
                         face_geometry_from_ref(hit.face, Some(&graph.0)).normal,
                     );
+                    let Some((cursor, (ray_origin, ray_direction))) =
+                        state.pointer_position.zip(state.pointer_ray)
+                    else {
+                        state.feedback = Some("Pointer position is unavailable".to_owned());
+                        return;
+                    };
                     state.delete_drag = Some(DeleteDrag {
                         start: spec,
+                        press: PointerSample {
+                            cursor,
+                            ray_origin,
+                            ray_direction,
+                        },
                         plane,
-                        last_endpoint: None,
+                        anchor_span: IVec3::ZERO,
+                        span: IVec3::ZERO,
+                        last_span: None,
                         parts: vec![part],
                         error: None,
                     });
@@ -4125,10 +4349,14 @@ fn handle_build_actions(
             if let Some(PendingOperation::Weld(first)) = graph.0.pending() {
                 match stage_weld_objects(&graph.0, first.owner, hit.face.owner) {
                     Ok(staged) => {
+                        let lockup = weld_lockup_warning(&graph.0, &staged);
                         let previous = EditorSnapshot::capture(&graph.0, &state);
                         graph.0 = staged;
                         history.commit(previous);
-                        state.feedback = Some("Welded the two objects".to_owned());
+                        state.feedback = Some(lockup.map_or_else(
+                            || "Welded the two objects".to_owned(),
+                            |warning| format!("Welded the two objects — {warning}"),
+                        ));
                     }
                     Err(error) => state.feedback = Some(error.to_string()),
                 }
@@ -4569,7 +4797,7 @@ fn handle_connector_actions(
 
 fn connect_control_link(
     graph: &mut ConstructionGraph,
-    state: &EditorState,
+    state: &mut EditorState,
     history: &mut EditorHistory,
     command: BuildCommand,
     success: &str,
@@ -4578,6 +4806,10 @@ fn connect_control_link(
     match graph.apply(command) {
         Ok(_) => {
             history.commit(previous);
+            // The new link is a line in the drive overlay, and that overlay is
+            // only rebuilt on request. Without this the wire stays invisible
+            // until something else happens to dirty the mesh.
+            state.construction_mesh_dirty = true;
             success.to_owned()
         }
         Err(error) => error.to_string(),
@@ -5830,6 +6062,8 @@ fn update_previews(
     );
     let action_material = if state.preview_error.is_some() {
         &visuals.red_preview_material
+    } else if state.preview_warning.is_some() {
+        &visuals.amber_preview_material
     } else if bearing_attachment_highlighted {
         &visuals.green_preview_material
     } else {
@@ -8255,15 +8489,20 @@ mod rendering_tests {
         MATERIAL_TEXTURE_PIXELS_PER_SIDE, PlacedBearing, SimulationMeshKind,
         append_bearing_cylinder, append_cylinder_shape, authored_preview_material, authored_uvs,
         bearing_preview_dimensions_changed, bearing_surface_material, block_sheet_bounds,
-        block_sheet_preview_mesh, block_sheet_specs, combined_authored_construction_mesh,
-        combined_bearing_mesh, combined_controller_mesh, combined_drive_xray_mesh,
-        combined_material_construction_mesh, combined_simulation_bearing_mesh,
-        combined_simulation_material_mesh, combined_simulation_mesh, configure_repeating_texture,
-        drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
-        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
+        block_sheet_preview_mesh, combined_authored_construction_mesh, combined_bearing_mesh,
+        combined_controller_mesh, combined_drive_xray_mesh, combined_material_construction_mesh,
+        combined_simulation_bearing_mesh, combined_simulation_material_mesh,
+        combined_simulation_mesh, configure_repeating_texture, drive_xray_is_visible,
+        joint_xray_is_visible, preview_material, renderable_mesh, single_authored_part_mesh,
+        single_bearing_mesh, single_cylinder_mesh,
     };
-    use super::{OverlayGeometry, append_drag_plane, append_plane_arrows, region_world_bounds};
+    use super::{
+        OverlayGeometry, SKY_GROUND, SKY_HORIZON, SKY_ZENITH, append_drag_plane,
+        append_plane_arrows, cubemap_direction, half_bits, region_world_bounds, sky_colour,
+        sky_cubemap,
+    };
     use crate::PlacementPlane;
+    use crate::builder::block_sheet_specs;
     use crate::hotbar::Tool;
     use crate::sequencer::DriveSequencer;
 
@@ -8352,6 +8591,75 @@ mod rendering_tests {
                 "{plane:?} arrows are centred on the area with the sheet"
             );
         }
+    }
+
+    #[test]
+    fn half_precision_encodes_the_values_the_sky_map_uses() {
+        // The bit patterns IEEE 754 binary16 defines for these.
+        assert_eq!(half_bits(0.0), 0x0000);
+        assert_eq!(half_bits(0.5), 0x3800);
+        assert_eq!(half_bits(1.0), 0x3c00);
+        assert_eq!(half_bits(2.0), 0x4000);
+        // Round trip every channel the sky actually holds.
+        for colour in [SKY_ZENITH, SKY_HORIZON, SKY_GROUND] {
+            for channel in [colour.x, colour.y, colour.z] {
+                let decoded = decode_half(half_bits(channel));
+                assert!(
+                    (decoded - channel).abs() < 1.0e-3,
+                    "{channel} survives the encoding"
+                );
+            }
+        }
+    }
+
+    fn decode_half(bits: u16) -> f32 {
+        if bits == 0 {
+            return 0.0;
+        }
+        let exponent = i32::from(bits >> 10) - 15;
+        let mantissa = f32::from(bits & 0x03ff) / 1024.0;
+        (1.0 + mantissa) * 2.0_f32.powi(exponent)
+    }
+
+    #[test]
+    fn the_sky_map_is_bright_above_and_dim_below() {
+        // Whichever face it lands on, a direction gets the same colour, which
+        // is what makes the six faces meet without a seam.
+        assert!(sky_colour(Vec3::Y).abs_diff_eq(SKY_ZENITH, 1.0e-6));
+        assert!(sky_colour(Vec3::NEG_Y).abs_diff_eq(SKY_GROUND, 1.0e-6));
+        for horizontal in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z] {
+            assert!(sky_colour(horizontal).abs_diff_eq(SKY_HORIZON, 1.0e-6));
+        }
+        // Up is brighter than down, which is the whole point of it.
+        assert!(sky_colour(Vec3::Y).length() > sky_colour(Vec3::NEG_Y).length() * 2.0);
+    }
+
+    #[test]
+    fn every_cubemap_face_looks_the_way_its_index_says() {
+        // Face centres are the six axes, in the order the graphics API expects.
+        let centres = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ];
+        for (face, expected) in centres.into_iter().enumerate() {
+            assert!(
+                cubemap_direction(face, 0.0, 0.0).abs_diff_eq(expected, 1.0e-6),
+                "face {face} points along {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sky_map_is_a_cube_of_the_size_it_was_asked_for() {
+        let map = sky_cubemap(8);
+        assert_eq!(map.texture_descriptor.size.depth_or_array_layers, 6);
+        assert_eq!(map.texture_descriptor.size.width, 8);
+        // Four half-precision channels per texel, six faces.
+        assert_eq!(map.data.as_ref().map(Vec::len), Some(6 * 8 * 8 * 8));
     }
 
     #[test]
@@ -9261,16 +9569,18 @@ mod interaction_tests {
         PointerSample, SelectedTool, SimulationShortcut, SurfaceHit, Tool, active_drag_plane,
         adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
         bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_bounds,
-        block_sheet_specs, candidate_from_hit, connect_drive_wire, delete_sheet_parts,
+        candidate_from_hit, connect_control_link, connect_drive_wire, delete_box_parts,
         disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude, hammer_point_travel,
         handle_block_actions, handle_build_actions, handle_shortcuts, handle_tool_change,
         help_toggle_requested, raycast_construction, raycast_placed_bearing_discs,
         raycast_placed_bearings, raycast_simulation, refresh_block_drag, refresh_region_drag,
         refresh_tool_preview, requested_bearing_dimension_adjustment,
         requested_cylinder_dimension_adjustment, requested_simulation_shortcut, rigid_body_parts,
-        stage_part_deletion_preserving_bearings, tool_status_line, wire_drag_step,
+        seat_aim_position, stage_part_deletion_preserving_bearings, tool_status_line,
+        wire_drag_step,
     };
     use super::{RegionDrag, commit_region_drag, region_area};
+    use crate::builder::block_sheet_specs;
     use crate::{WireConnection, WireDrag, WireDragStep, WireEnd, ui::UiInput};
 
     fn pointer_sample(cursor: Vec2, ray_origin: Vec3, ray_direction: Vec3) -> PointerSample {
@@ -10335,6 +10645,9 @@ mod interaction_tests {
             hovered_bearing: None,
             attachment_bearing: Some(0),
             placed_bearings: vec![bearing],
+            // A delete drag anchors on the press, so it needs the pointer.
+            pointer_position: Some(Vec2::ZERO),
+            pointer_ray: Some((Vec3::Y, Vec3::NEG_Y)),
             ..Default::default()
         };
         let mut mouse = ButtonInput::default();
@@ -10524,7 +10837,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn delete_drag_selects_only_the_rectangular_plane() {
+    fn delete_drag_selects_only_the_box_it_spans() {
         let mut graph = ConstructionGraph::new();
         let centers = [
             IVec3::new(1, 1, 1),
@@ -10548,11 +10861,15 @@ mod interaction_tests {
         }
         let start = graph.part(parts[0]).copied().unwrap().as_cuboid().unwrap();
 
-        let selected =
-            delete_sheet_parts(&graph, start, IVec3::new(3, 1, 3), PlacementPlane::Xz).unwrap();
+        // A flat span is the four in that plane; the block above is untouched.
+        let flat = delete_box_parts(&graph, start, IVec3::new(1, 0, 1)).unwrap();
+        assert_eq!(flat.len(), 4);
+        assert!(!flat.contains(&parts[4]));
 
-        assert_eq!(selected.len(), 4);
-        assert!(!selected.contains(&parts[4]));
+        // Rotating into the third axis, as `Q` does, reaches the one above too.
+        let boxed = delete_box_parts(&graph, start, IVec3::new(1, 1, 1)).unwrap();
+        assert_eq!(boxed.len(), 5);
+        assert!(boxed.contains(&parts[4]));
     }
 
     fn wired_socket_graph() -> (ConstructionGraph, PlacedBearing, PartId) {
@@ -10634,6 +10951,58 @@ mod interaction_tests {
         assert!(message.contains("Wired"), "{message}");
         assert_eq!(graph.drive_link_count(), 1);
         assert!(state.construction_mesh_dirty);
+    }
+
+    #[test]
+    fn linking_an_input_to_a_seat_asks_for_the_wire_overlay_to_be_redrawn() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(input) = graph
+            .apply(BuildCommand::SpawnInput(mechanic_core::InputSpec::new(
+                BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(seat) = graph
+            .apply(BuildCommand::SpawnSeat(mechanic_core::SeatSpec::new(
+                BuildPose::new(IVec3::new(8, 2, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut state = EditorState::default();
+        let mut history = EditorHistory::default();
+
+        let message = connect_control_link(
+            &mut graph,
+            &mut state,
+            &mut history,
+            BuildCommand::AddInputSeatLink(mechanic_core::InputSeatLinkSpec { input, seat }),
+            "Linked Input to Seat",
+        );
+
+        assert_eq!(message, "Linked Input to Seat");
+        assert_eq!(graph.input_seat_links().count(), 1);
+        // The wire is a line in the drive overlay, and that overlay is only
+        // rebuilt on request: without the flag it stays invisible until some
+        // unrelated edit happens to dirty the mesh.
+        assert!(state.construction_mesh_dirty);
+    }
+
+    #[test]
+    fn the_seat_ray_follows_the_pointer_and_falls_back_to_the_window_centre() {
+        let viewport = Vec2::new(1600.0, 900.0);
+        assert_eq!(
+            seat_aim_position(Some(Vec2::new(200.0, 700.0)), viewport),
+            Vec2::new(200.0, 700.0)
+        );
+        assert_eq!(
+            seat_aim_position(None, viewport),
+            Vec2::new(800.0, 450.0),
+            "a pointer outside the window leaves the centre to aim by",
+        );
     }
 
     #[test]
@@ -10955,8 +11324,15 @@ mod history_tests {
         });
         state.delete_drag = Some(DeleteDrag {
             start: graph.part(support).copied().unwrap().as_cuboid().unwrap(),
+            press: PointerSample {
+                cursor: Vec2::ZERO,
+                ray_origin: Vec3::Y,
+                ray_direction: Vec3::NEG_Y,
+            },
             plane: PlacementPlane::Xz,
-            last_endpoint: None,
+            anchor_span: IVec3::ZERO,
+            span: IVec3::ZERO,
+            last_span: None,
             parts: vec![support],
             error: None,
         });

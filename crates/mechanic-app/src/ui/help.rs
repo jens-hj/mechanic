@@ -138,18 +138,25 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         .as_ref()
         .and_then(|drag| drag.error.as_ref())
         .or(state.preview_error.as_ref());
+    // A warning is not a refusal: it only speaks when nothing is refused.
+    let active_warning = active_error
+        .is_none()
+        .then_some(state.preview_warning.as_ref())
+        .flatten();
     let status = if let Some(charge) = hammer.charging {
         format!(
             "Hammer charge: {:.0}% — release to strike",
             charge.elapsed_seconds / HAMMER_CHARGE_SECONDS * 100.0
         )
+    } else if let Some(warning) = active_warning {
+        warning.clone()
     } else {
         active_error.map_or_else(
             || state.feedback.clone().unwrap_or_else(|| "Ready".to_owned()),
             ToString::to_string,
         )
     };
-    let status_tone = if hammer.charging.is_some() {
+    let status_tone = if hammer.charging.is_some() || active_warning.is_some() {
         Tone::Warn
     } else if active_error.is_some()
         || ["Cannot", "Could not", "Simulation stopped"]
@@ -164,7 +171,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         "Simulation paused at the current pose — press Space to resume".to_owned()
     } else if let Some(drag) = state.delete_drag.as_ref() {
         format!(
-            "Release to delete {} cuboid(s) on the {} plane",
+            "Release to delete {} cuboid(s) — Q rotates the {} plane and keeps the extent",
             drag.parts.len(),
             drag.plane.label()
         )
@@ -209,7 +216,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Click a flat face to place; Shift+Down/Up changes the slice angle".to_owned()
             }
             (false, Tool::Weld, None, _, _) => "Left click selects the first object".to_owned(),
-            (false, Tool::Weld, Some(_), _, _) => "Left click a touching second object".to_owned(),
+            (false, Tool::Weld, Some(_), _, _) => {
+                "Left click a second object the highlighted one touches".to_owned()
+            }
             (false, Tool::Bearing, _, _, _) => {
                 "Left click places a bearing; use Blocker Placer to attach it".to_owned()
             }

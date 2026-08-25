@@ -6,11 +6,11 @@ use std::{
 
 use bevy::prelude::*;
 use mechanic_core::{
-    BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-    ControllerSpec, ConvexPiece, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind,
-    EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartId, PartPiece, PartSpec,
-    PendingOperation, RigidLinkSpec, SeatSpec, ServoSpec, ShapeRegion, WeldSpec,
-    snap_world_to_grid,
+    BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
+    ConstructionGraph, ControllerSpec, ConvexPiece, CuboidSpec, CylinderDimensions, CylinderSpec,
+    EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartId,
+    PartPiece, PartSpec, PendingOperation, RigidLinkSpec, SeatSpec, ServoSpec, ShapeRegion,
+    WeldSpec, snap_world_to_grid,
 };
 
 pub(crate) const GROUND_HALF_SIZE: f32 = 10.0;
@@ -814,54 +814,25 @@ pub(crate) fn validate_block_batch(
     Ok(())
 }
 
+/// One plane of [`block_box_specs`], addressed by the endpoint the pointer is
+/// aiming at rather than a span.
+///
+/// Drags themselves all work in spans now. This survives because a good many
+/// tests are written against an endpoint, and routing it through the box keeps
+/// the two from ever describing different geometry.
+#[cfg(test)]
 pub(crate) fn block_sheet_specs(
     start: CuboidSpec,
     endpoint_units: IVec3,
     plane: PlacementPlane,
 ) -> Result<Vec<CuboidSpec>, PlacementError> {
     let start_units = start.pose.translation_half_units();
-    let dimension_units = start.dimensions[0].units();
-    let block_units = i32::from(dimension_units) * 2;
-    let axes = plane.tangent_axes();
-    let steps = axes.map(|axis| rounded_div(endpoint_units[axis] - start_units[axis], block_units));
-    let counts = steps.map(|step| step.unsigned_abs() as usize + 1);
-    let count = counts[0].saturating_mul(counts[1]);
-    if count > MAX_DRAG_BLOCKS {
-        return Err(PlacementError::TooManyBlocks {
-            count,
-            maximum: MAX_DRAG_BLOCKS,
-        });
+    let block_units = i32::from(start.dimensions[0].units()) * 2;
+    let mut span = IVec3::ZERO;
+    for axis in plane.tangent_axes() {
+        span[axis] = rounded_div(endpoint_units[axis] - start_units[axis], block_units);
     }
-
-    let mut specs = Vec::with_capacity(count);
-    for first in inclusive_steps(steps[0]) {
-        for second in inclusive_steps(steps[1]) {
-            let mut center = start_units;
-            center[axes[0]] += first * block_units;
-            center[axes[1]] += second * block_units;
-            specs.push(
-                CuboidSpec::new(
-                    [dimension_units; 3],
-                    BuildPose::from_half_grid(center, GridRotation::default()),
-                )
-                .expect("dragged blocks retain the selected valid size")
-                .with_material(start.material),
-            );
-        }
-    }
-    Ok(specs)
-}
-
-pub(crate) fn raycast_placement_plane(
-    origin: Vec3,
-    direction: Vec3,
-    start: CuboidSpec,
-    plane: PlacementPlane,
-) -> Option<IVec3> {
-    let point = raycast_placement_plane_point(origin, direction, start, plane)?;
-    let mut endpoint = snap_world_to_half_grid(point);
-    endpoint[plane.normal_axis()] = start.pose.translation_half_units()[plane.normal_axis()];
-    Some(endpoint)
+    block_box_specs(start, span)
 }
 
 /// Intersects a pointer ray with the plane through the dragged block's centre.
@@ -932,6 +903,16 @@ pub(crate) fn block_box_specs(
     Ok(specs)
 }
 
+/// The world-space bounds of the box a drag spans, without building its blocks.
+pub(crate) fn block_box_bounds(start: CuboidSpec, span: IVec3) -> (Vec3, Vec3) {
+    let block = f32::from(start.dimensions[0].units()) * HALF_GRID_UNIT_METERS;
+    let centre = start.pose.translation();
+    let reach = span.as_vec3() * block;
+    let low = centre + reach.min(Vec3::ZERO) - Vec3::splat(block * 0.5);
+    let high = centre + reach.max(Vec3::ZERO) + Vec3::splat(block * 0.5);
+    (low, high)
+}
+
 /// Extends a drag's span by the pointer's motion within the active plane.
 ///
 /// Only the plane's own two axes move; the third keeps whatever it already had.
@@ -966,6 +947,7 @@ fn inclusive_steps(end: i32) -> impl Iterator<Item = i32> {
         .map(move |step| i32::try_from(step).expect("drag step count fits in i32") * direction)
 }
 
+#[cfg(test)]
 fn rounded_div(value: i32, divisor: i32) -> i32 {
     let half = divisor / 2;
     if value >= 0 {
@@ -990,7 +972,7 @@ pub(crate) fn stage_weld_objects(
     first: FaceOwner,
     second: FaceOwner,
 ) -> Result<ConstructionGraph, PlacementError> {
-    if first == second {
+    if first == second || weld_body_owners(graph, first).contains(&second) {
         return Err(PlacementError::SameObject);
     }
     let Some((first_face, second_face)) = touching_weld_face_pair(graph, first, second) else {
@@ -1011,19 +993,55 @@ fn touching_weld_face_pair(
     first: FaceOwner,
     second: FaceOwner,
 ) -> Option<(FaceRef, FaceRef)> {
-    match (first, second) {
-        (FaceOwner::Ground, FaceOwner::Part(part)) => rigid_body_parts(graph, part)
+    // The tool highlights whole rigid bodies, so it has to weld whole rigid
+    // bodies: contact anywhere between the two counts, not just between the one
+    // part that was clicked and the one under the pointer.
+    weld_body_owners(graph, first).into_iter().find_map(|left| {
+        weld_body_owners(graph, second)
             .into_iter()
-            .find_map(|member| {
-                touching_face_pair(graph, FaceOwner::Ground, FaceOwner::Part(member))
-            }),
-        (FaceOwner::Part(part), FaceOwner::Ground) => rigid_body_parts(graph, part)
+            .find_map(|right| touching_face_pair(graph, left, right))
+    })
+}
+
+/// Every object that moves with `owner`, which is what the weld tool treats as
+/// one selection.
+fn weld_body_owners(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceOwner> {
+    match owner {
+        FaceOwner::Ground => vec![FaceOwner::Ground],
+        FaceOwner::Part(part) => rigid_body_parts(graph, part)
             .into_iter()
-            .find_map(|member| {
-                touching_face_pair(graph, FaceOwner::Part(member), FaceOwner::Ground)
-            }),
-        _ => touching_face_pair(graph, first, second),
+            .map(FaceOwner::Part)
+            .collect(),
     }
+}
+
+/// Bearings whose two sides have ended up in one rigid body, so the joint can
+/// no longer turn. Welding into a loop is allowed; this reports the cost.
+pub(crate) fn locked_bearings(graph: &ConstructionGraph) -> Vec<BearingId> {
+    graph
+        .bearings()
+        .filter_map(|(id, spec)| bearing_is_locked(graph, spec).then_some(id))
+        .collect()
+}
+
+fn bearing_is_locked(graph: &ConstructionGraph, spec: &BearingSpec) -> bool {
+    let (FaceOwner::Part(source), FaceOwner::Part(target)) = (spec.source.owner, spec.target.owner)
+    else {
+        return false;
+    };
+    source == target || rigid_body_parts(graph, source).contains(&target)
+}
+
+/// How many bearings `after` locks that `before` left free.
+pub(crate) fn newly_locked_bearings(
+    before: &ConstructionGraph,
+    after: &ConstructionGraph,
+) -> usize {
+    let was_locked = locked_bearings(before);
+    locked_bearings(after)
+        .into_iter()
+        .filter(|id| !was_locked.contains(id))
+        .count()
 }
 
 pub(crate) fn rigid_body_parts(graph: &ConstructionGraph, seed: PartId) -> Vec<PartId> {
@@ -2239,7 +2257,8 @@ mod tests {
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, FaceKind,
-        FaceOwner, FaceRef, GridRotation, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
+        FaceOwner, FaceRef, GridRotation, PartId, PartSpec, PendingOperation, RigidLinkSpec,
+        WeldSpec,
     };
 
     use super::{
@@ -2247,11 +2266,12 @@ mod tests {
         bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
         bearing_ring_overlaps_face, bearing_support_face, begin_weld, block_box_specs,
         block_sheet_specs, block_span_from_rays, candidate_from_hit, cuboid_candidate_from_hit,
-        cylinder_candidate_from_hit, face_geometry_from_ref, face_is_flat,
-        oriented_cuboid_candidate_from_hit, raycast_construction, raycast_construction_for_annulus,
-        raycast_placement_plane, rigid_body_parts, stage_bearing_attachment,
-        stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source, stage_cuboid,
-        stage_cylinder_from_source, stage_engine_from_source, stage_weld_objects, validate_part,
+        cylinder_candidate_from_hit, face_geometry_from_ref, face_is_flat, locked_bearings,
+        newly_locked_bearings, oriented_cuboid_candidate_from_hit, raycast_construction,
+        raycast_construction_for_annulus, raycast_placement_plane_point, rigid_body_parts,
+        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
+        stage_block_batch_from_source, stage_cuboid, stage_cylinder_from_source,
+        stage_engine_from_source, stage_weld_objects, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -3039,7 +3059,7 @@ mod tests {
                 face: FaceRef::ground(),
             },
         );
-        let endpoint = raycast_placement_plane(
+        let point = raycast_placement_plane_point(
             Vec3::new(2.0, 5.0, 3.0),
             Vec3::NEG_Y,
             start.spec,
@@ -3047,7 +3067,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(endpoint, IVec3::new(16, 1, 24));
+        // The plane runs through the dragged block's centre, and the point is
+        // left unsnapped for the span arithmetic to quantize.
+        assert!(point.abs_diff_eq(Vec3::new(2.0, BLOCK_SIZE_METERS * 0.5, 3.0), 1.0e-6));
         assert_eq!(PlacementPlane::Xz.cycle(), PlacementPlane::Xy);
         assert_eq!(PlacementPlane::Xy.cycle(), PlacementPlane::Yz);
         assert_eq!(PlacementPlane::Yz.cycle(), PlacementPlane::Xz);
@@ -3101,6 +3123,108 @@ mod tests {
         let compiled = grounded.compile().unwrap();
         assert_eq!(compiled.compounds.len(), 1);
         assert!(compiled.compounds[0].is_static);
+    }
+
+    #[test]
+    fn weld_resolves_contact_across_both_rigid_bodies() {
+        let mut graph = ConstructionGraph::new();
+        let left = spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
+        let middle = spawn_cube(&mut graph, IVec3::new(4, 2, 0), 4);
+        let right = spawn_cube(&mut graph, IVec3::new(8, 2, 0), 4);
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(left, FaceKind::PositiveX),
+                second: FaceRef::part(middle, FaceKind::NegativeX),
+            }))
+            .unwrap();
+
+        // `left` does not touch `right`, but the body it belongs to does, and
+        // the body is what the tool highlights and claims to weld.
+        let staged =
+            stage_weld_objects(&graph, FaceOwner::Part(left), FaceOwner::Part(right)).unwrap();
+
+        assert_eq!(staged.weld_count(), 2);
+        let compiled = staged.compile().unwrap();
+        assert_eq!(compiled.compounds.len(), 1);
+        assert_eq!(compiled.compounds[0].source_parts.len(), 3);
+    }
+
+    #[test]
+    fn weld_refuses_two_parts_of_one_rigid_body() {
+        let mut graph = ConstructionGraph::new();
+        let left = spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
+        let right = spawn_cube(&mut graph, IVec3::new(4, 2, 0), 4);
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(left, FaceKind::PositiveX),
+                second: FaceRef::part(right, FaceKind::NegativeX),
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            stage_weld_objects(&graph, FaceOwner::Part(left), FaceOwner::Part(right)),
+            Err(PlacementError::SameObject)
+        ));
+        assert_eq!(graph.weld_count(), 1);
+    }
+
+    /// Base spanning two cells with two one-cell blocks bearing-mounted on top,
+    /// side by side and touching one another.
+    fn twin_bearing_rig() -> (ConstructionGraph, PartId, PartId, PartId) {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn_cube(&mut graph, IVec3::ZERO, 2);
+        let mounted = [-1, 1].map(|x| {
+            let spec = CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_half_grid(IVec3::new(x, 3, -1), GridRotation::default()),
+            )
+            .unwrap();
+            let Ok(BuildOutcome::Spawned(part)) = graph.apply(BuildCommand::Spawn(spec)) else {
+                panic!("block must spawn");
+            };
+            graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(base, FaceKind::PositiveY),
+                    FaceRef::part(part, FaceKind::NegativeY),
+                    Vec3::new(
+                        f32::from(i8::try_from(x).expect("small")) * 0.125,
+                        0.25,
+                        -0.125,
+                    ),
+                    Vec3::Y,
+                )))
+                .unwrap();
+            part
+        });
+        let [first, second] = mounted;
+        (graph, base, first, second)
+    }
+
+    #[test]
+    fn welding_across_a_bearing_is_allowed_and_reports_the_lockup() {
+        let (graph, base, mounted, _) = twin_bearing_rig();
+        assert!(locked_bearings(&graph).is_empty());
+
+        let staged =
+            stage_weld_objects(&graph, FaceOwner::Part(base), FaceOwner::Part(mounted)).unwrap();
+
+        assert_eq!(newly_locked_bearings(&graph, &staged), 1);
+        // Allowed, so it has to survive compilation rather than fail later.
+        staged.compile().unwrap();
+    }
+
+    #[test]
+    fn a_loop_that_leaves_every_bearing_free_reports_no_lockup() {
+        let (graph, _, first, second) = twin_bearing_rig();
+
+        // Both blocks turn on their own bearing; joining them to each other
+        // closes a loop through the base without locking either joint.
+        let staged =
+            stage_weld_objects(&graph, FaceOwner::Part(first), FaceOwner::Part(second)).unwrap();
+
+        assert_eq!(staged.weld_count(), 1);
+        assert_eq!(newly_locked_bearings(&graph, &staged), 0);
+        staged.compile().unwrap();
     }
 
     #[test]
