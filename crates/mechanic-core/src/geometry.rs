@@ -488,7 +488,7 @@ impl ControllerSpec {
 }
 
 /// Authored engine appearance and future behaviour family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EngineKind {
     /// Combustion engine with a fixed 2×2×3-grid-unit envelope.
     Gas,
@@ -635,6 +635,32 @@ impl EngineSpec {
     }
 }
 
+/// Fixed-size transmission block. Its appearance is derived from its root engine.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransmissionSpec {
+    /// Transmission centre and inherited engine orientation.
+    pub pose: BuildPose,
+}
+
+impl TransmissionSpec {
+    /// Fixed local x/y/z side lengths in grid units.
+    pub const GRID_UNITS: [u8; 3] = [2, 2, 1];
+
+    /// Creates a transmission at the supplied candidate pose.
+    pub const fn new(pose: BuildPose) -> Self {
+        Self { pose }
+    }
+
+    /// Fixed cuboid envelope backing every transmission.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the fixed transmission envelope uses valid dimensions.
+    pub fn cuboid(self) -> CuboidSpec {
+        CuboidSpec::new(Self::GRID_UNITS, self.pose).expect("transmission dimensions are valid")
+    }
+}
+
 /// A construction part with shape-specific dimensions and a shared build pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PartSpec {
@@ -646,6 +672,8 @@ pub enum PartSpec {
     Controller(ControllerSpec),
     /// Fixed-size inert engine with an authored appearance.
     Engine(EngineSpec),
+    /// Fixed-size transmission whose appearance comes from its root engine.
+    Transmission(TransmissionSpec),
     /// Fixed-size servo angle actuator.
     Servo(ServoSpec),
     /// Fixed-size seat cushion.
@@ -662,6 +690,7 @@ impl PartSpec {
             Self::Cylinder(spec) => spec.pose,
             Self::Controller(spec) => spec.pose,
             Self::Engine(spec) => spec.pose,
+            Self::Transmission(spec) => spec.pose,
             Self::Servo(spec) => spec.pose,
             Self::Seat(spec) => spec.pose,
             Self::Input(spec) => spec.pose,
@@ -675,6 +704,7 @@ impl PartSpec {
             Self::Cuboid(spec) => Some(spec),
             Self::Controller(spec) => Some(spec.cuboid()),
             Self::Engine(spec) => Some(spec.cuboid()),
+            Self::Transmission(spec) => Some(spec.cuboid()),
             Self::Servo(spec) => Some(spec.cuboid()),
             Self::Seat(spec) => Some(spec.cuboid()),
             Self::Input(spec) => Some(spec.cuboid()),
@@ -689,6 +719,7 @@ impl PartSpec {
             Self::Cuboid(_)
             | Self::Cylinder(_)
             | Self::Engine(_)
+            | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
             | Self::Input(_) => None,
@@ -702,6 +733,7 @@ impl PartSpec {
             Self::Cuboid(_)
             | Self::Controller(_)
             | Self::Engine(_)
+            | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
             | Self::Input(_) => None,
@@ -714,6 +746,7 @@ impl PartSpec {
             Self::Cuboid(spec) => spec.size_meters(),
             Self::Controller(spec) => spec.cuboid().size_meters(),
             Self::Engine(spec) => spec.cuboid().size_meters(),
+            Self::Transmission(spec) => spec.cuboid().size_meters(),
             Self::Servo(spec) => spec.cuboid().size_meters(),
             Self::Seat(spec) => spec.cuboid().size_meters(),
             Self::Input(spec) => spec.cuboid().size_meters(),
@@ -753,6 +786,12 @@ impl From<ControllerSpec> for PartSpec {
 impl From<EngineSpec> for PartSpec {
     fn from(value: EngineSpec) -> Self {
         Self::Engine(value)
+    }
+}
+
+impl From<TransmissionSpec> for PartSpec {
+    fn from(value: TransmissionSpec) -> Self {
+        Self::Transmission(value)
     }
 }
 

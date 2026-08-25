@@ -18,7 +18,7 @@ use mosaic_widgets::input::{EventCtx, Key, KeyEvent, KeyEventKind};
 
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
-use super::{CreationsAction, Handles, UiIntent};
+use super::{CreationsAction, Handles, UiIntent, display_font};
 use crate::creation_menu::CreationMenuState;
 use crate::showcase::CreationPreset;
 
@@ -127,7 +127,8 @@ fn dialog(handles: &Handles, model: State<Model>) -> Element {
             stroke:(width:1px color:picker.edge)
             shadow:(offset:(x:0px y:30px) blur:90px color:#00000099) {
             col width:fill height:min-content gap:10px {
-                text font-size:19px font-weight:700 letter-spacing:2.7px "CREATIONS"
+                text font-family:{ display_font() } font-size:19px font-weight:700
+                    letter-spacing:2.7px "CREATIONS"
                 (field)
                 if !notice().is_empty() {
                     text font-size:13px font-color:picker.notice { notice() }
@@ -159,8 +160,8 @@ fn dialog(handles: &Handles, model: State<Model>) -> Element {
 /// One of the two section headings.
 fn heading(text: &'static str) -> Element {
     view! {
-        text width:fill font-size:12px font-weight:700 letter-spacing:1.7px
-            font-color:ink.dim margin:(top:6px) (text)
+        text width:fill font-family:{ display_font() } font-size:12px font-weight:700
+            letter-spacing:1.7px font-color:ink.dim margin:(top:6px) (text)
     }
 }
 
@@ -240,7 +241,7 @@ fn saved_row(handles: &Handles, model: State<Model>, index: usize) -> Element {
                 stroke:(width:1px color:picker.row-edge)
                 hover { fill:picker.row-over }
                 @click:{ load.ask(UiIntent::Creations(CreationsAction::Load(row().path))) } {
-                text font-size:17px { row().name }
+                text font-family:{ display_font() } font-size:17px { row().name }
                 text font-size:12px font-color:ink.muted { row().summary }
             }
             col width:{ if confirming() { Dimension::Px(96.0) } else { Dimension::Px(44.0) } }
@@ -266,7 +267,7 @@ fn preset_button(handles: &Handles, scene: CreationPreset) -> Element {
             stroke:(width:1px color:picker.row-edge)
             hover { fill:picker.row-over }
             @click:{ handles.ask(UiIntent::Creations(CreationsAction::Preset(scene))) } {
-            text font-size:16px (scene.label())
+            text font-family:{ display_font() } font-size:16px (scene.label())
             text font-size:12px font-color:ink.muted (scene.description())
         }
     }

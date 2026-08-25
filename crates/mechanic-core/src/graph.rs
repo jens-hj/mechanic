@@ -4,11 +4,12 @@ use bevy_math::{IVec3, Vec2, Vec3};
 use thiserror::Error;
 
 use crate::{
-    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, ActuatorAssignment, BearingId, CageIndex,
-    ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderSpec, DriveLimits, DriveLinkId,
-    DriveName, DriveProgram, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
-    InputSeatLinkId, InputSpec, PartId, PartSpec, RegionError, RegionId, RigidLinkId,
-    SeatControllerLinkId, SeatSpec, ServoSpec, ShapeRegion, WeldId,
+    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, ActuatorAssignment, BearingId, BuildPose,
+    CageIndex, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderSpec, DriveLimits,
+    DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner,
+    FaceRef, GearKeyChord, GearboxConfig, GearboxError, InputSeatLinkId, InputSpec, PartId,
+    PartSpec, RegionError, RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec, ServoSpec,
+    ShapeRegion, ShiftMode, TransmissionSpec, WeldId,
     geometry::{FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face},
     id::Arena,
 };
@@ -207,6 +208,14 @@ pub struct ActuatorInventory {
     pub gas_joints: u32,
     /// Physical joints using servo power.
     pub servo_joints: u32,
+    /// Common electric transmission depth, or `None` when absent or mismatched.
+    pub electric_transmission_depth: Option<u8>,
+    /// Common gas transmission depth, or `None` when absent or mismatched.
+    pub gas_transmission_depth: Option<u8>,
+    /// Whether electric engines in this module have different chain depths.
+    pub electric_transmission_mismatch: bool,
+    /// Whether gas engines in this module have different chain depths.
+    pub gas_transmission_mismatch: bool,
 }
 
 impl ActuatorInventory {
@@ -223,6 +232,17 @@ impl ActuatorInventory {
     /// Available dedicated servo ports.
     pub const fn servo_capacity(self) -> u32 {
         self.servos
+    }
+
+    /// Whether an editable electric gearbox is present and unambiguous.
+    pub const fn electric_gearbox_available(self) -> bool {
+        matches!(self.electric_transmission_depth, Some(1..))
+            && !self.electric_transmission_mismatch
+    }
+
+    /// Whether an editable gas gearbox is present and unambiguous.
+    pub const fn gas_gearbox_available(self) -> bool {
+        matches!(self.gas_transmission_depth, Some(1..)) && !self.gas_transmission_mismatch
     }
 }
 
@@ -304,6 +324,13 @@ pub enum BuildCommand {
     SpawnController(ControllerSpec),
     /// Spawn an inert engine.
     SpawnEngine(EngineSpec),
+    /// Attach a transmission to an engine or the current tail of its output chain.
+    AttachTransmission {
+        /// Engine or transmission whose local positive-Z face receives the block.
+        parent: PartId,
+        /// Candidate block. Its pose must exactly continue the root engine orientation.
+        spec: TransmissionSpec,
+    },
     /// Spawn a servo.
     SpawnServo(ServoSpec),
     /// Spawn a seat cushion.
@@ -336,6 +363,42 @@ pub enum BuildCommand {
         name: DriveName,
         /// Replacement actuator assignment.
         actuator: ActuatorAssignment,
+    },
+    /// Change automatic/manual shifting for one controller engine lane.
+    SetGearboxMode {
+        /// Controller owning the lane.
+        controller: PartId,
+        /// Engine family being edited.
+        kind: EngineKind,
+        /// Replacement mode.
+        mode: ShiftMode,
+    },
+    /// Replace every ratio in one controller engine lane.
+    SetGearboxRatios {
+        /// Controller owning the lane.
+        controller: PartId,
+        /// Engine family being edited.
+        kind: EngineKind,
+        /// Strictly descending input-to-output ratios.
+        ratios: Vec<f32>,
+    },
+    /// Replace the manual shift bindings for one controller engine lane.
+    SetGearboxBindings {
+        /// Controller owning the lane.
+        controller: PartId,
+        /// Engine family being edited.
+        kind: EngineKind,
+        /// Upshift chord.
+        up: GearKeyChord,
+        /// Downshift chord.
+        down: GearKeyChord,
+    },
+    /// Move the divider between reverse and forward gas gears.
+    SetGasDivider {
+        /// Controller owning the gas lane.
+        controller: PartId,
+        /// Number of ratios on the reverse side.
+        reverse_gears: u8,
     },
     /// Claim a solid cuboid of blocks as an editable shape region.
     AddRegion(ShapeRegion),
@@ -385,6 +448,8 @@ pub enum BuildOutcome {
     SeatControllerLinked(SeatControllerLinkId),
     /// A drive wire's limits or program were replaced.
     DriveUpdated,
+    /// A persistent gearbox setting was replaced.
+    GearboxUpdated,
     /// A region was claimed.
     RegionAdded(RegionId),
     /// A region's cage changed.
@@ -422,6 +487,52 @@ pub enum GraphError {
     /// A part referenced as a control block is a different kind of part.
     #[error("part {0:?} is not a control block")]
     NotAController(PartId),
+    /// A transmission parent is neither an engine nor a transmission.
+    #[error("part {0:?} cannot carry a transmission")]
+    InvalidTransmissionParent(PartId),
+    /// A transmission can only extend the current chain tail.
+    #[error("part {0:?} already has a transmission on its positive-Z output")]
+    TransmissionOutputOccupied(PartId),
+    /// Transmission candidate pose did not exactly continue the engine output axis.
+    #[error(
+        "a transmission must inherit its root engine orientation and attach -Z to the parent +Z face"
+    )]
+    InvalidTransmissionPose,
+    /// A transmission chain reached its supported block limit.
+    #[error("an engine transmission chain supports at most 17 blocks")]
+    TransmissionLimitReached,
+    /// A required transmission weld cannot be removed independently.
+    #[error("weld {0:?} is required by a transmission; remove the transmission instead")]
+    RequiredTransmissionWeld(WeldId),
+    /// The requested controller/type has no editable, unambiguous gearbox.
+    #[error("controller {controller:?} has no editable {kind:?} gearbox")]
+    GearboxUnavailable {
+        /// Controller being edited.
+        controller: PartId,
+        /// Engine family being edited.
+        kind: EngineKind,
+    },
+    /// Same-type engines cannot share gearing until every chain has equal depth.
+    #[error("controller {controller:?} has mismatched {kind:?} transmission depths {depths:?}")]
+    TransmissionDepthMismatch {
+        /// Controller identifying the machine module.
+        controller: PartId,
+        /// Engine family with inconsistent stacks.
+        kind: EngineKind,
+        /// Sorted physical depths found in the module.
+        depths: Vec<u8>,
+    },
+    /// A gearbox edit did not satisfy ratio or divider invariants.
+    #[error(transparent)]
+    InvalidGearbox(#[from] GearboxError),
+    /// A ratio edit had a different count than the physical stack provides.
+    #[error("gearbox needs {expected} ratios for its transmission depth, but got {actual}")]
+    GearCountMismatch {
+        /// Required physical gear count.
+        expected: usize,
+        /// Supplied ratio count.
+        actual: usize,
+    },
     /// A part referenced as an Input block is a different kind of part.
     #[error("part {0:?} is not an Input block")]
     NotAnInput(PartId),
@@ -503,6 +614,12 @@ pub struct ConstructionGraph {
     pub(crate) drive_links: Arena<DriveLinkSpec, DriveLinkId>,
     pub(crate) input_seat_links: Arena<InputSeatLinkSpec, InputSeatLinkId>,
     pub(crate) seat_controller_links: Arena<SeatControllerLinkSpec, SeatControllerLinkId>,
+    /// Transmission part to its engine-or-transmission parent.
+    pub(crate) transmission_parents: BTreeMap<PartId, PartId>,
+    /// Transmission part to the weld created atomically with it.
+    pub(crate) transmission_welds: BTreeMap<PartId, WeldId>,
+    /// Persistent per-controller, per-engine-family gearbox overrides.
+    pub(crate) gearbox_configs: BTreeMap<(PartId, EngineKind), GearboxConfig>,
     /// Editable shape regions. A region owns the geometry of the blocks it
     /// covers, so those blocks stop emitting boxes of their own.
     pub(crate) regions: Arena<ShapeRegion, RegionId>,
@@ -720,6 +837,198 @@ impl ConstructionGraph {
         self.drive_links.len()
     }
 
+    /// Parent of a transmission, when `part` is one in a live chain.
+    pub fn transmission_parent(&self, part: PartId) -> Option<PartId> {
+        self.transmission_parents.get(&part).copied()
+    }
+
+    /// Required weld belonging to a transmission.
+    pub fn transmission_weld(&self, part: PartId) -> Option<WeldId> {
+        self.transmission_welds.get(&part).copied()
+    }
+
+    /// Root engine and physical depth of a transmission chain member.
+    pub fn transmission_root(&self, part: PartId) -> Option<(PartId, EngineKind, u8)> {
+        let mut current = part;
+        let mut depth = 0_u8;
+        loop {
+            match self.parts.get(current)? {
+                PartSpec::Engine(engine) => return Some((current, engine.kind, depth)),
+                PartSpec::Transmission(_) => {
+                    current = *self.transmission_parents.get(&current)?;
+                    depth = depth.checked_add(1)?;
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Number of transmission blocks downstream of one engine.
+    pub fn engine_transmission_depth(&self, engine: PartId) -> Option<u8> {
+        matches!(self.parts.get(engine), Some(PartSpec::Engine(_))).then_some(())?;
+        let mut current = engine;
+        let mut depth = 0_u8;
+        while let Some((&child, _)) = self
+            .transmission_parents
+            .iter()
+            .find(|(_, parent)| **parent == current)
+        {
+            current = child;
+            depth = depth.saturating_add(1);
+        }
+        Some(depth)
+    }
+
+    /// Exact candidate pose which extends `parent` along the root engine's local +Z axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `parent` is not an engine-line tail, its output is occupied,
+    /// or the chain has reached the seventeen-block limit.
+    pub fn next_transmission_spec(&self, parent: PartId) -> Result<TransmissionSpec, GraphError> {
+        let parent_spec = self
+            .parts
+            .get(parent)
+            .copied()
+            .ok_or(GraphError::MissingPart(parent))?;
+        let (root, _, depth) = match parent_spec {
+            PartSpec::Engine(engine) => (parent, engine.kind, 0),
+            PartSpec::Transmission(_) => self
+                .transmission_root(parent)
+                .ok_or(GraphError::InvalidTransmissionParent(parent))?,
+            _ => return Err(GraphError::InvalidTransmissionParent(parent)),
+        };
+        if self
+            .transmission_parents
+            .values()
+            .any(|candidate| *candidate == parent)
+        {
+            return Err(GraphError::TransmissionOutputOccupied(parent));
+        }
+        let output = FaceRef::part(parent, FaceKind::PositiveZ);
+        if self
+            .welds
+            .iter()
+            .any(|(_, weld)| weld.first == output || weld.second == output)
+        {
+            return Err(GraphError::TransmissionOutputOccupied(parent));
+        }
+        if depth >= 17 {
+            return Err(GraphError::TransmissionLimitReached);
+        }
+        let Some(root_pose) = self.parts.get(root).copied().and_then(|spec| match spec {
+            PartSpec::Engine(engine) => Some(engine.pose),
+            _ => None,
+        }) else {
+            return Err(GraphError::InvalidTransmissionParent(parent));
+        };
+        let parent_z_units = match parent_spec {
+            PartSpec::Engine(engine) => engine.kind.grid_units()[2],
+            PartSpec::Transmission(_) => TransmissionSpec::GRID_UNITS[2],
+            _ => unreachable!(),
+        };
+        let local_z = root_pose.rotation.quaternion() * Vec3::Z;
+        let direction = local_z.round().as_ivec3();
+        let centre = parent_spec.pose().translation_half_units()
+            + direction * i32::from(parent_z_units + TransmissionSpec::GRID_UNITS[2]);
+        Ok(TransmissionSpec::new(BuildPose::from_half_grid(
+            centre,
+            root_pose.rotation,
+        )))
+    }
+
+    /// Derived authored appearance for one transmission.
+    pub fn transmission_kind(&self, transmission: PartId) -> Option<EngineKind> {
+        self.transmission_root(transmission)
+            .map(|(_, kind, _)| kind)
+    }
+
+    /// Physical same-type engine depths in a Controller's direct machine module.
+    pub fn transmission_depths(&self, controller: PartId, kind: EngineKind) -> Option<Vec<u8>> {
+        self.is_controller(controller).then(|| {
+            let mut depths = self
+                .machine_module(controller)
+                .into_iter()
+                .filter_map(|part| match self.parts.get(part) {
+                    Some(PartSpec::Engine(engine)) if engine.kind == kind => {
+                        self.engine_transmission_depth(part)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            depths.sort_unstable();
+            depths
+        })
+    }
+
+    /// Effective gearbox settings, including defaults when no override was authored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the controller has no engines of `kind` or their physical
+    /// transmission depths do not match.
+    pub fn gearbox_config(
+        &self,
+        controller: PartId,
+        kind: EngineKind,
+    ) -> Result<GearboxConfig, GraphError> {
+        let depth = self.common_transmission_depth(controller, kind)?;
+        let gear_count = usize::from(depth) + 1;
+        Ok(self
+            .gearbox_configs
+            .get(&(controller, kind))
+            .cloned()
+            .unwrap_or_else(|| GearboxConfig::for_depth(depth, kind == EngineKind::Gas))
+            .resized(gear_count))
+    }
+
+    /// Explicit gearbox records in stable controller/type order.
+    pub fn gearbox_configs(&self) -> impl Iterator<Item = ((PartId, EngineKind), &GearboxConfig)> {
+        self.gearbox_configs
+            .iter()
+            .map(|(&(controller, kind), config)| ((controller, kind), config))
+    }
+
+    fn common_transmission_depth(
+        &self,
+        controller: PartId,
+        kind: EngineKind,
+    ) -> Result<u8, GraphError> {
+        if !self.is_controller(controller) {
+            return Err(if self.parts.get(controller).is_some() {
+                GraphError::NotAController(controller)
+            } else {
+                GraphError::MissingPart(controller)
+            });
+        }
+        let depths = self
+            .transmission_depths(controller, kind)
+            .expect("the controller was checked above");
+        let Some(&depth) = depths.first() else {
+            return Err(GraphError::GearboxUnavailable { controller, kind });
+        };
+        if depths.iter().any(|candidate| *candidate != depth) {
+            return Err(GraphError::TransmissionDepthMismatch {
+                controller,
+                kind,
+                depths,
+            });
+        }
+        Ok(depth)
+    }
+
+    fn editable_gearbox(
+        &self,
+        controller: PartId,
+        kind: EngineKind,
+    ) -> Result<GearboxConfig, GraphError> {
+        let depth = self.common_transmission_depth(controller, kind)?;
+        if depth == 0 {
+            return Err(GraphError::GearboxUnavailable { controller, kind });
+        }
+        self.gearbox_config(controller, kind)
+    }
+
     /// Actuator hardware and graph-level assignment demand in a Controller's
     /// direct machine-only weld module.
     pub fn actuator_inventory(&self, controller: PartId) -> Option<ActuatorInventory> {
@@ -734,6 +1043,32 @@ impl ConstructionGraph {
                     },
                     Some(PartSpec::Servo(_)) => inventory.servos += 1,
                     _ => {}
+                }
+            }
+            for kind in [EngineKind::Electric, EngineKind::Gas] {
+                let mut depths = members
+                    .iter()
+                    .filter_map(|part| match self.parts.get(*part) {
+                        Some(PartSpec::Engine(engine)) if engine.kind == kind => {
+                            self.engine_transmission_depth(*part)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                depths.sort_unstable();
+                let mismatch = depths
+                    .first()
+                    .is_some_and(|first| depths.iter().any(|depth| depth != first));
+                let common = (!mismatch).then(|| depths.first().copied()).flatten();
+                match kind {
+                    EngineKind::Electric => {
+                        inventory.electric_transmission_depth = common;
+                        inventory.electric_transmission_mismatch = mismatch;
+                    }
+                    EngineKind::Gas => {
+                        inventory.gas_transmission_depth = common;
+                        inventory.gas_transmission_mismatch = mismatch;
+                    }
                 }
             }
             let mut electric_coordinates = Vec::<(Vec3, Vec3)>::new();
@@ -801,7 +1136,12 @@ impl ConstructionGraph {
     fn is_machine_part(&self, part: PartId) -> bool {
         matches!(
             self.parts.get(part),
-            Some(PartSpec::Controller(_) | PartSpec::Engine(_) | PartSpec::Servo(_))
+            Some(
+                PartSpec::Controller(_)
+                    | PartSpec::Engine(_)
+                    | PartSpec::Transmission(_)
+                    | PartSpec::Servo(_)
+            )
         )
     }
 
@@ -811,6 +1151,7 @@ impl ConstructionGraph {
                 Some(PartSpec::Cuboid(spec)) => Ok(cuboid_face(spec, face.face)),
                 Some(PartSpec::Controller(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Engine(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                Some(PartSpec::Transmission(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Servo(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Seat(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Input(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
@@ -989,6 +1330,23 @@ impl ConstructionGraph {
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
+            BuildCommand::AttachTransmission { parent, spec } => {
+                let expected = self.next_transmission_spec(parent)?;
+                if spec != expected {
+                    return Err(GraphError::InvalidTransmissionPose);
+                }
+                let id = self.parts.insert(spec.into());
+                let weld = WeldSpec {
+                    first: FaceRef::part(parent, FaceKind::PositiveZ),
+                    second: FaceRef::part(id, FaceKind::NegativeZ),
+                };
+                self.validate_weld(weld)?;
+                let weld_id = self.welds.insert(weld);
+                self.transmission_parents.insert(id, parent);
+                self.transmission_welds.insert(id, weld_id);
+                self.pending = None;
+                Ok(BuildOutcome::Spawned(id))
+            }
             BuildCommand::SpawnServo(spec) => {
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
@@ -1003,23 +1361,47 @@ impl ConstructionGraph {
             }
             BuildCommand::Remove(id) => {
                 self.parts.get(id).ok_or(GraphError::MissingPart(id))?;
+                let mut removed_parts = BTreeSet::from([id]);
+                let mut frontier = vec![id];
+                while let Some(parent) = frontier.pop() {
+                    for (&child, _) in self
+                        .transmission_parents
+                        .iter()
+                        .filter(|(_, candidate)| **candidate == parent)
+                    {
+                        if removed_parts.insert(child) {
+                            frontier.push(child);
+                        }
+                    }
+                }
                 let welds = self
                     .welds
                     .iter()
-                    .filter_map(|(weld_id, weld)| weld_references(*weld, id).then_some(weld_id))
+                    .filter_map(|(weld_id, weld)| {
+                        removed_parts
+                            .iter()
+                            .any(|part| weld_references(*weld, *part))
+                            .then_some(weld_id)
+                    })
                     .collect::<Vec<_>>();
                 let bearings = self
                     .bearings
                     .iter()
                     .filter_map(|(bearing_id, bearing)| {
-                        bearing_references(*bearing, id).then_some(bearing_id)
+                        removed_parts
+                            .iter()
+                            .any(|part| bearing_references(*bearing, *part))
+                            .then_some(bearing_id)
                     })
                     .collect::<Vec<_>>();
                 let rigid_links = self
                     .rigid_links
                     .iter()
                     .filter_map(|(link_id, link)| {
-                        rigid_link_references(*link, id).then_some(link_id)
+                        removed_parts
+                            .iter()
+                            .any(|part| rigid_link_references(*link, *part))
+                            .then_some(link_id)
                     })
                     .collect::<Vec<_>>();
                 let removed_bearings = bearings.iter().copied().collect::<BTreeSet<_>>();
@@ -1027,22 +1409,26 @@ impl ConstructionGraph {
                     .drive_links
                     .iter()
                     .filter_map(|(link_id, link)| {
-                        (link.controller == id || removed_bearings.contains(&link.bearing))
-                            .then_some(link_id)
+                        (removed_parts.contains(&link.controller)
+                            || removed_bearings.contains(&link.bearing))
+                        .then_some(link_id)
                     })
                     .collect::<Vec<_>>();
                 let input_seat_links = self
                     .input_seat_links
                     .iter()
                     .filter_map(|(link_id, link)| {
-                        (link.input == id || link.seat == id).then_some(link_id)
+                        (removed_parts.contains(&link.input) || removed_parts.contains(&link.seat))
+                            .then_some(link_id)
                     })
                     .collect::<Vec<_>>();
                 let seat_controller_links = self
                     .seat_controller_links
                     .iter()
                     .filter_map(|(link_id, link)| {
-                        (link.seat == id || link.controller == id).then_some(link_id)
+                        (removed_parts.contains(&link.seat)
+                            || removed_parts.contains(&link.controller))
+                        .then_some(link_id)
                     })
                     .collect::<Vec<_>>();
                 for weld in welds {
@@ -1065,14 +1451,30 @@ impl ConstructionGraph {
                 }
                 // A region needs every cell filled, so losing one of its blocks
                 // ends it — the same cascade welds already get.
-                if let Some(region) = self.region_of(id) {
+                let regions = removed_parts
+                    .iter()
+                    .filter_map(|part| self.region_of(*part))
+                    .collect::<BTreeSet<_>>();
+                for region in regions {
                     self.regions.remove(region);
                 }
-                self.parts.remove(id);
+                self.gearbox_configs
+                    .retain(|(controller, _), _| !removed_parts.contains(controller));
+                self.transmission_parents.retain(|child, parent| {
+                    !removed_parts.contains(child) && !removed_parts.contains(parent)
+                });
+                self.transmission_welds
+                    .retain(|part, _| !removed_parts.contains(part));
+                for part in removed_parts {
+                    self.parts.remove(part);
+                }
                 self.pending = None;
                 Ok(BuildOutcome::Removed)
             }
             BuildCommand::RemoveWeld(id) => {
+                if self.transmission_welds.values().any(|weld| *weld == id) {
+                    return Err(GraphError::RequiredTransmissionWeld(id));
+                }
                 self.welds.remove(id).ok_or(GraphError::MissingWeld(id))?;
                 self.pending = None;
                 Ok(BuildOutcome::Removed)
@@ -1172,6 +1574,53 @@ impl ConstructionGraph {
                 spec.name = name;
                 spec.actuator = actuator;
                 Ok(BuildOutcome::DriveUpdated)
+            }
+            BuildCommand::SetGearboxMode {
+                controller,
+                kind,
+                mode,
+            } => {
+                let mut config = self.editable_gearbox(controller, kind)?;
+                config.set_mode(mode);
+                self.gearbox_configs.insert((controller, kind), config);
+                Ok(BuildOutcome::GearboxUpdated)
+            }
+            BuildCommand::SetGearboxRatios {
+                controller,
+                kind,
+                ratios,
+            } => {
+                let mut config = self.editable_gearbox(controller, kind)?;
+                if ratios.len() != config.ratios().len() {
+                    return Err(GraphError::GearCountMismatch {
+                        expected: config.ratios().len(),
+                        actual: ratios.len(),
+                    });
+                }
+                config.set_ratios(ratios)?;
+                self.gearbox_configs.insert((controller, kind), config);
+                Ok(BuildOutcome::GearboxUpdated)
+            }
+            BuildCommand::SetGearboxBindings {
+                controller,
+                kind,
+                up,
+                down,
+            } => {
+                let mut config = self.editable_gearbox(controller, kind)?;
+                config.set_bindings(up, down);
+                self.gearbox_configs.insert((controller, kind), config);
+                Ok(BuildOutcome::GearboxUpdated)
+            }
+            BuildCommand::SetGasDivider {
+                controller,
+                reverse_gears,
+            } => {
+                let kind = EngineKind::Gas;
+                let mut config = self.editable_gearbox(controller, kind)?;
+                config.set_reverse_gears(reverse_gears)?;
+                self.gearbox_configs.insert((controller, kind), config);
+                Ok(BuildOutcome::GearboxUpdated)
             }
             BuildCommand::AddRegion(region) => {
                 self.validate_region_area(&region)?;
@@ -1686,7 +2135,7 @@ mod tests {
         CylinderDimensions, CylinderSpec, DriveLimits, DriveName, DriveProgram, DriveState,
         DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef, GridRotation, InputSeatLinkSpec,
         InputSpec, PartId, PartSpec, RegionError, RegionId, SeatControllerLinkSpec, SeatSpec,
-        ShapeRegion,
+        ShapeRegion, ShiftMode, TransmissionSpec,
     };
 
     fn cube_at(x: i32) -> CuboidSpec {
@@ -2599,5 +3048,198 @@ mod tests {
             corners.push(region.vertex_steps(index).unwrap().to_array());
         }
         corners
+    }
+
+    fn engine(graph: &mut ConstructionGraph, kind: EngineKind, units: IVec3) -> PartId {
+        let BuildOutcome::Spawned(engine) = graph
+            .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                kind,
+                BuildPose::new(units, GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        engine
+    }
+
+    fn attach(graph: &mut ConstructionGraph, parent: PartId) -> PartId {
+        let spec = graph.next_transmission_spec(parent).unwrap();
+        let BuildOutcome::Spawned(transmission) = graph
+            .apply(BuildCommand::AttachTransmission { parent, spec })
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        transmission
+    }
+
+    #[test]
+    fn transmissions_form_one_inherited_seventeen_block_chain() {
+        let mut graph = ConstructionGraph::new();
+        let engine = engine(&mut graph, EngineKind::Gas, IVec3::ZERO);
+        let mut tail = engine;
+        for depth in 1..=17 {
+            tail = attach(&mut graph, tail);
+            assert_eq!(
+                graph.transmission_root(tail),
+                Some((engine, EngineKind::Gas, depth))
+            );
+            assert_eq!(graph.transmission_kind(tail), Some(EngineKind::Gas));
+            assert_eq!(
+                graph.part(tail).unwrap().pose().rotation,
+                GridRotation::default()
+            );
+        }
+        assert_eq!(
+            graph.next_transmission_spec(tail),
+            Err(GraphError::TransmissionLimitReached)
+        );
+        assert_eq!(graph.engine_transmission_depth(engine), Some(17));
+    }
+
+    #[test]
+    fn transmission_attachment_is_atomic_and_protects_its_weld() {
+        let mut graph = ConstructionGraph::new();
+        let engine = engine(&mut graph, EngineKind::Electric, IVec3::ZERO);
+        let expected = graph.next_transmission_spec(engine).unwrap();
+        let wrong = TransmissionSpec::new(BuildPose::new(
+            IVec3::new(0, 0, 99),
+            GridRotation::new(0, 1, 0),
+        ));
+        assert_eq!(
+            graph.apply(BuildCommand::AttachTransmission {
+                parent: engine,
+                spec: wrong,
+            }),
+            Err(GraphError::InvalidTransmissionPose)
+        );
+        assert_eq!(graph.part_count(), 1, "failed attachment changes nothing");
+
+        let BuildOutcome::Spawned(first) = graph
+            .apply(BuildCommand::AttachTransmission {
+                parent: engine,
+                spec: expected,
+            })
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            graph.next_transmission_spec(engine),
+            Err(GraphError::TransmissionOutputOccupied(engine))
+        );
+        let weld = graph.transmission_weld(first).unwrap();
+        assert_eq!(
+            graph.apply(BuildCommand::RemoveWeld(weld)),
+            Err(GraphError::RequiredTransmissionWeld(weld))
+        );
+    }
+
+    #[test]
+    fn deleting_upstream_transmission_parts_cascades_downstream() {
+        let mut graph = ConstructionGraph::new();
+        let engine = engine(&mut graph, EngineKind::Gas, IVec3::ZERO);
+        let first = attach(&mut graph, engine);
+        let second = attach(&mut graph, first);
+        let third = attach(&mut graph, second);
+
+        graph.apply(BuildCommand::Remove(second)).unwrap();
+        assert!(graph.part(engine).is_some());
+        assert!(graph.part(first).is_some());
+        assert!(graph.part(second).is_none());
+        assert!(graph.part(third).is_none());
+        assert_eq!(graph.engine_transmission_depth(engine), Some(1));
+
+        graph.apply(BuildCommand::Remove(engine)).unwrap();
+        assert_eq!(graph.part_count(), 0);
+        assert_eq!(graph.weld_count(), 0);
+    }
+
+    #[test]
+    fn same_type_stack_mismatch_is_visible_and_blocks_compile_only() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::ZERO, GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let first = engine(&mut graph, EngineKind::Electric, IVec3::new(2, 0, 0));
+        let second = engine(&mut graph, EngineKind::Electric, IVec3::new(4, 0, 0));
+        for (left, right) in [(controller, first), (first, second)] {
+            graph
+                .apply(BuildCommand::Weld(WeldSpec {
+                    first: FaceRef::part(left, FaceKind::PositiveX),
+                    second: FaceRef::part(right, FaceKind::NegativeX),
+                }))
+                .unwrap();
+        }
+        attach(&mut graph, first);
+
+        let inventory = graph.actuator_inventory(controller).unwrap();
+        assert_eq!(inventory.electric_engines, 2);
+        assert!(inventory.electric_transmission_mismatch);
+        assert_eq!(inventory.electric_transmission_depth, None);
+        assert!(matches!(
+            graph.compile(),
+            Err(crate::TopologyError::TransmissionDepthMismatch {
+                kind: EngineKind::Electric,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn gearbox_edits_validate_physical_gear_count_and_are_transactional() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::ZERO, GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let engine = engine(&mut graph, EngineKind::Gas, IVec3::new(2, 0, 0));
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(controller, FaceKind::PositiveX),
+                second: FaceRef::part(engine, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        attach(&mut graph, engine);
+
+        graph
+            .apply(BuildCommand::SetGearboxMode {
+                controller,
+                kind: EngineKind::Gas,
+                mode: ShiftMode::Manual,
+            })
+            .unwrap();
+        assert_eq!(
+            graph
+                .gearbox_config(controller, EngineKind::Gas)
+                .unwrap()
+                .mode(),
+            ShiftMode::Manual
+        );
+        assert!(matches!(
+            graph.apply(BuildCommand::SetGearboxRatios {
+                controller,
+                kind: EngineKind::Gas,
+                ratios: vec![1.0],
+            }),
+            Err(GraphError::GearCountMismatch { .. })
+        ));
+        assert_eq!(
+            graph
+                .gearbox_config(controller, EngineKind::Gas)
+                .unwrap()
+                .ratios(),
+            &[3.0, 1.0]
+        );
     }
 }

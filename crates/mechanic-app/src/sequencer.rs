@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 use mechanic_core::{
     CompiledCreation, ConstructionGraph, DriveKey, DriveLinkId, DriveProgram, DriveRelease,
-    DriveTarget,
+    DriveTarget, EngineKind, GearKey, GearKeyChord, GearSelection, PartSpec, ShiftMode,
 };
 use mechanic_gpu::{DRIVE_MODE_ANGLE, DRIVE_MODE_SPEED, FIXED_DT_SECONDS, GpuMechanismDrive};
 
@@ -101,6 +101,59 @@ pub(crate) fn drive_key(key: KeyCode) -> Option<DriveKey> {
     DriveKey::new(symbol)
 }
 
+/// Maps every main key accepted by a gearbox binding.
+pub(crate) fn gear_key(key: KeyCode) -> Option<GearKey> {
+    let symbol = match key {
+        KeyCode::KeyA => Some('A'),
+        KeyCode::KeyB => Some('B'),
+        KeyCode::KeyC => Some('C'),
+        KeyCode::KeyD => Some('D'),
+        KeyCode::KeyE => Some('E'),
+        KeyCode::KeyF => Some('F'),
+        KeyCode::KeyG => Some('G'),
+        KeyCode::KeyH => Some('H'),
+        KeyCode::KeyI => Some('I'),
+        KeyCode::KeyJ => Some('J'),
+        KeyCode::KeyK => Some('K'),
+        KeyCode::KeyL => Some('L'),
+        KeyCode::KeyM => Some('M'),
+        KeyCode::KeyN => Some('N'),
+        KeyCode::KeyO => Some('O'),
+        KeyCode::KeyP => Some('P'),
+        KeyCode::KeyQ => Some('Q'),
+        KeyCode::KeyR => Some('R'),
+        KeyCode::KeyS => Some('S'),
+        KeyCode::KeyT => Some('T'),
+        KeyCode::KeyU => Some('U'),
+        KeyCode::KeyV => Some('V'),
+        KeyCode::KeyW => Some('W'),
+        KeyCode::KeyX => Some('X'),
+        KeyCode::KeyY => Some('Y'),
+        KeyCode::KeyZ => Some('Z'),
+        KeyCode::Digit0 => Some('0'),
+        KeyCode::Digit1 => Some('1'),
+        KeyCode::Digit2 => Some('2'),
+        KeyCode::Digit3 => Some('3'),
+        KeyCode::Digit4 => Some('4'),
+        KeyCode::Digit5 => Some('5'),
+        KeyCode::Digit6 => Some('6'),
+        KeyCode::Digit7 => Some('7'),
+        KeyCode::Digit8 => Some('8'),
+        KeyCode::Digit9 => Some('9'),
+        _ => None,
+    };
+    symbol.and_then(GearKey::from_char).or(match key {
+        KeyCode::Space => Some(GearKey::Space),
+        KeyCode::ArrowUp => Some(GearKey::ArrowUp),
+        KeyCode::ArrowDown => Some(GearKey::ArrowDown),
+        KeyCode::ArrowLeft => Some(GearKey::ArrowLeft),
+        KeyCode::ArrowRight => Some(GearKey::ArrowRight),
+        KeyCode::PageUp => Some(GearKey::PageUp),
+        KeyCode::PageDown => Some(GearKey::PageDown),
+        _ => None,
+    })
+}
+
 /// Where one bearing currently sits in its program.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RowCursor {
@@ -126,6 +179,378 @@ pub(crate) struct SequencerRow {
 pub(crate) struct DriveSequencer {
     rows: Vec<SequencerRow>,
     started: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GearboxRow {
+    controller: mechanic_core::PartId,
+    kind: EngineKind,
+    gear: Option<usize>,
+    pending: Option<usize>,
+    last_shift_tick: u64,
+}
+
+/// Transient selected gears. Persistent ratios and bindings remain graph-owned.
+#[derive(Resource, Default)]
+pub(crate) struct GearboxRuntime {
+    rows: Vec<GearboxRow>,
+    started: bool,
+}
+
+impl GearboxRuntime {
+    pub(crate) fn start(&mut self, graph: &ConstructionGraph, sequencer: &DriveSequencer) {
+        self.rows.clear();
+        for (controller, spec) in graph.parts() {
+            if !matches!(spec, PartSpec::Controller(_)) {
+                continue;
+            }
+            for kind in [EngineKind::Electric, EngineKind::Gas] {
+                let Ok(config) = graph.gearbox_config(controller, kind) else {
+                    continue;
+                };
+                let requested_sign = dominant_request_sign(graph, sequencer, controller, kind);
+                let gear = if config.mode() == ShiftMode::Manual {
+                    if kind == EngineKind::Gas {
+                        let first_forward = usize::from(config.reverse_gears());
+                        (first_forward < config.ratios().len())
+                            .then_some(first_forward)
+                            .or(Some(0))
+                    } else {
+                        Some(0)
+                    }
+                } else {
+                    initial_gear(&config, kind, requested_sign)
+                };
+                self.rows.push(GearboxRow {
+                    controller,
+                    kind,
+                    gear,
+                    pending: None,
+                    last_shift_tick: 0,
+                });
+            }
+        }
+        self.started = true;
+    }
+
+    pub(crate) fn stop(&mut self) {
+        self.rows.clear();
+        self.started = false;
+    }
+
+    pub(crate) fn active_gear(
+        &self,
+        controller: mechanic_core::PartId,
+        kind: EngineKind,
+    ) -> Option<usize> {
+        self.rows
+            .iter()
+            .find(|row| row.controller == controller && row.kind == kind)
+            .and_then(|row| row.gear)
+    }
+
+    /// Applies every matching manual binding. Duplicate chords intentionally all fire.
+    #[allow(clippy::too_many_arguments)] // Runtime inputs stay explicit at the simulation boundary.
+    pub(crate) fn step(
+        &mut self,
+        graph: &ConstructionGraph,
+        sequencer: &DriveSequencer,
+        keyboard: &ButtonInput<KeyCode>,
+        keyboard_controller: Option<mechanic_core::PartId>,
+        tick: u64,
+        measured_speeds: &[(mechanic_core::PartId, EngineKind, f32)],
+        paused: bool,
+    ) -> bool {
+        let mut changed = false;
+        for row in &mut self.rows {
+            let Ok(config) = graph.gearbox_config(row.controller, row.kind) else {
+                continue;
+            };
+            let measured_speed = measured_speeds
+                .iter()
+                .find(|(controller, kind, _)| *controller == row.controller && *kind == row.kind)
+                .map_or(0.0, |(_, _, speed)| *speed);
+            if let Some(destination) = row.pending {
+                if paused {
+                    continue;
+                }
+                if reversal_is_safe(row.kind, &config, destination, measured_speed) {
+                    row.gear = Some(destination);
+                    row.pending = None;
+                    row.last_shift_tick = tick;
+                    changed = true;
+                }
+                continue;
+            }
+            if config.mode() == ShiftMode::Auto {
+                if paused {
+                    continue;
+                }
+                let requested_sign =
+                    dominant_request_sign(graph, sequencer, row.controller, row.kind);
+                let requested = initial_gear(&config, row.kind, requested_sign);
+                if requested.is_none() {
+                    if row.gear.take().is_some() {
+                        changed = true;
+                    }
+                    continue;
+                }
+                let requested = requested.expect("the missing direction was handled");
+                if row.kind == EngineKind::Gas
+                    && row.gear.is_some_and(|current| {
+                        gear_bank(&config, current) != gear_bank(&config, requested)
+                    })
+                {
+                    row.gear = None;
+                    row.pending = Some(requested);
+                    changed = true;
+                    continue;
+                }
+                if row.gear.is_none() {
+                    row.gear = Some(requested);
+                    row.last_shift_tick = tick;
+                    changed = true;
+                    continue;
+                }
+                if tick.saturating_sub(row.last_shift_tick) < 21 {
+                    continue;
+                }
+                let current = row.gear.expect("the missing gear was handled");
+                let next = automatic_shift_destination(row.kind, &config, current, measured_speed);
+                if next != current {
+                    row.gear = Some(next);
+                    row.last_shift_tick = tick;
+                    changed = true;
+                }
+                continue;
+            }
+            if keyboard_controller != Some(row.controller) {
+                continue;
+            }
+            let delta = i8::from(chord_just_pressed(keyboard, config.gear_up()))
+                - i8::from(chord_just_pressed(keyboard, config.gear_down()));
+            if delta == 0 {
+                continue;
+            }
+            let current = row.gear.unwrap_or(0);
+            let maximum = config.ratios().len().saturating_sub(1);
+            let next = if delta > 0 {
+                current.saturating_add(1).min(maximum)
+            } else {
+                current.saturating_sub(1)
+            };
+            if row.gear != Some(next) {
+                if row.kind == EngineKind::Gas
+                    && gear_bank(&config, current) != gear_bank(&config, next)
+                {
+                    row.gear = None;
+                    row.pending = Some(next);
+                    if reversal_is_safe(row.kind, &config, next, measured_speed) {
+                        row.gear = Some(next);
+                        row.pending = None;
+                    }
+                } else {
+                    row.gear = Some(next);
+                }
+                row.last_shift_tick = tick;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn selections(&self, graph: &ConstructionGraph) -> Vec<GearSelection> {
+        self.rows
+            .iter()
+            .map(|row| GearSelection {
+                controller: row.controller,
+                kind: row.kind,
+                ratio: row.gear.and_then(|gear| {
+                    graph
+                        .gearbox_config(row.controller, row.kind)
+                        .ok()?
+                        .ratios()
+                        .get(gear)
+                        .copied()
+                }),
+            })
+            .collect()
+    }
+
+    fn gas_direction(
+        &self,
+        graph: &ConstructionGraph,
+        controller: mechanic_core::PartId,
+    ) -> Option<i8> {
+        let row = self
+            .rows
+            .iter()
+            .find(|row| row.controller == controller && row.kind == EngineKind::Gas)?;
+        let gear = row.gear?;
+        let config = graph.gearbox_config(controller, EngineKind::Gas).ok()?;
+        Some(gear_bank(&config, gear))
+    }
+}
+
+fn gear_bank(config: &mechanic_core::GearboxConfig, gear: usize) -> i8 {
+    if gear < usize::from(config.reverse_gears()) {
+        -1
+    } else {
+        1
+    }
+}
+
+fn gear_bank_range(
+    kind: EngineKind,
+    config: &mechanic_core::GearboxConfig,
+    gear: usize,
+) -> (usize, usize) {
+    if kind == EngineKind::Electric {
+        return (0, config.ratios().len().saturating_sub(1));
+    }
+    let divider = usize::from(config.reverse_gears());
+    if gear < divider {
+        (0, divider.saturating_sub(1))
+    } else {
+        (divider, config.ratios().len().saturating_sub(1))
+    }
+}
+
+fn automatic_shift_destination(
+    kind: EngineKind,
+    config: &mechanic_core::GearboxConfig,
+    current: usize,
+    measured_speed: f32,
+) -> usize {
+    let ratio = config.ratios()[current];
+    let engine_rpm = measured_speed.abs() * ratio * 60.0 / core::f32::consts::TAU;
+    let (first, last) = gear_bank_range(kind, config, current);
+    if engine_rpm >= 0.85 * kind.no_load_rpm() && current < last {
+        current + 1
+    } else if engine_rpm <= 0.40 * kind.no_load_rpm() && current > first {
+        current - 1
+    } else {
+        current
+    }
+}
+
+fn reversal_is_safe(
+    kind: EngineKind,
+    config: &mechanic_core::GearboxConfig,
+    destination: usize,
+    measured_speed: f32,
+) -> bool {
+    if kind != EngineKind::Gas {
+        return true;
+    }
+    let output_speed =
+        kind.no_load_rpm() * core::f32::consts::TAU / 60.0 / config.ratios()[destination];
+    measured_speed.abs() < 0.05_f32.max(output_speed * 0.05)
+}
+
+fn initial_gear(
+    config: &mechanic_core::GearboxConfig,
+    kind: EngineKind,
+    requested_sign: f32,
+) -> Option<usize> {
+    if kind == EngineKind::Electric {
+        return Some(0);
+    }
+    let divider = usize::from(config.reverse_gears());
+    if requested_sign < 0.0 {
+        (divider != 0).then_some(0)
+    } else {
+        (divider < config.ratios().len()).then_some(divider)
+    }
+}
+
+fn dominant_request_sign(
+    graph: &ConstructionGraph,
+    sequencer: &DriveSequencer,
+    controller: mechanic_core::PartId,
+    kind: EngineKind,
+) -> f32 {
+    sequencer
+        .rows()
+        .iter()
+        .filter_map(|row| {
+            let spec = graph.drive_link(row.link)?;
+            if spec.controller != controller
+                || match kind {
+                    EngineKind::Electric => !spec.actuator.uses_electric(),
+                    EngineKind::Gas => !spec.actuator.uses_gas(),
+                }
+            {
+                return None;
+            }
+            spec.resolved_target(row.cursor.active)?.speed()
+        })
+        .max_by(|left, right| left.abs().total_cmp(&right.abs()))
+        .unwrap_or(0.0)
+        .signum()
+}
+
+fn chord_just_pressed(keyboard: &ButtonInput<KeyCode>, chord: GearKeyChord) -> bool {
+    let key = match chord.key {
+        GearKey::Letter(letter) => match letter {
+            'A' => KeyCode::KeyA,
+            'B' => KeyCode::KeyB,
+            'C' => KeyCode::KeyC,
+            'D' => KeyCode::KeyD,
+            'E' => KeyCode::KeyE,
+            'F' => KeyCode::KeyF,
+            'G' => KeyCode::KeyG,
+            'H' => KeyCode::KeyH,
+            'I' => KeyCode::KeyI,
+            'J' => KeyCode::KeyJ,
+            'K' => KeyCode::KeyK,
+            'L' => KeyCode::KeyL,
+            'M' => KeyCode::KeyM,
+            'N' => KeyCode::KeyN,
+            'O' => KeyCode::KeyO,
+            'P' => KeyCode::KeyP,
+            'Q' => KeyCode::KeyQ,
+            'R' => KeyCode::KeyR,
+            'S' => KeyCode::KeyS,
+            'T' => KeyCode::KeyT,
+            'U' => KeyCode::KeyU,
+            'V' => KeyCode::KeyV,
+            'W' => KeyCode::KeyW,
+            'X' => KeyCode::KeyX,
+            'Y' => KeyCode::KeyY,
+            'Z' => KeyCode::KeyZ,
+            _ => return false,
+        },
+        GearKey::Digit(digit) => match digit {
+            0 => KeyCode::Digit0,
+            1 => KeyCode::Digit1,
+            2 => KeyCode::Digit2,
+            3 => KeyCode::Digit3,
+            4 => KeyCode::Digit4,
+            5 => KeyCode::Digit5,
+            6 => KeyCode::Digit6,
+            7 => KeyCode::Digit7,
+            8 => KeyCode::Digit8,
+            9 => KeyCode::Digit9,
+            _ => return false,
+        },
+        GearKey::Space => KeyCode::Space,
+        GearKey::ArrowUp => KeyCode::ArrowUp,
+        GearKey::ArrowDown => KeyCode::ArrowDown,
+        GearKey::ArrowLeft => KeyCode::ArrowLeft,
+        GearKey::ArrowRight => KeyCode::ArrowRight,
+        GearKey::PageUp => KeyCode::PageUp,
+        GearKey::PageDown => KeyCode::PageDown,
+    };
+    let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let control = keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let alt = keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    let super_key = keyboard.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]);
+    keyboard.just_pressed(key)
+        && shift == chord.shift
+        && control == chord.control
+        && alt == chord.alt
+        && super_key == chord.super_key
 }
 
 impl DriveSequencer {
@@ -269,6 +694,7 @@ fn stepped_cursor(
 ///
 /// Starts from the compiled state-zero rows so undriven coordinates stay
 /// passive, then overwrites every coordinate the sequencer owns.
+#[cfg(test)]
 pub(crate) fn gpu_drive_rows(
     creation: &CompiledCreation,
     graph: &ConstructionGraph,
@@ -305,11 +731,90 @@ pub(crate) fn gpu_drive_rows(
     rows
 }
 
+/// Builds GPU rows with independently geared gas and electric contributions.
+pub(crate) fn geared_gpu_drive_rows(
+    creation: &CompiledCreation,
+    graph: &ConstructionGraph,
+    sequencer: &DriveSequencer,
+    gearboxes: &GearboxRuntime,
+) -> Vec<GpuMechanismDrive> {
+    let selections = gearboxes.selections(graph);
+    let mut rows = creation
+        .resolve_coordinate_drives_with_gears(graph, &selections)
+        .into_iter()
+        .map(GpuMechanismDrive::from)
+        .collect::<Vec<_>>();
+    apply_live_targets(&mut rows, graph, sequencer);
+    for row in sequencer.rows() {
+        let Some(spec) = graph.drive_link(row.link) else {
+            continue;
+        };
+        if !spec.actuator.uses_gas() {
+            continue;
+        }
+        let requested_sign = spec
+            .resolved_target(row.cursor.active)
+            .and_then(DriveTarget::speed)
+            .map_or(0, |speed| {
+                if speed > 0.0 {
+                    1
+                } else if speed < 0.0 {
+                    -1
+                } else {
+                    0
+                }
+            });
+        if gearboxes.gas_direction(graph, spec.controller) != Some(requested_sign)
+            && let Some(slot) = rows.get_mut(row.coordinate as usize)
+        {
+            slot.source_b_max_acceleration = 0.0;
+            slot.source_b_no_load_speed = 0.0;
+            slot.max_acceleration = slot.source_a_max_acceleration;
+            slot.max_speed = slot.source_a_no_load_speed;
+        }
+    }
+    rows
+}
+
+fn apply_live_targets(
+    rows: &mut [GpuMechanismDrive],
+    graph: &ConstructionGraph,
+    sequencer: &DriveSequencer,
+) {
+    for row in sequencer.rows() {
+        let Some(spec) = graph.drive_link(row.link) else {
+            continue;
+        };
+        let Some(target) = spec.resolved_target(row.cursor.active) else {
+            continue;
+        };
+        let Some(slot) = rows.get_mut(row.coordinate as usize) else {
+            continue;
+        };
+        match target {
+            DriveTarget::Speed(speed) => {
+                slot.mode = DRIVE_MODE_SPEED;
+                slot.target_speed = speed.clamp(-slot.max_speed, slot.max_speed);
+                slot.target_angle = 0.0;
+            }
+            DriveTarget::Angle(angle) => {
+                slot.mode = DRIVE_MODE_ANGLE;
+                slot.target_speed = 0.0;
+                slot.target_angle = angle;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DriveKeyState, RowCursor, stepped_cursor};
+    use super::{
+        DriveKeyState, RowCursor, automatic_shift_destination, chord_just_pressed, initial_gear,
+        reversal_is_safe, stepped_cursor,
+    };
     use mechanic_core::{
         DriveDwell, DriveKey, DriveProgram, DriveRelease, DriveState, DriveTarget, DriveTrigger,
+        EngineKind, GearKey, GearKeyChord, GearboxConfig,
     };
 
     fn key(symbol: char) -> DriveKey {
@@ -608,6 +1113,18 @@ mod tests {
         assert_eq!(super::drive_key(bevy::prelude::KeyCode::KeyE), None);
         assert!(super::drive_key(bevy::prelude::KeyCode::KeyD).is_some());
         assert!(super::drive_key(bevy::prelude::KeyCode::KeyF).is_some());
+        assert_eq!(
+            super::gear_key(bevy::prelude::KeyCode::KeyE),
+            Some(GearKey::Letter('E'))
+        );
+        assert_eq!(
+            super::gear_key(bevy::prelude::KeyCode::Space),
+            Some(GearKey::Space)
+        );
+        assert_eq!(
+            super::gear_key(bevy::prelude::KeyCode::PageDown),
+            Some(GearKey::PageDown)
+        );
     }
 
     #[test]
@@ -621,5 +1138,73 @@ mod tests {
 
         let playing = DriveKeyState::from_keyboard(&keyboard, false);
         assert_eq!(stepped_cursor(row(), &program, &playing, 10).active, 1);
+    }
+
+    #[test]
+    fn automatic_shift_thresholds_have_hysteresis() {
+        let config = GearboxConfig::for_depth(3, false);
+        let output_speed =
+            |rpm: f32, gear: usize| rpm * core::f32::consts::TAU / 60.0 / config.ratios()[gear];
+        assert_eq!(
+            automatic_shift_destination(
+                EngineKind::Electric,
+                &config,
+                0,
+                output_speed(EngineKind::Electric.no_load_rpm() * 0.85, 0),
+            ),
+            1,
+        );
+        assert_eq!(
+            automatic_shift_destination(
+                EngineKind::Electric,
+                &config,
+                1,
+                output_speed(EngineKind::Electric.no_load_rpm() * 0.40, 1),
+            ),
+            0,
+        );
+        assert_eq!(
+            automatic_shift_destination(
+                EngineKind::Electric,
+                &config,
+                1,
+                output_speed(EngineKind::Electric.no_load_rpm() * 0.60, 1),
+            ),
+            1,
+        );
+    }
+
+    #[test]
+    fn gas_direction_banks_and_reversal_gate_cover_missing_and_safe_destinations() {
+        let mut config = GearboxConfig::for_depth(1, true);
+        assert_eq!(initial_gear(&config, EngineKind::Gas, -1.0), Some(0));
+        assert_eq!(initial_gear(&config, EngineKind::Gas, 1.0), Some(1));
+        assert!(!reversal_is_safe(EngineKind::Gas, &config, 1, 30.0));
+        assert!(reversal_is_safe(EngineKind::Gas, &config, 1, 0.01));
+        config = mechanic_core::GearboxConfig::new(
+            mechanic_core::ShiftMode::Auto,
+            config.ratios().to_vec(),
+            0,
+            config.gear_up(),
+            config.gear_down(),
+        )
+        .unwrap();
+        assert_eq!(initial_gear(&config, EngineKind::Gas, -1.0), None);
+    }
+
+    #[test]
+    fn shift_chords_accept_space_page_keys_and_modifiers() {
+        let mut keyboard = bevy::input::ButtonInput::<bevy::prelude::KeyCode>::default();
+        keyboard.press(bevy::prelude::KeyCode::ShiftLeft);
+        keyboard.press(bevy::prelude::KeyCode::Space);
+        let chord = GearKeyChord {
+            shift: true,
+            ..GearKeyChord::new(GearKey::Space)
+        };
+        assert!(chord_just_pressed(&keyboard, chord));
+        assert!(!chord_just_pressed(
+            &keyboard,
+            GearKeyChord::new(GearKey::Space)
+        ));
     }
 }

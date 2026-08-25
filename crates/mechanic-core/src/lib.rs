@@ -3,6 +3,7 @@
 mod compile;
 mod creation;
 mod drive;
+mod gearbox;
 mod geometry;
 mod graph;
 mod id;
@@ -11,14 +12,14 @@ mod shape;
 
 pub use compile::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
-    CompiledCreation, CoordinateDrive, DriveMode, LocalCollider, LoopTopology,
+    CompiledCreation, CoordinateDrive, DriveMode, GearSelection, LocalCollider, LoopTopology,
     MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology, TopologyError,
 };
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, CreationDocument,
     CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc, DriveStateDoc,
-    DriveTriggerDoc, FaceOwnerDoc, FaceRefDoc, InputSeatLinkDoc, LoadedCreation, PartDoc, PoseDoc,
-    RegionDoc, RigidLinkDoc, SeatControllerLinkDoc, WeldDoc,
+    DriveTriggerDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc, InputSeatLinkDoc, LoadedCreation,
+    PartDoc, PoseDoc, RegionDoc, RigidLinkDoc, SeatControllerLinkDoc, WeldDoc,
 };
 pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
@@ -26,13 +27,17 @@ pub use drive::{
     DriveTarget, DriveTrigger, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
     MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
 };
+pub use gearbox::{
+    GearKey, GearKeyChord, GearboxConfig, GearboxError, MAX_GEAR_RATIO, MAX_GEARS, MIN_GEAR_RATIO,
+    ShiftMode,
+};
 pub use geometry::{
     Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ConstructionMaterial, ControllerSpec, CuboidSpec,
     CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, EngineKind,
     EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridDimension, GridRotation,
     InputSpec, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS,
     MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES,
-    MaterialProperties, PartSpec, SeatSpec, ServoSpec, snap_world_to_grid,
+    MaterialProperties, PartSpec, SeatSpec, ServoSpec, TransmissionSpec, snap_world_to_grid,
 };
 pub use graph::{
     ActuatorInventory, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,

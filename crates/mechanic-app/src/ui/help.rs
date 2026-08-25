@@ -13,9 +13,9 @@ use bevy_mosaic::ui::*;
 use mosaic_core::theme::color;
 use mosaic_macros::view;
 
-use super::Handles;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
+use super::{Handles, body_font, display_font};
 use crate::hotbar::{SelectedMaterial, SelectedTool, Tool};
 use crate::{
     AppSimulation, BearingToolSettings, BlockAttachment, CylinderToolSettings, EditorGraph,
@@ -236,6 +236,10 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Q rotates; place a 500 N·m, 120 RPM electric engine (4 bearing ports)"
                     .to_owned()
             }
+            (false, Tool::Transmission, _, _, _) => {
+                "Attach to an engine or transmission +Z output; orientation is inherited"
+                    .to_owned()
+            }
             (false, Tool::Servo, _, _, _) => {
                 "Q rotates; place a 150 N·m, 30 RPM Servo (one angle-controlled bearing)"
                     .to_owned()
@@ -357,9 +361,12 @@ const fn tool_tone(tool: Tool) -> Tone {
     match tool {
         Tool::Bearing | Tool::Hammer | Tool::GasEngine | Tool::Servo => Tone::Angle,
         Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input => Tone::Key,
-        Tool::Block | Tool::Cylinder | Tool::ElectricEngine | Tool::Seat | Tool::Shape => {
-            Tone::Speed
-        }
+        Tool::Block
+        | Tool::Cylinder
+        | Tool::ElectricEngine
+        | Tool::Transmission
+        | Tool::Seat
+        | Tool::Shape => Tone::Speed,
     }
 }
 
@@ -374,14 +381,14 @@ pub(crate) fn view(handles: &Handles) -> Element {
             translate:(x:16px y:16px) pad:16px radius:10px
             fill:shell stroke:(width:1px color:shell-edge)
             font-color:help.body {
-            (line(model, 19.0, 1.4, |found| &found.title))
-            (line(model, 15.0, 0.0, |found| &found.primary))
-            (line(model, 14.0, 0.0, |found| &found.edit))
-            (line(model, 14.0, 0.0, |found| &found.pointer))
-            (line(model, 16.0, 0.0, |found| &found.tool))
-            (line(model, 13.0, 0.0, |found| &found.counts))
-            (line(model, 15.0, 0.0, |found| &found.hint))
-            (line(model, 13.0, 0.0, |found| &found.status))
+            (line(model, 19.0, 1.4, display_font(), |found| &found.title))
+            (line(model, 15.0, 0.0, body_font(), |found| &found.primary))
+            (line(model, 14.0, 0.0, body_font(), |found| &found.edit))
+            (line(model, 14.0, 0.0, body_font(), |found| &found.pointer))
+            (line(model, 16.0, 0.0, body_font(), |found| &found.tool))
+            (line(model, 13.0, 0.0, body_font(), |found| &found.counts))
+            (line(model, 15.0, 0.0, body_font(), |found| &found.hint))
+            (line(model, 13.0, 0.0, body_font(), |found| &found.status))
         }
     }
 }
@@ -392,13 +399,14 @@ fn line(
     model: State<Model>,
     size: f32,
     spacing: f32,
+    family: FontFamily,
     of: impl Fn(&Model) -> &Line + Copy + 'static,
 ) -> Element {
     let text = move || model.with(|found| of(found).text.clone());
     let tone = move || model.with(|found| of(found).tone).paint();
     view! {
-        text width:fill font-size:{ Length::px(size) } letter-spacing:{ Length::px(spacing) }
-            font-color:{ tone() } { text() }
+        text width:fill font-family:{ family.clone() } font-size:{ Length::px(size) }
+            letter-spacing:{ Length::px(spacing) } font-color:{ tone() } { text() }
     }
 }
 

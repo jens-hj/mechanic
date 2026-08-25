@@ -50,7 +50,8 @@ use builder::{
     rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch, stage_bearing_cylinder,
     stage_block_batch_from_source, stage_controller_from_source, stage_cylinder_from_source,
     stage_engine_from_source, stage_input_from_source, stage_seat_from_source,
-    stage_servo_from_source, stage_weld_objects, try_face_geometry_from_ref, validate_block_batch,
+    stage_servo_from_source, stage_transmission, stage_weld_objects,
+    transmission_candidate_from_hit, try_face_geometry_from_ref, validate_block_batch,
     validate_cylinder_candidate,
 };
 use camera::{OrbitCamera, SeatedView, seated_view_rotation};
@@ -67,12 +68,12 @@ use mechanic_core::{
     MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER,
     MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId,
     PartPiece, PartSpec, PendingOperation, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec,
-    ServoSpec, ShapeRegion, TopologyError, face_neighbour_offset, part_cells,
+    ServoSpec, ShapeRegion, TopologyError, TransmissionSpec, face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
 };
-use sequencer::{DriveKeyState, DriveSequencer, gpu_drive_rows};
+use sequencer::{DriveKeyState, DriveSequencer, GearboxRuntime, geared_gpu_drive_rows};
 
 const SIMULATION_VISUAL_TICK_INTERVAL: u32 = 2;
 const HAMMER_CHARGE_SECONDS: f32 = 1.5;
@@ -106,7 +107,10 @@ struct AppSimulation {
     paused: bool,
     scheduler: FixedStepScheduler,
     next_tick: u64,
+    previous_transforms: Vec<GpuTransform>,
     transforms: Vec<GpuTransform>,
+    previous_snapshot_tick: u64,
+    snapshot_tick: u64,
     visual_ticks_since_publish: u32,
     static_mesh_dirty: bool,
     render_dirty: bool,
@@ -310,6 +314,8 @@ fn handle_simulation_shortcut(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     overlay: Res<ui::UiInput>,
+    mut sequencer: ResMut<DriveSequencer>,
+    mut gearboxes: ResMut<GearboxRuntime>,
 ) {
     if overlay.blocks_keyboard() {
         return;
@@ -366,7 +372,7 @@ fn handle_simulation_shortcut(
             return;
         }
     };
-    let transforms = creation
+    let transforms: Vec<GpuTransform> = creation
         .compounds
         .iter()
         .map(|compound| {
@@ -378,13 +384,18 @@ fn handle_simulation_shortcut(
             }
         })
         .collect();
+    sequencer.stop();
+    gearboxes.stop();
     *simulation = AppSimulation {
         gpu: Some(gpu),
         creation: Some(creation),
         paused: false,
         scheduler: FixedStepScheduler::new(),
         next_tick: 1,
+        previous_transforms: transforms.clone(),
         transforms,
+        previous_snapshot_tick: 0,
+        snapshot_tick: 0,
         visual_ticks_since_publish: 0,
         static_mesh_dirty: true,
         render_dirty: true,
@@ -627,18 +638,21 @@ fn handle_seat_interaction(
 ///
 /// Runs immediately before the tick is dispatched, so a state entered this
 /// frame takes effect in the same tick rather than the next one.
+#[allow(clippy::too_many_arguments)] // Bevy systems receive each independent resource explicitly.
 fn run_drive_sequencer(
     keyboard: Res<ButtonInput<KeyCode>>,
     graph: Res<EditorGraph>,
     overlay: Res<ui::UiInput>,
     simulation: Res<AppSimulation>,
     mut sequencer: ResMut<DriveSequencer>,
+    mut gearboxes: ResMut<GearboxRuntime>,
     mut state: ResMut<EditorState>,
     seated: Res<SeatedView>,
 ) {
     if !simulation.is_running() {
         if sequencer.is_started() {
             sequencer.stop();
+            gearboxes.stop();
         }
         return;
     }
@@ -647,18 +661,142 @@ fn run_drive_sequencer(
             return;
         };
         sequencer.start(creation, &graph.0);
+        gearboxes.start(&graph.0, &sequencer);
         state.drive_rows_dirty = true;
-    }
-    if simulation.is_paused() {
-        return;
     }
     let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
     let keyboard_controller = seated
         .seat
         .filter(|seat| graph.0.seat_input(*seat).is_some())
         .and_then(|seat| graph.0.seat_controller(seat));
-    if sequencer.step(&graph.0, &keys, keyboard_controller, simulation.next_tick) {
+    let sequencer_changed = !simulation.is_paused()
+        && sequencer.step(&graph.0, &keys, keyboard_controller, simulation.next_tick);
+    let measured_speeds = measured_engine_speeds(&graph.0, &simulation, &sequencer);
+    let gearbox_changed = gearboxes.step(
+        &graph.0,
+        &sequencer,
+        &keyboard,
+        (!overlay.blocks_keyboard())
+            .then_some(keyboard_controller)
+            .flatten(),
+        simulation.next_tick,
+        &measured_speeds,
+        simulation.is_paused(),
+    );
+    if sequencer_changed || gearbox_changed {
         state.drive_rows_dirty = true;
+    }
+}
+
+/// Signed joint speeds from the two transform snapshots already read for rendering.
+#[allow(clippy::cast_precision_loss)]
+fn measured_engine_speeds(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    sequencer: &DriveSequencer,
+) -> Vec<(PartId, EngineKind, f32)> {
+    let Some(creation) = simulation.creation.as_ref() else {
+        return Vec::new();
+    };
+    let tick_delta = simulation
+        .snapshot_tick
+        .saturating_sub(simulation.previous_snapshot_tick);
+    if tick_delta == 0 || simulation.previous_transforms.len() != simulation.transforms.len() {
+        return Vec::new();
+    }
+    let delta_seconds = tick_delta as f32 * FIXED_DT_SECONDS;
+    let mut result = Vec::<(PartId, EngineKind, f32)>::new();
+    for row in sequencer.rows() {
+        let Some(link) = graph.drive_link(row.link) else {
+            continue;
+        };
+        let Some(bearing) = creation
+            .bearings
+            .iter()
+            .find(|bearing| bearing.coordinate_index == Some(row.coordinate))
+        else {
+            continue;
+        };
+        let a = bearing.compound_a as usize;
+        let b = bearing.compound_b as usize;
+        let (Some(previous_a), Some(previous_b), Some(current_a), Some(current_b)) = (
+            simulation.previous_transforms.get(a),
+            simulation.previous_transforms.get(b),
+            simulation.transforms.get(a),
+            simulation.transforms.get(b),
+        ) else {
+            continue;
+        };
+        let speed = signed_joint_speed(
+            Quat::from_array(previous_a.rotation),
+            Quat::from_array(previous_b.rotation),
+            Quat::from_array(current_a.rotation),
+            Quat::from_array(current_b.rotation),
+            bearing.local_axis_a,
+            delta_seconds,
+        );
+        for kind in [EngineKind::Electric, EngineKind::Gas] {
+            let powered = match kind {
+                EngineKind::Electric => link.actuator.uses_electric(),
+                EngineKind::Gas => link.actuator.uses_gas(),
+            };
+            if !powered {
+                continue;
+            }
+            if let Some(entry) = result.iter_mut().find(|(controller, candidate, _)| {
+                *controller == link.controller && *candidate == kind
+            }) {
+                if speed.abs() > entry.2.abs() {
+                    entry.2 = speed;
+                }
+            } else {
+                result.push((link.controller, kind, speed));
+            }
+        }
+    }
+    result
+}
+
+fn signed_joint_speed(
+    previous_a: Quat,
+    previous_b: Quat,
+    current_a: Quat,
+    current_b: Quat,
+    local_axis_a: Vec3,
+    delta_seconds: f32,
+) -> f32 {
+    let angular_a = (current_a * previous_a.inverse()).to_scaled_axis() / delta_seconds;
+    let angular_b = (current_b * previous_b.inverse()).to_scaled_axis() / delta_seconds;
+    (angular_b - angular_a).dot(current_a * local_axis_a)
+}
+
+#[cfg(test)]
+mod transmission_speed_tests {
+    use bevy::prelude::{Quat, Vec3};
+
+    use super::signed_joint_speed;
+
+    #[test]
+    fn snapshot_pairs_measure_signed_relative_joint_speed() {
+        let delta_seconds = 0.1;
+        let positive = signed_joint_speed(
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::from_axis_angle(Vec3::Z, 0.2),
+            Vec3::Z,
+            delta_seconds,
+        );
+        let negative = signed_joint_speed(
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::IDENTITY,
+            Quat::from_axis_angle(Vec3::Z, -0.2),
+            Vec3::Z,
+            delta_seconds,
+        );
+        assert!((positive - 2.0).abs() < 1.0e-5);
+        assert!((negative + 2.0).abs() < 1.0e-5);
     }
 }
 
@@ -705,7 +843,7 @@ fn handle_creation_request(
             match load_creation(&mut graph.0, &path) {
                 Ok((name, sockets, creation)) => {
                     history.commit(previous);
-                    let bodies = creation.compounds.len();
+                    let bodies = creation.as_ref().map(|compiled| compiled.compounds.len());
                     let placed = sockets
                         .into_iter()
                         .map(|socket| PlacedBearing {
@@ -715,11 +853,17 @@ fn handle_creation_request(
                         })
                         .collect();
                     adopt_loaded_creation(&mut state, &mut camera, &graph.0, placed);
-                    state.feedback = Some(format!(
-                        "Opened \"{name}\": {} parts, {} bearings, {bodies} bodies — Space to simulate",
-                        graph.0.part_count(),
-                        graph.0.bearing_count(),
-                    ));
+                    state.feedback = Some(if let Some(bodies) = bodies {
+                        format!(
+                            "Opened \"{name}\": {} parts, {} bearings, {bodies} bodies — Space to simulate",
+                            graph.0.part_count(),
+                            graph.0.bearing_count(),
+                        )
+                    } else {
+                        format!(
+                            "Opened \"{name}\" — complete matching transmission stacks before simulation"
+                        )
+                    });
                     current.0 = Some(name);
                 }
                 Err(error) => {
@@ -779,13 +923,24 @@ fn capture_creation(
 }
 
 /// Reads a creation file and installs it, compiling before it commits.
+type LoadedCreation = (String, Vec<BearingSocket>, Option<CompiledCreation>);
+
 fn load_creation(
     current: &mut ConstructionGraph,
     path: &Path,
-) -> Result<(String, Vec<BearingSocket>, CompiledCreation), Box<dyn Error>> {
+) -> Result<LoadedCreation, Box<dyn Error>> {
     let loaded = creation_store::read_document(path)?.into_graph()?;
-    let creation = install_editor_graph(current, loaded.graph)?;
-    Ok((loaded.name, loaded.sockets, creation))
+    match loaded.graph.compile() {
+        Ok(creation) => {
+            *current = loaded.graph;
+            Ok((loaded.name, loaded.sockets, Some(creation)))
+        }
+        Err(TopologyError::TransmissionDepthMismatch { .. }) => {
+            *current = loaded.graph;
+            Ok((loaded.name, loaded.sockets, None))
+        }
+        Err(error) => Err(Box::new(error)),
+    }
 }
 
 /// Clears the transient editing state a freshly opened creation invalidates,
@@ -839,6 +994,7 @@ fn advance_simulation(
     time: Res<Time>,
     graph: Res<EditorGraph>,
     sequencer: Res<DriveSequencer>,
+    gearboxes: Res<GearboxRuntime>,
     selection: Res<SelectedTool>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
@@ -881,7 +1037,7 @@ fn advance_simulation(
         if let (Some(gpu), Some(creation)) = (simulation.gpu.as_ref(), simulation.creation.as_ref())
             && let Err(error) = gpu.write_mechanism_drives(
                 &render_queue,
-                &gpu_drive_rows(creation, &graph.0, &sequencer),
+                &geared_gpu_drive_rows(creation, &graph.0, &sequencer, &gearboxes),
             )
         {
             stop_failed_simulation(&mut simulation, &mut state, error.to_string());
@@ -954,7 +1110,10 @@ fn advance_simulation(
                 .map_err(|error| error.to_string());
             match transforms {
                 Ok(transforms) => {
-                    simulation.transforms = transforms;
+                    simulation.previous_transforms =
+                        core::mem::replace(&mut simulation.transforms, transforms);
+                    simulation.previous_snapshot_tick = simulation.snapshot_tick;
+                    simulation.snapshot_tick = tick;
                     simulation.visual_ticks_since_publish = 0;
                     simulation.render_dirty = true;
                 }
@@ -1034,7 +1193,10 @@ fn advance_simulation(
     // rebuild and makes the renderer log a use-after-free every frame.
     let bearings_visible = graph.0.bearing_count() > 0 || !state.placed_bearings.is_empty();
     for appearance in AuthoredPart::ALL {
-        let visible = graph.0.parts().any(|(_, spec)| appearance.matches(*spec));
+        let visible = graph
+            .0
+            .parts()
+            .any(|(part, spec)| appearance.matches(&graph.0, part, *spec));
         if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
             *mesh = combined_simulation_authored_mesh(
                 &graph.0,
@@ -1182,12 +1344,14 @@ struct EditorVisuals {
     controller_mesh: Handle<Mesh>,
     gas_engine_mesh: Handle<Mesh>,
     electric_engine_mesh: Handle<Mesh>,
+    gas_transmission_mesh: Handle<Mesh>,
+    electric_transmission_mesh: Handle<Mesh>,
     servo_mesh: Handle<Mesh>,
     seat_mesh: Handle<Mesh>,
     input_mesh: Handle<Mesh>,
-    authored_preview_meshes: [Handle<Mesh>; 6],
-    authored_preview_materials: [Handle<StandardMaterial>; 6],
-    invalid_authored_preview_materials: [Handle<StandardMaterial>; 6],
+    authored_preview_meshes: [Handle<Mesh>; AuthoredPart::ALL.len()],
+    authored_preview_materials: [Handle<StandardMaterial>; AuthoredPart::ALL.len()],
+    invalid_authored_preview_materials: [Handle<StandardMaterial>; AuthoredPart::ALL.len()],
     drive_xray_mesh: Handle<Mesh>,
     wire_drag_mesh: Handle<Mesh>,
     wire_hover_mesh: Handle<Mesh>,
@@ -1211,6 +1375,8 @@ impl EditorVisuals {
             AuthoredPart::Controller => &self.controller_mesh,
             AuthoredPart::GasEngine => &self.gas_engine_mesh,
             AuthoredPart::ElectricEngine => &self.electric_engine_mesh,
+            AuthoredPart::GasTransmission => &self.gas_transmission_mesh,
+            AuthoredPart::ElectricTransmission => &self.electric_transmission_mesh,
             AuthoredPart::Servo => &self.servo_mesh,
             AuthoredPart::Seat => &self.seat_mesh,
             AuthoredPart::Input => &self.input_mesh,
@@ -1280,16 +1446,20 @@ enum AuthoredPart {
     Controller,
     GasEngine,
     ElectricEngine,
+    GasTransmission,
+    ElectricTransmission,
     Servo,
     Seat,
     Input,
 }
 
 impl AuthoredPart {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::Controller,
         Self::GasEngine,
         Self::ElectricEngine,
+        Self::GasTransmission,
+        Self::ElectricTransmission,
         Self::Servo,
         Self::Seat,
         Self::Input,
@@ -1300,9 +1470,11 @@ impl AuthoredPart {
             Self::Controller => 0,
             Self::GasEngine => 1,
             Self::ElectricEngine => 2,
-            Self::Servo => 3,
-            Self::Seat => 4,
-            Self::Input => 5,
+            Self::GasTransmission => 3,
+            Self::ElectricTransmission => 4,
+            Self::Servo => 5,
+            Self::Seat => 6,
+            Self::Input => 7,
         }
     }
 
@@ -1318,7 +1490,7 @@ impl AuthoredPart {
         }
     }
 
-    fn matches(self, spec: PartSpec) -> bool {
+    fn matches(self, graph: &ConstructionGraph, part: PartId, spec: PartSpec) -> bool {
         matches!(
             (self, spec),
             (Self::Controller, PartSpec::Controller(_))
@@ -1339,7 +1511,14 @@ impl AuthoredPart {
                         ..
                     }),
                 )
-        )
+        ) || matches!(spec, PartSpec::Transmission(_))
+            && match self {
+                Self::GasTransmission => graph.transmission_kind(part) == Some(EngineKind::Gas),
+                Self::ElectricTransmission => {
+                    graph.transmission_kind(part) == Some(EngineKind::Electric)
+                }
+                _ => false,
+            }
     }
 }
 
@@ -1523,6 +1702,7 @@ fn main() {
         .init_resource::<BearingToolSettings>()
         .init_resource::<ControlPanelState>()
         .init_resource::<DriveSequencer>()
+        .init_resource::<GearboxRuntime>()
         .init_resource::<CylinderToolSettings>()
         .init_resource::<shape_tool::ShapeMirror>()
         .init_resource::<shape_tool::ShapeSnap>()
@@ -1600,6 +1780,8 @@ fn setup(
     let controller_mesh = meshes.add(Cuboid::default());
     let gas_engine_mesh = meshes.add(Cuboid::default());
     let electric_engine_mesh = meshes.add(Cuboid::default());
+    let gas_transmission_mesh = meshes.add(Cuboid::default());
+    let electric_transmission_mesh = meshes.add(Cuboid::default());
     let servo_mesh = meshes.add(Cuboid::default());
     let seat_mesh = meshes.add(Cuboid::default());
     let input_mesh = meshes.add(Cuboid::default());
@@ -1630,6 +1812,11 @@ fn setup(
         authored_part_material(&asset_server, "machines/controller/controller"),
         authored_part_material(&asset_server, "machines/gas_engine/gas_engine"),
         authored_part_material(&asset_server, "machines/electric_engine/electric_engine"),
+        authored_part_material(&asset_server, "machines/transmission_gas/transmission_gas"),
+        authored_part_material(
+            &asset_server,
+            "machines/transmission_electric/transmission_electric",
+        ),
         authored_part_material(&asset_server, "machines/servo/servo"),
         authored_part_material(&asset_server, "machines/seat/seat"),
         authored_part_material(&asset_server, "machines/input/input"),
@@ -1687,6 +1874,8 @@ fn setup(
         controller_mesh: controller_mesh.clone(),
         gas_engine_mesh: gas_engine_mesh.clone(),
         electric_engine_mesh: electric_engine_mesh.clone(),
+        gas_transmission_mesh: gas_transmission_mesh.clone(),
+        electric_transmission_mesh: electric_transmission_mesh.clone(),
         servo_mesh: servo_mesh.clone(),
         seat_mesh: seat_mesh.clone(),
         input_mesh: input_mesh.clone(),
@@ -1774,6 +1963,22 @@ fn setup(
         NoFrustumCulling,
         Visibility::Hidden,
         AuthoredPartVisual(AuthoredPart::ElectricEngine),
+    ));
+    commands.spawn((
+        Name::new("Gas transmission mesh"),
+        Mesh3d(gas_transmission_mesh),
+        MeshMaterial3d(authored_materials[AuthoredPart::GasTransmission.index()].clone()),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::GasTransmission),
+    ));
+    commands.spawn((
+        Name::new("Electric transmission mesh"),
+        Mesh3d(electric_transmission_mesh),
+        MeshMaterial3d(authored_materials[AuthoredPart::ElectricTransmission.index()].clone()),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::ElectricTransmission),
     ));
     commands.spawn((
         Name::new("Servo mesh"),
@@ -2660,6 +2865,7 @@ fn update_hover(
             | Tool::Connector
             | Tool::GasEngine
             | Tool::ElectricEngine
+            | Tool::Transmission
             | Tool::Servo
             | Tool::Seat
             | Tool::Input
@@ -3068,6 +3274,27 @@ fn refresh_tool_preview_with_cylinder(
                 state.cylinder_preview = Some(candidate);
                 error
             })
+        }
+        (Tool::Transmission, _) => {
+            state
+                .hovered
+                .and_then(|hit| match transmission_candidate_from_hit(graph, hit) {
+                    Ok((_, candidate)) => {
+                        state.preview = Some(candidate);
+                        None
+                    }
+                    Err(error) => {
+                        if try_face_geometry_from_ref(hit.face, Some(graph)).is_some() {
+                            state.preview = Some(oriented_cuboid_candidate_from_hit(
+                                graph,
+                                hit,
+                                TransmissionSpec::GRID_UNITS,
+                                GridRotation::default(),
+                            ));
+                        }
+                        Some(error)
+                    }
+                })
         }
         (
             tool @ (Tool::Controller
@@ -4160,6 +4387,13 @@ fn handle_build_actions(
                         }
                     ));
                 }
+                PartSpec::Transmission(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some(
+                        "Release right mouse to delete transmission and downstream blocks"
+                            .to_owned(),
+                    );
+                }
                 PartSpec::Servo(_) => {
                     state.delete_target = Some(DeleteTarget::Part(part));
                     state.feedback = Some("Release right mouse to delete servo".to_owned());
@@ -4491,6 +4725,42 @@ fn handle_build_actions(
                     graph.0 = staged;
                     history.commit(previous);
                     state.feedback = Some(format!("Placed {}", tool.label().to_lowercase()));
+                    state.construction_mesh_dirty = true;
+                    clear_hover(&mut state);
+                }
+                Err(error) => state.feedback = Some(error.to_string()),
+            }
+        }
+        Tool::Transmission => {
+            let Some(hit) = state.hovered else {
+                state.feedback = Some("Point at an engine or transmission +Z output".to_owned());
+                return;
+            };
+            let (parent, candidate) = match transmission_candidate_from_hit(&graph.0, hit) {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    state.feedback = Some(error.to_string());
+                    return;
+                }
+            };
+            let kind = match graph.0.part(parent) {
+                Some(PartSpec::Engine(engine)) => Some(engine.kind),
+                Some(PartSpec::Transmission(_)) => graph.0.transmission_kind(parent),
+                _ => None,
+            };
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            match stage_transmission(&graph.0, parent, candidate) {
+                Ok(staged) => {
+                    graph.0 = staged;
+                    history.commit(previous);
+                    state.feedback = Some(format!(
+                        "Placed {} transmission",
+                        match kind {
+                            Some(EngineKind::Gas) => "gas",
+                            Some(EngineKind::Electric) => "electric",
+                            None => "",
+                        }
+                    ));
                     state.construction_mesh_dirty = true;
                     clear_hover(&mut state);
                 }
@@ -5472,6 +5742,7 @@ fn raycast_simulation(
                 PartSpec::Cuboid(_)
                 | PartSpec::Controller(_)
                 | PartSpec::Engine(_)
+                | PartSpec::Transmission(_)
                 | PartSpec::Servo(_)
                 | PartSpec::Seat(_)
                 | PartSpec::Input(_) => {
@@ -5787,7 +6058,10 @@ fn sync_visual_meshes(
         *visibility = Visibility::Hidden;
     }
     for appearance in AuthoredPart::ALL {
-        let visible = graph.0.parts().any(|(_, spec)| appearance.matches(*spec));
+        let visible = graph
+            .0
+            .parts()
+            .any(|(part, spec)| appearance.matches(&graph.0, part, *spec));
         if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
             *mesh = combined_authored_construction_mesh(&graph.0, appearance);
         }
@@ -6209,6 +6483,29 @@ fn update_previews(
                 );
             }
         }
+        (Tool::Transmission, _) => {
+            if let Some(candidate) = state.preview {
+                let kind = state.hovered.and_then(|hit| match hit.face.owner {
+                    FaceOwner::Part(part) => match graph.0.part(part) {
+                        Some(PartSpec::Engine(engine)) => Some(engine.kind),
+                        Some(PartSpec::Transmission(_)) => graph.0.transmission_kind(part),
+                        _ => None,
+                    },
+                    FaceOwner::Ground => None,
+                });
+                let appearance = match kind.unwrap_or(EngineKind::Electric) {
+                    EngineKind::Gas => AuthoredPart::GasTransmission,
+                    EngineKind::Electric => AuthoredPart::ElectricTransmission,
+                };
+                show_cuboid_preview(
+                    &mut action,
+                    visuals.authored_preview_mesh(appearance),
+                    visuals.authored_preview_material(appearance, state.preview_error.is_some()),
+                    candidate.spec,
+                    0.992,
+                );
+            }
+        }
         (Tool::Hammer | Tool::Connector, _) => {}
     }
 }
@@ -6527,6 +6824,10 @@ const CONTROLLER_UVS: [[f32; 2]; 24] = [
     [1.0, 0.5],
     [1.0, 1.0],
 ];
+// Both transmission GLBs use this same six-tile atlas layout. The imported
+// vertex order differs within each face, but remapping it onto
+// `AUTHORED_CUBE_POSITIONS` produces the controller-style ordering below.
+const TRANSMISSION_UVS: [[f32; 2]; 24] = CONTROLLER_UVS;
 const GAS_ENGINE_UVS: [[f32; 2]; 24] = [
     [0.0, 1.0],
     [0.0, 0.666_667],
@@ -6663,6 +6964,7 @@ fn authored_uvs(appearance: AuthoredPart) -> [[f32; 2]; 24] {
         AuthoredPart::Controller => CONTROLLER_UVS,
         AuthoredPart::GasEngine => GAS_ENGINE_UVS,
         AuthoredPart::ElectricEngine => ELECTRIC_ENGINE_UVS,
+        AuthoredPart::GasTransmission | AuthoredPart::ElectricTransmission => TRANSMISSION_UVS,
         AuthoredPart::Servo => SERVO_UVS,
         AuthoredPart::Seat => SEAT_UVS,
         AuthoredPart::Input => INPUT_UVS,
@@ -6788,6 +7090,7 @@ const fn ordinary_material(spec: PartSpec) -> Option<ConstructionMaterial> {
         PartSpec::Cylinder(cylinder) => Some(cylinder.material),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
+        | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => None,
@@ -6810,7 +7113,10 @@ fn combined_authored_construction_mesh(
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
-    for (_, spec) in graph.parts().filter(|(_, spec)| appearance.matches(**spec)) {
+    for (_, spec) in graph
+        .parts()
+        .filter(|(part, spec)| appearance.matches(graph, *part, **spec))
+    {
         let cuboid = spec
             .as_cuboid()
             .expect("authored machine appearances have cuboid envelopes");
@@ -7024,7 +7330,7 @@ fn combined_simulation_authored_mesh(
     for &(part, compound_index) in creation.part_to_compound.iter().filter(|(part, _)| {
         graph
             .part(*part)
-            .is_some_and(|spec| appearance.matches(*spec))
+            .is_some_and(|spec| appearance.matches(graph, *part, *spec))
     }) {
         let transform = transforms[compound_index as usize];
         let root_translation = Vec3::from_array(transform.position[..3].try_into().unwrap());
@@ -8079,6 +8385,14 @@ fn append_part(
             normals,
             indices,
         ),
+        PartSpec::Transmission(spec) => append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.cuboid().size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
         PartSpec::Servo(spec) => append_transformed_cuboid(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
@@ -8382,6 +8696,7 @@ fn append_textured_part(
         ),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
+        | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => {
@@ -8433,6 +8748,7 @@ fn append_textured_part(
         }
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
+        | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => unreachable!(),
@@ -9313,12 +9629,26 @@ mod rendering_tests {
     #[test]
     fn authored_parts_render_in_textured_meshes_not_the_construction_mesh() {
         let mut graph = hinged_pair_with_control_block(false);
+        let mut engines = Vec::new();
         for (kind, x) in [(EngineKind::Gas, 20), (EngineKind::Electric, 24)] {
-            graph
+            let BuildOutcome::Spawned(engine) = graph
                 .apply(BuildCommand::SpawnEngine(EngineSpec::new(
                     kind,
                     BuildPose::new(IVec3::new(x, 12, 0), GridRotation::default()),
                 )))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            engines.push(engine);
+        }
+        for engine in engines {
+            let spec = graph.next_transmission_spec(engine).unwrap();
+            graph
+                .apply(BuildCommand::AttachTransmission {
+                    parent: engine,
+                    spec,
+                })
                 .unwrap();
         }
         graph
@@ -9343,6 +9673,10 @@ mod rendering_tests {
         let controllers = combined_controller_mesh(&graph);
         let gas = combined_authored_construction_mesh(&graph, AuthoredPart::GasEngine);
         let electric = combined_authored_construction_mesh(&graph, AuthoredPart::ElectricEngine);
+        let gas_transmission =
+            combined_authored_construction_mesh(&graph, AuthoredPart::GasTransmission);
+        let electric_transmission =
+            combined_authored_construction_mesh(&graph, AuthoredPart::ElectricTransmission);
         let servo = combined_authored_construction_mesh(&graph, AuthoredPart::Servo);
         let seat = combined_authored_construction_mesh(&graph, AuthoredPart::Seat);
         let input = combined_authored_construction_mesh(&graph, AuthoredPart::Input);
@@ -9353,10 +9687,21 @@ mod rendering_tests {
         assert_eq!(positions(&controllers).len(), 24);
         assert_eq!(positions(&gas).len(), 24);
         assert_eq!(positions(&electric).len(), 24);
+        assert_eq!(positions(&gas_transmission).len(), 24);
+        assert_eq!(positions(&electric_transmission).len(), 24);
         assert_eq!(positions(&servo).len(), 24);
         assert_eq!(positions(&seat).len(), 24);
         assert_eq!(positions(&input).len(), 24);
-        for mesh in [&controllers, &gas, &electric, &servo, &seat, &input] {
+        for mesh in [
+            &controllers,
+            &gas,
+            &electric,
+            &gas_transmission,
+            &electric_transmission,
+            &servo,
+            &seat,
+            &input,
+        ] {
             assert_eq!(
                 mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().len(),
                 positions(mesh).len()
@@ -9429,6 +9774,16 @@ mod rendering_tests {
             authored_uvs(AuthoredPart::GasEngine)[0],
             [0.0, 0.0]
         ));
+        assert_eq!(
+            authored_uvs(AuthoredPart::GasTransmission),
+            authored_uvs(AuthoredPart::ElectricTransmission),
+            "both imported transmission GLBs carry the same atlas UV layout",
+        );
+        assert_eq!(
+            authored_uvs(AuthoredPart::GasTransmission),
+            authored_uvs(AuthoredPart::Controller),
+            "the extracted transmission atlas maps onto the shared authored cuboid ordering",
+        );
         assert!(approximately(
             authored_uvs(AuthoredPart::ElectricEngine)[0],
             [0.666_667, 0.0]

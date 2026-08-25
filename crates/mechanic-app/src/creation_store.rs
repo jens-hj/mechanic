@@ -264,6 +264,7 @@ mod tests {
             drive_links: Vec::new(),
             input_seat_links: Vec::new(),
             seat_controller_links: Vec::new(),
+            gearbox_configs: Vec::new(),
             sockets: Vec::new(),
         }
     }

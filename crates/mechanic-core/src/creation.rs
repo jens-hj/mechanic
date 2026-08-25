@@ -20,14 +20,14 @@ use crate::{
     CuboidSpec, CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError,
     DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram,
     DriveProgramError, DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec,
-    FaceKind, FaceOwner, FaceRef, GraphError, GridDimension, GridRotation, InputSeatLinkSpec,
-    InputSpec, PartId, PartSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec,
-    ShapeRegion, WeldSpec,
+    FaceKind, FaceOwner, FaceRef, GearKeyChord, GraphError, GridDimension, GridRotation,
+    InputSeatLinkSpec, InputSpec, PartId, PartSpec, RigidLinkSpec, SeatControllerLinkSpec,
+    SeatSpec, ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 4;
+pub const CREATION_FORMAT_VERSION: u32 = 5;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = 1;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -154,6 +154,13 @@ pub enum PartDoc {
         /// Authored engine family.
         kind: EngineKind,
         /// Centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Fixed-size transmission with a graph-owned upstream relation.
+    Transmission {
+        /// Index of the engine or transmission whose positive-Z output it extends.
+        parent: u32,
+        /// Centre and inherited root-engine orientation.
         pose: PoseDoc,
     },
     /// Fixed-size servo.
@@ -346,6 +353,25 @@ pub struct SeatControllerLinkDoc {
     pub controller: u32,
 }
 
+/// Persistent gearbox settings for one Controller and engine family.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GearboxConfigDoc {
+    /// Index of the Controller part owning this lane.
+    pub controller: u32,
+    /// Engine family being configured.
+    pub kind: EngineKind,
+    /// Automatic or manual shifting.
+    pub mode: ShiftMode,
+    /// Strictly descending input-to-output ratios.
+    pub ratios: Vec<f32>,
+    /// Number of leading gas ratios assigned to reverse.
+    pub reverse_gears: u8,
+    /// Manual upshift chord.
+    pub gear_up: GearKeyChord,
+    /// Manual downshift chord.
+    pub gear_down: GearKeyChord,
+}
+
 /// A whole saved creation: everything the editor authors, and nothing it
 /// derives.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -375,6 +401,9 @@ pub struct CreationDocument {
     /// Logical Seat-to-Controller links.
     #[serde(default)]
     pub seat_controller_links: Vec<SeatControllerLinkDoc>,
+    /// Per-controller, per-engine-family gearbox settings.
+    #[serde(default)]
+    pub gearbox_configs: Vec<GearboxConfigDoc>,
     /// Editable shape regions. Absent in files written before regions existed.
     #[serde(default)]
     pub regions: Vec<RegionDoc>,
@@ -403,6 +432,7 @@ impl CreationDocument {
     /// # Panics
     ///
     /// Never in practice: the arenas already refuse to exceed `u32` indices.
+    #[allow(clippy::too_many_lines)] // The document snapshot keeps all index remapping together.
     pub fn from_graph(graph: &ConstructionGraph, name: &str, sockets: &[BearingSocket]) -> Self {
         let part_indices = index_map(graph.parts().map(|(id, _)| id));
         let bearing_indices = index_map(graph.bearings().map(|(id, _)| id));
@@ -416,7 +446,10 @@ impl CreationDocument {
         Self {
             version: CREATION_FORMAT_VERSION,
             name: name.to_owned(),
-            parts: graph.parts().map(|(_, spec)| part_doc(*spec)).collect(),
+            parts: graph
+                .parts()
+                .map(|(id, spec)| part_doc(*spec, graph.transmission_parent(id).map(&part)))
+                .collect(),
             regions: graph
                 .regions()
                 .map(|(_, region)| RegionDoc {
@@ -435,6 +468,7 @@ impl CreationDocument {
                 .collect(),
             welds: graph
                 .welds()
+                .filter(|(id, _)| !graph.transmission_welds.values().any(|weld| weld == id))
                 .map(|(_, weld)| WeldDoc {
                     first: face(weld.first),
                     second: face(weld.second),
@@ -486,6 +520,21 @@ impl CreationDocument {
                     controller: part(link.controller),
                 })
                 .collect(),
+            gearbox_configs: graph
+                .gearbox_configs()
+                .filter_map(|((controller, kind), _)| {
+                    let config = graph.gearbox_config(controller, kind).ok()?;
+                    Some(GearboxConfigDoc {
+                        controller: part(controller),
+                        kind,
+                        mode: config.mode(),
+                        ratios: config.ratios().to_vec(),
+                        reverse_gears: config.reverse_gears(),
+                        gear_up: config.gear_up(),
+                        gear_down: config.gear_down(),
+                    })
+                })
+                .collect(),
             sockets: sockets
                 .iter()
                 .map(|socket| BearingSocketDoc {
@@ -515,12 +564,26 @@ impl CreationDocument {
         }
 
         let mut graph = ConstructionGraph::new();
-        let spawns = self
-            .parts
-            .iter()
-            .map(|part| build_command(*part))
-            .collect::<Result<Vec<_>, _>>()?;
-        let part_ids = spawned_ids(graph.apply_batch(spawns)?);
+        let mut part_ids = Vec::with_capacity(self.parts.len());
+        for (index, part) in self.parts.iter().copied().enumerate() {
+            let command = match part {
+                PartDoc::Transmission { parent, pose } => {
+                    let parent = part_ids
+                        .get(parent as usize)
+                        .copied()
+                        .ok_or(CreationError::MissingPart(parent))?;
+                    BuildCommand::AttachTransmission {
+                        parent,
+                        spec: TransmissionSpec::new(pose.into()),
+                    }
+                }
+                other => build_command(other)?,
+            };
+            let BuildOutcome::Spawned(id) = graph.apply(command)? else {
+                unreachable!("part {index} replay uses a spawn command")
+            };
+            part_ids.push(id);
+        }
 
         let mut connections =
             Vec::with_capacity(self.welds.len() + self.rigid_links.len() + self.bearings.len());
@@ -627,6 +690,34 @@ impl CreationDocument {
             .collect::<Result<Vec<_>, CreationError>>()?;
         graph.apply_batch(logical_links)?;
 
+        for gearbox in &self.gearbox_configs {
+            let controller = resolve_part(gearbox.controller, &part_ids)?;
+            graph.apply_batch([
+                BuildCommand::SetGearboxMode {
+                    controller,
+                    kind: gearbox.kind,
+                    mode: gearbox.mode,
+                },
+                BuildCommand::SetGearboxRatios {
+                    controller,
+                    kind: gearbox.kind,
+                    ratios: gearbox.ratios.clone(),
+                },
+                BuildCommand::SetGearboxBindings {
+                    controller,
+                    kind: gearbox.kind,
+                    up: gearbox.gear_up,
+                    down: gearbox.gear_down,
+                },
+            ])?;
+            if gearbox.kind == EngineKind::Gas {
+                graph.apply(BuildCommand::SetGasDivider {
+                    controller,
+                    reverse_gears: gearbox.reverse_gears,
+                })?;
+            }
+        }
+
         let sockets = self
             .sockets
             .iter()
@@ -675,7 +766,7 @@ fn face_doc(face: FaceRef, parts: &HashMap<PartId, u32>) -> FaceRefDoc {
     }
 }
 
-fn part_doc(spec: PartSpec) -> PartDoc {
+fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
     match spec {
         PartSpec::Cuboid(cuboid) => PartDoc::Cuboid {
             dimensions: cuboid.dimensions.map(GridDimension::units),
@@ -696,6 +787,10 @@ fn part_doc(spec: PartSpec) -> PartDoc {
         PartSpec::Engine(engine) => PartDoc::Engine {
             kind: engine.kind,
             pose: engine.pose.into(),
+        },
+        PartSpec::Transmission(transmission) => PartDoc::Transmission {
+            parent: transmission_parent.expect("every transmission has a live graph parent"),
+            pose: transmission.pose.into(),
         },
         PartSpec::Servo(servo) => PartDoc::Servo {
             pose: servo.pose.into(),
@@ -771,20 +866,13 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
         PartDoc::Engine { kind, pose } => {
             BuildCommand::SpawnEngine(EngineSpec::new(kind, pose.into()))
         }
+        PartDoc::Transmission { .. } => {
+            unreachable!("transmissions are replayed with their parent relation")
+        }
         PartDoc::Servo { pose } => BuildCommand::SpawnServo(ServoSpec::new(pose.into())),
         PartDoc::Seat { pose } => BuildCommand::SpawnSeat(SeatSpec::new(pose.into())),
         PartDoc::Input { pose } => BuildCommand::SpawnInput(InputSpec::new(pose.into())),
     })
-}
-
-fn spawned_ids(outcomes: Vec<BuildOutcome>) -> Vec<PartId> {
-    outcomes
-        .into_iter()
-        .map(|outcome| match outcome {
-            BuildOutcome::Spawned(part) => part,
-            _ => unreachable!("the spawn batch only contains spawn commands"),
-        })
-        .collect()
 }
 
 fn resolve_part(index: u32, parts: &[PartId]) -> Result<PartId, CreationError> {
@@ -849,8 +937,9 @@ mod tests {
         ConstructionGraph, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions,
         CylinderSpec, DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveName, DriveProgram,
         DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind,
-        FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, PartSpec, RigidLinkSpec,
-        SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, WeldSpec,
+        FaceRef, GearKey, GearKeyChord, GridRotation, InputSeatLinkSpec, InputSpec, PartSpec,
+        RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode,
+        WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -1126,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn version_four_round_trips_all_construction_materials() {
+    fn current_version_round_trips_all_construction_materials() {
         let mut graph = ConstructionGraph::new();
         for (index, material) in ConstructionMaterial::ALL.into_iter().enumerate() {
             let position = IVec3::new(i32::try_from(index).unwrap() * 8, 0, 0);
@@ -1137,7 +1226,7 @@ mod tests {
                 .unwrap();
         }
         let document = CreationDocument::from_graph(&graph, "Materials", &[]);
-        assert_eq!(document.version, 4);
+        assert_eq!(document.version, CREATION_FORMAT_VERSION);
         let restored = round_trip(&document).into_graph().unwrap();
         let materials = restored
             .graph
@@ -1418,5 +1507,155 @@ mod tests {
         let document: CreationDocument = ron::from_str(text).unwrap();
         assert!(document.regions.is_empty());
         assert_eq!(document.into_graph().unwrap().graph.regions().count(), 0);
+    }
+
+    #[test]
+    fn transmission_parents_and_gearbox_settings_round_trip() {
+        let mut graph = ConstructionGraph::new();
+        let controller = spawned(
+            graph
+                .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                    BuildPose::new(IVec3::ZERO, GridRotation::default()),
+                )))
+                .unwrap(),
+        );
+        let engine = spawned(
+            graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    EngineKind::Gas,
+                    BuildPose::new(IVec3::new(2, 0, 0), GridRotation::default()),
+                )))
+                .unwrap(),
+        );
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(controller, FaceKind::PositiveX),
+                second: FaceRef::part(engine, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let spec = graph.next_transmission_spec(engine).unwrap();
+        let transmission = spawned(
+            graph
+                .apply(BuildCommand::AttachTransmission {
+                    parent: engine,
+                    spec,
+                })
+                .unwrap(),
+        );
+        graph
+            .apply(BuildCommand::SetGearboxMode {
+                controller,
+                kind: EngineKind::Gas,
+                mode: ShiftMode::Manual,
+            })
+            .unwrap();
+        graph
+            .apply(BuildCommand::SetGearboxRatios {
+                controller,
+                kind: EngineKind::Gas,
+                ratios: vec![4.0, 0.8],
+            })
+            .unwrap();
+        graph
+            .apply(BuildCommand::SetGearboxBindings {
+                controller,
+                kind: EngineKind::Gas,
+                up: GearKeyChord::new(GearKey::PageUp),
+                down: GearKeyChord {
+                    shift: true,
+                    ..GearKeyChord::new(GearKey::PageDown)
+                },
+            })
+            .unwrap();
+        graph
+            .apply(BuildCommand::SetGasDivider {
+                controller,
+                reverse_gears: 2,
+            })
+            .unwrap();
+
+        let document = CreationDocument::from_graph(&graph, "Geared", &[]);
+        assert_eq!(document.gearbox_configs.len(), 1);
+        assert_eq!(
+            document.welds.len(),
+            1,
+            "the required weld is derived from its parent"
+        );
+        let restored = round_trip(&document).into_graph().unwrap().graph;
+        let restored_transmission = restored
+            .parts()
+            .find_map(|(id, spec)| matches!(spec, PartSpec::Transmission(_)).then_some(id))
+            .unwrap();
+        let restored_engine = restored.transmission_parent(restored_transmission).unwrap();
+        assert!(matches!(
+            restored.part(restored_engine),
+            Some(PartSpec::Engine(_))
+        ));
+        let restored_controller = restored
+            .parts()
+            .find_map(|(id, spec)| matches!(spec, PartSpec::Controller(_)).then_some(id))
+            .unwrap();
+        let config = restored
+            .gearbox_config(restored_controller, EngineKind::Gas)
+            .unwrap();
+        assert_eq!(config.mode(), ShiftMode::Manual);
+        assert_eq!(config.ratios(), &[4.0, 0.8]);
+        assert_eq!(config.reverse_gears(), 2);
+        assert_eq!(config.gear_up().key, GearKey::PageUp);
+        assert!(config.gear_down().shift);
+        assert!(graph.part(transmission).is_some());
+    }
+
+    #[test]
+    fn incomplete_matching_stacks_remain_saveable_and_loadable() {
+        let mut graph = ConstructionGraph::new();
+        let controller = spawned(
+            graph
+                .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                    BuildPose::new(IVec3::ZERO, GridRotation::default()),
+                )))
+                .unwrap(),
+        );
+        let first = spawned(
+            graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    EngineKind::Electric,
+                    BuildPose::new(IVec3::new(2, 0, 0), GridRotation::default()),
+                )))
+                .unwrap(),
+        );
+        let second = spawned(
+            graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    EngineKind::Electric,
+                    BuildPose::new(IVec3::new(4, 0, 0), GridRotation::default()),
+                )))
+                .unwrap(),
+        );
+        for (left, right) in [(controller, first), (first, second)] {
+            graph
+                .apply(BuildCommand::Weld(WeldSpec {
+                    first: FaceRef::part(left, FaceKind::PositiveX),
+                    second: FaceRef::part(right, FaceKind::NegativeX),
+                }))
+                .unwrap();
+        }
+        let spec = graph.next_transmission_spec(first).unwrap();
+        graph
+            .apply(BuildCommand::AttachTransmission {
+                parent: first,
+                spec,
+            })
+            .unwrap();
+
+        let document = CreationDocument::from_graph(&graph, "Incomplete", &[]);
+        let restored = round_trip(&document).into_graph().unwrap().graph;
+        assert!(matches!(
+            restored.compile(),
+            Err(crate::TopologyError::TransmissionDepthMismatch {
+                kind: EngineKind::Electric,
+                ..
+            })
+        ));
     }
 }

@@ -62,6 +62,8 @@ pub(crate) enum UiIntent {
     Creations(CreationsAction),
     /// Change a joint's drive program.
     Drive(control_block::Intent),
+    /// Change one engine lane's gearbox settings.
+    Gearbox(control_block::GearboxIntent),
     /// Put away the control-block panel.
     CloseControlPanel,
 }
@@ -142,6 +144,7 @@ impl Handles {
                 selected: MosaicState::new(None),
                 located: MosaicState::new(None),
                 capturing: MosaicState::new(None),
+                gearbox_capturing: MosaicState::new(None),
                 intents: Rc::clone(&intents),
             },
             intents,
@@ -209,11 +212,21 @@ impl UiInput {
 /// Where the design's two typefaces are looked for.
 const FONT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts");
 
-/// The typeface the design sets its chrome in.
-const CHROME_FAMILY: &str = "Chakra Petch";
+/// The typeface the design uses for titles and section headings.
+const DISPLAY_FAMILY: &str = "Chakra Petch";
 
-/// The typeface the design sets every number in.
-const NUMERIC_FAMILY: &str = "JetBrains Mono";
+/// The typeface the design uses for body copy, controls, labels, and numbers.
+const BODY_FAMILY: &str = "JetBrains Mono";
+
+/// The authored family for display-scale UI text.
+pub(crate) fn display_font() -> FontFamily {
+    FontFamily::Named(DISPLAY_FAMILY.into())
+}
+
+/// The authored family for the UI's body text.
+pub(crate) fn body_font() -> FontFamily {
+    FontFamily::Named(BODY_FAMILY.into())
+}
 
 /// Builds the overlay and hands it to Mosaic.
 ///
@@ -262,7 +275,7 @@ fn shell(handles: &Handles) -> Element {
     let block_panel = handles.clone();
     let creations_panel = handles.clone();
     view! {
-        stack width:fill height:fill align:start justify:start {
+        stack width:fill height:fill align:start justify:start font-family:{ body_font() } {
             (markers::view(&markers_panel))
             (dimensions::view(&dimensions_panel))
             if $help_open {
@@ -305,12 +318,12 @@ fn load_fonts(ui: &mosaic_widgets::Ui) {
     }
 
     let mut fonts = fonts.borrow_mut();
-    for (family, install) in [(CHROME_FAMILY, true), (NUMERIC_FAMILY, false)] {
+    for (family, install_as_sans) in [(DISPLAY_FAMILY, true), (BODY_FAMILY, false)] {
         if !fonts.has_family(family) {
             info!("overlay: {family} is not installed; falling back");
             continue;
         }
-        if install {
+        if install_as_sans {
             fonts.set_sans_serif_family(family);
         } else {
             fonts.set_monospace_family(family);
@@ -357,9 +370,11 @@ pub(crate) fn drain(
             }
             UiIntent::Creations(action) => menu.act(action),
             UiIntent::Drive(edit) => control_block::write_joint(&mut panel, &mut target, &edit),
+            UiIntent::Gearbox(edit) => control_block::write_gearbox(&panel, &mut target, &edit),
             UiIntent::CloseControlPanel => {
                 panel.close();
                 ui.handles.block.capturing.set(None);
+                ui.handles.block.gearbox_capturing.set(None);
                 ui.handles.block.located.set(None);
             }
         }
@@ -367,7 +382,8 @@ pub(crate) fn drain(
 }
 
 /// Shows the panels what the world now says.
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+// Bevy system parameters are value-typed wrappers and independent resources.
 pub(crate) fn push(
     ui: Option<NonSendMut<AppUi>>,
     panel: Res<ControlPanelState>,
@@ -375,6 +391,7 @@ pub(crate) fn push(
     selection: Res<SelectedTool>,
     material: Res<SelectedMaterial>,
     graph: Res<EditorGraph>,
+    gearboxes: Res<crate::sequencer::GearboxRuntime>,
     mut located: ResMut<LocatedJoint>,
 ) {
     let Some(mut ui) = ui else {
@@ -382,7 +399,7 @@ pub(crate) fn push(
     };
     ui.handles.hotbar.set(selection.0);
     ui.handles.material.set(material.0);
-    let block = control_block::capture(&panel, &graph);
+    let block = control_block::capture(&panel, &graph, &gearboxes);
     if block != ui.pushed.block {
         ui.handles.block.model.set(block.clone());
         ui.pushed.block = block;
@@ -496,10 +513,28 @@ fn escape_is_consumed(mosaic_keyboard: bool, menu_open: bool, capturing: bool) -
 
 #[cfg(test)]
 mod tests {
+    use bevy_mosaic::ui::FontFamily;
     use mosaic_core::Vector2;
+    use mosaic_widgets::Ui;
 
     use super::testing::{Overlay, VIEWPORT};
-    use super::{creations, escape_is_consumed};
+    use super::{
+        BODY_FAMILY, DISPLAY_FAMILY, body_font, creations, display_font, escape_is_consumed,
+        load_fonts,
+    };
+
+    #[test]
+    fn bundled_fonts_cover_the_authored_type_roles() {
+        let ui = Ui::new();
+        load_fonts(&ui);
+        let fonts = ui.fonts();
+        let fonts = fonts.borrow();
+
+        assert!(fonts.has_family(DISPLAY_FAMILY));
+        assert!(fonts.has_family(BODY_FAMILY));
+        assert_eq!(display_font(), FontFamily::Named(DISPLAY_FAMILY.into()));
+        assert_eq!(body_font(), FontFamily::Named(BODY_FAMILY.into()));
+    }
 
     /// The bug this guards against: a `stack` child fills its parent unless it
     /// is told not to, and one full-bleed panel makes every point in the window

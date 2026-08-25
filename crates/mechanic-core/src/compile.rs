@@ -247,6 +247,17 @@ pub struct CoordinateDrive {
     pub max_angle: f32,
 }
 
+/// Transient active gear for one Controller engine lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GearSelection {
+    /// Controller whose directly welded engine line is being shifted.
+    pub controller: PartId,
+    /// Independently geared engine family.
+    pub kind: EngineKind,
+    /// Input-to-output ratio, or `None` while that family is disengaged.
+    pub ratio: Option<f32>,
+}
+
 impl CoordinateDrive {
     /// Row describing a coordinate no control block drives.
     pub const PASSIVE: Self = Self {
@@ -341,6 +352,18 @@ pub enum TopologyError {
         /// Bearing carrying the incompatible program.
         bearing: BearingId,
     },
+    /// Same-type engines in one Controller module have different transmission depths.
+    #[error(
+        "control module at {controller:?} has mismatched {kind:?} transmission depths {depths:?}"
+    )]
+    TransmissionDepthMismatch {
+        /// Controller identifying the module.
+        controller: PartId,
+        /// Engine family whose physical stacks disagree.
+        kind: EngineKind,
+        /// Sorted depths found on the physical engines.
+        depths: Vec<u8>,
+    },
 }
 
 impl ConstructionGraph {
@@ -400,6 +423,7 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         .map(|(_, spec)| match spec {
             PartSpec::Controller(_)
             | PartSpec::Engine(_)
+            | PartSpec::Transmission(_)
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
             | PartSpec::Input(_)
@@ -661,8 +685,9 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
     topology.coordinate_axis_inertia =
         compile_coordinate_axis_inertia(&compounds, &bearings, &topology);
 
+    validate_transmission_depths(graph)?;
     validate_actuator_programs(graph)?;
-    let actuation = resolve_coordinate_actuation(&topology, graph)?;
+    let actuation = resolve_coordinate_actuation(&topology, graph, &[])?;
     let coordinate_drives = resolve_coordinate_drives(&topology, graph, &actuation);
 
     Ok(CompiledCreation {
@@ -674,6 +699,29 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         part_to_compound,
         coordinate_drives,
     })
+}
+
+fn validate_transmission_depths(graph: &ConstructionGraph) -> Result<(), TopologyError> {
+    for (controller, spec) in graph.parts() {
+        if !matches!(spec, PartSpec::Controller(_)) {
+            continue;
+        }
+        for kind in [EngineKind::Electric, EngineKind::Gas] {
+            let depths = graph
+                .transmission_depths(controller, kind)
+                .expect("the part was checked as a controller");
+            if let Some(first) = depths.first()
+                && depths.iter().any(|depth| depth != first)
+            {
+                return Err(TopologyError::TransmissionDepthMismatch {
+                    controller,
+                    kind,
+                    depths,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn compile_tree_metadata(
@@ -891,9 +939,10 @@ fn validate_actuator_programs(graph: &ConstructionGraph) -> Result<(), TopologyE
 fn resolve_coordinate_actuation(
     topology: &LoopTopology,
     graph: &ConstructionGraph,
+    active_gears: &[GearSelection],
 ) -> Result<Vec<CoordinateActuation>, TopologyError> {
     let mut modules = BTreeMap::<PartId, ModuleBudget>::new();
-    let mut assignment_by_coordinate = BTreeMap::<u32, (PartId, ActuatorAssignment)>::new();
+    let mut assignment_by_coordinate = BTreeMap::<u32, (PartId, PartId, ActuatorAssignment)>::new();
 
     for (_, link) in graph.drive_links() {
         let Some(&coordinate) = topology.bearing_coordinates.get(&link.bearing) else {
@@ -927,9 +976,11 @@ fn resolve_coordinate_actuation(
         if link.actuator.uses_servo() {
             module.servo_coordinates.insert(coordinate);
         }
-        assignment_by_coordinate
-            .entry(coordinate)
-            .or_insert((module_key, link.actuator));
+        assignment_by_coordinate.entry(coordinate).or_insert((
+            module_key,
+            link.controller,
+            link.actuator,
+        ));
     }
 
     for module in modules.values() {
@@ -968,31 +1019,45 @@ fn resolve_coordinate_actuation(
     }
 
     let mut result = vec![CoordinateActuation::default(); topology.tree_bearings.len()];
-    for (coordinate, (module_key, assignment)) in assignment_by_coordinate {
+    for (coordinate, (module_key, controller, assignment)) in assignment_by_coordinate {
         let module = &modules[&module_key];
         let row = &mut result[coordinate as usize];
+        let active_ratio = |kind| {
+            active_gears
+                .iter()
+                .find(|gear| gear.controller == controller && gear.kind == kind)
+                .map_or(Some(1.0), |gear| gear.ratio)
+        };
         match assignment {
             ActuatorAssignment::Unpowered => {}
             ActuatorAssignment::Motor {
                 electric_percent,
                 gas_percent,
             } => {
-                if electric_percent != 0 {
+                if electric_percent != 0
+                    && let Some(ratio) = active_ratio(EngineKind::Electric)
+                {
                     let consumers = module.electric_coordinates.len() as f32;
                     row.source_a_torque = module.electric_engines as f32
                         * EngineKind::Electric.stall_torque_newton_meters()
                         / consumers
-                        * (f32::from(electric_percent) / 100.0);
-                    row.source_a_no_load_speed = rpm_to_rad_s(EngineKind::Electric.no_load_rpm());
+                        * (f32::from(electric_percent) / 100.0)
+                        * ratio;
+                    row.source_a_no_load_speed =
+                        rpm_to_rad_s(EngineKind::Electric.no_load_rpm()) / ratio;
                     row.max_speed = row.max_speed.max(row.source_a_no_load_speed);
                 }
-                if gas_percent != 0 {
+                if gas_percent != 0
+                    && let Some(ratio) = active_ratio(EngineKind::Gas)
+                {
                     let consumers = module.gas_coordinates.len() as f32;
                     row.source_b_torque = module.gas_engines as f32
                         * EngineKind::Gas.stall_torque_newton_meters()
                         / consumers
-                        * (f32::from(gas_percent) / 100.0);
-                    row.source_b_no_load_speed = rpm_to_rad_s(EngineKind::Gas.no_load_rpm());
+                        * (f32::from(gas_percent) / 100.0)
+                        * ratio;
+                    row.source_b_no_load_speed =
+                        rpm_to_rad_s(EngineKind::Gas.no_load_rpm()) / ratio;
                     row.max_speed = row.max_speed.max(row.source_b_no_load_speed);
                 }
             }
@@ -1089,7 +1154,17 @@ impl CompiledCreation {
     /// parameters may have changed since. This is how a running simulation is
     /// retuned without recompiling topology.
     pub fn resolve_coordinate_drives(&self, graph: &ConstructionGraph) -> Vec<CoordinateDrive> {
-        let actuation = resolve_coordinate_actuation(&self.loop_topology, graph)
+        self.resolve_coordinate_drives_with_gears(graph, &[])
+    }
+
+    /// Re-derives drive rows using independent active gas/electric gear ratios.
+    /// A disengaged selection contributes no torque while the other family remains active.
+    pub fn resolve_coordinate_drives_with_gears(
+        &self,
+        graph: &ConstructionGraph,
+        active_gears: &[GearSelection],
+    ) -> Vec<CoordinateDrive> {
+        let actuation = resolve_coordinate_actuation(&self.loop_topology, graph, active_gears)
             .unwrap_or_else(|_| vec![CoordinateActuation::default(); self.coordinate_drives.len()]);
         resolve_coordinate_drives(&self.loop_topology, graph, &actuation)
     }
@@ -1222,6 +1297,7 @@ fn physical_spec(spec: PartSpec) -> PartSpec {
     match spec {
         PartSpec::Controller(controller) => PartSpec::Cuboid(controller.cuboid()),
         PartSpec::Engine(engine) => PartSpec::Cuboid(engine.cuboid()),
+        PartSpec::Transmission(transmission) => PartSpec::Cuboid(transmission.cuboid()),
         PartSpec::Servo(servo) => PartSpec::Cuboid(servo.cuboid()),
         PartSpec::Seat(seat) => PartSpec::Cuboid(seat.cuboid()),
         PartSpec::Input(input) => PartSpec::Cuboid(input.cuboid()),
@@ -1264,6 +1340,9 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
             cuboid_mass_properties(controller.cuboid(), CUBOID_DENSITY_KG_M3)
         }
         PartSpec::Engine(engine) => cuboid_mass_properties(engine.cuboid(), CUBOID_DENSITY_KG_M3),
+        PartSpec::Transmission(transmission) => {
+            cuboid_mass_properties(transmission.cuboid(), CUBOID_DENSITY_KG_M3)
+        }
         PartSpec::Servo(servo) => cuboid_mass_properties(servo.cuboid(), CUBOID_DENSITY_KG_M3),
         PartSpec::Seat(seat) => cuboid_mass_properties(seat.cuboid(), CUBOID_DENSITY_KG_M3),
         PartSpec::Input(input) => cuboid_mass_properties(input.cuboid(), CUBOID_DENSITY_KG_M3),
@@ -1397,6 +1476,7 @@ fn contact_properties(spec: PartSpec) -> MaterialProperties {
         PartSpec::Cylinder(cylinder) => cylinder.material.properties(),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
+        | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => AUTHORED_CONTACT_PROPERTIES,
@@ -1476,6 +1556,7 @@ fn append_part_colliders(
         }
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
+        | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => {
@@ -1602,7 +1683,7 @@ mod tests {
         BuildPose, ColliderShape, ConstructionGraph, ConstructionMaterial, ControllerSpec,
         CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
         DriveMode, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind,
-        FaceRef, GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
+        FaceRef, GearSelection, GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
     };
     use bevy_math::{Mat3, Quat};
 
@@ -2792,6 +2873,51 @@ mod tests {
             assert!((drive.max_speed - 4.0 * core::f32::consts::PI).abs() < 1.0e-5);
             assert!((drive.target_speed - 4.0 * core::f32::consts::PI).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn ideal_gearing_multiplies_torque_divides_speed_and_can_disengage_one_family() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn(&mut graph, IVec3::new(0, 2, 0));
+        ground(&mut graph, base);
+        let arm = spawn(&mut graph, IVec3::new(4, 2, 0));
+        let bearing = add_bearing(
+            &mut graph,
+            base,
+            FaceKind::PositiveX,
+            arm,
+            FaceKind::NegativeX,
+            Vec3::new(0.5, 0.5, 0.0),
+            Vec3::X,
+        );
+        let controller = wire(&mut graph, bearing, false);
+        let compiled = graph.compile().unwrap();
+        let direct = compiled.resolve_coordinate_drives(&graph)[0];
+        let geared = compiled.resolve_coordinate_drives_with_gears(
+            &graph,
+            &[GearSelection {
+                controller,
+                kind: EngineKind::Electric,
+                ratio: Some(4.0),
+            }],
+        )[0];
+        assert!(
+            (geared.source_a_max_acceleration / direct.source_a_max_acceleration - 4.0).abs()
+                < 1.0e-5
+        );
+        assert!(
+            (direct.source_a_no_load_speed / geared.source_a_no_load_speed - 4.0).abs() < 1.0e-5
+        );
+
+        let disengaged = compiled.resolve_coordinate_drives_with_gears(
+            &graph,
+            &[GearSelection {
+                controller,
+                kind: EngineKind::Electric,
+                ratio: None,
+            }],
+        )[0];
+        assert_eq!(disengaged, CoordinateDrive::PASSIVE);
     }
 
     #[test]

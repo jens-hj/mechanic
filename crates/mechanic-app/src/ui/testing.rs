@@ -7,14 +7,14 @@
 
 use std::cell::RefCell;
 
-use bevy_mosaic::ui::PaintCmd;
+use bevy_mosaic::ui::{PaintCmd, TextStyle};
 use mosaic_core::{Rect, Scope, Size, Vector2};
 use mosaic_widgets::Ui;
 use mosaic_widgets::input::{
     Modifiers, PointerButton, PointerEvent, PointerEventKind, PointerType,
 };
 
-use super::{Handles, UiIntent, shell, theme};
+use super::{Handles, UiIntent, load_fonts, shell, theme};
 
 /// The window the overlay is laid out in for these tests.
 pub(crate) const VIEWPORT: Size = Size {
@@ -45,6 +45,7 @@ impl Overlay {
         mosaic_core::builtins::install();
         let scope = Scope::new(|| {});
         let ui = scope.run(Ui::new);
+        load_fonts(&ui);
         theme::install();
 
         let handles = Handles::new();
@@ -94,6 +95,18 @@ impl Overlay {
     /// How many elements the tree holds.
     pub(crate) fn element_count(&self) -> usize {
         self.ui.element_count()
+    }
+
+    /// Width of one unwrapped run in the same font database the overlay uses.
+    #[cfg(test)]
+    pub(crate) fn text_width(&self, text: &str, style: &TextStyle) -> f32 {
+        let fonts = self.ui.fonts();
+        fonts
+            .borrow_mut()
+            .shape(text, style, None)
+            .metrics()
+            .size
+            .width
     }
 
     /// What the overlay has asked for, taken.

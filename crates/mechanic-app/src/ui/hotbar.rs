@@ -57,7 +57,7 @@ const MATERIAL_MENU_HEIGHT: f32 = {
 const MATERIAL_MENU_OFFSET_Y: f32 = -((MATERIAL_MENU_HEIGHT + SLOT) * 0.5 + MATERIAL_MENU_GAP);
 
 /// The tools, in the order their number keys run.
-const TOOLS: [Tool; 13] = [
+const TOOLS: [Tool; 14] = [
     Tool::Block,
     Tool::Cylinder,
     Tool::Bearing,
@@ -67,6 +67,7 @@ const TOOLS: [Tool; 13] = [
     Tool::Connector,
     Tool::GasEngine,
     Tool::ElectricEngine,
+    Tool::Transmission,
     Tool::Servo,
     Tool::Seat,
     Tool::Input,
@@ -376,6 +377,14 @@ fn icon(tool: Tool) -> Element {
                 circle at:(x:20px y:20px) radius:9px stroke:(width:3px color:accent.speed)
                 line from:(x:20px y:11px) to:(x:20px y:29px)
                     stroke:(width:3px cap:round color:ink.fg)
+            }
+        },
+        Tool::Transmission => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:20px) size:(w:30px h:22px) radius:3px
+                    fill:bar.slot stroke:(width:2px color:accent.speed)
+                circle at:(x:15px y:20px) radius:6px stroke:(width:3px color:accent.angle)
+                circle at:(x:26px y:20px) radius:6px stroke:(width:3px color:accent.speed)
             }
         },
         Tool::Servo => view! {

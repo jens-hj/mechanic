@@ -12,19 +12,28 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use bevy_mosaic::ui::*;
-use mechanic_core::DriveLinkId;
+use mechanic_core::{DriveLinkId, EngineKind, ShiftMode};
 use mosaic_core::theme::color;
 use mosaic_macros::view;
 use mosaic_widgets::input::EventCtx;
 
 use super::geometry;
 use super::model::{
-    BearingSlots, Intent, LaneModel, Mode, PanelEdit, PanelModel, Preset, StateModel,
+    BearingSlots, EngineLaneModel, GearboxEdit, GearboxIntent, Intent, LaneModel, Mode, PanelEdit,
+    PanelModel, Preset, StateModel,
 };
 use crate::control_panel::SpeedUnit;
-use crate::ui::UiIntent;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use crate::ui::theme::*;
+
+/// Text room left in a capacity tile after its padding, badge, and gap.
+#[cfg(test)]
+pub(super) const CAPACITY_TEXT_WIDTH: f32 = 64.0;
+
+/// Text room left in a joint capability tile after its padding, icon, and gap.
+#[cfg(test)]
+pub(super) const CAPABILITY_TEXT_WIDTH: f32 = 76.0;
+use crate::ui::{UiIntent, display_font};
 
 /// A wire being drawn, while the pointer still has hold of it.
 ///
@@ -56,6 +65,8 @@ pub(crate) struct Handles {
     pub(crate) located: State<Option<DriveLinkId>>,
     /// The state waiting for a key to bind, if any.
     pub(crate) capturing: State<Option<(DriveLinkId, u8)>>,
+    /// Engine lane and whether Gear Up is waiting for a chord.
+    pub(crate) gearbox_capturing: State<Option<(EngineKind, bool)>>,
     /// What the whole overlay is asking the world to change, which a drive
     /// edit joins rather than queues beside: one queue is one order.
     pub(crate) intents: Rc<RefCell<Vec<UiIntent>>>,
@@ -84,6 +95,79 @@ impl Handles {
             edit,
             transient: true,
         }));
+    }
+
+    pub(crate) fn gearbox(&self, kind: EngineKind, edit: GearboxEdit) {
+        self.gearbox_with_transience(kind, edit, false);
+    }
+
+    fn gearbox_with_transience(&self, kind: EngineKind, edit: GearboxEdit, transient: bool) {
+        self.intents
+            .borrow_mut()
+            .push(UiIntent::Gearbox(GearboxIntent {
+                kind,
+                edit,
+                transient,
+            }));
+    }
+
+    fn capture_gearbox_binding(&self, kind: EngineKind, up: bool) {
+        let manual = self.model.with(|panel| {
+            panel
+                .engine_lane(kind)
+                .is_some_and(gearbox_bindings_enabled)
+        });
+        if manual {
+            self.capturing.set(None);
+            self.gearbox_capturing.set(Some((kind, up)));
+        }
+    }
+
+    fn adjust_ratio(&self, kind: EngineKind, index: usize, delta: f32) {
+        let ratios = self.model.with(|panel| {
+            panel.engine_lane(kind)?.config.as_ref().and_then(|config| {
+                let mut ratios = config.ratios().to_vec();
+                let previous = index
+                    .checked_sub(1)
+                    .and_then(|previous| ratios.get(previous))
+                    .map_or(mechanic_core::MAX_GEAR_RATIO, |ratio| ratio - 0.01);
+                let next = ratios
+                    .get(index + 1)
+                    .map_or(mechanic_core::MIN_GEAR_RATIO, |ratio| ratio + 0.01);
+                let ratio = ratios.get_mut(index)?;
+                *ratio = (*ratio + delta).clamp(next, previous);
+                Some(ratios)
+            })
+        });
+        if let Some(ratios) = ratios {
+            self.gearbox(kind, GearboxEdit::Ratios(ratios));
+        }
+    }
+
+    fn swap_bindings(&self, kind: EngineKind) {
+        let bindings = self.model.with(|panel| {
+            let engine = panel.engine_lane(kind)?;
+            let config = engine.config.as_ref()?;
+            gearbox_bindings_enabled(engine).then_some((config.gear_down(), config.gear_up()))
+        });
+        if let Some((up, down)) = bindings {
+            self.gearbox(kind, GearboxEdit::Bindings { up, down });
+        }
+    }
+
+    fn move_divider(&self, kind: EngineKind, direction: i8) {
+        if kind != EngineKind::Gas {
+            return;
+        }
+        let reverse = self.model.with(|panel| {
+            let config = panel.engine_lane(kind)?.config.as_ref()?;
+            let current = i16::from(config.reverse_gears());
+            let maximum = i16::try_from(config.ratios().len()).ok()?;
+            u8::try_from((current + i16::from(direction)).clamp(0, maximum)).ok()
+        });
+        if let Some(reverse) = reverse {
+            self.gearbox(kind, GearboxEdit::ReverseGears(reverse));
+        }
     }
 
     /// Reads something out of one lane, or falls back when the joint has gone.
@@ -115,6 +199,24 @@ fn lane_read<T: 'static>(
         .unwrap_or(fallback)
 }
 
+fn engine_read<T: 'static>(
+    model: State<PanelModel>,
+    kind: EngineKind,
+    fallback: T,
+    of: impl Fn(&super::model::EngineLaneModel) -> T,
+) -> T {
+    model
+        .with(|panel| panel.engine_lane(kind).map(&of))
+        .unwrap_or(fallback)
+}
+
+fn gearbox_bindings_enabled(engine: &EngineLaneModel) -> bool {
+    engine
+        .config
+        .as_ref()
+        .is_some_and(|config| config.mode() == ShiftMode::Manual && config.ratios().len() > 1)
+}
+
 /// The panel's own frame.
 ///
 /// Inset from the window by its own margin rather than by a padded wrapper: a
@@ -122,13 +224,528 @@ fn lane_read<T: 'static>(
 /// overlay's root is the one element allowed to do that.
 pub(crate) fn panel(handles: &Handles) -> Element {
     let header = header(handles);
+    let engines = engine_lanes(handles);
     let lanes = lanes(handles);
     view! {
         col margin:22px fill:shell radius:14px stroke:(width:1px color:shell-edge)
             shadow:(offset:(x:0px y:30px) blur:90px color:#00000099)
             font-color:ink.fg {
             (header)
+            (engines)
             (lanes)
+        }
+    }
+}
+
+/// One horizontally scrollable gearing lane per engine family, before joint programs.
+fn engine_lanes(handles: &Handles) -> Element {
+    let model = handles.model;
+    let inner = handles.clone();
+    view! {
+        col height:min-content shrink:0 pad:(left:14px right:14px top:10px bottom:4px) {
+            for (kind, ()) in { $model.engine_keys() } {
+                (engine_lane(&inner, *kind))
+            }
+        }
+    }
+}
+
+fn engine_lane(handles: &Handles, kind: EngineKind) -> Element {
+    let model = handles.model;
+    let summary = engine_summary(model, kind);
+    let gearbox = gearbox_area(handles, kind);
+    let mismatch = move || engine_read(model, kind, false, |engine| engine.mismatch);
+    view! {
+        row height:min-content shrink:0 margin:(top:10px) radius:12px fill:lane.fill
+            stroke:(width:1px color:{
+                if mismatch() { color(accent.angle) } else { color(lane.edge) }
+            }) {
+            (summary)
+            (gearbox)
+        }
+    }
+}
+
+fn engine_summary(model: State<PanelModel>, kind: EngineKind) -> Element {
+    let engines = engine_metric(model, kind, EngineMetric::Count);
+    let torque = engine_metric(model, kind, EngineMetric::Torque);
+    let speed = engine_metric(model, kind, EngineMetric::Speed);
+    let bearings = engine_metric(model, kind, EngineMetric::Bearings);
+    let title = move || engine_read(model, kind, "ENGINE LINE", EngineLaneModel::label).to_owned();
+    let transmission = move || {
+        engine_read(model, kind, String::new(), |engine| {
+            if engine.mismatch {
+                let depths = engine
+                    .physical_depths
+                    .iter()
+                    .map(u8::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+                format!("STACKS DO NOT MATCH  ·  {depths} BLOCKS")
+            } else if engine.transmission_depth == Some(0) {
+                "DIRECT DRIVE  ·  1 FIXED GEAR".to_owned()
+            } else {
+                let blocks = engine.transmission_depth.unwrap_or(0);
+                let gears = engine
+                    .config
+                    .as_ref()
+                    .map_or(1, |config| config.ratios().len());
+                format!("{blocks} TRANSMISSION BLOCKS  ·  {gears} GEARS")
+            }
+        })
+    };
+    let mismatch = move || engine_read(model, kind, false, |engine| engine.mismatch);
+    let initial = match kind {
+        EngineKind::Electric => "E",
+        EngineKind::Gas => "G",
+    };
+    view! {
+        col width:262px shrink:0 height:fill gap:10px
+            pad:(left:14px right:14px top:14px bottom:12px)
+            stroke:(width:1px color:lane.edge edges:right) {
+            row height:min-content align:center gap:9px {
+                col width:30px height:30px shrink:0 align:center justify:center radius:7px
+                    fill:{ engine_wash(kind) }
+                    stroke:(width:1px color:{ engine_accent(kind) })
+                    font-color:{ engine_accent(kind) } {
+                    text font-size:14px font-weight:700 (initial)
+                }
+                col width:1fr height:min-content gap:1px {
+                    text font-family:{ display_font() } font-size:12px font-weight:700 letter-spacing:1.1px
+                        font-color:{ engine_accent(kind) } { title() }
+                    text font-size:9px letter-spacing:0.9px font-color:ink.faint "COMBINED POWERTRAIN"
+                }
+            }
+            grid height:min-content cols:(repeat(2 minmax(0px 1fr))) col-gap:6px row-gap:6px {
+                (engines)
+                (torque)
+                (speed)
+                (bearings)
+            }
+            row height:34px align:center gap:7px pad:(horizontal:9px vertical:0px) radius:8px
+                fill:if mismatch() { { color(wash.angle) } } else { { color(chip.fill) } }
+                stroke:(width:1px color:if mismatch() { color(accent.angle) } else { color(chip.edge) }) {
+                col width:7px height:7px shrink:0 radius:4px
+                    fill:if mismatch() { { color(accent.angle) } } else { { engine_accent(kind) } } {}
+                text width:1fr font-size:9px font-weight:700 letter-spacing:0.45px text-wrap:none
+                    font-color:if mismatch() { { color(accent.angle) } } else { { color(ink.muted) } } {
+                    transmission()
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EngineMetric {
+    Count,
+    Torque,
+    Speed,
+    Bearings,
+}
+
+impl EngineMetric {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Count => "ENGINES",
+            Self::Torque => "STALL TORQUE",
+            Self::Speed => "BASE SPEED",
+            Self::Bearings => "BEARING PORTS",
+        }
+    }
+}
+
+fn engine_metric(model: State<PanelModel>, kind: EngineKind, metric: EngineMetric) -> Element {
+    let label = metric.label();
+    let value = move || {
+        engine_read(model, kind, String::new(), |engine| match metric {
+            EngineMetric::Count => engine.engine_count.to_string(),
+            EngineMetric::Torque => format!("{:.0} N·m", engine.combined_stall_torque),
+            EngineMetric::Speed => format!("{:.0} RPM", engine.base_rpm),
+            EngineMetric::Bearings => engine.slots.text(),
+        })
+    };
+    view! {
+        col height:45px justify:center gap:2px pad:(horizontal:9px vertical:0px) radius:8px
+            fill:chip.fill stroke:(width:1px color:chip.edge) {
+            text font-size:8px font-weight:700 letter-spacing:0.7px font-color:ink.faint (label)
+            text font-size:12px font-weight:600 text-wrap:none font-color:ink.fg { value() }
+        }
+    }
+}
+
+fn engine_accent(kind: EngineKind) -> Color {
+    match kind {
+        EngineKind::Electric => color(accent.speed),
+        EngineKind::Gas => color(accent.angle),
+    }
+}
+
+fn engine_wash(kind: EngineKind) -> Color {
+    match kind {
+        EngineKind::Electric => color(wash.speed),
+        EngineKind::Gas => color(wash.angle),
+    }
+}
+
+fn gearbox_area(handles: &Handles, kind: EngineKind) -> Element {
+    let mismatch = handles.model.with(|panel| {
+        panel
+            .engine_lane(kind)
+            .is_some_and(|engine| engine.mismatch)
+    });
+    if mismatch {
+        return gearbox_mismatch(handles.model, kind);
+    }
+
+    let toolbar = gearbox_toolbar(handles, kind);
+    let divider = gas_divider_controls(handles, kind);
+    let gears = gear_strip(handles, kind);
+    view! {
+        col width:1fr min-width:0px height:min-content shrink:0 gap:10px
+            pad:(left:14px right:14px top:14px bottom:12px) {
+            (toolbar)
+            (divider)
+            (gears)
+        }
+    }
+}
+
+fn gearbox_mismatch(model: State<PanelModel>, kind: EngineKind) -> Element {
+    let details = move || {
+        engine_read(model, kind, String::new(), |engine| {
+            let depths = engine
+                .physical_depths
+                .iter()
+                .map(|depth| format!("{depth} blocks"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Physical stack depths: {depths}")
+        })
+    };
+    let family = match kind {
+        EngineKind::Electric => "electric",
+        EngineKind::Gas => "gas",
+    };
+    view! {
+        col width:1fr min-width:0px height:194px align:center justify:center pad:20px {
+            row width:fill max-width:720px height:min-content align:center gap:14px
+                pad:(horizontal:18px vertical:16px) radius:12px fill:wash.angle
+                stroke:(width:1px color:accent.angle) {
+                col width:34px height:34px shrink:0 align:center justify:center radius:9px
+                    fill:#3A2918 font-color:accent.angle {
+                    text font-size:18px font-weight:700 "!"
+                }
+                col width:1fr height:min-content gap:4px {
+                    text font-family:{ display_font() } font-size:12px font-weight:700 letter-spacing:0.8px
+                        font-color:accent.angle "TRANSMISSION STACKS DO NOT MATCH"
+                    text font-size:12px font-color:ink.fg { details() }
+                    text font-size:11px font-color:ink.dim {
+                        format!("Match every {family} engine stack to restore gearing controls and simulation.")
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)] // The compact toolbar keeps related gearbox controls together.
+fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
+    let model = handles.model;
+    let auto = handles.clone();
+    let manual = handles.clone();
+    let bindings_button = handles.clone();
+    let capture_up = handles.clone();
+    let capture_down = handles.clone();
+    let gearbox_capturing = handles.gearbox_capturing;
+    let conflict = move || engine_read(model, kind, false, |engine| engine.binding_conflict);
+    let is_auto = move || {
+        engine_read(model, kind, true, |engine| {
+            engine
+                .config
+                .as_ref()
+                .is_none_or(|config| config.mode() == ShiftMode::Auto)
+        })
+    };
+    let can_bind = move || engine_read(model, kind, false, gearbox_bindings_enabled);
+    let up_binding = move || {
+        engine_read(model, kind, String::new(), |engine| {
+            engine.config.as_ref().map_or_else(String::new, |config| {
+                if gearbox_capturing.get() == Some((kind, true)) {
+                    "PRESS A KEY…".to_owned()
+                } else {
+                    config.gear_up().to_string()
+                }
+            })
+        })
+    };
+    let down_binding = move || {
+        engine_read(model, kind, String::new(), |engine| {
+            engine.config.as_ref().map_or_else(String::new, |config| {
+                if gearbox_capturing.get() == Some((kind, false)) {
+                    "PRESS A KEY…".to_owned()
+                } else {
+                    config.gear_down().to_string()
+                }
+            })
+        })
+    };
+    view! {
+        row height:42px align:center gap:10px {
+            col width:126px shrink:0 height:min-content gap:2px {
+                text font-family:{ display_font() } font-size:11px font-weight:700
+                    letter-spacing:1px font-color:ink.fg "GEARBOX CONTROL"
+                text font-size:9px font-color:ink.faint "input : output ratios"
+            }
+            row width:158px shrink:0 height:36px align:center gap:3px pad:3px radius:9px
+                fill:chip.fill stroke:(width:1px color:chip.edge) {
+                col width:1fr height:28px align:center justify:center radius:6px
+                    fill:if is_auto() { { color(accent.speed) } } else { Color::TRANSPARENT }
+                    font-color:if is_auto() { { color(shell) } } else { { color(ink.muted) } }
+                    hover { fill:reticle.fill_over }
+                    @click:{ auto.gearbox(kind, GearboxEdit::Mode(ShiftMode::Auto)); } {
+                    text font-size:10px font-weight:700 "AUTO"
+                }
+                col width:1fr height:28px align:center justify:center radius:6px
+                    fill:if !is_auto() { { color(accent.speed) } } else { Color::TRANSPARENT }
+                    font-color:if !is_auto() { { color(shell) } } else { { color(ink.muted) } }
+                    hover { fill:reticle.fill_over }
+                    @click:{ manual.gearbox(kind, GearboxEdit::Mode(ShiftMode::Manual)); } {
+                    text font-size:10px font-weight:700 "MANUAL"
+                }
+            }
+            col width:122px shrink:0 height:38px justify:center gap:1px
+                pad:(horizontal:10px vertical:0px) radius:8px fill:chip.fill
+                stroke:(width:1px color:chip.edge)
+                opacity:{ if can_bind() { 1.0 } else { 0.38 } }
+                hover { stroke:(width:1px color:chip.edge-over) }
+                @click:{ capture_up.capture_gearbox_binding(kind, true); } {
+                text font-size:8px font-weight:700 letter-spacing:0.65px font-color:ink.faint "GEAR UP"
+                row height:min-content align:center gap:6px {
+                    icon size:13px keyboard
+                    text font-size:11px font-weight:700 text-wrap:none font-color:ink.fg { up_binding() }
+                }
+            }
+            col width:122px shrink:0 height:38px justify:center gap:1px
+                pad:(horizontal:10px vertical:0px) radius:8px fill:chip.fill
+                stroke:(width:1px color:chip.edge)
+                opacity:{ if can_bind() { 1.0 } else { 0.38 } }
+                hover { stroke:(width:1px color:chip.edge-over) }
+                @click:{ capture_down.capture_gearbox_binding(kind, false); } {
+                text font-size:8px font-weight:700 letter-spacing:0.65px font-color:ink.faint "GEAR DOWN"
+                row height:min-content align:center gap:6px {
+                    icon size:13px keyboard
+                    text font-size:11px font-weight:700 text-wrap:none font-color:ink.fg { down_binding() }
+                }
+            }
+            col width:68px shrink:0 height:36px align:center justify:center radius:8px
+                fill:chip.fill stroke:(width:1px color:chip.edge) font-color:ink.muted
+                opacity:{ if can_bind() { 1.0 } else { 0.38 } }
+                hover { stroke:(width:1px color:chip.edge-over) fill:reticle.fill_over }
+                @click:{ bindings_button.swap_bindings(kind); } {
+                text font-size:9px font-weight:700 letter-spacing:0.5px "SWAP KEYS"
+            }
+            if conflict() {
+                row height:30px align:center gap:5px pad:(horizontal:9px vertical:0px)
+                    radius:7px fill:wash.angle stroke:(width:1px color:accent.angle)
+                    font-color:accent.angle {
+                    text font-size:12px font-weight:700 "!"
+                    text font-size:9px font-weight:700 text-wrap:none "KEY CONFLICT"
+                }
+            }
+        }
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)] // The snapped divider is clamped to a non-negative range of at most eighteen.
+fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
+    if kind != EngineKind::Gas {
+        return view! { row width:0px height:0px {} };
+    }
+    let left = handles.clone();
+    let right = handles.clone();
+    let dragging = handles.clone();
+    let model = handles.model;
+    let bounds = State::new(Rect::default());
+    let divider = move || {
+        engine_read(model, kind, 0_u8, |engine| {
+            engine
+                .config
+                .as_ref()
+                .map_or(0, mechanic_core::GearboxConfig::reverse_gears)
+        })
+    };
+    let count = move || {
+        engine_read(model, kind, 1_usize, |engine| {
+            engine
+                .config
+                .as_ref()
+                .map_or(1, |config| config.ratios().len())
+        })
+    };
+    let track_width = move || bounds.get().size.width.max(1.0);
+    let reverse_width =
+        move || Dimension::Px(track_width() * f32::from(divider()) / count() as f32);
+    let marker = move || track_width() * f32::from(divider()) / count() as f32 - 1.5;
+    view! {
+        row height:42px align:center gap:10px pad:(horizontal:10px vertical:0px) radius:9px
+            fill:chip.fill stroke:(width:1px color:chip.edge) {
+            col width:126px shrink:0 height:min-content gap:2px {
+                text font-family:{ display_font() } font-size:9px font-weight:700
+                    letter-spacing:0.8px font-color:ink.muted "DIRECTION SPLIT"
+                text font-size:9px font-color:ink.faint "drag to assign gears"
+            }
+            col width:32px height:30px align:center justify:center radius:7px
+                stroke:(width:1px color:chip.edge) font-color:accent.angle
+                hover { fill:wash.angle stroke:(width:1px color:accent.angle) }
+                @click:{ left.move_divider(kind, -1); } { text font-size:11px font-weight:700 "R−" }
+            stack width:1fr min-width:120px height:30px radius:7px fill:wash.speed
+                @layout:{ move |rect: Rect| bounds.set(rect) }
+                @drag:{ move |event: &DragEvent, _: &mut EventCtx| {
+                    let rect = bounds.get_untracked();
+                    let across = ((event.position.x - rect.origin.x) / rect.size.width.max(1.0))
+                        .clamp(0.0, 1.0);
+                    let reverse = (across * count() as f32).round() as u8;
+                    dragging.gearbox_with_transience(
+                        kind,
+                        GearboxEdit::ReverseGears(reverse),
+                        event.phase != DragPhase::End,
+                    );
+                } } {
+                col width:{ reverse_width() } height:30px radius:7px fill:wash.angle {}
+                row width:fill height:fill align:center justify:between pad:(horizontal:10px vertical:0px) {
+                    text font-size:9px font-weight:700 font-color:accent.angle {
+                        format!("{} REVERSE", divider())
+                    }
+                    text font-size:9px font-weight:700 font-color:accent.speed {
+                        format!("{} FORWARD", count().saturating_sub(usize::from(divider())))
+                    }
+                }
+                col width:3px height:24px translate:(x:{ Length::px(marker()) } y:3px)
+                    radius:2px fill:ink.fg {}
+            }
+            col width:32px height:30px align:center justify:center radius:7px
+                stroke:(width:1px color:chip.edge) font-color:accent.angle
+                hover { fill:wash.angle stroke:(width:1px color:accent.angle) }
+                @click:{ right.move_divider(kind, 1); } { text font-size:11px font-weight:700 "R+" }
+        }
+    }
+}
+
+fn gear_strip(handles: &Handles, kind: EngineKind) -> Element {
+    let model = handles.model;
+    let inner = handles.clone();
+    view! {
+        col height:110px shrink:0 gap:7px {
+            text height:11px font-family:{ display_font() } font-size:9px font-weight:700
+                letter-spacing:0.9px font-color:ink.muted "GEAR RATIOS"
+            scroll height:92px {
+                row width:min-content gap:10px pad:(bottom:3px) {
+                    for (index, ()) in { $model.engine_gear_keys(kind) } {
+                        (ratio_card(&inner, kind, *index))
+                    }
+                }
+            } as strip
+            { strip.thumb_color(|| color(lane.edge_on)); }
+        }
+    }
+}
+
+#[allow(unused_braces)] // Mosaic conditionals require expression blocks in style values.
+fn ratio_card(handles: &Handles, kind: EngineKind, index: usize) -> Element {
+    let model = handles.model;
+    let controls = ratio_controls(handles, kind, index);
+    let label = move || {
+        engine_read(model, kind, String::new(), |engine| {
+            let Some(config) = engine.config.as_ref() else {
+                return String::new();
+            };
+            if kind == EngineKind::Gas && index < usize::from(config.reverse_gears()) {
+                format!("R{}", index + 1)
+            } else {
+                format!(
+                    "F{}",
+                    index.saturating_sub(usize::from(config.reverse_gears())) + 1
+                )
+            }
+        })
+    };
+    let ratio = move || {
+        engine_read(model, kind, String::new(), |engine| {
+            engine
+                .config
+                .as_ref()
+                .and_then(|config| config.ratios().get(index))
+                .map_or_else(String::new, |ratio| format!("{ratio:.2}:1"))
+        })
+    };
+    let active = move || {
+        engine_read(model, kind, false, |engine| {
+            engine.active_gear == Some(index)
+        })
+    };
+    let reverse = move || {
+        engine_read(model, kind, false, |engine| {
+            kind == EngineKind::Gas
+                && engine
+                    .config
+                    .as_ref()
+                    .is_some_and(|config| index < usize::from(config.reverse_gears()))
+        })
+    };
+    view! {
+        col width:128px shrink:0 height:82px gap:5px pad:(horizontal:9px vertical:8px)
+            radius:10px fill:if active() {
+                if reverse() { { color(wash.angle) } } else { { color(wash.speed) } }
+            } else { { color(card.fill) } }
+            stroke:(width:{ if active() { 2.0 } else { 1.0 } } color:if active() {
+                if reverse() { { color(accent.angle) } } else { { color(accent.speed) } }
+            } else { { color(card.edge) } })
+            shadow:(offset:(x:0px y:8px) blur:18px color:#00000052) {
+            row height:18px align:center justify:between {
+                row width:min-content height:18px align:center pad:(horizontal:7px vertical:0px)
+                    radius:5px fill:if reverse() { { color(wash.pill_angle) } } else { { color(wash.pill_speed) } }
+                    font-color:if reverse() { { color(accent.angle) } } else { { color(accent.speed) } } {
+                    text font-size:10px font-weight:700 { label() }
+                }
+                if active() {
+                    text font-size:8px font-weight:700 letter-spacing:0.6px
+                        font-color:if reverse() { { color(accent.angle) } } else { { color(accent.speed) } }
+                        "ACTIVE"
+                }
+            }
+            text font-size:16px font-weight:700 letter-spacing:-0.25px font-color:ink.fg { ratio() }
+            (controls)
+        }
+    }
+}
+
+fn ratio_controls(handles: &Handles, kind: EngineKind, index: usize) -> Element {
+    let editable = handles.model.with(|panel| {
+        panel
+            .engine_lane(kind)
+            .and_then(|engine| engine.transmission_depth)
+            .is_some_and(|depth| depth != 0)
+    });
+    if !editable {
+        return view! { text height:20px font-size:8px font-weight:700 letter-spacing:0.5px font-color:ink.faint "FIXED" };
+    }
+    let decrease = handles.clone();
+    let increase = handles.clone();
+    view! {
+        row width:fill height:20px gap:4px {
+            col width:1fr align:center justify:center radius:5px fill:chip.fill
+                stroke:(width:1px color:chip.edge)
+                hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) }
+                @click:{ decrease.adjust_ratio(kind, index, -0.05); } { text font-size:12px "−" }
+            col width:1fr align:center justify:center radius:5px fill:chip.fill
+                stroke:(width:1px color:chip.edge)
+                hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) }
+                @click:{ increase.adjust_ratio(kind, index, 0.05); } { text font-size:12px "+" }
         }
     }
 }
@@ -149,7 +766,8 @@ fn header(handles: &Handles) -> Element {
                     icon size:18px mark
                 }
                 col height:min-content gap:1px {
-                    text font-size:19px font-weight:700 letter-spacing:2.7px "CONTROL BLOCK"
+                    text font-family:{ display_font() } font-size:19px font-weight:700
+                        letter-spacing:2.7px "CONTROL BLOCK"
                     text font-size:12px letter-spacing:0.6px font-color:ink.dim
                         { $model.subtitle() }
                 }
@@ -226,7 +844,7 @@ fn capacity_item(model: State<PanelModel>, kind: CapacityKind) -> Element {
     let label = kind.label();
     let initial = kind.initial();
     view! {
-        row width:104px height:38px align:center gap:8px pad:(horizontal:8px vertical:0px)
+        row width:110px height:38px align:center gap:8px pad:(horizontal:8px vertical:0px)
             radius:8px fill:chip.fill stroke:(width:1px color:chip.edge)
             opacity:{ if active() { 1.0 } else { 0.32 } } {
             col width:22px height:22px align:center justify:center radius:6px
@@ -250,7 +868,7 @@ fn capacity_item(model: State<PanelModel>, kind: CapacityKind) -> Element {
                 text font-size:8px font-weight:700 letter-spacing:0.8px font-color:ink.dim {
                     label
                 }
-                text font-size:10px text-wrap:none font-color:ink.fg { text() }
+                text font-size:9px text-wrap:none font-color:ink.fg { text() }
             }
         }
     }
@@ -704,7 +1322,9 @@ fn wire_label(handles: &Handles, id: DriveLinkId, rank: usize, release: bool) ->
             if $typing {
                 (editable_field(buffer, Rc::clone(&commit), typing))
             } else {
-                text font-size:12px text-wrap:none { wire_text(model, id, rank, release) }
+                text font-size:11px font-weight:700 text-wrap:none {
+                    wire_text(model, id, rank, release)
+                }
             }
         }
     }
@@ -1331,7 +1951,8 @@ fn name_field(handles: &Handles, id: DriveLinkId) -> Element {
             if $editing {
                 (editable_field(buffer, Rc::clone(&commit), editing))
             } else {
-                text width:1fr font-size:15px font-weight:600 text-wrap:none {
+                text width:1fr font-family:{ display_font() } font-size:15px
+                    font-weight:600 text-wrap:none {
                     lane_read(model, id, String::new(), LaneModel::title)
                 }
             }
@@ -1376,11 +1997,31 @@ enum Chip {
     Repeat,
 }
 
+impl Chip {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Speed => "SPEED",
+            Self::Actuator => "ACTUATOR",
+            Self::Electric => "ELECTRIC",
+            Self::Gas => "GAS",
+            Self::Travel => "TRAVEL",
+            Self::Repeat => "SEQUENCE",
+        }
+    }
+}
+
 /// A hardware capability chip. Clicking speed toggles its unit; the remaining
 /// chips cycle assignments that can actually be supplied by the machine.
 fn capability_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
     let handles = handles.clone();
     let model = handles.model;
+    let label = move || {
+        if which == Chip::Actuator {
+            lane_read(model, id, "ACTUATOR", LaneModel::torque_label)
+        } else {
+            which.label()
+        }
+    };
     let edit = match which {
         Chip::Speed => PanelEdit::ToggleSpeedUnit,
         Chip::Actuator => PanelEdit::CycleActuator,
@@ -1390,21 +2031,25 @@ fn capability_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
     };
 
     view! {
-        row height:44px align:center gap:8px pad:(horizontal:9px vertical:0px) radius:8px
+        row height:44px align:center gap:6px pad:(horizontal:7px vertical:0px) radius:8px
             fill:chip.fill stroke:(width:1px color:chip.edge)
             font-color:{ if which == Chip::Speed { color(chip.speed) } else { color(chip.torque) } }
             hover { stroke:(width:1px color:chip.edge-over) }
             @click:{ handles.edit(id, edit.clone()) } {
-            if which == Chip::Speed { icon size:20px chip-speed } else { icon size:20px chip-torque }
-            text width:1fr font-size:12px letter-spacing:-0.12px text-wrap:none {
-                if which == Chip::Speed {
-                    lane_read(model, id, String::new(), LaneModel::speed_text)
-                } else if which == Chip::Actuator {
-                    lane_read(model, id, String::new(), LaneModel::torque_text)
-                } else if which == Chip::Electric {
-                    lane_read(model, id, String::new(), LaneModel::electric_text)
-                } else {
-                    lane_read(model, id, String::new(), LaneModel::gas_text)
+            if which == Chip::Speed { icon size:18px chip-speed } else { icon size:18px chip-torque }
+            col width:1fr height:min-content gap:0px {
+                text width:1fr font-size:8px font-weight:700 letter-spacing:0.45px
+                    text-wrap:none font-color:ink.faint { label() }
+                text width:1fr font-size:11px letter-spacing:-0.12px text-wrap:none {
+                    if which == Chip::Speed {
+                        lane_read(model, id, String::new(), LaneModel::speed_text)
+                    } else if which == Chip::Actuator {
+                        lane_read(model, id, String::new(), LaneModel::torque_text)
+                    } else if which == Chip::Electric {
+                        lane_read(model, id, String::new(), LaneModel::electric_text)
+                    } else {
+                        lane_read(model, id, String::new(), LaneModel::gas_text)
+                    }
                 }
             }
         }
@@ -1513,5 +2158,59 @@ fn editable_field(buffer: State<String>, commit: Rc<dyn Fn()>, typing: State<boo
             input width:1fr font-size:12px fill:#00000000 pad:(horizontal:0px vertical:0px)
                 stroke:(width:0px color:#00000000) buffer
         }
+    }
+}
+
+#[cfg(test)]
+mod engine_lane_tests {
+    use mechanic_core::{GearKey, GearKeyChord, GearboxConfig};
+
+    use super::{BearingSlots, EngineKind, EngineLaneModel, ShiftMode, gearbox_bindings_enabled};
+
+    fn engine(config: GearboxConfig) -> EngineLaneModel {
+        EngineLaneModel {
+            kind: EngineKind::Gas,
+            engine_count: 1,
+            combined_stall_torque: 200.0,
+            base_rpm: 220.0,
+            slots: BearingSlots::new(0, 4),
+            transmission_depth: Some(1),
+            physical_depths: vec![1],
+            mismatch: false,
+            config: Some(config),
+            active_gear: None,
+            binding_conflict: false,
+        }
+    }
+
+    fn config(mode: ShiftMode, ratios: Vec<f32>) -> GearboxConfig {
+        GearboxConfig::new(
+            mode,
+            ratios,
+            0,
+            GearKeyChord::new(GearKey::Letter('R')),
+            GearKeyChord::new(GearKey::Letter('F')),
+        )
+        .expect("test gearbox is valid")
+    }
+
+    #[test]
+    fn manual_binding_controls_require_multiple_gears() {
+        assert!(!gearbox_bindings_enabled(&engine(config(
+            ShiftMode::Manual,
+            vec![1.0]
+        ))));
+        assert!(gearbox_bindings_enabled(&engine(config(
+            ShiftMode::Manual,
+            vec![3.0, 1.0]
+        ))));
+    }
+
+    #[test]
+    fn automatic_mode_disables_manual_binding_controls() {
+        assert!(!gearbox_bindings_enabled(&engine(config(
+            ShiftMode::Auto,
+            vec![3.0, 1.0]
+        ))));
     }
 }

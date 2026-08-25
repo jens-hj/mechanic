@@ -15,17 +15,18 @@ mod view;
 
 use bevy::prelude::*;
 use mechanic_core::{
-    ActuatorAssignment, BuildCommand, DriveLinkId, DriveProgram, DriveTarget, EngineKind, PartId,
-    ServoSpec,
+    ActuatorAssignment, BuildCommand, DriveLinkId, DriveProgram, DriveTarget, EngineKind, GearKey,
+    GearKeyChord, PartId, ServoSpec,
 };
 
 use crate::control_panel::{ControlPanelState, panel_rows, set_row_commands};
+use crate::sequencer::GearboxRuntime;
 use crate::{AppSimulation, EditorGraph, EditorHistory, EditorSnapshot, EditorState};
 
-pub(crate) use model::{Intent, PanelEdit, PanelModel};
+pub(crate) use model::{GearboxEdit, GearboxIntent, Intent, PanelEdit, PanelModel};
 pub(crate) use view::{Handles, panel};
 
-use model::{HardwareModel, LaneModel, apply_edit};
+use model::{EngineLaneModel, HardwareModel, LaneModel, apply_edit};
 
 /// The joint the panel is pointing out in the world, if any.
 ///
@@ -58,6 +59,55 @@ pub(crate) fn write_joint(panel: &mut ControlPanelState, target: &mut EditTarget
         return;
     };
     write_to(controller, target, intent);
+}
+
+/// Writes one persistent engine-lane setting transactionally.
+pub(crate) fn write_gearbox(
+    panel: &ControlPanelState,
+    target: &mut EditTarget,
+    intent: &GearboxIntent,
+) {
+    let Some(controller) = panel.controller() else {
+        return;
+    };
+    let command = match &intent.edit {
+        GearboxEdit::Mode(mode) => BuildCommand::SetGearboxMode {
+            controller,
+            kind: intent.kind,
+            mode: *mode,
+        },
+        GearboxEdit::Ratios(ratios) => BuildCommand::SetGearboxRatios {
+            controller,
+            kind: intent.kind,
+            ratios: ratios.clone(),
+        },
+        GearboxEdit::Bindings { up, down } => BuildCommand::SetGearboxBindings {
+            controller,
+            kind: intent.kind,
+            up: *up,
+            down: *down,
+        },
+        GearboxEdit::ReverseGears(reverse_gears) => {
+            if intent.kind != EngineKind::Gas {
+                return;
+            }
+            BuildCommand::SetGasDivider {
+                controller,
+                reverse_gears: *reverse_gears,
+            }
+        }
+    };
+    let previous = EditorSnapshot::capture(&target.graph.0, &target.editor);
+    match target.graph.0.apply(command) {
+        Ok(_) => {
+            if target.simulation.is_running() {
+                target.editor.drive_rows_dirty = true;
+            } else if !intent.transient {
+                target.history.commit(previous);
+            }
+        }
+        Err(error) => target.editor.feedback = Some(error.to_string()),
+    }
 }
 
 /// The half of [`write_joint`] that already knows which control block is open.
@@ -228,12 +278,17 @@ fn capacity_error(graph: &mechanic_core::ConstructionGraph, controller: PartId) 
 }
 
 /// Reads the open control block's wires into what the panel draws.
-pub(crate) fn capture(panel: &ControlPanelState, graph: &EditorGraph) -> PanelModel {
+#[allow(clippy::cast_precision_loss)] // Construction counts are far below f32's exact integer range.
+pub(crate) fn capture(
+    panel: &ControlPanelState,
+    graph: &EditorGraph,
+    gearboxes: &GearboxRuntime,
+) -> PanelModel {
     let Some(controller) = panel.controller() else {
         return PanelModel::default();
     };
     let inventory = graph.0.actuator_inventory(controller).unwrap_or_default();
-    let lanes = panel_rows(&graph.0, controller)
+    let lanes: Vec<LaneModel> = panel_rows(&graph.0, controller)
         .iter()
         .enumerate()
         .filter_map(|(index, row)| {
@@ -252,10 +307,90 @@ pub(crate) fn capture(panel: &ControlPanelState, graph: &EditorGraph) -> PanelMo
             ))
         })
         .collect();
+    let mut engine_lanes: Vec<EngineLaneModel> = [EngineKind::Electric, EngineKind::Gas]
+        .into_iter()
+        .filter_map(|kind| {
+            let (engine_count, slots, transmission_depth, mismatch) = match kind {
+                EngineKind::Electric => (
+                    inventory.electric_engines,
+                    model::BearingSlots::new(
+                        inventory.electric_joints,
+                        inventory.electric_capacity(),
+                    ),
+                    inventory.electric_transmission_depth,
+                    inventory.electric_transmission_mismatch,
+                ),
+                EngineKind::Gas => (
+                    inventory.gas_engines,
+                    model::BearingSlots::new(inventory.gas_joints, inventory.gas_capacity()),
+                    inventory.gas_transmission_depth,
+                    inventory.gas_transmission_mismatch,
+                ),
+            };
+            (engine_count != 0).then(|| EngineLaneModel {
+                kind,
+                engine_count,
+                combined_stall_torque: engine_count as f32 * kind.stall_torque_newton_meters(),
+                base_rpm: kind.no_load_rpm(),
+                slots,
+                transmission_depth,
+                physical_depths: graph
+                    .0
+                    .transmission_depths(controller, kind)
+                    .unwrap_or_default(),
+                mismatch,
+                config: graph.0.gearbox_config(controller, kind).ok(),
+                active_gear: gearboxes.active_gear(controller, kind),
+                binding_conflict: false,
+            })
+        })
+        .collect();
+    let gearbox_chords = engine_lanes
+        .iter()
+        .filter_map(|lane| lane.config.as_ref())
+        .flat_map(|config| [config.gear_up(), config.gear_down()])
+        .collect::<Vec<_>>();
+    let joint_keys = lanes
+        .iter()
+        .flat_map(|lane| lane.states.iter().filter_map(|state| state.key))
+        .collect::<Vec<_>>();
+    for lane in &mut engine_lanes {
+        let Some(config) = lane.config.as_ref() else {
+            continue;
+        };
+        lane.binding_conflict = [config.gear_up(), config.gear_down()]
+            .into_iter()
+            .any(|chord| {
+                gearbox_chords
+                    .iter()
+                    .filter(|candidate| **candidate == chord)
+                    .count()
+                    > 1
+                    || chord_symbol(chord).is_some_and(|symbol| joint_keys.contains(&symbol))
+            });
+    }
     PanelModel {
         open: true,
         lanes,
+        engine_lanes,
         hardware: HardwareModel::from(inventory),
+    }
+}
+
+fn chord_symbol(chord: GearKeyChord) -> Option<char> {
+    if chord.shift || chord.control || chord.alt || chord.super_key {
+        return None;
+    }
+    match chord.key {
+        GearKey::Letter(symbol) => Some(symbol),
+        GearKey::Digit(digit) => char::from_digit(u32::from(digit), 10),
+        GearKey::Space
+        | GearKey::ArrowUp
+        | GearKey::ArrowDown
+        | GearKey::ArrowLeft
+        | GearKey::ArrowRight
+        | GearKey::PageUp
+        | GearKey::PageDown => None,
     }
 }
 
@@ -310,13 +445,50 @@ fn actuator_capability(
 /// key rather than going through the tree: nothing else may act on the press
 /// that binds a state.
 pub(crate) fn capture_key(handles: &Handles, keyboard: &ButtonInput<KeyCode>) {
+    if keyboard.just_pressed(KeyCode::Escape) {
+        handles.capturing.set(None);
+        handles.gearbox_capturing.set(None);
+        return;
+    }
+    if let Some((kind, up)) = handles.gearbox_capturing.get_untracked() {
+        for pressed in keyboard.get_just_pressed() {
+            let Some(key) = crate::sequencer::gear_key(*pressed) else {
+                continue;
+            };
+            let chord = mechanic_core::GearKeyChord {
+                key,
+                shift: keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+                control: keyboard.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
+                alt: keyboard.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
+                super_key: keyboard.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]),
+            };
+            let Some((old_up, old_down)) = handles.model.with(|panel| {
+                let config = panel.engine_lane(kind)?.config.as_ref()?;
+                Some((config.gear_up(), config.gear_down()))
+            }) else {
+                handles.gearbox_capturing.set(None);
+                return;
+            };
+            let (gear_up, gear_down) = if up {
+                (chord, old_down)
+            } else {
+                (old_up, chord)
+            };
+            handles.gearbox(
+                kind,
+                GearboxEdit::Bindings {
+                    up: gear_up,
+                    down: gear_down,
+                },
+            );
+            handles.gearbox_capturing.set(None);
+            return;
+        }
+        return;
+    }
     let Some((link, slot)) = handles.capturing.get_untracked() else {
         return;
     };
-    if keyboard.just_pressed(KeyCode::Escape) {
-        handles.capturing.set(None);
-        return;
-    }
     // `E` opens and closes the panel, so binding it would take the way out.
     for pressed in keyboard.get_just_pressed() {
         if *pressed == KeyCode::KeyE {
@@ -340,17 +512,19 @@ pub(crate) fn capture_key(handles: &Handles, keyboard: &ButtonInput<KeyCode>) {
 #[cfg(test)]
 mod tests {
     use bevy::math::{IVec3, Vec3};
+    use bevy_mosaic::ui::TextStyle;
     use mechanic_core::{
-        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, ControllerSpec,
-        CuboidSpec, DriveLinkId, DriveLinkSpec, FaceKind, FaceRef, GridRotation,
+        ActuatorAssignment, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
+        ControllerSpec, CuboidSpec, DriveLinkId, DriveLinkSpec, EngineKind, FaceKind, FaceRef,
+        GearboxConfig, GridRotation,
     };
     use mosaic_core::{Rect, Vector2};
     use mosaic_widgets::input::{PointerButton, PointerEventKind};
 
     use super::geometry;
-    use super::model::{Mode, PanelEdit, StateModel};
-    use crate::ui::UiIntent;
+    use super::model::{BearingSlots, EngineLaneModel, Mode, PanelEdit, StateModel};
     use crate::ui::testing::{Overlay, away};
+    use crate::ui::{UiIntent, body_font};
 
     /// A control block driving one bearing.
     fn wired() -> (ConstructionGraph, DriveLinkId) {
@@ -414,13 +588,35 @@ mod tests {
         let overlay = Overlay::mount();
         let mut state = crate::control_panel::ControlPanelState::default();
         state.open(controller);
-        overlay
-            .handles
-            .block
-            .model
-            .set(super::capture(&state, &crate::EditorGraph(graph)));
+        overlay.handles.block.model.set(super::capture(
+            &state,
+            &crate::EditorGraph(graph),
+            &crate::sequencer::GearboxRuntime::default(),
+        ));
         overlay.settle();
         (overlay, link)
+    }
+
+    /// The overlay with a five-speed gas engine line and no joint rows.
+    fn open_gas_gearbox() -> Overlay {
+        let (overlay, _link) = open();
+        overlay.handles.block.model.update(|model| {
+            model.engine_lanes = vec![EngineLaneModel {
+                kind: EngineKind::Gas,
+                engine_count: 1,
+                combined_stall_torque: EngineKind::Gas.stall_torque_newton_meters(),
+                base_rpm: EngineKind::Gas.no_load_rpm(),
+                slots: BearingSlots::new(0, EngineKind::Gas.bearing_capacity()),
+                transmission_depth: Some(4),
+                physical_depths: vec![4],
+                mismatch: false,
+                config: Some(GearboxConfig::for_depth(4, true)),
+                active_gear: None,
+                binding_conflict: false,
+            }];
+        });
+        overlay.settle();
+        overlay
     }
 
     /// Gives the joint travel limits and puts its first state on an angle,
@@ -548,11 +744,93 @@ mod tests {
             .rects()
             .into_iter()
             .filter(|(_, rect)| {
-                (rect.size.width - 104.0).abs() < 0.5 && (rect.size.height - 38.0).abs() < 0.5
+                (rect.size.width - 110.0).abs() < 0.5 && (rect.size.height - 38.0).abs() < 0.5
             })
             .count();
 
         assert_eq!(stats, 3, "electric, gas, and Servo stats stay visible");
+    }
+
+    #[test]
+    fn compact_powertrain_text_fits_its_tiles_in_the_body_font() {
+        let (overlay, link) = open();
+        overlay.handles.block.model.update(|model| {
+            let lane = model.lanes.first_mut().expect("the joint is present");
+            lane.actuator = ActuatorAssignment::motor(100, 100).expect("valid percentages");
+            lane.torque = 9_999.0;
+        });
+        let (heading, speed, torque, electric, gas) = overlay.handles.block.model.with(|model| {
+            let lane = model.lane(link).expect("the joint is present");
+            (
+                lane.torque_label(),
+                lane.speed_text(),
+                lane.torque_text(),
+                lane.electric_text(),
+                lane.gas_text(),
+            )
+        });
+        let heading_style = TextStyle::new(8.0)
+            .family(body_font())
+            .weight(700)
+            .letter_spacing(0.45);
+        let value_style = TextStyle::new(11.0)
+            .family(body_font())
+            .letter_spacing(-0.12);
+
+        for text in ["ELECTRIC", "SPEED", heading] {
+            assert!(
+                overlay.text_width(text, &heading_style) <= super::view::CAPABILITY_TEXT_WIDTH,
+                "capability heading {text:?} overflows its tile",
+            );
+        }
+        for text in [
+            speed.as_str(),
+            torque.as_str(),
+            electric.as_str(),
+            gas.as_str(),
+        ] {
+            assert!(
+                overlay.text_width(text, &value_style) <= super::view::CAPABILITY_TEXT_WIDTH,
+                "capability value {text:?} overflows its tile",
+            );
+        }
+
+        let capacity_style = TextStyle::new(9.0).family(body_font());
+        let capacity = BearingSlots::new(99, 99).text();
+        assert!(
+            overlay.text_width(&capacity, &capacity_style) <= super::view::CAPACITY_TEXT_WIDTH,
+            "capacity value {capacity:?} overflows its header tile",
+        );
+    }
+
+    #[test]
+    fn gas_direction_split_uses_the_available_lane_width() {
+        let overlay = open_gas_gearbox();
+        let gear_card_rects = overlay
+            .rects()
+            .into_iter()
+            .map(|(_, rect)| rect)
+            .filter(|rect| {
+                (rect.size.width - 128.0).abs() < 0.5 && (rect.size.height - 82.0).abs() < 0.5
+            })
+            .collect::<Vec<_>>();
+        let widest_track = overlay
+            .rects()
+            .into_iter()
+            .map(|(_, rect)| rect)
+            .filter(|rect| (rect.size.height - 30.0).abs() < 0.5)
+            .map(|rect| rect.size.width)
+            .fold(0.0_f32, f32::max);
+
+        assert!(
+            widest_track > crate::ui::testing::VIEWPORT.width * 0.5,
+            "the direction track should fill the gearbox lane; it was only {widest_track}px wide",
+        );
+        assert_eq!(
+            gear_card_rects.len(),
+            5,
+            "all five ratio cards should be visible"
+        );
     }
 
     /// The bug this guards against: a canvas with no size of its own shrinks

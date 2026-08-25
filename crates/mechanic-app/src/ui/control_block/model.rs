@@ -13,8 +13,9 @@
 use crate::control_panel::SpeedUnit;
 use mechanic_core::{
     ActuatorAssignment, ActuatorInventory, DriveDwell, DriveKey, DriveLimits, DriveLinkId,
-    DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget, DriveTrigger,
-    MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
+    DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind,
+    GearKeyChord, GearboxConfig, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
+    MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES, ShiftMode,
 };
 
 /// Smallest travel range the grips may close to, in degrees. Two limits that
@@ -106,6 +107,26 @@ pub(crate) struct Intent {
     /// Whether this is one step of a gesture still in progress. A drag writes
     /// on every pointer move, and only the last of them belongs in history.
     pub(crate) transient: bool,
+}
+
+/// One engine-lane edit requested by the panel.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GearboxIntent {
+    pub(crate) kind: EngineKind,
+    pub(crate) edit: GearboxEdit,
+    pub(crate) transient: bool,
+}
+
+/// Editable persistent settings in one engine lane.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum GearboxEdit {
+    Mode(ShiftMode),
+    Ratios(Vec<f32>),
+    Bindings {
+        up: GearKeyChord,
+        down: GearKeyChord,
+    },
+    ReverseGears(u8),
 }
 
 /// The joint's whole configuration, as the graph stores it.
@@ -607,19 +628,30 @@ impl LaneModel {
 
     /// What the speed chip reads.
     pub(crate) fn speed_text(&self) -> String {
+        if matches!(self.actuator, ActuatorAssignment::Motor { .. }) {
+            return "GEARED".to_owned();
+        }
         match self.speed_unit {
             SpeedUnit::Rpm => format!("{:.0} RPM", self.speed),
             SpeedUnit::DegreesPerSecond => format!("{:.0} °/s", self.speed),
         }
     }
 
-    /// What the torque chip reads. An unlimited joint says so in words rather
-    /// than showing an infinity.
+    /// What the torque chip's heading reads.
+    pub(crate) const fn torque_label(&self) -> &'static str {
+        match self.actuator {
+            ActuatorAssignment::Unpowered => "ACTUATOR",
+            ActuatorAssignment::Servo => "SERVO TORQUE",
+            ActuatorAssignment::Motor { .. } => "MOTOR TORQUE",
+        }
+    }
+
+    /// What the torque chip reads.
     pub(crate) fn torque_text(&self) -> String {
         match self.actuator {
-            ActuatorAssignment::Unpowered => "unpowered".to_owned(),
-            ActuatorAssignment::Servo => format!("Servo · {:.0} N·m", self.torque),
-            ActuatorAssignment::Motor { .. } => format!("Motor · {:.0} N·m", self.torque),
+            ActuatorAssignment::Unpowered => "NONE".to_owned(),
+            ActuatorAssignment::Servo => format!("{:.0} N·m", self.torque),
+            ActuatorAssignment::Motor { .. } => "GEARED".to_owned(),
         }
     }
 
@@ -631,11 +663,11 @@ impl LaneModel {
     }
 
     pub(crate) fn electric_text(&self) -> String {
-        format!("Electric {}%", self.actuator.electric_percent())
+        format!("{}%", self.actuator.electric_percent())
     }
 
     pub(crate) fn gas_text(&self) -> String {
-        format!("Gas {}%", self.actuator.gas_percent())
+        format!("{}%", self.actuator.gas_percent())
     }
 
     /// What the travel chip reads.
@@ -685,7 +717,7 @@ fn wires(states: &[StateModel], kind: WireKind) -> Vec<WireModel> {
                 Some(WireModel {
                     source,
                     target: usize::from(target).min(states.len().saturating_sub(1)),
-                    label: format!("{key} up"),
+                    label: key.to_string(),
                 })
             }
             WireKind::Dwell => {
@@ -735,8 +767,35 @@ pub(crate) struct PanelModel {
     pub(crate) open: bool,
     /// One lane per joint the control block drives.
     pub(crate) lanes: Vec<LaneModel>,
+    /// Electric then gas engine lanes present in the Controller module.
+    pub(crate) engine_lanes: Vec<EngineLaneModel>,
     /// Bearing-port usage supplied by the controller's attached actuators.
     pub(crate) hardware: HardwareModel,
+}
+
+/// Static build information and persistent gearing for one engine family.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EngineLaneModel {
+    pub(crate) kind: EngineKind,
+    pub(crate) engine_count: u32,
+    pub(crate) combined_stall_torque: f32,
+    pub(crate) base_rpm: f32,
+    pub(crate) slots: BearingSlots,
+    pub(crate) transmission_depth: Option<u8>,
+    pub(crate) physical_depths: Vec<u8>,
+    pub(crate) mismatch: bool,
+    pub(crate) config: Option<GearboxConfig>,
+    pub(crate) active_gear: Option<usize>,
+    pub(crate) binding_conflict: bool,
+}
+
+impl EngineLaneModel {
+    pub(crate) const fn label(&self) -> &'static str {
+        match self.kind {
+            EngineKind::Electric => "ELECTRIC ENGINE LINE",
+            EngineKind::Gas => "GAS ENGINE LINE",
+        }
+    }
 }
 
 /// Bearing-port usage for every actuator family in a Controller module.
@@ -765,12 +824,12 @@ pub(crate) struct BearingSlots {
 }
 
 impl BearingSlots {
-    const fn new(used: u32, capacity: u32) -> Self {
+    pub(crate) const fn new(used: u32, capacity: u32) -> Self {
         Self { used, capacity }
     }
 
     pub(crate) fn text(self) -> String {
-        format!("{} / {} slots", self.used, self.capacity)
+        format!("{}/{} ports", self.used, self.capacity)
     }
 }
 
@@ -801,11 +860,32 @@ impl PanelModel {
     pub(crate) fn keys(&self) -> Vec<(DriveLinkId, ())> {
         self.lanes.iter().map(|lane| (lane.id, ())).collect()
     }
+
+    pub(crate) fn engine_keys(&self) -> Vec<(EngineKind, ())> {
+        self.engine_lanes
+            .iter()
+            .map(|lane| (lane.kind, ()))
+            .collect()
+    }
+
+    pub(crate) fn engine_lane(&self, kind: EngineKind) -> Option<&EngineLaneModel> {
+        self.engine_lanes.iter().find(|lane| lane.kind == kind)
+    }
+
+    pub(crate) fn engine_gear_keys(&self, kind: EngineKind) -> Vec<(usize, ())> {
+        self.engine_lane(kind)
+            .and_then(|lane| lane.config.as_ref())
+            .map_or_else(Vec::new, |config| {
+                (0..config.ratios().len())
+                    .map(|index| (index, ()))
+                    .collect()
+            })
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{HardwareModel, Mode, PanelEdit, Preset, apply_edit};
+    use super::{HardwareModel, Mode, PanelEdit, Preset, StateModel, WireKind, apply_edit, wires};
     use mechanic_core::{
         ActuatorInventory, DriveDwell, DriveKey, DriveLimits, DriveName, DriveProgram,
         DriveRelease, DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_SPEED_RAD_S,
@@ -820,11 +900,26 @@ mod tests {
             electric_joints: 5,
             gas_joints: 1,
             servo_joints: 2,
+            ..ActuatorInventory::default()
         });
 
-        assert_eq!(hardware.electric.text(), "5 / 8 slots");
-        assert_eq!(hardware.gas.text(), "1 / 4 slots");
-        assert_eq!(hardware.servo.text(), "2 / 3 slots");
+        assert_eq!(hardware.electric.text(), "5/8 ports");
+        assert_eq!(hardware.gas.text(), "1/4 ports");
+        assert_eq!(hardware.servo.text(), "2/3 ports");
+    }
+
+    #[test]
+    fn release_wire_pills_leave_the_event_to_the_arrow_icon() {
+        let mut released = StateModel::resting();
+        released.key = Some('W');
+        released.release = Some(0);
+
+        let labels = wires(&[released], WireKind::Release)
+            .into_iter()
+            .map(|wire| wire.label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, ["W"]);
     }
 
     /// A joint holding three angles, the middle two bound to keys.

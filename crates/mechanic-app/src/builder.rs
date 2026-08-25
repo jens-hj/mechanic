@@ -10,7 +10,7 @@ use mechanic_core::{
     ConstructionGraph, ControllerSpec, ConvexPiece, CuboidSpec, CylinderDimensions, CylinderSpec,
     EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartId,
     PartPiece, PartSpec, PendingOperation, RigidLinkSpec, SeatSpec, ServoSpec, ShapeRegion,
-    WeldSpec, snap_world_to_grid,
+    TransmissionSpec, WeldSpec, snap_world_to_grid,
 };
 
 pub(crate) const GROUND_HALF_SIZE: f32 = 10.0;
@@ -120,6 +120,7 @@ pub(crate) enum PlacementError {
     SameObject,
     ObjectsDoNotTouch,
     CurvedSurface,
+    TransmissionOutputOnly,
     EmptyBlockBatch,
     BlocksOverlap,
     DragPlaneUnavailable,
@@ -148,6 +149,9 @@ impl fmt::Display for PlacementError {
             Self::CurvedSurface => {
                 formatter.write_str("curved cylinder walls are not connection faces")
             }
+            Self::TransmissionOutputOnly => formatter.write_str(
+                "transmissions attach only to an engine or chain-tail positive-Z output",
+            ),
             Self::EmptyBlockBatch => formatter.write_str("block drag did not produce any blocks"),
             Self::BlocksOverlap => formatter.write_str("dragged blocks overlap one another"),
             Self::DragPlaneUnavailable => {
@@ -252,6 +256,7 @@ pub(crate) fn raycast_construction_for_annulus(
             PartSpec::Cuboid(_)
             | PartSpec::Controller(_)
             | PartSpec::Engine(_)
+            | PartSpec::Transmission(_)
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
             | PartSpec::Input(_) => None,
@@ -475,6 +480,47 @@ pub(crate) fn stage_engine_from_source(
         Some(source),
         FixedPartSpawn::Engine(kind),
     )
+}
+
+/// Builds the only valid transmission candidate for a hovered output face.
+pub(crate) fn transmission_candidate_from_hit(
+    graph: &ConstructionGraph,
+    hit: SurfaceHit,
+) -> Result<(PartId, PlacementCandidate), PlacementError> {
+    let FaceOwner::Part(parent) = hit.face.owner else {
+        return Err(PlacementError::TransmissionOutputOnly);
+    };
+    if hit.face.face != FaceKind::PositiveZ {
+        return Err(PlacementError::TransmissionOutputOnly);
+    }
+    let spec = graph
+        .next_transmission_spec(parent)
+        .map_err(|error| PlacementError::Graph(error.to_string()))?;
+    validate_part(graph, PartSpec::Transmission(spec))?;
+    Ok((
+        parent,
+        PlacementCandidate {
+            spec: spec.cuboid(),
+            attached_face: FaceKind::NegativeZ,
+            anchor: Some(hit.point),
+        },
+    ))
+}
+
+/// Stages one graph-owned transmission, including its required weld and parent relation.
+pub(crate) fn stage_transmission(
+    graph: &ConstructionGraph,
+    parent: PartId,
+    candidate: PlacementCandidate,
+) -> Result<ConstructionGraph, PlacementError> {
+    let mut staged = graph.clone();
+    staged
+        .apply(BuildCommand::AttachTransmission {
+            parent,
+            spec: TransmissionSpec::new(candidate.spec.pose),
+        })
+        .map_err(|error| PlacementError::Graph(error.to_string()))?;
+    Ok(staged)
 }
 
 /// Stages one servo, auto-welding it like an ordinary block.
@@ -1357,6 +1403,7 @@ fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
         PartSpec::Cuboid(spec) => Some(face_geometry(spec, face)),
         PartSpec::Controller(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Engine(spec) => Some(face_geometry(spec.cuboid(), face)),
+        PartSpec::Transmission(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Servo(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Seat(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Input(spec) => Some(face_geometry(spec.cuboid(), face)),
@@ -1462,6 +1509,7 @@ fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
                 PartSpec::Cuboid(_)
                 | PartSpec::Controller(_)
                 | PartSpec::Engine(_)
+                | PartSpec::Transmission(_)
                 | PartSpec::Servo(_)
                 | PartSpec::Seat(_)
                 | PartSpec::Input(_),
@@ -1614,6 +1662,7 @@ fn raycast_part(origin: Vec3, direction: Vec3, part: PartId, spec: PartSpec) -> 
         PartSpec::Cuboid(spec) => raycast_cuboid(origin, direction, part, spec),
         PartSpec::Controller(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Engine(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
+        PartSpec::Transmission(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Servo(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Seat(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Input(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
@@ -2056,6 +2105,7 @@ pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
         PartSpec::Cuboid(spec) => cuboid_world_bounds(spec),
         PartSpec::Controller(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Engine(spec) => cuboid_world_bounds(spec.cuboid()),
+        PartSpec::Transmission(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Servo(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Seat(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Input(spec) => cuboid_world_bounds(spec.cuboid()),
@@ -2130,6 +2180,7 @@ fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
     match spec {
         PartSpec::Controller(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Engine(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
+        PartSpec::Transmission(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Servo(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Seat(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Input(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
@@ -2256,9 +2307,9 @@ mod tests {
     use bevy::prelude::{IVec3, Vec3};
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, FaceKind,
-        FaceOwner, FaceRef, GridRotation, PartId, PartSpec, PendingOperation, RigidLinkSpec,
-        WeldSpec,
+        ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, EngineSpec,
+        FaceKind, FaceOwner, FaceRef, GridRotation, PartId, PartSpec, PendingOperation,
+        RigidLinkSpec, WeldSpec,
     };
 
     use super::{
@@ -2271,7 +2322,8 @@ mod tests {
         raycast_construction_for_annulus, raycast_placement_plane_point, rigid_body_parts,
         stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
         stage_block_batch_from_source, stage_cuboid, stage_cylinder_from_source,
-        stage_engine_from_source, stage_weld_objects, validate_part,
+        stage_engine_from_source, stage_transmission, stage_weld_objects,
+        transmission_candidate_from_hit, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -2297,6 +2349,41 @@ mod tests {
             unreachable!()
         };
         part
+    }
+
+    #[test]
+    fn transmission_preview_accepts_only_the_current_positive_z_output() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(engine) = graph
+            .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                EngineKind::Gas,
+                BuildPose::new(IVec3::new(0, 1, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let output = FaceRef::part(engine, FaceKind::PositiveZ);
+        let output_geometry = face_geometry_from_ref(output, Some(&graph));
+        let hit = SurfaceHit {
+            distance: 0.0,
+            point: output_geometry.center,
+            face: output,
+        };
+        let (parent, candidate) = transmission_candidate_from_hit(&graph, hit).unwrap();
+        let staged = stage_transmission(&graph, parent, candidate).unwrap();
+        assert_eq!(staged.engine_transmission_depth(engine), Some(1));
+        assert!(matches!(
+            transmission_candidate_from_hit(
+                &graph,
+                SurfaceHit {
+                    face: FaceRef::part(engine, FaceKind::PositiveX),
+                    ..hit
+                }
+            ),
+            Err(PlacementError::TransmissionOutputOnly)
+        ));
+        assert!(transmission_candidate_from_hit(&staged, hit).is_err());
     }
 
     #[test]

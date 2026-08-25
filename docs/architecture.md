@@ -31,6 +31,25 @@ rows may be written to the GPU while `Running`, because they change no topology,
 no mass, and no buffer size, leaving every compiled row index valid. Everything
 else still requires `Building`.
 
+Engines of the same kind in one Controller's directly welded machine module are
+one physical engine line. Adding engines scales that line's stall torque and
+bearing capacity linearly; it does not scale no-load RPM. Every engine in the
+line therefore shares one gearbox and must carry the same transmission depth.
+A mismatched line is a valid incomplete build which can be edited, saved, and
+loaded, but compilation refuses to simulate it until the physical stacks match.
+
+A transmission is a fixed 2×2×1 machine part with a graph-owned parent relation.
+It can only continue an engine's local positive-Z output or the current chain
+tail, inherits the root engine orientation and appearance, and owns a required
+weld which cannot be removed separately. Removing an engine or upstream
+transmission cascades through the downstream chain. Persistent gearbox settings
+belong to `(Controller, EngineKind)` graph records rather than to the Controller
+part. Active gears and pending direction changes are transient simulation state.
+Ideal gearing is resolved when drive rows are uploaded: each engine family's
+stall torque is multiplied by its active input-to-output ratio and its no-load
+output speed is divided by the same ratio. Gas and electric contributions use
+independent ratios, and this changes no GPU ABI or topology row.
+
 The compiled simulation is data-oriented. Parts become collider rows, compounds
 become body rows, and tree bearings become one-coordinate mechanism rows. Each
 bearing component has deterministic fixed or floating roots, parent/direction
@@ -77,9 +96,10 @@ so nothing could sit flush on it.
 ## Persistence
 
 A saved creation is the authored graph and nothing derived from it: parts,
-welds, rigid links, bearings, drive wires with their limits and programs, the
-shape regions with their cage planes and displaced vertices, and the bearing
-rings the editor holds that no part hangs from yet. That set is the
+welds, rigid links, bearings, drive wires with their limits and programs,
+transmission parent references, per-controller gearbox settings, the shape
+regions with their cage planes and displaced vertices, and the bearing rings the
+editor holds that no part hangs from yet. That set is the
 same one the undo history snapshots, which is the definition of "the whole
 creation". Compiled bodies, mass and inertia, loop topology, GPU buffers, and
 sequencer cursors are all recomputed on load.
@@ -89,8 +109,10 @@ across a rebuild and cannot appear in a file. A creation document numbers its
 rows by position instead, and loading replays them as `BuildCommand`s through
 `apply_batch`, remapping dense indices onto the handles the arenas return.
 Every value passes through the same validating constructors the editor uses,
-and the rebuilt graph is compiled before it replaces the current one, so
-neither a corrupt file nor a hand-edited one can install an invalid
+and the rebuilt graph is compiled before it replaces the current one. The sole
+recognized exception is a same-type transmission-depth mismatch: it installs as
+an explicitly incomplete build so a player can finish matching the stacks. All
+other compilation errors still prevent the candidate from replacing the current
 construction.
 
 `mechanic-core` owns the document and its conversions and performs no
