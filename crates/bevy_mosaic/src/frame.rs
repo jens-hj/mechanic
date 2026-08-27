@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use bevy::window::{CursorIcon, SystemCursorIcon, Window};
+use bevy::window::{CursorGrabMode, CursorIcon, CursorOptions, SystemCursorIcon, Window};
 use mosaic_core::{Size, reactive};
 use mosaic_widgets::CursorIcon as MosaicCursor;
 
@@ -20,6 +20,7 @@ use crate::input::BevyInput;
 pub(crate) fn process_input(
     context: Option<NonSendMut<MosaicContext>>,
     time: Res<Time>,
+    cursors: Query<&CursorOptions>,
     mut input: BevyInput,
 ) {
     let Some(mut context) = context else {
@@ -27,8 +28,11 @@ pub(crate) fn process_input(
     };
     let window = context.window();
     let elapsed = time.elapsed();
+    let pointer_enabled = !cursors
+        .get(window)
+        .is_ok_and(|cursor| cursor.grab_mode == CursorGrabMode::Locked);
     let (ui, state) = context.parts_mut();
-    state.drive(ui, window, elapsed, &mut input);
+    state.drive(ui, window, elapsed, pointer_enabled, &mut input);
 }
 
 /// Settle the tree, assemble a scene, and tell the window what the tree wants.

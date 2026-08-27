@@ -12,12 +12,16 @@
 use bevy_mosaic::ui::*;
 use mechanic_core::ConstructionMaterial;
 use mosaic_core::{Rect, Vector2, theme::color};
-use mosaic_macros::view;
+use mosaic_macros::{component, view};
 use mosaic_widgets::input::{EventCtx, PointerButton};
 
+use super::components::{OverlayBadge, OverlayBadgeProps};
+#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
+use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use super::{Handles, UiIntent};
+use crate::controls::GameAction;
 use crate::hotbar::Tool;
 
 /// Side of one slot.
@@ -79,7 +83,8 @@ const TOOLS: [Tool; 14] = [
 /// Placed against the bottom edge by measuring itself: the window's size is
 /// pushed in, and a column that hugs its slots is the only one that knows how
 /// wide it ended up.
-pub(crate) fn view(handles: &Handles) -> Element {
+#[component]
+pub(crate) fn Hotbar(handles: Handles) -> Element {
     let viewport = handles.viewport;
     let hovered = handles.hovered;
     let selected_material = handles.material;
@@ -112,10 +117,9 @@ pub(crate) fn view(handles: &Handles) -> Element {
                 }
             } } {
             if hovered.get().is_some() && material_menu.get().is_none() {
-                row width:max-content height:24px align:center justify:center
-                    pad:(left:10px right:12px top:0px bottom:0px) radius:12px
-                    fill:port.fill stroke:(width:1px color:accent.key) {
-                    text font-size:12px text-wrap:none font-color:accent.key { named() }
+                OverlayBadge width:max-content height:24px
+                    pad:(left:10px right:12px top:0px bottom:0px) radius:12px {
+                    text #mechanic.caption text-wrap:none font-color:accent.key { named() }
                 }
             }
             row width:min-content height:min-content align:center gap:8px
@@ -143,17 +147,18 @@ fn slot(handles: &Handles, tool: Tool) -> Element {
     let menu = handles.material_menu;
     let material_hover = handles.material_hover;
     let material_tool = matches!(tool, Tool::Block | Tool::Cylinder);
+    let controls = handles.controls;
+    let shortcut = move || controls.with(|bindings| bindings.label(GameAction::for_tool(tool)));
     let gesture = handles.clone();
-    let held = move || selection.get() == tool;
+    let held = move || selection.get() == Some(tool);
     let icon = icon(tool);
     view! {
-        stack width:{ Length::px(SLOT) } height:{ Length::px(SLOT) }
-            align:center justify:center radius:{ Length::px(SLOT_RADIUS) }
+        stack width:{ Length::px(SLOT) } height:{ Length::px(SLOT) } align:center justify:center
+            radius:{ Length::px(SLOT_RADIUS) }
             fill:{ if held() { color(bar.slot_on) } else { color(bar.slot) } }
             stroke:(width:1px color:{
                 if held() { color(bar.edge_on) } else { color(bar.edge) }
             })
-            hover { fill:bar.slot-over stroke:(width:1px color:bar.edge-over) }
             @pointer:{ move |event: &PointerEvent, _: &mut EventCtx| match event.kind {
                 PointerEventKind::Enter => hovered.set(Some(tool)),
                 // Only when this slot is still the one being named: the pointer
@@ -194,19 +199,21 @@ fn slot(handles: &Handles, tool: Tool) -> Element {
                     _ => {}
                 }
             } }
-            @click:{ if !material_tool { handles.ask(UiIntent::Tool(tool)); } } {
+            @click:{ if !material_tool { handles.ask(UiIntent::Tool(tool)); } }
+            hover { fill:bar.slot-over stroke:(width:1px color:bar.edge-over) }
+            pressed { fill:control.pressed stroke:(width:1px color:bar.edge-on) } {
             (icon)
             if menu.get() == Some(tool) {
                 col width:{ Length::px(MATERIAL_MENU_WIDTH) } height:min-content
-                    translate:(x:0px y:{ Length::px(MATERIAL_MENU_OFFSET_Y) })
-                    radius:8px clip fill:bar.fill stroke:(width:1px color:shell-edge) {
+                    translate:(x:0px y:{ Length::px(MATERIAL_MENU_OFFSET_Y) }) radius:8px clip
+                    fill:bar.fill stroke:(width:1px color:shell-edge) {
                     for (material, ()) in { ConstructionMaterial::ALL.map(|material| (material, ())) } {
                         (material_row(*material, material_hover))
                     }
                 }
             }
-            text font-size:12px font-color:bar.shortcut
-                translate:(x:-22px y:-20px) (tool.shortcut())
+            text #mechanic.caption font-color:bar.shortcut translate:(x:-22px y:-20px)
+                { shortcut() }
         }
     }
 }
@@ -216,15 +223,16 @@ fn material_row(
     highlighted: State<Option<ConstructionMaterial>>,
 ) -> Element {
     view! {
-        row width:fill height:{ Length::px(MATERIAL_ROW_HEIGHT) }
-            align:center gap:8px pad:(left:5px right:10px top:4px bottom:4px)
+        row #mechanic.list-row width:fill height:{ Length::px(MATERIAL_ROW_HEIGHT) } align:center
+            gap:8px pad:(left:5px right:10px top:4px bottom:4px) radius:0px
+            stroke:(width:0px color:bar.edge)
             fill:{ if highlighted.get() == Some(material) {
                 color(bar.slot_over)
             } else {
                 color(bar.slot)
             } } {
             (material_thumbnail(material))
-            text font-size:12px font-color:ink.fg text-wrap:none { material.label() }
+            text #mechanic.caption font-color:ink.fg text-wrap:none { material.label() }
         }
     }
 }
@@ -250,7 +258,7 @@ fn material_at(position: Vector2, slot: Rect) -> Option<ConstructionMaterial> {
     None
 }
 
-fn material_thumbnail(material: ConstructionMaterial) -> Element {
+pub(crate) fn material_thumbnail(material: ConstructionMaterial) -> Element {
     match material {
         ConstructionMaterial::Aluminium => view! {
             el width:26px height:26px radius:4px clip {
@@ -258,10 +266,27 @@ fn material_thumbnail(material: ConstructionMaterial) -> Element {
                     "assets/materials/aluminium/aluminium_thumbnail.png"
             }
         },
+        ConstructionMaterial::Graphite => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/graphite/graphite_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::CarbonFiber => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/carbon_fiber/carbon_fiber_thumbnail.png"
+            }
+        },
         ConstructionMaterial::Concrete => view! {
             el width:26px height:26px radius:4px clip {
                 img fit:cover width:fill height:fill
                     "assets/materials/concrete/concrete_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Iron => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill "assets/materials/iron/iron_thumbnail.png"
             }
         },
         ConstructionMaterial::Plastic => view! {
@@ -272,20 +297,22 @@ fn material_thumbnail(material: ConstructionMaterial) -> Element {
         },
         ConstructionMaterial::Rubber => view! {
             el width:26px height:26px radius:4px clip {
-                img fit:cover width:fill height:fill
-                    "assets/materials/rubber/rubber_thumbnail.png"
+                img fit:cover width:fill height:fill "assets/materials/rubber/rubber_thumbnail.png"
             }
         },
         ConstructionMaterial::Steel => view! {
             el width:26px height:26px radius:4px clip {
-                img fit:cover width:fill height:fill
-                    "assets/materials/steel/steel_thumbnail.png"
+                img fit:cover width:fill height:fill "assets/materials/steel/steel_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Stone => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill "assets/materials/stone/stone_thumbnail.png"
             }
         },
         ConstructionMaterial::Wood => view! {
             el width:26px height:26px radius:4px clip {
-                img fit:cover width:fill height:fill
-                    "assets/materials/wood/wood_thumbnail.png"
+                img fit:cover width:fill height:fill "assets/materials/wood/wood_thumbnail.png"
             }
         },
     }
@@ -300,24 +327,21 @@ fn icon(tool: Tool) -> Element {
     match tool {
         Tool::Block => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:23px y:16px) size:(w:22px h:22px)
-                    stroke:(width:2px color:ink.muted)
-                rect at:(x:18.5px y:24px) size:(w:25px h:24px)
-                    fill:accent.speed stroke:(width:2px color:ink.fg)
+                rect at:(x:23px y:16px) size:(w:22px h:22px) stroke:(width:2px color:ink.muted)
+                rect at:(x:18.5px y:24px) size:(w:25px h:24px) fill:accent.speed
+                    stroke:(width:2px color:ink.fg)
             }
         },
         Tool::Cylinder => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:20px) size:(w:26px h:30px) radius:13px
-                    fill:accent.speed stroke:(width:2px color:ink.fg)
-                rect at:(x:20px y:20px) size:(w:10px h:16px) radius:5px
-                    fill:bar.slot
+                rect at:(x:20px y:20px) size:(w:26px h:30px) radius:13px fill:accent.speed
+                    stroke:(width:2px color:ink.fg)
+                rect at:(x:20px y:20px) size:(w:10px h:16px) radius:5px fill:bar.slot
             }
         },
         Tool::Bearing => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                circle at:(x:20px y:20px) radius:12.5px
-                    stroke:(width:7px color:accent.angle)
+                circle at:(x:20px y:20px) radius:12.5px stroke:(width:7px color:accent.angle)
             }
         },
         Tool::Weld => view! {
@@ -342,8 +366,8 @@ fn icon(tool: Tool) -> Element {
         },
         Tool::Controller => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:20px) size:(w:26px h:26px) radius:4px
-                    fill:accent.key stroke:(width:2px color:ink.fg)
+                rect at:(x:20px y:20px) size:(w:26px h:26px) radius:4px fill:accent.key
+                    stroke:(width:2px color:ink.fg)
                 circle at:(x:20px y:20px) radius:5px fill:bar.slot
             }
         },
@@ -351,16 +375,14 @@ fn icon(tool: Tool) -> Element {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
                 line from:(x:7.02px y:25.24px) to:(x:32.98px y:14.76px)
                     stroke:(width:4px cap:round color:accent.key)
-                rect at:(x:8.5px y:28.5px) size:(w:11px h:11px) radius:3px
-                    fill:accent.key
-                circle at:(x:31px y:11px) radius:4.5px
-                    stroke:(width:3px color:accent.angle)
+                rect at:(x:8.5px y:28.5px) size:(w:11px h:11px) radius:3px fill:accent.key
+                circle at:(x:31px y:11px) radius:4.5px stroke:(width:3px color:accent.angle)
             }
         },
         Tool::GasEngine => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:20px) size:(w:30px h:24px) radius:3px
-                    fill:bar.slot stroke:(width:2px color:accent.angle)
+                rect at:(x:20px y:20px) size:(w:30px h:24px) radius:3px fill:bar.slot
+                    stroke:(width:2px color:accent.angle)
                 circle at:(x:12px y:20px) radius:5px stroke:(width:2px color:accent.angle)
                 line from:(x:20px y:13px) to:(x:31px y:13px)
                     stroke:(width:3px cap:round color:ink.fg)
@@ -372,8 +394,8 @@ fn icon(tool: Tool) -> Element {
         },
         Tool::ElectricEngine => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:20px) size:(w:28px h:28px) radius:4px
-                    fill:bar.slot stroke:(width:2px color:accent.speed)
+                rect at:(x:20px y:20px) size:(w:28px h:28px) radius:4px fill:bar.slot
+                    stroke:(width:2px color:accent.speed)
                 circle at:(x:20px y:20px) radius:9px stroke:(width:3px color:accent.speed)
                 line from:(x:20px y:11px) to:(x:20px y:29px)
                     stroke:(width:3px cap:round color:ink.fg)
@@ -381,24 +403,24 @@ fn icon(tool: Tool) -> Element {
         },
         Tool::Transmission => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:20px) size:(w:30px h:22px) radius:3px
-                    fill:bar.slot stroke:(width:2px color:accent.speed)
+                rect at:(x:20px y:20px) size:(w:30px h:22px) radius:3px fill:bar.slot
+                    stroke:(width:2px color:accent.speed)
                 circle at:(x:15px y:20px) radius:6px stroke:(width:3px color:accent.angle)
                 circle at:(x:26px y:20px) radius:6px stroke:(width:3px color:accent.speed)
             }
         },
         Tool::Servo => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:20px) size:(w:27px h:27px) radius:4px
-                    fill:bar.slot stroke:(width:2px color:accent.key)
+                rect at:(x:20px y:20px) size:(w:27px h:27px) radius:4px fill:bar.slot
+                    stroke:(width:2px color:accent.key)
                 circle at:(x:20px y:20px) radius:8px stroke:(width:3px color:accent.angle)
                 circle at:(x:20px y:20px) radius:2px fill:ink.fg
             }
         },
         Tool::Seat => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:17px) size:(w:29px h:12px) radius:5px
-                    fill:accent.speed stroke:(width:2px color:ink.fg)
+                rect at:(x:20px y:17px) size:(w:29px h:12px) radius:5px fill:accent.speed
+                    stroke:(width:2px color:ink.fg)
                 line from:(x:10px y:23px) to:(x:10px y:28px)
                     stroke:(width:3px cap:round color:ink.fg)
                 line from:(x:30px y:23px) to:(x:30px y:28px)
@@ -407,8 +429,8 @@ fn icon(tool: Tool) -> Element {
         },
         Tool::Input => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                rect at:(x:20px y:20px) size:(w:31px h:21px) radius:4px
-                    fill:bar.slot stroke:(width:2px color:accent.key)
+                rect at:(x:20px y:20px) size:(w:31px h:21px) radius:4px fill:bar.slot
+                    stroke:(width:2px color:accent.key)
                 circle at:(x:12px y:20px) radius:2.5px fill:accent.key
                 circle at:(x:20px y:20px) radius:2.5px fill:accent.key
                 circle at:(x:28px y:20px) radius:2.5px fill:accent.key
@@ -418,12 +440,9 @@ fn icon(tool: Tool) -> Element {
         // move: the wedge is what shaping is for.
         Tool::Shape => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
-                line from:(x:10px y:30px) to:(x:30px y:30px)
-                    stroke:(width:2px color:ink.fg)
-                line from:(x:10px y:30px) to:(x:10px y:14px)
-                    stroke:(width:2px color:ink.fg)
-                line from:(x:30px y:30px) to:(x:10px y:14px)
-                    stroke:(width:2px color:accent.key)
+                line from:(x:10px y:30px) to:(x:30px y:30px) stroke:(width:2px color:ink.fg)
+                line from:(x:10px y:30px) to:(x:10px y:14px) stroke:(width:2px color:ink.fg)
+                line from:(x:30px y:30px) to:(x:10px y:14px) stroke:(width:2px color:accent.key)
                 circle at:(x:10px y:14px) radius:3.5px fill:accent.key
                 circle at:(x:30px y:30px) radius:3px fill:ink.fg
                 circle at:(x:10px y:30px) radius:3px fill:ink.fg
@@ -512,10 +531,15 @@ mod tests {
                 ConstructionMaterial::Steel
             );
 
+            let concrete_index = ConstructionMaterial::ALL
+                .iter()
+                .position(|material| *material == ConstructionMaterial::Concrete)
+                .expect("Concrete is selectable");
+            let concrete_row = f32::from(u16::try_from(concrete_index).unwrap()) + 0.5;
             let concrete = Vector2::new(
                 slot.center().x,
                 slot.origin.y - MATERIAL_MENU_GAP - MATERIAL_MENU_HEIGHT
-                    + MATERIAL_ROW_HEIGHT * 1.5,
+                    + MATERIAL_ROW_HEIGHT * concrete_row,
             );
             overlay.dispatch(PointerEventKind::Move, concrete);
             assert_eq!(
@@ -773,7 +797,7 @@ mod tests {
     #[test]
     fn the_slot_in_hand_reads_differently_from_the_rest() {
         let overlay = Overlay::mount();
-        overlay.handles.hotbar.set(Tool::Weld);
+        overlay.handles.hotbar.set(Some(Tool::Weld));
         overlay.settle();
         // Nothing to assert about colour without painting a frame; what matters
         // is that the binding runs at all rather than panicking on a freed

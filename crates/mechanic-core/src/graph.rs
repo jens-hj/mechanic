@@ -8,9 +8,11 @@ use crate::{
     CageIndex, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderSpec, DriveLimits,
     DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner,
     FaceRef, GearKeyChord, GearboxConfig, GearboxError, InputSeatLinkId, InputSpec, PartId,
-    PartSpec, RegionError, RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec, ServoSpec,
-    ShapeRegion, ShiftMode, TransmissionSpec, WeldId,
-    geometry::{FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face},
+    PartSpec, PipeBendSpec, RegionError, RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec,
+    ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec, WeldId,
+    geometry::{
+        FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face, pipe_bend_face,
+    },
     id::Arena,
 };
 
@@ -308,6 +310,8 @@ pub enum BuildCommand {
     Spawn(CuboidSpec),
     /// Spawn a standalone solid or hollow cylinder.
     SpawnCylinder(CylinderSpec),
+    /// Spawn a standalone cardinal 90-degree pipe bend.
+    SpawnPipeBend(PipeBendSpec),
     /// Remove a part and every connection referencing it.
     Remove(PartId),
     /// Remove one weld while leaving its endpoint parts intact.
@@ -557,6 +561,9 @@ pub enum GraphError {
     /// Cylinders expose only their two flat local-Y ends as connection faces.
     #[error("cylinders expose only their positive-y and negative-y flat ends")]
     InvalidCylinderFace,
+    /// Pipe bends expose only their local negative-X inlet and positive-Y outlet.
+    #[error("pipe bends expose only their negative-x inlet and positive-y outlet")]
+    InvalidPipeBendFace,
     /// A connection selected the same endpoint twice.
     #[error("a connection requires two distinct faces")]
     SameFace,
@@ -1158,6 +1165,9 @@ impl ConstructionGraph {
                 Some(PartSpec::Cylinder(spec)) => {
                     cylinder_face(spec, face.face).ok_or(GraphError::InvalidCylinderFace)
                 }
+                Some(PartSpec::PipeBend(spec)) => {
+                    pipe_bend_face(spec, face.face).ok_or(GraphError::InvalidPipeBendFace)
+                }
                 None => Err(GraphError::MissingPart(part)),
             },
             FaceOwner::Ground if face.face == FaceKind::PositiveY => Ok(ground_face()),
@@ -1319,6 +1329,10 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnCylinder(spec) => {
+                let id = self.parts.insert(spec.into());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnPipeBend(spec) => {
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }

@@ -771,6 +771,8 @@ pub(crate) struct PanelModel {
     pub(crate) engine_lanes: Vec<EngineLaneModel>,
     /// Bearing-port usage supplied by the controller's attached actuators.
     pub(crate) hardware: HardwareModel,
+    /// A vehicle key overlaps a rebindable gameplay action.
+    pub(crate) gameplay_binding_conflict: bool,
 }
 
 /// Static build information and persistent gearing for one engine family.

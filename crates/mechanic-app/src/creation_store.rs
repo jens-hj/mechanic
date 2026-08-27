@@ -97,6 +97,17 @@ impl CreationStore {
         &self.directory
     }
 
+    /// Settings live beside the creations directory in Mechanic's app-data folder.
+    pub(crate) fn settings_path(&self) -> PathBuf {
+        self.directory
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(
+                || PathBuf::from("settings.ron"),
+                |parent| parent.join("settings.ron"),
+            )
+    }
+
     /// Where a creation with this display name would be written.
     pub(crate) fn path_for(&self, name: &str) -> PathBuf {
         self.directory

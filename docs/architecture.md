@@ -146,14 +146,36 @@ pair of sequence-numbered slots and never waits for bulk CPU readback.
    matrix-free normal equation with eight diagonally preconditioned CG rounds.
 4. Build Morton codes and an LBVH over the current cuboid world bounds.
 5. Generate OBB and ground contacts with fixed-capacity overflow accounting.
-6. Warm start and solve normal/friction impulses for a fixed projected budget,
-   then project their body-space changes back into root and joint velocities.
+6. Warm start and solve compliant normal impulses, persistent two-axis
+   static/kinetic friction, and tangent-axis rolling resistance for a fixed
+   projected budget, then project their body-space changes back into root and
+   joint velocities. Surface friction and rolling coefficients mix by geometric
+   mean, restitution by maximum, and nominal block compliance additively. The
+   normal constraint uses `gamma = combined_compliance / dt²` in both its
+   effective-mass denominator and accumulated-impulse feedback. The infinite
+   ground plane uses Concrete's surface properties.
 7. Validate finite state and the 0.01 mm/0.001 degree bearing tolerances.
 8. Publish the next snapshot and timestamp report.
 
 Scenes without bearings retain the direct free-body integration/contact path.
 Mechanism timing covers reduced-coordinate projection and forward kinematics;
 contact timing includes contact projection before articulated feedback.
+
+## Contact ABI
+
+`GpuContact` remains 64 bytes and the 2,097,152-row pair/contact capacity is
+unchanged. Narrowphase temporarily carries combined compliance in the future
+normal-impulse lane. Preparation then stores target normal speed in the former
+penetration lane and packs static friction, kinetic friction, rolling
+resistance, and compliance response into the spare lane; an analytic-cylinder
+bit lives in contact metadata.
+
+`GpuCollider` grows from 96 to 112 bytes to hold explicit surface-response and
+elasticity vectors, adding 2 MiB at the 131,072-collider cap. A 32-byte uniform
+holds the ground surface. `GpuPersistentManifold` grows from 48 to 64 bytes so
+normal, two-axis sliding, and two-axis rolling impulses survive between ticks;
+that adds 32 MiB at maximum pair capacity. These are fixed allocations and do
+not alter overflow behavior or adapt solver quality at runtime.
 
 The initial WGSL proof keeps these stages as separate entry points even where a
 smoke implementation is deliberately minimal. This preserves profiling and

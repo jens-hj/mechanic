@@ -128,10 +128,16 @@ pub(crate) struct VertexDrag {
     pub(crate) start_offset: [i16; 3],
     /// Where the vertex sat in the world when the drag began.
     pub(crate) start_position: Vec3,
+    /// The one world axis this segment of the drag may change.
+    pub(crate) axis: usize,
+    /// Offset at the most recent axis change.
+    anchor_offset: [i16; 3],
+    /// Vertex position at the most recent axis change.
+    anchor_position: Vec3,
     /// Plane normal the pointer is projected onto.
-    pub(crate) plane_normal: Vec3,
+    plane_normal: Vec3,
     /// Where the pointer first met that plane.
-    pub(crate) grab_point: Vec3,
+    grab_point: Vec3,
     /// Offset the drag currently proposes.
     pub(crate) offset: [i16; 3],
     /// Other selected vertices moving with it, and the offsets they started
@@ -139,25 +145,36 @@ pub(crate) struct VertexDrag {
     pub(crate) group: Vec<(CageIndex, [i16; 3])>,
 }
 
-/// A selection rectangle being dragged out.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct BoxSelect {
-    /// Where the drag started, in viewport coordinates.
-    pub(crate) start: Vec2,
-    /// Where the pointer is now.
-    pub(crate) current: Vec2,
-}
-
-impl BoxSelect {
-    /// The rectangle's corners, lowest first.
-    pub(crate) fn bounds(self) -> (Vec2, Vec2) {
-        (self.start.min(self.current), self.start.max(self.current))
+impl VertexDrag {
+    /// World position proposed for the primary vertex.
+    pub(crate) fn position(&self) -> Vec3 {
+        let delta = Vec3::from_array(self.offset.map(f32::from))
+            - Vec3::from_array(self.start_offset.map(f32::from));
+        self.start_position + delta * STEP_METERS
     }
 
-    /// Whether the pointer has travelled far enough to mean a box rather than a
-    /// click that missed.
-    pub(crate) fn is_meaningful(self) -> bool {
-        (self.current - self.start).abs().max_element() > 4.0
+    /// Changes the movement axis and starts measuring this segment at the
+    /// pointer's current position, so cycling never makes the vertex jump.
+    pub(crate) fn cycle_axis(&mut self, ray_origin: Vec3, ray_direction: Vec3) {
+        self.axis = (self.axis + 1) % 3;
+        self.anchor_offset = self.offset;
+        self.anchor_position = self.position();
+        self.plane_normal = -ray_direction;
+        self.grab_point = project_onto_plane(
+            ray_origin,
+            ray_direction,
+            self.anchor_position,
+            self.plane_normal,
+        )
+        .unwrap_or(self.anchor_position);
+    }
+
+    pub(crate) const fn axis_label(&self) -> &'static str {
+        match self.axis {
+            0 => "X",
+            1 => "Y",
+            _ => "Z",
+        }
     }
 }
 
@@ -315,23 +332,6 @@ fn edge_point(
     Some(from.lerp(to, blend))
 }
 
-/// Cage vertices whose projected position falls inside a viewport rectangle.
-pub(crate) fn vertices_in_rect(
-    region: &ShapeRegion,
-    bounds: (Vec2, Vec2),
-    project: impl Fn(Vec3) -> Option<Vec2>,
-) -> Vec<CageIndex> {
-    let (low, high) = bounds;
-    region
-        .vertices()
-        .filter(|&index| {
-            vertex_position(region, index)
-                .and_then(&project)
-                .is_some_and(|at| at.cmpge(low).all() && at.cmple(high).all())
-        })
-        .collect()
-}
-
 /// Starts a drag on `index`, carrying `selected` along with it.
 pub(crate) fn begin_group_drag(
     region: &ShapeRegion,
@@ -341,8 +341,11 @@ pub(crate) fn begin_group_drag(
     ray_direction: Vec3,
 ) -> VertexDrag {
     let start_position = vertex_position(region, index).unwrap_or_default();
-    // Drag in the plane facing the camera, so the vertex follows the pointer
-    // rather than sliding along one axis the user did not choose.
+    let start_offset = region.offset(index);
+    // Begin with the axis that reads most clearly in the current view. The
+    // pointer is still measured on a camera-facing plane, but only travel along
+    // this one axis is accepted.
+    let axis = most_visible_axis(ray_direction);
     let plane_normal = -ray_direction;
     let grab_point = project_onto_plane(ray_origin, ray_direction, start_position, plane_normal)
         .unwrap_or(start_position);
@@ -357,12 +360,27 @@ pub(crate) fn begin_group_drag(
     };
     VertexDrag {
         index,
-        start_offset: region.offset(index),
+        start_offset,
         start_position,
+        axis,
+        anchor_offset: start_offset,
+        anchor_position: start_position,
         plane_normal,
         grab_point,
-        offset: region.offset(index),
+        offset: start_offset,
         group,
+    }
+}
+
+/// Chooses the world axis with the largest screen projection.
+fn most_visible_axis(ray_direction: Vec3) -> usize {
+    let alignment = ray_direction.abs();
+    if alignment.x <= alignment.y && alignment.x <= alignment.z {
+        0
+    } else if alignment.y <= alignment.z {
+        1
+    } else {
+        2
     }
 }
 
@@ -377,17 +395,15 @@ pub(crate) fn drag_offset(
     let Some(point) = project_onto_plane(
         ray_origin,
         ray_direction,
-        drag.start_position,
+        drag.anchor_position,
         drag.plane_normal,
     ) else {
         return drag.offset;
     };
     let travel = (point - drag.grab_point) / STEP_METERS;
-    let proposed = [
-        snap.quantise(i32::from(drag.start_offset[0]) + round_to_i32(travel.x)),
-        snap.quantise(i32::from(drag.start_offset[1]) + round_to_i32(travel.y)),
-        snap.quantise(i32::from(drag.start_offset[2]) + round_to_i32(travel.z)),
-    ];
+    let mut proposed = drag.anchor_offset.map(i32::from);
+    proposed[drag.axis] =
+        snap.quantise(i32::from(drag.anchor_offset[drag.axis]) + round_to_i32(travel[drag.axis]));
     clamp_into_region(region, drag.index, proposed)
 }
 
@@ -554,11 +570,11 @@ pub(crate) fn vertex_marker_size(distance: f32) -> f32 {
 mod tests {
     use super::{
         ShapeMirror, ShapeSnap, begin_group_drag, clamp_into_region, drag_edits, drag_offset,
-        edge_insertion, hovered_vertex, mirrored_edits, nudge_edits, screen_axis, vertex_position,
-        vertices_in_rect,
+        edge_insertion, hovered_vertex, mirrored_edits, most_visible_axis, nudge_edits,
+        screen_axis, vertex_position,
     };
     use bevy::prelude::*;
-    use mechanic_core::{ConstructionMaterial, STEPS_PER_CELL, ShapeRegion};
+    use mechanic_core::{ConstructionMaterial, STEP_METERS, STEPS_PER_CELL, ShapeRegion};
 
     fn region(size: IVec3) -> ShapeRegion {
         ShapeRegion::new(IVec3::ZERO, size, ConstructionMaterial::Steel).unwrap()
@@ -627,6 +643,60 @@ mod tests {
                 "travel {travel} produced off-grid offset {offset:?}"
             );
         }
+    }
+
+    #[test]
+    fn dragging_changes_only_the_active_axis() {
+        let region = region(IVec3::new(4, 4, 4));
+        let snap = ShapeSnap { steps: 1 };
+        let index = [0, 0, 0];
+        let start = vertex_position(&region, index).unwrap();
+        let direction = Vec3::NEG_Z;
+        let origin = start + Vec3::Z * 2.0;
+        let drag = begin_group_drag(&region, index, &[], origin, direction);
+        assert_eq!(drag.axis, 0, "X is most visible from this view");
+
+        let target = start + Vec3::new(STEP_METERS * 7.0, STEP_METERS * 11.0, 0.0);
+        let moved_direction = (target - origin).normalize();
+        assert_eq!(
+            drag_offset(&region, &drag, snap, origin, moved_direction),
+            [7, 0, 0],
+            "screen travel on Y must not leak into an X-axis edit"
+        );
+    }
+
+    #[test]
+    fn cycling_the_drag_axis_preserves_prior_travel() {
+        let region = region(IVec3::new(4, 4, 4));
+        let snap = ShapeSnap { steps: 1 };
+        let index = [0, 0, 0];
+        let start = vertex_position(&region, index).unwrap();
+        let direction = Vec3::NEG_Z;
+        let origin = start + Vec3::Z * 2.0;
+        let mut drag = begin_group_drag(&region, index, &[], origin, direction);
+        let target_x = start + Vec3::X * STEP_METERS * 7.0;
+        let moved_x = (target_x - origin).normalize();
+        drag.offset = drag_offset(&region, &drag, snap, origin, moved_x);
+
+        drag.cycle_axis(origin, moved_x);
+        assert_eq!(drag.axis, 1);
+        assert_eq!(
+            drag_offset(&region, &drag, snap, origin, moved_x),
+            [7, 0, 0]
+        );
+        let target_y = target_x + Vec3::Y * STEP_METERS * 5.0;
+        let moved_y = (target_y - origin).normalize();
+        assert_eq!(
+            drag_offset(&region, &drag, snap, origin, moved_y),
+            [7, 5, 0]
+        );
+    }
+
+    #[test]
+    fn the_initial_drag_axis_is_the_most_visible_world_axis() {
+        assert_eq!(most_visible_axis(Vec3::NEG_Z), 0);
+        assert_eq!(most_visible_axis(Vec3::new(0.9, 0.2, 0.3)), 1);
+        assert_eq!(most_visible_axis(Vec3::new(0.2, 0.3, 0.9)), 0);
     }
 
     #[test]
@@ -724,18 +794,6 @@ mod tests {
             edits.contains(&(companion, [0, 8, 0])),
             "the companion keeps its own head start: {edits:?}"
         );
-    }
-
-    #[test]
-    fn a_rectangle_selects_only_the_vertices_projected_inside_it() {
-        let region = region(IVec3::ONE);
-        let inside = vertices_in_rect(
-            &region,
-            (Vec2::new(-0.01, -0.01), Vec2::new(0.13, 0.13)),
-            |point| Some(Vec2::new(point.x, point.y)),
-        );
-        assert!(!inside.is_empty());
-        assert!(inside.len() < 8, "the rectangle should not sweep up all");
     }
 
     #[test]

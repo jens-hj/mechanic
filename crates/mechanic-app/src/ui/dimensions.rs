@@ -5,9 +5,12 @@
 use bevy::math::{Vec2, Vec3};
 use bevy::prelude::{Camera, GlobalTransform};
 use bevy_mosaic::ui::*;
-use mosaic_macros::view;
+use mosaic_macros::{component, view};
 
 use super::Handles;
+use super::components::{OverlayBadge, OverlayBadgeProps, PanelSurface, PanelSurfaceProps};
+#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
+use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use crate::{AppSimulation, EditorState, block_sheet_bounds};
@@ -41,7 +44,7 @@ struct EdgeLabel {
 struct Summary {
     counts: String,
     metres: String,
-    /// Which plane the pointer is driving, so `Q` reports what it changed to.
+    /// Which plane the pointer is driving, so Rotate reports what it changed to.
     plane: String,
 }
 
@@ -55,6 +58,53 @@ pub(crate) fn capture(
         return Model::default();
     }
     let (camera, transform) = *camera;
+    if let Some(drag) = state.pipe_drag.as_ref() {
+        let mut points = Vec::with_capacity(drag.corners.len() + 2);
+        points.push(drag.start);
+        points.extend(drag.corners.iter().copied());
+        points.push(drag.endpoint);
+        let mut edges = Vec::with_capacity(points.len().saturating_sub(1));
+        for segment in points.windows(2) {
+            let Some(at) = camera
+                .world_to_viewport(transform, (segment[0] + segment[1]) * 0.5)
+                .ok()
+            else {
+                return Model::default();
+            };
+            edges.push(EdgeLabel {
+                at: at + Vec2::new(0.0, -LABEL_H),
+                text: format!("{:.2} m", segment[0].distance(segment[1])),
+            });
+        }
+        let bend_radius = if drag.choosing_direction || drag.bend_radii.is_empty() {
+            drag.pending_radius
+        } else {
+            *drag.bend_radii.last().expect("a latest pipe bend exists")
+        };
+        return Model {
+            edges,
+            summary: Some(Summary {
+                counts: format!(
+                    "{} leg{} · {} bend{}",
+                    points.len() - 1,
+                    if points.len() == 2 { "" } else { "s" },
+                    drag.bend_radii.len(),
+                    if drag.bend_radii.len() == 1 { "" } else { "s" },
+                ),
+                metres: format!(
+                    "OD {:.2} m · ID {:.2} m · radius {:.2} m",
+                    drag.dimensions.outer_diameter(),
+                    drag.dimensions.inner_diameter(),
+                    bend_radius,
+                ),
+                plane: if drag.choosing_direction {
+                    "Choose turn direction · wheel changes radius".to_owned()
+                } else {
+                    format!("{} mode · R cycles · F bends", drag.mode.label())
+                },
+            }),
+        };
+    }
     // An area drag measures a volume; a block drag measures the sheet it is
     // filling. Only one of the two can be open at a time.
     if let Some(drag) = state.region_drag.as_ref() {
@@ -156,7 +206,7 @@ fn capture_box(
                 lengths.z,
                 lengths.x * lengths.y * lengths.z
             ),
-            plane: format!("{} plane · Q rotates", plane.label()),
+            plane: format!("{} plane · Rotate action", plane.label()),
         }),
     }
 }
@@ -252,7 +302,7 @@ fn capture_sheet(
                 lengths[1],
                 lengths[0] * lengths[1]
             ),
-            plane: format!("{} plane · Q rotates", plane.label()),
+            plane: format!("{} plane · Rotate action", plane.label()),
         }),
     }
 }
@@ -299,12 +349,13 @@ fn outside_edge_label(at: Vec2, from: Vec2, to: Vec2, centre: Vec2) -> Option<Ve
     Some(at + outward * (label_radius + LABEL_OUTSIDE_GAP))
 }
 
-pub(crate) fn view(handles: &Handles) -> Element {
+#[component]
+pub(crate) fn DimensionOverlay(handles: Handles) -> Element {
     let dimensions = handles.dimensions;
     let viewport = handles.viewport;
     let count = move || dimensions.with(|model| model.edges.len());
     view! {
-        stack width:fill height:fill align:start justify:start nohit {
+        stack align:start justify:start nohit {
             for (index, ()) in { (0..count()).map(|index| (index, ())) } {
                 (edge(dimensions, *index))
             }
@@ -327,11 +378,11 @@ fn edge(dimensions: State<Model>, index: usize) -> Element {
     };
     let text = move || found().map_or_else(String::new, |label| label.text);
     view! {
-        row width:{ Length::px(LABEL_W) } height:{ Length::px(LABEL_H) }
-            align:center justify:center radius:14px
-            translate:(x:{ at().0 } y:{ at().1 })
-            fill:port.fill stroke:(width:1px color:accent.key) {
-            text font-size:14px font-weight:700 text-wrap:none font-color:ink.fg { text() }
+        stack width:0px height:0px nohit translate:(x:{ at().0 } y:{ at().1 }) {
+            OverlayBadge width:(Length::px(LABEL_W)) height:(Length::px(LABEL_H)) radius:14px {
+                text font-size:text-size.body font-weight:{ resolved_weight(text_weight.bold) }
+                    text-wrap:none font-color:ink.fg { text() }
+            }
         }
     }
 }
@@ -364,14 +415,16 @@ fn summary(dimensions: State<Model>, viewport: State<Size>) -> Element {
     let at =
         move || Length::px((viewport.get().width - SUMMARY_W - SUMMARY_MARGIN).max(SUMMARY_MARGIN));
     view! {
-        col width:{ Length::px(SUMMARY_W) } height:{ Length::px(SUMMARY_H) }
-            align:end justify:center gap:2px
-            pad:(left:14px right:14px top:8px bottom:8px) radius:8px
-            translate:(x:{ at() } y:{ Length::px(SUMMARY_MARGIN) })
-            fill:shell stroke:(width:1px color:shell-edge) {
-            text font-size:26px font-weight:700 text-wrap:none font-color:accent.key { counts() }
-            text font-size:14px font-weight:700 text-wrap:none font-color:ink.fg { metres() }
-            text font-size:13px font-weight:700 text-wrap:none font-color:accent.speed { plane() }
+        stack width:0px height:0px nohit translate:(x:{ at() } y:{ Length::px(SUMMARY_MARGIN) }) {
+            PanelSurface elevated:false width:(Length::px(SUMMARY_W)) height:(Length::px(SUMMARY_H))
+                align:end justify:center gap:2px pad:(left:14px right:14px top:8px bottom:8px)
+                radius:(radius.chip) {
+                text font-size:text-size.hero font-weight:{ resolved_weight(text_weight.bold) }
+                    text-wrap:none font-color:accent.key { counts() }
+                text font-size:text-size.body font-weight:{ resolved_weight(text_weight.bold) }
+                    text-wrap:none font-color:ink.fg { metres() }
+                text #mechanic.label text-wrap:none font-color:accent.speed { plane() }
+            }
         }
     }
 }
@@ -406,7 +459,7 @@ mod tests {
             summary: Some(Summary {
                 counts: "6 × 4 = 24".to_owned(),
                 metres: "1.50 m × 1.00 m = 1.50 m²".to_owned(),
-                plane: "XZ plane · Q rotates".to_owned(),
+                plane: "XZ plane · R rotates".to_owned(),
             }),
         }
     }
@@ -443,7 +496,7 @@ mod tests {
             assert_eq!(summary.metres, "1.50 m × 1.00 m = 1.50 m²");
             assert_eq!(
                 summary.plane,
-                format!("{} plane · Q rotates", plane.label())
+                format!("{} plane · Rotate action", plane.label())
             );
 
             let [lower, upper, left, right] = captured.edges.as_slice() else {
@@ -518,7 +571,7 @@ mod tests {
         let summary = captured.summary.expect("an area reports its size");
         assert_eq!(summary.counts, "3 × 2 × 1 = 6");
         assert_eq!(summary.metres, "0.75 × 0.50 × 0.25 m = 0.094 m³");
-        assert_eq!(summary.plane, "XZ plane · Q rotates");
+        assert_eq!(summary.plane, "XZ plane · Rotate action");
 
         // Every label is pushed away from the box rather than sitting on it.
         let centre = skewed(Vec3::new(0.375, 0.25, 0.125));

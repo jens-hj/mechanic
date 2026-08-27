@@ -22,6 +22,10 @@ Mechanic is a Rust 2024 Cargo workspace. Keep shared construction data structure
 
 Follow standard `rustfmt` output with four-space indentation. Use `snake_case` for modules, functions, variables, and test names; `UpperCamelCase` for types and traits; and `SCREAMING_SNAKE_CASE` for constants. Keep CPU/GPU layouts synchronized when editing ABI structs or WGSL bindings. Unsafe Rust is forbidden, public APIs should be documented, and Clippy `all` plus `pedantic` warnings are enabled workspace-wide.
 
+## Dependency Quality
+
+Treat Mosaic as a first-party UI dependency, not a fixed limitation to work around. Do not add Mechanic-specific hacks, duplicate rendering paths, or brittle layout tricks to compensate for missing or incorrect Mosaic behavior. Identify the capability or fix that belongs in Mosaic, propose it explicitly, and prefer implementing and consuming that upstream change before continuing the Mechanic feature.
+
 ## Testing Guidelines
 
 Add focused regression tests beside the code being changed. Name tests after observable behavior, for example `off_centre_external_impulse_changes_linear_and_angular_motion`. Exercise both graph compilation and GPU behavior when a change crosses that boundary. Hardware-specific GPU tests may require a real adapter; report the adapter and command used. Do not claim scale-gate completion unless the exact body count, kernel coverage, failure flags, throughput, and p95 requirements in `README.md` are satisfied.

@@ -65,6 +65,7 @@ pub(crate) fn drive_key(key: KeyCode) -> Option<DriveKey> {
         KeyCode::KeyB => 'B',
         KeyCode::KeyC => 'C',
         KeyCode::KeyD => 'D',
+        KeyCode::KeyE => 'E',
         KeyCode::KeyF => 'F',
         KeyCode::KeyG => 'G',
         KeyCode::KeyH => 'H',
@@ -1107,10 +1108,8 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_key_is_not_bindable() {
-        // E opens the control panel, so binding it to a state would make one
-        // press both move the machine and open the window used to edit it.
-        assert_eq!(super::drive_key(bevy::prelude::KeyCode::KeyE), None);
+    fn the_panel_key_is_bindable_with_gameplay_conflicts_allowed() {
+        assert!(super::drive_key(bevy::prelude::KeyCode::KeyE).is_some());
         assert!(super::drive_key(bevy::prelude::KeyCode::KeyD).is_some());
         assert!(super::drive_key(bevy::prelude::KeyCode::KeyF).is_some());
         assert_eq!(

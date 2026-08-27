@@ -1,64 +1,92 @@
-//! The whole overlay's palette and icon set.
+//! The overlay's independently installable design-token schemes.
 //!
-//! The colours carry meaning rather than decoration, and the views read better
-//! when they say so: amber is positional (an angle, a travel limit), cyan is
-//! continuous (a speed), teal is bound or focused, and lilac is temporal (a
-//! dwell, a loop). Dashed edges mean "not configured yet" everywhere they
-//! appear.
-//!
-//! One palette for every panel. The control block was drawn from these tokens
-//! first and the rest of the UI was restyled onto them, which is what stops the
-//! overlay reading as two applications sharing a window.
+//! Colour, geometry, typography, effects, and icons are separate schemes so a
+//! future palette or density switch only invalidates the values it owns. The
+//! default themes below preserve the measurements and colours the overlay was
+//! authored with.
 
 #[allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
 use bevy_mosaic::ui::*;
 
+/// Where the design's two typefaces are looked for.
+pub(crate) const FONT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts");
+
+/// The typeface the design uses for titles and section headings.
+pub(crate) const DISPLAY_FAMILY: &str = "Chakra Petch";
+
+/// The typeface the design uses for body copy, controls, labels, and numbers.
+pub(crate) const BODY_FAMILY: &str = "JetBrains Mono";
+
 mosaic_macros::scheme! {
-    /// Every colour the control block paints with.
-    pub Block {
-        // The panel itself.
+    /// Surfaces, ink, accents, interaction states, and specialised block colours.
+    pub(crate) MechanicPalette {
         shell:Color, shell-edge:Color, shell-rule:Color,
-        // Text, from loudest to quietest.
         ink { fg:Color, muted:Color, legend:Color, dim:Color, faint:Color },
-        // What the accents mean.
         accent { angle:Color, speed:Color, key:Color, time:Color, danger:Color },
-        // The design's accent washes, pre-composed against the shell: it
-        // authored them as CSS `rgba()`, which blends in sRGB, while the
-        // renderer composites in linear space and would read them far
-        // brighter.
+        control { rest:Color, hover:Color, pressed:Color, focus:Color },
+        status-color { good:Color, warn:Color, bad:Color },
         wash { angle:Color, speed:Color, key:Color, time:Color, mode-angle:Color,
                mode-speed:Color, chip-travel:Color, chip-loop:Color, badge:Color,
                pill-angle:Color, pill-speed:Color, travel-arc:Color, capturing:Color,
                delete:Color },
-        // One joint's row.
         lane { edge:Color, edge-on:Color, fill:Color, fill-on:Color },
         badge { fill:Color, edge:Color, ink:Color },
         reticle { edge:Color, fill-over:Color },
-        // The four property chips.
         chip { fill:Color, edge:Color, edge-over:Color, speed:Color, torque:Color,
                travel-edge:Color, loop-edge:Color },
         preset { edge:Color, fill-over:Color },
-        // One state.
         card { fill:Color, edge:Color, edge-on:Color },
         dial { track:Color, tick:Color, limit:Color, grip:Color, knob:Color },
         key { edge-off:Color, ink-off:Color, ink-on:Color },
         mode { off:Color },
         port { fill:Color, fill-over:Color, idle:Color, off:Color },
         add { edge:Color, ring:Color, fill-over:Color },
-        // One hotbar slot, and the tooltip above the bar.
         bar { fill:Color, slot:Color, slot-over:Color, slot-on:Color,
               edge:Color, edge-over:Color, edge-on:Color, shortcut:Color },
-        // The help panel's lines, which are graded by how loudly they speak.
         help { title:Color, body:Color, muted:Color, good:Color, warn:Color, bad:Color },
-        // The creation picker, and the sheet it darkens the world with.
         picker { veil:Color, sheet:Color, edge:Color, row:Color, row-over:Color,
                  row-edge:Color, danger:Color, danger-over:Color, notice:Color },
     }
 }
 
 mosaic_macros::scheme! {
-    /// Every mark the control block draws.
-    pub BlockIcons {
+    /// Repeated overlay measurements. Procedural drawing geometry stays in Rust.
+    pub(crate) MechanicMetrics {
+        space { xxs:Length, xs:Length, sm:Length, md:Length, lg:Length, xl:Length },
+        pad { panel:Length, sheet:Length, action-x:Length, action-y:Length },
+        radius { field:Length, action:Length, chip:Length, panel:Length,
+                 elevated:Length, badge:Length },
+        control-size { compact-height:Length, height:Length, row-height:Length },
+        border { hairline:Scalar, strong:Scalar },
+        panel-size { help-width:Length, inset:Length, modal-width:Length,
+                     summary-width:Length, summary-height:Length },
+    }
+}
+
+mosaic_macros::scheme! {
+    /// The semantic type scale used by every overlay surface.
+    pub(crate) MechanicType {
+        typeface { body:FontFamily, display:FontFamily },
+        text-size { micro:Length, tiny:Length, caption:Length, label:Length, body:Length,
+                    value:Length, section:Length, heading:Length, title:Length, hero:Length },
+        text-weight { medium:Scalar, bold:Scalar },
+        text-tracking { tight:Length, label:Length, help-title:Length,
+                        section:Length, title:Length },
+    }
+}
+
+mosaic_macros::scheme! {
+    /// Elevation and the shared interaction/theme transition.
+    pub(crate) MechanicEffects {
+        panel-shadow:Shadow,
+        modal-shadow:Shadow,
+        motion:Transition,
+    }
+}
+
+mosaic_macros::scheme! {
+    /// Every embedded mark the control block draws.
+    pub(crate) MechanicIcons {
         mark:Svg,
         legend-angle:Svg, legend-spin:Svg, legend-key:Svg, legend-time:Svg,
         locate:Svg,
@@ -71,12 +99,14 @@ mosaic_macros::scheme! {
     }
 }
 
-/// The palette, straight off the design.
-pub(crate) fn palette() -> Block {
-    mosaic_macros::theme! { Block {
+/// The default palette, straight off the design.
+pub(crate) fn palette() -> MechanicPalette {
+    mosaic_macros::theme! { MechanicPalette {
         shell:#070C11F7, shell-edge:#24444C, shell-rule:#142430,
         ink { fg:#DCE9F2, muted:#8FA6B6, legend:#90A6B6, dim:#7E95A6, faint:#6E869A },
         accent { angle:#F2A33C, speed:#3FCBE0, key:#2FD8B4, time:#9C8BF0, danger:#E2565A },
+        control { rest:#0B141C, hover:#122029, pressed:#0C2425, focus:#2FD8B4 },
+        status-color { good:#2FD8B4, warn:#F2A33C, bad:#E2565A },
         wash { angle:#231E16, speed:#0E232A, key:#0C2425, time:#191B2C, mode-angle:#322E25,
                mode-speed:#163540, chip-travel:#1A1814, chip-loop:#131623, badge:#0D2B29,
                pill-angle:#2E2B25, pill-speed:#15313C, travel-arc:#322E25, capturing:#122F33,
@@ -103,9 +133,58 @@ pub(crate) fn palette() -> Block {
     } }
 }
 
+/// The default spacing and density.
+pub(crate) fn metrics() -> MechanicMetrics {
+    mosaic_macros::theme! { MechanicMetrics {
+        space { xxs:2px, xs:3px, sm:6px, md:8px, lg:10px, xl:16px },
+        pad { panel:16px, sheet:24px, action-x:16px, action-y:9px },
+        radius { field:6px, action:7px, chip:8px, panel:10px, elevated:14px, badge:13px },
+        control-size { compact-height:34px, height:42px, row-height:52px },
+        border { hairline:1, strong:2 },
+        panel-size { help-width:720px, inset:16px, modal-width:640px,
+                     summary-width:300px, summary-height:102px },
+    } }
+}
+
+/// The default typography.
+pub(crate) fn typography() -> MechanicType {
+    mosaic_macros::theme! { MechanicType {
+        typeface {
+            body:(FontFamily::Named(BODY_FAMILY.into())),
+            display:(FontFamily::Named(DISPLAY_FAMILY.into())),
+        },
+        text-size { micro:8px, tiny:9px, caption:12px, label:13px, body:14px,
+                    value:15px, section:16px, heading:17px, title:19px, hero:26px },
+        text-weight { medium:600, bold:700 },
+        text-tracking { tight:0px, label:0.6px, help-title:1.4px,
+                        section:1.7px, title:2.7px },
+    } }
+}
+
+/// Resolves an authored font weight into Mosaic's integer text weight.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "theme weights are clamped and rounded before conversion"
+)]
+pub(crate) fn resolved_weight(token: mosaic_core::theme::ScalarToken) -> u16 {
+    mosaic_core::theme::scalar(token)
+        .round()
+        .clamp(1.0, 1_000.0) as u16
+}
+
+/// The default elevation and 140 ms motion.
+pub(crate) fn effects() -> MechanicEffects {
+    mosaic_macros::theme! { MechanicEffects {
+        panel-shadow:(offset:(x:0px y:12px) blur:26px color:#00000073),
+        modal-shadow:(offset:(x:0px y:30px) blur:90px color:#00000099),
+        motion:(all:ease(out 140ms)),
+    } }
+}
+
 /// The icon set, embedded at compile time.
-pub(crate) fn icons() -> BlockIcons {
-    mosaic_macros::theme! { BlockIcons {
+pub(crate) fn icons() -> MechanicIcons {
+    mosaic_macros::theme! { MechanicIcons {
         mark:"assets/control-block/mark.svg",
         legend-angle:"assets/control-block/legend-angle.svg",
         legend-spin:"assets/control-block/legend-spin.svg",
@@ -134,8 +213,11 @@ pub(crate) fn icons() -> BlockIcons {
     } }
 }
 
-/// Installs the palette and icons, which every `view!` below reads by token.
+/// Installs one default theme for every scheme the overlay reads.
 pub(crate) fn install() {
     install_theme(&palette());
+    install_theme(&metrics());
+    install_theme(&typography());
+    install_theme(&effects());
     install_theme(&icons());
 }

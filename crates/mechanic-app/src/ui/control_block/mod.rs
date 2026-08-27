@@ -24,7 +24,7 @@ use crate::sequencer::GearboxRuntime;
 use crate::{AppSimulation, EditorGraph, EditorHistory, EditorSnapshot, EditorState};
 
 pub(crate) use model::{GearboxEdit, GearboxIntent, Intent, PanelEdit, PanelModel};
-pub(crate) use view::{Handles, panel};
+pub(crate) use view::{ControlPanel, ControlPanelProps, Handles};
 
 use model::{EngineLaneModel, HardwareModel, LaneModel, apply_edit};
 
@@ -283,6 +283,7 @@ pub(crate) fn capture(
     panel: &ControlPanelState,
     graph: &EditorGraph,
     gearboxes: &GearboxRuntime,
+    controls: &crate::controls::Controls,
 ) -> PanelModel {
     let Some(controller) = panel.controller() else {
         return PanelModel::default();
@@ -374,6 +375,9 @@ pub(crate) fn capture(
         lanes,
         engine_lanes,
         hardware: HardwareModel::from(inventory),
+        gameplay_binding_conflict: crate::controls::GameAction::ALL
+            .into_iter()
+            .any(|action| controls.conflicts_with_vehicle(&graph.0, action)),
     }
 }
 
@@ -489,11 +493,7 @@ pub(crate) fn capture_key(handles: &Handles, keyboard: &ButtonInput<KeyCode>) {
     let Some((link, slot)) = handles.capturing.get_untracked() else {
         return;
     };
-    // `E` opens and closes the panel, so binding it would take the way out.
     for pressed in keyboard.get_just_pressed() {
-        if *pressed == KeyCode::KeyE {
-            continue;
-        }
         let Some(key) = crate::sequencer::drive_key(*pressed) else {
             continue;
         };
@@ -523,8 +523,9 @@ mod tests {
 
     use super::geometry;
     use super::model::{BearingSlots, EngineLaneModel, Mode, PanelEdit, StateModel};
+    use crate::ui::UiIntent;
     use crate::ui::testing::{Overlay, away};
-    use crate::ui::{UiIntent, body_font};
+    use crate::ui::theme::typeface;
 
     /// A control block driving one bearing.
     fn wired() -> (ConstructionGraph, DriveLinkId) {
@@ -592,6 +593,7 @@ mod tests {
             &state,
             &crate::EditorGraph(graph),
             &crate::sequencer::GearboxRuntime::default(),
+            &crate::controls::Controls::default(),
         ));
         overlay.settle();
         (overlay, link)
@@ -770,11 +772,17 @@ mod tests {
             )
         });
         let heading_style = TextStyle::new(8.0)
-            .family(body_font())
+            .family(mosaic_core::theme::typed(
+                typeface.body,
+                bevy_mosaic::ui::FontFamily::default,
+            ))
             .weight(700)
             .letter_spacing(0.45);
         let value_style = TextStyle::new(11.0)
-            .family(body_font())
+            .family(mosaic_core::theme::typed(
+                typeface.body,
+                bevy_mosaic::ui::FontFamily::default,
+            ))
             .letter_spacing(-0.12);
 
         for text in ["ELECTRIC", "SPEED", heading] {
@@ -795,7 +803,10 @@ mod tests {
             );
         }
 
-        let capacity_style = TextStyle::new(9.0).family(body_font());
+        let capacity_style = TextStyle::new(9.0).family(mosaic_core::theme::typed(
+            typeface.body,
+            bevy_mosaic::ui::FontFamily::default,
+        ));
         let capacity = BearingSlots::new(99, 99).text();
         assert!(
             overlay.text_width(&capacity, &capacity_style) <= super::view::CAPACITY_TEXT_WIDTH,

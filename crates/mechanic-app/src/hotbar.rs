@@ -29,7 +29,7 @@ impl Tool {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Block => "Blocker Placer",
-            Self::Cylinder => "Cylinder",
+            Self::Cylinder => "Pipe / Cylinder",
             Self::Bearing => "Bearing",
             Self::Weld => "Weld",
             Self::Hammer => "Hammer",
@@ -42,25 +42,6 @@ impl Tool {
             Self::Seat => "Seat",
             Self::Input => "Input",
             Self::Shape => "Shape",
-        }
-    }
-
-    pub(crate) const fn shortcut(self) -> &'static str {
-        match self {
-            Self::Block => "1",
-            Self::Cylinder => "2",
-            Self::Bearing => "3",
-            Self::Weld => "4",
-            Self::Hammer => "5",
-            Self::Controller => "6",
-            Self::Connector => "7",
-            Self::GasEngine => "8",
-            Self::ElectricEngine => "9",
-            Self::Transmission => "]",
-            Self::Servo => "0",
-            Self::Seat => "-",
-            Self::Input => "=",
-            Self::Shape => "[",
         }
     }
 
@@ -78,6 +59,7 @@ impl Tool {
     }
 }
 
+#[cfg(test)]
 pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
     match key {
         KeyCode::Digit1 => Some(Tool::Block),
@@ -98,9 +80,44 @@ pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
     }
 }
 
-#[derive(Resource, Debug, Default)]
-pub(crate) struct SelectedTool(pub(crate) Tool);
+#[derive(Resource, Debug)]
+pub(crate) struct SelectedTool(pub(crate) Option<Tool>);
+
+impl Default for SelectedTool {
+    fn default() -> Self {
+        Self(Some(Tool::Block))
+    }
+}
 
 /// Material shared by the Blocker Placer and Cylinder for this process.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SelectedMaterial(pub(crate) ConstructionMaterial);
+
+#[cfg(test)]
+mod tests {
+    use super::{Tool, shortcut_tool};
+    use bevy::prelude::KeyCode;
+
+    #[test]
+    fn every_tool_has_a_keyboard_shortcut_including_brackets() {
+        let mappings = [
+            (KeyCode::Digit1, Tool::Block),
+            (KeyCode::Digit2, Tool::Cylinder),
+            (KeyCode::Digit3, Tool::Bearing),
+            (KeyCode::Digit4, Tool::Weld),
+            (KeyCode::Digit5, Tool::Hammer),
+            (KeyCode::Digit6, Tool::Controller),
+            (KeyCode::Digit7, Tool::Connector),
+            (KeyCode::Digit8, Tool::GasEngine),
+            (KeyCode::Digit9, Tool::ElectricEngine),
+            (KeyCode::BracketRight, Tool::Transmission),
+            (KeyCode::Digit0, Tool::Servo),
+            (KeyCode::Minus, Tool::Seat),
+            (KeyCode::Equal, Tool::Input),
+            (KeyCode::BracketLeft, Tool::Shape),
+        ];
+        for (key, tool) in mappings {
+            assert_eq!(shortcut_tool(key), Some(tool));
+        }
+    }
+}

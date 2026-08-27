@@ -9,9 +9,12 @@
 use bevy::math::{Vec2, Vec3};
 use bevy::prelude::{Camera, GlobalTransform};
 use bevy_mosaic::ui::*;
-use mosaic_macros::view;
+use mosaic_macros::{component, view};
 
 use super::Handles;
+use super::components::{OverlayBadge, OverlayBadgeProps};
+#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
+use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use crate::hotbar::Tool;
@@ -42,7 +45,7 @@ pub(crate) struct Marker {
 pub(crate) fn wanted(
     graph: &EditorGraph,
     simulation: &AppSimulation,
-    tool: Tool,
+    tool: impl Into<Option<Tool>>,
 ) -> Vec<(usize, Vec3)> {
     if !crate::drive_xray_is_visible(tool, crate::driven_bearing_count(&graph.0)) {
         return Vec::new();
@@ -63,7 +66,7 @@ pub(crate) fn wanted(
 pub(crate) fn capture(
     graph: &EditorGraph,
     simulation: &AppSimulation,
-    tool: Tool,
+    tool: Option<Tool>,
     camera: &(&Camera, &GlobalTransform),
 ) -> Vec<Marker> {
     let (camera, transform) = *camera;
@@ -77,11 +80,12 @@ pub(crate) fn capture(
 }
 
 /// Every chip currently on screen.
-pub(crate) fn view(handles: &Handles) -> Element {
+#[component]
+pub(crate) fn MarkerOverlay(handles: Handles) -> Element {
     let markers = handles.markers;
     let count = move || markers.with(Vec::len);
     view! {
-        stack width:fill height:fill align:start justify:start nohit {
+        stack align:start justify:start nohit {
             for (index, ()) in { (0..count()).map(|index| (index, ())) } {
                 (chip(markers, *index))
             }
@@ -105,11 +109,11 @@ fn chip(markers: State<Vec<Marker>>, index: usize) -> Element {
     };
     let numeral = move || found().map_or_else(String::new, |marker| marker.number.to_string());
     view! {
-        col width:{ Length::px(CHIP_W) } height:{ Length::px(CHIP_H) }
-            align:center justify:center radius:13px
-            translate:(x:{ at().0 } y:{ at().1 })
-            fill:port.fill stroke:(width:2px color:accent.key) {
-            text font-size:15px font-weight:700 font-color:ink.fg { numeral() }
+        stack width:0px height:0px nohit translate:(x:{ at().0 } y:{ at().1 }) {
+            OverlayBadge width:(Length::px(CHIP_W)) height:(Length::px(CHIP_H))
+                stroke:(width:2px color:accent.key) {
+                text #mechanic.value { numeral() }
+            }
         }
     }
 }

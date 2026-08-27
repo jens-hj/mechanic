@@ -4,18 +4,18 @@ use std::sync::mpsc;
 
 use bevy_math::Vec3;
 use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
-use mechanic_core::CompiledCreation;
+use mechanic_core::{ColliderShape, CompiledCreation, ConstructionMaterial};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
 use crate::{
     BROADPHASE_HASH_CAPACITY, COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, FIXED_DT_SECONDS,
-    GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuLinkState, GpuMass,
-    GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold,
-    GpuSpatialInertia, GpuTickConfig, GpuTransform, MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS,
-    MAX_CONTACT_PAIRS, MAX_CONVEX_SHAPE_SLOTS, SNAPSHOT_RING_SIZE, pack_convex_counts,
+    GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuGroundSurface,
+    GpuLinkState, GpuMass, GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair,
+    GpuPersistentManifold, GpuSpatialInertia, GpuTickConfig, GpuTransform, MAX_BEARINGS,
+    MAX_BODIES, MAX_COLLIDERS, MAX_CONTACT_PAIRS, MAX_CONVEX_SHAPE_SLOTS, SNAPSHOT_RING_SIZE,
+    pack_convex_counts,
 };
-use mechanic_core::ColliderShape;
 
 const SERIAL_MECHANISM_BEARING_LIMIT: u32 = 64;
 const SERIAL_MECHANISM_SOLVER_MULTIPLIER: u32 = 12;
@@ -250,6 +250,7 @@ struct CollisionResources {
     _contacts: wgpu::Buffer,
     _manifold_keys: wgpu::Buffer,
     _persistent_manifolds: wgpu::Buffer,
+    _ground_surface: wgpu::Buffer,
     _active_contacts: wgpu::Buffer,
     indirect_args: wgpu::Buffer,
     velocity_deltas: wgpu::Buffer,
@@ -543,9 +544,15 @@ impl GpuPhysics {
                         collider.source_part.generation(),
                         ground.role,
                     ],
-                    contact_properties: [
-                        collider.material_properties.friction,
+                    surface_response: [
+                        collider.material_properties.static_friction,
+                        collider.material_properties.dynamic_friction,
                         collider.material_properties.restitution,
+                        collider.material_properties.rolling_resistance,
+                    ],
+                    surface_elasticity: [
+                        collider.material_properties.nominal_block_compliance(),
+                        collider.material_properties.youngs_modulus_pa,
                         0.0,
                         0.0,
                     ],
@@ -2603,6 +2610,25 @@ fn create_collision_resources(
         MAX_CONTACT_PAIRS * size_of::<GpuPersistentManifold>(),
         wgpu::BufferUsages::STORAGE,
     );
+    let concrete = ConstructionMaterial::Concrete.properties();
+    let ground_surface = create_uniform_buffer(
+        device,
+        "mechanic ground surface",
+        &GpuGroundSurface {
+            response: [
+                concrete.static_friction,
+                concrete.dynamic_friction,
+                concrete.restitution,
+                concrete.rolling_resistance,
+            ],
+            elasticity: [
+                concrete.nominal_block_compliance(),
+                concrete.youngs_modulus_pa,
+                0.0,
+                0.0,
+            ],
+        },
+    );
     let active_contacts = create_sized_buffer(
         device,
         "mechanic active contact indices",
@@ -2679,6 +2705,7 @@ fn create_collision_resources(
         entry(9, &pairs),
         entry(10, &contacts),
         entry(28, convex_shapes),
+        entry(29, &ground_surface),
     ];
     if !mechanism_self_collisions {
         narrowphase_bindings.push(entry(27, &body_components));
@@ -2707,6 +2734,7 @@ fn create_collision_resources(
             entry(6, colliders),
             entry(10, &contacts),
             entry(28, convex_shapes),
+            entry(29, &ground_surface),
         ],
     );
     let finalize_contacts_pipeline = compute_pipeline(
@@ -2780,6 +2808,7 @@ fn create_collision_resources(
             entry(10, &contacts),
             entry(13, &velocity_deltas),
             entry(16, &active_contacts),
+            entry(15, &persistent_manifolds),
             entry(26, &world_masses),
             entry(25, angular_velocities),
         ],
@@ -2801,6 +2830,7 @@ fn create_collision_resources(
             entry(10, &contacts),
             entry(13, &velocity_deltas),
             entry(16, &active_contacts),
+            entry(15, &persistent_manifolds),
             entry(26, &world_masses),
             entry(25, angular_velocities),
         ],
@@ -2821,6 +2851,7 @@ fn create_collision_resources(
             entry(5, diagnostics),
             entry(10, &contacts),
             entry(16, &active_contacts),
+            entry(15, &persistent_manifolds),
             entry(25, angular_velocities),
             entry(26, &world_masses),
         ],
@@ -2867,6 +2898,7 @@ fn create_collision_resources(
         _contacts: contacts,
         _manifold_keys: manifold_keys,
         _persistent_manifolds: persistent_manifolds,
+        _ground_surface: ground_surface,
         _active_contacts: active_contacts,
         indirect_args,
         velocity_deltas,
@@ -3172,7 +3204,7 @@ mod tests {
     use mechanic_core::{
         BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceRef,
-        GridRotation, PartId, RigidLinkSpec, WeldSpec,
+        GridRotation, PartId, PipeBendDimensions, PipeBendSpec, RigidLinkSpec, WeldSpec,
     };
 
     use crate::GpuMechanismCoordinate;
@@ -4771,6 +4803,269 @@ mod tests {
     }
 
     #[test]
+    fn static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let creation = material_cube(ConstructionMaterial::Aluminium, 4);
+        let mass = creation.compounds[0].mass_properties.mass;
+        let contact_center = Vec3::new(0.0, 0.5, 0.0);
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        for tick in 1..=60 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        let static_load_impulse = mass * 9.81 * crate::FIXED_DT_SECONDS * 0.62;
+        for tick in 61..=120 {
+            gpu.apply_impulse(
+                &device,
+                &queue,
+                0,
+                contact_center,
+                Vec3::X * static_load_impulse,
+            )
+            .unwrap();
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let stuck = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap()[0];
+        assert!(
+            stuck.position[0].abs() < 0.01,
+            "sub-threshold static load moved the cube {} m",
+            stuck.position[0],
+        );
+
+        let sliding = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        sliding
+            .apply_impulse(&device, &queue, 0, contact_center, Vec3::X * mass * 3.0)
+            .unwrap();
+        for tick in 1..=2 {
+            sliding.dispatch_tick(&device, &queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let early = sliding
+            .read_snapshot_transforms(&device, &queue, 2)
+            .unwrap()[0];
+        let initial = sliding
+            .read_snapshot_transforms(&device, &queue, 1)
+            .unwrap()[0];
+        let early_speed = snapshot_speed(early, initial);
+        for tick in 3..=20 {
+            sliding.dispatch_tick(&device, &queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let late = sliding
+            .read_snapshot_transforms(&device, &queue, 2)
+            .unwrap()[0];
+        let previous = sliding
+            .read_snapshot_transforms(&device, &queue, 1)
+            .unwrap()[0];
+        let late_speed = snapshot_speed(late, previous);
+        assert!(
+            late_speed < early_speed - 0.5,
+            "sliding speed did not decay: {early_speed} to {late_speed}"
+        );
+        assert!(
+            late_speed > 0.5,
+            "kinetic friction used the static limit: final speed {late_speed}"
+        );
+    }
+
+    #[test]
+    fn higher_rolling_resistance_stops_an_otherwise_identical_cylinder_sooner() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnCylinder(
+                CylinderSpec::new(
+                    CylinderDimensions::new(1.0, 0.0, 1.0).unwrap(),
+                    BuildPose::new(IVec3::new(0, 2, 0), GridRotation::new(0, 0, 1)),
+                )
+                .with_material(ConstructionMaterial::Steel),
+            ))
+            .unwrap();
+        let base = graph.compile().unwrap();
+        let roll = |rolling_resistance: f32| {
+            let mut creation = base.clone();
+            for collider in &mut creation.colliders {
+                collider.material_properties.rolling_resistance = rolling_resistance;
+            }
+            let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+            let mass = creation.compounds[0].mass_properties.mass;
+            gpu.apply_impulse(
+                &device,
+                &queue,
+                0,
+                Vec3::new(0.0, 0.75, 0.0),
+                Vec3::Z * mass * 2.0,
+            )
+            .unwrap();
+            for tick in 1..=120 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+            gpu.read_snapshot_transforms(&device, &queue, 0).unwrap()[0].position[2]
+        };
+        let low_distance = roll(0.002);
+        let high_distance = roll(0.040);
+        assert!(
+            high_distance < low_distance - 0.05,
+            "high rolling resistance travelled {high_distance} m; low travelled {low_distance} m",
+        );
+    }
+
+    #[test]
+    fn flat_disc_stops_sliding_without_long_term_contact_drift() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                CylinderDimensions::new(1.0, 0.0, 0.5).unwrap(),
+                BuildPose::new(IVec3::new(0, 4, 0), GridRotation::default()),
+            )))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        let mass = creation.compounds[0].mass_properties.mass;
+        gpu.apply_impulse(
+            &device,
+            &queue,
+            0,
+            Vec3::new(0.35, 0.65, 0.0),
+            Vec3::new(1.0, -0.35, 0.2) * mass,
+        )
+        .unwrap();
+
+        for tick in 1..=600 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let settled =
+            transform_position(gpu.read_snapshot_transforms(&device, &queue, 0).unwrap()[0]);
+
+        for tick in 601..=1_200 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let later =
+            transform_position(gpu.read_snapshot_transforms(&device, &queue, 0).unwrap()[0]);
+        let tail_drift = Vec3::new(later.x - settled.x, 0.0, later.z - settled.z).length();
+        assert!(
+            tail_drift < 0.005,
+            "flat disc drifted {tail_drift} m after it should have stopped"
+        );
+        assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+    }
+
+    #[test]
+    fn flat_disc_landing_on_another_disc_does_not_gain_energy() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let mut graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::new(1.0, 0.0, 0.25).unwrap();
+        let BuildOutcome::Spawned(lower) = graph
+            .apply(BuildCommand::SpawnCylinder(
+                CylinderSpec::new(
+                    dimensions,
+                    BuildPose::new(IVec3::new(0, 1, 0), GridRotation::default()),
+                )
+                .with_material(ConstructionMaterial::Concrete),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(lower, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+        graph
+            .apply(BuildCommand::SpawnCylinder(
+                CylinderSpec::new(
+                    dimensions,
+                    BuildPose::new(IVec3::new(0, 4, 0), GridRotation::default()),
+                )
+                .with_material(ConstructionMaterial::Concrete),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let dynamic_body = creation
+            .compounds
+            .iter()
+            .position(|compound| !compound.is_static)
+            .unwrap();
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        let mut maximum_height_after_impact = 0.0_f32;
+        for tick in 1..=120 {
+            gpu.dispatch_tick(&device, &queue, tick);
+            if tick >= 25 {
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let position = transform_position(
+                    gpu.read_snapshot_transforms(&device, &queue, (tick % 3) as u8)
+                        .unwrap()[dynamic_body],
+                );
+                maximum_height_after_impact = maximum_height_after_impact.max(position.y);
+                assert!(position.is_finite(), "stacked disc became non-finite");
+                assert!(
+                    position.x.abs() < 0.25 && position.z.abs() < 0.25,
+                    "stacked disc was launched sideways to {position:?}"
+                );
+            }
+        }
+        assert!(
+            maximum_height_after_impact < 0.9,
+            "stacked disc rebounded above {maximum_height_after_impact} m"
+        );
+        assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+    }
+
+    #[test]
+    fn lower_modulus_allows_more_transient_penetration_without_failure() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let base = material_cube(ConstructionMaterial::Steel, 16);
+        let minimum_height = |youngs_modulus_pa: f32| {
+            let mut creation = base.clone();
+            for collider in &mut creation.colliders {
+                collider.material_properties.youngs_modulus_pa = youngs_modulus_pa;
+            }
+            let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+            let mut minimum = f32::INFINITY;
+            for tick in 1..=60 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                if tick >= 25 {
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    minimum = minimum.min(
+                        gpu.read_snapshot_transforms(&device, &queue, (tick % 3) as u8)
+                            .unwrap()[0]
+                            .position[1],
+                    );
+                }
+            }
+            assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+            minimum
+        };
+        let stiff_height = minimum_height(200.0e9);
+        let soft_height = minimum_height(0.01e9);
+        assert!(
+            soft_height < stiff_height - 1.0e-4,
+            "soft contact reached {soft_height} m; stiff contact reached {stiff_height} m",
+        );
+        assert!(
+            soft_height > 0.4,
+            "soft contact became unstable at {soft_height} m"
+        );
+    }
+
+    #[test]
     fn plastic_rebounds_more_than_concrete() {
         let Some((device, queue)) = test_device() else {
             return;
@@ -4961,6 +5256,81 @@ mod tests {
             "annular drop reached y={} instead of resting on the ring",
             annular_snapshot[falling_body].position[1]
         );
+    }
+
+    fn pipe_bend_drop_creation(
+        inner_diameter: f32,
+        drop_x_half_units: i32,
+    ) -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        let support_spec = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(8, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(support) =
+            graph.apply(BuildCommand::Spawn(support_spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(support, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+        let bend_spec = PipeBendSpec::new(
+            PipeBendDimensions::new(1.0, inner_diameter, 1.0).unwrap(),
+            BuildPose::from_half_grid(IVec3::new(0, 16, 0), GridRotation::default()),
+        );
+        let BuildOutcome::Spawned(bend) =
+            graph.apply(BuildCommand::SpawnPipeBend(bend_spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: support,
+                second: bend,
+            }))
+            .unwrap();
+        let drop_spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(
+                IVec3::new(drop_x_half_units, 32, 0),
+                GridRotation::default(),
+            ),
+        )
+        .unwrap();
+        graph.apply(BuildCommand::Spawn(drop_spec)).unwrap();
+        graph.compile().unwrap()
+    }
+
+    #[test]
+    fn gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion() {
+        let hollow = pipe_bend_drop_creation(0.60, 0);
+        let solid = pipe_bend_drop_creation(0.0, 0);
+        let annular = pipe_bend_drop_creation(0.60, 3);
+        let Some((hollow_snapshot, hollow_readback)) = run_ticks(&hollow, 60, true) else {
+            return;
+        };
+        let Some((solid_snapshot, solid_readback)) = run_ticks(&solid, 60, true) else {
+            return;
+        };
+        let Some((annular_snapshot, annular_readback)) = run_ticks(&annular, 60, true) else {
+            return;
+        };
+        assert_eq!(hollow_readback.error_flags, 0);
+        assert_eq!(solid_readback.error_flags, 0);
+        assert_eq!(annular_readback.error_flags, 0);
+        let falling_body = 1;
+        assert!(
+            hollow_snapshot[falling_body].position[1] < 2.95,
+            "centered drop did not enter the bend bore: y={}",
+            hollow_snapshot[falling_body].position[1]
+        );
+        assert!(solid_snapshot[falling_body].position[1] > 3.0);
+        assert!(annular_snapshot[falling_body].position[1] > 3.0);
     }
 
     #[test]

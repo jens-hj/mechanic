@@ -11,11 +11,17 @@
 use bevy::ecs::system::{Res, SystemParam};
 use bevy_mosaic::ui::*;
 use mosaic_core::theme::color;
-use mosaic_macros::view;
+use mosaic_core::theme::{LengthToken, typed};
+use mosaic_macros::{component, view};
 
+use super::Handles;
+use super::components::{PanelSurface, PanelSurfaceProps};
+#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
+use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
-use super::{Handles, body_font, display_font};
+use crate::camera::PlayerState;
+use crate::controls::GameAction;
 use crate::hotbar::{SelectedMaterial, SelectedTool, Tool};
 use crate::{
     AppSimulation, BearingToolSettings, BlockAttachment, CylinderToolSettings, EditorGraph,
@@ -117,6 +123,8 @@ pub(crate) struct Sources<'w> {
     material: Res<'w, SelectedMaterial>,
     bearing: Res<'w, BearingToolSettings>,
     cylinder: Res<'w, CylinderToolSettings>,
+    player: Res<'w, PlayerState>,
+    settings: Res<'w, crate::settings::AppSettings>,
 }
 
 /// Reads the editor into what the panel says.
@@ -131,7 +139,12 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         material,
         bearing,
         cylinder,
+        player,
+        settings,
     } = sources;
+    let selected_tool = selection.0.unwrap_or(Tool::Block);
+    let controls = settings.controls();
+    let rotate = controls.label(GameAction::Rotate);
 
     let active_error = state
         .delete_drag
@@ -178,7 +191,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     } else {
         match (
             simulation.is_running(),
-            selection.0,
+            selected_tool,
             graph.0.pending(),
             state.block_drag.as_ref(),
             state.attachment_bearing,
@@ -201,7 +214,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Green bearing attachment active — click or drag to connect blocks".to_owned()
             }
             (false, Tool::Cylinder, _, _, Some(_)) => {
-                "Green bearing attachment active — click to connect cylinder".to_owned()
+                "Green bearing attachment active — hold and drag to connect a pipe run".to_owned()
             }
             (true, Tool::Hammer, _, _, _) => {
                 "Hold left mouse on a moving cuboid; release to strike".to_owned()
@@ -213,7 +226,8 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Click for one block or drag to place a welded sheet".to_owned()
             }
             (false, Tool::Cylinder, _, _, _) => {
-                "Click a flat face to place; Shift+Down/Up changes the slice angle".to_owned()
+                "Hold on a flat face and drag; R cycles dimensions, F adds bends, wheel changes radius"
+                    .to_owned()
             }
             (false, Tool::Weld, None, _, _) => "Left click selects the first object".to_owned(),
             (false, Tool::Weld, Some(_), _, _) => {
@@ -252,7 +266,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Q cycles all 24 orientations; place Input, then wire it to a Seat".to_owned()
             }
             (false, Tool::Shape, _, _, _) => {
-                "Drag an area of blocks (Q changes plane), then drag its corners; arrows/WASD nudge; G sets the step"
+                "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows/WASD nudge"
                     .to_owned()
             }
             (false, Tool::Connector, _, _, _) => match state.wire_drag.map(|drag| drag.from) {
@@ -268,24 +282,40 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 }
             },
         }
-    };
+    }.replace('Q', &rotate);
     let (phase, title_tone, primary_controls) = if simulation.is_paused() {
         (
             "PAUSED",
             Tone::Warn,
-            "SPACE  Resume     SHIFT+SPACE  Restart     ESC  Build mode     ?  Hide help",
+            format!(
+                "{}  Resume     {}  Restart     ESC  Build mode     {}  Hide help",
+                controls.label(GameAction::ToggleSimulation),
+                controls.label(GameAction::RestartSimulation),
+                controls.label(GameAction::ToggleHelp)
+            ),
         )
     } else if simulation.is_running() {
         (
             "SIMULATING",
             Tone::Good,
-            "SPACE  Pause     SHIFT+SPACE  Restart     ESC  Build mode     ?  Hide help",
+            format!(
+                "{}  Pause     {}  Restart     ESC  Build mode     {}  Hide help",
+                controls.label(GameAction::ToggleSimulation),
+                controls.label(GameAction::RestartSimulation),
+                controls.label(GameAction::ToggleHelp)
+            ),
         )
     } else {
         (
             "BUILDING",
             Tone::Title,
-            "SPACE  Start simulation     P  Creations     CTRL/CMD+S  Save     ?  Hide help",
+            format!(
+                "{}  Start simulation     {}  Creations     {}  Save     {}  Hide help",
+                controls.label(GameAction::ToggleSimulation),
+                controls.label(GameAction::Creations),
+                controls.label(GameAction::Save),
+                controls.label(GameAction::ToggleHelp)
+            ),
         )
     };
     let action_controls = if state.delete_drag.is_some() {
@@ -293,7 +323,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     } else {
         match (
             simulation.is_running(),
-            selection.0,
+            selected_tool,
             state.block_drag.is_some(),
         ) {
             (false, Tool::Block, true) => "RELEASE  Place     RIGHT / ESC  Cancel",
@@ -303,11 +333,11 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         }
     };
     let plane_controls = if let Some(drag) = state.block_drag.as_ref() {
-        format!("Q  Cycle plane ({})", drag.plane.label())
+        format!("{rotate}  Cycle plane ({})", drag.plane.label())
     } else if let Some(drag) = state.delete_drag.as_ref() {
-        format!("Q  Cycle delete plane ({})", drag.plane.label())
+        format!("{rotate}  Cycle delete plane ({})", drag.plane.label())
     } else {
-        "Q  Cycle plane while dragging or deleting".to_owned()
+        format!("{rotate}  Cycle plane while dragging or deleting")
     };
     let edit_controls = if simulation.is_running() {
         if simulation.is_paused() {
@@ -328,7 +358,18 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         primary: Line::new(primary_controls, Tone::Body),
         edit: Line::new(edit_controls, Tone::Muted),
         pointer: Line::new(
-            format!("{action_controls}     ALT+LEFT  Orbit     SHIFT+LEFT  Pan     WHEEL  Zoom"),
+            format!(
+                "{action_controls}     WASD  Walk     MOUSE  Look     WHEEL  FP↔TP     TAB  Materials{}",
+                if simulation.is_running() {
+                    if player.seat.is_some() {
+                        "     E  Leave Seat"
+                    } else {
+                        "     E  Enter Seat"
+                    }
+                } else {
+                    ""
+                }
+            ),
             Tone::Muted,
         ),
         tool: Line::new(
@@ -357,16 +398,19 @@ pub(crate) fn capture(sources: &Sources) -> Model {
 
 /// What each tool reads in, following what the tool works on rather than what
 /// it is called: positions are amber, speeds cyan, connections teal.
-const fn tool_tone(tool: Tool) -> Tone {
+const fn tool_tone(tool: Option<Tool>) -> Tone {
     match tool {
-        Tool::Bearing | Tool::Hammer | Tool::GasEngine | Tool::Servo => Tone::Angle,
-        Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input => Tone::Key,
-        Tool::Block
-        | Tool::Cylinder
-        | Tool::ElectricEngine
-        | Tool::Transmission
-        | Tool::Seat
-        | Tool::Shape => Tone::Speed,
+        Some(Tool::Bearing | Tool::Hammer | Tool::GasEngine | Tool::Servo) => Tone::Angle,
+        Some(Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input) => Tone::Key,
+        Some(
+            Tool::Block
+            | Tool::Cylinder
+            | Tool::ElectricEngine
+            | Tool::Transmission
+            | Tool::Seat
+            | Tool::Shape,
+        ) => Tone::Speed,
+        None => Tone::Muted,
     }
 }
 
@@ -374,21 +418,21 @@ const fn tool_tone(tool: Tool) -> Tone {
 ///
 /// Hugging rather than filling: it sits in the top-left corner and the world
 /// keeps the pointer everywhere it is not.
-pub(crate) fn view(handles: &Handles) -> Element {
+#[component]
+pub(crate) fn HelpPanel(handles: Handles) -> Element {
     let model = handles.help;
     view! {
-        col width:720px height:min-content gap:7px
-            translate:(x:16px y:16px) pad:16px radius:10px
-            fill:shell stroke:(width:1px color:shell-edge)
-            font-color:help.body {
-            (line(model, 19.0, 1.4, display_font(), |found| &found.title))
-            (line(model, 15.0, 0.0, body_font(), |found| &found.primary))
-            (line(model, 14.0, 0.0, body_font(), |found| &found.edit))
-            (line(model, 14.0, 0.0, body_font(), |found| &found.pointer))
-            (line(model, 16.0, 0.0, body_font(), |found| &found.tool))
-            (line(model, 13.0, 0.0, body_font(), |found| &found.counts))
-            (line(model, 15.0, 0.0, body_font(), |found| &found.hint))
-            (line(model, 13.0, 0.0, body_font(), |found| &found.status))
+        PanelSurface elevated:false width:(panel_size.help_width) height:min-content gap:7px
+            translate:(Translate::new(panel_size.inset, panel_size.inset))
+            pad:(Edges::all(pad.panel)) {
+            (line(model, text_size.title, text_tracking.help_title, true, |found| &found.title))
+            (line(model, text_size.value, text_tracking.tight, false, |found| &found.primary))
+            (line(model, text_size.body, text_tracking.tight, false, |found| &found.edit))
+            (line(model, text_size.body, text_tracking.tight, false, |found| &found.pointer))
+            (line(model, text_size.section, text_tracking.tight, false, |found| &found.tool))
+            (line(model, text_size.label, text_tracking.tight, false, |found| &found.counts))
+            (line(model, text_size.value, text_tracking.tight, false, |found| &found.hint))
+            (line(model, text_size.label, text_tracking.tight, false, |found| &found.status))
         }
     }
 }
@@ -397,16 +441,25 @@ pub(crate) fn view(handles: &Handles) -> Element {
 /// edit re-evaluates a binding instead of rebuilding the column.
 fn line(
     model: State<Model>,
-    size: f32,
-    spacing: f32,
-    family: FontFamily,
+    size_token: LengthToken,
+    spacing_token: LengthToken,
+    display: bool,
     of: impl Fn(&Model) -> &Line + Copy + 'static,
 ) -> Element {
     let text = move || model.with(|found| of(found).text.clone());
     let tone = move || model.with(|found| of(found).tone).paint();
+    let family = move || {
+        if display {
+            typed(typeface.display, FontFamily::default)
+        } else {
+            typed(typeface.body, FontFamily::default)
+        }
+    };
     view! {
-        text width:fill font-family:{ family.clone() } font-size:{ Length::px(size) }
-            letter-spacing:{ Length::px(spacing) } font-color:{ tone() } { text() }
+        text width:fill font-family:{ family() }
+            font-size:{ mosaic_core::theme::length(size_token) }
+            letter-spacing:{ mosaic_core::theme::length(spacing_token) } font-color:{ tone() }
+            { text() }
     }
 }
 
@@ -420,7 +473,7 @@ mod tests {
         Model {
             title: Line::new("MECHANIC  •  BUILDING", Tone::Title),
             primary: Line::new("SPACE  Start simulation", Tone::Body),
-            edit: Line::new("Q  Cycle plane", Tone::Muted),
+            edit: Line::new("R  Cycle plane", Tone::Muted),
             pointer: Line::new("LEFT  Action", Tone::Muted),
             tool: Line::new("Tool: Blocker Placer    Material: Steel", Tone::Speed),
             counts: Line::new("3 parts", Tone::Muted),

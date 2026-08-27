@@ -14,7 +14,7 @@ use std::rc::Rc;
 use bevy_mosaic::ui::*;
 use mechanic_core::{DriveLinkId, EngineKind, ShiftMode};
 use mosaic_core::theme::color;
-use mosaic_macros::view;
+use mosaic_macros::{component, view};
 use mosaic_widgets::input::EventCtx;
 
 use super::geometry;
@@ -23,6 +23,9 @@ use super::model::{
     PanelModel, Preset, StateModel,
 };
 use crate::control_panel::SpeedUnit;
+use crate::ui::components::{Action, ActionProps, PanelSurface, PanelSurfaceProps};
+#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
+use crate::ui::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use crate::ui::theme::*;
 
@@ -33,7 +36,7 @@ pub(super) const CAPACITY_TEXT_WIDTH: f32 = 64.0;
 /// Text room left in a joint capability tile after its padding, icon, and gap.
 #[cfg(test)]
 pub(super) const CAPABILITY_TEXT_WIDTH: f32 = 76.0;
-use crate::ui::{UiIntent, display_font};
+use crate::ui::UiIntent;
 
 /// A wire being drawn, while the pointer still has hold of it.
 ///
@@ -222,15 +225,23 @@ fn gearbox_bindings_enabled(engine: &EngineLaneModel) -> bool {
 /// Inset from the window by its own margin rather than by a padded wrapper: a
 /// full-bleed wrapper would take the pointer everywhere it covers, and the
 /// overlay's root is the one element allowed to do that.
-pub(crate) fn panel(handles: &Handles) -> Element {
-    let header = header(handles);
-    let engines = engine_lanes(handles);
-    let lanes = lanes(handles);
+#[component]
+pub(crate) fn ControlPanel(handles: Handles) -> Element {
+    let header = header(&handles);
+    let engines = engine_lanes(&handles);
+    let lanes = lanes(&handles);
+    let model = handles.model;
     view! {
-        col margin:22px fill:shell radius:14px stroke:(width:1px color:shell-edge)
-            shadow:(offset:(x:0px y:30px) blur:90px color:#00000099)
-            font-color:ink.fg {
+        PanelSurface elevated:true margin:22px
+            shadow:(mosaic_core::theme::typed(
+            modal_shadow,
+            || ShadowSpec::new(Vector2::ZERO, 0.0, 0.0, Color::TRANSPARENT),
+        )) {
             (header)
+            if model.with(|panel| panel.gameplay_binding_conflict) {
+                text #mechanic.caption font-color:accent.danger pad:(left:14px right:14px top:8px bottom:0px)
+                    "KEY CONFLICT · Vehicle and gameplay actions may fire together"
+            }
             (engines)
             (lanes)
         }
@@ -300,20 +311,19 @@ fn engine_summary(model: State<PanelModel>, kind: EngineKind) -> Element {
         EngineKind::Gas => "G",
     };
     view! {
-        col width:262px shrink:0 height:fill gap:10px
-            pad:(left:14px right:14px top:14px bottom:12px)
+        col width:262px shrink:0 gap:10px pad:(left:14px right:14px top:14px bottom:12px)
             stroke:(width:1px color:lane.edge edges:right) {
             row height:min-content align:center gap:9px {
                 col width:30px height:30px shrink:0 align:center justify:center radius:7px
-                    fill:{ engine_wash(kind) }
-                    stroke:(width:1px color:{ engine_accent(kind) })
+                    fill:{ engine_wash(kind) } stroke:(width:1px color:{ engine_accent(kind) })
                     font-color:{ engine_accent(kind) } {
                     text font-size:14px font-weight:700 (initial)
                 }
                 col width:1fr height:min-content gap:1px {
-                    text font-family:{ display_font() } font-size:12px font-weight:700 letter-spacing:1.1px
-                        font-color:{ engine_accent(kind) } { title() }
-                    text font-size:9px letter-spacing:0.9px font-color:ink.faint "COMBINED POWERTRAIN"
+                    text font-family:typeface.display font-size:12px font-weight:700
+                        letter-spacing:1.1px font-color:{ engine_accent(kind) } { title() }
+                    text font-size:9px letter-spacing:0.9px font-color:ink.faint
+                        "COMBINED POWERTRAIN"
                 }
             }
             grid height:min-content cols:(repeat(2 minmax(0px 1fr))) col-gap:6px row-gap:6px {
@@ -328,7 +338,8 @@ fn engine_summary(model: State<PanelModel>, kind: EngineKind) -> Element {
                 col width:7px height:7px shrink:0 radius:4px
                     fill:if mismatch() { { color(accent.angle) } } else { { engine_accent(kind) } } {}
                 text width:1fr font-size:9px font-weight:700 letter-spacing:0.45px text-wrap:none
-                    font-color:if mismatch() { { color(accent.angle) } } else { { color(ink.muted) } } {
+                    font-color:if mismatch() { { color(accent.angle) } } else { { color(ink.muted) } }
+                    {
                     transmission()
                 }
             }
@@ -366,8 +377,7 @@ fn engine_metric(model: State<PanelModel>, kind: EngineKind, metric: EngineMetri
         })
     };
     view! {
-        col height:45px justify:center gap:2px pad:(horizontal:9px vertical:0px) radius:8px
-            fill:chip.fill stroke:(width:1px color:chip.edge) {
+        col #mechanic.chip height:45px justify:center gap:2px pad:(horizontal:9px vertical:0px) {
             text font-size:8px font-weight:700 letter-spacing:0.7px font-color:ink.faint (label)
             text font-size:12px font-weight:600 text-wrap:none font-color:ink.fg { value() }
         }
@@ -429,7 +439,7 @@ fn gearbox_mismatch(model: State<PanelModel>, kind: EngineKind) -> Element {
     };
     view! {
         col width:1fr min-width:0px height:194px align:center justify:center pad:20px {
-            row width:fill max-width:720px height:min-content align:center gap:14px
+            row max-width:720px height:min-content align:center gap:14px
                 pad:(horizontal:18px vertical:16px) radius:12px fill:wash.angle
                 stroke:(width:1px color:accent.angle) {
                 col width:34px height:34px shrink:0 align:center justify:center radius:9px
@@ -437,10 +447,12 @@ fn gearbox_mismatch(model: State<PanelModel>, kind: EngineKind) -> Element {
                     text font-size:18px font-weight:700 "!"
                 }
                 col width:1fr height:min-content gap:4px {
-                    text font-family:{ display_font() } font-size:12px font-weight:700 letter-spacing:0.8px
-                        font-color:accent.angle "TRANSMISSION STACKS DO NOT MATCH"
+                    text font-family:typeface.display font-size:12px font-weight:700
+                        letter-spacing:0.8px font-color:accent.angle
+                        "TRANSMISSION STACKS DO NOT MATCH"
                     text font-size:12px font-color:ink.fg { details() }
-                    text font-size:11px font-color:ink.dim {
+                    text font-size:11px font-color:ink.dim
+                        {
                         format!("Match every {family} engine stack to restore gearing controls and simulation.")
                     }
                 }
@@ -493,8 +505,8 @@ fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
     view! {
         row height:42px align:center gap:10px {
             col width:126px shrink:0 height:min-content gap:2px {
-                text font-family:{ display_font() } font-size:11px font-weight:700
-                    letter-spacing:1px font-color:ink.fg "GEARBOX CONTROL"
+                text font-family:typeface.display font-size:11px font-weight:700 letter-spacing:1px
+                    font-color:ink.fg "GEARBOX CONTROL"
                 text font-size:9px font-color:ink.faint "input : output ratios"
             }
             row width:158px shrink:0 height:36px align:center gap:3px pad:3px radius:9px
@@ -502,53 +514,48 @@ fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
                 col width:1fr height:28px align:center justify:center radius:6px
                     fill:if is_auto() { { color(accent.speed) } } else { Color::TRANSPARENT }
                     font-color:if is_auto() { { color(shell) } } else { { color(ink.muted) } }
-                    hover { fill:reticle.fill_over }
-                    @click:{ auto.gearbox(kind, GearboxEdit::Mode(ShiftMode::Auto)); } {
+                    @click:{ auto.gearbox(kind, GearboxEdit::Mode(ShiftMode::Auto)); }
+                    hover { fill:reticle.fill_over } {
                     text font-size:10px font-weight:700 "AUTO"
                 }
                 col width:1fr height:28px align:center justify:center radius:6px
                     fill:if !is_auto() { { color(accent.speed) } } else { Color::TRANSPARENT }
                     font-color:if !is_auto() { { color(shell) } } else { { color(ink.muted) } }
-                    hover { fill:reticle.fill_over }
-                    @click:{ manual.gearbox(kind, GearboxEdit::Mode(ShiftMode::Manual)); } {
+                    @click:{ manual.gearbox(kind, GearboxEdit::Mode(ShiftMode::Manual)); }
+                    hover { fill:reticle.fill_over } {
                     text font-size:10px font-weight:700 "MANUAL"
                 }
             }
-            col width:122px shrink:0 height:38px justify:center gap:1px
-                pad:(horizontal:10px vertical:0px) radius:8px fill:chip.fill
-                stroke:(width:1px color:chip.edge)
-                opacity:{ if can_bind() { 1.0 } else { 0.38 } }
-                hover { stroke:(width:1px color:chip.edge-over) }
+            col #mechanic.action width:122px shrink:0 height:38px justify:center gap:1px
+                pad:(horizontal:10px vertical:0px) opacity:{ if can_bind() { 1.0 } else { 0.38 } }
                 @click:{ capture_up.capture_gearbox_binding(kind, true); } {
-                text font-size:8px font-weight:700 letter-spacing:0.65px font-color:ink.faint "GEAR UP"
+                text font-size:8px font-weight:700 letter-spacing:0.65px font-color:ink.faint
+                    "GEAR UP"
                 row height:min-content align:center gap:6px {
                     icon size:13px keyboard
-                    text font-size:11px font-weight:700 text-wrap:none font-color:ink.fg { up_binding() }
+                    text font-size:11px font-weight:700 text-wrap:none font-color:ink.fg
+                        { up_binding() }
                 }
             }
-            col width:122px shrink:0 height:38px justify:center gap:1px
-                pad:(horizontal:10px vertical:0px) radius:8px fill:chip.fill
-                stroke:(width:1px color:chip.edge)
-                opacity:{ if can_bind() { 1.0 } else { 0.38 } }
-                hover { stroke:(width:1px color:chip.edge-over) }
+            col #mechanic.action width:122px shrink:0 height:38px justify:center gap:1px
+                pad:(horizontal:10px vertical:0px) opacity:{ if can_bind() { 1.0 } else { 0.38 } }
                 @click:{ capture_down.capture_gearbox_binding(kind, false); } {
-                text font-size:8px font-weight:700 letter-spacing:0.65px font-color:ink.faint "GEAR DOWN"
+                text font-size:8px font-weight:700 letter-spacing:0.65px font-color:ink.faint
+                    "GEAR DOWN"
                 row height:min-content align:center gap:6px {
                     icon size:13px keyboard
-                    text font-size:11px font-weight:700 text-wrap:none font-color:ink.fg { down_binding() }
+                    text font-size:11px font-weight:700 text-wrap:none font-color:ink.fg
+                        { down_binding() }
                 }
             }
-            col width:68px shrink:0 height:36px align:center justify:center radius:8px
-                fill:chip.fill stroke:(width:1px color:chip.edge) font-color:ink.muted
+            col #mechanic.action width:68px shrink:0 height:36px font-color:ink.muted
                 opacity:{ if can_bind() { 1.0 } else { 0.38 } }
-                hover { stroke:(width:1px color:chip.edge-over) fill:reticle.fill_over }
                 @click:{ bindings_button.swap_bindings(kind); } {
                 text font-size:9px font-weight:700 letter-spacing:0.5px "SWAP KEYS"
             }
             if conflict() {
-                row height:30px align:center gap:5px pad:(horizontal:9px vertical:0px)
-                    radius:7px fill:wash.angle stroke:(width:1px color:accent.angle)
-                    font-color:accent.angle {
+                row height:30px align:center gap:5px pad:(horizontal:9px vertical:0px) radius:7px
+                    fill:wash.angle stroke:(width:1px color:accent.angle) font-color:accent.angle {
                     text font-size:12px font-weight:700 "!"
                     text font-size:9px font-weight:700 text-wrap:none "KEY CONFLICT"
                 }
@@ -564,7 +571,9 @@ fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
 )] // The snapped divider is clamped to a non-negative range of at most eighteen.
 fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
     if kind != EngineKind::Gas {
-        return view! { row width:0px height:0px {} };
+        return view! {
+            row width:0px height:0px {}
+        };
     }
     let left = handles.clone();
     let right = handles.clone();
@@ -595,14 +604,16 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
         row height:42px align:center gap:10px pad:(horizontal:10px vertical:0px) radius:9px
             fill:chip.fill stroke:(width:1px color:chip.edge) {
             col width:126px shrink:0 height:min-content gap:2px {
-                text font-family:{ display_font() } font-size:9px font-weight:700
-                    letter-spacing:0.8px font-color:ink.muted "DIRECTION SPLIT"
+                text font-family:typeface.display font-size:9px font-weight:700 letter-spacing:0.8px
+                    font-color:ink.muted "DIRECTION SPLIT"
                 text font-size:9px font-color:ink.faint "drag to assign gears"
             }
             col width:32px height:30px align:center justify:center radius:7px
                 stroke:(width:1px color:chip.edge) font-color:accent.angle
-                hover { fill:wash.angle stroke:(width:1px color:accent.angle) }
-                @click:{ left.move_divider(kind, -1); } { text font-size:11px font-weight:700 "R−" }
+                @click:{ left.move_divider(kind, -1); }
+                hover { fill:wash.angle stroke:(width:1px color:accent.angle) } {
+                text font-size:11px font-weight:700 "R−"
+            }
             stack width:1fr min-width:120px height:30px radius:7px fill:wash.speed
                 @layout:{ move |rect: Rect| bounds.set(rect) }
                 @drag:{ move |event: &DragEvent, _: &mut EventCtx| {
@@ -617,21 +628,25 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
                     );
                 } } {
                 col width:{ reverse_width() } height:30px radius:7px fill:wash.angle {}
-                row width:fill height:fill align:center justify:between pad:(horizontal:10px vertical:0px) {
-                    text font-size:9px font-weight:700 font-color:accent.angle {
+                row align:center justify:between pad:(horizontal:10px vertical:0px) {
+                    text font-size:9px font-weight:700 font-color:accent.angle
+                        {
                         format!("{} REVERSE", divider())
                     }
-                    text font-size:9px font-weight:700 font-color:accent.speed {
+                    text font-size:9px font-weight:700 font-color:accent.speed
+                        {
                         format!("{} FORWARD", count().saturating_sub(usize::from(divider())))
                     }
                 }
-                col width:3px height:24px translate:(x:{ Length::px(marker()) } y:3px)
-                    radius:2px fill:ink.fg {}
+                col width:3px height:24px translate:(x:{ Length::px(marker()) } y:3px) radius:2px
+                    fill:ink.fg {}
             }
             col width:32px height:30px align:center justify:center radius:7px
                 stroke:(width:1px color:chip.edge) font-color:accent.angle
-                hover { fill:wash.angle stroke:(width:1px color:accent.angle) }
-                @click:{ right.move_divider(kind, 1); } { text font-size:11px font-weight:700 "R+" }
+                @click:{ right.move_divider(kind, 1); }
+                hover { fill:wash.angle stroke:(width:1px color:accent.angle) } {
+                text font-size:11px font-weight:700 "R+"
+            }
         }
     }
 }
@@ -641,7 +656,7 @@ fn gear_strip(handles: &Handles, kind: EngineKind) -> Element {
     let inner = handles.clone();
     view! {
         col height:110px shrink:0 gap:7px {
-            text height:11px font-family:{ display_font() } font-size:9px font-weight:700
+            text height:11px font-family:typeface.display font-size:9px font-weight:700
                 letter-spacing:0.9px font-color:ink.muted "GEAR RATIOS"
             scroll height:92px {
                 row width:min-content gap:10px pad:(bottom:3px) {
@@ -698,8 +713,8 @@ fn ratio_card(handles: &Handles, kind: EngineKind, index: usize) -> Element {
         })
     };
     view! {
-        col width:128px shrink:0 height:82px gap:5px pad:(horizontal:9px vertical:8px)
-            radius:10px fill:if active() {
+        col width:128px shrink:0 height:82px gap:5px pad:(horizontal:9px vertical:8px) radius:10px
+            fill:if active() {
                 if reverse() { { color(wash.angle) } } else { { color(wash.speed) } }
             } else { { color(card.fill) } }
             stroke:(width:{ if active() { 2.0 } else { 1.0 } } color:if active() {
@@ -708,7 +723,8 @@ fn ratio_card(handles: &Handles, kind: EngineKind, index: usize) -> Element {
             shadow:(offset:(x:0px y:8px) blur:18px color:#00000052) {
             row height:18px align:center justify:between {
                 row width:min-content height:18px align:center pad:(horizontal:7px vertical:0px)
-                    radius:5px fill:if reverse() { { color(wash.pill_angle) } } else { { color(wash.pill_speed) } }
+                    radius:5px
+                    fill:if reverse() { { color(wash.pill_angle) } } else { { color(wash.pill_speed) } }
                     font-color:if reverse() { { color(accent.angle) } } else { { color(accent.speed) } } {
                     text font-size:10px font-weight:700 { label() }
                 }
@@ -732,20 +748,27 @@ fn ratio_controls(handles: &Handles, kind: EngineKind, index: usize) -> Element 
             .is_some_and(|depth| depth != 0)
     });
     if !editable {
-        return view! { text height:20px font-size:8px font-weight:700 letter-spacing:0.5px font-color:ink.faint "FIXED" };
+        return view! {
+            text height:20px font-size:8px font-weight:700 letter-spacing:0.5px font-color:ink.faint
+                "FIXED"
+        };
     }
     let decrease = handles.clone();
     let increase = handles.clone();
     view! {
-        row width:fill height:20px gap:4px {
+        row height:20px gap:4px {
             col width:1fr align:center justify:center radius:5px fill:chip.fill
                 stroke:(width:1px color:chip.edge)
-                hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) }
-                @click:{ decrease.adjust_ratio(kind, index, -0.05); } { text font-size:12px "−" }
+                @click:{ decrease.adjust_ratio(kind, index, -0.05); }
+                hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) } {
+                text font-size:12px "−"
+            }
             col width:1fr align:center justify:center radius:5px fill:chip.fill
                 stroke:(width:1px color:chip.edge)
-                hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) }
-                @click:{ increase.adjust_ratio(kind, index, 0.05); } { text font-size:12px "+" }
+                @click:{ increase.adjust_ratio(kind, index, 0.05); }
+                hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) } {
+                text font-size:12px "+"
+            }
         }
     }
 }
@@ -757,17 +780,15 @@ fn header(handles: &Handles) -> Element {
     let close = handles.clone();
     let capacity = capacity_strip(model);
     view! {
-        row height:min-content align:center justify:between
-            pad:(horizontal:22px vertical:16px)
+        row height:min-content align:center justify:between pad:(horizontal:22px vertical:16px)
             stroke:(width:1px color:shell-rule edges:bottom) {
             row height:min-content align:center gap:14px {
-                col width:34px height:34px align:center justify:center radius:8px
-                    fill:#0F2A2A stroke:(width:1px color:accent.key) font-color:accent.key {
+                col width:34px height:34px align:center justify:center radius:8px fill:#0F2A2A
+                    stroke:(width:1px color:accent.key) font-color:accent.key {
                     icon size:18px mark
                 }
                 col height:min-content gap:1px {
-                    text font-family:{ display_font() } font-size:19px font-weight:700
-                        letter-spacing:2.7px "CONTROL BLOCK"
+                    text #mechanic.title letter-spacing:2.7px "CONTROL BLOCK"
                     text font-size:12px letter-spacing:0.6px font-color:ink.dim
                         { $model.subtitle() }
                 }
@@ -777,8 +798,8 @@ fn header(handles: &Handles) -> Element {
                 (legend())
                 col width:32px height:32px align:center justify:center radius:8px
                     stroke:(width:1px color:shell-rule) font-color:ink.muted
-                    hover { fill:reticle.fill-over stroke:(width:1px color:accent.key) }
-                    @click:{ close.close() } {
+                    @click:{ close.close() }
+                    hover { fill:reticle.fill-over stroke:(width:1px color:accent.key) } {
                     canvas width:18px height:18px nohit {
                         line from:(x:3px y:3px) to:(x:15px y:15px)
                             stroke:(width:4px cap:square color:ink.muted)
@@ -844,9 +865,8 @@ fn capacity_item(model: State<PanelModel>, kind: CapacityKind) -> Element {
     let label = kind.label();
     let initial = kind.initial();
     view! {
-        row width:110px height:38px align:center gap:8px pad:(horizontal:8px vertical:0px)
-            radius:8px fill:chip.fill stroke:(width:1px color:chip.edge)
-            opacity:{ if active() { 1.0 } else { 0.32 } } {
+        row #mechanic.chip width:110px height:38px align:center gap:8px
+            pad:(horizontal:8px vertical:0px) opacity:{ if active() { 1.0 } else { 0.32 } } {
             col width:22px height:22px align:center justify:center radius:6px
                 fill:{
                     match kind {
@@ -865,7 +885,8 @@ fn capacity_item(model: State<PanelModel>, kind: CapacityKind) -> Element {
                 text font-size:11px font-weight:700 { initial }
             }
             col width:1fr height:min-content gap:0px {
-                text font-size:8px font-weight:700 letter-spacing:0.8px font-color:ink.dim {
+                text font-size:8px font-weight:700 letter-spacing:0.8px font-color:ink.dim
+                    {
                     label
                 }
                 text font-size:9px text-wrap:none font-color:ink.fg { text() }
@@ -890,20 +911,28 @@ fn legend() -> Element {
 fn legend_item(label: &'static str) -> Element {
     let tile = match label {
         "hold angle" => view! {
-            col width:22px height:22px align:center justify:center radius:6px
-                fill:wash.angle font-color:accent.angle { icon size:14px legend-angle }
+            col width:22px height:22px align:center justify:center radius:6px fill:wash.angle
+                font-color:accent.angle {
+                icon size:14px legend-angle
+            }
         },
         "spin" => view! {
-            col width:22px height:22px align:center justify:center radius:6px
-                fill:wash.speed font-color:accent.speed { icon size:14px legend-spin }
+            col width:22px height:22px align:center justify:center radius:6px fill:wash.speed
+                font-color:accent.speed {
+                icon size:14px legend-spin
+            }
         },
         "key" => view! {
-            col width:22px height:22px align:center justify:center radius:6px
-                fill:wash.key font-color:accent.key { icon size:14px legend-key }
+            col width:22px height:22px align:center justify:center radius:6px fill:wash.key
+                font-color:accent.key {
+                icon size:14px legend-key
+            }
         },
         _ => view! {
-            col width:22px height:22px align:center justify:center radius:6px
-                fill:wash.time font-color:accent.time { icon size:14px legend-time }
+            col width:22px height:22px align:center justify:center radius:6px fill:wash.time
+                font-color:accent.time {
+                icon size:14px legend-time
+            }
         },
     };
     view! {
@@ -954,13 +983,12 @@ fn lane_row(handles: &Handles, id: DriveLinkId) -> Element {
                 }
             })
             @pointer-down:{ selected.set(Some(id)) } {
-            col width:262px shrink:0 height:fill gap:10px
-                pad:(left:14px right:14px top:14px bottom:12px)
+            col width:262px shrink:0 gap:10px pad:(left:14px right:14px top:14px bottom:12px)
                 stroke:(width:1px color:lane.edge edges:right) {
                 row height:min-content align:center gap:9px {
                     col width:30px height:30px shrink:0 align:center justify:center radius:7px
                         fill:if $selected == Some(id) { { color(wash.badge) } }
-                            else { { color(badge.fill) } }
+                        else { { color(badge.fill) } }
                         stroke:(width:1px color:{
                             if selected.get() == Some(id) { color(accent.key) } else { color(badge.edge) }
                         })
@@ -977,14 +1005,14 @@ fn lane_row(handles: &Handles, id: DriveLinkId) -> Element {
                         font-color:{
                             if located.get() == Some(id) { color(accent.key) } else { color(ink.faint) }
                         }
-                        hover { fill:reticle.fill_over }
                         @pointer:{ move |event: &PointerEvent, _: &mut EventCtx| {
                             match event.kind {
                                 PointerEventKind::Enter => located.set(Some(id)),
                                 PointerEventKind::Leave => located.set(None),
                                 _ => {}
                             }
-                        } } {
+                        } }
+                        hover { fill:reticle.fill_over } {
                         icon size:16px locate
                     }
                 }
@@ -1083,7 +1111,8 @@ fn wires(handles: &Handles, id: DriveLinkId, draft: State<Option<Draft>>) -> Ele
         canvas nohit {
             for (rank, ()) in { (0..releases()).map(|rank| (rank, ())) } {
                 let at = *rank;
-                line through:(
+                line
+                    through:(
                     (x:{ Length::px(wire_points(model, id, at, true)[0].0) }
                      y:{ Length::px(wire_points(model, id, at, true)[0].1) })
                     (x:{ Length::px(wire_points(model, id, at, true)[1].0) }
@@ -1093,12 +1122,12 @@ fn wires(handles: &Handles, id: DriveLinkId, draft: State<Option<Draft>>) -> Ele
                     (x:{ Length::px(wire_points(model, id, at, true)[3].0) }
                      y:{ Length::px(wire_points(model, id, at, true)[3].1) })
                 )
-                    corner:12px head:triangle
-                    stroke:(width:2px color:accent.key)
+                    corner:12px head:triangle stroke:(width:2px color:accent.key)
             }
             for (rank, ()) in { (0..dwells()).map(|rank| (rank, ())) } {
                 let at = *rank;
-                line through:(
+                line
+                    through:(
                     (x:{ Length::px(wire_points(model, id, at, false)[0].0) }
                      y:{ Length::px(wire_points(model, id, at, false)[0].1) })
                     (x:{ Length::px(wire_points(model, id, at, false)[1].0) }
@@ -1108,21 +1137,20 @@ fn wires(handles: &Handles, id: DriveLinkId, draft: State<Option<Draft>>) -> Ele
                     (x:{ Length::px(wire_points(model, id, at, false)[3].0) }
                      y:{ Length::px(wire_points(model, id, at, false)[3].1) })
                 )
-                    corner:12px head:triangle
-                    stroke:(width:2px color:accent.time)
+                    corner:12px head:triangle stroke:(width:2px color:accent.time)
             }
             // The wire being pulled out of a port, routed like the one it will
             // become: it leaves the same port, runs along a lane rather than
             // straight at the pointer, and ends on the card it has caught.
             if drawing() {
-                line through:(
+                line
+                    through:(
                     (x:{ point(0).0 } y:{ point(0).1 })
                     (x:{ point(1).0 } y:{ point(1).1 })
                     (x:{ point(2).0 } y:{ point(2).1 })
                     (x:{ point(3).0 } y:{ point(3).1 })
                 )
-                    corner:12px head:triangle
-                    stroke:(width:2px color:draft_color(draft.get()))
+                    corner:12px head:triangle stroke:(width:2px color:draft_color(draft.get()))
             }
         }
     }
@@ -1350,16 +1378,14 @@ fn state_card(
     let cap = keycap(&handles, id, index);
     let header = card_header(&handles, id, index);
     view! {
-        col width:204px height:214px align:center
+        col #mechanic.elevated width:204px height:214px align:center
             pad:(left:12px right:12px top:10px bottom:4px)
-            translate:(x:(Length::px(left)) y:{ Length::px(top()) })
-            radius:14px fill:card.fill
+            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:14px fill:card.fill
             stroke:(width:{ if caught() { 2.0 } else { 1.0 } } color:{
                 if caught() { draft_color(draft.get()) }
                 else if selected.get() == Some(id) { color(card.edge_on) }
                 else { color(card.edge) }
             })
-            shadow:(offset:(x:0px y:12px) blur:26px color:#00000073)
             font-color:{ if angled() { color(accent.angle) } else { color(accent.speed) } } {
             (header)
             (face)
@@ -1407,15 +1433,17 @@ fn card_header(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let to_speed = handles.clone();
     let remove = handles.clone();
     view! {
-        row width:fill height:20px align:center justify:between {
+        row height:20px align:center justify:between {
             row width:min-content height:20px align:center gap:6px {
-                row width:min-content height:20px align:center
-                    pad:(horizontal:7px vertical:0px) radius:5px
+                row width:min-content height:20px align:center pad:(horizontal:7px vertical:0px)
+                    radius:5px
                     fill:{ if angled() { color(wash.pill_angle) } else { color(wash.pill_speed) } } {
                     text font-size:12px font-weight:700 { format!("S{}", index + 1) }
                 }
                 if index == 0 {
-                    col width:14px height:14px font-color:ink.dim { icon size:14px home }
+                    col width:14px height:14px font-color:ink.dim {
+                        icon size:14px home
+                    }
                 }
             }
             row width:min-content height:20px align:center gap:4px {
@@ -1433,8 +1461,8 @@ fn card_header(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                 }
                 col width:20px height:20px align:center justify:center radius:5px
                     font-color:accent.danger opacity:0.5
-                    hover { opacity:1.0 fill:wash.delete }
-                    @click:{ remove.edit(id, PanelEdit::RemoveState { state: slot }) } {
+                    @click:{ remove.edit(id, PanelEdit::RemoveState { state: slot }) }
+                    hover { opacity:1.0 fill:wash.delete } {
                     icon size:12px delete
                 }
             }
@@ -1709,12 +1737,14 @@ fn dial_readout(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let value = move || state_of(model, id, index).value;
     let unit = move || lane_read(model, id, "RPM", LaneModel::speed_unit_text);
     view! {
-        col width:fill height:fill align:center justify:center nohit {
+        col align:center justify:center nohit {
             text font-size:21px font-weight:700
-                font-color:{ if angled() { color(accent.angle) } else { color(accent.speed) } } {
+                font-color:{ if angled() { color(accent.angle) } else { color(accent.speed) } }
+                {
                 if angled() { format!("{:.0}°", value()) } else { format!("{:.0}", value()) }
             }
-            text font-size:11px font-color:ink.faint margin:(top:2px) {
+            text font-size:11px font-color:ink.faint margin:(top:2px)
+                {
                 if angled() { "degrees" } else { unit() }
             }
         }
@@ -1746,7 +1776,6 @@ fn keycap(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                 else if bound().is_some() { color(key.ink_on) }
                 else { color(key.ink_off) }
             }
-            hover { stroke:(width:1px color:accent.key) }
             @click:{
                 if bound().is_some() {
                     clear.edit(id, PanelEdit::ClearKey { state: slot });
@@ -1756,11 +1785,13 @@ fn keycap(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                 } else {
                     capturing.set(Some((id, slot)));
                 }
-            } {
+            }
+            hover { stroke:(width:1px color:accent.key) } {
             if bound().is_none() && !arming() {
                 icon size:18px keyboard
             } else {
-                text font-size:15px font-weight:700 {
+                text font-size:15px font-weight:700
+                    {
                     if arming() {
                         "…".to_owned()
                     } else {
@@ -1793,8 +1824,7 @@ fn release_port(
     let dragged: State<bool> = State::new(false);
     view! {
         col width:22px height:22px align:center justify:center
-            translate:(x:(Length::px(left)) y:{ Length::px(top()) })
-            radius:11px fill:port.fill
+            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:11px fill:port.fill
             stroke:(width:1px color:{
                 if !keyed() { color(port.off) }
                 else if latched() { color(port.idle) }
@@ -1806,7 +1836,6 @@ fn release_port(
                 else { color(accent.key) }
             }
             opacity:{ if keyed() { 1.0 } else { 0.35 } }
-            hover { fill:port.fill-over }
             @drag:{ move |event: &DragEvent, _: &mut EventCtx| {
                 dragged.set(true);
                 let at = event.position - frame.get_untracked();
@@ -1834,8 +1863,13 @@ fn release_port(
                 } else {
                     handles.edit(id, PanelEdit::CycleRelease { state: slot });
                 }
-            } {
-            if latched() { icon size:12px port-latch } else { icon size:12px port-linked }
+            }
+            hover { fill:port.fill-over } {
+            if latched() {
+                icon size:12px port-latch
+            } else {
+                icon size:12px port-linked
+            }
         }
     }
 }
@@ -1858,14 +1892,12 @@ fn dwell_port(
     let top = move || band_top(model, id) + geometry::NODE_H - 11.0;
     view! {
         col width:22px height:22px align:center justify:center
-            translate:(x:(Length::px(left)) y:{ Length::px(top()) })
-            radius:11px fill:port.fill
+            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:11px fill:port.fill
             stroke:(width:1px color:{
                 if waiting() { color(accent.time) } else { color(port.idle) }
             })
             font-color:{ if waiting() { color(accent.time) } else { color(port.idle) } }
             opacity:{ if waiting() { 1.0 } else { 0.5 } }
-            hover { fill:port.fill-over }
             @drag:{ move |event: &DragEvent, _: &mut EventCtx| {
                 dragged.set(true);
                 let at = event.position - frame.get_untracked();
@@ -1893,7 +1925,8 @@ fn dwell_port(
                 } else {
                     handles.edit(id, PanelEdit::ToggleDwell { state: slot });
                 }
-            } {
+            }
+            hover { fill:port.fill-over } {
             icon size:12px port-dwell
         }
     }
@@ -1908,10 +1941,10 @@ fn add_card(handles: &Handles, id: DriveLinkId) -> Element {
     let left = move || Length::px(geometry::add_card_left(count()));
     view! {
         col width:204px height:214px align:center justify:center
-            translate:(x:{ left() } y:{ Length::px(top()) })
-            radius:14px stroke:(width:1px color:add.edge) opacity:0.6
-            hover { stroke:(width:1px color:accent.key) fill:add.fill-over opacity:1.0 }
-            @click:{ handles.edit(id, PanelEdit::AddState) } {
+            translate:(x:{ left() } y:{ Length::px(top()) }) radius:14px
+            stroke:(width:1px color:add.edge) opacity:0.6
+            @click:{ handles.edit(id, PanelEdit::AddState) }
+            hover { stroke:(width:1px color:accent.key) fill:add.fill-over opacity:1.0 } {
             canvas width:132px height:132px {
                 circle at:(x:66px y:66px) radius:54px stroke:(width:13px color:add.ring)
                 line from:(x:66px y:53px) to:(x:66px y:79px)
@@ -1951,8 +1984,9 @@ fn name_field(handles: &Handles, id: DriveLinkId) -> Element {
             if $editing {
                 (editable_field(buffer, Rc::clone(&commit), editing))
             } else {
-                text width:1fr font-family:{ display_font() } font-size:15px
-                    font-weight:600 text-wrap:none {
+                text width:1fr font-family:typeface.display font-size:text-size.value
+                    font-weight:{ resolved_weight(text_weight.medium) } text-wrap:none
+                    {
                     lane_read(model, id, String::new(), LaneModel::title)
                 }
             }
@@ -2031,16 +2065,19 @@ fn capability_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
     };
 
     view! {
-        row height:44px align:center gap:6px pad:(horizontal:7px vertical:0px) radius:8px
-            fill:chip.fill stroke:(width:1px color:chip.edge)
+        row #mechanic.action height:44px align:center gap:6px pad:(horizontal:7px vertical:0px)
             font-color:{ if which == Chip::Speed { color(chip.speed) } else { color(chip.torque) } }
-            hover { stroke:(width:1px color:chip.edge-over) }
             @click:{ handles.edit(id, edit.clone()) } {
-            if which == Chip::Speed { icon size:18px chip-speed } else { icon size:18px chip-torque }
+            if which == Chip::Speed {
+                icon size:18px chip-speed
+            } else {
+                icon size:18px chip-torque
+            }
             col width:1fr height:min-content gap:0px {
-                text width:1fr font-size:8px font-weight:700 letter-spacing:0.45px
-                    text-wrap:none font-color:ink.faint { label() }
-                text width:1fr font-size:11px letter-spacing:-0.12px text-wrap:none {
+                text width:1fr font-size:8px font-weight:700 letter-spacing:0.45px text-wrap:none
+                    font-color:ink.faint { label() }
+                text width:1fr font-size:11px letter-spacing:-0.12px text-wrap:none
+                    {
                     if which == Chip::Speed {
                         lane_read(model, id, String::new(), LaneModel::speed_text)
                     } else if which == Chip::Actuator {
@@ -2070,7 +2107,7 @@ fn switch_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
     };
 
     view! {
-        row height:44px align:center gap:8px pad:(horizontal:9px vertical:0px) radius:8px
+        row #mechanic.action height:44px align:center gap:8px pad:(horizontal:9px vertical:0px)
             fill:{
                 if !on() { color(chip.fill) }
                 else if travel { color(wash.chip_travel) }
@@ -2086,7 +2123,6 @@ fn switch_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
                 else if travel { color(accent.angle) }
                 else { color(accent.time) }
             }
-            hover { stroke:(width:1px color:chip.edge-over) }
             @click:{
                 handles.edit(id, if travel { PanelEdit::ToggleTravel } else { PanelEdit::ToggleLoop });
             } {
@@ -2097,9 +2133,14 @@ fn switch_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
                     icon size:20px chip-travel-free
                 }
             } else {
-                if on() { icon size:20px chip-loop } else { icon size:20px chip-once }
+                if on() {
+                    icon size:20px chip-loop
+                } else {
+                    icon size:20px chip-once
+                }
             }
-            text width:1fr font-size:12px letter-spacing:-0.12px text-wrap:none {
+            text width:1fr font-size:12px letter-spacing:-0.12px text-wrap:none
+                {
                 if travel {
                     lane_read(model, id, String::new(), LaneModel::travel_text)
                 } else {
@@ -2128,16 +2169,31 @@ fn presets(handles: &Handles, id: DriveLinkId) -> Element {
 /// One ready-made program.
 fn preset_button(handles: &Handles, id: DriveLinkId, which: Preset) -> Element {
     let handles = handles.clone();
-    let glyph = match which {
-        Preset::Steer => view! { icon size:22px preset-steer },
-        Preset::Drive => view! { icon size:22px preset-drive },
-        Preset::Spin => view! { icon size:22px preset-spin },
+    let (label, glyph) = match which {
+        Preset::Steer => (
+            "Apply steering preset",
+            view! {
+                icon size:22px font-color:ink.muted preset-steer
+            },
+        ),
+        Preset::Drive => (
+            "Apply drive preset",
+            view! {
+                icon size:22px font-color:ink.muted preset-drive
+            },
+        ),
+        Preset::Spin => (
+            "Apply spin preset",
+            view! {
+                icon size:22px font-color:ink.muted preset-spin
+            },
+        ),
     };
     view! {
-        col width:1fr height:34px align:center justify:center radius:8px
-            stroke:(width:1px color:preset.edge) font-color:ink.muted
-            hover { stroke:(width:1px color:accent.key) fill:preset.fill-over }
-            @click:{ handles.edit(id, PanelEdit::ApplyPreset(which)) } {
+        Action label:(label.to_owned())
+            on-click:(move || handles.edit(id, PanelEdit::ApplyPreset(which))) width:1fr height:34px
+            radius:8px fill:Color::TRANSPARENT stroke:(width:1px color:preset.edge)
+            hover { stroke:(width:1px color:accent.key) fill:preset.fill-over } {
             (glyph)
         }
     }
@@ -2155,8 +2211,8 @@ fn editable_field(buffer: State<String>, commit: Rc<dyn Fn()>, typing: State<boo
                     _ => {}
                 }
             } } {
-            input width:1fr font-size:12px fill:#00000000 pad:(horizontal:0px vertical:0px)
-                stroke:(width:0px color:#00000000) buffer
+            input #mechanic.field width:1fr height:24px font-size:12px fill:#00000000
+                pad:(horizontal:0px vertical:0px) stroke:(width:0px color:#00000000) buffer
         }
     }
 }

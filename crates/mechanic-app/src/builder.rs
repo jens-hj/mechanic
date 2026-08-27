@@ -9,8 +9,8 @@ use mechanic_core::{
     BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
     ConstructionGraph, ControllerSpec, ConvexPiece, CuboidSpec, CylinderDimensions, CylinderSpec,
     EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartId,
-    PartPiece, PartSpec, PendingOperation, RigidLinkSpec, SeatSpec, ServoSpec, ShapeRegion,
-    TransmissionSpec, WeldSpec, snap_world_to_grid,
+    PartPiece, PartSpec, PendingOperation, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
+    SeatSpec, ServoSpec, ShapeRegion, TransmissionSpec, WeldSpec, snap_world_to_grid,
 };
 
 pub(crate) const GROUND_HALF_SIZE: f32 = 10.0;
@@ -124,6 +124,7 @@ pub(crate) enum PlacementError {
     EmptyBlockBatch,
     BlocksOverlap,
     DragPlaneUnavailable,
+    PipeRun(String),
     TooManyBlocks {
         count: usize,
         maximum: usize,
@@ -157,6 +158,7 @@ impl fmt::Display for PlacementError {
             Self::DragPlaneUnavailable => {
                 formatter.write_str("camera ray does not reach the selected drag plane")
             }
+            Self::PipeRun(reason) => formatter.write_str(reason),
             Self::TooManyBlocks { count, maximum } => {
                 write!(
                     formatter,
@@ -166,6 +168,26 @@ impl fmt::Display for PlacementError {
             Self::Graph(error) => formatter.write_str(error),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PipeRunAttachment<'a> {
+    AutoWeld {
+        source: FaceOwner,
+    },
+    Bearing {
+        source: FaceRef,
+        anchor: Vec3,
+        dimensions: BearingDimensions,
+        rigid_targets: &'a [PartId],
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PipeRunPiece {
+    pub(crate) spec: PartSpec,
+    pub(crate) inlet: FaceKind,
+    pub(crate) outlet: FaceKind,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -253,7 +275,8 @@ pub(crate) fn raycast_construction_for_annulus(
             PartSpec::Cylinder(spec) => {
                 raycast_cylinder_bore_obstruction(origin, direction, part, *spec, placement_profile)
             }
-            PartSpec::Cuboid(_)
+            PartSpec::PipeBend(_)
+            | PartSpec::Cuboid(_)
             | PartSpec::Controller(_)
             | PartSpec::Engine(_)
             | PartSpec::Transmission(_)
@@ -608,6 +631,7 @@ pub(crate) fn validate_cylinder_candidate(
     validate_part(graph, PartSpec::Cylinder(candidate.spec))
 }
 
+#[allow(dead_code)] // Retained as the focused straight-cylinder staging seam used by regression tests.
 pub(crate) fn stage_cylinder_from_source(
     graph: &ConstructionGraph,
     candidate: CylinderPlacementCandidate,
@@ -692,6 +716,340 @@ fn stage_connected_cylinder(
         .apply_batch(connections)
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
     Ok(staged)
+}
+
+pub(crate) fn pipe_run_pieces(
+    points: &[Vec3],
+    bend_radii: &[f32],
+    dimensions: CylinderDimensions,
+    material: mechanic_core::ConstructionMaterial,
+) -> Result<Vec<PipeRunPiece>, PlacementError> {
+    if dimensions.sweep_angle_degrees() != 360 && !bend_radii.is_empty() {
+        return Err(PlacementError::PipeRun(
+            "partial-cylinder sectors support straight runs only".to_owned(),
+        ));
+    }
+    let (directions, lengths) = pipe_path_segments(points, bend_radii)?;
+    let bend_dimensions = bend_radii
+        .iter()
+        .copied()
+        .map(|radius| {
+            PipeBendDimensions::new(
+                dimensions.outer_diameter(),
+                dimensions.inner_diameter(),
+                radius,
+            )
+            .map_err(|error| PlacementError::PipeRun(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut pieces = Vec::new();
+    for segment in 0..directions.len() {
+        append_pipe_segment(
+            &mut pieces,
+            points,
+            &directions,
+            &lengths,
+            bend_radii,
+            &bend_dimensions,
+            dimensions,
+            material,
+            segment,
+        )?;
+    }
+    if pieces.is_empty() {
+        return Err(PlacementError::PipeRun(
+            "pipe run contains no material".to_owned(),
+        ));
+    }
+    for first in 0..pieces.len() {
+        for second in first + 2..pieces.len() {
+            if parts_overlap(pieces[first].spec, pieces[second].spec) {
+                return Err(PlacementError::PipeRun(format!(
+                    "pipe run intersects itself between pieces {} and {}",
+                    first + 1,
+                    second + 1
+                )));
+            }
+        }
+    }
+    Ok(pieces)
+}
+
+fn pipe_path_segments(
+    points: &[Vec3],
+    bend_radii: &[f32],
+) -> Result<(Vec<Vec3>, Vec<f32>), PlacementError> {
+    if points.len() < 2 || bend_radii.len() + 2 != points.len() {
+        return Err(PlacementError::PipeRun(
+            "pipe run path and bend counts do not match".to_owned(),
+        ));
+    }
+    let mut directions = Vec::with_capacity(points.len() - 1);
+    let mut lengths = Vec::with_capacity(points.len() - 1);
+    for segment in points.windows(2) {
+        let delta = segment[1] - segment[0];
+        let length = delta.length();
+        if length < GRID_UNIT_METERS - CONTACT_EPSILON
+            || (length / GRID_UNIT_METERS - (length / GRID_UNIT_METERS).round()).abs() > 1.0e-4
+        {
+            return Err(PlacementError::PipeRun(
+                "pipe legs must be positive whole-block lengths".to_owned(),
+            ));
+        }
+        let direction = delta / length;
+        if !is_cardinal(direction) {
+            return Err(PlacementError::PipeRun(
+                "pipe legs must be grid-aligned".to_owned(),
+            ));
+        }
+        directions.push(snap_cardinal(direction));
+        lengths.push(length);
+    }
+    for (corner, pair) in directions.windows(2).enumerate() {
+        if pair[0].dot(pair[1]).abs() > CONTACT_EPSILON {
+            return Err(PlacementError::PipeRun(format!(
+                "bend {} must turn exactly 90°",
+                corner + 1
+            )));
+        }
+    }
+    Ok((directions, lengths))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_pipe_segment(
+    pieces: &mut Vec<PipeRunPiece>,
+    points: &[Vec3],
+    directions: &[Vec3],
+    lengths: &[f32],
+    bend_radii: &[f32],
+    bend_dimensions: &[PipeBendDimensions],
+    dimensions: CylinderDimensions,
+    material: mechanic_core::ConstructionMaterial,
+    segment: usize,
+) -> Result<(), PlacementError> {
+    let start_trim = segment
+        .checked_sub(1)
+        .and_then(|bend| bend_radii.get(bend))
+        .copied()
+        .unwrap_or(0.0);
+    let end_trim = bend_radii.get(segment).copied().unwrap_or(0.0);
+    let residual = lengths[segment] - start_trim - end_trim;
+    if residual < -CONTACT_EPSILON {
+        let required = start_trim + end_trim;
+        return Err(PlacementError::PipeRun(format!(
+            "leg {} needs {:.2} m clearance for adjacent bends",
+            segment + 1,
+            required
+        )));
+    }
+    if residual > CONTACT_EPSILON {
+        let start = points[segment] + directions[segment] * start_trim;
+        let end = points[segment + 1] - directions[segment] * end_trim;
+        let pose = pose_for_axis_segment(start, end, directions[segment])?;
+        let cylinder = CylinderSpec::new(
+            CylinderDimensions::new(
+                dimensions.outer_diameter(),
+                dimensions.inner_diameter(),
+                residual,
+            )
+            .map_err(|error| PlacementError::PipeRun(error.to_string()))?
+            .with_sweep_angle_degrees(dimensions.sweep_angle_degrees())
+            .map_err(|error| PlacementError::PipeRun(error.to_string()))?,
+            pose,
+        )
+        .with_material(material);
+        pieces.push(PipeRunPiece {
+            spec: PartSpec::Cylinder(cylinder),
+            inlet: FaceKind::NegativeY,
+            outlet: FaceKind::PositiveY,
+        });
+    }
+    if let Some(&bend_dimensions) = bend_dimensions.get(segment) {
+        let rotation = rotation_xy_to_directions(directions[segment], directions[segment + 1])
+            .ok_or_else(|| {
+                PlacementError::PipeRun("pipe turn has no cardinal orientation".to_owned())
+            })?;
+        let corner_half_units = (points[segment + 1] / HALF_GRID_UNIT_METERS)
+            .round()
+            .as_ivec3();
+        pieces.push(PipeRunPiece {
+            spec: PartSpec::PipeBend(
+                PipeBendSpec::new(
+                    bend_dimensions,
+                    BuildPose::from_half_grid(corner_half_units, rotation),
+                )
+                .with_material(material),
+            ),
+            inlet: FaceKind::NegativeX,
+            outlet: FaceKind::PositiveY,
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_pipe_run(
+    graph: &ConstructionGraph,
+    pieces: &[PipeRunPiece],
+) -> Result<(), PlacementError> {
+    for piece in pieces {
+        validate_part(graph, piece.spec)?;
+    }
+    let existing = graph
+        .parts()
+        .filter(|(part, _)| graph.region_of(*part).is_none())
+        .map(|(_, part)| match part {
+            PartSpec::Cylinder(_) => mechanic_core::CYLINDER_COLLIDER_COUNT,
+            PartSpec::PipeBend(_) => mechanic_core::PIPE_BEND_COLLIDER_COUNT,
+            _ => 1,
+        })
+        .sum::<usize>()
+        + graph
+            .regions()
+            .map(|(_, region)| region_pieces(region).len())
+            .sum::<usize>();
+    let required = existing
+        + pieces
+            .iter()
+            .map(|piece| match piece.spec {
+                PartSpec::Cylinder(_) => mechanic_core::CYLINDER_COLLIDER_COUNT,
+                PartSpec::PipeBend(_) => mechanic_core::PIPE_BEND_COLLIDER_COUNT,
+                _ => 0,
+            })
+            .sum::<usize>();
+    if required > mechanic_core::MAX_COMPILED_COLLIDERS {
+        return Err(PlacementError::PipeRun(format!(
+            "pipe run needs {required} colliders; maximum is {}",
+            mechanic_core::MAX_COMPILED_COLLIDERS
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn stage_pipe_run(
+    graph: &ConstructionGraph,
+    pieces: &[PipeRunPiece],
+    attachment: PipeRunAttachment<'_>,
+) -> Result<ConstructionGraph, PlacementError> {
+    validate_pipe_run(graph, pieces)?;
+    let existing_parts = graph.parts().map(|(part, _)| part).collect::<Vec<_>>();
+    let weld_scope = match attachment {
+        PipeRunAttachment::AutoWeld { source } => bearing_connected_weld_scope(graph, source),
+        PipeRunAttachment::Bearing { .. } => None,
+    };
+    let mut staged = graph.clone();
+    let mut spawned = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        let command = match piece.spec {
+            PartSpec::Cylinder(spec) => BuildCommand::SpawnCylinder(spec),
+            PartSpec::PipeBend(spec) => BuildCommand::SpawnPipeBend(spec),
+            _ => unreachable!("pipe runs contain only straights and bends"),
+        };
+        let BuildOutcome::Spawned(part) = staged
+            .apply(command)
+            .map_err(|error| PlacementError::Graph(error.to_string()))?
+        else {
+            unreachable!()
+        };
+        spawned.push(part);
+    }
+    let mut connections = pieces
+        .windows(2)
+        .enumerate()
+        .map(|(index, pair)| {
+            BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(spawned[index], pair[0].outlet),
+                second: FaceRef::part(spawned[index + 1], pair[1].inlet),
+            })
+        })
+        .collect::<Vec<_>>();
+    match attachment {
+        PipeRunAttachment::Bearing {
+            source,
+            anchor,
+            dimensions,
+            rigid_targets,
+        } => {
+            let target = FaceRef::part(spawned[0], pieces[0].inlet);
+            let axis = face_geometry_from_ref(source, Some(graph)).normal;
+            connections.push(BuildCommand::AddBearing(
+                BearingSpec::new(source, target, anchor, axis).with_dimensions(dimensions),
+            ));
+            connections.extend(rigid_targets.iter().copied().map(|target| {
+                BuildCommand::RigidLink(RigidLinkSpec {
+                    first: target,
+                    second: spawned[0],
+                })
+            }));
+        }
+        PipeRunAttachment::AutoWeld { .. } => {
+            for &part in &spawned {
+                if weld_scope.is_none()
+                    && let Some((first, second)) =
+                        touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Ground)
+                {
+                    connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+                }
+                for &other in &existing_parts {
+                    if weld_scope
+                        .as_ref()
+                        .is_some_and(|members| !members.contains(&other))
+                    {
+                        continue;
+                    }
+                    if let Some((first, second)) =
+                        touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Part(other))
+                    {
+                        connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+                    }
+                }
+            }
+        }
+    }
+    staged
+        .apply_batch(connections)
+        .map_err(|error| PlacementError::Graph(error.to_string()))?;
+    Ok(staged)
+}
+
+fn is_cardinal(direction: Vec3) -> bool {
+    let absolute = direction.abs();
+    (absolute.max_element() - 1.0).abs() <= 1.0e-4
+        && absolute.min_element() <= 1.0e-4
+        && (absolute.x + absolute.y + absolute.z - 1.0).abs() <= 1.0e-4
+}
+
+fn pose_for_axis_segment(
+    start: Vec3,
+    end: Vec3,
+    direction: Vec3,
+) -> Result<BuildPose, PlacementError> {
+    let rotation = rotation_y_to_direction(direction).ok_or_else(|| {
+        PlacementError::PipeRun("pipe leg has no cardinal orientation".to_owned())
+    })?;
+    let center_half_units = ((start + end) * 0.5 / HALF_GRID_UNIT_METERS)
+        .round()
+        .as_ivec3();
+    Ok(BuildPose::from_half_grid(center_half_units, rotation))
+}
+
+fn rotation_y_to_direction(direction: Vec3) -> Option<GridRotation> {
+    cardinal_rotations()
+        .find(|rotation| (rotation.quaternion() * Vec3::Y).abs_diff_eq(direction, 1.0e-4))
+}
+
+fn rotation_xy_to_directions(incoming: Vec3, outgoing: Vec3) -> Option<GridRotation> {
+    cardinal_rotations().find(|rotation| {
+        (rotation.quaternion() * Vec3::X).abs_diff_eq(incoming, 1.0e-4)
+            && (rotation.quaternion() * Vec3::Y).abs_diff_eq(outgoing, 1.0e-4)
+    })
+}
+
+fn cardinal_rotations() -> impl Iterator<Item = GridRotation> {
+    (0_u8..4).flat_map(|x| {
+        (0_u8..4).flat_map(move |y| (0_u8..4).map(move |z| GridRotation::new(x, y, z)))
+    })
 }
 
 fn stage_connected_block_batch(
@@ -909,7 +1267,7 @@ pub(crate) fn raycast_placement_plane_point(
 ///
 /// `span` counts blocks *beyond* the start block along each axis and may be
 /// negative, so a zero span is the single starting block. This is what a drag
-/// produces once `Q` has rotated it into a third axis.
+/// produces once Rotate has moved it into a third axis.
 pub(crate) fn block_box_specs(
     start: CuboidSpec,
     span: IVec3,
@@ -962,7 +1320,7 @@ pub(crate) fn block_box_bounds(start: CuboidSpec, span: IVec3) -> (Vec3, Vec3) {
 /// Extends a drag's span by the pointer's motion within the active plane.
 ///
 /// Only the plane's own two axes move; the third keeps whatever it already had.
-/// That is what lets `Q` rotate the drag into a new plane without discarding the
+/// That is what lets Rotate move the drag into a new plane without discarding the
 /// extent already dragged, turning a rectangle into a box.
 pub(crate) fn block_span_from_rays(
     start: CuboidSpec,
@@ -1398,6 +1756,26 @@ fn cylinder_face_geometry(spec: CylinderSpec, face: FaceKind) -> Option<FaceGeom
     })
 }
 
+fn pipe_bend_face_geometry(spec: PipeBendSpec, face: FaceKind) -> Option<FaceGeometry> {
+    let radius = spec.dimensions.radius();
+    let (local_center, local_normal, local_u, local_v) = match face {
+        FaceKind::NegativeX => (Vec3::new(-radius, 0.0, 0.0), Vec3::NEG_X, Vec3::Y, Vec3::Z),
+        FaceKind::PositiveY => (Vec3::new(0.0, radius, 0.0), Vec3::Y, Vec3::X, Vec3::Z),
+        _ => return None,
+    };
+    let rotation = spec.pose.rotation.quaternion();
+    Some(FaceGeometry {
+        center: spec.pose.translation() + rotation * local_center,
+        normal: snap_cardinal(rotation * local_normal),
+        tangent_u: snap_cardinal(rotation * local_u),
+        tangent_v: snap_cardinal(rotation * local_v),
+        profile: FaceProfile::Annulus {
+            inner_radius: spec.dimensions.inner_diameter() * 0.5,
+            outer_radius: spec.dimensions.outer_diameter() * 0.5,
+        },
+    })
+}
+
 fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
     match spec {
         PartSpec::Cuboid(spec) => Some(face_geometry(spec, face)),
@@ -1408,6 +1786,7 @@ fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
         PartSpec::Seat(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Input(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Cylinder(spec) => cylinder_face_geometry(spec, face),
+        PartSpec::PipeBend(spec) => pipe_bend_face_geometry(spec, face),
     }
 }
 
@@ -1518,6 +1897,10 @@ fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
                 .map(|face| FaceRef::part(part, face))
                 .collect(),
             Some(PartSpec::Cylinder(_)) => [FaceKind::PositiveY, FaceKind::NegativeY]
+                .into_iter()
+                .map(|face| FaceRef::part(part, face))
+                .collect(),
+            Some(PartSpec::PipeBend(_)) => [FaceKind::NegativeX, FaceKind::PositiveY]
                 .into_iter()
                 .map(|face| FaceRef::part(part, face))
                 .collect(),
@@ -1667,7 +2050,68 @@ fn raycast_part(origin: Vec3, direction: Vec3, part: PartId, spec: PartSpec) -> 
         PartSpec::Seat(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Input(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Cylinder(spec) => raycast_cylinder(origin, direction, part, spec),
+        PartSpec::PipeBend(spec) => raycast_pipe_bend(origin, direction, part, spec),
     }
+}
+
+fn raycast_pipe_bend(
+    origin: Vec3,
+    direction: Vec3,
+    part: PartId,
+    spec: PipeBendSpec,
+) -> Option<SurfaceHit> {
+    let direction = direction.normalize();
+    let rotation = spec.pose.rotation.quaternion();
+    let inverse = rotation.inverse();
+    let local_origin = inverse * (origin - spec.pose.translation());
+    let local_direction = inverse * direction;
+    let outer = spec.dimensions.outer_diameter() * 0.5;
+    let inner = spec.dimensions.inner_diameter() * 0.5;
+    let radius = spec.dimensions.radius();
+    let mut candidates = Vec::new();
+    for (center, normal, face) in [
+        (
+            Vec3::new(-radius, 0.0, 0.0),
+            Vec3::NEG_X,
+            FaceKind::NegativeX,
+        ),
+        (Vec3::new(0.0, radius, 0.0), Vec3::Y, FaceKind::PositiveY),
+    ] {
+        let denominator = local_direction.dot(normal);
+        if denominator.abs() <= f32::EPSILON {
+            continue;
+        }
+        let distance = (center - local_origin).dot(normal) / denominator;
+        if distance < 0.0 {
+            continue;
+        }
+        let offset = local_origin + local_direction * distance - center;
+        let radial_squared = offset.length_squared();
+        if radial_squared >= inner * inner - CONTACT_EPSILON
+            && radial_squared <= outer * outer + CONTACT_EPSILON
+        {
+            candidates.push((distance, face));
+        }
+    }
+    for collider in pipe_bend_collision_boxes(spec) {
+        if let Some(hit) = raycast_oriented_cuboid(
+            origin,
+            direction,
+            collider.center,
+            collider.rotation,
+            collider.half,
+        ) {
+            candidates.push((hit.distance, FaceKind::PositiveZ));
+        }
+    }
+    let (distance, face) = candidates
+        .into_iter()
+        .min_by(|left, right| left.0.total_cmp(&right.0))?;
+    Some(SurfaceHit {
+        distance,
+        point: origin + direction * distance,
+        face: FaceRef::part(part, face),
+    })
 }
 
 fn raycast_cylinder(
@@ -2125,7 +2569,39 @@ pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
             }
             (world_minimum, world_maximum)
         }
+        PartSpec::PipeBend(spec) => {
+            let outer = spec.dimensions.outer_diameter() * 0.5;
+            let radius = spec.dimensions.radius();
+            let local_minimum = Vec3::new(-radius, -outer, -outer);
+            let local_maximum = Vec3::new(outer, radius, outer);
+            transformed_bounds(
+                spec.pose.translation(),
+                spec.pose.rotation.quaternion(),
+                local_minimum,
+                local_maximum,
+            )
+        }
     }
+}
+
+fn transformed_bounds(
+    translation: Vec3,
+    rotation: Quat,
+    local_minimum: Vec3,
+    local_maximum: Vec3,
+) -> (Vec3, Vec3) {
+    let mut world_minimum = Vec3::splat(f32::INFINITY);
+    let mut world_maximum = Vec3::splat(f32::NEG_INFINITY);
+    for x in [local_minimum.x, local_maximum.x] {
+        for y in [local_minimum.y, local_maximum.y] {
+            for z in [local_minimum.z, local_maximum.z] {
+                let point = translation + rotation * Vec3::new(x, y, z);
+                world_minimum = world_minimum.min(point);
+                world_maximum = world_maximum.max(point);
+            }
+        }
+    }
+    (world_minimum, world_maximum)
 }
 
 fn cylinder_local_bounds(dimensions: CylinderDimensions) -> (Vec3, Vec3) {
@@ -2219,7 +2695,44 @@ fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
                 })
                 .collect()
         }
+        PartSpec::PipeBend(spec) => pipe_bend_collision_boxes(spec),
     }
+}
+
+fn pipe_bend_collision_boxes(spec: PipeBendSpec) -> Vec<CollisionBox> {
+    let outer = spec.dimensions.outer_diameter() * 0.5;
+    let inner = spec.dimensions.inner_diameter() * 0.5;
+    let half_radial = (outer - inner) * 0.5;
+    let cross_radius = (outer + inner) * 0.5;
+    let bend_radius = spec.dimensions.radius();
+    let bend_step = std::f32::consts::FRAC_PI_2 / 12.0;
+    let cross_step = std::f32::consts::TAU / 16.0;
+    let part_rotation = spec.pose.rotation.quaternion();
+    let mut boxes = Vec::with_capacity(12 * 16);
+    for bend_slice in 0_u16..12 {
+        let theta = -std::f32::consts::FRAC_PI_2 + bend_step * (f32::from(bend_slice) + 0.5);
+        let radial = Vec3::new(theta.cos(), theta.sin(), 0.0);
+        let tangent = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+        for sector in 0_u16..16 {
+            let phi = cross_step * (f32::from(sector) + 0.5);
+            let normal = radial * phi.cos() + Vec3::Z * phi.sin();
+            let cross_tangent = -radial * phi.sin() + Vec3::Z * phi.cos();
+            let center = Vec3::new(-bend_radius, bend_radius, 0.0)
+                + radial * (bend_radius + cross_radius * phi.cos())
+                + Vec3::Z * (cross_radius * phi.sin());
+            boxes.push(CollisionBox {
+                center: spec.pose.translation() + part_rotation * center,
+                rotation: part_rotation
+                    * Quat::from_mat3(&Mat3::from_cols(normal, tangent, cross_tangent)),
+                half: Vec3::new(
+                    half_radial,
+                    (bend_radius + outer) * (bend_step * 0.5).tan(),
+                    outer * (cross_step * 0.5).tan(),
+                ),
+            });
+        }
+    }
+    boxes
 }
 
 fn boxes_overlap(first: CollisionBox, second: CollisionBox) -> bool {
@@ -2313,17 +2826,17 @@ mod tests {
     };
 
     use super::{
-        BLOCK_SIZE_METERS, PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit,
-        bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
-        bearing_ring_overlaps_face, bearing_support_face, begin_weld, block_box_specs,
-        block_sheet_specs, block_span_from_rays, candidate_from_hit, cuboid_candidate_from_hit,
-        cylinder_candidate_from_hit, face_geometry_from_ref, face_is_flat, locked_bearings,
-        newly_locked_bearings, oriented_cuboid_candidate_from_hit, raycast_construction,
-        raycast_construction_for_annulus, raycast_placement_plane_point, rigid_body_parts,
-        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
-        stage_block_batch_from_source, stage_cuboid, stage_cylinder_from_source,
-        stage_engine_from_source, stage_transmission, stage_weld_objects,
-        transmission_candidate_from_hit, validate_part,
+        BLOCK_SIZE_METERS, PipeRunAttachment, PlacementCandidate, PlacementError, PlacementPlane,
+        SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate,
+        bearing_overlaps_candidate, bearing_ring_overlaps_face, bearing_support_face, begin_weld,
+        block_box_specs, block_sheet_specs, block_span_from_rays, candidate_from_hit,
+        cuboid_candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref,
+        face_is_flat, locked_bearings, newly_locked_bearings, oriented_cuboid_candidate_from_hit,
+        pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
+        raycast_placement_plane_point, rigid_body_parts, stage_bearing_attachment,
+        stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source, stage_cuboid,
+        stage_cylinder_from_source, stage_engine_from_source, stage_pipe_run, stage_transmission,
+        stage_weld_objects, transmission_candidate_from_hit, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -3060,7 +3573,7 @@ mod tests {
 
     #[test]
     fn rotating_the_plane_keeps_the_extent_and_extends_the_third_axis() {
-        // This is what makes a big cuboid easy: drag a rectangle, press Q, and
+        // This is what makes a big cuboid easy: drag a rectangle, press Rotate, and
         // carry on into the axis the first plane could not reach.
         let start = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
         let down = Vec3::NEG_Y;
@@ -3079,7 +3592,7 @@ mod tests {
         .expect("the XZ plane is reachable from above");
         assert_eq!(flat, IVec3::new(3, 0, 2));
 
-        // Q rotates into a plane containing Y; the frozen span carries over and
+        // Rotate moves into a plane containing Y; the frozen span carries over and
         // only the new plane's axes move.
         let horizontal = Vec3::new(1.0, 0.0, 0.0);
         let side_origin = Vec3::new(-4.0, 0.0, 0.0);
@@ -3889,5 +4402,115 @@ mod tests {
             face_is_flat(&graph, FaceRef::part(part, FaceKind::NegativeY)),
             "the untouched underside must still take a block"
         );
+    }
+
+    #[test]
+    fn pipe_run_trims_straights_to_bend_tangencies() {
+        let dimensions = CylinderDimensions::new(0.25, 0.10, 0.25).unwrap();
+        let pieces = pipe_run_pieces(
+            &[
+                Vec3::ZERO,
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ],
+            &[0.25],
+            dimensions,
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        assert_eq!(pieces.len(), 3);
+        assert!(matches!(pieces[1].spec, PartSpec::PipeBend(_)));
+        for piece in [pieces[0], pieces[2]] {
+            let PartSpec::Cylinder(cylinder) = piece.spec else {
+                panic!("the ends remain straight")
+            };
+            assert!((cylinder.dimensions.axial_length() - 0.75).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn pipe_run_omits_zero_length_straights_and_keeps_per_corner_radii() {
+        let dimensions = CylinderDimensions::new(0.25, 0.10, 0.25).unwrap();
+        let one = pipe_run_pieces(
+            &[Vec3::ZERO, Vec3::X * 0.25, Vec3::new(0.25, 0.25, 0.0)],
+            &[0.25],
+            dimensions,
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        assert_eq!(one.len(), 1);
+        assert!(matches!(one[0].spec, PartSpec::PipeBend(_)));
+
+        let multiple = pipe_run_pieces(
+            &[
+                Vec3::ZERO,
+                Vec3::X,
+                Vec3::new(1.0, 1.5, 0.0),
+                Vec3::new(2.0, 1.5, 0.0),
+            ],
+            &[0.25, 0.50],
+            dimensions,
+            ConstructionMaterial::Aluminium,
+        )
+        .unwrap();
+        let radii = multiple
+            .iter()
+            .filter_map(|piece| piece.spec.as_pipe_bend())
+            .map(|bend| bend.dimensions.radius())
+            .collect::<Vec<_>>();
+        assert_eq!(radii, vec![0.25, 0.50]);
+    }
+
+    #[test]
+    fn pipe_run_rejects_insufficient_between_bend_clearance() {
+        let dimensions = CylinderDimensions::new(0.25, 0.10, 0.25).unwrap();
+        let error = pipe_run_pieces(
+            &[
+                Vec3::ZERO,
+                Vec3::X,
+                Vec3::new(1.0, 0.5, 0.0),
+                Vec3::new(2.0, 0.5, 0.0),
+            ],
+            &[0.50, 0.50],
+            dimensions,
+            ConstructionMaterial::Steel,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("1.00 m clearance"));
+    }
+
+    #[test]
+    fn staged_pipe_run_spawns_and_welds_every_piece_atomically() {
+        let graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::new(0.25, 0.10, 0.25).unwrap();
+        let pieces = pipe_run_pieces(
+            &[Vec3::ZERO, Vec3::Y, Vec3::new(1.0, 1.0, 0.0)],
+            &[0.25],
+            dimensions,
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let staged = stage_pipe_run(
+            &graph,
+            &pieces,
+            PipeRunAttachment::AutoWeld {
+                source: FaceOwner::Ground,
+            },
+        )
+        .unwrap();
+        assert_eq!(staged.part_count(), pieces.len());
+        assert_eq!(staged.weld_count(), pieces.len());
+        assert_eq!(
+            graph.part_count(),
+            0,
+            "staging leaves the source graph untouched"
+        );
+        assert!(staged.compile().is_ok());
+        assert!(pieces.iter().any(|piece| {
+            piece
+                .spec
+                .as_pipe_bend()
+                .is_some_and(|bend| (bend.dimensions.radius() - 0.25).abs() < 1.0e-5)
+        }));
     }
 }

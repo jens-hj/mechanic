@@ -9,7 +9,7 @@ mod scheduler;
 pub use abi::{
     COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, CONSTRAINT_NON_CONVERGENCE_FLAG,
     DRIVE_MODE_ANGLE, DRIVE_MODE_PASSIVE, DRIVE_MODE_SPEED, GpuBearing, GpuCollider, GpuContact,
-    GpuContractionNode, GpuDiagnostics, GpuLinkState, GpuMass, GpuMechanismBody,
+    GpuContractionNode, GpuDiagnostics, GpuGroundSurface, GpuLinkState, GpuMass, GpuMechanismBody,
     GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold, GpuSpatialInertia,
     GpuTickConfig, GpuTransform, GpuVelocity, INVALID_NUMERIC_FLAG, MANIFOLD_OVERFLOW_FLAG,
     PAIR_OVERFLOW_FLAG, pack_convex_counts,

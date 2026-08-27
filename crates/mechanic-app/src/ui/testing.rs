@@ -7,14 +7,14 @@
 
 use std::cell::RefCell;
 
-use bevy_mosaic::ui::{PaintCmd, TextStyle};
+use bevy_mosaic::ui::{PaintCmd, Shape, TextStyle};
 use mosaic_core::{Rect, Scope, Size, Vector2};
 use mosaic_widgets::Ui;
 use mosaic_widgets::input::{
     Modifiers, PointerButton, PointerEvent, PointerEventKind, PointerType,
 };
 
-use super::{Handles, UiIntent, load_fonts, shell, theme};
+use super::{Handles, OverlayShell, OverlayShellProps, UiIntent, load_fonts, theme};
 
 /// The window the overlay is laid out in for these tests.
 pub(crate) const VIEWPORT: Size = Size {
@@ -52,7 +52,11 @@ impl Overlay {
         handles.viewport.set(VIEWPORT);
         let tree = {
             let _ambient = ui.enter();
-            shell(&handles)
+            OverlayShell(
+                OverlayShellProps::builder()
+                    .handles(handles.clone())
+                    .build(),
+            )
         };
         ui.mount(&tree);
         let overlay = Overlay {
@@ -80,6 +84,7 @@ impl Overlay {
                     })
                     .collect();
             }
+            self.ui.tick(std::time::Duration::from_millis(160));
         }
     }
 
@@ -92,9 +97,93 @@ impl Overlay {
         self.ink.borrow().clone()
     }
 
+    /// Every shape in the settled scene, for theme and style assertions.
+    pub(crate) fn shapes(&self) -> Vec<Shape> {
+        self.ui
+            .scene()
+            .cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                PaintCmd::Shape(shape) => Some(shape.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Paint-list positions for shapes, preserving their order relative to images.
+    pub(crate) fn indexed_shapes(&self) -> Vec<(usize, Shape)> {
+        self.ui
+            .scene()
+            .cmds
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cmd)| match cmd {
+                PaintCmd::Shape(shape) => Some((index, shape.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Intrinsic pixel size and destination box for every decoded image.
+    pub(crate) fn images(&self) -> Vec<((u32, u32), Rect)> {
+        self.ui
+            .scene()
+            .cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                PaintCmd::Image { image, dest, .. } => {
+                    Some(((image.width(), image.height()), *dest))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Paint-list positions for images, preserving their order relative to shapes.
+    pub(crate) fn indexed_images(&self) -> Vec<(usize, (u32, u32), Rect)> {
+        self.ui
+            .scene()
+            .cmds
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cmd)| match cmd {
+                PaintCmd::Image { image, dest, .. } => {
+                    Some((index, (image.width(), image.height()), *dest))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// How many elements the tree holds.
     pub(crate) fn element_count(&self) -> usize {
         self.ui.element_count()
+    }
+
+    /// Numeric semantics projected by the first range-like widget.
+    pub(crate) fn numeric_semantics(&self) -> Option<(f64, f64, f64, f64)> {
+        self.ui
+            .accessibility_update()
+            .nodes
+            .into_iter()
+            .find_map(|(_, node)| {
+                Some((
+                    node.numeric_value()?,
+                    node.min_numeric_value()?,
+                    node.max_numeric_value()?,
+                    node.numeric_value_step()?,
+                ))
+            })
+    }
+
+    /// Authored and computed semantic labels in the retained tree.
+    pub(crate) fn labels(&self) -> Vec<String> {
+        self.ui
+            .inspection_snapshot()
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect()
     }
 
     /// Width of one unwrapped run in the same font database the overlay uses.

@@ -3,7 +3,7 @@
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     error::Error,
     path::Path,
 };
@@ -11,23 +11,29 @@ use std::{
 mod builder;
 mod camera;
 mod control_panel;
+mod controls;
 mod creation_menu;
 mod creation_store;
 mod hotbar;
+mod pause_menu;
+mod performance;
 mod sequencer;
+mod settings;
 mod shape_tool;
 mod showcase;
 mod ui;
 
 use bevy::{
+    app::AppExit,
     asset::RenderAssetUsages,
     camera::{
         Exposure,
         visibility::{NoFrustumCulling, RenderLayers},
     },
     core_pipeline::tonemapping::Tonemapping,
+    diagnostic::FrameTimeDiagnosticsPlugin,
     image::{ImageAddressMode, ImageLoaderSettings},
-    input::keyboard::Key,
+    input::mouse::AccumulatedMouseScroll,
     mesh::Indices,
     prelude::*,
     render::{
@@ -41,39 +47,48 @@ use bevy::{
 };
 use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
-    PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit, bearing_anchor_from_hit,
-    bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
-    bearing_support_face, bearing_support_face_excluding, begin_weld, block_box_bounds,
-    block_box_specs, block_span_from_rays, candidate_from_hit, cylinder_candidate_from_hit,
-    face_geometry_from_ref, oriented_cuboid_candidate_from_hit, part_world_bounds,
-    raycast_construction, raycast_construction_for_annulus, raycast_oriented_cuboid,
-    rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch, stage_bearing_cylinder,
-    stage_block_batch_from_source, stage_controller_from_source, stage_cylinder_from_source,
-    stage_engine_from_source, stage_input_from_source, stage_seat_from_source,
+    PipeRunAttachment, PipeRunPiece, PlacementCandidate, PlacementError, PlacementPlane,
+    SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
+    bearing_overlaps_cylinder_candidate, bearing_support_face, bearing_support_face_excluding,
+    begin_weld, block_box_bounds, block_box_specs, block_span_from_rays, candidate_from_hit,
+    cylinder_candidate_from_hit, face_geometry_from_ref, oriented_cuboid_candidate_from_hit,
+    part_world_bounds, pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
+    raycast_oriented_cuboid, rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch,
+    stage_bearing_cylinder, stage_block_batch_from_source, stage_controller_from_source,
+    stage_engine_from_source, stage_input_from_source, stage_pipe_run, stage_seat_from_source,
     stage_servo_from_source, stage_transmission, stage_weld_objects,
     transmission_candidate_from_hit, try_face_geometry_from_ref, validate_block_batch,
-    validate_cylinder_candidate,
+    validate_cylinder_candidate, validate_pipe_run,
 };
-use camera::{OrbitCamera, SeatedView, seated_view_rotation};
+use camera::{
+    MainCamera, MaterialWheelState, PlayerCamera, PlayerState, SEATED_EYE_HEIGHT,
+    seated_view_rotation,
+};
 use control_panel::ControlPanelState;
+use controls::{BindingInput, GameAction, InputChord, Modifiers, WheelDirection};
 use creation_menu::{CreationMenuState, CreationRequest};
 use creation_store::CreationStore;
-use hotbar::{SelectedMaterial, SelectedTool, Tool, shortcut_tool};
+use hotbar::{SelectedMaterial, SelectedTool, Tool};
 use mechanic_core::{
     ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand, BuildOutcome,
-    CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, CompiledCreation, ConstructionGraph,
-    ConstructionMaterial, ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions,
-    DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceOwner, GRID_UNIT_METERS, GridRotation,
-    InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER,
-    MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER,
-    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId,
-    PartPiece, PartSpec, PendingOperation, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec,
+    CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape, CompiledCreation,
+    ConstructionGraph, ConstructionMaterial, ControllerSpec, CreationDocument, CuboidSpec,
+    CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceKind, FaceOwner,
+    FaceRef, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec,
+    MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
+    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
+    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartPiece, PartSpec,
+    PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec,
     ServoSpec, ShapeRegion, TopologyError, TransmissionSpec, face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
-    FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTransform,
+    FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTickReadback,
+    GpuTransform,
 };
+use pause_menu::{PauseMenuState, PauseRequest};
+use performance::PerformanceMetrics;
 use sequencer::{DriveKeyState, DriveSequencer, GearboxRuntime, geared_gpu_drive_rows};
+use settings::AppSettings;
 
 const SIMULATION_VISUAL_TICK_INTERVAL: u32 = 2;
 const HAMMER_CHARGE_SECONDS: f32 = 1.5;
@@ -86,11 +101,13 @@ const BEARING_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_LENGTH_STEP: f32 = 0.25;
 const CONTROLLER_SURFACE_COLOR: Color = Color::srgb(0.10, 0.78, 0.68);
+const DEBUG_FRAME_FREEZE_KEY: KeyCode = KeyCode::F8;
 
 /// The overlay's cyan, matching the `accent.speed` the panels use. Selected
 /// shape corners take it so a selection reads by colour and not only by size.
 const SHAPE_SELECTION_COLOR: Color = Color::srgb(0.247, 0.796, 0.878);
-const BLOCK_DRAG_DEAD_ZONE_PIXELS: f32 = 5.0;
+/// Roughly the old five-pixel threshold at a typical desktop field of view.
+pub(crate) const DRAG_DEAD_ZONE_RADIANS: f32 = 0.004;
 
 #[derive(Resource, Default)]
 struct EditorGraph(ConstructionGraph);
@@ -100,11 +117,96 @@ struct EditorGraph(ConstructionGraph);
 #[derive(Resource, Default)]
 struct CurrentCreation(Option<String>);
 
+#[derive(Resource, Debug, Default, PartialEq, Eq)]
+struct DebugFrameFreeze {
+    active: bool,
+    resume_pending: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DebugFrameFreezeEffect {
+    None,
+    PauseTime,
+    ResumeTime,
+}
+
+impl DebugFrameFreeze {
+    fn advance(&mut self, freeze_pressed: bool, primary_pressed: bool) -> DebugFrameFreezeEffect {
+        if self.resume_pending {
+            self.resume_pending = false;
+            return DebugFrameFreezeEffect::ResumeTime;
+        }
+        if self.active && primary_pressed {
+            self.active = false;
+            self.resume_pending = true;
+            return DebugFrameFreezeEffect::None;
+        }
+        if !self.active && freeze_pressed {
+            self.active = true;
+            return DebugFrameFreezeEffect::PauseTime;
+        }
+        DebugFrameFreezeEffect::None
+    }
+
+    const fn blocks_updates(&self) -> bool {
+        self.active || self.resume_pending
+    }
+}
+
+fn update_debug_frame_freeze(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut freeze: ResMut<DebugFrameFreeze>,
+    mut virtual_time: ResMut<Time<Virtual>>,
+    mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    match freeze.advance(
+        keyboard.just_pressed(DEBUG_FRAME_FREEZE_KEY),
+        mouse.just_pressed(MouseButton::Left),
+    ) {
+        DebugFrameFreezeEffect::PauseTime => virtual_time.pause(),
+        DebugFrameFreezeEffect::ResumeTime => virtual_time.unpause(),
+        DebugFrameFreezeEffect::None => {}
+    }
+    if freeze.blocks_updates() {
+        cursor.grab_mode = CursorGrabMode::None;
+        cursor.visible = true;
+    }
+}
+
+fn debug_frame_updates_enabled(freeze: Res<DebugFrameFreeze>) -> bool {
+    !freeze.blocks_updates()
+}
+
+#[cfg(test)]
+mod debug_frame_freeze_tests {
+    use super::{DebugFrameFreeze, DebugFrameFreezeEffect};
+
+    #[test]
+    fn freeze_stays_active_until_a_click_is_consumed() {
+        let mut freeze = DebugFrameFreeze::default();
+        assert_eq!(
+            freeze.advance(true, false),
+            DebugFrameFreezeEffect::PauseTime
+        );
+        assert!(freeze.blocks_updates());
+
+        assert_eq!(freeze.advance(false, true), DebugFrameFreezeEffect::None);
+        assert!(freeze.blocks_updates());
+
+        assert_eq!(
+            freeze.advance(false, false),
+            DebugFrameFreezeEffect::ResumeTime
+        );
+        assert!(!freeze.blocks_updates());
+    }
+}
+
 #[derive(Resource, Default)]
 struct AppSimulation {
     gpu: Option<GpuPhysics>,
     creation: Option<CompiledCreation>,
-    paused: bool,
+    pause: SimulationPause,
     scheduler: FixedStepScheduler,
     next_tick: u64,
     previous_transforms: Vec<GpuTransform>,
@@ -114,6 +216,14 @@ struct AppSimulation {
     visual_ticks_since_publish: u32,
     static_mesh_dirty: bool,
     render_dirty: bool,
+    physics_cpu_ms: Option<f64>,
+    last_tick_readback: Option<GpuTickReadback>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SimulationPause {
+    playback: bool,
+    menu: bool,
 }
 
 #[derive(Resource, Default)]
@@ -150,7 +260,7 @@ struct SimulationHit {
 struct BlockDrag {
     start: PlacementCandidate,
     attachment: BlockAttachment,
-    /// Re-anchored whenever the plane rotates, so motion after a `Q` is
+    /// Re-anchored whenever the plane rotates, so motion after Rotate is
     /// measured from that moment rather than from the original press.
     press: PointerSample,
     plane: PlacementPlane,
@@ -170,7 +280,7 @@ struct BlockDrag {
 struct RegionDrag {
     /// The block first clicked, which anchors the area.
     start: CuboidSpec,
-    /// Re-anchored whenever the plane rotates, so motion after a `Q` is
+    /// Re-anchored whenever the plane rotates, so motion after Rotate is
     /// measured from that moment rather than from the original press.
     press: PointerSample,
     plane: PlacementPlane,
@@ -187,6 +297,7 @@ struct RegionDrag {
 
 #[derive(Clone, Copy, Debug)]
 struct PointerSample {
+    #[cfg_attr(not(test), allow(dead_code))]
     cursor: Vec2,
     ray_origin: Vec3,
     ray_direction: Vec3,
@@ -207,7 +318,7 @@ enum BlockAttachment {
 #[derive(Clone, Debug)]
 struct DeleteDrag {
     start: CuboidSpec,
-    /// Re-anchored whenever the plane rotates, so motion after a `Q` is
+    /// Re-anchored whenever the plane rotates, so motion after Rotate is
     /// measured from that moment rather than from the original press.
     press: PointerSample,
     plane: PlacementPlane,
@@ -232,15 +343,72 @@ struct BearingToolSettings {
     dimensions: BearingDimensions,
 }
 
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
 struct CylinderToolSettings {
     dimensions: CylinderDimensions,
+    bend_radius: f32,
+}
+
+impl Default for CylinderToolSettings {
+    fn default() -> Self {
+        Self {
+            dimensions: CylinderDimensions::default(),
+            bend_radius: PipeBendDimensions::DEFAULT_RADIUS,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PipeEditMode {
+    #[default]
+    Length,
+    OuterDiameter,
+    InnerDiameter,
+}
+
+impl PipeEditMode {
+    const fn next(self) -> Self {
+        match self {
+            Self::Length => Self::OuterDiameter,
+            Self::OuterDiameter => Self::InnerDiameter,
+            Self::InnerDiameter => Self::Length,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Length => "Length",
+            Self::OuterDiameter => "Outer diameter",
+            Self::InnerDiameter => "Inner diameter",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PipeDrag {
+    attachment: BlockAttachment,
+    start: Vec3,
+    corners: Vec<Vec3>,
+    endpoint: Vec3,
+    directions: Vec<Vec3>,
+    bend_radii: Vec<f32>,
+    pending_radius: f32,
+    dimensions: CylinderDimensions,
+    material: ConstructionMaterial,
+    mode: PipeEditMode,
+    choosing_direction: bool,
+    press: PointerSample,
+    anchor_endpoint: Vec3,
+    anchor_dimensions: CylinderDimensions,
+    pieces: Vec<PipeRunPiece>,
+    error: Option<PlacementError>,
 }
 
 #[derive(Clone, Debug)]
 struct EditorSnapshot {
     graph: ConstructionGraph,
     placed_bearings: Vec<PlacedBearing>,
+    revision: u64,
 }
 
 impl EditorSnapshot {
@@ -254,6 +422,7 @@ impl EditorSnapshot {
         Self {
             graph,
             placed_bearings: state.placed_bearings.clone(),
+            revision: 0,
         }
     }
 }
@@ -262,27 +431,45 @@ impl EditorSnapshot {
 struct EditorHistory {
     undo: VecDeque<EditorSnapshot>,
     redo: VecDeque<EditorSnapshot>,
+    current_revision: u64,
+    clean_revision: u64,
+    next_revision: u64,
 }
 
 impl EditorHistory {
-    fn commit(&mut self, previous: EditorSnapshot) {
+    fn commit(&mut self, mut previous: EditorSnapshot) {
+        previous.revision = self.current_revision;
         self.redo.clear();
         if self.undo.len() == HISTORY_CAPACITY {
             self.undo.pop_front();
         }
         self.undo.push_back(previous);
+        self.next_revision = self.next_revision.saturating_add(1);
+        self.current_revision = self.next_revision;
     }
 
-    fn undo(&mut self, current: EditorSnapshot) -> Option<EditorSnapshot> {
+    fn undo(&mut self, mut current: EditorSnapshot) -> Option<EditorSnapshot> {
+        current.revision = self.current_revision;
         let previous = self.undo.pop_back()?;
+        self.current_revision = previous.revision;
         self.redo.push_back(current);
         Some(previous)
     }
 
-    fn redo(&mut self, current: EditorSnapshot) -> Option<EditorSnapshot> {
+    fn redo(&mut self, mut current: EditorSnapshot) -> Option<EditorSnapshot> {
+        current.revision = self.current_revision;
         let next = self.redo.pop_back()?;
+        self.current_revision = next.revision;
         self.undo.push_back(current);
         Some(next)
+    }
+
+    const fn is_dirty(&self) -> bool {
+        self.current_revision != self.clean_revision
+    }
+
+    fn mark_clean(&mut self) {
+        self.clean_revision = self.current_revision;
     }
 }
 
@@ -298,6 +485,279 @@ enum SimulationShortcut {
     Restart,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EscapeTarget {
+    PauseSubmenu,
+    PauseMenu,
+    ExistingUi,
+    ControlPanel,
+    WorldState,
+    Tool,
+    OpenPause,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitDisposition {
+    Exit,
+    ConfirmUnsaved,
+}
+
+const fn exit_disposition(construction_dirty: bool) -> ExitDisposition {
+    if construction_dirty {
+        ExitDisposition::ConfirmUnsaved
+    } else {
+        ExitDisposition::Exit
+    }
+}
+
+#[allow(clippy::fn_params_excessive_bools)]
+// The booleans are independent, ordered input owners; the return value is their priority.
+const fn escape_target(
+    pause_open: bool,
+    submenu_open: bool,
+    existing_ui: bool,
+    panel_open: bool,
+    world_state: bool,
+    non_default_tool: bool,
+) -> EscapeTarget {
+    if pause_open && submenu_open {
+        EscapeTarget::PauseSubmenu
+    } else if pause_open {
+        EscapeTarget::PauseMenu
+    } else if existing_ui {
+        EscapeTarget::ExistingUi
+    } else if panel_open {
+        EscapeTarget::ControlPanel
+    } else if world_state {
+        EscapeTarget::WorldState
+    } else if non_default_tool {
+        EscapeTarget::Tool
+    } else {
+        EscapeTarget::OpenPause
+    }
+}
+
+fn begin_pause_frame(mut pause: ResMut<PauseMenuState>) {
+    pause.begin_frame();
+}
+
+fn sync_simulation_menu_pause(pause: Res<PauseMenuState>, mut simulation: ResMut<AppSimulation>) {
+    simulation.pause.menu = pause.blocks_world_input();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_pause_escape(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    overlay: Res<ui::UiInput>,
+    menu: Res<CreationMenuState>,
+    mut panel: ResMut<ControlPanelState>,
+    mut graph: ResMut<EditorGraph>,
+    mut state: ResMut<EditorState>,
+    mut selection: ResMut<SelectedTool>,
+    mut wheel: ResMut<MaterialWheelState>,
+    simulation: Res<AppSimulation>,
+    mut pause: ResMut<PauseMenuState>,
+) {
+    if !keyboard.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    if pause.binding_capture().is_some() {
+        pause.cancel_binding_capture();
+        return;
+    }
+    let building = !simulation.is_running();
+    let world_state = building
+        && (state.block_drag.is_some()
+            || state.pipe_drag.is_some()
+            || state.delete_drag.is_some()
+            || graph.0.pending().is_some()
+            || state.wire_drag.is_some()
+            || shape_tool_is_busy(selection.0, &state));
+    let target = escape_target(
+        pause.is_open(),
+        pause.is_in_submenu(),
+        menu.is_open() || overlay.escape_is_consumed(),
+        panel.is_open(),
+        world_state,
+        building && selection.0 != Some(Tool::Block),
+    );
+    pause.consume_frame();
+    match target {
+        EscapeTarget::PauseSubmenu => pause.return_to_main(),
+        EscapeTarget::PauseMenu => pause.close(),
+        EscapeTarget::ExistingUi => {}
+        EscapeTarget::ControlPanel => {
+            panel.close();
+            state.feedback = Some("Control block panel closed".to_owned());
+        }
+        EscapeTarget::WorldState => cancel_one_world_escape_owner(&mut graph.0, &mut state),
+        EscapeTarget::Tool => {
+            selection.0 = Some(Tool::Block);
+            state.feedback = None;
+        }
+        EscapeTarget::OpenPause => {
+            wheel.close();
+            pause.open();
+        }
+    }
+}
+
+fn cancel_one_world_escape_owner(graph: &mut ConstructionGraph, state: &mut EditorState) {
+    if state.block_drag.take().is_some() {
+        clear_hover(state);
+        state.feedback = Some("Block drag cancelled".to_owned());
+    } else if state.pipe_drag.take().is_some() {
+        clear_hover(state);
+        state.feedback = Some("Pipe run cancelled".to_owned());
+    } else if state.delete_drag.take().is_some() {
+        clear_hover(state);
+        state.feedback = Some("Delete drag cancelled".to_owned());
+    } else if graph.pending().is_some() {
+        let _ = graph.apply(BuildCommand::CancelPending);
+        state.feedback = Some("Selection cancelled".to_owned());
+    } else if state.wire_drag.take().is_some() {
+        state.feedback = Some("Wire drag cancelled".to_owned());
+    } else if state.region_drag.take().is_some() {
+        state.feedback = Some("Area selection cancelled".to_owned());
+    } else if state.vertex_drag.take().is_some() {
+        state.construction_mesh_dirty = true;
+        state.feedback = Some("Shape drag cancelled".to_owned());
+    } else if state.paint_selecting || !state.selected_vertices.is_empty() {
+        state.paint_selecting = false;
+        state.selected_vertices.clear();
+        state.feedback = Some("Selection cleared".to_owned());
+    } else if state.active_region.take().is_some() {
+        state.construction_mesh_dirty = true;
+        state.feedback = Some("Left the region".to_owned());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_pause_request(
+    mut pause: ResMut<PauseMenuState>,
+    mut settings: ResMut<AppSettings>,
+    history: Res<EditorHistory>,
+    mut simulation: ResMut<AppSimulation>,
+    mut hammer: ResMut<HammerInteraction>,
+    mut state: ResMut<EditorState>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Some(request) = pause.take_request() else {
+        return;
+    };
+    match request {
+        PauseRequest::Continue => pause.close(),
+        PauseRequest::OpenOptions => pause.open_options(),
+        PauseRequest::OpenControls => pause.open_controls(),
+        PauseRequest::Back | PauseRequest::CancelExit => pause.return_to_main(),
+        PauseRequest::SetCameraFov(degrees) => {
+            if let Err(error) = settings.set_camera_fov_degrees(degrees) {
+                warn!("could not save settings: {error}");
+            }
+        }
+        PauseRequest::BeginBindingCapture(_) => {}
+        PauseRequest::ClearBinding(action, slot) => {
+            if let Err(error) = settings.set_binding(action, slot, None) {
+                warn!("could not save settings: {error}");
+            }
+        }
+        PauseRequest::ResetControls => {
+            if let Err(error) = settings.reset_controls() {
+                warn!("could not save settings: {error}");
+            }
+        }
+        PauseRequest::ReturnToBuild => {
+            stop_simulation_for_build_mode(&mut simulation, &mut hammer, &mut state);
+            pause.close();
+        }
+        PauseRequest::Exit => match exit_disposition(history.is_dirty()) {
+            ExitDisposition::Exit => {
+                exit.write(AppExit::Success);
+            }
+            ExitDisposition::ConfirmUnsaved => pause.confirm_exit(),
+        },
+        PauseRequest::ExitWithoutSaving => {
+            exit.write(AppExit::Success);
+        }
+    }
+}
+
+fn capture_control_binding(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut pause: ResMut<PauseMenuState>,
+    mut settings: ResMut<AppSettings>,
+) {
+    let Some(capture) = pause.binding_capture() else {
+        return;
+    };
+    if keyboard.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    let modifiers = Modifiers::from_keyboard(&keyboard);
+    let modifier_key = |key| {
+        matches!(
+            key,
+            KeyCode::ShiftLeft
+                | KeyCode::ShiftRight
+                | KeyCode::ControlLeft
+                | KeyCode::ControlRight
+                | KeyCode::AltLeft
+                | KeyCode::AltRight
+                | KeyCode::SuperLeft
+                | KeyCode::SuperRight
+        )
+    };
+    let input = keyboard
+        .get_just_pressed()
+        .copied()
+        .find(|key| !modifier_key(*key))
+        .map(BindingInput::Key)
+        .or_else(|| {
+            mouse
+                .get_just_pressed()
+                .next()
+                .copied()
+                .map(BindingInput::Mouse)
+        })
+        .or_else(|| {
+            if scroll.delta.y > 0.0 {
+                Some(BindingInput::Wheel(WheelDirection::Up))
+            } else if scroll.delta.y < 0.0 {
+                Some(BindingInput::Wheel(WheelDirection::Down))
+            } else if scroll.delta.x < 0.0 {
+                Some(BindingInput::Wheel(WheelDirection::Left))
+            } else if scroll.delta.x > 0.0 {
+                Some(BindingInput::Wheel(WheelDirection::Right))
+            } else {
+                None
+            }
+        });
+    let Some(input) = input else {
+        return;
+    };
+    if matches!(input, BindingInput::Wheel(_)) && !capture.action.instantaneous() {
+        return;
+    }
+    let chord = InputChord { input, modifiers };
+    if let Err(error) = settings.set_binding(capture.action, capture.slot, Some(chord)) {
+        warn!("could not save settings: {error}");
+    }
+    pause.finish_binding_capture(chord);
+}
+
+fn stop_simulation_for_build_mode(
+    simulation: &mut AppSimulation,
+    hammer: &mut HammerInteraction,
+    state: &mut EditorState,
+) {
+    *simulation = AppSimulation::default();
+    *hammer = HammerInteraction::default();
+    state.construction_mesh_dirty = true;
+    state.feedback = Some("Returned to build mode".to_owned());
+}
+
 #[derive(Clone, Copy, Debug)]
 enum DeleteTarget {
     PlacedBearing(usize),
@@ -306,7 +766,7 @@ enum DeleteTarget {
 
 #[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
 fn handle_simulation_shortcut(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
@@ -320,21 +780,14 @@ fn handle_simulation_shortcut(
     if overlay.blocks_keyboard() {
         return;
     }
-    if keyboard.just_pressed(KeyCode::Escape) && simulation.is_running() {
-        *simulation = AppSimulation::default();
-        *hammer = HammerInteraction::default();
-        state.construction_mesh_dirty = true;
-        state.feedback = Some("Returned to build mode".to_owned());
-        return;
-    }
-    let Some(shortcut) = requested_simulation_shortcut(&keyboard) else {
+    let Some(shortcut) = requested_simulation_shortcut(&actions) else {
         return;
     };
     let restarting = simulation.is_running();
     if restarting && shortcut == SimulationShortcut::TogglePlayback {
-        simulation.paused = !simulation.paused;
+        simulation.pause.playback = !simulation.pause.playback;
         *hammer = HammerInteraction::default();
-        state.feedback = Some(if simulation.paused {
+        state.feedback = Some(if simulation.pause.playback {
             "Simulation paused — Space resumes, Shift+Space restarts".to_owned()
         } else {
             "Simulation resumed".to_owned()
@@ -342,6 +795,7 @@ fn handle_simulation_shortcut(
         return;
     }
     state.block_drag = None;
+    state.pipe_drag = None;
     state.delete_drag = None;
     state.delete_target = None;
     *hammer = HammerInteraction::default();
@@ -389,7 +843,7 @@ fn handle_simulation_shortcut(
     *simulation = AppSimulation {
         gpu: Some(gpu),
         creation: Some(creation),
-        paused: false,
+        pause: SimulationPause::default(),
         scheduler: FixedStepScheduler::new(),
         next_tick: 1,
         previous_transforms: transforms.clone(),
@@ -399,6 +853,8 @@ fn handle_simulation_shortcut(
         visual_ticks_since_publish: 0,
         static_mesh_dirty: true,
         render_dirty: true,
+        physics_cpu_ms: None,
+        last_tick_readback: None,
     };
     state.feedback = Some(if restarting {
         "Simulation restarted".to_owned()
@@ -407,27 +863,22 @@ fn handle_simulation_shortcut(
     });
 }
 
-fn requested_simulation_shortcut(keyboard: &ButtonInput<KeyCode>) -> Option<SimulationShortcut> {
-    keyboard.just_pressed(KeyCode::Space).then(|| {
-        if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-            SimulationShortcut::Restart
-        } else {
-            SimulationShortcut::TogglePlayback
-        }
-    })
+fn requested_simulation_shortcut(actions: &ButtonInput<GameAction>) -> Option<SimulationShortcut> {
+    if actions.just_pressed(GameAction::RestartSimulation) {
+        Some(SimulationShortcut::Restart)
+    } else if actions.just_pressed(GameAction::ToggleSimulation) {
+        Some(SimulationShortcut::TogglePlayback)
+    } else {
+        None
+    }
 }
 
 /// Whether the primary modifier plus `S` was pressed this frame.
 ///
 /// A modifier is required because a bare letter binds to a drive state, so
 /// plain `S` belongs to a machine rather than to the editor.
-fn save_shortcut_requested(keyboard: &ButtonInput<KeyCode>) -> bool {
-    keyboard.any_pressed([
-        KeyCode::ControlLeft,
-        KeyCode::ControlRight,
-        KeyCode::SuperLeft,
-        KeyCode::SuperRight,
-    ]) && keyboard.just_pressed(KeyCode::KeyS)
+fn save_shortcut_requested(actions: &ButtonInput<GameAction>) -> bool {
+    actions.just_pressed(GameAction::Save)
 }
 
 /// Opens the creations modal with `P`, or with the primary modifier and `S`.
@@ -438,20 +889,21 @@ fn save_shortcut_requested(keyboard: &ButtonInput<KeyCode>) -> bool {
 /// both be typing, so neither can open over the other.
 #[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
 fn handle_creation_menu_shortcut(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     simulation: Res<AppSimulation>,
     store: Res<CreationStore>,
     current: Res<CurrentCreation>,
     panel: Res<ControlPanelState>,
+    pause: Res<PauseMenuState>,
     mut menu: ResMut<CreationMenuState>,
 ) {
-    if menu.is_open() || panel.blocks_keyboard() {
+    if menu.is_open() || panel.blocks_keyboard() || pause.blocks_world_input() {
         return;
     }
-    let saving = save_shortcut_requested(&keyboard);
-    if !saving && !keyboard.just_pressed(KeyCode::KeyP) {
+    let saving = save_shortcut_requested(&actions);
+    if !saving && !actions.just_pressed(GameAction::Creations) {
         return;
     }
     if simulation.is_running() {
@@ -476,32 +928,28 @@ fn handle_creation_menu_shortcut(
 ///
 /// The panel targets the hovered control block, falling back to the selected
 /// one, so it opens both from the world and from whatever was last wired.
+#[allow(clippy::too_many_arguments)]
 fn handle_control_panel_shortcut(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     menu: Res<CreationMenuState>,
-    overlay: Res<ui::UiInput>,
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut panel: ResMut<ControlPanelState>,
     simulation: Res<AppSimulation>,
+    player: Res<PlayerState>,
+    wheel: Res<MaterialWheelState>,
+    pause: Res<PauseMenuState>,
 ) {
-    if menu.is_open() {
+    if menu.is_open() || pause.blocks_world_input() {
         return;
     }
     if panel.is_open() {
-        // Escape backs out of a value being typed or a key being bound before
-        // it closes the panel; the panel itself handles those, seeing the same
-        // press later in the frame.
-        if keyboard.just_pressed(KeyCode::Escape) && !overlay.escape_is_consumed() {
-            panel.close();
-            state.feedback = Some("Control block panel closed".to_owned());
-        }
         return;
     }
     if simulation.is_running() {
         return;
     }
-    if !keyboard.just_pressed(KeyCode::KeyE) {
+    if !actions.just_pressed(GameAction::Interact) || !player.world_input_active() || wheel.open {
         return;
     }
     let target = hovered_part(state.hovered)
@@ -519,50 +967,50 @@ fn handle_control_panel_shortcut(
     panel.open(controller);
 }
 
-/// Where the ray that looks for a Seat is aimed.
-///
-/// The pointer, the way every other tool in the editor aims, because there is
-/// no reticle to aim by: the cursor is free and visible whenever a running
-/// creation is not being sat in. The window centre is the fallback for a
-/// pointer that has left the window entirely.
-fn seat_aim_position(cursor: Option<Vec2>, viewport: Vec2) -> Vec2 {
-    cursor.unwrap_or(viewport * 0.5)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn handle_seat_interaction(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    actions: Res<ButtonInput<GameAction>>,
     overlay: Res<ui::UiInput>,
+    wheel: Res<MaterialWheelState>,
     graph: Res<EditorGraph>,
     simulation: Res<AppSimulation>,
     window: Single<&Window, With<PrimaryWindow>>,
-    mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
-    mut camera: Single<(&Camera, &GlobalTransform, &mut Transform), With<OrbitCamera>>,
-    mut seated: ResMut<SeatedView>,
+    mut camera: Single<
+        (
+            &Camera,
+            &mut PlayerCamera,
+            &mut Transform,
+            &mut GlobalTransform,
+        ),
+        With<MainCamera>,
+    >,
+    mut player: ResMut<PlayerState>,
     mut state: ResMut<EditorState>,
 ) {
     if !simulation.is_running() {
-        if seated.seat.take().is_some() {
-            cursor.grab_mode = CursorGrabMode::None;
-            cursor.visible = true;
+        if player.seat.is_some() {
+            let camera_position = camera.2.translation;
+            player.leave_seat_at(camera_position);
         }
         return;
     }
 
-    if keyboard.just_pressed(KeyCode::KeyE) && !overlay.blocks_keyboard() {
-        if seated.seat.is_some() {
-            seated.leave();
-            cursor.grab_mode = CursorGrabMode::None;
-            cursor.visible = true;
+    if actions.just_pressed(GameAction::Interact)
+        && player.world_input_active()
+        && !overlay.blocks_keyboard()
+        && !wheel.open
+    {
+        if let Some(seat) = player.seat {
+            let beside = seat_world_pose(&graph.0, &simulation, seat)
+                .map_or(camera.2.translation, |(centre, rotation)| {
+                    centre + rotation * (Vec3::X * 0.9)
+                });
+            player.leave_seat_at(beside);
             state.feedback = Some("Left Seat".to_owned());
             return;
         }
-        let (camera_component, camera_global, _) = &mut *camera;
-        let cursor_position = seat_aim_position(
-            window.cursor_position(),
-            Vec2::new(window.width(), window.height()),
-        );
+        let (camera_component, _, _, camera_global) = &mut *camera;
+        let cursor_position = camera::viewport_center(Vec2::new(window.width(), window.height()));
         let hit = camera_component
             .viewport_to_world(camera_global, cursor_position)
             .ok()
@@ -579,59 +1027,58 @@ fn handle_seat_interaction(
                 )
             });
         if let Some(hit) = hit
-            && graph.0.is_seat(hit.part)
+            && camera::seat_entry_allowed(hit.distance, graph.0.is_seat(hit.part))
         {
-            seated.seat = Some(hit.part);
-            seated.yaw = 0.0;
-            seated.pitch = 0.0;
-            cursor.grab_mode = CursorGrabMode::Locked;
-            cursor.visible = false;
+            player.seat = Some(hit.part);
+            camera.1.yaw = 0.0;
+            camera.1.pitch = 0.0;
             state.feedback = Some("Seated — mouse looks around, E leaves the Seat".to_owned());
         } else {
             state.feedback = Some(if hit.is_some() {
-                "That is not a Seat — point at the Seat and press E".to_owned()
+                "Seat must be under the reticle and within 3 m".to_owned()
             } else {
-                "Point at a Seat and press E".to_owned()
+                "Aim the reticle at a Seat within 3 m and press E".to_owned()
             });
         }
     }
 
-    let Some(seat) = seated.seat else {
+    let Some(seat) = player.seat else {
         return;
     };
-    let Some(creation) = simulation.creation.as_ref() else {
+    let Some((seat_center, seat_rotation)) = seat_world_pose(&graph.0, &simulation, seat) else {
+        player.seat = None;
         return;
     };
-    let Some((_, compound)) = creation
+    let (_, view, transform, global) = &mut *camera;
+    let rotation = seated_view_rotation(seat_rotation, view.yaw, view.pitch);
+    **transform = view.apply_pullback(
+        seat_center + seat_rotation * (Vec3::Y * SEATED_EYE_HEIGHT),
+        rotation,
+    );
+    **global = GlobalTransform::from(**transform);
+}
+
+pub(crate) fn seat_world_pose(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    seat: PartId,
+) -> Option<(Vec3, Quat)> {
+    let creation = simulation.creation.as_ref()?;
+    let compound = creation
         .part_to_compound
         .iter()
-        .find(|(part, _)| *part == seat)
-    else {
-        seated.leave();
-        return;
+        .find_map(|(part, compound)| (*part == seat).then_some(*compound))?;
+    let snapshot = simulation.transforms.get(compound as usize)?;
+    let PartSpec::Seat(spec) = graph.part(seat).copied()? else {
+        return None;
     };
-    let Some(snapshot) = simulation.transforms.get(*compound as usize) else {
-        return;
-    };
-    let Some(PartSpec::Seat(spec)) = graph.0.part(seat).copied() else {
-        seated.leave();
-        return;
-    };
-    seated.yaw -= motion.delta.x * 0.0025;
-    seated.pitch = (seated.pitch - motion.delta.y * 0.0025).clamp(
-        -core::f32::consts::FRAC_PI_2 + 0.08,
-        core::f32::consts::FRAC_PI_2 - 0.08,
-    );
     let root_position = Vec3::from_slice(&snapshot.position[..3]);
     let root_rotation = Quat::from_array(snapshot.rotation);
-    let local_rotation = spec.pose.rotation.quaternion();
-    let seat_rotation = root_rotation * local_rotation;
+    let seat_rotation = root_rotation * spec.pose.rotation.quaternion();
     let seat_center = root_position
         + root_rotation
-            * (spec.pose.translation() - creation.compounds[*compound as usize].root_translation);
-    let (_, _, transform) = &mut *camera;
-    transform.translation = seat_center + seat_rotation * (Vec3::Y * 0.475);
-    transform.rotation = seated_view_rotation(seat_rotation, seated.yaw, seated.pitch);
+            * (spec.pose.translation() - creation.compounds[compound as usize].root_translation);
+    Some((seat_center, seat_rotation))
 }
 
 /// Advances every driven bearing's program and pushes changed rows to the GPU.
@@ -647,7 +1094,7 @@ fn run_drive_sequencer(
     mut sequencer: ResMut<DriveSequencer>,
     mut gearboxes: ResMut<GearboxRuntime>,
     mut state: ResMut<EditorState>,
-    seated: Res<SeatedView>,
+    player: Res<PlayerState>,
 ) {
     if !simulation.is_running() {
         if sequencer.is_started() {
@@ -665,7 +1112,7 @@ fn run_drive_sequencer(
         state.drive_rows_dirty = true;
     }
     let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
-    let keyboard_controller = seated
+    let keyboard_controller = player
         .seat
         .filter(|seat| graph.0.seat_input(*seat).is_some())
         .and_then(|seat| graph.0.seat_controller(seat));
@@ -809,7 +1256,8 @@ fn handle_creation_request(
     mut history: ResMut<EditorHistory>,
     mut current: ResMut<CurrentCreation>,
     store: Res<CreationStore>,
-    mut camera: Single<(&mut OrbitCamera, &mut Transform)>,
+    mut player: ResMut<PlayerState>,
+    mut camera: Single<(&mut PlayerCamera, &mut Transform, &mut GlobalTransform), With<MainCamera>>,
 ) {
     let Some(request) = menu.take_request() else {
         return;
@@ -824,7 +1272,13 @@ fn handle_creation_request(
                     debug_assert_eq!(creation.compounds.len(), preset.body_count());
                     history.commit(previous);
                     current.0 = None;
-                    adopt_loaded_creation(&mut state, &mut camera, &graph.0, Vec::new());
+                    adopt_loaded_creation(
+                        &mut state,
+                        &mut player,
+                        &mut camera,
+                        &graph.0,
+                        Vec::new(),
+                    );
                     state.feedback = Some(format!(
                         "Opened {}: {} welds, {} bearings, {} bodies — Space to simulate",
                         preset.label(),
@@ -843,6 +1297,7 @@ fn handle_creation_request(
             match load_creation(&mut graph.0, &path) {
                 Ok((name, sockets, creation)) => {
                     history.commit(previous);
+                    history.mark_clean();
                     let bodies = creation.as_ref().map(|compiled| compiled.compounds.len());
                     let placed = sockets
                         .into_iter()
@@ -852,7 +1307,7 @@ fn handle_creation_request(
                             dimensions: socket.dimensions,
                         })
                         .collect();
-                    adopt_loaded_creation(&mut state, &mut camera, &graph.0, placed);
+                    adopt_loaded_creation(&mut state, &mut player, &mut camera, &graph.0, placed);
                     state.feedback = Some(if let Some(bodies) = bodies {
                         format!(
                             "Opened \"{name}\": {} parts, {} bearings, {bodies} bodies — Space to simulate",
@@ -877,6 +1332,7 @@ fn handle_creation_request(
             let document = capture_creation(&graph.0, &state, &name);
             match store.save(&document) {
                 Ok(path) => {
+                    history.mark_clean();
                     current.0 = Some(name.clone());
                     state.feedback = Some(format!("Saved \"{name}\" to {}", path.display()));
                 }
@@ -947,21 +1403,30 @@ fn load_creation(
 /// then frames the camera on what arrived.
 fn adopt_loaded_creation(
     state: &mut EditorState,
-    camera: &mut Single<(&mut OrbitCamera, &mut Transform)>,
+    player: &mut PlayerState,
+    camera: &mut Single<
+        (&mut PlayerCamera, &mut Transform, &mut GlobalTransform),
+        With<MainCamera>,
+    >,
     graph: &ConstructionGraph,
     placed_bearings: Vec<PlacedBearing>,
 ) {
     clear_hover(state);
     state.block_drag = None;
+    state.pipe_drag = None;
     state.delete_drag = None;
     state.delete_target = None;
     state.selected_controller = None;
     state.placed_bearings = placed_bearings;
     state.construction_mesh_dirty = true;
     if let Some((minimum, maximum)) = graph_bounds(graph) {
-        let (orbit, transform) = &mut **camera;
-        orbit.frame_bounds(minimum, maximum);
-        **transform = orbit.transform();
+        let (view, transform, global) = &mut **camera;
+        player.place_outside_bounds(view, minimum, maximum);
+        **transform = view.apply_pullback(
+            player.position + Vec3::Y * camera::EYE_HEIGHT,
+            view.look_rotation(),
+        );
+        **global = GlobalTransform::from(**transform);
     }
 }
 
@@ -1045,16 +1510,17 @@ fn advance_simulation(
         }
     }
 
+    let effectively_paused = simulation.is_paused();
     let tick = {
         let AppSimulation {
-            paused,
             scheduler,
             next_tick,
             ..
         } = &mut *simulation;
-        next_simulation_tick(scheduler, next_tick, time.delta(), *paused)
+        next_simulation_tick(scheduler, next_tick, time.delta(), effectively_paused)
     };
     if let Some(tick) = tick {
+        let physics_started = std::time::Instant::now();
         if let Err(error) =
             apply_pending_hammer_impact(&simulation, &mut hammer, &render_device, &render_queue)
         {
@@ -1079,9 +1545,12 @@ fn advance_simulation(
                     .map_err(|error| error.to_string())
             })
         };
+        let mut successful_readback = None;
         match diagnostics {
             None => {}
-            Some(Ok(diagnostics)) if diagnostics.error_flags == 0 => {}
+            Some(Ok(diagnostics)) if diagnostics.error_flags == 0 => {
+                successful_readback = Some(diagnostics);
+            }
             Some(Ok(diagnostics)) => {
                 stop_failed_simulation(
                     &mut simulation,
@@ -1123,6 +1592,7 @@ fn advance_simulation(
                 }
             }
         }
+        simulation.record_performance(physics_started.elapsed(), successful_readback);
     }
 
     if simulation.static_mesh_dirty {
@@ -1275,8 +1745,27 @@ impl AppSimulation {
     }
 
     const fn is_paused(&self) -> bool {
-        self.is_running() && self.paused
+        self.is_running() && effective_simulation_pause(self.pause.playback, self.pause.menu)
     }
+
+    fn record_performance(
+        &mut self,
+        cpu_elapsed: std::time::Duration,
+        readback: Option<GpuTickReadback>,
+    ) {
+        const SMOOTHING: f64 = 0.2;
+        let cpu_ms = cpu_elapsed.as_secs_f64() * 1_000.0;
+        self.physics_cpu_ms = Some(self.physics_cpu_ms.map_or(cpu_ms, |previous| {
+            previous + (cpu_ms - previous) * SMOOTHING
+        }));
+        if let Some(readback) = readback {
+            self.last_tick_readback = Some(readback);
+        }
+    }
+}
+
+const fn effective_simulation_pause(space_paused: bool, menu_paused: bool) -> bool {
+    space_paused || menu_paused
 }
 
 #[derive(Resource, Default)]
@@ -1299,6 +1788,8 @@ struct EditorState {
     delete_target: Option<DeleteTarget>,
     block_drag: Option<BlockDrag>,
     block_preview_revision: u64,
+    pipe_drag: Option<PipeDrag>,
+    pipe_preview_revision: u64,
     delete_drag: Option<DeleteDrag>,
     delete_preview_revision: u64,
     placed_bearings: Vec<PlacedBearing>,
@@ -1321,12 +1812,42 @@ struct EditorState {
     hovered_vertex: Option<CageIndex>,
     /// Vertex the pointer is dragging.
     vertex_drag: Option<shape_tool::VertexDrag>,
-    /// Vertices picked out by a rectangle, moved together by one drag.
+    /// Vertices painted by Shift+left, moved together by one drag.
     selected_vertices: Vec<CageIndex>,
-    /// Selection rectangle being dragged out.
-    box_select: Option<shape_tool::BoxSelect>,
+    /// Whether Shift+left is sweeping across cage vertices.
+    paint_selecting: bool,
     /// The new cage vertex the pointer is currently being offered.
     edge_offer: Option<shape_tool::EdgeInsertion>,
+}
+
+impl EditorState {
+    pub(crate) fn world_drag_active(&self) -> bool {
+        self.block_drag.is_some()
+            || self.pipe_drag.is_some()
+            || self.delete_drag.is_some()
+            || self.delete_target.is_some()
+            || self.region_drag.is_some()
+            || self.active_region.is_some()
+            || self.vertex_drag.is_some()
+            || self.wire_drag.is_some()
+            || self.paint_selecting
+    }
+
+    pub(crate) fn pipe_bend_active(&self) -> bool {
+        self.pipe_drag
+            .as_ref()
+            .is_some_and(|drag| drag.choosing_direction || !drag.bend_radii.is_empty())
+    }
+
+    fn cancel_delete_gesture(&mut self) -> bool {
+        let cancelled_drag = self.delete_drag.take().is_some();
+        let cancelled_target = self.delete_target.take().is_some();
+        let cancelled = cancelled_drag || cancelled_target;
+        if cancelled {
+            clear_hover(self);
+        }
+        cancelled
+    }
 }
 
 #[derive(Resource)]
@@ -1367,6 +1888,13 @@ struct EditorVisuals {
     delete_drag_preview_mesh: Handle<Mesh>,
     weld_hover_preview_mesh: Handle<Mesh>,
     weld_selection_preview_mesh: Handle<Mesh>,
+}
+
+#[derive(Default)]
+struct PreviewMeshRevisions {
+    block: u64,
+    pipe: u64,
+    delete: u64,
 }
 
 impl EditorVisuals {
@@ -1423,6 +1951,9 @@ struct BearingVisual;
 struct JointXrayVisual;
 
 #[derive(Component)]
+struct FovCamera;
+
+#[derive(Component)]
 struct ShapeNodeVisual;
 
 #[derive(Component)]
@@ -1435,6 +1966,22 @@ struct ShapePlaneVisual;
 /// The arrows naming that plane's two axes.
 #[derive(Component)]
 struct ShapeArrowVisual;
+
+#[derive(Component)]
+pub(crate) struct PlayerAvatar;
+
+#[derive(Component, Clone)]
+pub(crate) struct AvatarPart {
+    standing: Transform,
+    seated: Transform,
+}
+
+#[derive(Resource)]
+pub(crate) struct AvatarMaterials {
+    clothing: Handle<StandardMaterial>,
+    head: Handle<StandardMaterial>,
+    boots: Handle<StandardMaterial>,
+}
 
 /// One of the Shape tool's three overlay batches, each excluding the others so
 /// the three `Single` parameters can be held at once.
@@ -1620,11 +2167,15 @@ fn authored_part_material(asset_server: &AssetServer, stem: &str) -> StandardMat
 const fn material_index(material: ConstructionMaterial) -> usize {
     match material {
         ConstructionMaterial::Aluminium => 0,
-        ConstructionMaterial::Concrete => 1,
-        ConstructionMaterial::Plastic => 2,
-        ConstructionMaterial::Rubber => 3,
-        ConstructionMaterial::Steel => 4,
-        ConstructionMaterial::Wood => 5,
+        ConstructionMaterial::CarbonFiber => 1,
+        ConstructionMaterial::Concrete => 2,
+        ConstructionMaterial::Graphite => 3,
+        ConstructionMaterial::Iron => 4,
+        ConstructionMaterial::Plastic => 5,
+        ConstructionMaterial::Rubber => 6,
+        ConstructionMaterial::Steel => 7,
+        ConstructionMaterial::Stone => 8,
+        ConstructionMaterial::Wood => 9,
     }
 }
 
@@ -1634,10 +2185,14 @@ fn construction_material(
 ) -> StandardMaterial {
     let stem = match material {
         ConstructionMaterial::Aluminium => "materials/aluminium/aluminium",
+        ConstructionMaterial::Graphite => "materials/graphite/graphite",
+        ConstructionMaterial::CarbonFiber => "materials/carbon_fiber/carbon_fiber",
         ConstructionMaterial::Concrete => "materials/concrete/concrete",
+        ConstructionMaterial::Iron => "materials/iron/iron",
         ConstructionMaterial::Plastic => "materials/plastic/plastic",
         ConstructionMaterial::Rubber => "materials/rubber/rubber",
         ConstructionMaterial::Steel => "materials/steel/steel",
+        ConstructionMaterial::Stone => "materials/stone/stone",
         ConstructionMaterial::Wood => "materials/wood/wood",
     };
     let texture = |suffix: &str, is_srgb: bool| {
@@ -1678,6 +2233,7 @@ fn authored_preview_material(
     material
 }
 
+#[allow(clippy::too_many_lines)] // The app schedule is kept in visible execution order.
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -1686,8 +2242,12 @@ fn main() {
                 resolution: (1280, 720).into(),
                 ..default()
             }),
-            ..default()
+            ..Default::default()
         }))
+        .add_plugins((
+            FrameTimeDiagnosticsPlugin::new(120),
+            bevy::render::diagnostic::RenderDiagnosticsPlugin,
+        ))
         // After DefaultPlugins: the overlay's render pass installs into the
         // render sub-app, which does not exist until RenderPlugin has run.
         .add_plugins(bevy_mosaic::MosaicPlugin)
@@ -1697,6 +2257,10 @@ fn main() {
         .init_resource::<CreationMenuState>()
         .init_resource::<CreationStore>()
         .init_resource::<CurrentCreation>()
+        .init_resource::<DebugFrameFreeze>()
+        .init_resource::<PauseMenuState>()
+        .init_resource::<PerformanceMetrics>()
+        .init_resource::<AppSettings>()
         .init_resource::<AppSimulation>()
         .init_resource::<HammerInteraction>()
         .init_resource::<BearingToolSettings>()
@@ -1708,53 +2272,87 @@ fn main() {
         .init_resource::<shape_tool::ShapeSnap>()
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
-        .init_resource::<SeatedView>()
+        .init_resource::<PlayerState>()
+        .init_resource::<MaterialWheelState>()
+        .init_resource::<ButtonInput<GameAction>>()
         // A floor so deep cavities are not pure black. Everything else now
         // comes from the sky environment map, which has direction.
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.75, 0.80, 0.90),
             brightness: 20.0,
-            ..default()
+            ..Default::default()
         })
         .add_systems(Startup, (setup, ui::mount).chain())
         .add_systems(
             Update,
             (
+                update_debug_frame_freeze,
+                performance::toggle,
                 (
-                    handle_creation_menu_shortcut,
-                    handle_control_panel_shortcut,
-                    ui::drain,
-                    ui::push,
-                    ui::push_help,
-                    ui::push_markers,
-                    ui::sync_input,
-                    handle_history_shortcut,
-                    handle_creation_request,
+                    (
+                        (
+                            begin_pause_frame,
+                            controls::update_action_state,
+                            capture_control_binding,
+                            handle_creation_menu_shortcut,
+                            handle_control_panel_shortcut,
+                            ui::drain,
+                            handle_pause_request,
+                            handle_pause_escape,
+                            sync_simulation_menu_pause,
+                        )
+                            .chain(),
+                        (
+                            ui::push,
+                            ui::push_help,
+                            ui::push_markers,
+                            ui::push_player,
+                            ui::sync_input,
+                            handle_history_shortcut,
+                            handle_creation_request,
+                        )
+                            .chain(),
+                    )
+                        .chain(),
+                    (
+                        apply_camera_fov,
+                        camera::update_material_wheel,
+                        camera::update_player_camera,
+                        handle_simulation_shortcut,
+                        handle_seat_interaction,
+                        handle_shortcuts,
+                    )
+                        .chain(),
+                    (
+                        (
+                            handle_bearing_dimension_shortcuts,
+                            handle_cylinder_dimension_shortcuts,
+                        )
+                            .chain(),
+                        (
+                            handle_tool_change,
+                            update_hover,
+                            handle_build_actions,
+                            handle_shape_actions,
+                            ui::push_dimensions,
+                            handle_hammer_actions,
+                        )
+                            .chain(),
+                        update_joint_xray,
+                        sync_visual_meshes,
+                        (sync_shape_nodes, sync_region_focus, sync_drag_plane).chain(),
+                        update_wire_drag_preview,
+                        update_wire_hover_preview,
+                        run_drive_sequencer,
+                        advance_simulation,
+                        sync_player_avatar,
+                        update_previews,
+                        (performance::sample, ui::push_performance).chain(),
+                    )
+                        .chain(),
                 )
-                    .chain(),
-                camera::update_orbit_camera,
-                handle_simulation_shortcut,
-                handle_seat_interaction,
-                handle_shortcuts,
-                (
-                    handle_bearing_dimension_shortcuts,
-                    handle_cylinder_dimension_shortcuts,
-                )
-                    .chain(),
-                handle_tool_change,
-                update_hover,
-                handle_build_actions,
-                handle_shape_actions,
-                ui::push_dimensions,
-                handle_hammer_actions,
-                update_joint_xray,
-                sync_visual_meshes,
-                (sync_shape_nodes, sync_region_focus, sync_drag_plane).chain(),
-                update_wire_drag_preview,
-                update_wire_hover_preview,
-                run_drive_sequencer,
-                advance_simulation,
-                update_previews,
+                    .chain()
+                    .run_if(debug_frame_updates_enabled),
             )
                 .chain(),
         )
@@ -1765,6 +2363,7 @@ fn main() {
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    settings: Res<AppSettings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -1859,6 +2458,8 @@ fn setup(
         materials.add(preview_material(Color::srgba(1.0, 0.60, 0.06, 0.46)));
     let green_preview_material =
         materials.add(preview_material(Color::srgba(0.12, 1.0, 0.28, 0.52)));
+
+    spawn_player_avatar(&mut commands, &mut meshes, &mut materials);
 
     commands.insert_resource(EditorVisuals {
         construction_meshes: construction_meshes.clone(),
@@ -2132,11 +2733,20 @@ fn setup(
     // the build reads round without the key light being cranked into clipping.
     let environment_map = images.add(sky_cubemap(SKY_CUBEMAP_SIZE));
 
-    let orbit = OrbitCamera::default();
+    let player_camera = PlayerCamera::default();
+    let projection = Projection::Perspective(PerspectiveProjection {
+        fov: settings.camera_fov_degrees().to_radians(),
+        ..default()
+    });
+    let camera_transform = player_camera.apply_pullback(
+        PlayerState::default().position + Vec3::Y * camera::EYE_HEIGHT,
+        player_camera.look_rotation(),
+    );
     commands
         .spawn((
-            Name::new("Orbital camera"),
+            Name::new("Player camera"),
             Camera3d::default(),
+            projection.clone(),
             Exposure::OVERCAST,
             Tonemapping::SomewhatBoringDisplayTransform,
             GeneratedEnvironmentMapLight {
@@ -2144,13 +2754,16 @@ fn setup(
                 intensity: SKY_ENVIRONMENT_INTENSITY,
                 ..default()
             },
-            orbit.transform(),
-            orbit,
+            camera_transform,
+            player_camera,
+            MainCamera,
+            FovCamera,
         ))
         .with_children(|camera| {
             camera.spawn((
                 Name::new("Joint x-ray camera"),
                 Camera3d::default(),
+                projection,
                 // The overlay rides the camera that draws last. This pass loads
                 // rather than clears, so an overlay painted before it is drawn
                 // over by the joints showing through.
@@ -2162,9 +2775,338 @@ fn setup(
                 },
                 Tonemapping::None,
                 RenderLayers::layer(1),
+                FovCamera,
                 Transform::default(),
             ));
         });
+}
+
+fn apply_camera_fov(
+    settings: Res<AppSettings>,
+    mut cameras: Query<&mut Projection, With<FovCamera>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let fov = settings.camera_fov_degrees().to_radians();
+    for mut projection in &mut cameras {
+        set_projection_fov(&mut projection, fov);
+    }
+}
+
+fn set_projection_fov(projection: &mut Projection, fov_radians: f32) {
+    if let Projection::Perspective(perspective) = projection {
+        perspective.fov = fov_radians;
+    }
+}
+
+#[cfg(test)]
+mod pause_feature_tests {
+    use super::*;
+
+    #[test]
+    fn existing_escape_owners_take_priority_before_pause() {
+        assert_eq!(
+            escape_target(false, false, true, true, true, true),
+            EscapeTarget::ExistingUi
+        );
+        assert_eq!(
+            escape_target(false, false, false, true, true, true),
+            EscapeTarget::ControlPanel
+        );
+        assert_eq!(
+            escape_target(false, false, false, false, true, true),
+            EscapeTarget::WorldState
+        );
+        assert_eq!(
+            escape_target(false, false, false, false, false, true),
+            EscapeTarget::Tool
+        );
+        assert_eq!(
+            escape_target(false, false, false, false, false, false),
+            EscapeTarget::OpenPause
+        );
+    }
+
+    #[test]
+    fn pause_confirmation_cancels_before_pause_continues() {
+        assert_eq!(
+            escape_target(true, true, true, true, true, true),
+            EscapeTarget::PauseSubmenu
+        );
+        assert_eq!(
+            escape_target(true, false, true, true, true, true),
+            EscapeTarget::PauseMenu
+        );
+    }
+
+    #[test]
+    fn menu_pause_does_not_change_the_prior_space_pause_state() {
+        for space_paused in [false, true] {
+            assert!(effective_simulation_pause(space_paused, true));
+            assert_eq!(
+                effective_simulation_pause(space_paused, false),
+                space_paused
+            );
+        }
+    }
+
+    #[test]
+    fn revisions_restore_clean_identity_through_undo_and_redo() {
+        let graph = ConstructionGraph::default();
+        let state = EditorState::default();
+        let mut history = EditorHistory::default();
+        assert!(
+            !history.is_dirty(),
+            "the initial blank construction is clean"
+        );
+
+        history.commit(EditorSnapshot::capture(&graph, &state));
+        assert!(history.is_dirty(), "a successful edit creates a revision");
+        history.mark_clean();
+        assert!(
+            !history.is_dirty(),
+            "a successful save marks that revision clean"
+        );
+
+        history.commit(EditorSnapshot::capture(&graph, &state));
+        assert!(history.is_dirty(), "a later edit is dirty");
+        history
+            .undo(EditorSnapshot::capture(&graph, &state))
+            .expect("undo reaches the saved revision");
+        assert!(!history.is_dirty());
+        history
+            .redo(EditorSnapshot::capture(&graph, &state))
+            .expect("redo reaches the edited revision");
+        assert!(history.is_dirty());
+    }
+
+    #[test]
+    fn clean_exit_is_immediate_and_dirty_exit_requires_confirmation() {
+        assert_eq!(exit_disposition(false), ExitDisposition::Exit);
+        assert_eq!(exit_disposition(true), ExitDisposition::ConfirmUnsaved);
+    }
+
+    #[test]
+    fn both_camera_projections_receive_the_same_fov() {
+        let mut projections = [
+            Projection::Perspective(PerspectiveProjection::default()),
+            Projection::Perspective(PerspectiveProjection::default()),
+        ];
+        let wanted = 80.0_f32.to_radians();
+        for projection in &mut projections {
+            set_projection_fov(projection, wanted);
+        }
+        for projection in projections {
+            let Projection::Perspective(perspective) = projection else {
+                panic!("test projection remains perspective");
+            };
+            assert!((perspective.fov - wanted).abs() < f32::EPSILON);
+        }
+    }
+}
+
+pub(crate) fn avatar_material(color: Color) -> StandardMaterial {
+    StandardMaterial {
+        base_color: color.with_alpha(0.0),
+        perceptual_roughness: 0.92,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    }
+}
+
+pub(crate) fn avatar_pose(position: Vec3, scale: Vec3, rotation: Quat) -> Transform {
+    Transform::from_translation(position)
+        .with_rotation(rotation)
+        .with_scale(scale)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn spawn_player_avatar(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) {
+    let cube = meshes.add(Cuboid::default());
+    let avatar_materials = AvatarMaterials {
+        clothing: materials.add(avatar_material(Color::srgb(0.08, 0.48, 0.46))),
+        head: materials.add(avatar_material(Color::srgb(0.72, 0.58, 0.46))),
+        boots: materials.add(avatar_material(Color::srgb(0.055, 0.065, 0.075))),
+    };
+    let parts = [
+        (
+            "Head",
+            avatar_materials.head.clone(),
+            avatar_pose(
+                Vec3::new(0.0, 1.53, 0.0),
+                Vec3::new(0.30, 0.32, 0.28),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(0.0, 0.54, 0.04),
+                Vec3::new(0.30, 0.32, 0.28),
+                Quat::IDENTITY,
+            ),
+        ),
+        (
+            "Torso",
+            avatar_materials.clothing.clone(),
+            avatar_pose(
+                Vec3::new(0.0, 1.12, 0.0),
+                Vec3::new(0.42, 0.52, 0.24),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(0.0, 0.18, -0.04),
+                Vec3::new(0.42, 0.46, 0.24),
+                Quat::IDENTITY,
+            ),
+        ),
+        (
+            "Left arm",
+            avatar_materials.clothing.clone(),
+            avatar_pose(
+                Vec3::new(-0.29, 1.08, 0.0),
+                Vec3::new(0.13, 0.55, 0.13),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(-0.29, 0.16, 0.16),
+                Vec3::new(0.13, 0.48, 0.13),
+                Quat::from_rotation_x(-0.55),
+            ),
+        ),
+        (
+            "Right arm",
+            avatar_materials.clothing.clone(),
+            avatar_pose(
+                Vec3::new(0.29, 1.08, 0.0),
+                Vec3::new(0.13, 0.55, 0.13),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(0.29, 0.16, 0.16),
+                Vec3::new(0.13, 0.48, 0.13),
+                Quat::from_rotation_x(-0.55),
+            ),
+        ),
+        (
+            "Left leg",
+            avatar_materials.clothing.clone(),
+            avatar_pose(
+                Vec3::new(-0.12, 0.52, 0.0),
+                Vec3::new(0.17, 0.68, 0.18),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(-0.12, -0.05, 0.34),
+                Vec3::new(0.17, 0.62, 0.18),
+                Quat::from_rotation_x(core::f32::consts::FRAC_PI_2),
+            ),
+        ),
+        (
+            "Right leg",
+            avatar_materials.clothing.clone(),
+            avatar_pose(
+                Vec3::new(0.12, 0.52, 0.0),
+                Vec3::new(0.17, 0.68, 0.18),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(0.12, -0.05, 0.34),
+                Vec3::new(0.17, 0.62, 0.18),
+                Quat::from_rotation_x(core::f32::consts::FRAC_PI_2),
+            ),
+        ),
+        (
+            "Left boot",
+            avatar_materials.boots.clone(),
+            avatar_pose(
+                Vec3::new(-0.12, 0.10, 0.06),
+                Vec3::new(0.19, 0.20, 0.31),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(-0.12, -0.05, 0.72),
+                Vec3::new(0.19, 0.20, 0.31),
+                Quat::IDENTITY,
+            ),
+        ),
+        (
+            "Right boot",
+            avatar_materials.boots.clone(),
+            avatar_pose(
+                Vec3::new(0.12, 0.10, 0.06),
+                Vec3::new(0.19, 0.20, 0.31),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(0.12, -0.05, 0.72),
+                Vec3::new(0.19, 0.20, 0.31),
+                Quat::IDENTITY,
+            ),
+        ),
+    ];
+    commands
+        .spawn((
+            Name::new("Player mannequin"),
+            Transform::default(),
+            Visibility::Hidden,
+            PlayerAvatar,
+        ))
+        .with_children(|avatar| {
+            for (name, material, standing, seated) in parts {
+                avatar.spawn((
+                    Name::new(name),
+                    Mesh3d(cube.clone()),
+                    MeshMaterial3d(material),
+                    standing,
+                    AvatarPart { standing, seated },
+                ));
+            }
+        });
+    commands.insert_resource(avatar_materials);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sync_player_avatar(
+    player: Res<PlayerState>,
+    view: Single<&PlayerCamera, With<MainCamera>>,
+    graph: Res<EditorGraph>,
+    simulation: Res<AppSimulation>,
+    handles: Res<AvatarMaterials>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut root: Single<(&mut Transform, &mut Visibility), With<PlayerAvatar>>,
+    mut parts: Query<(&AvatarPart, &mut Transform), Without<PlayerAvatar>>,
+) {
+    let alpha = camera::avatar_alpha(view.current_pullback());
+    *root.1 = if alpha > 0.0 {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for handle in [&handles.clothing, &handles.head, &handles.boots] {
+        if let Some(mut material) = materials.get_mut(handle) {
+            material.base_color = material.base_color.with_alpha(alpha);
+        }
+    }
+    let seated_pose = player
+        .seat
+        .and_then(|seat| seat_world_pose(&graph.0, &simulation, seat));
+    if let Some((centre, rotation)) = seated_pose {
+        root.0.translation = centre;
+        root.0.rotation = rotation;
+    } else {
+        root.0.translation = player.position;
+        root.0.rotation = Quat::from_rotation_y(view.yaw);
+    }
+    for (part, mut transform) in &mut parts {
+        *transform = if seated_pose.is_some() {
+            part.seated
+        } else {
+            part.standing
+        };
+    }
 }
 
 /// Edge of each cubemap face, in texels. The generator filters this down to a
@@ -2271,33 +3213,18 @@ fn half_bits(value: f32) -> u16 {
     (exponent << 10) | mantissa
 }
 
-fn help_toggle_requested(keyboard: &ButtonInput<Key>) -> bool {
-    keyboard
-        .get_just_pressed()
-        .any(|key| matches!(key, Key::Character(character) if character == "?"))
-}
-
-fn requested_history_action(keyboard: &ButtonInput<KeyCode>) -> Option<HistoryAction> {
-    let primary_modifier = keyboard.any_pressed([
-        KeyCode::ControlLeft,
-        KeyCode::ControlRight,
-        KeyCode::SuperLeft,
-        KeyCode::SuperRight,
-    ]);
-    if !primary_modifier || !keyboard.just_pressed(KeyCode::KeyZ) {
-        return None;
+fn requested_history_action(actions: &ButtonInput<GameAction>) -> Option<HistoryAction> {
+    if actions.just_pressed(GameAction::Redo) {
+        Some(HistoryAction::Redo)
+    } else if actions.just_pressed(GameAction::Undo) {
+        Some(HistoryAction::Undo)
+    } else {
+        None
     }
-    Some(
-        if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-            HistoryAction::Redo
-        } else {
-            HistoryAction::Undo
-        },
-    )
 }
 
 fn handle_history_shortcut(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
@@ -2307,7 +3234,7 @@ fn handle_history_shortcut(
     if overlay.blocks_keyboard() {
         return;
     }
-    let Some(action) = requested_history_action(&keyboard) else {
+    let Some(action) = requested_history_action(&actions) else {
         return;
     };
     apply_history_action(
@@ -2368,6 +3295,7 @@ fn cancel_transient_editor_state(graph: &mut ConstructionGraph, state: &mut Edit
             .expect("restored pending editor operation can be cancelled");
     }
     state.block_drag = None;
+    state.pipe_drag = None;
     state.delete_drag = None;
     state.delete_target = None;
     state.region_drag = None;
@@ -2375,71 +3303,238 @@ fn cancel_transient_editor_state(graph: &mut ConstructionGraph, state: &mut Edit
 }
 
 /// Whether the Shape tool has something of its own for `Escape` to unwind.
-fn shape_tool_is_busy(tool: Tool, state: &EditorState) -> bool {
-    tool == Tool::Shape
+fn shape_tool_is_busy(tool: Option<Tool>, state: &EditorState) -> bool {
+    tool == Some(Tool::Shape)
         && (state.region_drag.is_some()
             || state.active_region.is_some()
             || state.vertex_drag.is_some()
             || !state.selected_vertices.is_empty())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_shortcuts(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut selection: ResMut<SelectedTool>,
     simulation: Res<AppSimulation>,
+    mut hammer: ResMut<HammerInteraction>,
+    mut material: ResMut<SelectedMaterial>,
+    mut bearing_settings: ResMut<BearingToolSettings>,
+    mut cylinder_settings: ResMut<CylinderToolSettings>,
+    window: Single<&Window, With<PrimaryWindow>>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     overlay: Res<ui::UiInput>,
+    player: Res<PlayerState>,
+    wheel: Res<MaterialWheelState>,
 ) {
-    if overlay.blocks_keyboard() {
+    if overlay.blocks_keyboard() || !player.world_input_active() || wheel.open {
         return;
     }
-    for key in [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-        KeyCode::Digit7,
-        KeyCode::Digit8,
-        KeyCode::Digit9,
-        KeyCode::Digit0,
-        KeyCode::Minus,
-        KeyCode::Equal,
-    ] {
-        if keyboard.just_pressed(key) {
-            selection.0 = shortcut_tool(key).expect("tool shortcut has a mapping");
+    for (action, tool) in GameAction::TOOL_ACTIONS {
+        if actions.just_pressed(action) {
+            selection.0 = Some(tool);
             break;
+        }
+    }
+    if actions.just_pressed(GameAction::ClearPipette) {
+        if selection.0.is_some() {
+            clear_held_tool(&mut graph.0, &mut state, &mut selection, &mut hammer);
+        } else {
+            let cursor = camera::viewport_center(Vec2::new(window.width(), window.height()));
+            let ray = camera.0.viewport_to_world(camera.1, cursor).ok();
+            let setup = ray.and_then(|ray| {
+                pipette_at_ray(
+                    &graph.0,
+                    &state,
+                    &simulation,
+                    ray.origin,
+                    ray.direction.as_vec3(),
+                )
+            });
+            if let Some(setup) = setup {
+                apply_pipette_setup(
+                    setup,
+                    &graph.0,
+                    &mut state,
+                    &mut selection,
+                    &mut material,
+                    &mut bearing_settings,
+                    &mut cylinder_settings,
+                );
+            } else {
+                state.feedback = Some("Nothing to pick up".to_owned());
+            }
         }
     }
     if simulation.is_running() {
         return;
     }
-    if keyboard.just_pressed(KeyCode::Escape) {
-        if state.block_drag.take().is_some() {
-            clear_hover(&mut state);
-            state.feedback = Some("Block drag cancelled".to_owned());
-        } else if state.delete_drag.take().is_some() {
-            clear_hover(&mut state);
-            state.feedback = Some("Delete drag cancelled".to_owned());
-        } else if graph.0.pending().is_some() {
-            let _ = graph.0.apply(BuildCommand::CancelPending);
-            state.feedback = Some("Selection cancelled".to_owned());
-        } else if !shape_tool_is_busy(selection.0, &state) {
-            // The Shape tool unwinds its own state on Escape; dropping back to
-            // the Block tool in the same press would skip a step.
-            selection.0 = Tool::Block;
-            state.feedback = None;
-        }
+    if actions.just_pressed(GameAction::Rotate)
+        && let Some(tool) = selection.0
+    {
+        state.feedback = Some(cycle_orientation(&mut state, tool));
     }
-    if keyboard.just_pressed(KeyCode::KeyQ) {
-        state.feedback = Some(cycle_orientation(&mut state, selection.0));
+    if actions.just_pressed(GameAction::PipeTurn) && selection.0 == Some(Tool::Cylinder) {
+        state.feedback = Some(begin_pipe_turn(&mut state));
     }
 }
 
-/// What `Q` does: rotate whichever drag plane is open, or step an authored
-/// part's orientation, reporting what to say about it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PipetteSetup {
+    Ground,
+    Bearing(BearingDimensions),
+    Part(PartId),
+}
+
+fn clear_held_tool(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    selection: &mut SelectedTool,
+    hammer: &mut HammerInteraction,
+) {
+    cancel_transient_editor_state(graph, state);
+    state.wire_drag = None;
+    state.vertex_drag = None;
+    state.paint_selecting = false;
+    state.selected_vertices.clear();
+    state.active_region = None;
+    *hammer = HammerInteraction::default();
+    selection.0 = None;
+    state.construction_mesh_dirty = true;
+    state.feedback =
+        Some("Hand cleared — Clear / Pipette picks the object under the reticle".to_owned());
+}
+
+fn pipette_at_ray(
+    graph: &ConstructionGraph,
+    state: &EditorState,
+    simulation: &AppSimulation,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<PipetteSetup> {
+    if simulation.creation.is_some() {
+        let creation = simulation.creation.as_ref()?;
+        let part = raycast_simulation(graph, creation, &simulation.transforms, origin, direction);
+        let bearing = raycast_simulation_bearings(
+            graph,
+            creation,
+            &simulation.transforms,
+            &state.placed_bearings,
+            origin,
+            direction,
+        );
+        return match (part, bearing) {
+            (Some(part), Some((dimensions, distance))) if distance < part.distance => {
+                Some(PipetteSetup::Bearing(dimensions))
+            }
+            (Some(part), _) => Some(PipetteSetup::Part(part.part)),
+            (None, Some((dimensions, _))) => Some(PipetteSetup::Bearing(dimensions)),
+            (None, None) => None,
+        };
+    }
+    let part = raycast_construction(graph, origin, direction);
+    let bearing = raycast_placed_bearings(graph, &state.placed_bearings, origin, direction)
+        .and_then(|(index, distance)| {
+            Some((state.placed_bearings.get(index)?.dimensions, distance))
+        });
+    match (part, bearing) {
+        (Some(hit), Some((dimensions, distance))) if distance < hit.distance => {
+            Some(PipetteSetup::Bearing(dimensions))
+        }
+        (
+            Some(SurfaceHit {
+                face:
+                    mechanic_core::FaceRef {
+                        owner: FaceOwner::Ground,
+                        ..
+                    },
+                ..
+            }),
+            _,
+        ) => Some(PipetteSetup::Ground),
+        (Some(hit), _) => hovered_part(Some(hit)).map(PipetteSetup::Part),
+        (None, Some((dimensions, _))) => Some(PipetteSetup::Bearing(dimensions)),
+        (None, None) => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_pipette_setup(
+    setup: PipetteSetup,
+    graph: &ConstructionGraph,
+    state: &mut EditorState,
+    selection: &mut SelectedTool,
+    material: &mut SelectedMaterial,
+    bearing_settings: &mut BearingToolSettings,
+    cylinder_settings: &mut CylinderToolSettings,
+) {
+    state.active_region = None;
+    let tool = match setup {
+        PipetteSetup::Ground => Tool::Block,
+        PipetteSetup::Bearing(dimensions) => {
+            bearing_settings.dimensions = dimensions;
+            Tool::Bearing
+        }
+        PipetteSetup::Part(part) => {
+            if let Some(region) = graph
+                .region_of(part)
+                .and_then(|id| graph.region(id).map(|region| (id, region)))
+            {
+                state.active_region = Some(region.0);
+                material.0 = region.1.material();
+                Tool::Shape
+            } else {
+                let Some(spec) = graph.part(part).copied() else {
+                    state.feedback = Some("Nothing to pick up".to_owned());
+                    return;
+                };
+                state.authored_orientation = AUTHORED_ORIENTATIONS
+                    .iter()
+                    .position(|rotation| *rotation == spec.pose().rotation)
+                    .and_then(|index| u8::try_from(index).ok())
+                    .unwrap_or_default();
+                match spec {
+                    PartSpec::Cuboid(spec) => {
+                        material.0 = spec.material;
+                        Tool::Block
+                    }
+                    PartSpec::Cylinder(spec) => {
+                        material.0 = spec.material;
+                        cylinder_settings.dimensions = spec.dimensions;
+                        Tool::Cylinder
+                    }
+                    PartSpec::PipeBend(spec) => {
+                        material.0 = spec.material;
+                        cylinder_settings.bend_radius = spec.dimensions.radius();
+                        cylinder_settings.dimensions = CylinderDimensions::new(
+                            spec.dimensions.outer_diameter(),
+                            spec.dimensions.inner_diameter(),
+                            cylinder_settings.dimensions.axial_length(),
+                        )
+                        .expect("stored bend cross-section is valid for a cylinder");
+                        Tool::Cylinder
+                    }
+                    PartSpec::Controller(_) => Tool::Controller,
+                    PartSpec::Engine(spec) => match spec.kind {
+                        EngineKind::Gas => Tool::GasEngine,
+                        EngineKind::Electric => Tool::ElectricEngine,
+                    },
+                    PartSpec::Transmission(_) => Tool::Transmission,
+                    PartSpec::Servo(_) => Tool::Servo,
+                    PartSpec::Seat(_) => Tool::Seat,
+                    PartSpec::Input(_) => Tool::Input,
+                }
+            }
+        }
+    };
+    selection.0 = Some(tool);
+    state.construction_mesh_dirty = true;
+    state.feedback = Some(format!("Picked up {}", tool.label()));
+}
+
+/// What Rotate does: rotate whichever drag plane or vertex axis is open, or step
+/// an authored part's orientation, reporting what to say about it.
 fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
     let sample = state.pointer_position.zip(state.pointer_ray).map(
         |(cursor, (ray_origin, ray_direction))| PointerSample {
@@ -2448,6 +3543,22 @@ fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
             ray_direction,
         },
     );
+    if let Some(drag) = state.pipe_drag.as_mut() {
+        drag.mode = drag.mode.next();
+        drag.anchor_endpoint = drag.endpoint;
+        drag.anchor_dimensions = drag.dimensions;
+        if let Some(press) = sample {
+            drag.press = press;
+        }
+        return format!("Pipe edit mode: {}", drag.mode.label());
+    }
+    if let Some(drag) = state.vertex_drag.as_mut() {
+        let Some(pointer) = sample else {
+            return "Move the pointer back over the world to change the shape axis".to_owned();
+        };
+        drag.cycle_axis(pointer.ray_origin, pointer.ray_direction);
+        return format!("Shape axis: {}", drag.axis_label());
+    }
     // Both drags freeze what has been dragged so far and measure from here, so
     // a rectangle plus a rotation extrudes into a box instead of starting over.
     if let Some(drag) = state.block_drag.as_mut() {
@@ -2494,7 +3605,39 @@ fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
             AUTHORED_ORIENTATION_COUNT,
         );
     }
-    "Q cycles machine, Seat, and Input orientations, or changes an active drag plane".to_owned()
+    "Rotate cycles machine, Seat, and Input orientations, or changes an active drag plane"
+        .to_owned()
+}
+
+fn begin_pipe_turn(state: &mut EditorState) -> String {
+    let Some(drag) = state.pipe_drag.as_mut() else {
+        return "Hold primary while dragging a pipe before adding a bend".to_owned();
+    };
+    if drag.choosing_direction {
+        return "Aim toward one of the four perpendicular turn directions".to_owned();
+    }
+    if drag.dimensions.sweep_angle_degrees() != 360 {
+        return "Partial-cylinder sectors support straight runs only".to_owned();
+    }
+    let leg_start = drag.corners.last().copied().unwrap_or(drag.start);
+    let leg_length = drag.endpoint.distance(leg_start);
+    let previous_radius = drag.bend_radii.last().copied().unwrap_or(0.0);
+    let required = previous_radius + drag.pending_radius;
+    if leg_length + 1.0e-5 < required {
+        return format!("Current leg needs {required:.2} m clearance before another bend");
+    }
+    drag.choosing_direction = true;
+    drag.anchor_endpoint = drag.endpoint;
+    if let Some((cursor, (ray_origin, ray_direction))) =
+        state.pointer_position.zip(state.pointer_ray)
+    {
+        drag.press = PointerSample {
+            cursor,
+            ray_origin,
+            ray_direction,
+        };
+    }
+    "Endpoint frozen — aim toward a perpendicular arrow; wheel changes radius".to_owned()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2504,27 +3647,40 @@ enum BearingDimensionTarget {
 }
 
 fn requested_bearing_dimension_adjustment(
-    keyboard: &ButtonInput<KeyCode>,
-    tool: Tool,
+    actions: &ButtonInput<GameAction>,
+    tool: Option<Tool>,
     simulating: bool,
     menu_blocks_input: bool,
 ) -> Option<(BearingDimensionTarget, i8)> {
-    if tool != Tool::Bearing || simulating || menu_blocks_input {
+    if tool != Some(Tool::Bearing) || simulating || menu_blocks_input {
         return None;
     }
-    let direction = if keyboard.just_pressed(KeyCode::ArrowLeft) {
-        -1
-    } else if keyboard.just_pressed(KeyCode::ArrowRight) {
-        1
-    } else {
-        return None;
-    };
-    let target = if keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-        BearingDimensionTarget::Inner
-    } else {
-        BearingDimensionTarget::Outer
-    };
-    Some((target, direction))
+    [
+        (
+            GameAction::BearingInnerDecrease,
+            BearingDimensionTarget::Inner,
+            -1,
+        ),
+        (
+            GameAction::BearingInnerIncrease,
+            BearingDimensionTarget::Inner,
+            1,
+        ),
+        (
+            GameAction::BearingOuterDecrease,
+            BearingDimensionTarget::Outer,
+            -1,
+        ),
+        (
+            GameAction::BearingOuterIncrease,
+            BearingDimensionTarget::Outer,
+            1,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(action, target, direction)| {
+        actions.just_pressed(action).then_some((target, direction))
+    })
 }
 
 fn adjusted_bearing_dimensions(
@@ -2555,7 +3711,7 @@ fn adjusted_bearing_dimensions(
 }
 
 fn handle_bearing_dimension_shortcuts(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     menu: Res<CreationMenuState>,
@@ -2563,7 +3719,7 @@ fn handle_bearing_dimension_shortcuts(
     mut state: ResMut<EditorState>,
 ) {
     let Some((target, direction)) = requested_bearing_dimension_adjustment(
-        &keyboard,
+        &actions,
         selection.0,
         simulation.is_running(),
         menu.blocks_keyboard(),
@@ -2587,48 +3743,60 @@ enum CylinderDimensionTarget {
 }
 
 fn requested_cylinder_dimension_adjustment(
-    keyboard: &ButtonInput<KeyCode>,
-    tool: Tool,
+    actions: &ButtonInput<GameAction>,
+    tool: Option<Tool>,
     simulating: bool,
     menu_blocks_input: bool,
 ) -> Option<(CylinderDimensionTarget, i8)> {
-    if tool != Tool::Cylinder || simulating || menu_blocks_input {
+    if tool != Some(Tool::Cylinder) || simulating || menu_blocks_input {
         return None;
     }
-    let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-    if keyboard.just_pressed(KeyCode::ArrowDown) {
-        return Some((
-            if shift {
-                CylinderDimensionTarget::Sweep
-            } else {
-                CylinderDimensionTarget::Length
-            },
+    [
+        (
+            GameAction::CylinderSweepDecrease,
+            CylinderDimensionTarget::Sweep,
             -1,
-        ));
-    }
-    if keyboard.just_pressed(KeyCode::ArrowUp) {
-        return Some((
-            if shift {
-                CylinderDimensionTarget::Sweep
-            } else {
-                CylinderDimensionTarget::Length
-            },
+        ),
+        (
+            GameAction::CylinderSweepIncrease,
+            CylinderDimensionTarget::Sweep,
             1,
-        ));
-    }
-    let direction = if keyboard.just_pressed(KeyCode::ArrowLeft) {
-        -1
-    } else if keyboard.just_pressed(KeyCode::ArrowRight) {
-        1
-    } else {
-        return None;
-    };
-    let target = if shift {
-        CylinderDimensionTarget::Inner
-    } else {
-        CylinderDimensionTarget::Outer
-    };
-    Some((target, direction))
+        ),
+        (
+            GameAction::CylinderLengthDecrease,
+            CylinderDimensionTarget::Length,
+            -1,
+        ),
+        (
+            GameAction::CylinderLengthIncrease,
+            CylinderDimensionTarget::Length,
+            1,
+        ),
+        (
+            GameAction::CylinderInnerDecrease,
+            CylinderDimensionTarget::Inner,
+            -1,
+        ),
+        (
+            GameAction::CylinderInnerIncrease,
+            CylinderDimensionTarget::Inner,
+            1,
+        ),
+        (
+            GameAction::CylinderOuterDecrease,
+            CylinderDimensionTarget::Outer,
+            -1,
+        ),
+        (
+            GameAction::CylinderOuterIncrease,
+            CylinderDimensionTarget::Outer,
+            1,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(action, target, direction)| {
+        actions.just_pressed(action).then_some((target, direction))
+    })
 }
 
 fn adjusted_cylinder_dimensions(
@@ -2684,15 +3852,18 @@ fn adjusted_cylinder_dimensions(
 }
 
 fn handle_cylinder_dimension_shortcuts(
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     menu: Res<CreationMenuState>,
     mut settings: ResMut<CylinderToolSettings>,
     mut state: ResMut<EditorState>,
 ) {
+    if state.pipe_drag.is_some() {
+        return;
+    }
     let Some((target, direction)) = requested_cylinder_dimension_adjustment(
-        &keyboard,
+        &actions,
         selection.0,
         simulation.is_running(),
         menu.blocks_keyboard(),
@@ -2722,12 +3893,12 @@ fn handle_tool_change(
     }
     clear_hover(&mut state);
     state.block_drag = None;
+    state.pipe_drag = None;
     state.delete_drag = None;
     state.wire_drag = None;
-    if !selection.0.edits_drives() {
+    if !selection.0.is_some_and(Tool::edits_drives) {
         state.selected_controller = None;
     }
-    state.feedback = None;
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -2735,65 +3906,26 @@ fn update_hover(
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     window: Single<&Window>,
-    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
-    mouse_buttons: Res<ButtonInput<MouseButton>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    actions: Res<ButtonInput<GameAction>>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
     selected_material: Option<Res<SelectedMaterial>>,
     overlay: Res<ui::UiInput>,
+    player: Res<PlayerState>,
+    wheel: Res<MaterialWheelState>,
 ) {
-    if simulation.is_running() || overlay.blocks_pointer() {
+    if simulation.is_running()
+        || overlay.blocks_pointer()
+        || !player.world_input_active()
+        || wheel.open
+    {
         clear_hover(&mut state);
         return;
     }
-    if camera::camera_input_active(&mouse_buttons, &keyboard) {
-        if state.block_drag.take().is_some() {
-            state.feedback = Some("Block drag cancelled while moving camera".to_owned());
-        }
-        if state.delete_drag.take().is_some() {
-            state.feedback = Some("Delete drag cancelled while moving camera".to_owned());
-        }
-        clear_hover(&mut state);
-        refresh_tool_preview_with_cylinder(
-            &graph.0,
-            &mut state,
-            selection.0,
-            cylinder_settings.dimensions,
-            selected_material
-                .as_deref()
-                .map_or(ConstructionMaterial::Steel, |value| value.0),
-        );
-        return;
-    }
-    if overlay.blocks_pointer() {
-        clear_hover(&mut state);
-        return;
-    }
-    let Some(cursor) = window.cursor_position() else {
-        state.pointer_position = None;
-        if state.block_drag.is_some() {
-            invalidate_block_drag(&mut state, PlacementError::DragPlaneUnavailable);
-            return;
-        }
-        if state.delete_drag.is_some() {
-            invalidate_delete_drag(&mut state, PlacementError::DragPlaneUnavailable);
-            return;
-        }
-        clear_hover(&mut state);
-        refresh_tool_preview_with_cylinder(
-            &graph.0,
-            &mut state,
-            selection.0,
-            cylinder_settings.dimensions,
-            selected_material
-                .as_deref()
-                .map_or(ConstructionMaterial::Steel, |value| value.0),
-        );
-        return;
-    };
+    let cursor = camera::viewport_center(Vec2::new(window.width(), window.height()));
     let (camera, camera_transform) = *camera;
     let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) else {
         state.pointer_position = None;
@@ -2801,26 +3933,42 @@ fn update_hover(
             invalidate_block_drag(&mut state, PlacementError::DragPlaneUnavailable);
             return;
         }
+        if state.pipe_drag.is_some() {
+            invalidate_pipe_drag(&mut state, PlacementError::DragPlaneUnavailable);
+            return;
+        }
         if state.delete_drag.is_some() {
             invalidate_delete_drag(&mut state, PlacementError::DragPlaneUnavailable);
             return;
         }
         clear_hover(&mut state);
-        refresh_tool_preview_with_cylinder(
-            &graph.0,
-            &mut state,
-            selection.0,
-            cylinder_settings.dimensions,
-            selected_material
-                .as_deref()
-                .map_or(ConstructionMaterial::Steel, |value| value.0),
-        );
+        if let Some(tool) = selection.0 {
+            refresh_tool_preview_with_cylinder(
+                &graph.0,
+                &mut state,
+                tool,
+                cylinder_settings.dimensions,
+                selected_material
+                    .as_deref()
+                    .map_or(ConstructionMaterial::Steel, |value| value.0),
+            );
+        }
         return;
     };
     state.pointer_position = Some(cursor);
     state.pointer_ray = Some((ray.origin, ray.direction.as_vec3()));
     if state.block_drag.is_some() {
         refresh_block_drag(
+            &graph.0,
+            &mut state,
+            cursor,
+            ray.origin,
+            ray.direction.as_vec3(),
+        );
+        return;
+    }
+    if state.pipe_drag.is_some() {
+        refresh_pipe_drag(
             &graph.0,
             &mut state,
             cursor,
@@ -2840,10 +3988,27 @@ fn update_hover(
         return;
     }
     let ray_direction = ray.direction.as_vec3();
-    let construction_hit = if mouse_buttons.pressed(MouseButton::Right) {
+    let Some(tool) = selection.0 else {
+        let construction_hit = raycast_construction(&graph.0, ray.origin, ray_direction);
+        let bearing_hit =
+            raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction);
+        if let Some((bearing, distance)) = bearing_hit
+            && construction_hit.is_none_or(|hit| distance <= hit.distance)
+        {
+            state.hovered = construction_hit;
+            state.hovered_bearing = Some(bearing);
+        } else {
+            state.hovered = construction_hit;
+            state.hovered_bearing = None;
+        }
+        state.preview = None;
+        state.cylinder_preview = None;
+        return;
+    };
+    let construction_hit = if actions.pressed(GameAction::Secondary) {
         raycast_construction(&graph.0, ray.origin, ray_direction)
     } else {
-        match selection.0 {
+        match tool {
             Tool::Bearing => raycast_construction_for_annulus(
                 &graph.0,
                 ray.origin,
@@ -2874,14 +4039,13 @@ fn update_hover(
     };
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
     // dropped on a bearing without having to hit its thin ring.
-    let wiring = selection.0 == Tool::Connector;
+    let wiring = tool == Tool::Connector;
     let bearing_hit = if wiring {
         raycast_placed_bearing_discs(&graph.0, &state.placed_bearings, ray.origin, ray_direction)
             .or_else(|| {
                 raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction)
             })
-    } else if matches!(selection.0, Tool::Block | Tool::Cylinder)
-        || mouse_buttons.pressed(MouseButton::Right)
+    } else if matches!(tool, Tool::Block | Tool::Cylinder) || actions.pressed(GameAction::Secondary)
     {
         raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction)
     } else {
@@ -2898,7 +4062,7 @@ fn update_hover(
         refresh_tool_preview_with_cylinder(
             &graph.0,
             &mut state,
-            selection.0,
+            tool,
             cylinder_settings.dimensions,
             selected_material
                 .as_deref()
@@ -2911,7 +4075,7 @@ fn update_hover(
         refresh_tool_preview_with_cylinder(
             &graph.0,
             &mut state,
-            selection.0,
+            tool,
             cylinder_settings.dimensions,
             selected_material
                 .as_deref()
@@ -2924,7 +4088,7 @@ fn update_hover(
     refresh_tool_preview_with_cylinder(
         &graph.0,
         &mut state,
-        selection.0,
+        tool,
         cylinder_settings.dimensions,
         selected_material
             .as_deref()
@@ -2935,7 +4099,7 @@ fn update_hover(
 fn refresh_block_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
-    cursor: Vec2,
+    _cursor: Vec2,
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
@@ -2952,9 +4116,7 @@ fn refresh_block_drag(
             drag.last_span,
         )
     };
-    let span = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
-        anchor_span
-    } else {
+    let span = if camera::ray_drag_started(press.ray_direction, ray_direction) {
         let Some(span) = block_span_from_rays(
             start.spec,
             plane,
@@ -2968,6 +4130,8 @@ fn refresh_block_drag(
             return;
         };
         span
+    } else {
+        anchor_span
     };
     if last_span == Some(span) {
         return;
@@ -3007,10 +4171,248 @@ fn invalidate_block_drag(state: &mut EditorState, error: PlacementError) {
     }
 }
 
-fn refresh_delete_drag(
+fn refresh_pipe_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
     cursor: Vec2,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) {
+    let Some(snapshot) = state.pipe_drag.as_ref().map(|drag| {
+        (
+            drag.press,
+            drag.mode,
+            drag.choosing_direction,
+            drag.anchor_endpoint,
+            drag.anchor_dimensions,
+            drag.corners.last().copied().unwrap_or(drag.start),
+            *drag
+                .directions
+                .last()
+                .expect("a pipe run has one direction"),
+        )
+    }) else {
+        return;
+    };
+    let (press, mode, choosing, anchor_endpoint, anchor_dimensions, leg_start, direction) =
+        snapshot;
+    if choosing {
+        let Some(outgoing) = pipe_turn_direction(direction, press.ray_direction, ray_direction)
+        else {
+            return;
+        };
+        let drag = state.pipe_drag.as_mut().expect("pipe drag remains active");
+        let corner = drag.endpoint;
+        drag.corners.push(corner);
+        drag.bend_radii.push(drag.pending_radius);
+        drag.directions.push(outgoing);
+        drag.endpoint = corner + outgoing * drag.dimensions.axial_length();
+        drag.anchor_endpoint = drag.endpoint;
+        drag.anchor_dimensions = drag.dimensions;
+        drag.press = PointerSample {
+            cursor,
+            ray_origin,
+            ray_direction,
+        };
+        drag.choosing_direction = false;
+        rebuild_pipe_drag(graph, state);
+        state.feedback = Some(format!(
+            "Turn locked; dragging next leg — radius {:.2} m",
+            state
+                .pipe_drag
+                .as_ref()
+                .and_then(|drag| drag.bend_radii.last())
+                .copied()
+                .unwrap_or_default()
+        ));
+        return;
+    }
+    if !camera::ray_drag_started(press.ray_direction, ray_direction) {
+        return;
+    }
+    let drag = state.pipe_drag.as_mut().expect("pipe drag remains active");
+    match mode {
+        PipeEditMode::Length => {
+            let Some(press_parameter) =
+                closest_axis_parameter(leg_start, direction, press.ray_origin, press.ray_direction)
+            else {
+                invalidate_pipe_drag(state, PlacementError::DragPlaneUnavailable);
+                return;
+            };
+            let Some(current_parameter) =
+                closest_axis_parameter(leg_start, direction, ray_origin, ray_direction)
+            else {
+                invalidate_pipe_drag(state, PlacementError::DragPlaneUnavailable);
+                return;
+            };
+            let anchor_length = anchor_endpoint.distance(leg_start);
+            let units = ((anchor_length + current_parameter - press_parameter) / GRID_UNIT_METERS)
+                .round()
+                .clamp(1.0, 32.0);
+            drag.endpoint = leg_start + direction * (units * GRID_UNIT_METERS);
+        }
+        PipeEditMode::OuterDiameter | PipeEditMode::InnerDiameter => {
+            let delta = pipe_pointer_delta(press.ray_direction, ray_direction);
+            let steps = (delta / 0.005).round();
+            let mut outer = anchor_dimensions.outer_diameter();
+            let mut inner = anchor_dimensions.inner_diameter();
+            match mode {
+                PipeEditMode::OuterDiameter => {
+                    outer = (outer + steps * CYLINDER_DIAMETER_STEP)
+                        .clamp(MIN_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER);
+                    inner = inner.min(outer - MIN_CYLINDER_DIAMETER_GAP);
+                }
+                PipeEditMode::InnerDiameter => {
+                    inner = (inner + steps * CYLINDER_DIAMETER_STEP)
+                        .clamp(0.0, outer - MIN_CYLINDER_DIAMETER_GAP);
+                }
+                PipeEditMode::Length => unreachable!(),
+            }
+            drag.dimensions =
+                CylinderDimensions::new(outer, inner, anchor_dimensions.axial_length())
+                    .expect("clamped pipe dimensions remain valid")
+                    .with_sweep_angle_degrees(anchor_dimensions.sweep_angle_degrees())
+                    .expect("the existing sector sweep remains valid");
+        }
+    }
+    rebuild_pipe_drag(graph, state);
+}
+
+fn rebuild_pipe_drag(graph: &ConstructionGraph, state: &mut EditorState) {
+    let (points, bend_radii, dimensions, material) = {
+        let drag = state.pipe_drag.as_ref().expect("pipe drag remains active");
+        let mut points = Vec::with_capacity(drag.corners.len() + 2);
+        points.push(drag.start);
+        points.extend(drag.corners.iter().copied());
+        points.push(drag.endpoint);
+        (
+            points,
+            drag.bend_radii.clone(),
+            drag.dimensions,
+            drag.material,
+        )
+    };
+    let result = pipe_run_pieces(&points, &bend_radii, dimensions, material).and_then(|pieces| {
+        validate_pipe_run(graph, &pieces)?;
+        Ok(pieces)
+    });
+    let drag = state.pipe_drag.as_mut().expect("pipe drag remains active");
+    match result {
+        Ok(pieces) => {
+            drag.pieces = pieces;
+            drag.error = None;
+            state.preview_error = None;
+        }
+        Err(error) => {
+            drag.error = Some(error.clone());
+            state.preview_error = Some(error);
+        }
+    }
+    state.pipe_preview_revision = state.pipe_preview_revision.wrapping_add(1);
+}
+
+fn invalidate_pipe_drag(state: &mut EditorState, error: PlacementError) {
+    let drag = state
+        .pipe_drag
+        .as_mut()
+        .expect("pipe drag was checked by caller");
+    drag.error = Some(error.clone());
+    state.preview_error = Some(error);
+}
+
+fn closest_axis_parameter(
+    axis_origin: Vec3,
+    axis_direction: Vec3,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<f32> {
+    let ray_direction = ray_direction.normalize();
+    let offset = axis_origin - ray_origin;
+    let parallel = axis_direction.dot(ray_direction);
+    let denominator = 1.0 - parallel * parallel;
+    (denominator > 1.0e-5)
+        .then(|| (-axis_direction.dot(offset) + parallel * ray_direction.dot(offset)) / denominator)
+}
+
+fn pipe_pointer_delta(anchor: Vec3, current: Vec3) -> f32 {
+    let pitch = current.y.asin() - anchor.y.asin();
+    let yaw = wrap_angle(current.x.atan2(current.z) - anchor.x.atan2(anchor.z));
+    if yaw.abs() >= pitch.abs() {
+        yaw
+    } else {
+        -pitch
+    }
+}
+
+fn wrap_angle(angle: f32) -> f32 {
+    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+fn pipe_turn_direction(incoming: Vec3, anchor_ray: Vec3, current_ray: Vec3) -> Option<Vec3> {
+    let anchor_ray = anchor_ray.normalize();
+    let current_ray = current_ray.normalize();
+    let mut aim = current_ray - anchor_ray * current_ray.dot(anchor_ray);
+    aim -= incoming * aim.dot(incoming);
+    if aim.length() < DRAG_DEAD_ZONE_RADIANS {
+        return None;
+    }
+    let selected = [
+        Vec3::X,
+        Vec3::NEG_X,
+        Vec3::Y,
+        Vec3::NEG_Y,
+        Vec3::Z,
+        Vec3::NEG_Z,
+    ]
+    .into_iter()
+    .filter(|candidate| candidate.dot(incoming).abs() < 0.5)
+    .max_by(|left, right| left.dot(aim).total_cmp(&right.dot(aim)))?;
+    (selected.dot(aim) >= DRAG_DEAD_ZONE_RADIANS).then_some(selected)
+}
+
+fn adjust_pipe_bend_radius(
+    graph: &ConstructionGraph,
+    state: &mut EditorState,
+    direction: i8,
+) -> (f32, String) {
+    let drag = state
+        .pipe_drag
+        .as_mut()
+        .expect("radius adjustment requires an active pipe drag");
+    let minimum = PipeBendDimensions::minimum_radius(drag.dimensions.outer_diameter());
+    let current = if drag.choosing_direction || drag.bend_radii.is_empty() {
+        drag.pending_radius
+    } else {
+        *drag.bend_radii.last().expect("a latest bend exists")
+    };
+    let requested = current + f32::from(direction) * GRID_UNIT_METERS;
+    let radius = requested.clamp(minimum, mechanic_core::MAX_PIPE_BEND_RADIUS);
+    if drag.choosing_direction || drag.bend_radii.is_empty() {
+        drag.pending_radius = radius;
+    } else {
+        *drag.bend_radii.last_mut().expect("a latest bend exists") = radius;
+        drag.pending_radius = radius;
+    }
+    rebuild_pipe_drag(graph, state);
+    let message = if (radius - requested).abs() > 1.0e-5 {
+        if requested < minimum {
+            format!("Bend radius clamped to minimum {minimum:.2} m for this diameter")
+        } else {
+            format!(
+                "Bend radius clamped to maximum {:.2} m",
+                mechanic_core::MAX_PIPE_BEND_RADIUS
+            )
+        }
+    } else {
+        format!("Bend radius: {radius:.2} m")
+    };
+    (radius, message)
+}
+
+fn refresh_delete_drag(
+    graph: &ConstructionGraph,
+    state: &mut EditorState,
+    _cursor: Vec2,
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
@@ -3027,9 +4429,7 @@ fn refresh_delete_drag(
             drag.last_span,
         )
     };
-    let span = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
-        anchor_span
-    } else {
+    let span = if camera::ray_drag_started(press.ray_direction, ray_direction) {
         let Some(span) = block_span_from_rays(
             start,
             plane,
@@ -3043,6 +4443,8 @@ fn refresh_delete_drag(
             return;
         };
         span
+    } else {
+        anchor_span
     };
     if last_span == Some(span) {
         return;
@@ -3359,8 +4761,7 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
 /// which keeps a whole symmetric edit to a single undo entry.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_shape_actions(
-    mouse: Res<ButtonInput<MouseButton>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
@@ -3369,10 +4770,11 @@ fn handle_shape_actions(
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     overlay: Res<ui::UiInput>,
-    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    player: Res<PlayerState>,
+    wheel: Res<MaterialWheelState>,
+    camera_transform: Single<&GlobalTransform, With<MainCamera>>,
 ) {
-    let (camera, camera_transform) = *camera;
-    if selection.0 != Tool::Shape || simulation.is_running() {
+    if selection.0 != Some(Tool::Shape) || simulation.is_running() {
         if state.vertex_drag.take().is_some() {
             state.construction_mesh_dirty = true;
         }
@@ -3387,8 +4789,8 @@ fn handle_shape_actions(
         leave_region(&mut state);
     }
     if handle_shape_keyboard(
-        &keyboard,
-        camera_transform,
+        &actions,
+        &camera_transform,
         &mut graph.0,
         &mut state,
         &mut history,
@@ -3397,7 +4799,7 @@ fn handle_shape_actions(
     ) {
         return;
     }
-    if overlay.blocks_pointer() || camera::camera_input_active(&mouse, &keyboard) {
+    if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
         return;
     }
     let Some((ray_origin, ray_direction)) = state.pointer_ray else {
@@ -3405,13 +4807,14 @@ fn handle_shape_actions(
     };
     let pointer_position = state.pointer_position;
 
-    if mouse.just_pressed(MouseButton::Right) || keyboard.just_pressed(KeyCode::Escape) {
+    if actions.just_pressed(GameAction::Secondary) {
         if state.region_drag.take().is_some() {
             state.feedback = Some("Area selection cancelled".to_owned());
         } else if state.vertex_drag.take().is_some() {
             state.construction_mesh_dirty = true;
             state.feedback = Some("Shape drag cancelled".to_owned());
-        } else if state.box_select.take().is_some() || !state.selected_vertices.is_empty() {
+        } else if state.paint_selecting || !state.selected_vertices.is_empty() {
+            state.paint_selecting = false;
             state.selected_vertices.clear();
             state.feedback = Some("Selection cleared".to_owned());
         } else if state.active_region.take().is_some() {
@@ -3425,7 +4828,7 @@ fn handle_shape_actions(
     // tool uses, claiming an area instead of filling one.
     let Some(region_id) = state.active_region else {
         choose_region(
-            &mouse,
+            &actions,
             &mut graph.0,
             &mut state,
             &mut history,
@@ -3439,37 +4842,16 @@ fn handle_shape_actions(
         return;
     };
 
-    if let Some(selection) = state.box_select.as_mut() {
-        if let Some(at) = pointer_position {
-            selection.current = at;
-        }
-        if mouse.just_released(MouseButton::Left) {
-            let selection = state.box_select.take().expect("a selection is open");
-            state.selected_vertices = if selection.is_meaningful() {
-                shape_tool::vertices_in_rect(&region, selection.bounds(), |point| {
-                    camera.world_to_viewport(camera_transform, point).ok()
-                })
-            } else {
-                Vec::new()
-            };
-            state.feedback = Some(match state.selected_vertices.len() {
-                0 => "Selection cleared".to_owned(),
-                count => format!("Selected {count} corners"),
-            });
-        }
-        return;
-    }
-
     if let Some(drag) = state.vertex_drag.as_mut() {
         let offset = shape_tool::drag_offset(&region, drag, *snap, ray_origin, ray_direction);
         if offset != drag.offset {
             drag.offset = offset;
             state.construction_mesh_dirty = true;
         }
-        if mouse.just_released(MouseButton::Left) {
+        if actions.just_released(GameAction::Primary) {
             let drag = state.vertex_drag.take().expect("a drag is in progress");
             if drag.offset == drag.start_offset {
-                select_clicked_vertex(&mut state, drag.index, shift_held(&keyboard));
+                select_clicked_vertex(&mut state, drag.index, shift_held(&actions));
             } else {
                 commit_vertex_drag(
                     &mut graph.0,
@@ -3492,7 +4874,34 @@ fn handle_shape_actions(
         .then(|| shape_tool::edge_insertion(&region, ray_origin, ray_direction))
         .flatten();
 
-    if !mouse.just_pressed(MouseButton::Left) {
+    if state.paint_selecting {
+        if actions.just_released(GameAction::Primary)
+            || !actions.pressed(GameAction::Primary)
+            || !shift_held(&actions)
+        {
+            state.paint_selecting = false;
+            state.feedback = Some(format!(
+                "Selected {} corners",
+                state.selected_vertices.len()
+            ));
+        } else if let Some(index) = state.hovered_vertex
+            && !state.selected_vertices.contains(&index)
+        {
+            state.selected_vertices.push(index);
+        }
+        return;
+    }
+
+    if !actions.just_pressed(GameAction::Primary) {
+        return;
+    }
+    if shift_held(&actions) {
+        state.paint_selecting = true;
+        if let Some(index) = state.hovered_vertex
+            && !state.selected_vertices.contains(&index)
+        {
+            state.selected_vertices.push(index);
+        }
         return;
     }
     if let Some(index) = state.hovered_vertex {
@@ -3508,14 +4917,13 @@ fn handle_shape_actions(
         if drag.group.is_empty() {
             state.selected_vertices.clear();
         }
+        state.feedback = Some(format!(
+            "Moving on {} axis — Rotate changes axis",
+            drag.axis_label()
+        ));
         state.vertex_drag = Some(drag);
     } else if let Some(offer) = state.edge_offer {
         subdivide_region(&mut graph.0, &mut state, &mut history, region_id, offer);
-    } else if let Some(at) = pointer_position {
-        state.box_select = Some(shape_tool::BoxSelect {
-            start: at,
-            current: at,
-        });
     }
 }
 
@@ -3525,7 +4933,7 @@ fn leave_region(state: &mut EditorState) {
         state.construction_mesh_dirty = true;
     }
     state.hovered_vertex = None;
-    state.box_select = None;
+    state.paint_selecting = false;
     state.edge_offer = None;
     state.region_drag = None;
     state.selected_vertices.clear();
@@ -3543,9 +4951,9 @@ fn region_area(start: CuboidSpec, span: IVec3) -> ShapeRegion {
 }
 
 /// Drags an area of blocks out and claims it as an editable region, using the
-/// same gesture the Block tool places with — `Q` included.
+/// same gesture the Block tool places with — Rotate included.
 fn choose_region(
-    mouse: &ButtonInput<MouseButton>,
+    actions: &ButtonInput<GameAction>,
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
@@ -3557,12 +4965,12 @@ fn choose_region(
         if let Some(cursor) = cursor {
             refresh_region_drag(graph, state, cursor, ray_origin, ray_direction);
         }
-        if mouse.just_released(MouseButton::Left) {
+        if actions.just_released(GameAction::Primary) {
             commit_region_drag(graph, state, history);
         }
         return;
     }
-    if !mouse.just_pressed(MouseButton::Left) {
+    if !actions.just_pressed(GameAction::Primary) {
         return;
     }
     let Some(hit) = builder::raycast_construction(graph, ray_origin, ray_direction) else {
@@ -3610,7 +5018,7 @@ fn choose_region(
         error,
     });
     state.feedback = Some(format!(
-        "Choosing an area on {} plane — release to shape it, Q changes plane",
+        "Choosing an area on {} plane — release to shape it, Rotate changes plane",
         plane.label()
     ));
 }
@@ -3619,7 +5027,7 @@ fn choose_region(
 fn refresh_region_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
-    cursor: Vec2,
+    _cursor: Vec2,
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
@@ -3636,9 +5044,7 @@ fn refresh_region_drag(
             drag.last_span,
         )
     };
-    let span = if cursor.distance(press.cursor) <= BLOCK_DRAG_DEAD_ZONE_PIXELS {
-        anchor_span
-    } else {
+    let span = if camera::ray_drag_started(press.ray_direction, ray_direction) {
         // A plane the pointer cannot reach leaves the last good area standing
         // rather than collapsing the drag.
         let Some(span) = builder::block_span_from_rays(
@@ -3653,6 +5059,8 @@ fn refresh_region_drag(
             return;
         };
         span
+    } else {
+        anchor_span
     };
     if last_span == Some(span) {
         return;
@@ -3741,7 +5149,7 @@ fn subdivide_region(
 /// does not also act on the same input.
 #[allow(clippy::too_many_arguments)]
 fn handle_shape_keyboard(
-    keyboard: &ButtonInput<KeyCode>,
+    actions: &ButtonInput<GameAction>,
     camera_transform: &GlobalTransform,
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
@@ -3749,19 +5157,19 @@ fn handle_shape_keyboard(
     mirror: &mut shape_tool::ShapeMirror,
     snap: &mut shape_tool::ShapeSnap,
 ) -> bool {
-    if keyboard.just_pressed(KeyCode::KeyX) {
+    if actions.just_pressed(GameAction::ShapeMirrorX) {
         mirror.x = !mirror.x;
         state.feedback = Some(mirror.label());
     }
-    if keyboard.just_pressed(KeyCode::KeyZ) {
+    if actions.just_pressed(GameAction::ShapeMirrorZ) {
         mirror.z = !mirror.z;
         state.feedback = Some(mirror.label());
     }
-    if keyboard.just_pressed(KeyCode::KeyG) {
+    if actions.just_pressed(GameAction::ShapeSnap) {
         snap.cycle();
         state.feedback = Some(snap.label());
     }
-    let Some((axis, direction)) = nudge_request(keyboard, camera_transform) else {
+    let Some((axis, direction)) = nudge_request(actions, camera_transform) else {
         return false;
     };
     nudge_selection(graph, state, history, axis, direction, *snap, *mirror);
@@ -3775,21 +5183,20 @@ fn handle_shape_keyboard(
 /// on the grid. Depth is deliberately absent: orbiting the camera is how the
 /// third axis is reached.
 fn nudge_request(
-    keyboard: &ButtonInput<KeyCode>,
+    actions: &ButtonInput<GameAction>,
     camera_transform: &GlobalTransform,
 ) -> Option<(usize, i32)> {
     let (right, up) = (
         camera_transform.right().as_vec3(),
         camera_transform.up().as_vec3(),
     );
-    let pressed = |keys: [KeyCode; 2]| keys.iter().any(|key| keyboard.just_pressed(*key));
-    let (basis, sign) = if pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
+    let (basis, sign) = if actions.just_pressed(GameAction::NudgeRight) {
         (right, 1)
-    } else if pressed([KeyCode::ArrowLeft, KeyCode::KeyA]) {
+    } else if actions.just_pressed(GameAction::NudgeLeft) {
         (right, -1)
-    } else if pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
+    } else if actions.just_pressed(GameAction::NudgeUp) {
         (up, 1)
-    } else if pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
+    } else if actions.just_pressed(GameAction::NudgeDown) {
         (up, -1)
     } else {
         return None;
@@ -3871,8 +5278,8 @@ fn select_clicked_vertex(state: &mut EditorState, index: CageIndex, extend: bool
     });
 }
 
-fn shift_held(keyboard: &ButtonInput<KeyCode>) -> bool {
-    keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
+fn shift_held(actions: &ButtonInput<GameAction>) -> bool {
+    actions.pressed(GameAction::SelectionModifier)
 }
 
 /// Commits a finished drag, expanded across the active mirror planes.
@@ -3921,7 +5328,7 @@ fn sync_region_focus(
     visuals: Res<EditorVisuals>,
     mut construction_visuals: Query<(&ConstructionVisual, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    let editing = selection.0 == Tool::Shape && state.active_region.is_some();
+    let editing = selection.0 == Some(Tool::Shape) && state.active_region.is_some();
     for (visual, mut material) in &mut construction_visuals {
         let index = material_index(visual.0);
         let wanted = if editing {
@@ -3948,13 +5355,11 @@ fn sync_shape_nodes(
     selection: Res<SelectedTool>,
     simulation: Res<AppSimulation>,
     visuals: Res<EditorVisuals>,
-    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut markers: ShapeOverlay<ShapeNodeVisual, ShapeSelectedVisual, ShapePlaneVisual>,
     mut selected_markers: ShapeOverlay<ShapeSelectedVisual, ShapeNodeVisual, ShapePlaneVisual>,
 ) {
-    let (camera, camera_transform) = *camera;
-    let hide = selection.0 != Tool::Shape || simulation.is_running();
+    let hide = selection.0 != Some(Tool::Shape) || simulation.is_running();
 
     // Two batches rather than one: a selected corner reads by colour as well as
     // by size, which size alone was not carrying.
@@ -4020,27 +5425,14 @@ fn sync_shape_nodes(
             &mut chosen.indices,
         );
     }
-    if let Some(selection) = state.box_select
-        && selection.is_meaningful()
-    {
-        append_selection_frame(
-            camera,
-            camera_transform,
-            selection,
-            &mut chosen.positions,
-            &mut chosen.normals,
-            &mut chosen.indices,
-        );
-    }
     **markers = write_overlay(&mut meshes, &visuals.shape_node_mesh, plain);
     **selected_markers = write_overlay(&mut meshes, &visuals.shape_selected_mesh, chosen);
 }
 
-/// Draws the plane an open drag is sliding along, and the arrows naming its two
-/// axes.
+/// Draws the guide for an open drag: a placement plane or one vertex axis.
 ///
 /// Shared by placing blocks and choosing a shape area, because both measure the
-/// pointer against a plane and both rotate it with `Q`.
+/// pointer against a plane and both rotate it with Rotate.
 fn sync_drag_plane(
     state: Res<EditorState>,
     simulation: Res<AppSimulation>,
@@ -4051,9 +5443,37 @@ fn sync_drag_plane(
 ) {
     let mut sheet = OverlayGeometry::default();
     let mut arrows = OverlayGeometry::default();
-    if let Some((low, high, plane)) = active_drag_plane(&state, &simulation) {
+    if !simulation.is_running()
+        && let Some(drag) = state.pipe_drag.as_ref()
+    {
+        let direction = *drag
+            .directions
+            .last()
+            .expect("a pipe run has one direction");
+        let absolute = direction.abs();
+        let incoming_axis = if absolute.x >= absolute.y && absolute.x >= absolute.z {
+            0
+        } else if absolute.y >= absolute.z {
+            1
+        } else {
+            2
+        };
+        if drag.choosing_direction || drag.mode != PipeEditMode::Length {
+            for axis in 0..3 {
+                if axis != incoming_axis {
+                    append_axis_arrows(drag.endpoint, axis, &mut arrows);
+                }
+            }
+        } else {
+            append_axis_arrows(drag.endpoint, incoming_axis, &mut arrows);
+        }
+    } else if let Some((low, high, plane)) = active_drag_plane(&state, &simulation) {
         append_drag_plane(low, high, plane, &mut sheet);
         append_plane_arrows(low, high, plane, &mut arrows);
+    } else if !simulation.is_running()
+        && let Some(drag) = state.vertex_drag.as_ref()
+    {
+        append_axis_arrows(drag.position(), drag.axis, &mut arrows);
     }
     **plane_marker = write_overlay(&mut meshes, &visuals.shape_plane_mesh, sheet);
     **arrow_marker = write_overlay(&mut meshes, &visuals.shape_arrow_mesh, arrows);
@@ -4145,7 +5565,7 @@ fn append_region_outline(region: &ShapeRegion, geometry: &mut OverlayGeometry) {
 
 /// Draws the plane an area drag is sliding along, as a translucent sheet through
 /// the block the drag started on — the same plane the pointer is measured
-/// against, so `Q` visibly rotates it.
+/// against, so Rotate visibly rotates it.
 fn append_drag_plane(low: Vec3, high: Vec3, plane: PlacementPlane, geometry: &mut OverlayGeometry) {
     const THICKNESS: f32 = 0.004;
     /// Overhang past the area, so the sheet reads as a plane rather than a lid.
@@ -4226,99 +5646,107 @@ fn append_plane_arrows(
     }
 }
 
+/// Draws a two-headed arrow along the one axis a cage vertex may currently
+/// move. Two crossed profiles keep it readable from any camera angle.
+fn append_axis_arrows(at: Vec3, axis: usize, geometry: &mut OverlayGeometry) {
+    const GAP: f32 = 0.035;
+    const SHAFT_HALF_WIDTH: f32 = 0.008;
+    const HEAD_HALF_WIDTH: f32 = 0.026;
+    const HEAD_LENGTH: f32 = 0.06;
+    const REACH: f32 = 0.18;
+
+    let along = Vec3::AXES[axis];
+    let perpendicular = [(axis + 1) % 3, (axis + 2) % 3];
+    for across_axis in perpendicular {
+        let across = Vec3::AXES[across_axis];
+        let normal = along.cross(across);
+        for direction in [1.0_f32, -1.0] {
+            let base = at + along * (direction * GAP);
+            let neck = at + along * (direction * (REACH - HEAD_LENGTH));
+            let tip = at + along * (direction * REACH);
+            append_mesh_quad(
+                [
+                    base - across * SHAFT_HALF_WIDTH,
+                    base + across * SHAFT_HALF_WIDTH,
+                    neck + across * SHAFT_HALF_WIDTH,
+                    neck - across * SHAFT_HALF_WIDTH,
+                ],
+                normal,
+                &mut geometry.positions,
+                &mut geometry.normals,
+                &mut geometry.indices,
+            );
+            append_mesh_triangle(
+                [
+                    neck - across * HEAD_HALF_WIDTH,
+                    neck + across * HEAD_HALF_WIDTH,
+                    tip,
+                ],
+                normal,
+                &mut geometry.positions,
+                &mut geometry.normals,
+                &mut geometry.indices,
+            );
+        }
+    }
+}
+
 /// A region's bounding box in world metres.
 fn region_world_bounds(region: &ShapeRegion) -> (Vec3, Vec3) {
     let (low, high) = region.bounds_steps();
     (low.as_vec3() * STEP_METERS, high.as_vec3() * STEP_METERS)
 }
 
-/// Draws the selection rectangle as a frame floating just in front of the
-/// camera, so it lines up with the screen rectangle it represents.
-fn append_selection_frame(
-    camera: &Camera,
-    camera_transform: &GlobalTransform,
-    selection: shape_tool::BoxSelect,
-    positions: &mut Vec<[f32; 3]>,
-    normals: &mut Vec<[f32; 3]>,
-    indices: &mut Vec<u32>,
-) {
-    const DEPTH: f32 = 1.0;
-    let (low, high) = selection.bounds();
-    let at = |x: f32, y: f32| {
-        camera
-            .viewport_to_world(camera_transform, Vec2::new(x, y))
-            .ok()
-            .map(|ray| ray.origin + ray.direction.as_vec3() * DEPTH)
-    };
-    let Some(corners) = (|| {
-        Some([
-            at(low.x, low.y)?,
-            at(high.x, low.y)?,
-            at(high.x, high.y)?,
-            at(low.x, high.y)?,
-        ])
-    })() else {
-        return;
-    };
-    let normal = camera_transform.forward().as_vec3();
-    // Thickness in world units at this depth, so the frame reads the same
-    // however far the camera is from the build.
-    let thickness = (corners[1] - corners[0]).length().max(1.0e-4) * 0.004;
-    for edge in 0..4 {
-        let start = corners[edge];
-        let end = corners[(edge + 1) % 4];
-        let along = (end - start).normalize_or_zero();
-        let across = along.cross(normal).normalize_or_zero() * thickness;
-        let base = u32::try_from(positions.len()).expect("overlay fits 32-bit indices");
-        for corner in [start - across, end - across, end + across, start + across] {
-            positions.push(corner.to_array());
-            normals.push((-normal).to_array());
-        }
-        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-}
-
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 // Tool-specific input flows remain readable together.
 fn handle_build_actions(
-    mouse: Res<ButtonInput<MouseButton>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
-    cylinder_settings: Res<CylinderToolSettings>,
+    mut cylinder_settings: ResMut<CylinderToolSettings>,
     selected_material: Option<Res<SelectedMaterial>>,
     overlay: Res<ui::UiInput>,
+    player: Res<PlayerState>,
+    wheel: Res<MaterialWheelState>,
 ) {
-    if simulation.is_running() || overlay.blocks_pointer() {
+    if simulation.is_running() {
         return;
     }
-    if overlay.blocks_pointer() {
-        if mouse.just_released(MouseButton::Left) && state.block_drag.take().is_some() {
+    if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
+        if actions.just_released(GameAction::Primary) && state.block_drag.take().is_some() {
             clear_hover(&mut state);
             state.feedback = Some("Block drag cancelled over hotbar".to_owned());
         }
-        if mouse.just_released(MouseButton::Right) && state.delete_drag.take().is_some() {
+        if actions.just_released(GameAction::Primary) && state.pipe_drag.take().is_some() {
             clear_hover(&mut state);
+            state.feedback = Some("Pipe run cancelled over hotbar".to_owned());
+        }
+        if actions.just_released(GameAction::Secondary) && state.cancel_delete_gesture() {
             state.feedback = Some("Delete drag cancelled over hotbar".to_owned());
         }
         return;
     }
-    if camera::camera_input_active(&mouse, &keyboard) {
+    let Some(tool) = selection.0 else {
+        return;
+    };
+    if tool == Tool::Shape {
         return;
     }
-    if selection.0 == Tool::Shape {
-        return;
-    }
-    if mouse.just_pressed(MouseButton::Right) && state.block_drag.take().is_some() {
+    if actions.just_pressed(GameAction::Secondary) && state.block_drag.take().is_some() {
         clear_hover(&mut state);
         state.feedback = Some("Block drag cancelled".to_owned());
         return;
     }
-    if selection.0 == Tool::Connector && mouse.just_pressed(MouseButton::Right) {
+    if actions.just_pressed(GameAction::Secondary) && state.pipe_drag.take().is_some() {
+        clear_hover(&mut state);
+        state.feedback = Some("Pipe run cancelled".to_owned());
+        return;
+    }
+    if tool == Tool::Connector && actions.just_pressed(GameAction::Secondary) {
         if state.wire_drag.take().is_some() {
             state.feedback = Some("Drive wire cancelled".to_owned());
             return;
@@ -4330,7 +5758,7 @@ fn handle_build_actions(
         ));
         return;
     }
-    if mouse.just_pressed(MouseButton::Right) {
+    if actions.just_pressed(GameAction::Secondary) {
         if let Some(index) = state.hovered_bearing {
             state.delete_target = Some(DeleteTarget::PlacedBearing(index));
             state.feedback = Some("Release right mouse to delete bearing".to_owned());
@@ -4365,13 +5793,17 @@ fn handle_build_actions(
                     });
                     state.delete_preview_revision = state.delete_preview_revision.wrapping_add(1);
                     state.feedback = Some(format!(
-                        "Dragging delete on {} plane — release to remove, Q changes plane",
+                        "Dragging delete on {} plane — release to remove, Rotate changes plane",
                         plane.label()
                     ));
                 }
                 PartSpec::Cylinder(_) => {
                     state.delete_target = Some(DeleteTarget::Part(part));
                     state.feedback = Some("Release right mouse to delete cylinder".to_owned());
+                }
+                PartSpec::PipeBend(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some("Release right mouse to delete pipe bend".to_owned());
                 }
                 PartSpec::Controller(_) => {
                     state.delete_target = Some(DeleteTarget::Part(part));
@@ -4409,7 +5841,7 @@ fn handle_build_actions(
             }
         }
     }
-    if mouse.just_released(MouseButton::Right) {
+    if actions.just_released(GameAction::Secondary) {
         if let Some(target) = state.delete_target.take() {
             match target {
                 DeleteTarget::PlacedBearing(index) => {
@@ -4513,51 +5945,172 @@ fn handle_build_actions(
         }
         return;
     }
-    if selection.0 == Tool::Connector {
-        handle_connector_actions(&mouse, &mut graph.0, &mut state, &mut history);
+    if tool == Tool::Connector {
+        handle_connector_actions(&actions, &mut graph.0, &mut state, &mut history);
         return;
     }
-    if selection.0 == Tool::Block {
-        handle_block_actions(&mouse, &mut graph.0, &mut state, &mut history);
+    if tool == Tool::Block {
+        handle_block_actions(&actions, &mut graph.0, &mut state, &mut history);
         return;
     }
-    if selection.0 == Tool::Cylinder {
-        if mouse.just_pressed(MouseButton::Left) {
+    if tool == Tool::Cylinder {
+        if state.pipe_bend_active()
+            && (actions.just_pressed(GameAction::ZoomIn)
+                || actions.just_pressed(GameAction::ZoomOut))
+        {
+            let direction = i8::from(actions.just_pressed(GameAction::ZoomIn))
+                - i8::from(actions.just_pressed(GameAction::ZoomOut));
+            let (radius, message) = adjust_pipe_bend_radius(&graph.0, &mut state, direction);
+            cylinder_settings.bend_radius = radius;
+            state.feedback = Some(message);
+            return;
+        }
+        if actions.just_pressed(GameAction::Primary) {
             let Some(candidate) = state.cylinder_preview else {
                 state.feedback = Some("Point at a flat face or compatible bearing".to_owned());
                 return;
             };
-            let previous = EditorSnapshot::capture(&graph.0, &state);
-            let staged = if let Some(index) = state.attachment_bearing {
+            let attachment = if let Some(index) = state.attachment_bearing {
                 let Some(bearing) = state.placed_bearings.get(index).copied() else {
                     state.feedback = Some("Bearing is no longer available".to_owned());
                     return;
                 };
-                let rigid_targets = bearing_socket_targets(&graph.0, bearing);
-                stage_bearing_cylinder(
+                if let Err(error) = stage_bearing_cylinder(
                     &graph.0,
                     candidate,
                     bearing.source,
                     bearing.anchor,
                     bearing.dimensions,
-                    &rigid_targets,
-                )
+                    &bearing_socket_targets(&graph.0, bearing),
+                ) {
+                    state.feedback = Some(error.to_string());
+                    return;
+                }
+                BlockAttachment::Bearing {
+                    source: bearing.source,
+                    anchor: bearing.anchor,
+                    dimensions: bearing.dimensions,
+                }
             } else {
                 let Some(hit) = state.hovered else {
                     return;
                 };
-                stage_cylinder_from_source(&graph.0, candidate, hit.face.owner)
+                if let Err(error) = validate_cylinder_candidate(&graph.0, candidate) {
+                    state.feedback = Some(error.to_string());
+                    return;
+                }
+                BlockAttachment::AutoWeld {
+                    source: hit.face.owner,
+                }
+            };
+            let Some((ray_origin, ray_direction)) = state.pointer_ray else {
+                state.feedback = Some("Pointer ray is unavailable".to_owned());
+                return;
+            };
+            let Some(cursor) = state.pointer_position else {
+                state.feedback = Some("Pointer position is unavailable".to_owned());
+                return;
+            };
+            let direction = candidate.spec.pose.rotation.quaternion() * Vec3::Y;
+            let start = candidate.spec.pose.translation()
+                - direction * candidate.spec.dimensions.axial_length() * 0.5;
+            let endpoint = start + direction * candidate.spec.dimensions.axial_length();
+            let pieces = vec![PipeRunPiece {
+                spec: PartSpec::Cylinder(candidate.spec),
+                inlet: mechanic_core::FaceKind::NegativeY,
+                outlet: mechanic_core::FaceKind::PositiveY,
+            }];
+            state.pipe_drag = Some(PipeDrag {
+                attachment,
+                start,
+                corners: Vec::new(),
+                endpoint,
+                directions: vec![direction],
+                bend_radii: Vec::new(),
+                pending_radius: cylinder_settings.bend_radius.max(
+                    PipeBendDimensions::minimum_radius(candidate.spec.dimensions.outer_diameter()),
+                ),
+                dimensions: candidate.spec.dimensions,
+                material: candidate.spec.material,
+                mode: PipeEditMode::Length,
+                choosing_direction: false,
+                press: PointerSample {
+                    cursor,
+                    ray_origin,
+                    ray_direction,
+                },
+                anchor_endpoint: endpoint,
+                anchor_dimensions: candidate.spec.dimensions,
+                pieces,
+                error: None,
+            });
+            state.pipe_preview_revision = state.pipe_preview_revision.wrapping_add(1);
+            state.feedback = Some(
+                "Dragging pipe length — R cycles dimensions, F adds a 90° bend, release commits"
+                    .to_owned(),
+            );
+            return;
+        }
+        if actions.just_released(GameAction::Primary) {
+            let Some(drag) = state.pipe_drag.take() else {
+                return;
+            };
+            cylinder_settings.dimensions = drag.dimensions;
+            cylinder_settings.bend_radius = drag
+                .bend_radii
+                .last()
+                .copied()
+                .unwrap_or(drag.pending_radius);
+            if drag.choosing_direction {
+                state.feedback = Some(
+                    "Pipe run not placed: choose a turn direction before releasing".to_owned(),
+                );
+                clear_hover(&mut state);
+                return;
+            }
+            if let Some(error) = drag.error {
+                state.feedback = Some(error.to_string());
+                clear_hover(&mut state);
+                return;
+            }
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let staged = match drag.attachment {
+                BlockAttachment::AutoWeld { source } => stage_pipe_run(
+                    &graph.0,
+                    &drag.pieces,
+                    PipeRunAttachment::AutoWeld { source },
+                ),
+                BlockAttachment::Bearing {
+                    source,
+                    anchor,
+                    dimensions,
+                } => {
+                    let socket = PlacedBearing {
+                        source,
+                        anchor,
+                        dimensions,
+                    };
+                    let rigid_targets = bearing_socket_targets(&graph.0, socket);
+                    stage_pipe_run(
+                        &graph.0,
+                        &drag.pieces,
+                        PipeRunAttachment::Bearing {
+                            source,
+                            anchor,
+                            dimensions,
+                            rigid_targets: &rigid_targets,
+                        },
+                    )
+                }
             };
             match staged {
                 Ok(staged) => {
+                    let count = drag.pieces.len();
                     graph.0 = staged;
                     history.commit(previous);
                     state.feedback = Some(format!(
-                        "Placed cylinder {:.2}/{:.2} m × {:.2} m at {}°",
-                        cylinder_settings.dimensions.outer_diameter(),
-                        cylinder_settings.dimensions.inner_diameter(),
-                        cylinder_settings.dimensions.axial_length(),
-                        cylinder_settings.dimensions.sweep_angle_degrees(),
+                        "Placed pipe run with {count} piece(s) and {} bend(s)",
+                        drag.bend_radii.len()
                     ));
                     state.construction_mesh_dirty = true;
                     clear_hover(&mut state);
@@ -4567,11 +6120,11 @@ fn handle_build_actions(
         }
         return;
     }
-    if mouse.pressed(MouseButton::Right) || !mouse.just_pressed(MouseButton::Left) {
+    if actions.pressed(GameAction::Secondary) || !actions.just_pressed(GameAction::Primary) {
         return;
     }
 
-    match selection.0 {
+    match tool {
         Tool::Shape => unreachable!("shape actions are handled by handle_shape_actions"),
         Tool::Block => unreachable!("block actions are handled before this match"),
         Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),
@@ -4776,7 +6329,7 @@ fn handle_build_actions(
                 return;
             };
             let previous = EditorSnapshot::capture(&graph.0, &state);
-            let staged = match selection.0 {
+            let staged = match tool {
                 Tool::Servo => stage_servo_from_source(&graph.0, candidate, hit.face.owner),
                 Tool::Seat => stage_seat_from_source(&graph.0, candidate, hit.face.owner),
                 Tool::Input => stage_input_from_source(&graph.0, candidate, hit.face.owner),
@@ -4786,7 +6339,7 @@ fn handle_build_actions(
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
-                    state.feedback = Some(format!("Placed {}", selection.0.label()));
+                    state.feedback = Some(format!("Placed {}", tool.label()));
                     state.construction_mesh_dirty = true;
                     clear_hover(&mut state);
                 }
@@ -4798,7 +6351,7 @@ fn handle_build_actions(
     refresh_tool_preview_with_cylinder(
         &graph.0,
         &mut state,
-        selection.0,
+        tool,
         cylinder_settings.dimensions,
         selected_material
             .as_deref()
@@ -4998,13 +6551,13 @@ fn wire_drag_endpoints(graph: &ConstructionGraph, state: &EditorState) -> Option
 
 /// Press-and-drag wiring for the Connector tool.
 fn handle_connector_actions(
-    mouse: &ButtonInput<MouseButton>,
+    actions: &ButtonInput<GameAction>,
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
 ) {
-    let pressed = mouse.just_pressed(MouseButton::Left);
-    if !pressed && !mouse.just_released(MouseButton::Left) {
+    let pressed = actions.just_pressed(GameAction::Primary);
+    if !pressed && !actions.just_released(GameAction::Primary) {
         return;
     }
     let under = wire_end_under_cursor(graph, state);
@@ -5342,12 +6895,12 @@ fn visible_bearing_count(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
 
 #[allow(clippy::too_many_lines)] // Click, drag, and bearing attachment share one transaction.
 fn handle_block_actions(
-    mouse: &ButtonInput<MouseButton>,
+    actions: &ButtonInput<GameAction>,
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
 ) {
-    if mouse.just_pressed(MouseButton::Left) {
+    if actions.just_pressed(GameAction::Primary) {
         let Some(candidate) = state.preview else {
             state.feedback = Some("Point at the platform or a cuboid face".to_owned());
             return;
@@ -5422,14 +6975,14 @@ fn handle_block_actions(
             )
         } else {
             format!(
-                "Dragging blocks on {} plane — release to place, Q changes plane",
+                "Dragging blocks on {} plane — release to place, Rotate changes plane",
                 plane.label()
             )
         });
         return;
     }
 
-    if !mouse.just_released(MouseButton::Left) {
+    if !actions.just_released(GameAction::Primary) {
         return;
     }
     let Some(drag) = state.block_drag.take() else {
@@ -5490,34 +7043,43 @@ fn handle_block_actions(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_hammer_actions(
-    mouse: Res<ButtonInput<MouseButton>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+    actions: Res<ButtonInput<GameAction>>,
     time: Res<Time>,
     window: Single<&Window>,
-    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     simulation: Res<AppSimulation>,
     graph: Res<EditorGraph>,
     mut hammer: ResMut<HammerInteraction>,
     mut state: ResMut<EditorState>,
     selection: Res<SelectedTool>,
     overlay: Res<ui::UiInput>,
+    player: Res<PlayerState>,
+    wheel: Res<MaterialWheelState>,
 ) {
     if !simulation.is_running() {
         hammer.charging = None;
         hammer.pending = None;
         return;
     }
-    if simulation.is_paused() || overlay.blocks_pointer() {
+    if simulation.is_paused()
+        || overlay.blocks_pointer()
+        || !player.world_input_active()
+        || wheel.open
+    {
         hammer.charging = None;
         hammer.pending = None;
         return;
     }
-    if !selection.0.works_in_mode(true) {
+    let Some(tool) = selection.0 else {
         hammer.charging = None;
-        if mouse.just_pressed(MouseButton::Left) && !overlay.blocks_pointer() {
+        return;
+    };
+    if !tool.works_in_mode(true) {
+        hammer.charging = None;
+        if actions.just_pressed(GameAction::Primary) && !overlay.blocks_pointer() {
             state.feedback = Some(format!(
                 "{} is available in build mode — press Escape first",
-                selection.0.label()
+                tool.label()
             ));
         }
         return;
@@ -5525,35 +7087,27 @@ fn handle_hammer_actions(
     if overlay.blocks_pointer() && hammer.charging.is_none() {
         return;
     }
-    if camera::camera_input_active(&mouse, &keyboard) {
-        if hammer.charging.take().is_some() {
-            state.feedback = Some("Hammer charge cancelled while moving camera".to_owned());
-        }
-        return;
-    }
-
-    if mouse.just_pressed(MouseButton::Left) {
+    if actions.just_pressed(GameAction::Primary) {
         hammer.charging = None;
-        let hit = window
-            .cursor_position()
-            .and_then(|cursor| {
-                let (camera, camera_transform) = *camera;
-                camera.viewport_to_world(camera_transform, cursor).ok()
-            })
-            .and_then(|ray| {
-                let creation = simulation
-                    .creation
-                    .as_ref()
-                    .expect("running simulation has compiled creation");
-                raycast_simulation(
-                    &graph.0,
-                    creation,
-                    &simulation.transforms,
-                    ray.origin,
-                    ray.direction.as_vec3(),
-                )
-                .map(|hit| (hit, ray.direction.as_vec3()))
-            });
+        let cursor = camera::viewport_center(Vec2::new(window.width(), window.height()));
+        let hit = {
+            let (camera, camera_transform) = *camera;
+            camera.viewport_to_world(camera_transform, cursor).ok()
+        }
+        .and_then(|ray| {
+            let creation = simulation
+                .creation
+                .as_ref()
+                .expect("running simulation has compiled creation");
+            raycast_simulation(
+                &graph.0,
+                creation,
+                &simulation.transforms,
+                ray.origin,
+                ray.direction.as_vec3(),
+            )
+            .map(|hit| (hit, ray.direction.as_vec3()))
+        });
         match hit {
             Some((hit, direction)) => {
                 let creation = simulation
@@ -5580,14 +7134,14 @@ fn handle_hammer_actions(
         }
     }
 
-    if mouse.pressed(MouseButton::Left)
+    if actions.pressed(GameAction::Primary)
         && let Some(charge) = hammer.charging.as_mut()
     {
         charge.elapsed_seconds =
             (charge.elapsed_seconds + time.delta_secs()).min(HAMMER_CHARGE_SECONDS);
     }
 
-    if !mouse.just_released(MouseButton::Left) {
+    if !actions.just_released(GameAction::Primary) {
         return;
     }
     let Some(charge) = hammer.charging.take() else {
@@ -5764,6 +7318,30 @@ fn raycast_simulation(
                         spec.dimensions,
                     )?;
                     (distance, origin + direction.normalize() * distance)
+                }
+                PartSpec::PipeBend(_) => {
+                    let hit = creation
+                        .colliders
+                        .iter()
+                        .filter(|collider| collider.source_part == part)
+                        .filter_map(|collider| {
+                            let ColliderShape::Cuboid {
+                                local_rotation,
+                                half_extents,
+                            } = &collider.shape
+                            else {
+                                return None;
+                            };
+                            raycast_oriented_cuboid(
+                                origin,
+                                direction,
+                                position + rotation * collider.local_center,
+                                rotation * *local_rotation,
+                                *half_extents,
+                            )
+                        })
+                        .min_by(|left, right| left.distance.total_cmp(&right.distance))?;
+                    (hit.distance, hit.point)
                 }
             };
             Some(SimulationHit {
@@ -6102,15 +7680,21 @@ fn sync_visual_meshes(
 
 /// The bearing x-ray is also shown while wiring, so a drive wire can be traced
 /// back through the construction to the block that owns it.
-fn joint_xray_is_visible(tool: Tool, simulating: bool, bearing_count: usize) -> bool {
-    matches!(tool, Tool::Controller | Tool::Connector) && !simulating && bearing_count > 0
+fn joint_xray_is_visible(
+    tool: impl Into<Option<Tool>>,
+    simulating: bool,
+    bearing_count: usize,
+) -> bool {
+    matches!(tool.into(), Some(Tool::Controller | Tool::Connector))
+        && !simulating
+        && bearing_count > 0
 }
 
 /// The drive overlay additionally stays up while simulating, so the joint a key
 /// is driving can be seen moving. Its meshes are rebuilt from each published
 /// snapshot, so the arcs and wires track the running bodies.
-fn drive_xray_is_visible(tool: Tool, driven_count: usize) -> bool {
-    matches!(tool, Tool::Controller | Tool::Connector) && driven_count > 0
+fn drive_xray_is_visible(tool: impl Into<Option<Tool>>, driven_count: usize) -> bool {
+    matches!(tool.into(), Some(Tool::Controller | Tool::Connector)) && driven_count > 0
 }
 
 /// Number and world position of every driven joint.
@@ -6210,8 +7794,7 @@ fn update_previews(
     cylinder_settings: Res<CylinderToolSettings>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut rendered_block_revision: Local<u64>,
-    mut rendered_delete_revision: Local<u64>,
+    mut rendered_revisions: Local<PreviewMeshRevisions>,
     mut rendered_bearing_dimensions: Local<BearingDimensions>,
     mut rendered_weld_hover: Local<Option<PartId>>,
     mut rendered_weld_selection: Local<Option<PartId>>,
@@ -6259,7 +7842,7 @@ fn update_previews(
     hide_preview(&mut selection.2);
     hide_preview(&mut delete.2);
 
-    if selected_tool.0 == Tool::Weld {
+    if selected_tool.0 == Some(Tool::Weld) {
         if hovered_part(state.hovered).is_none() {
             *rendered_weld_hover = None;
         }
@@ -6276,7 +7859,7 @@ fn update_previews(
     }
 
     if let Some(drag) = state.delete_drag.as_ref() {
-        if *rendered_delete_revision != state.delete_preview_revision {
+        if rendered_revisions.delete != state.delete_preview_revision {
             let specs = drag
                 .parts
                 .iter()
@@ -6285,7 +7868,7 @@ fn update_previews(
             if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
                 *mesh = combined_parts_mesh_scaled(&specs, 1.0);
             }
-            *rendered_delete_revision = state.delete_preview_revision;
+            rendered_revisions.delete = state.delete_preview_revision;
         }
         delete.0.0 = visuals.delete_drag_preview_mesh.clone();
         *delete.1 = Transform::default();
@@ -6329,11 +7912,13 @@ fn update_previews(
         return;
     }
 
-    let bearing_attachment_highlighted = bearing_attachment_is_highlighted(
-        selected_tool.0,
-        state.attachment_bearing,
-        state.preview_error.as_ref(),
-    );
+    let bearing_attachment_highlighted = selected_tool.0.is_some_and(|tool| {
+        bearing_attachment_is_highlighted(
+            tool,
+            state.attachment_bearing,
+            state.preview_error.as_ref(),
+        )
+    });
     let action_material = if state.preview_error.is_some() {
         &visuals.red_preview_material
     } else if state.preview_warning.is_some() {
@@ -6368,16 +7953,16 @@ fn update_previews(
         selection.1.scale = Vec3::splat(1.12);
     }
     match (selected_tool.0, graph.0.pending()) {
-        (Tool::Shape, _) => {
+        (None | Some(Tool::Shape), _) => {
             *action.2 = Visibility::Hidden;
         }
-        (Tool::Block, _) => {
+        (Some(Tool::Block), _) => {
             if let Some(drag) = state.block_drag.as_ref() {
-                if *rendered_block_revision != state.block_preview_revision {
+                if rendered_revisions.block != state.block_preview_revision {
                     if let Some(mut mesh) = meshes.get_mut(&visuals.block_drag_preview_mesh) {
                         *mesh = block_sheet_preview_mesh(&drag.specs);
                     }
-                    *rendered_block_revision = state.block_preview_revision;
+                    rendered_revisions.block = state.block_preview_revision;
                 }
                 action.0.0 = visuals.block_drag_preview_mesh.clone();
                 *action.1 = Transform::default();
@@ -6393,8 +7978,24 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Cylinder, _) => {
-            if let Some(candidate) = state.cylinder_preview {
+        (Some(Tool::Cylinder), _) => {
+            if let Some(drag) = state.pipe_drag.as_ref() {
+                if rendered_revisions.pipe != state.pipe_preview_revision {
+                    let specs = drag
+                        .pieces
+                        .iter()
+                        .map(|piece| piece.spec)
+                        .collect::<Vec<_>>();
+                    if let Some(mut mesh) = meshes.get_mut(&visuals.block_drag_preview_mesh) {
+                        *mesh = combined_parts_mesh_scaled(&specs, 1.0);
+                    }
+                    rendered_revisions.pipe = state.pipe_preview_revision;
+                }
+                action.0.0 = visuals.block_drag_preview_mesh.clone();
+                *action.1 = Transform::default();
+                action.3.0 = action_material.clone();
+                *action.2 = Visibility::Visible;
+            } else if let Some(candidate) = state.cylinder_preview {
                 if let Some(mut mesh) = meshes.get_mut(&visuals.cylinder_preview_mesh) {
                     *mesh = single_cylinder_mesh(cylinder_settings.dimensions);
                 }
@@ -6406,7 +8007,7 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Weld, pending) => {
+        (Some(Tool::Weld), pending) => {
             if let Some(part) = hovered_part(state.hovered) {
                 if *rendered_weld_hover != Some(part) || graph.is_changed() {
                     let specs = rigid_body_parts(&graph.0, part)
@@ -6442,7 +8043,7 @@ fn update_previews(
                 *selection.2 = Visibility::Visible;
             }
         }
-        (Tool::Bearing, _) => {
+        (Some(Tool::Bearing), _) => {
             if let Some(hit) = state.hovered
                 && let Some(face) = try_face_geometry_from_ref(hit.face, Some(&graph.0))
             {
@@ -6463,17 +8064,20 @@ fn update_previews(
             }
         }
         (
-            Tool::Controller
-            | Tool::GasEngine
-            | Tool::ElectricEngine
-            | Tool::Servo
-            | Tool::Seat
-            | Tool::Input,
+            Some(
+                Tool::Controller
+                | Tool::GasEngine
+                | Tool::ElectricEngine
+                | Tool::Servo
+                | Tool::Seat
+                | Tool::Input,
+            ),
             _,
         ) => {
-            if let (Some(candidate), Some(appearance)) =
-                (state.preview, AuthoredPart::from_tool(selected_tool.0))
-            {
+            if let (Some(candidate), Some(appearance)) = (
+                state.preview,
+                selected_tool.0.and_then(AuthoredPart::from_tool),
+            ) {
                 show_cuboid_preview(
                     &mut action,
                     visuals.authored_preview_mesh(appearance),
@@ -6483,7 +8087,7 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Transmission, _) => {
+        (Some(Tool::Transmission), _) => {
             if let Some(candidate) = state.preview {
                 let kind = state.hovered.and_then(|hit| match hit.face.owner {
                     FaceOwner::Part(part) => match graph.0.part(part) {
@@ -6506,7 +8110,7 @@ fn update_previews(
                 );
             }
         }
-        (Tool::Hammer | Tool::Connector, _) => {}
+        (Some(Tool::Hammer | Tool::Connector), _) => {}
     }
 }
 
@@ -6603,12 +8207,15 @@ fn show_cylinder_preview(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 // Tool-specific guidance is kept together with its HUD layout.
 fn tool_status_line(
-    tool: Tool,
+    tool: impl Into<Option<Tool>>,
     bearing_dimensions: BearingDimensions,
     cylinder_dimensions: CylinderDimensions,
     selected_wires: Option<usize>,
     material: ConstructionMaterial,
 ) -> String {
+    let Some(tool) = tool.into() else {
+        return "Hand: Empty    Clear / Pipette picks the object under the reticle".to_owned();
+    };
     match tool {
         Tool::Connector => format!(
             "Tool: Connector    Drag a block to a bearing, or a bearing to a block    {}    Right click a wired bearing removes it",
@@ -6621,7 +8228,7 @@ fn tool_status_line(
             ),
         ),
         Tool::Controller => format!(
-            "Tool: {}    Q Rotate 90°    {}    E opens its program",
+            "Tool: {}    Rotate action: 90°    {}    Interact opens its program",
             tool.label(),
             selected_wires.map_or_else(
                 || "No block selected — click one to select it".to_owned(),
@@ -6641,7 +8248,7 @@ fn tool_status_line(
             bearing_dimensions.inner_diameter(),
         ),
         Tool::Cylinder => format!(
-            "Tool: Cylinder    Material: {}    Outer: {:.2} m ←/→  Inner: {:.2} m Shift+←/→  Length: {:.2} m ↓/↑  Sweep: {}° Shift+↓/↑",
+            "Tool: Pipe / Cylinder    Material: {}    Outer: {:.2} m ←/→  Inner: {:.2} m Shift+←/→  Length: {:.2} m ↓/↑  Sweep: {}° Shift+↓/↑    Hold primary to drag; R mode; F bend; wheel radius",
             material.label(),
             cylinder_dimensions.outer_diameter(),
             cylinder_dimensions.inner_diameter(),
@@ -6649,7 +8256,7 @@ fn tool_status_line(
             cylinder_dimensions.sweep_angle_degrees(),
         ),
         Tool::GasEngine | Tool::ElectricEngine | Tool::Servo | Tool::Seat | Tool::Input => {
-            format!("Tool: {}    Q Rotate 90°", tool.label())
+            format!("Tool: {}    Rotate action: 90°", tool.label())
         }
         _ => format!("Tool: {}", tool.label()),
     }
@@ -7033,6 +8640,8 @@ fn combined_construction_mesh_filtered(
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
+    let pipe_texture_offsets = pipe_texture_offsets(graph);
+    let welded_pipe_ends = welded_pipe_ends(graph);
     // A part inside a region hands its surface to that region, so drawing both
     // would render the same material twice.
     for (part, spec) in graph.parts().filter(|(_, spec)| {
@@ -7042,11 +8651,14 @@ fn combined_construction_mesh_filtered(
         if graph.region_of(part).is_some() {
             continue;
         }
+        let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
         append_textured_part(
             *spec,
             spec.pose().translation(),
             spec.pose().rotation.quaternion(),
             BuildTransform::IDENTITY,
+            texture_offset,
+            pipe_end_faces(part, &welded_pipe_ends),
             &mut positions,
             &mut normals,
             &mut uvs,
@@ -7088,12 +8700,190 @@ const fn ordinary_material(spec: PartSpec) -> Option<ConstructionMaterial> {
     match spec {
         PartSpec::Cuboid(cuboid) => Some(cuboid.material),
         PartSpec::Cylinder(cylinder) => Some(cylinder.material),
+        PartSpec::PipeBend(bend) => Some(bend.material),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => None,
+    }
+}
+
+fn pipe_endpoint_texture_u(spec: PartSpec, face: FaceKind) -> Option<f32> {
+    match (spec, face) {
+        (PartSpec::Cylinder(cylinder), FaceKind::NegativeY) => {
+            Some(-cylinder.dimensions.axial_length() * 0.5)
+        }
+        (PartSpec::Cylinder(cylinder), FaceKind::PositiveY) => {
+            Some(cylinder.dimensions.axial_length() * 0.5)
+        }
+        (PartSpec::PipeBend(bend), FaceKind::NegativeX) => {
+            Some(-std::f32::consts::FRAC_PI_2 * bend.dimensions.radius())
+        }
+        (PartSpec::PipeBend(_), FaceKind::PositiveY) => Some(0.0),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PipeTextureOffset {
+    u: f32,
+    v_angle: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PipeEndpointTextureFrame {
+    direction: Vec3,
+    radial_zero: Vec3,
+}
+
+fn pipe_endpoint_texture_frame(spec: PartSpec, face: FaceKind) -> Option<PipeEndpointTextureFrame> {
+    let rotation = spec.pose().rotation.quaternion();
+    match (spec, face) {
+        (PartSpec::Cylinder(_), FaceKind::NegativeY | FaceKind::PositiveY) => {
+            Some(PipeEndpointTextureFrame {
+                direction: rotation * Vec3::Y,
+                radial_zero: rotation * Vec3::X,
+            })
+        }
+        (PartSpec::PipeBend(_), FaceKind::NegativeX) => Some(PipeEndpointTextureFrame {
+            direction: rotation * Vec3::X,
+            radial_zero: rotation * Vec3::NEG_Y,
+        }),
+        (PartSpec::PipeBend(_), FaceKind::PositiveY) => Some(PipeEndpointTextureFrame {
+            direction: rotation * Vec3::Y,
+            radial_zero: rotation * Vec3::X,
+        }),
+        _ => None,
+    }
+}
+
+/// Carries both lengthwise and circumferential texture phase across welded pipe ends.
+fn pipe_texture_offsets(graph: &ConstructionGraph) -> HashMap<PartId, PipeTextureOffset> {
+    let mut neighbours = HashMap::<PartId, Vec<(PartId, PipeTextureOffset)>>::new();
+    for (_, weld) in graph.welds() {
+        let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+            (weld.first.owner, weld.second.owner)
+        else {
+            continue;
+        };
+        let Some(first_u) = graph
+            .part(first)
+            .copied()
+            .and_then(|spec| pipe_endpoint_texture_u(spec, weld.first.face))
+        else {
+            continue;
+        };
+        let Some(second_u) = graph
+            .part(second)
+            .copied()
+            .and_then(|spec| pipe_endpoint_texture_u(spec, weld.second.face))
+        else {
+            continue;
+        };
+        let first_spec = graph
+            .part(first)
+            .copied()
+            .expect("welded part remains in graph");
+        let second_spec = graph
+            .part(second)
+            .copied()
+            .expect("welded part remains in graph");
+        let first_frame = pipe_endpoint_texture_frame(first_spec, weld.first.face)
+            .expect("pipe endpoint exposes a texture frame");
+        let second_frame = pipe_endpoint_texture_frame(second_spec, weld.second.face)
+            .expect("pipe endpoint exposes a texture frame");
+        let v_angle = if first_frame.direction.dot(second_frame.direction) > 1.0 - 1.0e-4 {
+            let second_angular = -second_frame.direction.cross(second_frame.radial_zero);
+            -first_frame
+                .radial_zero
+                .dot(second_angular)
+                .atan2(first_frame.radial_zero.dot(second_frame.radial_zero))
+        } else {
+            0.0
+        };
+        let second_from_first = PipeTextureOffset {
+            u: first_u - second_u,
+            v_angle,
+        };
+        neighbours
+            .entry(first)
+            .or_default()
+            .push((second, second_from_first));
+        neighbours.entry(second).or_default().push((
+            first,
+            PipeTextureOffset {
+                u: -second_from_first.u,
+                v_angle: -second_from_first.v_angle,
+            },
+        ));
+    }
+
+    let mut offsets = HashMap::new();
+    let mut pending = VecDeque::new();
+    for (root, spec) in graph.parts() {
+        if !matches!(spec, PartSpec::Cylinder(_) | PartSpec::PipeBend(_))
+            || offsets.contains_key(&root)
+        {
+            continue;
+        }
+        offsets.insert(root, PipeTextureOffset::default());
+        pending.push_back(root);
+        while let Some(part) = pending.pop_front() {
+            let offset = offsets[&part];
+            for &(neighbour, delta) in neighbours.get(&part).into_iter().flatten() {
+                if let std::collections::hash_map::Entry::Vacant(entry) = offsets.entry(neighbour) {
+                    entry.insert(PipeTextureOffset {
+                        u: offset.u + delta.u,
+                        v_angle: offset.v_angle + delta.v_angle,
+                    });
+                    pending.push_back(neighbour);
+                }
+            }
+        }
+    }
+    offsets
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PipeEndFaces {
+    inlet: bool,
+    outlet: bool,
+}
+
+impl PipeEndFaces {
+    const ALL: Self = Self {
+        inlet: true,
+        outlet: true,
+    };
+}
+
+fn welded_pipe_ends(graph: &ConstructionGraph) -> HashSet<FaceRef> {
+    let mut ends = HashSet::new();
+    for (_, weld) in graph.welds() {
+        let pipe_endpoint = |face: FaceRef| {
+            let FaceOwner::Part(part) = face.owner else {
+                return false;
+            };
+            graph
+                .part(part)
+                .copied()
+                .is_some_and(|spec| pipe_endpoint_texture_u(spec, face.face).is_some())
+        };
+        if pipe_endpoint(weld.first) && pipe_endpoint(weld.second) {
+            ends.insert(weld.first);
+            ends.insert(weld.second);
+        }
+    }
+    ends
+}
+
+fn pipe_end_faces(part: PartId, welded_ends: &HashSet<FaceRef>) -> PipeEndFaces {
+    let hidden = |face| welded_ends.contains(&FaceRef::part(part, face));
+    PipeEndFaces {
+        inlet: !hidden(FaceKind::NegativeY) && !hidden(FaceKind::NegativeX),
+        outlet: !hidden(FaceKind::PositiveY),
     }
 }
 
@@ -7240,6 +9030,8 @@ fn combined_simulation_mesh_filtered(
     kind: SimulationMeshKind,
     material: Option<ConstructionMaterial>,
 ) -> Mesh {
+    let pipe_texture_offsets = pipe_texture_offsets(graph);
+    let welded_pipe_ends = welded_pipe_ends(graph);
     let parts = creation
         .part_to_compound
         .iter()
@@ -7292,11 +9084,14 @@ fn combined_simulation_mesh_filtered(
             continue;
         }
         let local_center = spec.pose().translation() - initial.root_translation;
+        let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
         append_textured_part(
             spec,
             root_translation + root_rotation * local_center,
             root_rotation * spec.pose().rotation.quaternion(),
             placement,
+            texture_offset,
+            pipe_end_faces(part, &welded_pipe_ends),
             &mut positions,
             &mut normals,
             &mut uvs,
@@ -7505,6 +9300,56 @@ fn simulation_bearing_pose(
     ))
 }
 
+fn simulation_placed_bearing_pose(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    bearing: PlacedBearing,
+) -> Option<(Vec3, Vec3)> {
+    let FaceOwner::Part(source_part) = bearing.source.owner else {
+        return None;
+    };
+    let compound_index = creation
+        .part_to_compound
+        .iter()
+        .find_map(|&(part, index)| (part == source_part).then_some(index))?;
+    let initial = creation.compounds.get(compound_index as usize)?;
+    let inverse_initial_rotation = initial.root_rotation.inverse();
+    let local_anchor = inverse_initial_rotation * (bearing.anchor - initial.root_translation);
+    let local_axis =
+        inverse_initial_rotation * face_geometry_from_ref(bearing.source, Some(graph)).normal;
+    Some(transform_bearing_pose(
+        *transforms.get(compound_index as usize)?,
+        local_anchor,
+        local_axis,
+    ))
+}
+
+fn raycast_simulation_bearings(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    placed_bearings: &[PlacedBearing],
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<(BearingDimensions, f32)> {
+    let graph_bearings = graph.bearings().filter_map(|(_, bearing)| {
+        let (anchor, axis) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
+        let distance =
+            raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)?;
+        Some((bearing.dimensions, distance))
+    });
+    let placed = placed_bearings.iter().filter_map(|&bearing| {
+        let (anchor, axis) = simulation_placed_bearing_pose(graph, creation, transforms, bearing)?;
+        let distance =
+            raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)?;
+        Some((bearing.dimensions, distance))
+    });
+    graph_bearings
+        .chain(placed)
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+}
+
 fn transform_bearing_pose(
     transform: GpuTransform,
     local_anchor: Vec3,
@@ -7576,13 +9421,41 @@ fn append_cylinder_shape(
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
 ) {
+    append_cylinder_shape_with_end_faces(
+        center,
+        rotation,
+        dimensions,
+        scale,
+        PipeEndFaces::ALL,
+        0.0,
+        positions,
+        normals,
+        indices,
+    );
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn append_cylinder_shape_with_end_faces(
+    center: Vec3,
+    rotation: Quat,
+    dimensions: CylinderDimensions,
+    scale: f32,
+    end_faces: PipeEndFaces,
+    v_angle_offset: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
     if dimensions.sweep_angle_degrees() == 360 {
-        append_annular_cylinder(
+        append_annular_cylinder_with_end_faces(
             center,
             rotation * Vec3::Y,
             dimensions.outer_diameter() * scale,
             dimensions.inner_diameter() * scale,
             dimensions.axial_length() * scale,
+            end_faces,
+            true,
+            Some(rotation * (Vec3::X * v_angle_offset.cos() - Vec3::Z * v_angle_offset.sin())),
             positions,
             normals,
             indices,
@@ -7690,6 +9563,201 @@ fn append_cylinder_shape(
             [inner_lower, inner_upper, outer_upper, outer_lower]
         };
         append_mesh_quad(vertices, normal, positions, normals, indices);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_pipe_bend_shape(
+    corner: Vec3,
+    rotation: Quat,
+    dimensions: PipeBendDimensions,
+    scale: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    append_pipe_bend_shape_with_end_faces(
+        corner,
+        rotation,
+        dimensions,
+        scale,
+        PipeEndFaces::ALL,
+        0.0,
+        positions,
+        normals,
+        indices,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_pipe_bend_shape_with_end_faces(
+    corner: Vec3,
+    rotation: Quat,
+    dimensions: PipeBendDimensions,
+    scale: f32,
+    end_faces: PipeEndFaces,
+    v_angle_offset: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    const ARC_SLICES: u16 = 12;
+    const RADIAL_SIDES: u16 = 24;
+    let radius = dimensions.radius() * scale;
+    let outer = dimensions.outer_diameter() * scale * 0.5;
+    let inner = dimensions.inner_diameter() * scale * 0.5;
+    let curve_center = Vec3::new(-radius, radius, 0.0);
+    let point = |theta: f32, phi: f32, tube_radius: f32| {
+        let radial = Vec3::new(theta.cos(), theta.sin(), 0.0);
+        curve_center
+            + radial * (radius + tube_radius * phi.cos())
+            + Vec3::Z * (tube_radius * phi.sin())
+    };
+    let surface_normal = |theta: f32, phi: f32| {
+        let radial = Vec3::new(theta.cos(), theta.sin(), 0.0);
+        rotation * (radial * phi.cos() + Vec3::Z * phi.sin())
+    };
+    let world = |local: Vec3| corner + rotation * local;
+
+    for arc in 0..ARC_SLICES {
+        let theta0 = -std::f32::consts::FRAC_PI_2
+            + std::f32::consts::FRAC_PI_2 * f32::from(arc) / f32::from(ARC_SLICES);
+        let theta1 = -std::f32::consts::FRAC_PI_2
+            + std::f32::consts::FRAC_PI_2 * f32::from(arc + 1) / f32::from(ARC_SLICES);
+        for side in 0..RADIAL_SIDES {
+            let phi0 =
+                std::f32::consts::TAU * f32::from(side) / f32::from(RADIAL_SIDES) - v_angle_offset;
+            let phi1 = std::f32::consts::TAU * f32::from(side + 1) / f32::from(RADIAL_SIDES)
+                - v_angle_offset;
+            append_mesh_quad_with_normals(
+                [
+                    world(point(theta0, phi0, outer)),
+                    world(point(theta1, phi0, outer)),
+                    world(point(theta1, phi1, outer)),
+                    world(point(theta0, phi1, outer)),
+                ],
+                [
+                    surface_normal(theta0, phi0),
+                    surface_normal(theta1, phi0),
+                    surface_normal(theta1, phi1),
+                    surface_normal(theta0, phi1),
+                ],
+                positions,
+                normals,
+                indices,
+            );
+            if inner > 0.0 {
+                append_mesh_quad_with_normals(
+                    [
+                        world(point(theta0, phi1, inner)),
+                        world(point(theta1, phi1, inner)),
+                        world(point(theta1, phi0, inner)),
+                        world(point(theta0, phi0, inner)),
+                    ],
+                    [
+                        -surface_normal(theta0, phi1),
+                        -surface_normal(theta1, phi1),
+                        -surface_normal(theta1, phi0),
+                        -surface_normal(theta0, phi0),
+                    ],
+                    positions,
+                    normals,
+                    indices,
+                );
+            }
+        }
+    }
+
+    append_pipe_bend_end_faces(
+        corner,
+        rotation,
+        dimensions,
+        scale,
+        end_faces,
+        v_angle_offset,
+        positions,
+        normals,
+        indices,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_pipe_bend_end_faces(
+    corner: Vec3,
+    rotation: Quat,
+    dimensions: PipeBendDimensions,
+    scale: f32,
+    end_faces: PipeEndFaces,
+    v_angle_offset: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    const RADIAL_SIDES: u16 = 24;
+    let radius = dimensions.radius() * scale;
+    let outer = dimensions.outer_diameter() * scale * 0.5;
+    let inner = dimensions.inner_diameter() * scale * 0.5;
+    let curve_center = Vec3::new(-radius, radius, 0.0);
+    let point = |theta: f32, phi: f32, tube_radius: f32| {
+        let radial = Vec3::new(theta.cos(), theta.sin(), 0.0);
+        curve_center
+            + radial * (radius + tube_radius * phi.cos())
+            + Vec3::Z * (tube_radius * phi.sin())
+    };
+    let world = |local: Vec3| corner + rotation * local;
+
+    for (theta, end_normal, reverse, visible) in [
+        (
+            -std::f32::consts::FRAC_PI_2,
+            Vec3::NEG_X,
+            false,
+            end_faces.inlet,
+        ),
+        (0.0, Vec3::Y, true, end_faces.outlet),
+    ] {
+        if !visible {
+            continue;
+        }
+        let centerline = point(theta, 0.0, 0.0);
+        for side in 0..RADIAL_SIDES {
+            let phi0 =
+                std::f32::consts::TAU * f32::from(side) / f32::from(RADIAL_SIDES) - v_angle_offset;
+            let phi1 = std::f32::consts::TAU * f32::from(side + 1) / f32::from(RADIAL_SIDES)
+                - v_angle_offset;
+            if inner > 0.0 {
+                let vertices = if reverse {
+                    [
+                        world(point(theta, phi1, inner)),
+                        world(point(theta, phi1, outer)),
+                        world(point(theta, phi0, outer)),
+                        world(point(theta, phi0, inner)),
+                    ]
+                } else {
+                    [
+                        world(point(theta, phi0, inner)),
+                        world(point(theta, phi0, outer)),
+                        world(point(theta, phi1, outer)),
+                        world(point(theta, phi1, inner)),
+                    ]
+                };
+                append_mesh_quad(vertices, rotation * end_normal, positions, normals, indices);
+            } else {
+                let vertices = if reverse {
+                    [
+                        world(centerline),
+                        world(point(theta, phi1, outer)),
+                        world(point(theta, phi0, outer)),
+                    ]
+                } else {
+                    [
+                        world(centerline),
+                        world(point(theta, phi0, outer)),
+                        world(point(theta, phi1, outer)),
+                    ]
+                };
+                append_mesh_triangle(vertices, rotation * end_normal, positions, normals, indices);
+            }
+        }
     }
 }
 
@@ -7915,7 +9983,7 @@ fn update_wire_hover_preview(
     mut drawn: Local<Option<WireEnd>>,
     mut transform: Single<&mut Transform, With<WireHoverVisual>>,
 ) {
-    let hovered = if selection.0 == Tool::Connector && !simulation.is_running() {
+    let hovered = if selection.0 == Some(Tool::Connector) && !simulation.is_running() {
         wire_end_under_cursor(&graph.0, &state)
     } else {
         None
@@ -7963,7 +10031,7 @@ fn update_wire_hover_preview(
 /// joint or block once the pointer is over one that would complete it.
 fn update_wire_drag_preview(
     graph: Res<EditorGraph>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    actions: Res<ButtonInput<GameAction>>,
     mut state: ResMut<EditorState>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -7974,7 +10042,7 @@ fn update_wire_drag_preview(
     // rather than left following the pointer forever.
     if state
         .wire_drag
-        .is_some_and(|drag| !drag.armed && !mouse.pressed(MouseButton::Left))
+        .is_some_and(|drag| !drag.armed && !actions.pressed(GameAction::Primary))
     {
         state.wire_drag = None;
     }
@@ -8164,6 +10232,19 @@ fn append_mesh_quad(
     indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
+fn append_mesh_quad_with_normals(
+    vertices: [Vec3; 4],
+    vertex_normals: [Vec3; 4],
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    let base = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
+    positions.extend(vertices.map(|vertex| vertex.to_array()));
+    normals.extend(vertex_normals.map(|normal| normal.to_array()));
+    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn append_annular_cylinder(
     anchor: Vec3,
@@ -8175,14 +10256,48 @@ fn append_annular_cylinder(
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
 ) {
+    append_annular_cylinder_with_end_faces(
+        anchor,
+        axis,
+        outer_diameter,
+        inner_diameter,
+        axial_length,
+        PipeEndFaces::ALL,
+        false,
+        None,
+        positions,
+        normals,
+        indices,
+    );
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn append_annular_cylinder_with_end_faces(
+    anchor: Vec3,
+    axis: Vec3,
+    outer_diameter: f32,
+    inner_diameter: f32,
+    axial_length: f32,
+    end_faces: PipeEndFaces,
+    duplicate_side_seam: bool,
+    circumference_start: Option<Vec3>,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
     const SEGMENTS: u16 = 24;
     let axis = axis.normalize();
-    let tangent_u = if axis.y.abs() < 0.9 {
-        axis.cross(Vec3::Y).normalize()
+    let (tangent_u, tangent_v, positive_circumference) = if let Some(start) = circumference_start {
+        let tangent_u = start.normalize();
+        (tangent_u, -axis.cross(tangent_u), true)
     } else {
-        axis.cross(Vec3::X).normalize()
+        let tangent_u = if axis.y.abs() < 0.9 {
+            axis.cross(Vec3::Y).normalize()
+        } else {
+            axis.cross(Vec3::X).normalize()
+        };
+        (tangent_u, axis.cross(tangent_u), false)
     };
-    let tangent_v = axis.cross(tangent_u);
     let outer_radius = outer_diameter * 0.5;
     let inner_radius = inner_diameter * 0.5;
     let half_depth = axial_length * 0.5;
@@ -8190,7 +10305,12 @@ fn append_annular_cylinder(
     let upper = anchor + axis * half_depth;
     let base = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
 
-    for segment in 0..SEGMENTS {
+    let side_ring_vertices = if duplicate_side_seam {
+        SEGMENTS + 1
+    } else {
+        SEGMENTS
+    };
+    for segment in 0..side_ring_vertices {
         let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
         let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
         positions.push((lower + radial * outer_radius).to_array());
@@ -8199,60 +10319,72 @@ fn append_annular_cylinder(
         normals.push(radial.to_array());
     }
     for segment in 0..SEGMENTS {
-        let next = (segment + 1) % SEGMENTS;
+        let next = if duplicate_side_seam {
+            segment + 1
+        } else {
+            (segment + 1) % SEGMENTS
+        };
         let lower_current = base + u32::from(segment) * 2;
         let upper_current = lower_current + 1;
         let lower_next = base + u32::from(next) * 2;
         let upper_next = lower_next + 1;
-        indices.extend([
-            lower_current,
-            lower_next,
-            upper_current,
-            upper_current,
-            lower_next,
-            upper_next,
-        ]);
+        if positive_circumference {
+            indices.extend([
+                lower_current,
+                upper_current,
+                lower_next,
+                upper_current,
+                upper_next,
+                lower_next,
+            ]);
+        } else {
+            indices.extend([
+                lower_current,
+                lower_next,
+                upper_current,
+                upper_current,
+                lower_next,
+                upper_next,
+            ]);
+        }
     }
 
     if inner_radius == 0.0 {
-        let lower_center = u32::try_from(positions.len()).unwrap();
-        positions.push(lower.to_array());
-        normals.push((-axis).to_array());
-        let upper_center = u32::try_from(positions.len()).unwrap();
-        positions.push(upper.to_array());
-        normals.push(axis.to_array());
-        let lower_ring = u32::try_from(positions.len()).unwrap();
-        for segment in 0..SEGMENTS {
-            let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
-            let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
-            positions.push((lower + radial * outer_radius).to_array());
-            normals.push((-axis).to_array());
-        }
-        let upper_ring = u32::try_from(positions.len()).unwrap();
-        for segment in 0..SEGMENTS {
-            let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
-            let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
-            positions.push((upper + radial * outer_radius).to_array());
-            normals.push(axis.to_array());
-        }
-        for segment in 0..SEGMENTS {
-            let next = (segment + 1) % SEGMENTS;
-            let current = u32::from(segment);
-            let next = u32::from(next);
-            indices.extend([
-                lower_center,
-                lower_ring + next,
-                lower_ring + current,
-                upper_center,
-                upper_ring + current,
-                upper_ring + next,
-            ]);
+        for (center, normal, visible, reverse) in [
+            (lower, -axis, end_faces.inlet, !positive_circumference),
+            (upper, axis, end_faces.outlet, positive_circumference),
+        ] {
+            if !visible {
+                continue;
+            }
+            let center_index = u32::try_from(positions.len()).unwrap();
+            positions.push(center.to_array());
+            normals.push(normal.to_array());
+            let ring = append_bearing_face_ring(
+                center,
+                normal,
+                outer_radius,
+                tangent_u,
+                tangent_v,
+                positions,
+                normals,
+            );
+            for segment in 0..SEGMENTS {
+                let next = (segment + 1) % SEGMENTS;
+                let current = u32::from(segment);
+                let next = u32::from(next);
+                if reverse {
+                    indices.extend([center_index, ring + next, ring + current]);
+                } else {
+                    indices.extend([center_index, ring + current, ring + next]);
+                }
+            }
         }
         return;
     }
 
     let inner_side = u32::try_from(positions.len()).unwrap();
-    for segment in 0..SEGMENTS {
+    for segment in 0..side_ring_vertices {
         let angle = std::f32::consts::TAU * f32::from(segment) / f32::from(SEGMENTS);
         let radial = tangent_u * angle.cos() + tangent_v * angle.sin();
         positions.push((lower + radial * inner_radius).to_array());
@@ -8261,75 +10393,85 @@ fn append_annular_cylinder(
         normals.push((-radial).to_array());
     }
     for segment in 0..SEGMENTS {
-        let next = (segment + 1) % SEGMENTS;
+        let next = if duplicate_side_seam {
+            segment + 1
+        } else {
+            (segment + 1) % SEGMENTS
+        };
         let lower_current = inner_side + u32::from(segment) * 2;
         let upper_current = lower_current + 1;
         let lower_next = inner_side + u32::from(next) * 2;
         let upper_next = lower_next + 1;
-        indices.extend([
-            lower_current,
-            upper_current,
-            lower_next,
-            upper_current,
-            upper_next,
-            lower_next,
-        ]);
+        if positive_circumference {
+            indices.extend([
+                lower_current,
+                lower_next,
+                upper_current,
+                upper_current,
+                lower_next,
+                upper_next,
+            ]);
+        } else {
+            indices.extend([
+                lower_current,
+                upper_current,
+                lower_next,
+                upper_current,
+                upper_next,
+                lower_next,
+            ]);
+        }
     }
 
-    let lower_outer = append_bearing_face_ring(
-        lower,
-        -axis,
-        outer_radius,
-        tangent_u,
-        tangent_v,
-        positions,
-        normals,
-    );
-    let lower_inner = append_bearing_face_ring(
-        lower,
-        -axis,
-        inner_radius,
-        tangent_u,
-        tangent_v,
-        positions,
-        normals,
-    );
-    let upper_outer = append_bearing_face_ring(
-        upper,
-        axis,
-        outer_radius,
-        tangent_u,
-        tangent_v,
-        positions,
-        normals,
-    );
-    let upper_inner = append_bearing_face_ring(
-        upper,
-        axis,
-        inner_radius,
-        tangent_u,
-        tangent_v,
-        positions,
-        normals,
-    );
-    for segment in 0..SEGMENTS {
-        let next = (segment + 1) % SEGMENTS;
-        let current = u32::from(segment);
-        let next = u32::from(next);
-        indices.extend([
-            lower_outer + current,
-            lower_inner + current,
-            lower_outer + next,
-            lower_outer + next,
-            lower_inner + current,
-            lower_inner + next,
-            upper_outer + current,
-            upper_outer + next,
-            upper_inner + current,
-            upper_outer + next,
-            upper_inner + next,
-            upper_inner + current,
-        ]);
+    for (center, normal, visible, reverse) in [
+        (lower, -axis, end_faces.inlet, !positive_circumference),
+        (upper, axis, end_faces.outlet, positive_circumference),
+    ] {
+        if !visible {
+            continue;
+        }
+        let outer = append_bearing_face_ring(
+            center,
+            normal,
+            outer_radius,
+            tangent_u,
+            tangent_v,
+            positions,
+            normals,
+        );
+        let inner = append_bearing_face_ring(
+            center,
+            normal,
+            inner_radius,
+            tangent_u,
+            tangent_v,
+            positions,
+            normals,
+        );
+        for segment in 0..SEGMENTS {
+            let next = (segment + 1) % SEGMENTS;
+            let current = u32::from(segment);
+            let next = u32::from(next);
+            if reverse {
+                indices.extend([
+                    outer + current,
+                    inner + current,
+                    outer + next,
+                    outer + next,
+                    inner + current,
+                    inner + next,
+                ]);
+            } else {
+                indices.extend([
+                    outer + current,
+                    outer + next,
+                    inner + current,
+                    outer + next,
+                    inner + next,
+                    inner + current,
+                ]);
+            }
+        }
     }
 }
 
@@ -8418,6 +10560,15 @@ fn append_part(
             indices,
         ),
         PartSpec::Cylinder(spec) => append_cylinder_shape(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.dimensions,
+            scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
+        PartSpec::PipeBend(spec) => append_pipe_bend_shape(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
             spec.dimensions,
@@ -8668,6 +10819,8 @@ fn append_textured_part(
     translation: Vec3,
     rotation: Quat,
     placement: BuildTransform,
+    texture_offset: PipeTextureOffset,
+    end_faces: PipeEndFaces,
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
     uvs: &mut Vec<[f32; 2]>,
@@ -8685,11 +10838,24 @@ fn append_textured_part(
             normals,
             indices,
         ),
-        PartSpec::Cylinder(cylinder) => append_cylinder_shape(
+        PartSpec::Cylinder(cylinder) => append_cylinder_shape_with_end_faces(
             translation,
             rotation,
             cylinder.dimensions,
             1.0,
+            end_faces,
+            texture_offset.v_angle,
+            positions,
+            normals,
+            indices,
+        ),
+        PartSpec::PipeBend(bend) => append_pipe_bend_shape_with_end_faces(
+            translation,
+            rotation,
+            bend.dimensions,
+            1.0,
+            end_faces,
+            texture_offset.v_angle,
             positions,
             normals,
             indices,
@@ -8722,29 +10888,29 @@ fn append_textured_part(
             }
         }
         PartSpec::Cylinder(_) => {
-            let inverse = rotation.inverse();
-            for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
-                let local = inverse * (Vec3::from_array(position) - translation);
-                let local_normal = inverse * Vec3::from_array(normal);
-                let radial = Vec3::new(local.x, 0.0, local.z);
-                let radial_direction = radial.normalize_or_zero();
-                let (uv, local_tangent) = if local_normal.y.abs() > 0.9 {
-                    ([local.x, local.z], Vec3::X)
-                } else if radial_direction != Vec3::ZERO
-                    && local_normal.dot(radial_direction).abs() > 0.5
-                {
-                    let angle = local.z.atan2(local.x);
-                    (
-                        [angle * radial.length(), local.y],
-                        Vec3::new(-angle.sin(), 0.0, angle.cos()),
-                    )
-                } else {
-                    ([radial.length(), local.y], radial_direction)
-                };
-                uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
-                let tangent = rotation * local_tangent;
-                tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
-            }
+            append_cylinder_texture_coordinates(
+                translation,
+                rotation,
+                first,
+                positions,
+                normals,
+                texture_offset.v_angle,
+                uvs,
+                tangents,
+            );
+        }
+        PartSpec::PipeBend(bend) => {
+            append_pipe_bend_texture_coordinates(
+                bend.dimensions,
+                translation,
+                rotation,
+                first,
+                positions,
+                normals,
+                texture_offset.v_angle,
+                uvs,
+                tangents,
+            );
         }
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
@@ -8752,6 +10918,125 @@ fn append_textured_part(
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => unreachable!(),
+    }
+    for uv in &mut uvs[first..] {
+        uv[0] += texture_offset.u / MATERIAL_TEXTURE_METERS_PER_REPEAT;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_cylinder_texture_coordinates(
+    translation: Vec3,
+    rotation: Quat,
+    first: usize,
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    v_angle_offset: f32,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+) {
+    let inverse = rotation.inverse();
+    // Full pipe rings start at the transported UV cut. Seeding the unwrap at
+    // that exact angle disambiguates atan2's equivalent -PI/+PI result.
+    let mut outer_angle = Some(-v_angle_offset);
+    let mut inner_angle = Some(-v_angle_offset);
+    for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
+        let local = inverse * (Vec3::from_array(position) - translation);
+        let local_normal = inverse * Vec3::from_array(normal);
+        let radial = Vec3::new(local.x, 0.0, local.z);
+        let radial_direction = radial.normalize_or_zero();
+        let (uv, local_tangent, local_bitangent) = if local_normal.y.abs() > 0.9 {
+            ([local.x, local.z], Vec3::X, Vec3::Z)
+        } else if radial_direction != Vec3::ZERO && local_normal.dot(radial_direction).abs() > 0.5 {
+            let mut angle = local.z.atan2(local.x);
+            let previous = if local_normal.dot(radial_direction) > 0.0 {
+                &mut outer_angle
+            } else {
+                &mut inner_angle
+            };
+            if let Some(previous) = *previous {
+                while angle - previous > std::f32::consts::PI {
+                    angle -= std::f32::consts::TAU;
+                }
+                while angle - previous < -std::f32::consts::PI {
+                    angle += std::f32::consts::TAU;
+                }
+            }
+            *previous = Some(angle);
+            (
+                [local.y, (angle + v_angle_offset) * radial.length()],
+                Vec3::Y,
+                Vec3::new(-angle.sin(), 0.0, angle.cos()),
+            )
+        } else {
+            ([local.y, radial.length()], Vec3::Y, radial_direction)
+        };
+        uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+        let tangent = rotation * local_tangent;
+        let bitangent = rotation * local_bitangent;
+        let normal = Vec3::from_array(normal);
+        let handedness = if tangent.cross(normal).dot(bitangent) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        tangents.push([tangent.x, tangent.y, tangent.z, handedness]);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_pipe_bend_texture_coordinates(
+    dimensions: PipeBendDimensions,
+    translation: Vec3,
+    rotation: Quat,
+    first: usize,
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    v_angle_offset: f32,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+) {
+    const ARC_SLICES: usize = 12;
+    const RADIAL_SIDES: usize = 24;
+    const CURVED_VERTICES_PER_SECTOR: usize = 8;
+    let inverse = rotation.inverse();
+    let radius = dimensions.radius();
+    for (vertex, (&position, &normal)) in
+        positions[first..].iter().zip(&normals[first..]).enumerate()
+    {
+        let local = inverse * (Vec3::from_array(position) - translation);
+        let from_curve_center = Vec2::new(local.x + radius, local.y - radius);
+        let theta = from_curve_center.y.atan2(from_curve_center.x);
+        let cross_x = from_curve_center.length() - radius;
+        let phi = if vertex < ARC_SLICES * RADIAL_SIDES * CURVED_VERTICES_PER_SECTOR {
+            let side = (vertex / CURVED_VERTICES_PER_SECTOR) % RADIAL_SIDES;
+            let within_sector = vertex % CURVED_VERTICES_PER_SECTOR;
+            let boundary = if matches!(within_sector, 0 | 1 | 6 | 7) {
+                side
+            } else {
+                side + 1
+            };
+            std::f32::consts::TAU * f32::from(u16::try_from(boundary).unwrap())
+                / f32::from(u16::try_from(RADIAL_SIDES).unwrap())
+                - v_angle_offset
+        } else {
+            local.z.atan2(cross_x)
+        };
+        let surface_radius = cross_x.hypot(local.z);
+        uvs.push([
+            theta * radius / MATERIAL_TEXTURE_METERS_PER_REPEAT,
+            (phi + v_angle_offset) * surface_radius / MATERIAL_TEXTURE_METERS_PER_REPEAT,
+        ]);
+        let tangent = rotation * Vec3::new(-theta.sin(), theta.cos(), 0.0);
+        let radial = Vec3::new(theta.cos(), theta.sin(), 0.0);
+        let bitangent = rotation * (-radial * phi.sin() + Vec3::Z * phi.cos());
+        let normal = Vec3::from_array(normal);
+        let handedness = if tangent.cross(normal).dot(bitangent) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        tangents.push([tangent.x, tangent.y, tangent.z, handedness]);
     }
 }
 
@@ -8789,13 +11074,16 @@ mod rendering_tests {
     use bevy::{
         image::{ImageAddressMode, ImageLoaderSettings},
         mesh::VertexAttributeValues,
-        prelude::{AlphaMode, Color, Handle, IVec3, Image, Mesh, Quat, StandardMaterial, Vec3},
+        prelude::{
+            AlphaMode, Color, Handle, IVec3, Image, Mesh, Quat, StandardMaterial, Vec2, Vec3,
+        },
     };
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
         DriveLimits, DriveLinkSpec, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec,
-        FaceKind, FaceRef, GridRotation, InputSpec, SeatSpec, ServoSpec,
+        FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartSpec, PipeBendDimensions,
+        SeatSpec, ServoSpec,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -8803,7 +11091,8 @@ mod rendering_tests {
         AuthoredPart, BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, BLOCK_SHEET_PREVIEW_INSET_METERS,
         MATERIAL_TEXTURE_METERS_PER_REPEAT, MATERIAL_TEXTURE_PIXELS_PER_BLOCK,
         MATERIAL_TEXTURE_PIXELS_PER_SIDE, PlacedBearing, SimulationMeshKind,
-        append_bearing_cylinder, append_cylinder_shape, authored_preview_material, authored_uvs,
+        append_bearing_cylinder, append_cylinder_shape, append_pipe_bend_shape,
+        append_pipe_bend_texture_coordinates, authored_preview_material, authored_uvs,
         bearing_preview_dimensions_changed, bearing_surface_material, block_sheet_bounds,
         block_sheet_preview_mesh, combined_authored_construction_mesh, combined_bearing_mesh,
         combined_controller_mesh, combined_drive_xray_mesh, combined_material_construction_mesh,
@@ -8813,9 +11102,9 @@ mod rendering_tests {
         single_bearing_mesh, single_cylinder_mesh,
     };
     use super::{
-        OverlayGeometry, SKY_GROUND, SKY_HORIZON, SKY_ZENITH, append_drag_plane,
-        append_plane_arrows, cubemap_direction, half_bits, region_world_bounds, sky_colour,
-        sky_cubemap,
+        OverlayGeometry, SKY_GROUND, SKY_HORIZON, SKY_ZENITH, append_axis_arrows,
+        append_drag_plane, append_plane_arrows, cubemap_direction, half_bits, region_world_bounds,
+        sky_colour, sky_cubemap,
     };
     use crate::PlacementPlane;
     use crate::builder::block_sheet_specs;
@@ -8906,6 +11195,24 @@ mod rendering_tests {
                     < 1.0e-5,
                 "{plane:?} arrows are centred on the area with the sheet"
             );
+        }
+    }
+
+    #[test]
+    fn the_vertex_axis_guide_points_only_along_its_active_axis() {
+        let at = Vec3::new(0.25, 0.5, 0.75);
+        for axis in 0..3 {
+            let mut geometry = OverlayGeometry::default();
+            append_axis_arrows(at, axis, &mut geometry);
+            let (low, high) = overlay_bounds(&geometry);
+            assert!(low[axis] < at[axis] - 0.17);
+            assert!(high[axis] > at[axis] + 0.17);
+            for other in [0, 1, 2].into_iter().filter(|&other| other != axis) {
+                assert!(
+                    low[other] > at[other] - 0.03 && high[other] < at[other] + 0.03,
+                    "axis {axis} guide must stay narrow on axis {other}"
+                );
+            }
         }
     }
 
@@ -9240,6 +11547,353 @@ mod rendering_tests {
                 .map(|&index| Vec3::from_array(normals[index as usize]))
                 .sum::<Vec3>();
             assert!(geometric_normal.dot(expected_normal) > 0.0);
+        }
+    }
+
+    #[test]
+    fn pipe_bend_mesh_has_exact_bounds_bore_and_outward_winding() {
+        let dimensions = PipeBendDimensions::new(0.25, 0.10, 0.50).unwrap();
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        append_pipe_bend_shape(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            dimensions,
+            1.0,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+        let minimum = positions
+            .iter()
+            .map(|position| Vec3::from_array(*position))
+            .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+        let maximum = positions
+            .iter()
+            .map(|position| Vec3::from_array(*position))
+            .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+        assert!(minimum.abs_diff_eq(Vec3::new(-0.5, -0.125, -0.125), 1.0e-5));
+        assert!(maximum.abs_diff_eq(Vec3::new(0.125, 0.5, 0.125), 1.0e-5));
+        assert!(positions.iter().any(|position| {
+            let point = Vec3::from_array(*position);
+            let from_curve_center = Vec2::new(point.x + 0.5, point.y - 0.5).length();
+            ((from_curve_center - 0.5).hypot(point.z) - 0.05).abs() < 1.0e-5
+        }));
+        for (triangle_index, triangle) in indices.chunks_exact(3).enumerate() {
+            let a = Vec3::from_array(positions[triangle[0] as usize]);
+            let b = Vec3::from_array(positions[triangle[1] as usize]);
+            let c = Vec3::from_array(positions[triangle[2] as usize]);
+            let geometric = (b - a).cross(c - a);
+            let expected = triangle
+                .iter()
+                .map(|&index| Vec3::from_array(normals[index as usize]))
+                .sum::<Vec3>();
+            assert!(
+                geometric.dot(expected) > 0.0,
+                "triangle {triangle_index} has reversed winding"
+            );
+        }
+    }
+
+    #[test]
+    fn pipe_bend_curved_vertices_share_analytic_smooth_normals() {
+        let dimensions = PipeBendDimensions::new(0.25, 0.10, 0.50).unwrap();
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        append_pipe_bend_shape(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            dimensions,
+            1.0,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+
+        let theta = -std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_2 / 12.0;
+        let expected_normal = Vec3::new(theta.cos(), theta.sin(), 0.0);
+        let expected_position = Vec3::new(-0.5, 0.5, 0.0) + expected_normal * (0.5 + 0.125);
+        let seam_normals = positions
+            .iter()
+            .zip(&normals)
+            .filter_map(|(&position, &normal)| {
+                Vec3::from_array(position)
+                    .abs_diff_eq(expected_position, 1.0e-5)
+                    .then_some(Vec3::from_array(normal))
+            })
+            .collect::<Vec<_>>();
+
+        assert!(seam_normals.len() >= 4);
+        assert!(
+            seam_normals
+                .iter()
+                .all(|normal| normal.abs_diff_eq(expected_normal, 1.0e-5))
+        );
+    }
+
+    #[test]
+    fn pipe_uvs_keep_texture_u_lengthwise_through_straights_and_bends() {
+        let cylinder_dimensions = CylinderDimensions::new(0.25, 0.10, 1.0).unwrap();
+        let mut straight_positions = Vec::new();
+        let mut straight_normals = Vec::new();
+        let mut straight_uvs = Vec::new();
+        let mut straight_tangents = Vec::new();
+        let mut straight_indices = Vec::new();
+        super::append_textured_part(
+            PartSpec::Cylinder(CylinderSpec::new(cylinder_dimensions, BuildPose::default())),
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            super::BuildTransform::IDENTITY,
+            super::PipeTextureOffset::default(),
+            super::PipeEndFaces::ALL,
+            &mut straight_positions,
+            &mut straight_normals,
+            &mut straight_uvs,
+            &mut straight_tangents,
+            &mut straight_indices,
+        );
+        let straight_length =
+            cylinder_dimensions.axial_length() / MATERIAL_TEXTURE_METERS_PER_REPEAT;
+        assert!((straight_uvs[1][0] - straight_uvs[0][0] - straight_length).abs() < 1.0e-6);
+        assert!((straight_uvs[1][1] - straight_uvs[0][1]).abs() < 1.0e-6);
+        assert!(
+            Vec3::from_array(straight_tangents[0][..3].try_into().unwrap())
+                .abs_diff_eq(Vec3::Y, 1.0e-6)
+        );
+        let straight_circumference_step =
+            std::f32::consts::TAU / 24.0 * cylinder_dimensions.outer_diameter() * 0.5
+                / MATERIAL_TEXTURE_METERS_PER_REPEAT;
+        for segment in 0..24 {
+            let current = segment * 2;
+            let next = (segment + 1) * 2;
+            assert!(
+                ((straight_uvs[next][1] - straight_uvs[current][1]).abs()
+                    - straight_circumference_step)
+                    .abs()
+                    < 1.0e-6
+            );
+        }
+
+        let dimensions = PipeBendDimensions::new(0.25, 0.10, 0.50).unwrap();
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut indices = Vec::new();
+        append_pipe_bend_shape(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            dimensions,
+            1.0,
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+        let mut uvs = Vec::new();
+        let mut tangents = Vec::new();
+        append_pipe_bend_texture_coordinates(
+            dimensions,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            0,
+            &positions,
+            &normals,
+            0.0,
+            &mut uvs,
+            &mut tangents,
+        );
+
+        let arc_step = std::f32::consts::FRAC_PI_2 / 12.0 * dimensions.radius()
+            / MATERIAL_TEXTURE_METERS_PER_REPEAT;
+        let circumference_step = std::f32::consts::TAU / 24.0 * dimensions.outer_diameter() * 0.5
+            / MATERIAL_TEXTURE_METERS_PER_REPEAT;
+        assert!((uvs[1][0] - uvs[0][0] - arc_step).abs() < 1.0e-6);
+        assert!((uvs[1][1] - uvs[0][1]).abs() < 1.0e-6);
+        assert!((uvs[2][0] - uvs[1][0]).abs() < 1.0e-6);
+        assert!((uvs[2][1] - uvs[1][1] - circumference_step).abs() < 1.0e-6);
+
+        let tangent = Vec3::from_array(tangents[0][..3].try_into().unwrap());
+        assert!(tangent.abs_diff_eq(Vec3::X, 1.0e-6));
+
+        let curved_vertex_count = 12 * 24 * 8;
+        let inner_circumference_step =
+            std::f32::consts::TAU / 24.0 * dimensions.inner_diameter() * 0.5
+                / MATERIAL_TEXTURE_METERS_PER_REPEAT;
+        for (quad_uvs, quad_tangents) in uvs[..curved_vertex_count]
+            .chunks_exact(8)
+            .zip(tangents[..curved_vertex_count].chunks_exact(8))
+        {
+            assert!((quad_uvs[2][1] - quad_uvs[0][1] - circumference_step).abs() < 1.0e-6);
+            assert!((quad_uvs[4][1] - quad_uvs[6][1] - inner_circumference_step).abs() < 1.0e-6);
+            assert!(
+                quad_tangents[..4]
+                    .iter()
+                    .all(|tangent| (tangent[3] + 1.0).abs() < f32::EPSILON)
+            );
+            assert!(
+                quad_tangents[4..]
+                    .iter()
+                    .all(|tangent| (tangent[3] - 1.0).abs() < f32::EPSILON)
+            );
+        }
+    }
+
+    fn assert_pipe_circumference_phase(
+        graph: &ConstructionGraph,
+        part: mechanic_core::PartId,
+        spec: PartSpec,
+        offset: super::PipeTextureOffset,
+    ) {
+        let face = FaceKind::PositiveY;
+        let frame = super::pipe_endpoint_texture_frame(spec, face).unwrap();
+        let local_angle = std::f32::consts::FRAC_PI_2 - offset.v_angle;
+        let radial = frame.radial_zero * local_angle.cos()
+            - frame.direction.cross(frame.radial_zero) * local_angle.sin();
+        let endpoint =
+            crate::builder::face_geometry_from_ref(FaceRef::part(part, face), Some(graph));
+        let target = endpoint.center + radial * 0.125;
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        let mut tangents = Vec::new();
+        let mut indices = Vec::new();
+        super::append_textured_part(
+            spec,
+            spec.pose().translation(),
+            spec.pose().rotation.quaternion(),
+            super::BuildTransform::IDENTITY,
+            offset,
+            super::PipeEndFaces {
+                inlet: false,
+                outlet: false,
+            },
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut tangents,
+            &mut indices,
+        );
+        let matching_v = positions
+            .iter()
+            .zip(&uvs)
+            .filter_map(|(&position, uv)| {
+                Vec3::from_array(position)
+                    .abs_diff_eq(target, 1.0e-5)
+                    .then_some(uv[1])
+            })
+            .collect::<Vec<_>>();
+        let expected_v =
+            std::f32::consts::FRAC_PI_2 * 0.125 / super::MATERIAL_TEXTURE_METERS_PER_REPEAT;
+        assert!(!matching_v.is_empty());
+        assert!(
+            matching_v.iter().all(|&v| (v - expected_v).abs() < 1.0e-5),
+            "part {part:?} circumference phase {matching_v:?} did not match {expected_v}"
+        );
+    }
+
+    #[test]
+    fn welded_pipe_pieces_share_texture_phase_and_hide_internal_caps() {
+        let pieces = crate::builder::pipe_run_pieces(
+            &[
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(1.0, 1.0, 1.0),
+            ],
+            &[0.25],
+            CylinderDimensions::new(0.25, 0.10, 1.0).unwrap(),
+            ConstructionMaterial::Wood,
+        )
+        .unwrap();
+        let graph = crate::builder::stage_pipe_run(
+            &ConstructionGraph::new(),
+            &pieces,
+            crate::builder::PipeRunAttachment::AutoWeld {
+                source: FaceOwner::Ground,
+            },
+        )
+        .unwrap();
+        let offsets = super::pipe_texture_offsets(&graph);
+        let welded_ends = super::welded_pipe_ends(&graph);
+        let mut raw_length_mismatch_seen = false;
+        let mut raw_circumference_mismatch_seen = false;
+        let mut checked = 0;
+
+        for (_, weld) in graph.welds() {
+            let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+                (weld.first.owner, weld.second.owner)
+            else {
+                continue;
+            };
+            let Some(first_u) = graph
+                .part(first)
+                .copied()
+                .and_then(|spec| super::pipe_endpoint_texture_u(spec, weld.first.face))
+            else {
+                continue;
+            };
+            let Some(second_u) = graph
+                .part(second)
+                .copied()
+                .and_then(|spec| super::pipe_endpoint_texture_u(spec, weld.second.face))
+            else {
+                continue;
+            };
+            let first_frame =
+                super::pipe_endpoint_texture_frame(*graph.part(first).unwrap(), weld.first.face)
+                    .unwrap();
+            let second_frame =
+                super::pipe_endpoint_texture_frame(*graph.part(second).unwrap(), weld.second.face)
+                    .unwrap();
+            let angular = -second_frame.direction.cross(second_frame.radial_zero);
+            let second_angle = first_frame
+                .radial_zero
+                .dot(angular)
+                .atan2(first_frame.radial_zero.dot(second_frame.radial_zero));
+
+            raw_length_mismatch_seen |= (first_u - second_u).abs() > 1.0e-6;
+            raw_circumference_mismatch_seen |= second_angle.abs() > 1.0e-6;
+            assert!((first_u + offsets[&first].u - second_u - offsets[&second].u).abs() < 1.0e-6);
+            assert!(
+                (offsets[&first].v_angle - second_angle - offsets[&second].v_angle).abs() < 1.0e-6
+            );
+            assert!(welded_ends.contains(&weld.first));
+            assert!(welded_ends.contains(&weld.second));
+            checked += 1;
+        }
+
+        assert!(raw_length_mismatch_seen);
+        assert!(raw_circumference_mismatch_seen);
+        assert_eq!(checked, 2);
+        assert_eq!(welded_ends.len(), 4);
+
+        for (part, spec) in graph.parts() {
+            match spec {
+                PartSpec::Cylinder(_) | PartSpec::PipeBend(_) => {
+                    assert_pipe_circumference_phase(&graph, part, *spec, offsets[&part]);
+                }
+                _ => {}
+            }
+        }
+
+        let mesh = super::combined_construction_mesh(&graph);
+        let positions = positions(&mesh);
+        let Some(VertexAttributeValues::Float32x3(normals)) =
+            mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+        else {
+            panic!("mesh must have float3 normals")
+        };
+        for (_, weld) in graph.welds() {
+            let FaceOwner::Part(_) = weld.first.owner else {
+                continue;
+            };
+            if !welded_ends.contains(&weld.first) {
+                continue;
+            }
+            let face = crate::builder::face_geometry_from_ref(weld.first, Some(&graph));
+            assert!(!positions.iter().zip(normals).any(|(position, normal)| {
+                (position - face.center).dot(face.normal).abs() < 1.0e-5
+                    && Vec3::from_array(*normal).dot(face.normal).abs() > 0.9
+            }));
         }
     }
 
@@ -9905,14 +12559,12 @@ mod rendering_tests {
 
 #[cfg(test)]
 mod interaction_tests {
-    use bevy::{
-        input::keyboard::Key,
-        prelude::{App, ButtonInput, IVec3, KeyCode, MouseButton, Update, Vec2, Vec3},
-    };
+    use bevy::prelude::{App, ButtonInput, IVec3, KeyCode, Quat, Update, Vec2, Vec3};
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLinkSpec, FaceKind,
-        FaceOwner, FaceRef, GridRotation, PartId, PendingOperation, RigidLinkSpec,
+        ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
+        DriveLinkSpec, FaceKind, FaceOwner, FaceRef, GridRotation, PartId, PartSpec,
+        PendingOperation, RigidLinkSpec, ShapeRegion,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -9920,23 +12572,25 @@ mod interaction_tests {
         AUTHORED_ORIENTATION_COUNT, AUTHORED_ORIENTATIONS, AppSimulation, BearingDimensionTarget,
         BearingToolSettings, BlockAttachment, BlockDrag, CylinderDimensionTarget,
         CylinderToolSettings, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
-        HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, PlacedBearing, PlacementPlane,
-        PointerSample, SelectedTool, SimulationShortcut, SurfaceHit, Tool, active_drag_plane,
-        adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
-        bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_bounds,
-        candidate_from_hit, connect_control_link, connect_drive_wire, delete_box_parts,
-        disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude, hammer_point_travel,
-        handle_block_actions, handle_build_actions, handle_shortcuts, handle_tool_change,
-        help_toggle_requested, raycast_construction, raycast_placed_bearing_discs,
-        raycast_placed_bearings, raycast_simulation, refresh_block_drag, refresh_region_drag,
-        refresh_tool_preview, requested_bearing_dimension_adjustment,
-        requested_cylinder_dimension_adjustment, requested_simulation_shortcut, rigid_body_parts,
-        seat_aim_position, stage_part_deletion_preserving_bearings, tool_status_line,
-        wire_drag_step,
+        HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, MaterialWheelState, PipeDrag,
+        PipeEditMode, PlacedBearing, PlacementPlane, PlayerState, PointerSample, SelectedTool,
+        SimulationShortcut, SurfaceHit, Tool, active_drag_plane, adjusted_bearing_dimensions,
+        adjusted_cylinder_dimensions, apply_history_action, bearing_attachment_candidate,
+        bearing_attachment_is_highlighted, block_sheet_bounds, candidate_from_hit,
+        closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
+        delete_box_parts, disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude,
+        hammer_point_travel, handle_block_actions, handle_build_actions, handle_tool_change,
+        pipe_pointer_delta, pipe_turn_direction, raycast_construction,
+        raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
+        refresh_block_drag, refresh_region_drag, refresh_tool_preview,
+        requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
+        requested_simulation_shortcut, rigid_body_parts, stage_part_deletion_preserving_bearings,
+        tool_status_line, wire_drag_step,
     };
     use super::{RegionDrag, commit_region_drag, region_area};
     use crate::builder::block_sheet_specs;
-    use crate::{WireConnection, WireDrag, WireDragStep, WireEnd, ui::UiInput};
+    use crate::controls::GameAction;
+    use crate::{WireConnection, WireDrag, WireDragStep, WireEnd};
 
     fn pointer_sample(cursor: Vec2, ray_origin: Vec3, ray_direction: Vec3) -> PointerSample {
         PointerSample {
@@ -9947,49 +12601,51 @@ mod interaction_tests {
     }
 
     #[test]
-    fn question_mark_is_what_asks_for_the_help_panel() {
-        let mut keyboard = ButtonInput::default();
-        assert!(!help_toggle_requested(&keyboard));
+    fn blocked_delete_release_clears_the_target_that_would_block_tab() {
+        let mut state = EditorState {
+            delete_target: Some(super::DeleteTarget::PlacedBearing(0)),
+            ..Default::default()
+        };
 
-        keyboard.press(Key::Character("?".into()));
-        assert!(help_toggle_requested(&keyboard));
-
-        keyboard.clear();
-        keyboard.press(Key::Character("a".into()));
-        assert!(
-            !help_toggle_requested(&keyboard),
-            "an ordinary letter is not a request for help",
-        );
+        assert!(state.world_drag_active());
+        assert!(state.cancel_delete_gesture());
+        assert!(!state.world_drag_active());
     }
 
     #[test]
-    fn q_cycles_every_authored_tool_through_all_grid_orientations() {
+    fn rotate_cycles_every_authored_tool_through_all_grid_orientations() {
         for tool in [Tool::Controller, Tool::GasEngine, Tool::ElectricEngine] {
-            let mut app = App::new();
-            app.init_resource::<ButtonInput<KeyCode>>()
-                .init_resource::<EditorGraph>()
-                .init_resource::<EditorState>()
-                .init_resource::<AppSimulation>()
-                .init_resource::<UiInput>()
-                .insert_resource(SelectedTool(tool))
-                .add_systems(Update, handle_shortcuts);
-
+            let mut state = EditorState::default();
             for expected in (1..AUTHORED_ORIENTATION_COUNT).chain(std::iter::once(0)) {
-                app.world_mut()
-                    .resource_mut::<ButtonInput<KeyCode>>()
-                    .press(KeyCode::KeyQ);
-                app.update();
+                cycle_orientation(&mut state, tool);
                 assert_eq!(
-                    app.world().resource::<EditorState>().authored_orientation,
+                    state.authored_orientation,
                     expected,
-                    "{} should rotate on Q",
+                    "{} should rotate",
                     tool.label()
                 );
-                app.world_mut()
-                    .resource_mut::<ButtonInput<KeyCode>>()
-                    .reset(KeyCode::KeyQ);
             }
         }
+    }
+
+    #[test]
+    fn rotate_cycles_the_axis_of_an_active_vertex_drag() {
+        let region =
+            ShapeRegion::new(IVec3::ZERO, IVec3::ONE, ConstructionMaterial::Steel).unwrap();
+        let start = crate::shape_tool::vertex_position(&region, [0, 0, 0]).unwrap();
+        let ray_origin = start + Vec3::Z * 2.0;
+        let ray_direction = Vec3::NEG_Z;
+        let drag =
+            crate::shape_tool::begin_group_drag(&region, [0, 0, 0], &[], ray_origin, ray_direction);
+        let mut state = EditorState {
+            pointer_position: Some(Vec2::ZERO),
+            pointer_ray: Some((ray_origin, ray_direction)),
+            vertex_drag: Some(drag),
+            ..Default::default()
+        };
+
+        assert_eq!(cycle_orientation(&mut state, Tool::Shape), "Shape axis: Y");
+        assert_eq!(state.vertex_drag.as_ref().unwrap().axis, 1);
     }
 
     #[test]
@@ -10030,13 +12686,14 @@ mod interaction_tests {
     #[test]
     fn space_toggles_playback_and_shift_space_restarts() {
         let mut keyboard = ButtonInput::default();
-        keyboard.press(KeyCode::Space);
+        keyboard.press(GameAction::ToggleSimulation);
         assert_eq!(
             requested_simulation_shortcut(&keyboard),
             Some(SimulationShortcut::TogglePlayback)
         );
 
-        keyboard.press(KeyCode::ShiftLeft);
+        keyboard.reset_all();
+        keyboard.press(GameAction::RestartSimulation);
         assert_eq!(
             requested_simulation_shortcut(&keyboard),
             Some(SimulationShortcut::Restart)
@@ -10046,28 +12703,28 @@ mod interaction_tests {
     #[test]
     fn bearing_shortcuts_are_gated_and_adjust_the_requested_diameter() {
         let mut keyboard = ButtonInput::default();
-        keyboard.press(KeyCode::ArrowRight);
+        keyboard.press(GameAction::BearingOuterIncrease);
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, false),
             Some((BearingDimensionTarget::Outer, 1))
         );
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Tool::Block, false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Block), false, false),
             None
         );
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, true, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), true, false),
             None
         );
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, true),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, true),
             None
         );
 
         keyboard.reset_all();
-        keyboard.press(KeyCode::ArrowUp);
+        keyboard.press(GameAction::NudgeUp);
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, false),
             None
         );
 
@@ -10080,10 +12737,9 @@ mod interaction_tests {
         assert!((increased.inner_diameter() - 0.10).abs() < f32::EPSILON);
 
         keyboard.reset_all();
-        keyboard.press(KeyCode::ArrowRight);
-        keyboard.press(KeyCode::ShiftLeft);
+        keyboard.press(GameAction::BearingInnerIncrease);
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Tool::Bearing, false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, false),
             Some((BearingDimensionTarget::Inner, 1))
         );
     }
@@ -10091,24 +12747,26 @@ mod interaction_tests {
     #[test]
     fn cylinder_shortcuts_adjust_and_clamp_without_graph_history() {
         let mut keyboard = ButtonInput::default();
-        keyboard.press(KeyCode::ArrowRight);
+        keyboard.press(GameAction::CylinderOuterIncrease);
         assert_eq!(
-            requested_cylinder_dimension_adjustment(&keyboard, Tool::Cylinder, false, false),
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false, false),
             Some((CylinderDimensionTarget::Outer, 1))
         );
-        keyboard.press(KeyCode::ShiftLeft);
+        keyboard.reset_all();
+        keyboard.press(GameAction::CylinderInnerIncrease);
         assert_eq!(
-            requested_cylinder_dimension_adjustment(&keyboard, Tool::Cylinder, false, false),
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false, false),
             Some((CylinderDimensionTarget::Inner, 1))
         );
-        keyboard.release(KeyCode::ArrowRight);
-        keyboard.press(KeyCode::ArrowDown);
+        keyboard.reset_all();
+        keyboard.press(GameAction::CylinderSweepDecrease);
         assert_eq!(
-            requested_cylinder_dimension_adjustment(&keyboard, Tool::Cylinder, false, false),
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false, false),
             Some((CylinderDimensionTarget::Sweep, -1))
         );
         assert!(
-            requested_cylinder_dimension_adjustment(&keyboard, Tool::Block, false, false).is_none()
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Block), false, false)
+                .is_none()
         );
 
         let dimensions = CylinderDimensions::new(0.25, 0.20, 0.25).unwrap();
@@ -10128,6 +12786,7 @@ mod interaction_tests {
         let history = EditorHistory::default();
         let settings = CylinderToolSettings {
             dimensions: minimum,
+            ..Default::default()
         };
         assert_eq!(graph.part_count(), 0);
         assert!(history.undo.is_empty() && history.redo.is_empty());
@@ -10383,8 +13042,8 @@ mod interaction_tests {
             &graph,
             &mut state,
             Vec2::new(100.0, 0.0),
-            Vec3::new(0.625, 2.0, 0.125),
-            Vec3::NEG_Y,
+            press.ray_origin,
+            (Vec3::new(0.625, 0.0, 0.125) - press.ray_origin).normalize(),
         );
 
         let drag = state.region_drag.as_ref().unwrap();
@@ -10394,7 +13053,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn q_mid_area_drag_extrudes_the_selection_into_a_box() {
+    fn rotate_mid_area_drag_extrudes_the_selection_into_a_box() {
         let graph = welded_slab(IVec3::new(3, 2, 1));
         let press = pointer_sample(Vec2::ZERO, Vec3::new(0.125, 2.0, 0.125), Vec3::NEG_Y);
         let mut state = EditorState {
@@ -10405,11 +13064,11 @@ mod interaction_tests {
             &graph,
             &mut state,
             Vec2::new(100.0, 0.0),
-            Vec3::new(0.625, 2.0, 0.125),
-            Vec3::NEG_Y,
+            press.ray_origin,
+            (Vec3::new(0.625, 0.0, 0.125) - press.ray_origin).normalize(),
         );
 
-        // What `Q` does: keep the rectangle already dragged and re-anchor here.
+        // What Rotate does: keep the rectangle already dragged and re-anchor here.
         let rotated = pointer_sample(Vec2::ZERO, Vec3::new(0.125, 0.125, 2.0), Vec3::NEG_Z);
         {
             let drag = state.region_drag.as_mut().unwrap();
@@ -10424,8 +13083,8 @@ mod interaction_tests {
             &graph,
             &mut state,
             Vec2::new(0.0, 100.0),
-            Vec3::new(0.125, 0.375, 2.0),
-            Vec3::NEG_Z,
+            rotated.ray_origin,
+            (Vec3::new(0.125, 0.375, 0.125) - rotated.ray_origin).normalize(),
         );
 
         let drag = state.region_drag.as_ref().unwrap();
@@ -10450,8 +13109,8 @@ mod interaction_tests {
             &graph,
             &mut state,
             Vec2::new(100.0, 0.0),
-            Vec3::new(0.375, 2.0, 0.125),
-            Vec3::NEG_Y,
+            press.ray_origin,
+            (Vec3::new(0.375, 0.0, 0.125) - press.ray_origin).normalize(),
         );
         let mut history = EditorHistory::default();
 
@@ -10476,8 +13135,8 @@ mod interaction_tests {
             &graph,
             &mut state,
             Vec2::new(100.0, 0.0),
-            Vec3::new(0.625, 2.0, 0.125),
-            Vec3::NEG_Y,
+            press.ray_origin,
+            (Vec3::new(0.625, 0.0, 0.125) - press.ray_origin).normalize(),
         );
         assert!(state.region_drag.as_ref().unwrap().error.is_some());
 
@@ -10551,7 +13210,7 @@ mod interaction_tests {
         let mut app = App::new();
         app.insert_resource(EditorGraph(graph))
             .insert_resource(EditorState::default())
-            .insert_resource(SelectedTool(Tool::Bearing))
+            .insert_resource(SelectedTool(Some(Tool::Bearing)))
             .add_systems(Update, handle_tool_change);
 
         app.update();
@@ -10629,7 +13288,7 @@ mod interaction_tests {
         let mut mouse = ButtonInput::default();
         let mut history = EditorHistory::default();
 
-        mouse.press(MouseButton::Left);
+        mouse.press(GameAction::Primary);
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 0);
         assert!(state.block_drag.is_some());
@@ -10643,7 +13302,7 @@ mod interaction_tests {
         assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
 
         mouse.clear();
-        mouse.release(MouseButton::Left);
+        mouse.release(GameAction::Primary);
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 1);
         assert!(state.block_drag.is_none());
@@ -10681,8 +13340,8 @@ mod interaction_tests {
             &graph,
             &mut state,
             Vec2::new(4.99, 0.0),
-            Vec3::new(4.0, 2.0, 4.0),
-            Vec3::NEG_Y,
+            press.ray_origin,
+            Quat::from_rotation_z(0.003) * Vec3::NEG_Y,
         );
         assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
 
@@ -10696,8 +13355,8 @@ mod interaction_tests {
                 &graph,
                 &mut state,
                 Vec2::new(10.0, 0.0),
-                target,
-                Vec3::NEG_Y,
+                press.ray_origin,
+                (Vec3::new(target.x, 0.0, target.z) - press.ray_origin).normalize(),
             );
             assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), expected);
         }
@@ -10750,8 +13409,8 @@ mod interaction_tests {
             &graph,
             &mut state,
             Vec2::new(110.0, 100.0),
-            press.ray_origin + Vec3::new(0.5, 0.0, 0.0),
-            press.ray_direction,
+            press.ray_origin,
+            (Vec3::new(0.5, 0.0, 0.0) - press.ray_origin).normalize(),
         );
         assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 3);
     }
@@ -10785,9 +13444,9 @@ mod interaction_tests {
         };
         let mut history = EditorHistory::default();
         let mut mouse = ButtonInput::default();
-        mouse.press(MouseButton::Left);
+        mouse.press(GameAction::Primary);
         mouse.clear();
-        mouse.release(MouseButton::Left);
+        mouse.release(GameAction::Primary);
 
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
 
@@ -10895,7 +13554,7 @@ mod interaction_tests {
 
         let mut mouse = ButtonInput::default();
         let mut history = EditorHistory::default();
-        mouse.press(MouseButton::Left);
+        mouse.press(GameAction::Primary);
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.bearing_count(), 0);
@@ -10903,7 +13562,7 @@ mod interaction_tests {
         assert!(state.block_drag.is_some());
 
         mouse.clear();
-        mouse.release(MouseButton::Left);
+        mouse.release(GameAction::Primary);
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
 
         assert_eq!(state.placed_bearings, vec![bearing]);
@@ -10955,10 +13614,10 @@ mod interaction_tests {
 
         let mut mouse = ButtonInput::default();
         let mut history = EditorHistory::default();
-        mouse.press(MouseButton::Left);
+        mouse.press(GameAction::Primary);
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
         mouse.clear();
-        mouse.release(MouseButton::Left);
+        mouse.release(GameAction::Primary);
         handle_block_actions(&mouse, &mut graph, &mut state, &mut history);
 
         assert_eq!(state.placed_bearings, vec![bearing]);
@@ -11006,7 +13665,7 @@ mod interaction_tests {
             ..Default::default()
         };
         let mut mouse = ButtonInput::default();
-        mouse.press(MouseButton::Right);
+        mouse.press(GameAction::Secondary);
         let mut app = App::new();
         app.insert_resource(mouse)
             .insert_resource(ButtonInput::<KeyCode>::default())
@@ -11014,10 +13673,15 @@ mod interaction_tests {
             .insert_resource(state)
             .insert_resource(EditorHistory::default())
             .insert_resource(AppSimulation::default())
-            .insert_resource(SelectedTool(Tool::Block))
+            .insert_resource(SelectedTool(Some(Tool::Block)))
             .insert_resource(BearingToolSettings::default())
             .insert_resource(CylinderToolSettings::default())
             .insert_resource(crate::ui::UiInput::default())
+            .insert_resource(MaterialWheelState::default())
+            .insert_resource(PlayerState {
+                input_captured: true,
+                ..Default::default()
+            })
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -11027,9 +13691,9 @@ mod interaction_tests {
             assert!(state.delete_drag.is_some());
         }
         {
-            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<GameAction>>();
             mouse.clear();
-            mouse.release(MouseButton::Right);
+            mouse.release(GameAction::Secondary);
         }
         app.update();
 
@@ -11161,7 +13825,7 @@ mod interaction_tests {
             ..Default::default()
         };
         let mut mouse = ButtonInput::default();
-        mouse.press(MouseButton::Right);
+        mouse.press(GameAction::Secondary);
         let mut app = App::new();
         app.insert_resource(mouse)
             .insert_resource(ButtonInput::<KeyCode>::default())
@@ -11169,17 +13833,22 @@ mod interaction_tests {
             .insert_resource(state)
             .insert_resource(EditorHistory::default())
             .insert_resource(AppSimulation::default())
-            .insert_resource(SelectedTool(Tool::Block))
+            .insert_resource(SelectedTool(Some(Tool::Block)))
             .insert_resource(BearingToolSettings::default())
             .insert_resource(CylinderToolSettings::default())
             .insert_resource(crate::ui::UiInput::default())
+            .insert_resource(MaterialWheelState::default())
+            .insert_resource(PlayerState {
+                input_captured: true,
+                ..Default::default()
+            })
             .add_systems(Update, handle_build_actions);
 
         app.update();
         {
-            let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<GameAction>>();
             mouse.clear();
-            mouse.release(MouseButton::Right);
+            mouse.release(GameAction::Secondary);
         }
         app.update();
 
@@ -11221,7 +13890,7 @@ mod interaction_tests {
         assert_eq!(flat.len(), 4);
         assert!(!flat.contains(&parts[4]));
 
-        // Rotating into the third axis, as `Q` does, reaches the one above too.
+        // Rotating into the third axis reaches the one above too.
         let boxed = delete_box_parts(&graph, start, IVec3::new(1, 1, 1)).unwrap();
         assert_eq!(boxed.len(), 5);
         assert!(boxed.contains(&parts[4]));
@@ -11344,20 +14013,6 @@ mod interaction_tests {
         // rebuilt on request: without the flag it stays invisible until some
         // unrelated edit happens to dirty the mesh.
         assert!(state.construction_mesh_dirty);
-    }
-
-    #[test]
-    fn the_seat_ray_follows_the_pointer_and_falls_back_to_the_window_centre() {
-        let viewport = Vec2::new(1600.0, 900.0);
-        assert_eq!(
-            seat_aim_position(Some(Vec2::new(200.0, 700.0)), viewport),
-            Vec2::new(200.0, 700.0)
-        );
-        assert_eq!(
-            seat_aim_position(None, viewport),
-            Vec2::new(800.0, 450.0),
-            "a pointer outside the window leaves the centre to aim by",
-        );
     }
 
     #[test]
@@ -11495,7 +14150,10 @@ mod interaction_tests {
             mechanic_core::ConstructionMaterial::Steel,
         );
         assert!(selected.contains("2 bearings wired"), "{selected}");
-        assert!(selected.contains("E opens its program"), "{selected}");
+        assert!(
+            selected.contains("Interact opens its program"),
+            "{selected}"
+        );
 
         let single = tool_status_line(
             Tool::Connector,
@@ -11514,6 +14172,184 @@ mod interaction_tests {
             mechanic_core::ConstructionMaterial::Steel,
         );
         assert!(none.contains("No block selected"), "{none}");
+    }
+
+    #[test]
+    fn pipette_copies_material_dimensions_authored_orientation_and_bearing_setup() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(cuboid) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(0, 1, 0), GridRotation::default()),
+                )
+                .unwrap()
+                .with_material(ConstructionMaterial::Wood),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let cylinder_dimensions = CylinderDimensions::new(0.75, 0.25, 1.5).unwrap();
+        let BuildOutcome::Spawned(cylinder) = graph
+            .apply(BuildCommand::SpawnCylinder(
+                CylinderSpec::new(
+                    cylinder_dimensions,
+                    BuildPose::new(IVec3::new(8, 2, 0), GridRotation::default()),
+                )
+                .with_material(ConstructionMaterial::Concrete),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let orientation = AUTHORED_ORIENTATIONS[17];
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::new(16, 2, 0), orientation),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        let shaped_spec = CuboidSpec::new(
+            [1; 3],
+            BuildPose::new(IVec3::new(24, 1, 0), GridRotation::default()),
+        )
+        .unwrap()
+        .with_material(ConstructionMaterial::Concrete);
+        let BuildOutcome::Spawned(shaped) = graph.apply(BuildCommand::Spawn(shaped_spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::RegionAdded(region) = graph
+            .apply(BuildCommand::AddRegion(super::region_area(
+                shaped_spec,
+                IVec3::ZERO,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        let mut state = EditorState::default();
+        let mut selection = SelectedTool(None);
+        let mut material = super::SelectedMaterial(ConstructionMaterial::Steel);
+        let mut bearing = BearingToolSettings::default();
+        let mut cylinder_settings = CylinderToolSettings::default();
+        macro_rules! apply {
+            ($setup:expr) => {
+                super::apply_pipette_setup(
+                    $setup,
+                    &graph,
+                    &mut state,
+                    &mut selection,
+                    &mut material,
+                    &mut bearing,
+                    &mut cylinder_settings,
+                )
+            };
+        }
+
+        apply!(super::PipetteSetup::Part(cuboid));
+        assert_eq!(selection.0, Some(Tool::Block));
+        assert_eq!(material.0, ConstructionMaterial::Wood);
+
+        apply!(super::PipetteSetup::Part(cylinder));
+        assert_eq!(selection.0, Some(Tool::Cylinder));
+        assert_eq!(material.0, ConstructionMaterial::Concrete);
+        assert_eq!(cylinder_settings.dimensions, cylinder_dimensions);
+
+        apply!(super::PipetteSetup::Part(controller));
+        assert_eq!(selection.0, Some(Tool::Controller));
+        assert_eq!(state.authored_orientation, 17);
+
+        let dimensions = BearingDimensions::new(0.9, 0.4).unwrap();
+        apply!(super::PipetteSetup::Bearing(dimensions));
+        assert_eq!(selection.0, Some(Tool::Bearing));
+        assert_eq!(bearing.dimensions, dimensions);
+
+        material.0 = ConstructionMaterial::Wood;
+        apply!(super::PipetteSetup::Ground);
+        assert_eq!(selection.0, Some(Tool::Block));
+        assert_eq!(material.0, ConstructionMaterial::Wood);
+
+        apply!(super::PipetteSetup::Part(shaped));
+        assert_eq!(selection.0, Some(Tool::Shape));
+        assert_eq!(state.active_region, Some(region));
+        assert_eq!(material.0, ConstructionMaterial::Concrete);
+    }
+
+    #[test]
+    fn pipette_uses_simulation_space_and_reports_no_target() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let creation = graph.compile().unwrap();
+        let simulation = AppSimulation {
+            transforms: vec![GpuTransform {
+                position: [10.0, 0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            }],
+            creation: Some(creation),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::pipette_at_ray(
+                &graph,
+                &EditorState::default(),
+                &simulation,
+                Vec3::new(10.0, 0.0, 5.0),
+                Vec3::NEG_Z,
+            ),
+            Some(super::PipetteSetup::Part(part)),
+        );
+        assert_eq!(
+            super::pipette_at_ray(
+                &ConstructionGraph::new(),
+                &EditorState::default(),
+                &AppSimulation::default(),
+                Vec3::Y,
+                Vec3::Y,
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn clearing_the_hand_cancels_pending_edits_and_hammer_charge() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        super::begin_weld(&mut graph, FaceRef::part(part, FaceKind::PositiveY)).unwrap();
+        let mut state = EditorState::default();
+        let mut selection = SelectedTool(Some(Tool::Weld));
+        let mut hammer = super::HammerInteraction {
+            charging: Some(super::HammerCharge {
+                body_index: 0,
+                local_point: Vec3::ZERO,
+                direction: Vec3::Y,
+                elapsed_seconds: 1.0,
+            }),
+            pending: None,
+        };
+        super::clear_held_tool(&mut graph, &mut state, &mut selection, &mut hammer);
+        assert_eq!(selection.0, None);
+        assert!(graph.pending().is_none());
+        assert!(hammer.charging.is_none() && hammer.pending.is_none());
     }
 
     #[test]
@@ -11560,11 +14396,103 @@ mod interaction_tests {
             assert!((link.limits.max_torque_newton_meters() - 30.0).abs() < f32::EPSILON);
         }
     }
+
+    #[test]
+    fn pipe_dimension_modes_cycle_without_mutating_the_current_value() {
+        let endpoint = Vec3::new(0.0, 1.0, 0.0);
+        let dimensions = CylinderDimensions::new(0.50, 0.25, 1.0).unwrap();
+        let mut mode = PipeEditMode::Length;
+        for expected in [
+            PipeEditMode::OuterDiameter,
+            PipeEditMode::InnerDiameter,
+            PipeEditMode::Length,
+        ] {
+            mode = mode.next();
+            assert_eq!(mode, expected);
+            assert_eq!(endpoint, Vec3::new(0.0, 1.0, 0.0));
+            assert_eq!(
+                dimensions,
+                CylinderDimensions::new(0.50, 0.25, 1.0).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn pipe_turn_chooser_locks_only_perpendicular_aim_beyond_the_dead_zone() {
+        let anchor = Vec3::Z;
+        assert_eq!(
+            pipe_turn_direction(Vec3::X, anchor, (Vec3::Z + Vec3::Y * 0.1).normalize()),
+            Some(Vec3::Y)
+        );
+        assert!(
+            pipe_turn_direction(Vec3::X, anchor, (Vec3::Z + Vec3::X * 0.1).normalize()).is_none(),
+            "aim along the incoming axis cannot select a perpendicular direction"
+        );
+        assert!(pipe_turn_direction(Vec3::X, anchor, anchor).is_none());
+    }
+
+    #[test]
+    fn pipe_drag_reanchors_length_and_diameter_measurements() {
+        let axis_origin = Vec3::ZERO;
+        let direction = Vec3::Y;
+        let camera = Vec3::new(0.0, 0.0, -4.0);
+        let first_ray = (Vec3::new(0.0, 1.0, 0.0) - camera).normalize();
+        let second_ray = (Vec3::new(0.0, 1.5, 0.0) - camera).normalize();
+        let first = closest_axis_parameter(axis_origin, direction, camera, first_ray).unwrap();
+        let second = closest_axis_parameter(axis_origin, direction, camera, second_ray).unwrap();
+        assert!((first - 1.0).abs() < 1.0e-5);
+        assert!((second - 1.5).abs() < 1.0e-5);
+        assert!(pipe_pointer_delta(Vec3::Z, (Vec3::Z + Vec3::Y * 0.05).normalize()).abs() > 0.0);
+    }
+
+    #[test]
+    fn bend_activity_owns_wheel_only_after_turning_starts() {
+        let dimensions = CylinderDimensions::default();
+        let cylinder = CylinderSpec::new(dimensions, BuildPose::default());
+        let make_drag = || PipeDrag {
+            attachment: BlockAttachment::AutoWeld {
+                source: FaceOwner::Ground,
+            },
+            start: Vec3::ZERO,
+            corners: Vec::new(),
+            endpoint: Vec3::Y * 0.25,
+            directions: vec![Vec3::Y],
+            bend_radii: Vec::new(),
+            pending_radius: 0.25,
+            dimensions,
+            material: ConstructionMaterial::Steel,
+            mode: PipeEditMode::Length,
+            choosing_direction: false,
+            press: PointerSample {
+                cursor: Vec2::ZERO,
+                ray_origin: Vec3::ZERO,
+                ray_direction: Vec3::Z,
+            },
+            anchor_endpoint: Vec3::Y * 0.25,
+            anchor_dimensions: dimensions,
+            pieces: vec![crate::builder::PipeRunPiece {
+                spec: PartSpec::Cylinder(cylinder),
+                inlet: FaceKind::NegativeY,
+                outlet: FaceKind::PositiveY,
+            }],
+            error: None,
+        };
+        let mut state = EditorState {
+            pipe_drag: Some(make_drag()),
+            ..Default::default()
+        };
+        assert!(!state.pipe_bend_active());
+        state.pipe_drag.as_mut().unwrap().choosing_direction = true;
+        assert!(state.pipe_bend_active());
+        state.pipe_drag.as_mut().unwrap().choosing_direction = false;
+        state.pipe_drag.as_mut().unwrap().bend_radii.push(0.25);
+        assert!(state.pipe_bend_active());
+    }
 }
 
 #[cfg(test)]
 mod history_tests {
-    use bevy::prelude::{ButtonInput, IVec3, KeyCode, Vec2, Vec3};
+    use bevy::prelude::{ButtonInput, IVec3, Vec2, Vec3};
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         CuboidSpec, FaceKind, FaceRef, GridRotation, PendingOperation, WeldSpec,
@@ -11576,6 +14504,7 @@ mod history_tests {
         SurfaceHit, apply_history_action, bearing_attachment_candidate, requested_history_action,
         stage_bearing_attachment,
     };
+    use crate::controls::GameAction;
 
     fn spawn_cube(graph: &mut ConstructionGraph, center: IVec3) -> mechanic_core::PartId {
         let spec =
@@ -11588,21 +14517,16 @@ mod history_tests {
 
     #[test]
     fn control_and_command_z_choose_undo_and_shift_redo() {
-        for modifier in [
-            KeyCode::ControlLeft,
-            KeyCode::ControlRight,
-            KeyCode::SuperLeft,
-            KeyCode::SuperRight,
-        ] {
+        for _ in 0..2 {
             let mut keyboard = ButtonInput::default();
-            keyboard.press(modifier);
-            keyboard.press(KeyCode::KeyZ);
+            keyboard.press(GameAction::Undo);
             assert_eq!(
                 requested_history_action(&keyboard),
                 Some(HistoryAction::Undo)
             );
 
-            keyboard.press(KeyCode::ShiftLeft);
+            keyboard.reset_all();
+            keyboard.press(GameAction::Redo);
             assert_eq!(
                 requested_history_action(&keyboard),
                 Some(HistoryAction::Redo)
@@ -11610,8 +14534,7 @@ mod history_tests {
         }
 
         let mut keyboard = ButtonInput::default();
-        keyboard.press(KeyCode::ControlLeft);
-        keyboard.press(KeyCode::KeyY);
+        keyboard.press(GameAction::Save);
         assert_eq!(requested_history_action(&keyboard), None);
     }
 

@@ -13,7 +13,8 @@ mod shape;
 pub use compile::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
     CompiledCreation, CoordinateDrive, DriveMode, GearSelection, LocalCollider, LoopTopology,
-    MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology, TopologyError,
+    MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology, PIPE_BEND_COLLIDER_COUNT,
+    TopologyError,
 };
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, CreationDocument,
@@ -36,8 +37,10 @@ pub use geometry::{
     CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, EngineKind,
     EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridDimension, GridRotation,
     InputSpec, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS,
-    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES,
-    MaterialProperties, PartSpec, SeatSpec, ServoSpec, TransmissionSpec, snap_world_to_grid,
+    MAX_PIPE_BEND_RADIUS, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
+    MIN_CYLINDER_SWEEP_DEGREES, MIN_PIPE_BEND_RADIUS, MaterialProperties, PIPE_BEND_ARC_SLICES,
+    PIPE_BEND_RADIAL_SIDES, PartSpec, PipeBendDimensionError, PipeBendDimensions, PipeBendSpec,
+    SeatSpec, ServoSpec, TransmissionSpec, snap_world_to_grid,
 };
 pub use graph::{
     ActuatorInventory, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,

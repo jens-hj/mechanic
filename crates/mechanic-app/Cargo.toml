@@ -18,6 +18,7 @@ bevy = { workspace = true, features = [
     "mouse",
     "multi_threaded",
     "png",
+    "serialize",
     "std",
     "wayland",
     "x11",
@@ -31,6 +32,7 @@ mosaic-core.workspace = true
 mosaic-macros.workspace = true
 mosaic-widgets.workspace = true
 ron.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

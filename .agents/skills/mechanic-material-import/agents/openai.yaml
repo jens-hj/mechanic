@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mechanic Material Import"
+  short_description: "Import and validate Mechanic material maps"
+  default_prompt: "Use $mechanic-material-import to install a new construction-material texture archive."

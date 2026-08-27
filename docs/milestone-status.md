@@ -24,8 +24,9 @@ physics exercise; the production renderer has not been started.
   bounds, fixed-capacity pair traversal, OBB SAT, analytic ground contacts, and
   direct-bearing collision suppression.
 - Persistent manifold caching with stale-row reclamation, active-contact
-  compaction, warm starting, friction, fixed projected iterations, angular
-  impulses, and world inverse-inertia precomputation.
+  compaction, warm starting, compliant normal response, persistent two-axis
+  static/kinetic friction, tangent-axis rolling resistance, fixed projected
+  iterations, angular impulses, and world inverse-inertia precomputation.
 - Root-plus-bearing-coordinate mechanism state, uploaded direct spatial inertia,
   articulated/bias/generalized-force scratch, mass-weighted bearing velocity
   projection, and parallel pointer-jump pose reconstruction. Gravity and contact

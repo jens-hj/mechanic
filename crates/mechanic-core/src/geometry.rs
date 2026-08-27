@@ -9,8 +9,15 @@ use crate::PartId;
 pub enum ConstructionMaterial {
     /// Lightweight aluminium alloy.
     Aluminium,
+    /// Graphite construction material.
+    #[serde(alias = "Carbon")]
+    Graphite,
+    /// Carbon-fibre composite construction material.
+    CarbonFiber,
     /// Dense, high-friction concrete.
     Concrete,
+    /// General-purpose structural iron.
+    Iron,
     /// Lightweight resilient plastic.
     Plastic,
     /// Compliant high-grip rubber.
@@ -18,18 +25,24 @@ pub enum ConstructionMaterial {
     /// General-purpose structural steel.
     #[default]
     Steel,
+    /// Dense natural stone.
+    Stone,
     /// Lightweight timber.
     Wood,
 }
 
 impl ConstructionMaterial {
     /// Every selectable material in alphabetical display order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::Aluminium,
+        Self::CarbonFiber,
         Self::Concrete,
+        Self::Graphite,
+        Self::Iron,
         Self::Plastic,
         Self::Rubber,
         Self::Steel,
+        Self::Stone,
         Self::Wood,
     ];
 
@@ -37,10 +50,14 @@ impl ConstructionMaterial {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Aluminium => "Aluminium",
+            Self::CarbonFiber => "Carbon Fiber",
             Self::Concrete => "Concrete",
+            Self::Graphite => "Graphite",
+            Self::Iron => "Iron",
             Self::Plastic => "Plastic",
             Self::Rubber => "Rubber",
             Self::Steel => "Steel",
+            Self::Stone => "Stone",
             Self::Wood => "Wood",
         }
     }
@@ -48,12 +65,16 @@ impl ConstructionMaterial {
     /// Density and contact response used by construction physics.
     pub const fn properties(self) -> MaterialProperties {
         match self {
-            Self::Aluminium => MaterialProperties::new(2_700.0, 0.45, 0.25),
-            Self::Concrete => MaterialProperties::new(2_400.0, 0.80, 0.05),
-            Self::Plastic => MaterialProperties::new(950.0, 0.35, 0.40),
-            Self::Rubber => MaterialProperties::new(1_100.0, 0.90, 0.70),
-            Self::Steel => MaterialProperties::new(7_850.0, 0.60, 0.20),
-            Self::Wood => MaterialProperties::new(700.0, 0.55, 0.15),
+            Self::Aluminium => MaterialProperties::new(2_700.0, 0.61, 0.47, 0.25, 0.004, 69.0e9),
+            Self::CarbonFiber => MaterialProperties::new(1_600.0, 0.40, 0.30, 0.20, 0.008, 70.0e9),
+            Self::Concrete => MaterialProperties::new(2_400.0, 0.80, 0.65, 0.05, 0.020, 30.0e9),
+            Self::Graphite => MaterialProperties::new(1_900.0, 0.25, 0.15, 0.10, 0.010, 12.0e9),
+            Self::Iron => MaterialProperties::new(7_870.0, 0.70, 0.55, 0.15, 0.003, 170.0e9),
+            Self::Plastic => MaterialProperties::new(950.0, 0.40, 0.30, 0.40, 0.020, 1.0e9),
+            Self::Rubber => MaterialProperties::new(1_100.0, 1.00, 0.80, 0.70, 0.040, 0.01e9),
+            Self::Steel => MaterialProperties::new(7_850.0, 0.74, 0.57, 0.20, 0.002, 200.0e9),
+            Self::Stone => MaterialProperties::new(2_700.0, 0.60, 0.48, 0.05, 0.015, 50.0e9),
+            Self::Wood => MaterialProperties::new(700.0, 0.48, 0.30, 0.15, 0.025, 10.0e9),
         }
     }
 }
@@ -63,19 +84,45 @@ impl ConstructionMaterial {
 pub struct MaterialProperties {
     /// Density in kilograms per cubic metre.
     pub density_kg_m3: f32,
-    /// Coulomb friction coefficient.
-    pub friction: f32,
+    /// Static Coulomb friction coefficient.
+    pub static_friction: f32,
+    /// Kinetic Coulomb friction coefficient.
+    pub dynamic_friction: f32,
     /// Coefficient of restitution.
     pub restitution: f32,
+    /// Dimensionless rolling-resistance coefficient.
+    pub rolling_resistance: f32,
+    /// Young's modulus in pascals.
+    pub youngs_modulus_pa: f32,
 }
 
 impl MaterialProperties {
-    const fn new(density_kg_m3: f32, friction: f32, restitution: f32) -> Self {
+    const fn new(
+        density_kg_m3: f32,
+        static_friction: f32,
+        dynamic_friction: f32,
+        restitution: f32,
+        rolling_resistance: f32,
+        youngs_modulus_pa: f32,
+    ) -> Self {
         Self {
             density_kg_m3,
-            friction,
+            static_friction,
+            dynamic_friction,
             restitution,
+            rolling_resistance,
+            youngs_modulus_pa,
         }
+    }
+
+    /// Nominal normal compliance of one 25 cm construction block, in metres
+    /// per newton.
+    ///
+    /// A one-dimensional block column has stiffness `E A / L`. At the engine's
+    /// nominal one-block contact area (`A = L²`) this reduces to
+    /// `C = 1 / (E × L)`, with `L = GRID_UNIT_METERS`.
+    pub const fn nominal_block_compliance(self) -> f32 {
+        1.0 / (self.youngs_modulus_pa * GRID_UNIT_METERS)
     }
 }
 
@@ -102,6 +149,18 @@ pub const MAX_CYLINDER_SWEEP_DEGREES: u16 = 360;
 
 /// Adjustment increment for retained cylinder sectors, in degrees.
 pub const CYLINDER_SWEEP_STEP_DEGREES: u16 = 15;
+
+/// Smallest supported pipe-bend centreline radius, in metres.
+pub const MIN_PIPE_BEND_RADIUS: f32 = GRID_UNIT_METERS;
+
+/// Largest supported pipe-bend centreline radius, in metres.
+pub const MAX_PIPE_BEND_RADIUS: f32 = 8.0;
+
+/// Radial sides used by the authored pipe-bend render and picking surface.
+pub const PIPE_BEND_RADIAL_SIDES: u16 = 24;
+
+/// Centreline slices used by the authored quarter-torus surface.
+pub const PIPE_BEND_ARC_SLICES: u16 = 12;
 
 /// Converts a world position into its nearest quarter-metre grid coordinate.
 pub fn snap_world_to_grid(position: Vec3) -> IVec3 {
@@ -459,6 +518,165 @@ impl CylinderSpec {
     }
 }
 
+/// Invalid dimensions for a cardinal 90-degree pipe bend.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum PipeBendDimensionError {
+    /// The outer diameter was not finite.
+    #[error("pipe bend outer diameter must be finite")]
+    NonFiniteOuterDiameter,
+    /// The outer diameter was outside the cylinder range.
+    #[error("pipe bend outer diameter must be between 0.05 m and 8.00 m")]
+    OuterDiameterOutOfRange,
+    /// The inner diameter was not finite.
+    #[error("pipe bend inner diameter must be finite")]
+    NonFiniteInnerDiameter,
+    /// The inner diameter was negative or left too little wall material.
+    #[error(
+        "pipe bend inner diameter must be non-negative and at least 0.05 m smaller than the outer diameter"
+    )]
+    InnerDiameterOutOfRange,
+    /// The centreline radius was not finite.
+    #[error("pipe bend centreline radius must be finite")]
+    NonFiniteRadius,
+    /// The radius was outside the grid range or not a quarter-metre increment.
+    #[error("pipe bend centreline radius must be between 0.25 m and 8.00 m in 0.25 m increments")]
+    RadiusOutOfRange,
+    /// The centreline radius would fold the outer wall through the bend.
+    #[error(
+        "pipe bend radius must be at least one block and the outer diameter rounded up to a block"
+    )]
+    RadiusTooSmallForDiameter,
+}
+
+/// Validated cross-section and centreline radius for a cardinal quarter-torus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PipeBendDimensions {
+    outer_diameter: f32,
+    inner_diameter: f32,
+    radius: GridDimension,
+}
+
+impl PipeBendDimensions {
+    /// Default centreline radius: one construction block.
+    pub const DEFAULT_RADIUS: f32 = GRID_UNIT_METERS;
+
+    /// Creates validated pipe-bend dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipeBendDimensionError`] when the annular cross-section is
+    /// invalid, the radius is not on the construction grid, or the radius is
+    /// shorter than the outer diameter rounded up to one block.
+    pub fn new(
+        outer_diameter: f32,
+        inner_diameter: f32,
+        radius: f32,
+    ) -> Result<Self, PipeBendDimensionError> {
+        if !outer_diameter.is_finite() {
+            return Err(PipeBendDimensionError::NonFiniteOuterDiameter);
+        }
+        if !(MIN_CYLINDER_OUTER_DIAMETER..=MAX_CYLINDER_OUTER_DIAMETER).contains(&outer_diameter) {
+            return Err(PipeBendDimensionError::OuterDiameterOutOfRange);
+        }
+        if !inner_diameter.is_finite() {
+            return Err(PipeBendDimensionError::NonFiniteInnerDiameter);
+        }
+        if inner_diameter < 0.0 || inner_diameter > outer_diameter - MIN_CYLINDER_DIAMETER_GAP {
+            return Err(PipeBendDimensionError::InnerDiameterOutOfRange);
+        }
+        if !radius.is_finite() {
+            return Err(PipeBendDimensionError::NonFiniteRadius);
+        }
+        let radius_units = radius / GRID_UNIT_METERS;
+        let rounded_units = radius_units.round();
+        if (radius_units - rounded_units).abs() > 1.0e-5
+            || !(1.0..=f32::from(MAX_GRID_UNITS)).contains(&rounded_units)
+        {
+            return Err(PipeBendDimensionError::RadiusOutOfRange);
+        }
+        let units = (1..=MAX_GRID_UNITS)
+            .find(|&units| (f32::from(units) - rounded_units).abs() < 1.0e-5)
+            .ok_or(PipeBendDimensionError::RadiusOutOfRange)?;
+        let minimum_units = (outer_diameter / GRID_UNIT_METERS).ceil().max(1.0);
+        if f32::from(units) < minimum_units {
+            return Err(PipeBendDimensionError::RadiusTooSmallForDiameter);
+        }
+        Ok(Self {
+            outer_diameter,
+            inner_diameter,
+            radius: GridDimension::new(units)
+                .map_err(|_| PipeBendDimensionError::RadiusOutOfRange)?,
+        })
+    }
+
+    /// Outer diameter in metres.
+    pub const fn outer_diameter(self) -> f32 {
+        self.outer_diameter
+    }
+
+    /// Inner diameter in metres. Zero represents a solid bend.
+    pub const fn inner_diameter(self) -> f32 {
+        self.inner_diameter
+    }
+
+    /// Centreline radius in metres.
+    pub fn radius(self) -> f32 {
+        self.radius.meters()
+    }
+
+    /// Centreline radius in quarter-metre grid units.
+    pub const fn radius_units(self) -> u8 {
+        self.radius.units()
+    }
+
+    /// Minimum valid radius for `outer_diameter`, rounded up to a block.
+    pub fn minimum_radius(outer_diameter: f32) -> f32 {
+        (outer_diameter / GRID_UNIT_METERS).ceil().max(1.0) * GRID_UNIT_METERS
+    }
+}
+
+impl Default for PipeBendDimensions {
+    fn default() -> Self {
+        Self {
+            outer_diameter: CylinderDimensions::DEFAULT_OUTER_DIAMETER,
+            inner_diameter: CylinderDimensions::DEFAULT_INNER_DIAMETER,
+            radius: GridDimension(1),
+        }
+    }
+}
+
+/// Cardinal 90-degree pipe bend with local negative-X inlet and positive-Y outlet.
+///
+/// The pose translation is the theoretical sharp corner. The centreline is
+/// tangent at `(-radius, 0, 0)` and `(0, radius, 0)` in local space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PipeBendSpec {
+    /// Validated annular dimensions and centreline radius.
+    pub dimensions: PipeBendDimensions,
+    /// Sharp-corner position and cardinal orientation.
+    pub pose: BuildPose,
+    /// Material used for appearance, mass, and contact response.
+    pub material: ConstructionMaterial,
+}
+
+impl PipeBendSpec {
+    /// Creates a pipe bend from validated dimensions and a build pose.
+    pub const fn new(dimensions: PipeBendDimensions, pose: BuildPose) -> Self {
+        Self {
+            dimensions,
+            pose,
+            material: ConstructionMaterial::Steel,
+        }
+    }
+
+    /// Uses an explicit construction material.
+    #[must_use]
+    pub const fn with_material(mut self, material: ConstructionMaterial) -> Self {
+        self.material = material;
+        self
+    }
+}
+
 /// Editable control block. Its shape is a fixed 2×2×1-grid-unit cuboid; what it
 /// does lives on the drive links wired from it, one program per bearing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -668,6 +886,8 @@ pub enum PartSpec {
     Cuboid(CuboidSpec),
     /// Solid or hollow cylinder whose axis is local Y.
     Cylinder(CylinderSpec),
+    /// Cardinal 90-degree quarter-torus pipe bend.
+    PipeBend(PipeBendSpec),
     /// Fixed-size control block driving the bearings wired to it.
     Controller(ControllerSpec),
     /// Fixed-size inert engine with an authored appearance.
@@ -688,6 +908,7 @@ impl PartSpec {
         match self {
             Self::Cuboid(spec) => spec.pose,
             Self::Cylinder(spec) => spec.pose,
+            Self::PipeBend(spec) => spec.pose,
             Self::Controller(spec) => spec.pose,
             Self::Engine(spec) => spec.pose,
             Self::Transmission(spec) => spec.pose,
@@ -708,7 +929,7 @@ impl PartSpec {
             Self::Servo(spec) => Some(spec.cuboid()),
             Self::Seat(spec) => Some(spec.cuboid()),
             Self::Input(spec) => Some(spec.cuboid()),
-            Self::Cylinder(_) => None,
+            Self::Cylinder(_) | Self::PipeBend(_) => None,
         }
     }
 
@@ -718,6 +939,7 @@ impl PartSpec {
             Self::Controller(spec) => Some(spec),
             Self::Cuboid(_)
             | Self::Cylinder(_)
+            | Self::PipeBend(_)
             | Self::Engine(_)
             | Self::Transmission(_)
             | Self::Servo(_)
@@ -731,6 +953,22 @@ impl PartSpec {
         match self {
             Self::Cylinder(spec) => Some(spec),
             Self::Cuboid(_)
+            | Self::PipeBend(_)
+            | Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_) => None,
+        }
+    }
+
+    /// Returns the pipe-bend shape, when this part is a bend.
+    pub const fn as_pipe_bend(self) -> Option<PipeBendSpec> {
+        match self {
+            Self::PipeBend(spec) => Some(spec),
+            Self::Cuboid(_)
+            | Self::Cylinder(_)
             | Self::Controller(_)
             | Self::Engine(_)
             | Self::Transmission(_)
@@ -755,6 +993,11 @@ impl PartSpec {
                 spec.dimensions.axial_length(),
                 spec.dimensions.outer_diameter(),
             ),
+            Self::PipeBend(spec) => {
+                let outer = spec.dimensions.outer_diameter();
+                let radius = spec.dimensions.radius();
+                Vec3::new(radius + outer * 0.5, radius + outer * 0.5, outer)
+            }
         }
     }
 }
@@ -774,6 +1017,12 @@ impl From<CuboidSpec> for PartSpec {
 impl From<CylinderSpec> for PartSpec {
     fn from(value: CylinderSpec) -> Self {
         Self::Cylinder(value)
+    }
+}
+
+impl From<PipeBendSpec> for PartSpec {
+    fn from(value: PipeBendSpec) -> Self {
+        Self::PipeBend(value)
     }
 }
 
@@ -1014,6 +1263,35 @@ pub(crate) fn cylinder_face(spec: CylinderSpec, face: FaceKind) -> Option<FaceGe
     })
 }
 
+pub(crate) fn pipe_bend_face(spec: PipeBendSpec, face: FaceKind) -> Option<FaceGeometry> {
+    let (local_center, local_normal, local_u, local_v) = match face {
+        FaceKind::NegativeX => (
+            Vec3::new(-spec.dimensions.radius(), 0.0, 0.0),
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::Z,
+        ),
+        FaceKind::PositiveY => (
+            Vec3::new(0.0, spec.dimensions.radius(), 0.0),
+            Vec3::Y,
+            Vec3::X,
+            Vec3::Z,
+        ),
+        _ => return None,
+    };
+    let rotation = spec.pose.rotation.quaternion();
+    Some(FaceGeometry {
+        center: spec.pose.translation() + rotation * local_center,
+        normal: snap_cardinal(rotation * local_normal),
+        tangent_u: snap_cardinal(rotation * local_u),
+        tangent_v: snap_cardinal(rotation * local_v),
+        profile: FaceProfile::Annulus {
+            inner_radius: spec.dimensions.inner_diameter() * 0.5,
+            outer_radius: spec.dimensions.outer_diameter() * 0.5,
+        },
+    })
+}
+
 pub(crate) const fn ground_face() -> FaceGeometry {
     FaceGeometry {
         center: Vec3::ZERO,
@@ -1035,7 +1313,8 @@ mod tests {
     use super::{
         BuildPose, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensionError,
         CylinderDimensions, CylinderSpec, EngineKind, EngineSpec, FaceKind, GridRotation,
-        InputSpec, SeatSpec, ServoSpec, cuboid_face, snap_world_to_grid,
+        InputSpec, PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, SeatSpec, ServoSpec,
+        cuboid_face, pipe_bend_face, snap_world_to_grid,
     };
 
     #[test]
@@ -1070,20 +1349,81 @@ mod tests {
 
     #[test]
     fn construction_material_property_rows_are_exact() {
-        let expected: [(ConstructionMaterial, f32, f32, f32); 6] = [
-            (ConstructionMaterial::Aluminium, 2_700.0, 0.45, 0.25),
-            (ConstructionMaterial::Concrete, 2_400.0, 0.80, 0.05),
-            (ConstructionMaterial::Plastic, 950.0, 0.35, 0.40),
-            (ConstructionMaterial::Rubber, 1_100.0, 0.90, 0.70),
-            (ConstructionMaterial::Steel, 7_850.0, 0.60, 0.20),
-            (ConstructionMaterial::Wood, 700.0, 0.55, 0.15),
+        let expected: [(ConstructionMaterial, [f32; 6]); 10] = [
+            (
+                ConstructionMaterial::Aluminium,
+                [2_700.0, 0.61, 0.47, 0.25, 0.004, 69.0e9],
+            ),
+            (
+                ConstructionMaterial::CarbonFiber,
+                [1_600.0, 0.40, 0.30, 0.20, 0.008, 70.0e9],
+            ),
+            (
+                ConstructionMaterial::Concrete,
+                [2_400.0, 0.80, 0.65, 0.05, 0.020, 30.0e9],
+            ),
+            (
+                ConstructionMaterial::Graphite,
+                [1_900.0, 0.25, 0.15, 0.10, 0.010, 12.0e9],
+            ),
+            (
+                ConstructionMaterial::Iron,
+                [7_870.0, 0.70, 0.55, 0.15, 0.003, 170.0e9],
+            ),
+            (
+                ConstructionMaterial::Plastic,
+                [950.0, 0.40, 0.30, 0.40, 0.020, 1.0e9],
+            ),
+            (
+                ConstructionMaterial::Rubber,
+                [1_100.0, 1.00, 0.80, 0.70, 0.040, 0.01e9],
+            ),
+            (
+                ConstructionMaterial::Steel,
+                [7_850.0, 0.74, 0.57, 0.20, 0.002, 200.0e9],
+            ),
+            (
+                ConstructionMaterial::Stone,
+                [2_700.0, 0.60, 0.48, 0.05, 0.015, 50.0e9],
+            ),
+            (
+                ConstructionMaterial::Wood,
+                [700.0, 0.48, 0.30, 0.15, 0.025, 10.0e9],
+            ),
         ];
-        for (material, density, friction, restitution) in expected {
+        for (material, expected) in expected {
             let properties = material.properties();
-            assert_eq!(properties.density_kg_m3.to_bits(), density.to_bits());
-            assert_eq!(properties.friction.to_bits(), friction.to_bits());
-            assert_eq!(properties.restitution.to_bits(), restitution.to_bits());
+            let actual = [
+                properties.density_kg_m3,
+                properties.static_friction,
+                properties.dynamic_friction,
+                properties.restitution,
+                properties.rolling_resistance,
+                properties.youngs_modulus_pa,
+            ];
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+            assert!(properties.density_kg_m3 > 0.0);
+            assert!(properties.static_friction >= properties.dynamic_friction);
+            assert!((0.0..=1.0).contains(&properties.dynamic_friction));
+            assert!((0.0..=1.0).contains(&properties.restitution));
+            assert!((0.0..=1.0).contains(&properties.rolling_resistance));
+            assert!(properties.youngs_modulus_pa > 0.0);
         }
+    }
+
+    #[test]
+    fn nominal_block_compliance_uses_the_construction_scale() {
+        let steel = ConstructionMaterial::Steel.properties();
+        assert_eq!(
+            steel.nominal_block_compliance().to_bits(),
+            (1.0 / (200.0e9 * super::GRID_UNIT_METERS)).to_bits(),
+        );
+        assert!(
+            ConstructionMaterial::Rubber
+                .properties()
+                .nominal_block_compliance()
+                > steel.nominal_block_compliance()
+        );
     }
 
     #[test]
@@ -1211,5 +1551,38 @@ mod tests {
 
         assert!(face.normal.abs_diff_eq(Vec3::Y, 1.0e-6));
         assert!(face.center.abs_diff_eq(Vec3::new(0.0, 0.5, 0.0), 1.0e-6));
+    }
+
+    #[test]
+    fn pipe_bend_dimensions_enforce_grid_radius_and_outer_diameter_clearance() {
+        assert!(PipeBendDimensions::new(0.25, 0.10, 0.25).is_ok());
+        assert_eq!(
+            PipeBendDimensions::new(0.30, 0.10, 0.25),
+            Err(PipeBendDimensionError::RadiusTooSmallForDiameter)
+        );
+        assert!(PipeBendDimensions::new(0.30, 0.10, 0.50).is_ok());
+        assert_eq!(
+            PipeBendDimensions::new(0.25, 0.21, 0.25),
+            Err(PipeBendDimensionError::InnerDiameterOutOfRange)
+        );
+        assert_eq!(
+            PipeBendDimensions::new(0.25, 0.10, 0.30),
+            Err(PipeBendDimensionError::RadiusOutOfRange)
+        );
+    }
+
+    #[test]
+    fn pipe_bend_exposes_only_its_two_tangent_annular_ends() {
+        let spec = PipeBendSpec::new(
+            PipeBendDimensions::new(0.25, 0.10, 0.50).unwrap(),
+            BuildPose::new(IVec3::new(4, 8, 0), GridRotation::new(0, 0, 1)),
+        );
+        let inlet = pipe_bend_face(spec, FaceKind::NegativeX).unwrap();
+        let outlet = pipe_bend_face(spec, FaceKind::PositiveY).unwrap();
+        assert!(inlet.normal.abs_diff_eq(Vec3::NEG_Y, 1.0e-6));
+        assert!(outlet.normal.abs_diff_eq(Vec3::NEG_X, 1.0e-6));
+        assert!(pipe_bend_face(spec, FaceKind::PositiveZ).is_none());
+        assert!(((inlet.center - spec.pose.translation()).length() - 0.5).abs() < 1.0e-5);
+        assert!(((outlet.center - spec.pose.translation()).length() - 0.5).abs() < 1.0e-5);
     }
 }

@@ -16,6 +16,10 @@ use crate::{
 /// Number of cuboid colliders used for each cylinder.
 pub const CYLINDER_COLLIDER_COUNT: usize = 16;
 
+/// Number of cuboid colliders used for each pipe bend: sixteen annular
+/// sectors over each of twelve centreline slices.
+pub const PIPE_BEND_COLLIDER_COUNT: usize = 16 * 12;
+
 /// Largest number of collider rows one compiled creation may produce.
 ///
 /// Shaping multiplies collider rows on the cells it touches, so a creation that
@@ -429,6 +433,7 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
             | PartSpec::Input(_)
             | PartSpec::Cuboid(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
+            PartSpec::PipeBend(_) => PIPE_BEND_COLLIDER_COUNT,
         })
         .sum::<usize>()
         // A region emits one row per fused convex piece, so the count is only
@@ -1336,6 +1341,7 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
                 )),
             }
         }
+        PartSpec::PipeBend(spec) => pipe_bend_mass_properties(spec),
         PartSpec::Controller(controller) => {
             cuboid_mass_properties(controller.cuboid(), CUBOID_DENSITY_KG_M3)
         }
@@ -1346,6 +1352,40 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
         PartSpec::Servo(servo) => cuboid_mass_properties(servo.cuboid(), CUBOID_DENSITY_KG_M3),
         PartSpec::Seat(seat) => cuboid_mass_properties(seat.cuboid(), CUBOID_DENSITY_KG_M3),
         PartSpec::Input(input) => cuboid_mass_properties(input.cuboid(), CUBOID_DENSITY_KG_M3),
+    }
+}
+
+fn pipe_bend_mass_properties(spec: crate::PipeBendSpec) -> PartMassProperties {
+    let outer = spec.dimensions.outer_diameter() * 0.5;
+    let inner = spec.dimensions.inner_diameter() * 0.5;
+    let radius = spec.dimensions.radius();
+    let sweep = core::f32::consts::FRAC_PI_2;
+    let radial_square_sum = outer * outer + inner * inner;
+    let volume = sweep * core::f32::consts::PI * radius * (outer * outer - inner * inner);
+    let mass = spec.material.properties().density_kg_m3 * volume;
+
+    // Integrate the torus volume element `(R + rho cos(phi)) rho d(rho)d(phi)d(theta)`.
+    // `mean_q` and `mean_q_squared` are the first two centre-of-curvature
+    // radial moments of the swept annulus. Symmetry then gives the complete
+    // covariance over the quarter turn, including the XY product of inertia.
+    let mean_q = radius + radial_square_sum / (4.0 * radius);
+    let mean_q_squared = radius * radius + 0.75 * radial_square_sum;
+    let mean_x = 2.0 * mean_q / core::f32::consts::PI;
+    let mean_y = -mean_x;
+    let planar_variance = mean_q_squared * 0.5 - mean_x * mean_x;
+    let planar_covariance = -mean_q_squared / core::f32::consts::PI - mean_x * mean_y;
+    let z_variance = radial_square_sum * 0.25;
+    let diagonal_xy = mass * (planar_variance + z_variance);
+    let product_xy = -mass * planar_covariance;
+
+    PartMassProperties {
+        mass,
+        local_center: Vec3::new(-radius + mean_x, radius + mean_y, 0.0),
+        local_inertia: Mat3::from_cols(
+            Vec3::new(diagonal_xy, product_xy, 0.0),
+            Vec3::new(product_xy, diagonal_xy, 0.0),
+            Vec3::new(0.0, 0.0, mass * planar_variance * 2.0),
+        ),
     }
 }
 
@@ -1466,14 +1506,18 @@ fn trace(matrix: Mat3) -> f32 {
 
 const AUTHORED_CONTACT_PROPERTIES: MaterialProperties = MaterialProperties {
     density_kg_m3: CUBOID_DENSITY_KG_M3,
-    friction: 0.05,
+    static_friction: 0.05,
+    dynamic_friction: 0.05,
     restitution: 0.0,
+    rolling_resistance: 0.0,
+    youngs_modulus_pa: 200.0e9,
 };
 
 fn contact_properties(spec: PartSpec) -> MaterialProperties {
     match spec {
         PartSpec::Cuboid(cuboid) => cuboid.material.properties(),
         PartSpec::Cylinder(cylinder) => cylinder.material.properties(),
+        PartSpec::PipeBend(bend) => bend.material.properties(),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
         | PartSpec::Transmission(_)
@@ -1554,6 +1598,14 @@ fn append_part_colliders(
                 });
             }
         }
+        PartSpec::PipeBend(spec) => append_pipe_bend_colliders(
+            colliders,
+            part,
+            compound_index,
+            spec,
+            center_of_mass,
+            material_properties,
+        ),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
         | PartSpec::Transmission(_)
@@ -1561,6 +1613,51 @@ fn append_part_colliders(
         | PartSpec::Seat(_)
         | PartSpec::Input(_) => {
             unreachable!("fixed-size authored parts resolve to cuboids")
+        }
+    }
+}
+
+fn append_pipe_bend_colliders(
+    colliders: &mut Vec<LocalCollider>,
+    part: PartId,
+    compound_index: u32,
+    spec: crate::PipeBendSpec,
+    center_of_mass: Vec3,
+    material_properties: MaterialProperties,
+) {
+    let outer = spec.dimensions.outer_diameter() * 0.5;
+    let inner = spec.dimensions.inner_diameter() * 0.5;
+    let half_radial = (outer - inner) * 0.5;
+    let cross_radius = (outer + inner) * 0.5;
+    let bend_radius = spec.dimensions.radius();
+    let bend_step = core::f32::consts::FRAC_PI_2 / 12.0;
+    let cross_step = core::f32::consts::TAU / 16.0;
+    let half_bend_tangent = (bend_radius + outer) * (bend_step * 0.5).tan();
+    let half_cross_tangent = outer * (cross_step * 0.5).tan();
+    let part_rotation = spec.pose.rotation.quaternion();
+    let corner = spec.pose.translation();
+    for bend_slice in 0_u16..12 {
+        let theta = -core::f32::consts::FRAC_PI_2 + bend_step * (f32::from(bend_slice) + 0.5);
+        let radial = Vec3::new(theta.cos(), theta.sin(), 0.0);
+        let tangent = Vec3::new(-theta.sin(), theta.cos(), 0.0);
+        for sector in 0_u16..16 {
+            let phi = cross_step * (f32::from(sector) + 0.5);
+            let normal = radial * phi.cos() + Vec3::Z * phi.sin();
+            let cross_tangent = -radial * phi.sin() + Vec3::Z * phi.cos();
+            let local_center = Vec3::new(-bend_radius, bend_radius, 0.0)
+                + radial * (bend_radius + cross_radius * phi.cos())
+                + Vec3::Z * (cross_radius * phi.sin());
+            let local_basis = Mat3::from_cols(normal, tangent, cross_tangent);
+            colliders.push(LocalCollider {
+                source_part: part,
+                compound_index,
+                local_center: corner - center_of_mass + part_rotation * local_center,
+                material_properties,
+                shape: ColliderShape::Cuboid {
+                    local_rotation: part_rotation * Quat::from_mat3(&local_basis),
+                    half_extents: Vec3::new(half_radial, half_bend_tangent, half_cross_tangent),
+                },
+            });
         }
     }
 }
@@ -1683,7 +1780,8 @@ mod tests {
         BuildPose, ColliderShape, ConstructionGraph, ConstructionMaterial, ControllerSpec,
         CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
         DriveMode, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind,
-        FaceRef, GearSelection, GridRotation, PartId, RigidLinkSpec, TopologyError, WeldSpec,
+        FaceRef, GearSelection, GridRotation, PIPE_BEND_COLLIDER_COUNT, PartId, PipeBendDimensions,
+        PipeBendSpec, RigidLinkSpec, TopologyError, WeldSpec,
     };
     use bevy_math::{Mat3, Quat};
 
@@ -1741,6 +1839,45 @@ mod tests {
             (half_extents.y - 1.0).abs() < 1.0e-6
                 && collider.local_center.length() >= inner - 1.0e-6
         }));
+    }
+
+    #[test]
+    fn hollow_pipe_bend_compiles_exact_quarter_torus_mass_and_full_inertia() {
+        let dimensions = PipeBendDimensions::new(0.50, 0.25, 0.75).unwrap();
+        let spec = PipeBendSpec::new(dimensions, BuildPose::default());
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::SpawnPipeBend(spec)).unwrap();
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.colliders.len(), PIPE_BEND_COLLIDER_COUNT);
+
+        let outer = 0.25_f32;
+        let inner = 0.125_f32;
+        let radius = 0.75_f32;
+        let expected_volume = std::f32::consts::FRAC_PI_2
+            * std::f32::consts::PI
+            * radius
+            * (outer * outer - inner * inner);
+        let properties = compiled.compounds[0].mass_properties;
+        assert!(
+            (properties.mass
+                - expected_volume * ConstructionMaterial::Steel.properties().density_kg_m3)
+                .abs()
+                < 1.0e-3
+        );
+        let mean_q = radius + (outer * outer + inner * inner) / (4.0 * radius);
+        let expected_center = Vec3::new(
+            -radius + 2.0 * mean_q / std::f32::consts::PI,
+            radius - 2.0 * mean_q / std::f32::consts::PI,
+            0.0,
+        );
+        assert!(
+            properties
+                .center_of_mass
+                .abs_diff_eq(expected_center, 1.0e-5)
+        );
+        assert!((properties.inertia.x_axis.x - properties.inertia.y_axis.y).abs() < 1.0e-4);
+        assert!(properties.inertia.x_axis.y.abs() > 1.0e-3);
+        assert!((properties.inertia.x_axis.y - properties.inertia.y_axis.x).abs() < 1.0e-4);
     }
 
     #[test]

@@ -22,7 +22,8 @@ struct Collider {
     local_rotation: vec4<f32>,
     half_extents: vec4<f32>,
     metadata: vec4<u32>,
-    contact_properties: vec4<f32>,
+    surface_response: vec4<f32>,
+    surface_elasticity: vec4<f32>,
     // shape kind, convex-buffer offset, packed element counts, reserved.
     shape: vec4<u32>,
 };

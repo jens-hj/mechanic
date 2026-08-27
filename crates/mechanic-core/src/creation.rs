@@ -21,13 +21,14 @@ use crate::{
     DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram,
     DriveProgramError, DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec,
     FaceKind, FaceOwner, FaceRef, GearKeyChord, GraphError, GridDimension, GridRotation,
-    InputSeatLinkSpec, InputSpec, PartId, PartSpec, RigidLinkSpec, SeatControllerLinkSpec,
-    SeatSpec, ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec, WeldSpec,
+    InputSeatLinkSpec, InputSpec, PartId, PartSpec, PipeBendDimensionError, PipeBendDimensions,
+    PipeBendSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion,
+    ShiftMode, TransmissionSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 5;
+pub const CREATION_FORMAT_VERSION: u32 = 7;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = 1;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -68,6 +69,9 @@ pub enum CreationError {
     /// A cylinder dimension was out of range.
     #[error(transparent)]
     CylinderDimension(#[from] CylinderDimensionError),
+    /// A pipe-bend dimension was out of range.
+    #[error(transparent)]
+    PipeBendDimension(#[from] PipeBendDimensionError),
     /// A bearing ring dimension was out of range.
     #[error(transparent)]
     BearingDimension(#[from] BearingDimensionError),
@@ -141,6 +145,20 @@ pub enum PartDoc {
         /// Centre and orientation.
         pose: PoseDoc,
         /// Appearance and physical properties. Older files default to steel.
+        #[serde(default)]
+        material: ConstructionMaterial,
+    },
+    /// Cardinal 90-degree quarter-torus pipe bend.
+    PipeBend {
+        /// Outer diameter in metres.
+        outer_diameter: f32,
+        /// Inner diameter in metres. Zero is solid.
+        inner_diameter: f32,
+        /// Centreline radius in quarter-metre grid units.
+        radius_units: u8,
+        /// Sharp-corner position and cardinal orientation.
+        pose: PoseDoc,
+        /// Appearance and physical properties.
         #[serde(default)]
         material: ConstructionMaterial,
     },
@@ -781,6 +799,13 @@ fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
             pose: cylinder.pose.into(),
             material: cylinder.material,
         },
+        PartSpec::PipeBend(bend) => PartDoc::PipeBend {
+            outer_diameter: bend.dimensions.outer_diameter(),
+            inner_diameter: bend.dimensions.inner_diameter(),
+            radius_units: bend.dimensions.radius_units(),
+            pose: bend.pose.into(),
+            material: bend.material,
+        },
         PartSpec::Controller(controller) => PartDoc::Controller {
             pose: controller.pose.into(),
         },
@@ -856,6 +881,23 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
                     f32::from(length_units) * crate::GRID_UNIT_METERS,
                 )?
                 .with_sweep_angle_degrees(sweep_degrees)?,
+                pose.into(),
+            )
+            .with_material(material),
+        ),
+        PartDoc::PipeBend {
+            outer_diameter,
+            inner_diameter,
+            radius_units,
+            pose,
+            material,
+        } => BuildCommand::SpawnPipeBend(
+            PipeBendSpec::new(
+                PipeBendDimensions::new(
+                    outer_diameter,
+                    inner_diameter,
+                    f32::from(radius_units) * crate::GRID_UNIT_METERS,
+                )?,
                 pose.into(),
             )
             .with_material(material),
@@ -938,8 +980,8 @@ mod tests {
         CylinderSpec, DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveName, DriveProgram,
         DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind,
         FaceRef, GearKey, GearKeyChord, GridRotation, InputSeatLinkSpec, InputSpec, PartSpec,
-        RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode,
-        WeldSpec,
+        PipeBendDimensions, PipeBendSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec,
+        ServoSpec, ShapeRegion, ShiftMode, WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -1215,6 +1257,19 @@ mod tests {
     }
 
     #[test]
+    fn version_five_creation_remains_readable_after_material_expansion() {
+        let (graph, sockets) = sample();
+        let mut document = CreationDocument::from_graph(&graph, "Version Five", &sockets);
+        document.version = 5;
+
+        let restored = round_trip(&document)
+            .into_graph()
+            .expect("version-five documents remain readable");
+        assert_eq!(restored.name, "Version Five");
+        assert_eq!(restored.graph.part_count(), graph.part_count());
+    }
+
+    #[test]
     fn current_version_round_trips_all_construction_materials() {
         let mut graph = ConstructionGraph::new();
         for (index, material) in ConstructionMaterial::ALL.into_iter().enumerate() {
@@ -1234,6 +1289,13 @@ mod tests {
             .filter_map(|(_, spec)| spec.as_cuboid().map(|cuboid| cuboid.material))
             .collect::<Vec<_>>();
         assert_eq!(materials, ConstructionMaterial::ALL);
+    }
+
+    #[test]
+    fn legacy_carbon_material_deserializes_as_graphite_and_writes_graphite() {
+        let parsed: ConstructionMaterial = ron::from_str("Carbon").unwrap();
+        assert_eq!(parsed, ConstructionMaterial::Graphite);
+        assert_eq!(ron::to_string(&parsed).unwrap(), "Graphite");
     }
 
     #[test]
@@ -1344,6 +1406,43 @@ mod tests {
         assert!((dimensions.inner_diameter() - 0.5).abs() < 1.0e-6);
         assert_eq!(dimensions.axial_length_units(), 3);
         assert_eq!(dimensions.sweep_angle_degrees(), 255);
+    }
+
+    #[test]
+    fn version_seven_round_trips_pipe_bends_and_versions_one_through_six_still_load() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnPipeBend(
+                PipeBendSpec::new(
+                    PipeBendDimensions::new(0.75, 0.25, 1.0).unwrap(),
+                    BuildPose::new(IVec3::new(4, 8, 12), GridRotation::new(1, 2, 3)),
+                )
+                .with_material(ConstructionMaterial::Aluminium),
+            ))
+            .unwrap();
+        let document = CreationDocument::from_graph(&graph, "Bent Pipe", &[]);
+        assert_eq!(document.version, 7);
+        let loaded = round_trip(&document).into_graph().unwrap();
+        let bend = loaded
+            .graph
+            .parts()
+            .find_map(|(_, part)| part.as_pipe_bend())
+            .unwrap();
+        assert_eq!(bend.material, ConstructionMaterial::Aluminium);
+        assert!((bend.dimensions.radius() - 1.0).abs() < f32::EPSILON);
+        assert!((bend.dimensions.inner_diameter() - 0.25).abs() < f32::EPSILON);
+
+        for version in 1..=6 {
+            let legacy = CreationDocument {
+                version,
+                name: format!("Legacy {version}"),
+                ..CreationDocument::from_graph(&ConstructionGraph::new(), "legacy", &[])
+            };
+            assert!(
+                legacy.into_graph().is_ok(),
+                "version {version} remains readable"
+            );
+        }
     }
 
     #[test]

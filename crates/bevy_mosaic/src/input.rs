@@ -88,6 +88,13 @@ impl InputState {
         ui.pointer_gone();
     }
 
+    /// Stop routing absolute pointer input while the host uses relative motion.
+    pub(crate) fn suspend_pointer(&mut self, ui: &Ui) {
+        if self.position.is_some() || self.pending_move.is_some() {
+            self.note_gone(ui);
+        }
+    }
+
     /// Dispatch a button transition at the pointer's last known position,
     /// flushing the move that put it there first.
     pub(crate) fn note_button(&mut self, ui: &Ui, button: PointerButton, pressed: bool) {
@@ -148,13 +155,18 @@ impl InputState {
         ui: &Ui,
         window: Entity,
         elapsed: Duration,
+        pointer_enabled: bool,
         input: &mut BevyInput,
     ) {
         self.elapsed = elapsed;
         self.modifiers = modifiers_from(&input.keys);
 
+        if !pointer_enabled {
+            self.suspend_pointer(ui);
+        }
+
         for moved in input.cursor_moved.read() {
-            if moved.window != window {
+            if moved.window != window || !pointer_enabled {
                 continue;
             }
             // Entering the window is a position becoming known, which the tree
@@ -163,14 +175,14 @@ impl InputState {
         }
 
         for left in input.cursor_left.read() {
-            if left.window != window {
+            if left.window != window || !pointer_enabled {
                 continue;
             }
             self.note_gone(ui);
         }
 
         for button in input.mouse_button.read() {
-            if button.window != window {
+            if button.window != window || !pointer_enabled {
                 continue;
             }
             let Some(pointer_button) = pointer_button_from(button.button) else {
@@ -182,7 +194,7 @@ impl InputState {
         }
 
         for wheel in input.mouse_wheel.read() {
-            if wheel.window != window {
+            if wheel.window != window || !pointer_enabled {
                 continue;
             }
             self.note_wheel(ui, wheel_delta(wheel));
@@ -441,6 +453,21 @@ mod tests {
             0,
             "a move the pointer already left behind must not be delivered after it",
         );
+        assert_eq!(state.position(), None);
+    }
+
+    #[test]
+    fn suspending_the_pointer_drops_a_stale_hover_and_later_click() {
+        let (ui, moves, downs) = counting_tree();
+        let mut state = InputState::default();
+
+        state.note_move(Vector2::new(50.0, 50.0));
+        state.flush_moves(&ui);
+        state.suspend_pointer(&ui);
+        state.note_button(&ui, PointerButton::Primary, true);
+
+        assert_eq!(moves.get(), 1);
+        assert_eq!(downs.get(), 0, "a locked cursor has no Mosaic click target");
         assert_eq!(state.position(), None);
     }
 

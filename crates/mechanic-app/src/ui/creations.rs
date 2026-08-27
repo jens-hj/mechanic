@@ -12,13 +12,15 @@ use std::path::PathBuf;
 
 use bevy_mosaic::ui::*;
 use mosaic_core::Effect;
-use mosaic_core::theme::color;
-use mosaic_macros::view;
+use mosaic_macros::{component, view};
 use mosaic_widgets::input::{EventCtx, Key, KeyEvent, KeyEventKind};
 
+use super::components::{Action, ActionProps, PanelSurface, PanelSurfaceProps};
+#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
+use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
-use super::{CreationsAction, Handles, UiIntent, display_font};
+use super::{CreationsAction, Handles, UiIntent};
 use crate::creation_menu::CreationMenuState;
 use crate::showcase::CreationPreset;
 
@@ -89,7 +91,8 @@ pub(crate) fn capture(menu: &CreationMenuState) -> Model {
 ///
 /// The veil covers the window on purpose: while the picker is up, a click that
 /// lands anywhere else is a click on the picker, not on the machine behind it.
-pub(crate) fn view(handles: &Handles) -> Element {
+#[component]
+pub(crate) fn CreationPicker(handles: Handles) -> Element {
     let model = handles.creations;
     let sheet = handles.clone();
     view! {
@@ -122,13 +125,15 @@ fn dialog(handles: &Handles, model: State<Model>) -> Element {
     // list given a share of a column that hugs has no share to take, and
     // collapses to nothing.
     view! {
-        col width:{ Length::px(SHEET) } height:min-content
-            pad:24px radius:14px fill:picker.sheet
-            stroke:(width:1px color:picker.edge)
-            shadow:(offset:(x:0px y:30px) blur:90px color:#00000099) {
-            col width:fill height:min-content gap:10px {
-                text font-family:{ display_font() } font-size:19px font-weight:700
-                    letter-spacing:2.7px "CREATIONS"
+        PanelSurface elevated:true width:(Length::px(SHEET)) height:min-content
+            pad:(Edges::all(pad.sheet)) fill:picker.sheet
+            stroke:(width:border.hairline color:picker.edge)
+            shadow:(mosaic_core::theme::typed(
+                modal_shadow,
+                || ShadowSpec::new(Vector2::ZERO, 0.0, 0.0, Color::TRANSPARENT),
+            )) {
+            col height:min-content gap:10px {
+                text #mechanic.title "CREATIONS"
                 (field)
                 if !notice().is_empty() {
                     text font-size:13px font-color:picker.notice { notice() }
@@ -146,11 +151,10 @@ fn dialog(handles: &Handles, model: State<Model>) -> Element {
                 for (scene, ()) in { CreationPreset::ALL.map(|scene| (scene, ())) } {
                     (preset_button(&presets, *scene))
                 }
-                col width:fill height:42px align:center justify:center
-                    margin:(top:10px) radius:7px fill:picker.row
-                    hover { fill:picker.row-over }
-                    @click:{ cancel.ask(UiIntent::Creations(CreationsAction::Cancel)) } {
-                    text font-size:15px "Cancel"
+                Action #mechanic.list-row label:"Cancel"
+                    on-click:(move || cancel.ask(UiIntent::Creations(CreationsAction::Cancel)))
+                    width:fill height:(control_size.height) margin:(top:10px) {
+                    text #mechanic.value "Cancel"
                 }
             }
         }
@@ -160,8 +164,7 @@ fn dialog(handles: &Handles, model: State<Model>) -> Element {
 /// One of the two section headings.
 fn heading(text: &'static str) -> Element {
     view! {
-        text width:fill font-family:{ display_font() } font-size:12px font-weight:700
-            letter-spacing:1.7px font-color:ink.dim margin:(top:6px) (text)
+        text #mechanic.section width:fill margin:(top:6px) (text)
     }
 }
 
@@ -190,11 +193,9 @@ fn name_field(handles: &Handles) -> Element {
         }
     };
     view! {
-        row width:fill height:min-content align:center gap:10px {
+        row height:min-content align:center gap:10px {
             text font-size:14px font-color:ink.muted "Save current as"
-            row width:1fr height:34px align:center
-                pad:(horizontal:10px vertical:0px) radius:6px fill:chip.fill
-                stroke:(width:1px color:chip.edge)
+            input #mechanic.field
                 @key:{ move |event: &KeyEvent, ctx: &mut EventCtx| {
                     if !matches!(event.kind, KeyEventKind::Down { .. }) { return; }
                     match event.key {
@@ -211,18 +212,16 @@ fn name_field(handles: &Handles) -> Element {
                         }
                         _ => {}
                     }
-                } } {
-                input width:1fr font-size:15px fill:#00000000
-                    pad:(horizontal:0px vertical:0px)
-                    stroke:(width:0px color:#00000000) buffer
-            }
-            col width:96px height:34px align:center justify:center radius:6px
-                fill:picker.row hover { fill:picker.row-over }
-                @click:{
+                } }
+                width:1fr height:control-size.compact-height pad:(horizontal:10px vertical:0px)
+                buffer
+            Action label:"Save creation"
+                on-click:(move || {
                     save.ask(UiIntent::Creations(CreationsAction::Name(buffer.get_untracked())));
                     save.ask(UiIntent::Creations(CreationsAction::Save));
-                } {
-                text font-size:14px { label().to_owned() }
+                })
+                width:96px height:(control_size.compact_height) {
+                text font-size:text-size.body { label().to_owned() }
             }
         }
     }
@@ -231,27 +230,36 @@ fn name_field(handles: &Handles) -> Element {
 /// One saved creation: open it, or ask twice and delete it.
 fn saved_row(handles: &Handles, model: State<Model>, index: usize) -> Element {
     let load = handles.clone();
-    let remove = handles.clone();
+    let remove_confirmed = handles.clone();
+    let remove_plain = handles.clone();
     let row = move || model.with(|found| found.rows.get(index).cloned().unwrap_or_default());
     let confirming = move || row().confirming;
     view! {
-        row width:fill height:52px align:center gap:8px {
-            col width:1fr height:fill justify:center gap:3px
-                pad:(horizontal:16px vertical:9px) radius:7px fill:picker.row
-                stroke:(width:1px color:picker.row-edge)
-                hover { fill:picker.row-over }
-                @click:{ load.ask(UiIntent::Creations(CreationsAction::Load(row().path))) } {
-                text font-family:{ display_font() } font-size:17px { row().name }
-                text font-size:12px font-color:ink.muted { row().summary }
+        row height:52px align:center gap:8px {
+            Action #mechanic.list-row label:"Open creation"
+                on-click:(move || load.ask(UiIntent::Creations(CreationsAction::Load(row().path))))
+                width:1fr height:fill justify:center gap:3px pad:(horizontal:16px vertical:9px)
+                align:start {
+                text font-family:typeface.display font-size:text-size.heading { row().name }
+                text #mechanic.caption { row().summary }
             }
-            col width:{ if confirming() { Dimension::Px(96.0) } else { Dimension::Px(44.0) } }
-                height:fill align:center justify:center radius:7px
-                fill:{ if confirming() { color(picker.danger) } else { color(picker.row) } }
-                font-color:{ if confirming() { color(accent.danger) } else { color(ink.muted) } }
-                hover { fill:picker.danger-over }
-                @click:{ remove.ask(UiIntent::Creations(CreationsAction::Delete(row().path))) } {
-                text font-size:{ if confirming() { Length::px(13.0) } else { Length::px(18.0) } } {
-                    if confirming() { "Delete?" } else { "×" }
+            if confirming() {
+                Action #mechanic.action-danger label:"Confirm delete creation"
+                    on-click:({
+                        let remove = remove_confirmed.clone();
+                        move || remove.ask(UiIntent::Creations(CreationsAction::Delete(row().path)))
+                    })
+                    width:96px height:fill {
+                    text font-size:text-size.label font-color:accent.danger "Delete?"
+                }
+            } else {
+                Action label:"Delete creation"
+                    on-click:({
+                        let remove = remove_plain.clone();
+                        move || remove.ask(UiIntent::Creations(CreationsAction::Delete(row().path)))
+                    })
+                    width:44px height:fill {
+                    text font-size:18px font-color:ink.muted "×"
                 }
             }
         }
@@ -262,13 +270,12 @@ fn saved_row(handles: &Handles, model: State<Model>, index: usize) -> Element {
 fn preset_button(handles: &Handles, scene: CreationPreset) -> Element {
     let handles = handles.clone();
     view! {
-        col width:fill height:min-content justify:center gap:3px
-            pad:(horizontal:16px vertical:9px) radius:7px fill:picker.row
-            stroke:(width:1px color:picker.row-edge)
-            hover { fill:picker.row-over }
-            @click:{ handles.ask(UiIntent::Creations(CreationsAction::Preset(scene))) } {
-            text font-family:{ display_font() } font-size:16px (scene.label())
-            text font-size:12px font-color:ink.muted (scene.description())
+        Action #mechanic.list-row label:"Open preset"
+            on-click:(move || handles.ask(UiIntent::Creations(CreationsAction::Preset(scene))))
+            width:fill height:min-content justify:center gap:3px align:start
+            pad:(horizontal:16px vertical:9px) {
+            text font-family:typeface.display font-size:text-size.section (scene.label())
+            text #mechanic.caption (scene.description())
         }
     }
 }

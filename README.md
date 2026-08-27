@@ -28,6 +28,10 @@ cargo run -p mechanic-app
 
 - Press `?` to show or hide the controls and status overlay. It starts hidden
   so the construction view stays unobstructed.
+- Press `F3` to toggle the pointer-transparent performance overlay. It reports
+  FPS, average and p95 frame time, render CPU/GPU time when the adapter exposes
+  it, actual simulation tick rate, physics CPU/GPU time, individual collision
+  stages, scene/contact counts, and solver failure flags.
 - Option/Alt + left-drag to orbit (middle-drag also works), Shift + left-drag
   to move the orbital centre across the ground plane, and use the mouse wheel
   or trackpad scroll to zoom. Right-click removes one hovered cylinder. On a
@@ -40,6 +44,11 @@ cargo run -p mechanic-app
   Engine. `[` selects Shape.
   Hover an icon to see its tool name. Tool selection persists when the
   simulation mode changes.
+- Hold `Tab` to open the ten-material wheel. The highlighted material shows
+  five 1–5 ratings beneath its name: Weight, Grip, Bounce, Roll Resistance,
+  and Softness. Weight, Grip, Bounce, and Roll Resistance are calibrated
+  against the engine's displayed caps; Softness uses a logarithmic scale from
+  rubber-like 0.01 GPa to steel-like 200 GPa.
 - With Block selected, click and release the white ghost to place one block, or
   hold and drag from the press position to preview a rectangle of blocks. The
   preview shows it as one cuboid with block counts and metre dimensions. While
@@ -62,9 +71,12 @@ cargo run -p mechanic-app
   in the HUD, and clicking a block that is already in a region reopens it. The region merges into a single shape
   with eight corners to edit, and the rest of the build fades back so the area
   under the cursor is the only thing reading as solid. `Escape` leaves it.
-  Drag a corner to shape it. Movement is constrained to a fraction of a block
-  rather than running free, so two corners line up because they landed on the
-  same sub-grid rather than because they were matched by eye. `G` cycles the step
+  Drag a corner to shape it. Movement follows one world axis at a time, shown by
+  a pair of arrows through the corner; press `Q` during the drag to cycle to the
+  next axis while keeping the movement already made. Movement is also constrained
+  to a fraction of a block rather than running free, so two corners line up
+  because they landed on the same sub-grid rather than because they were matched
+  by eye. `G` cycles the step
   through one block, a half, a quarter (the default, 62.5 mm), and fine 12.5 mm
   detail. **No corner may leave the region's original bounding box**, so a corner
   can only ever be drawn inward and one region can never grow into its
@@ -309,6 +321,16 @@ leaving the bore and omitted sector physically passable without changing the
 GPU ABI or collision kernels. Cuboids still compile to one collider each; under the
 131,072-collider limit an all-cylinder creation therefore supports about 8,192
 parts.
+
+Construction materials carry density, separate static and kinetic friction,
+restitution, rolling resistance, and Young's modulus. Contact pairs mix both
+friction coefficients and rolling resistance by geometric mean, take the
+higher restitution, and add their nominal block compliances. The solver retains
+two-axis static friction until the static limit is exceeded, then clamps to the
+lower kinetic limit; it also resists rolling about axes tangent to the contact
+normal without adding torsional spin friction. The ground uses Concrete's
+surface preset. Machine parts keep their fixed low-friction, non-bouncy contact
+response, while bearings remain massless and collisionless.
 
 The three smaller creation-picker scenes keep contact within articulated
 mechanisms enabled. The full 20,000-part stress scene disables that contact to

@@ -12,12 +12,18 @@
 //! moment later. Nothing in a view touches a resource, and nothing in the world
 //! knows a view exists.
 
+mod components;
 mod control_block;
 mod creations;
 mod dimensions;
 mod help;
 mod hotbar;
 pub(crate) mod markers;
+mod material_wheel;
+mod pause;
+mod performance;
+mod reticle;
+mod styles;
 #[cfg(test)]
 mod testing;
 pub(crate) mod theme;
@@ -25,7 +31,6 @@ pub(crate) mod theme;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use bevy::input::keyboard::Key;
 use bevy::prelude::{
     ButtonInput, Camera, GlobalTransform, KeyCode, NonSend, NonSendMut, Query, Res, ResMut,
     Resource, Single, Window, With, World, info, warn,
@@ -33,19 +38,37 @@ use bevy::prelude::{
 use bevy_mosaic::MosaicContext;
 use mosaic_core::{Size as MosaicSize, State as MosaicState};
 
+use crate::camera::{MainCamera, MaterialWheelState};
 use crate::control_panel::ControlPanelState;
+use crate::controls::{Controls, GameAction};
 use crate::creation_menu::CreationMenuState;
 use crate::hotbar::SelectedMaterial;
 use crate::hotbar::{SelectedTool, Tool};
+use crate::pause_menu::PauseMenuState;
+use crate::settings::AppSettings;
 use crate::showcase::CreationPreset;
-use crate::{AppSimulation, EditorGraph, EditorState, OrbitCamera};
+use crate::{AppSimulation, EditorGraph, EditorState};
 use mechanic_core::ConstructionMaterial;
 
 pub(crate) use control_block::{EditTarget, LocatedJoint};
 
 #[allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
 use bevy_mosaic::ui::*;
-use mosaic_macros::view;
+use mosaic_macros::{component, view};
+
+use control_block::{ControlPanel, ControlPanelProps};
+use creations::{CreationPicker, CreationPickerProps};
+use dimensions::{DimensionOverlay, DimensionOverlayProps};
+use help::{HelpPanel, HelpPanelProps};
+use hotbar::{Hotbar, HotbarProps};
+use markers::{MarkerOverlay, MarkerOverlayProps};
+use material_wheel::{MaterialWheel, MaterialWheelProps};
+use pause::{PauseMenu, PauseMenuProps};
+use performance::{PerformanceOverlay, PerformanceOverlayProps};
+use reticle::{WorldReticle, WorldReticleProps};
+#[allow(unused_imports, clippy::wildcard_imports)]
+// Style constants are consumed by `view!` expansion.
+use styles::*;
 
 /// What the overlay is asking the world to do.
 ///
@@ -64,8 +87,27 @@ pub(crate) enum UiIntent {
     Drive(control_block::Intent),
     /// Change one engine lane's gearbox settings.
     Gearbox(control_block::GearboxIntent),
+    /// An action in the full-screen pause menu.
+    Pause(PauseAction),
     /// Put away the control-block panel.
     CloseControlPanel,
+}
+
+/// What was changed or requested in the pause menu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PauseAction {
+    Continue,
+    OpenOptions,
+    OpenControls,
+    Back,
+    SetCameraFov(f32),
+    BeginBindingCapture(GameAction, usize),
+    ClearBinding(GameAction, usize),
+    ResetControls,
+    ReturnToBuild,
+    Exit,
+    CancelExit,
+    ExitWithoutSaving,
 }
 
 /// What was asked of the creation picker.
@@ -102,13 +144,17 @@ pub(crate) struct Handles {
     /// Whether the help panel is showing.
     help_open: MosaicState<bool>,
     /// Which tool is in hand.
-    hotbar: MosaicState<Tool>,
+    hotbar: MosaicState<Option<Tool>>,
+    /// Current shortcuts, used by hotbar labels and other guidance.
+    controls: MosaicState<Controls>,
     /// Shared material used by both ordinary shape tools.
     material: MosaicState<ConstructionMaterial>,
     /// Material tool whose press-and-drag menu is open.
     material_menu: MosaicState<Option<Tool>>,
     /// Material row currently under the captured pointer.
     material_hover: MosaicState<Option<ConstructionMaterial>>,
+    /// Open/highlight state of the keyboard-owned radial material selector.
+    material_wheel: MosaicState<material_wheel::Model>,
     /// Which tool the pointer is over, if any.
     hovered: MosaicState<Option<Tool>>,
     /// What the creation picker shows.
@@ -117,8 +163,14 @@ pub(crate) struct Handles {
     markers: MosaicState<Vec<markers::Marker>>,
     /// Dimensions for the live block-sheet preview.
     dimensions: MosaicState<dimensions::Model>,
+    /// What the pause modal shows.
+    pause: MosaicState<pause::Model>,
+    /// Slider-owned FOV value, kept separate so the native widget can bind it.
+    pause_fov: MosaicState<f32>,
     /// The control block's own state.
     block: control_block::Handles,
+    /// Opt-in frame, renderer, and physics diagnostics.
+    performance: MosaicState<performance::Model>,
     /// What the overlay is asking for.
     intents: Rc<RefCell<Vec<UiIntent>>>,
 }
@@ -131,14 +183,19 @@ impl Handles {
             viewport: MosaicState::new(MosaicSize::ZERO),
             help: MosaicState::new(help::Model::default()),
             help_open: MosaicState::new(false),
-            hotbar: MosaicState::new(Tool::default()),
+            hotbar: MosaicState::new(Some(Tool::default())),
+            controls: MosaicState::new(Controls::default()),
             material: MosaicState::new(ConstructionMaterial::Steel),
             material_menu: MosaicState::new(None),
             material_hover: MosaicState::new(None),
+            material_wheel: MosaicState::new(material_wheel::Model::default()),
             hovered: MosaicState::new(None),
             creations: MosaicState::new(creations::Model::default()),
             markers: MosaicState::new(Vec::new()),
             dimensions: MosaicState::new(dimensions::Model::default()),
+            pause: MosaicState::new(pause::Model::default()),
+            pause_fov: MosaicState::new(crate::settings::DEFAULT_CAMERA_FOV_DEGREES),
+            performance: MosaicState::new(performance::Model::default()),
             block: control_block::Handles {
                 model: MosaicState::new(control_block::PanelModel::default()),
                 selected: MosaicState::new(None),
@@ -174,6 +231,9 @@ struct Pushed {
     creations: creations::Model,
     markers: Vec<markers::Marker>,
     dimensions: dimensions::Model,
+    pause: pause::Model,
+    material_wheel: material_wheel::Model,
+    performance: performance::Model,
     block: control_block::PanelModel,
 }
 
@@ -209,25 +269,6 @@ impl UiInput {
     }
 }
 
-/// Where the design's two typefaces are looked for.
-const FONT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts");
-
-/// The typeface the design uses for titles and section headings.
-const DISPLAY_FAMILY: &str = "Chakra Petch";
-
-/// The typeface the design uses for body copy, controls, labels, and numbers.
-const BODY_FAMILY: &str = "JetBrains Mono";
-
-/// The authored family for display-scale UI text.
-pub(crate) fn display_font() -> FontFamily {
-    FontFamily::Named(DISPLAY_FAMILY.into())
-}
-
-/// The authored family for the UI's body text.
-pub(crate) fn body_font() -> FontFamily {
-    FontFamily::Named(BODY_FAMILY.into())
-}
-
 /// Builds the overlay and hands it to Mosaic.
 ///
 /// Exclusive because the tree is `!Send`, and inserting a non-send resource
@@ -244,7 +285,13 @@ pub(crate) fn mount(world: &mut World) {
     let handles = Handles::new();
     let tree = {
         let _ambient = ui.enter();
-        shell(&handles)
+        OverlayShell(
+            OverlayShellProps::builder()
+                .handles(handles.clone())
+                .build(),
+        )
+        .root()
+        .clone()
     };
     ui.mount(&tree);
 
@@ -264,9 +311,11 @@ pub(crate) fn mount(world: &mut World) {
 /// inside it does not — so every panel hugs its own contents, and the two that
 /// deliberately cover the window (the block, the picker) are the two that are
 /// meant to take the pointer with them.
-fn shell(handles: &Handles) -> Element {
+#[component]
+pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let block_open = handles.block.model;
     let creations_open = handles.creations;
+    let material_wheel_model = handles.material_wheel;
     let help_open = handles.help_open;
     let help_panel = handles.clone();
     let hotbar_panel = handles.clone();
@@ -274,19 +323,35 @@ fn shell(handles: &Handles) -> Element {
     let dimensions_panel = handles.clone();
     let block_panel = handles.clone();
     let creations_panel = handles.clone();
+    let pause_model = handles.pause;
+    let pause_panel = handles.clone();
+    let performance_model = handles.performance;
+    let performance_viewport = handles.viewport;
     view! {
-        stack width:fill height:fill align:start justify:start font-family:{ body_font() } {
-            (markers::view(&markers_panel))
-            (dimensions::view(&dimensions_panel))
-            if $help_open {
-                (help::view(&help_panel))
+        stack #mechanic.overlay width:fill height:fill align:start justify:start {
+            MarkerOverlay handles:(markers_panel)
+            DimensionOverlay handles:(dimensions_panel)
+            if material_wheel_model.with(|model| !model.open) && !pause_model.with(|model| model.open) {
+                WorldReticle
             }
-            (hotbar::view(&hotbar_panel))
+            if $help_open {
+                HelpPanel handles:(help_panel.clone())
+            }
+            Hotbar handles:(hotbar_panel)
+            if material_wheel_model.with(|model| model.open) {
+                MaterialWheel model:(material_wheel_model)
+            }
             if block_open.with(control_block::PanelModel::is_open) {
-                (control_block::panel(&block_panel.block))
+                ControlPanel handles:(block_panel.block.clone())
             }
             if creations_open.with(|model| model.open) {
-                (creations::view(&creations_panel))
+                CreationPicker handles:(creations_panel.clone())
+            }
+            if pause_model.with(|model| model.open) {
+                PauseMenu handles:(pause_panel.clone())
+            }
+            if performance_model.with(performance::Model::is_open) {
+                PerformanceOverlay model:(performance_model) viewport:(performance_viewport)
             }
         }
     }
@@ -301,7 +366,7 @@ fn shell(handles: &Handles) -> Element {
 /// the log rather than a failure to start.
 fn load_fonts(ui: &mosaic_widgets::Ui) {
     let fonts = ui.fonts();
-    if let Ok(entries) = std::fs::read_dir(FONT_DIR) {
+    if let Ok(entries) = std::fs::read_dir(theme::FONT_DIR) {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path
@@ -318,7 +383,7 @@ fn load_fonts(ui: &mosaic_widgets::Ui) {
     }
 
     let mut fonts = fonts.borrow_mut();
-    for (family, install_as_sans) in [(DISPLAY_FAMILY, true), (BODY_FAMILY, false)] {
+    for (family, install_as_sans) in [(theme::DISPLAY_FAMILY, true), (theme::BODY_FAMILY, false)] {
         if !fonts.has_family(family) {
             info!("overlay: {family} is not installed; falling back");
             continue;
@@ -341,32 +406,34 @@ pub(crate) struct ToolSelection<'w> {
     material: ResMut<'w, SelectedMaterial>,
 }
 
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+// Bevy system parameters are value-typed wrappers and independent resources.
 pub(crate) fn drain(
     ui: Option<NonSendMut<AppUi>>,
     mut panel: ResMut<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
+    mut pause: ResMut<PauseMenuState>,
     mut selection: ToolSelection,
     mut target: EditTarget,
     keyboard: Res<ButtonInput<KeyCode>>,
-    typed: Res<ButtonInput<Key>>,
+    actions: Res<ButtonInput<GameAction>>,
 ) {
     let Some(ui) = ui else {
         return;
     };
     control_block::capture_key(&ui.handles.block, &keyboard);
     // `?` belongs to the help panel unless something else is taking letters.
-    if !menu.is_open() && !panel.blocks_keyboard() && crate::help_toggle_requested(&typed) {
+    if !menu.is_open() && !panel.blocks_keyboard() && actions.just_pressed(GameAction::ToggleHelp) {
         let open = ui.handles.help_open.get_untracked();
         ui.handles.help_open.set(!open);
     }
     let intents: Vec<UiIntent> = ui.handles.intents.borrow_mut().drain(..).collect();
     for intent in intents {
         match intent {
-            UiIntent::Tool(tool) => selection.tool.0 = tool,
+            UiIntent::Tool(tool) => selection.tool.0 = Some(tool),
             UiIntent::MaterialTool(next, tool) => {
                 selection.material.0 = next;
-                selection.tool.0 = tool;
+                selection.tool.0 = Some(tool);
             }
             UiIntent::Creations(action) => menu.act(action),
             UiIntent::Drive(edit) => control_block::write_joint(&mut panel, &mut target, &edit),
@@ -377,6 +444,7 @@ pub(crate) fn drain(
                 ui.handles.block.gearbox_capturing.set(None);
                 ui.handles.block.located.set(None);
             }
+            UiIntent::Pause(action) => pause.act(action),
         }
     }
 }
@@ -391,6 +459,9 @@ pub(crate) fn push(
     selection: Res<SelectedTool>,
     material: Res<SelectedMaterial>,
     graph: Res<EditorGraph>,
+    simulation: Res<AppSimulation>,
+    pause: Res<PauseMenuState>,
+    settings: Res<AppSettings>,
     gearboxes: Res<crate::sequencer::GearboxRuntime>,
     mut located: ResMut<LocatedJoint>,
 ) {
@@ -398,8 +469,9 @@ pub(crate) fn push(
         return;
     };
     ui.handles.hotbar.set(selection.0);
+    ui.handles.controls.set(settings.controls().clone());
     ui.handles.material.set(material.0);
-    let block = control_block::capture(&panel, &graph, &gearboxes);
+    let block = control_block::capture(&panel, &graph, &gearboxes, settings.controls());
     if block != ui.pushed.block {
         ui.handles.block.model.set(block.clone());
         ui.pushed.block = block;
@@ -408,6 +480,31 @@ pub(crate) fn push(
     if creations != ui.pushed.creations {
         ui.handles.creations.set(creations.clone());
         ui.pushed.creations = creations;
+    }
+    let pause_model = pause::Model {
+        open: pause.is_open(),
+        simulating: simulation.is_running(),
+        page: pause.page(),
+        camera_fov_degrees: settings.camera_fov_degrees(),
+        controls: settings.controls().clone(),
+        capture: pause.binding_capture(),
+        vehicle_conflicts: GameAction::ALL
+            .into_iter()
+            .filter(|action| {
+                settings
+                    .controls()
+                    .conflicts_with_vehicle(&graph.0, *action)
+            })
+            .collect(),
+    };
+    if pause_model != ui.pushed.pause {
+        ui.handles.pause.set(pause_model.clone());
+        if (ui.handles.pause_fov.get_untracked() - settings.camera_fov_degrees()).abs()
+            > f32::EPSILON
+        {
+            ui.handles.pause_fov.set(settings.camera_fov_degrees());
+        }
+        ui.pushed.pause = pause_model;
     }
     located.0 = ui.handles.block.located.get_untracked();
 }
@@ -436,7 +533,7 @@ pub(crate) fn push_markers(
     graph: Res<EditorGraph>,
     simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
-    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
     let Some(mut ui) = ui else {
         return;
@@ -454,7 +551,7 @@ pub(crate) fn push_dimensions(
     ui: Option<NonSendMut<AppUi>>,
     state: Res<EditorState>,
     simulation: Res<AppSimulation>,
-    camera: Single<(&Camera, &GlobalTransform), With<OrbitCamera>>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
     let Some(mut ui) = ui else {
         return;
@@ -463,6 +560,38 @@ pub(crate) fn push_dimensions(
     if next != ui.pushed.dimensions {
         ui.handles.dimensions.set(next.clone());
         ui.pushed.dimensions = next;
+    }
+}
+
+/// Mirrors the transient world selector into the typed overlay components.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn push_player(ui: Option<NonSendMut<AppUi>>, wheel: Res<MaterialWheelState>) {
+    let Some(mut ui) = ui else {
+        return;
+    };
+    let next = material_wheel::Model {
+        open: wheel.open,
+        highlighted: wheel.highlighted,
+    };
+    if next != ui.pushed.material_wheel {
+        ui.handles.material_wheel.set(next);
+        ui.pushed.material_wheel = next;
+    }
+}
+
+/// Publishes the throttled performance snapshot into the retained overlay.
+#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+pub(crate) fn push_performance(
+    ui: Option<NonSendMut<AppUi>>,
+    metrics: Res<crate::performance::PerformanceMetrics>,
+) {
+    let Some(mut ui) = ui else {
+        return;
+    };
+    let next = performance::capture(metrics.snapshot());
+    if next != ui.pushed.performance {
+        ui.handles.performance.set(next.clone());
+        ui.pushed.performance = next;
     }
 }
 
@@ -476,6 +605,7 @@ pub(crate) fn sync_input(
     ui: Option<NonSend<AppUi>>,
     menu: Res<CreationMenuState>,
     panel: Res<ControlPanelState>,
+    pause: Res<PauseMenuState>,
     windows: Query<&Window>,
     mut input: ResMut<UiInput>,
 ) {
@@ -499,9 +629,10 @@ pub(crate) fn sync_input(
     let panel_keyboard = panel.blocks_keyboard();
     let capturing = ui.handles.block.capturing.get_untracked().is_some();
     *input = UiInput {
-        pointer: mosaic.wants_pointer(),
-        keyboard: mosaic_keyboard || menu_open || panel_keyboard,
-        escape: escape_is_consumed(mosaic_keyboard, menu_open, capturing),
+        pointer: mosaic.wants_pointer() || pause.blocks_world_input(),
+        keyboard: mosaic_keyboard || menu_open || panel_keyboard || pause.blocks_world_input(),
+        escape: escape_is_consumed(mosaic_keyboard, menu_open, capturing)
+            || pause.blocks_world_input(),
     };
 }
 
@@ -513,27 +644,35 @@ fn escape_is_consumed(mosaic_keyboard: bool, menu_open: bool, capturing: bool) -
 
 #[cfg(test)]
 mod tests {
-    use bevy_mosaic::ui::FontFamily;
+    use bevy_mosaic::ui::{Color, FontFamily, Length};
+    use mechanic_core::ConstructionMaterial;
     use mosaic_core::Vector2;
+    use mosaic_core::theme::{color, install as install_theme, typed};
     use mosaic_widgets::Ui;
 
-    use super::testing::{Overlay, VIEWPORT};
-    use super::{
-        BODY_FAMILY, DISPLAY_FAMILY, body_font, creations, display_font, escape_is_consumed,
-        load_fonts,
-    };
+    use super::material_wheel;
+    use super::testing::{Overlay, VIEWPORT, away};
+    use super::theme::{BODY_FAMILY, DISPLAY_FAMILY, accent, metrics, palette, typeface};
+    use super::{creations, escape_is_consumed, load_fonts, theme};
 
     #[test]
     fn bundled_fonts_cover_the_authored_type_roles() {
         let ui = Ui::new();
         load_fonts(&ui);
+        theme::install();
         let fonts = ui.fonts();
         let fonts = fonts.borrow();
 
         assert!(fonts.has_family(DISPLAY_FAMILY));
         assert!(fonts.has_family(BODY_FAMILY));
-        assert_eq!(display_font(), FontFamily::Named(DISPLAY_FAMILY.into()));
-        assert_eq!(body_font(), FontFamily::Named(BODY_FAMILY.into()));
+        assert_eq!(
+            typed(typeface.display, FontFamily::default),
+            FontFamily::Named(DISPLAY_FAMILY.into()),
+        );
+        assert_eq!(
+            typed(typeface.body, FontFamily::default),
+            FontFamily::Named(BODY_FAMILY.into()),
+        );
     }
 
     /// The bug this guards against: a `stack` child fills its parent unless it
@@ -568,6 +707,152 @@ mod tests {
             .find(|rect| (rect.size.width - 64.0).abs() < 0.5)
             .expect("the hotbar is on screen");
         assert!(overlay.wants_pointer_at(bar.center()));
+    }
+
+    #[test]
+    fn typed_boundaries_preserve_panel_and_world_pointer_ownership() {
+        let overlay = Overlay::mount();
+        overlay.handles.help_open.set(true);
+        overlay.settle();
+
+        assert!(overlay.wants_pointer_at(Vector2::new(32.0, 32.0)));
+        assert!(!overlay.wants_pointer_at(Vector2::new(900.0, 300.0)));
+    }
+
+    #[test]
+    fn reticle_is_centred_and_never_takes_world_input() {
+        let overlay = Overlay::mount();
+        let centre = Vector2::new(VIEWPORT.width / 2.0, VIEWPORT.height / 2.0);
+        assert!(
+            overlay
+                .ink()
+                .into_iter()
+                .any(|rect| away(rect.center(), centre) < 1.0 && rect.size.width < 40.0),
+            "the compact reticle is painted at viewport centre",
+        );
+        assert!(!overlay.wants_pointer_at(centre));
+    }
+
+    #[test]
+    fn material_wheel_is_large_textured_and_paints_the_highlight_last() {
+        let overlay = Overlay::mount();
+        overlay.handles.material_wheel.set(material_wheel::Model {
+            open: true,
+            highlighted: Some(ConstructionMaterial::Concrete),
+        });
+        overlay.settle();
+        let centre = Vector2::new(VIEWPORT.width / 2.0, VIEWPORT.height / 2.0);
+        let sectors = overlay
+            .shapes()
+            .into_iter()
+            .filter(|shape| {
+                away(shape.rect.center(), centre) < 1.0
+                    && shape
+                        .strokes
+                        .first()
+                        .is_some_and(|stroke| (stroke.width - 72.0).abs() < f32::EPSILON)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sectors.len(), ConstructionMaterial::ALL.len());
+        assert_eq!(
+            sectors
+                .last()
+                .and_then(|shape| shape.strokes.first())
+                .and_then(|stroke| stroke.color.as_solid()),
+            Some(color(accent.key)),
+        );
+        assert!(sectors.iter().all(|shape| shape.rect.size.width > 250.0));
+
+        let last_sector_paint = overlay
+            .indexed_shapes()
+            .into_iter()
+            .filter(|(_, shape)| {
+                shape
+                    .strokes
+                    .first()
+                    .is_some_and(|stroke| (stroke.width - 72.0).abs() < f32::EPSILON)
+            })
+            .map(|(index, _)| index)
+            .max()
+            .expect("material sector paint");
+        let first_block_paint = overlay
+            .indexed_images()
+            .into_iter()
+            .filter(|(_, intrinsic, _)| *intrinsic == (96, 106))
+            .map(|(index, _, _)| index)
+            .min()
+            .expect("material block paint");
+        assert!(
+            last_sector_paint < first_block_paint,
+            "all sector backgrounds paint beneath every material block"
+        );
+
+        let block_previews = overlay
+            .images()
+            .into_iter()
+            .filter(|(intrinsic, destination)| {
+                *intrinsic == (96, 106)
+                    && (destination.size.width - 54.0).abs() < f32::EPSILON
+                    && destination.size.height > 59.0
+                    && destination.size.height <= 60.0
+            })
+            .count();
+        assert_eq!(block_previews, ConstructionMaterial::ALL.len());
+
+        let label_texture = overlay
+            .images()
+            .into_iter()
+            .find(|(intrinsic, destination)| {
+                *intrinsic == (3072, 3072)
+                    && (destination.size.width - 236.0).abs() < f32::EPSILON
+                    && (destination.size.height - 54.0).abs() < f32::EPSILON
+            })
+            .expect("the selected material textures the high-resolution swatch");
+        assert!((label_texture.1.center().x - centre.x).abs() < f32::EPSILON);
+        assert!(
+            label_texture.1.origin.y > centre.y + 190.0,
+            "the material swatch is spaced below the wheel"
+        );
+
+        assert!(overlay.shapes().into_iter().any(|shape| {
+            (shape.rect.size.width - 236.0).abs() < f32::EPSILON
+                && (shape.rect.size.height - 54.0).abs() < f32::EPSILON
+                && (shape.radii.tl - 5.0).abs() < f32::EPSILON
+        }));
+
+        assert!(!overlay.wants_pointer_at(centre));
+    }
+
+    #[test]
+    fn alternate_palette_and_metric_themes_update_the_mounted_tree() {
+        let overlay = Overlay::mount();
+        overlay.handles.help_open.set(true);
+        overlay.settle();
+        let elements = overlay.element_count();
+
+        let switched_shell = Color::from_rgb_hex(0x0017_304A);
+        let mut switched_palette = palette();
+        switched_palette.shell = switched_shell;
+        let mut switched_metrics = metrics();
+        switched_metrics.radius.panel = Length::px(23.0);
+        install_theme(&switched_palette);
+        install_theme(&switched_metrics);
+        overlay.settle();
+
+        let panel = overlay
+            .shapes()
+            .into_iter()
+            .find(|shape| (shape.rect.size.width - 720.0).abs() < 0.5)
+            .expect("the already-mounted help panel repaints");
+        assert_eq!(panel.fill.as_solid(), Some(switched_shell));
+        assert!((panel.radii.tl - 23.0).abs() < f32::EPSILON);
+        assert_eq!(
+            overlay.element_count(),
+            elements,
+            "theme changes do not rebuild"
+        );
+
+        theme::install();
     }
 
     #[test]

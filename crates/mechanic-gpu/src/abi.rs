@@ -144,11 +144,23 @@ pub struct GpuCollider {
     pub half_extents: [f32; 4],
     /// compound index, source-part slot, source generation, ground-contact role.
     pub metadata: [u32; 4],
-    /// friction, restitution, and two reserved lanes.
-    pub contact_properties: [f32; 4],
+    /// Static friction, dynamic friction, restitution, and rolling resistance.
+    pub surface_response: [f32; 4],
+    /// Nominal block compliance, Young's modulus, and two reserved lanes.
+    pub surface_elasticity: [f32; 4],
     /// shape kind, offset into the convex-shape buffer, packed element counts,
     /// and one reserved lane. A box ignores every lane but the kind.
     pub shape: [u32; 4],
+}
+
+/// Contact properties for the infinite ground plane.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct GpuGroundSurface {
+    /// Static friction, dynamic friction, restitution, and rolling resistance.
+    pub response: [f32; 4],
+    /// Nominal block compliance, Young's modulus, and two reserved lanes.
+    pub elasticity: [f32; 4],
 }
 
 /// One exact passive-bearing row.
@@ -183,11 +195,12 @@ pub struct GpuPair {
 pub struct GpuContact {
     /// body a, body b, persistent-manifold slot, point count.
     pub metadata: [u32; 4],
-    /// xyz normal from a to b; w penetration depth.
+    /// xyz normal from a to b; w is penetration before preparation and target
+    /// normal speed afterwards.
     pub normal_penetration: [f32; 4],
     /// xyz lever arm from body A; w accumulated normal impulse.
     pub arm_a_impulse: [f32; 4],
-    /// xyz lever arm from body B; w is unused.
+    /// xyz lever arm from body B; w packs the prepared surface response.
     pub arm_b: [f32; 4],
 }
 
@@ -201,6 +214,8 @@ pub struct GpuPersistentManifold {
     pub normal_penetration: [f32; 4],
     /// xyz representative point relative to body A; w accumulated normal impulse.
     pub point_impulse: [f32; 4],
+    /// Cached tangent-u, tangent-v, rolling-u, and rolling-v impulses.
+    pub tangent_rolling_impulses: [f32; 4],
 }
 
 /// Canonical tree-parent information for one derived mechanism body.
@@ -335,11 +350,12 @@ const _: () = {
     assert!(size_of::<GpuVelocity>() == 32);
     assert!(size_of::<GpuMass>() == 64);
     assert!(size_of::<GpuSpatialInertia>() == 64);
-    assert!(size_of::<GpuCollider>() == 96);
+    assert!(size_of::<GpuCollider>() == 112);
+    assert!(size_of::<GpuGroundSurface>() == 32);
     assert!(size_of::<GpuBearing>() == 80);
     assert!(size_of::<GpuPair>() == 8);
     assert!(size_of::<GpuContact>() == 64);
-    assert!(size_of::<GpuPersistentManifold>() == 48);
+    assert!(size_of::<GpuPersistentManifold>() == 64);
     assert!(size_of::<GpuMechanismBody>() == 64);
     assert!(size_of::<GpuMechanismCoordinate>() == 8);
     assert!(size_of::<GpuMechanismDrive>() == 48);
@@ -349,11 +365,13 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::Zeroable;
+
     use super::{
         DRIVE_MODE_PASSIVE, GpuBearing, GpuCollider, GpuContact, GpuContractionNode,
-        GpuDiagnostics, GpuLinkState, GpuMass, GpuMechanismBody, GpuMechanismCoordinate,
-        GpuMechanismDrive, GpuPair, GpuPersistentManifold, GpuSpatialInertia, GpuTickConfig,
-        GpuTransform, GpuVelocity,
+        GpuDiagnostics, GpuGroundSurface, GpuLinkState, GpuMass, GpuMechanismBody,
+        GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold,
+        GpuSpatialInertia, GpuTickConfig, GpuTransform, GpuVelocity,
     };
 
     #[test]
@@ -366,6 +384,7 @@ mod tests {
             size_of::<GpuMass>(),
             size_of::<GpuSpatialInertia>(),
             size_of::<GpuCollider>(),
+            size_of::<GpuGroundSurface>(),
             size_of::<GpuBearing>(),
             size_of::<GpuContact>(),
             size_of::<GpuPersistentManifold>(),
@@ -387,5 +406,35 @@ mod tests {
         assert!(passive.max_acceleration.abs() < f32::EPSILON);
         assert!(passive.min_angle.is_infinite() && passive.min_angle < 0.0);
         assert!(passive.max_angle.is_infinite() && passive.max_angle > 0.0);
+    }
+
+    #[test]
+    fn contact_rows_and_capacities_remain_fixed() {
+        assert_eq!(size_of::<GpuCollider>(), 112);
+        assert_eq!(size_of::<GpuGroundSurface>(), 32);
+        assert_eq!(size_of::<GpuContact>(), 64);
+        assert_eq!(size_of::<GpuPersistentManifold>(), 64);
+        assert_eq!(crate::MAX_COLLIDERS, 131_072);
+        assert_eq!(crate::MAX_CONTACT_PAIRS, 2_097_152);
+    }
+
+    #[test]
+    fn expanded_manifold_rows_clear_before_reuse() {
+        let mut row = GpuPersistentManifold {
+            pair_tick: [1, 2, 3, 1],
+            normal_penetration: [0.0, 1.0, 0.0, 0.1],
+            point_impulse: [0.5, 0.0, 0.0, 4.0],
+            tangent_rolling_impulses: [1.0, 2.0, 3.0, 4.0],
+        };
+        assert_ne!(row, GpuPersistentManifold::zeroed());
+        row = GpuPersistentManifold::zeroed();
+        assert_eq!(row, GpuPersistentManifold::zeroed());
+        row.pair_tick = [9, 10, 11, 1];
+        assert_eq!(row.pair_tick, [9, 10, 11, 1]);
+        assert!(
+            row.tangent_rolling_impulses
+                .into_iter()
+                .all(|value| value.abs() < f32::EPSILON)
+        );
     }
 }
