@@ -26,6 +26,7 @@ bevy = { workspace = true, features = [
 bevy_mosaic = { path = "../bevy_mosaic" }
 mechanic-core = { path = "../mechanic-core" }
 mechanic-gpu = { path = "../mechanic-gpu" }
+mechanic-world = { path = "../mechanic-world" }
 # The control block's UI is written in Mosaic's `view!`, and the macro resolves
 # its paths through this crate's manifest rather than `bevy_mosaic`'s.
 mosaic-core.workspace = true

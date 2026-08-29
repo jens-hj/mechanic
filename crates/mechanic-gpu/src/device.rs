@@ -12,9 +12,9 @@ use crate::{
     BROADPHASE_HASH_CAPACITY, COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, FIXED_DT_SECONDS,
     GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuGroundSurface,
     GpuLinkState, GpuMass, GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair,
-    GpuPersistentManifold, GpuSpatialInertia, GpuTickConfig, GpuTransform, MAX_BEARINGS,
-    MAX_BODIES, MAX_COLLIDERS, MAX_CONTACT_PAIRS, MAX_CONVEX_SHAPE_SLOTS, SNAPSHOT_RING_SIZE,
-    pack_convex_counts,
+    GpuPersistentManifold, GpuSpatialInertia, GpuTickConfig, GpuTransform, GpuVelocity,
+    MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS, MAX_CONTACT_PAIRS, MAX_CONVEX_SHAPE_SLOTS,
+    SNAPSHOT_RING_SIZE, pack_convex_counts,
 };
 
 const SERIAL_MECHANISM_BEARING_LIMIT: u32 = 64;
@@ -25,6 +25,9 @@ const SERIAL_MECHANISM_SOLVER_MULTIPLIER: u32 = 12;
 pub struct GpuPhysicsConfig {
     /// Whether broadphase, SAT, and projected contact impulses are dispatched.
     pub collisions_enabled: bool,
+    /// Whether the explicit flat ground plane participates in collision.
+    /// Garage and benchmark scenes opt into this; streamed worlds disable it.
+    pub ground_plane_enabled: bool,
     /// Whether colliders in the same articulated mechanism may contact.
     pub mechanism_self_collisions: bool,
     /// Fixed number of projected impulse iterations.
@@ -35,6 +38,7 @@ impl Default for GpuPhysicsConfig {
     fn default() -> Self {
         Self {
             collisions_enabled: true,
+            ground_plane_enabled: true,
             mechanism_self_collisions: true,
             solver_iterations: 8,
         }
@@ -197,6 +201,22 @@ pub enum GpuImpulseError {
     NonFinite,
 }
 
+/// A replacement scene state cannot be uploaded safely.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum GpuBodyStateError {
+    /// State rows must exactly match the uploaded body count.
+    #[error("body state count {provided} does not match uploaded body count {expected}")]
+    BodyCount {
+        /// Number of rows supplied by the caller.
+        provided: usize,
+        /// Number of rows allocated by the scene.
+        expected: u32,
+    },
+    /// Every transform and velocity lane must be finite.
+    #[error("body state contains NaN or infinity")]
+    NonFinite,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct GpuExternalImpulse {
@@ -212,6 +232,7 @@ pub struct GpuPhysics {
     collider_count: u32,
     bearing_count: u32,
     suppression_count: u32,
+    pair_capacity: u32,
     pipeline_config: GpuPhysicsConfig,
     config: wgpu::Buffer,
     positions: wgpu::Buffer,
@@ -250,7 +271,7 @@ struct CollisionResources {
     _contacts: wgpu::Buffer,
     _manifold_keys: wgpu::Buffer,
     _persistent_manifolds: wgpu::Buffer,
-    _ground_surface: wgpu::Buffer,
+    ground_surface: wgpu::Buffer,
     _active_contacts: wgpu::Buffer,
     indirect_args: wgpu::Buffer,
     velocity_deltas: wgpu::Buffer,
@@ -436,6 +457,7 @@ impl GpuPhysics {
         let bearing_count = u32::try_from(creation.bearings.len()).unwrap_or(u32::MAX);
         let suppression_count =
             u32::try_from(creation.collision_suppression.len()).unwrap_or(u32::MAX);
+        let pair_capacity = contact_pair_capacity(creation.colliders.len());
         let positions = creation
             .compounds
             .iter()
@@ -787,6 +809,7 @@ impl GpuPhysics {
         let collision = create_collision_resources(
             device,
             creation.colliders.len(),
+            usize::try_from(pair_capacity).unwrap_or(MAX_CONTACT_PAIRS),
             &config,
             &positions_buffer,
             &rotations_buffer,
@@ -855,6 +878,7 @@ impl GpuPhysics {
             collider_count,
             bearing_count,
             suppression_count,
+            pair_capacity,
             pipeline_config,
             config,
             positions: positions_buffer,
@@ -931,6 +955,85 @@ impl GpuPhysics {
         Ok(queue.submit([encoder.finish()]))
     }
 
+    /// Replaces all authoritative body transforms and velocities at a safe app-owned boundary.
+    ///
+    /// This is used when a live world rebuilds its static construction topology after an edit;
+    /// unchanged moving compounds keep their latest pose and motion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuBodyStateError`] when row counts differ or any lane is non-finite.
+    pub fn write_body_states(
+        &self,
+        queue: &wgpu::Queue,
+        transforms: &[GpuTransform],
+        velocities: &[GpuVelocity],
+    ) -> Result<(), GpuBodyStateError> {
+        let expected = self.body_count;
+        if transforms.len() != expected as usize || velocities.len() != expected as usize {
+            return Err(GpuBodyStateError::BodyCount {
+                provided: transforms.len().max(velocities.len()),
+                expected,
+            });
+        }
+        let finite = transforms.iter().all(|state| {
+            state.position.into_iter().all(f32::is_finite)
+                && state.rotation.into_iter().all(f32::is_finite)
+        }) && velocities.iter().all(|state| {
+            state.linear.into_iter().all(f32::is_finite)
+                && state.angular.into_iter().all(f32::is_finite)
+        });
+        if !finite {
+            return Err(GpuBodyStateError::NonFinite);
+        }
+        let positions = transforms
+            .iter()
+            .map(|state| state.position)
+            .collect::<Vec<_>>();
+        let rotations = transforms
+            .iter()
+            .map(|state| state.rotation)
+            .collect::<Vec<_>>();
+        let linear = velocities
+            .iter()
+            .map(|state| state.linear)
+            .collect::<Vec<_>>();
+        let angular = velocities
+            .iter()
+            .map(|state| state.angular)
+            .collect::<Vec<_>>();
+        queue.write_buffer(&self.positions, 0, cast_slice(&positions));
+        queue.write_buffer(&self.rotations, 0, cast_slice(&rotations));
+        queue.write_buffer(&self.linear_velocities, 0, cast_slice(&linear));
+        queue.write_buffer(&self.angular_velocities, 0, cast_slice(&angular));
+        Ok(())
+    }
+
+    /// Changes the explicit flat collision plane used by garage and benchmark scenes.
+    pub fn write_ground_plane(&self, queue: &wgpu::Queue, normal: Vec3, offset: f32) {
+        let normal = normal.normalize_or_zero();
+        let concrete = ConstructionMaterial::Concrete.properties();
+        queue.write_buffer(
+            &self.collision.ground_surface,
+            0,
+            bytes_of(&GpuGroundSurface {
+                response: [
+                    concrete.static_friction,
+                    concrete.dynamic_friction,
+                    concrete.restitution,
+                    concrete.rolling_resistance,
+                ],
+                elasticity: [
+                    concrete.nominal_block_compliance(),
+                    concrete.youngs_modulus_pa,
+                    0.0,
+                    0.0,
+                ],
+                plane: [normal.x, normal.y, normal.z, offset],
+            }),
+        );
+    }
+
     /// Encodes and submits one 60 Hz integration/publication pass.
     pub fn dispatch_tick(
         &self,
@@ -950,7 +1053,7 @@ impl GpuPhysics {
             angular_damping: 0.98,
             bearing_count: self.bearing_count,
             suppression_count: self.suppression_count,
-            pair_capacity: u32::try_from(MAX_CONTACT_PAIRS).unwrap_or(u32::MAX),
+            pair_capacity: self.pair_capacity,
             flags: u32::from(self.pipeline_config.collisions_enabled),
             hash_capacity: u32::try_from(BROADPHASE_HASH_CAPACITY).unwrap_or(u32::MAX),
             solver_iterations: self.pipeline_config.solver_iterations.max(1),
@@ -1392,14 +1495,16 @@ impl GpuPhysics {
             0,
             timestamp_writes(self.timestamps.as_ref(), Some(6), None),
         );
-        direct_compute_pass(
-            encoder,
-            "mechanic ground contacts",
-            &collision.ground_contacts_pipeline,
-            &collision.ground_contacts_bind_group,
-            self.collider_count.div_ceil(256),
-            None,
-        );
+        if self.pipeline_config.ground_plane_enabled {
+            direct_compute_pass(
+                encoder,
+                "mechanic ground contacts",
+                &collision.ground_contacts_pipeline,
+                &collision.ground_contacts_bind_group,
+                self.collider_count.div_ceil(256),
+                None,
+            );
+        }
         direct_compute_pass(
             encoder,
             "mechanic finalize contacts",
@@ -2568,6 +2673,7 @@ fn create_lbvh_resources(
 fn create_collision_resources(
     device: &wgpu::Device,
     collider_count: usize,
+    pair_capacity: usize,
     config: &wgpu::Buffer,
     positions: &wgpu::Buffer,
     rotations: &wgpu::Buffer,
@@ -2589,25 +2695,25 @@ fn create_collision_resources(
     let pairs = create_sized_buffer(
         device,
         "mechanic candidate pairs",
-        MAX_CONTACT_PAIRS * size_of::<GpuPair>(),
+        pair_capacity * size_of::<GpuPair>(),
         wgpu::BufferUsages::STORAGE,
     );
     let contacts = create_sized_buffer(
         device,
         "mechanic contact manifolds",
-        MAX_CONTACT_PAIRS * size_of::<GpuContact>(),
+        pair_capacity * size_of::<GpuContact>(),
         wgpu::BufferUsages::STORAGE,
     );
     let manifold_keys = create_sized_buffer(
         device,
         "mechanic persistent manifold keys",
-        MAX_CONTACT_PAIRS * size_of::<u32>(),
+        pair_capacity * size_of::<u32>(),
         wgpu::BufferUsages::STORAGE,
     );
     let persistent_manifolds = create_sized_buffer(
         device,
         "mechanic persistent manifolds",
-        MAX_CONTACT_PAIRS * size_of::<GpuPersistentManifold>(),
+        pair_capacity * size_of::<GpuPersistentManifold>(),
         wgpu::BufferUsages::STORAGE,
     );
     let concrete = ConstructionMaterial::Concrete.properties();
@@ -2627,12 +2733,13 @@ fn create_collision_resources(
                 0.0,
                 0.0,
             ],
+            plane: [0.0, 1.0, 0.0, 0.0],
         },
     );
     let active_contacts = create_sized_buffer(
         device,
         "mechanic active contact indices",
-        MAX_CONTACT_PAIRS * size_of::<u32>(),
+        pair_capacity * size_of::<u32>(),
         wgpu::BufferUsages::STORAGE,
     );
     let indirect_args = create_sized_buffer(
@@ -2898,7 +3005,7 @@ fn create_collision_resources(
         _contacts: contacts,
         _manifold_keys: manifold_keys,
         _persistent_manifolds: persistent_manifolds,
-        _ground_surface: ground_surface,
+        ground_surface,
         _active_contacts: active_contacts,
         indirect_args,
         velocity_deltas,
@@ -2926,6 +3033,18 @@ fn create_collision_resources(
         persist_contacts_pipeline,
         persist_contacts_bind_group,
     }
+}
+
+fn contact_pair_capacity(collider_count: usize) -> u32 {
+    const MINIMUM_PAIR_CAPACITY: usize = 256;
+    let collider_pairs = collider_count.saturating_mul(collider_count.saturating_sub(1)) / 2;
+    let required = collider_pairs.saturating_add(collider_count);
+    let capacity = if required >= MAX_CONTACT_PAIRS {
+        MAX_CONTACT_PAIRS
+    } else {
+        required.max(MINIMUM_PAIR_CAPACITY).next_power_of_two()
+    };
+    u32::try_from(capacity).unwrap_or(u32::MAX)
 }
 
 fn shader_module(device: &wgpu::Device, label: &str, source: &'static str) -> wgpu::ShaderModule {
@@ -3210,8 +3329,21 @@ mod tests {
     use crate::GpuMechanismCoordinate;
 
     use super::{
-        FULL_CYLINDER_GROUND_FIRST, GpuPhysics, GpuPhysicsConfig, full_cylinder_ground_data,
+        FULL_CYLINDER_GROUND_FIRST, GpuPhysics, GpuPhysicsConfig, contact_pair_capacity,
+        full_cylinder_ground_data,
     };
+
+    #[test]
+    fn collision_buffers_scale_with_the_scene_up_to_the_hard_limit() {
+        assert_eq!(contact_pair_capacity(0), 256);
+        assert_eq!(contact_pair_capacity(1), 256);
+        assert_eq!(contact_pair_capacity(16), 256);
+        assert_eq!(contact_pair_capacity(1_024), 1_048_576);
+        assert_eq!(
+            contact_pair_capacity(crate::MAX_COLLIDERS),
+            u32::try_from(crate::MAX_CONTACT_PAIRS).unwrap()
+        );
+    }
 
     #[test]
     fn physics_wgsl_parses_and_validates_without_a_gpu() {
@@ -4261,6 +4393,7 @@ mod tests {
                 &creation,
                 GpuPhysicsConfig {
                     collisions_enabled: true,
+                    ground_plane_enabled: true,
                     mechanism_self_collisions,
                     solver_iterations: 8,
                 },
@@ -4654,6 +4787,7 @@ mod tests {
             creation,
             GpuPhysicsConfig {
                 collisions_enabled,
+                ground_plane_enabled: true,
                 mechanism_self_collisions: true,
                 solver_iterations: 16,
             },

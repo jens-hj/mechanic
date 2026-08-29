@@ -1,0 +1,18 @@
+[package]
+name = "mechanic-world"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy_math.workspace = true
+fastnoise-lite.workspace = true
+getrandom.workspace = true
+mechanic-core = { path = "../mechanic-core" }
+ron.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

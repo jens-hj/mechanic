@@ -12,7 +12,7 @@ use std::{
 };
 
 use bevy::prelude::Resource;
-use mechanic_core::{CreationDocument, CreationError};
+use mechanic_core::{CREATION_FORMAT_VERSION, CreationDocument, CreationError};
 use thiserror::Error;
 
 /// Extension every saved creation carries. The contents are RON.
@@ -161,13 +161,33 @@ impl CreationStore {
     /// directory cannot be created or written.
     pub(crate) fn save(&self, document: &CreationDocument) -> Result<PathBuf, StoreError> {
         fs::create_dir_all(&self.directory)?;
-        let text = ron::ser::to_string_pretty(document, ron::ser::PrettyConfig::default())?;
         let path = self.path_for(&document.name);
+        preserve_legacy_backup(&path)?;
+        let mut current = document.clone();
+        current.version = CREATION_FORMAT_VERSION;
+        let text = ron::ser::to_string_pretty(&current, ron::ser::PrettyConfig::default())?;
         let temporary = path.with_extension(format!("{CREATION_EXTENSION}.tmp"));
         fs::write(&temporary, text)?;
         fs::rename(&temporary, &path)?;
         Ok(path)
     }
+}
+
+fn preserve_legacy_backup(path: &Path) -> Result<(), StoreError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let Ok(existing) = read_document(path) else {
+        return Ok(());
+    };
+    if existing.version >= CREATION_FORMAT_VERSION {
+        return Ok(());
+    }
+    let backup = path.with_extension("v7.bak");
+    if !backup.exists() {
+        fs::copy(path, backup)?;
+    }
+    Ok(())
 }
 
 /// Reads one creation file.
@@ -262,7 +282,7 @@ mod tests {
                     dimensions: [1, 1, 1],
                     pose: PoseDoc {
                         #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-                        translation_half_units: [index as i32 * 2, 1, 0],
+                        translation_ticks: [index as i32 * 10, 5, 0],
                         rotation: [0, 0, 0],
                     },
                     material: mechanic_core::ConstructionMaterial::Steel,
@@ -345,6 +365,32 @@ mod tests {
         let listed = store.list();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].part_count, 5);
+    }
+
+    #[test]
+    fn first_legacy_overwrite_keeps_one_v7_backup_and_writes_v8() {
+        let temporary = TempDir::new();
+        let store = CreationStore::new(&temporary.0);
+        let path = store.path_for("Rig");
+        std::fs::create_dir_all(&temporary.0).unwrap();
+        let mut legacy =
+            ron::ser::to_string_pretty(&document("Rig", 1), ron::ser::PrettyConfig::default())
+                .unwrap();
+        legacy = legacy
+            .replace("version: 8", "version: 7")
+            .replace("translation_ticks", "translation_half_units");
+        std::fs::write(&path, &legacy).unwrap();
+
+        store.save(&document("Rig", 2)).unwrap();
+        let backup = path.with_extension("v7.bak");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), legacy);
+        assert_eq!(
+            read_document(&path).unwrap().version,
+            CREATION_FORMAT_VERSION
+        );
+
+        store.save(&document("Rig", 3)).unwrap();
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), legacy);
     }
 
     #[test]

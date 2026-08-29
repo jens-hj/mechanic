@@ -46,10 +46,9 @@ pub(crate) struct EditTarget<'w> {
 
 /// Writes one intent to every wire behind the joint it names.
 ///
-/// While building this is an undoable edit like any other, except part-way
-/// through a drag: a drag writes on every pointer move, and only the move that
-/// ends it belongs in history. While simulating it skips history entirely and
-/// marks the drive rows dirty, which is the one write running GPU state takes.
+/// This is an undoable edit except part-way through a drag: a drag writes on
+/// every pointer move, and only the move that ends it belongs in history. A
+/// live World also marks the uploaded drive rows dirty without pausing physics.
 pub(crate) fn write_joint(panel: &mut ControlPanelState, target: &mut EditTarget, intent: &Intent) {
     if matches!(intent.edit, PanelEdit::ToggleSpeedUnit) {
         panel.toggle_speed_unit();
@@ -102,7 +101,8 @@ pub(crate) fn write_gearbox(
         Ok(_) => {
             if target.simulation.is_running() {
                 target.editor.drive_rows_dirty = true;
-            } else if !intent.transient {
+            }
+            if !intent.transient {
                 target.history.commit(previous);
             }
         }
@@ -201,12 +201,11 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
             target.graph.0 = staged;
             if target.simulation.is_running() {
                 target.editor.drive_rows_dirty = true;
-            } else {
-                if !intent.transient {
-                    target.history.commit(previous);
-                }
-                target.editor.construction_mesh_dirty = true;
             }
+            if !intent.transient {
+                target.history.commit(previous);
+            }
+            target.editor.construction_mesh_dirty = true;
         }
         Err(error) => target.editor.feedback = Some(error.to_string()),
     }

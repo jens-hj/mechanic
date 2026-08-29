@@ -50,6 +50,7 @@ struct PersistentManifold {
 struct GroundSurface {
     response: vec4<f32>,
     elasticity: vec4<f32>,
+    plane: vec4<f32>,
 };
 
 struct TangentBasis {
@@ -1025,7 +1026,8 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
         return;
     }
     let collider = colliders[collider_index];
-    let down = vec3<f32>(0.0, -1.0, 0.0);
+    let normal = normalize(ground_surface.plane.xyz);
+    let down = -normal;
     var support_point = collider_support_point(collider_index, down);
     if collider_is_convex(collider_index) {
         support_point = convex_ground_support(collider_index);
@@ -1037,8 +1039,8 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
         }
         support_point = full_cylinder_support_point(collider_index, down, collider.metadata.w);
     }
-    let bottom = support_point.y;
-    if bottom > 1.0e-5 {
+    let signed_distance = dot(support_point, normal) - ground_surface.plane.w;
+    if signed_distance > 1.0e-5 {
         return;
     }
     let output = atomicAdd(&diagnostics[2], 1u);
@@ -1051,7 +1053,7 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
             collider_index | select(0u, ANALYTIC_CYLINDER_FLAG, collider.metadata.w != 0u),
             INVALID_MANIFOLD_SLOT,
         );
-        contacts[output].normal_penetration = vec4<f32>(0.0, -1.0, 0.0, max(-bottom, 0.0));
+        contacts[output].normal_penetration = vec4<f32>(down, max(-signed_distance, 0.0));
         contacts[output].arm_a_impulse = vec4<f32>(
             support_point - positions[collider.metadata.x].xyz,
             compliance,

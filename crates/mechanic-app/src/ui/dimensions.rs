@@ -51,12 +51,9 @@ struct Summary {
 /// Captures a complete overlay only when every sheet edge can be projected.
 pub(crate) fn capture(
     state: &EditorState,
-    simulation: &AppSimulation,
+    _simulation: &AppSimulation,
     camera: &(&Camera, &GlobalTransform),
 ) -> Model {
-    if simulation.is_running() {
-        return Model::default();
-    }
     let (camera, transform) = *camera;
     if let Some(drag) = state.pipe_drag.as_ref() {
         let mut points = Vec::with_capacity(drag.corners.len() + 2);
@@ -221,13 +218,13 @@ fn capture_sheet(
     };
     let axes = plane.tangent_axes();
     let lengths = axes.map(|axis| maximum[axis] - minimum[axis]);
-    let block_half_units = i32::from(specs[0].dimensions[0].units()) * 2;
+    let block_position_ticks = i32::from(specs[0].dimensions[0].units()) * 10;
     let counts = axes.map(|axis| {
         let (minimum, maximum) = specs.iter().fold((i32::MAX, i32::MIN), |bounds, spec| {
-            let coordinate = spec.pose.translation_half_units()[axis];
+            let coordinate = spec.pose.translation_position_ticks()[axis];
             (bounds.0.min(coordinate), bounds.1.max(coordinate))
         });
-        usize::try_from(maximum.saturating_sub(minimum) / block_half_units + 1)
+        usize::try_from(maximum.saturating_sub(minimum) / block_position_ticks + 1)
             .expect("block-sheet count fits usize")
     });
     if counts == [1, 1] {

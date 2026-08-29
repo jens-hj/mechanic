@@ -4,7 +4,10 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::prelude::{ButtonInput, KeyCode, Real, Res, ResMut, Resource, Time};
+use bevy::{
+    prelude::{ButtonInput, KeyCode, Real, Res, ResMut, Resource, Single, State, Time, With},
+    window::{PresentMode, PrimaryWindow, Window},
+};
 use mechanic_gpu::GpuKernelTimings;
 
 use crate::AppSimulation;
@@ -31,6 +34,24 @@ pub(crate) struct PerformanceSnapshot {
     pub(crate) contact_count: Option<u32>,
     pub(crate) active_contact_count: Option<u32>,
     pub(crate) error_flags: Option<u32>,
+    pub(crate) terrain_stage_ms: Option<f64>,
+    pub(crate) terrain_selection_ms: Option<f64>,
+    pub(crate) terrain_sampling_ms: Option<f64>,
+    pub(crate) terrain_polygonization_ms: Option<f64>,
+    pub(crate) terrain_seams_ms: Option<f64>,
+    pub(crate) terrain_bvh_ms: Option<f64>,
+    pub(crate) terrain_publication_ms: Option<f64>,
+    pub(crate) terrain_queue_age_ms: Option<f64>,
+    pub(crate) terrain_bounds_cache_bytes: Option<u64>,
+    pub(crate) terrain_local_resolved: Option<u32>,
+    pub(crate) terrain_local_total: Option<u32>,
+    pub(crate) terrain_triangle_count: Option<u64>,
+    pub(crate) terrain_streaming_backlog: Option<u32>,
+    pub(crate) terrain_remesh_count: Option<u64>,
+    pub(crate) terrain_overflow_flags: Option<u32>,
+    pub(crate) foundation_refresh_ms: Option<f64>,
+    pub(crate) foundation_candidate_count: Option<u64>,
+    pub(crate) foundation_sample_count: Option<u64>,
 }
 
 /// Rolling measurements behind the opt-in performance overlay.
@@ -64,13 +85,14 @@ impl PerformanceMetrics {
         self.snapshot
     }
 
-    fn toggle(&mut self) {
+    fn toggle(&mut self) -> bool {
         self.open = !self.open;
         self.force_refresh = true;
         self.refresh_elapsed = Duration::ZERO;
         if !self.open {
             self.snapshot.open = false;
         }
+        self.open
     }
 
     fn note_frame(&mut self, diagnostics: &DiagnosticsStore) {
@@ -92,9 +114,21 @@ impl PerformanceMetrics {
 }
 
 /// F3 is deliberately a debug-only shortcut, like the existing F8 frame freeze.
-pub(crate) fn toggle(keyboard: Res<ButtonInput<KeyCode>>, mut metrics: ResMut<PerformanceMetrics>) {
+pub(crate) fn toggle(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut metrics: ResMut<PerformanceMetrics>,
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
+) {
     if keyboard.just_pressed(KeyCode::F3) {
-        metrics.toggle();
+        window.present_mode = performance_present_mode(metrics.toggle());
+    }
+}
+
+const fn performance_present_mode(open: bool) -> PresentMode {
+    if open {
+        PresentMode::AutoNoVsync
+    } else {
+        PresentMode::Fifo
     }
 }
 
@@ -104,6 +138,8 @@ pub(crate) fn sample(
     time: Res<Time<Real>>,
     diagnostics: Res<DiagnosticsStore>,
     simulation: Res<AppSimulation>,
+    space: Res<State<crate::world::AppSpace>>,
+    world_diagnostics: Res<crate::world::WorldDiagnostics>,
     mut metrics: ResMut<PerformanceMetrics>,
 ) {
     metrics.note_frame(&diagnostics);
@@ -137,6 +173,7 @@ pub(crate) fn sample(
     let frame_p95_ms = percentile_95(&metrics.frame_samples_ms);
     let render_cpu_ms = render_time(&diagnostics, "elapsed_cpu");
     let render_gpu_ms = render_time(&diagnostics, "elapsed_gpu");
+    let in_world = *space.get() == crate::world::AppSpace::World;
 
     metrics.snapshot = PerformanceSnapshot {
         open: true,
@@ -155,6 +192,25 @@ pub(crate) fn sample(
         contact_count: readback.map(|value| value.contact_count),
         active_contact_count: readback.map(|value| value.active_contact_count),
         error_flags: readback.map(|value| value.error_flags),
+        terrain_stage_ms: in_world.then_some(world_diagnostics.terrain_stage_ms),
+        terrain_selection_ms: in_world.then_some(world_diagnostics.selection_ms),
+        terrain_sampling_ms: in_world.then_some(world_diagnostics.column_sampling_ms),
+        terrain_polygonization_ms: in_world.then_some(world_diagnostics.polygonization_ms),
+        terrain_seams_ms: in_world.then_some(world_diagnostics.transitions_caps_ms),
+        terrain_bvh_ms: in_world.then_some(world_diagnostics.bvh_construction_ms),
+        terrain_publication_ms: in_world.then_some(world_diagnostics.publication_ms),
+        terrain_queue_age_ms: in_world.then_some(world_diagnostics.oldest_queue_age_ms),
+        terrain_bounds_cache_bytes: in_world.then_some(world_diagnostics.bounds_cache_bytes),
+        terrain_local_resolved: in_world.then_some(world_diagnostics.local_resolved_nodes),
+        terrain_local_total: in_world.then_some(world_diagnostics.local_total_nodes),
+        terrain_triangle_count: in_world.then_some(world_diagnostics.triangle_count),
+        terrain_streaming_backlog: in_world.then_some(world_diagnostics.streaming_backlog),
+        terrain_remesh_count: in_world.then_some(world_diagnostics.remesh_count),
+        terrain_overflow_flags: in_world.then_some(world_diagnostics.overflow_flags),
+        foundation_refresh_ms: in_world.then_some(world_diagnostics.foundation_refresh_ms),
+        foundation_candidate_count: in_world
+            .then_some(world_diagnostics.foundation_candidate_count),
+        foundation_sample_count: in_world.then_some(world_diagnostics.foundation_sample_count),
     };
 }
 
@@ -194,7 +250,15 @@ fn capped_u32(value: usize) -> u32 {
 mod tests {
     use std::collections::VecDeque;
 
-    use super::{is_render_timing, mean, percentile_95};
+    use bevy::window::PresentMode;
+
+    use super::{is_render_timing, mean, percentile_95, performance_present_mode};
+
+    #[test]
+    fn performance_overlay_measures_uncapped_presentation() {
+        assert_eq!(performance_present_mode(true), PresentMode::AutoNoVsync);
+        assert_eq!(performance_present_mode(false), PresentMode::Fifo);
+    }
 
     #[test]
     fn frame_summary_reports_mean_and_tail_latency() {

@@ -6,6 +6,10 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     error::Error,
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 mod builder;
@@ -14,6 +18,7 @@ mod control_panel;
 mod controls;
 mod creation_menu;
 mod creation_store;
+mod garage;
 mod hotbar;
 mod pause_menu;
 mod performance;
@@ -22,44 +27,51 @@ mod settings;
 mod shape_tool;
 mod showcase;
 mod ui;
+mod world;
 
 use bevy::{
     app::AppExit,
     asset::RenderAssetUsages,
-    camera::{
-        Exposure,
-        visibility::{NoFrustumCulling, RenderLayers},
-    },
+    camera::visibility::{NoFrustumCulling, RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
     diagnostic::FrameTimeDiagnosticsPlugin,
-    image::{ImageAddressMode, ImageLoaderSettings},
+    image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings},
     input::mouse::AccumulatedMouseScroll,
     mesh::Indices,
     prelude::*,
     render::{
+        Render, RenderApp,
+        mesh::allocator::MeshAllocatorSettings,
         render_resource::{
-            Extent3d, PrimitiveTopology, TextureDimension, TextureFormat, TextureViewDescriptor,
-            TextureViewDimension,
+            Extent3d, PipelineCache, PrimitiveTopology, TextureDimension, TextureFormat,
+            TextureViewDescriptor, TextureViewDimension,
         },
         renderer::{RenderDevice, RenderQueue},
+        slab_allocator::SlabAllocatorSettings,
     },
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use builder::{
-    BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, GROUND_HALF_SIZE,
-    PipeRunAttachment, PipeRunPiece, PlacementCandidate, PlacementError, PlacementPlane,
-    SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
+    BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, PipeRunAttachment, PipeRunPiece,
+    PlacementBounds, PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit,
+    bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
     bearing_overlaps_cylinder_candidate, bearing_support_face, bearing_support_face_excluding,
-    begin_weld, block_box_bounds, block_box_specs, block_span_from_rays, candidate_from_hit,
-    cylinder_candidate_from_hit, face_geometry_from_ref, oriented_cuboid_candidate_from_hit,
-    part_world_bounds, pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
-    raycast_oriented_cuboid, rigid_body_parts, stage_bearing_attachment, stage_bearing_block_batch,
-    stage_bearing_cylinder, stage_block_batch_from_source, stage_controller_from_source,
-    stage_engine_from_source, stage_input_from_source, stage_pipe_run, stage_seat_from_source,
-    stage_servo_from_source, stage_transmission, stage_weld_objects,
-    transmission_candidate_from_hit, try_face_geometry_from_ref, validate_block_batch,
-    validate_cylinder_candidate, validate_pipe_run,
+    begin_weld, block_box_bounds, block_box_specs, block_span_from_rays,
+    candidate_from_hit_with_step, cylinder_candidate_from_hit_with_step, face_geometry_from_ref,
+    oriented_cuboid_candidate_from_hit_with_step, part_world_bounds, pipe_run_pieces,
+    raycast_construction, raycast_construction_for_annulus,
+    raycast_construction_for_annulus_with_ground, raycast_construction_with_ground,
+    raycast_oriented_cuboid, rigid_body_parts, stage_bearing_attachment_in_bounds,
+    stage_bearing_block_batch_in_bounds, stage_bearing_cylinder_in_bounds,
+    stage_block_batch_from_source_in_bounds, stage_controller_from_source_in_bounds,
+    stage_engine_from_source_in_bounds, stage_input_from_source_in_bounds,
+    stage_pipe_run_in_bounds, stage_seat_from_source_in_bounds, stage_servo_from_source_in_bounds,
+    stage_transmission, stage_weld_objects, transmission_candidate_from_hit_in_bounds,
+    try_face_geometry_from_ref, validate_block_batch_in_bounds,
+    validate_cylinder_candidate_in_bounds, validate_pipe_run_in_bounds,
 };
+#[cfg(test)]
+use builder::{candidate_from_hit, stage_bearing_attachment};
 use camera::{
     MainCamera, MaterialWheelState, PlayerCamera, PlayerState, SEATED_EYE_HEIGHT,
     seated_view_rotation,
@@ -72,10 +84,10 @@ use hotbar::{SelectedMaterial, SelectedTool, Tool};
 use mechanic_core::{
     ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand, BuildOutcome,
     CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape, CompiledCreation,
-    ConstructionGraph, ConstructionMaterial, ControllerSpec, CreationDocument, CuboidSpec,
-    CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceKind, FaceOwner,
-    FaceRef, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec,
-    MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
+    ConstructionEditDelta, ConstructionGraph, ConstructionMaterial, ControllerSpec,
+    CreationDocument, CuboidSpec, CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget,
+    EngineKind, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec,
+    InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
     MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
     MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartPiece, PartSpec,
     PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec,
@@ -83,7 +95,7 @@ use mechanic_core::{
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTickReadback,
-    GpuTransform,
+    GpuTransform, GpuVelocity,
 };
 use pause_menu::{PauseMenuState, PauseRequest};
 use performance::PerformanceMetrics;
@@ -102,6 +114,99 @@ const CYLINDER_DIAMETER_STEP: f32 = 0.05;
 const CYLINDER_LENGTH_STEP: f32 = 0.25;
 const CONTROLLER_SURFACE_COLOR: Color = Color::srgb(0.10, 0.78, 0.68);
 const DEBUG_FRAME_FREEZE_KEY: KeyCode = KeyCode::F8;
+
+/// Shared signal from the render world once Bevy has populated both filtered
+/// environment maps.
+#[derive(Resource, Clone, Default)]
+struct EnvironmentMapGenerationReady(Arc<AtomicBool>);
+
+/// Retains Bevy's filtered environment map but turns its generator into a
+/// one-shot operation.
+struct OneShotEnvironmentMapPlugin;
+
+/// Avoids repeatedly reallocating tiny GPU mesh slabs while the terrain
+/// horizon publishes thousands of chunks over successive frames.
+struct StreamingMeshAllocatorPlugin;
+
+impl Plugin for StreamingMeshAllocatorPlugin {
+    fn build(&self, app: &mut App) {
+        let render_app = app
+            .get_sub_app_mut(RenderApp)
+            .expect("the render app exists after DefaultPlugins");
+        render_app.insert_resource(MeshAllocatorSettings {
+            slab_allocator_settings: SlabAllocatorSettings {
+                min_slab_size: 8 * 1024 * 1024,
+                growth_factor: 2.0,
+                ..default()
+            },
+            ..default()
+        });
+    }
+}
+
+impl Plugin for OneShotEnvironmentMapPlugin {
+    fn build(&self, app: &mut App) {
+        let ready = EnvironmentMapGenerationReady::default();
+        app.insert_resource(ready.clone())
+            .add_systems(Update, retain_generated_environment_map);
+
+        app.get_sub_app_mut(RenderApp)
+            .expect("the render app exists after DefaultPlugins")
+            .insert_resource(ready)
+            .add_systems(
+                Render,
+                mark_environment_map_generated.after(bevy::pbr::generate::filtering_system),
+            );
+    }
+}
+
+fn mark_environment_map_generated(
+    ready: Res<EnvironmentMapGenerationReady>,
+    maps: Query<(), With<bevy::pbr::generate::GeneratorBindGroups>>,
+    pipelines: Option<Res<bevy::pbr::generate::GeneratorPipelines>>,
+    pipeline_cache: Res<PipelineCache>,
+) {
+    let Some(pipelines) = pipelines else {
+        return;
+    };
+    if maps.is_empty() {
+        return;
+    }
+    let pipeline_ids = [
+        pipelines.downsample_first,
+        pipelines.downsample_second,
+        pipelines.copy,
+        pipelines.radiance,
+        pipelines.irradiance,
+    ];
+    if pipeline_ids
+        .into_iter()
+        .all(|id| pipeline_cache.get_compute_pipeline(id).is_some())
+    {
+        ready.0.store(true, Ordering::Release);
+    }
+}
+
+fn retain_generated_environment_map(
+    ready: Res<EnvironmentMapGenerationReady>,
+    mut commands: Commands,
+    maps: Query<
+        Entity,
+        (
+            With<GeneratedEnvironmentMapLight>,
+            With<EnvironmentMapLight>,
+        ),
+    >,
+) {
+    if !ready.0.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    for entity in &maps {
+        commands
+            .entity(entity)
+            .remove::<GeneratedEnvironmentMapLight>();
+    }
+}
 
 /// The overlay's cyan, matching the `accent.speed` the panels use. Selected
 /// shape corners take it so a selection reads by colour and not only by size.
@@ -206,7 +311,6 @@ mod debug_frame_freeze_tests {
 struct AppSimulation {
     gpu: Option<GpuPhysics>,
     creation: Option<CompiledCreation>,
-    pause: SimulationPause,
     scheduler: FixedStepScheduler,
     next_tick: u64,
     previous_transforms: Vec<GpuTransform>,
@@ -218,12 +322,7 @@ struct AppSimulation {
     render_dirty: bool,
     physics_cpu_ms: Option<f64>,
     last_tick_readback: Option<GpuTickReadback>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct SimulationPause {
-    playback: bool,
-    menu: bool,
+    world_revision: Option<(u64, u64)>,
 }
 
 #[derive(Resource, Default)]
@@ -406,7 +505,7 @@ struct PipeDrag {
 
 #[derive(Clone, Debug)]
 struct EditorSnapshot {
-    graph: ConstructionGraph,
+    graph: Arc<ConstructionGraph>,
     placed_bearings: Vec<PlacedBearing>,
     revision: u64,
 }
@@ -420,7 +519,7 @@ impl EditorSnapshot {
                 .expect("captured pending editor operation can be cancelled");
         }
         Self {
-            graph,
+            graph: Arc::new(graph),
             placed_bearings: state.placed_bearings.clone(),
             revision: 0,
         }
@@ -480,12 +579,6 @@ enum HistoryAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SimulationShortcut {
-    TogglePlayback,
-    Restart,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EscapeTarget {
     PauseSubmenu,
     PauseMenu,
@@ -541,10 +634,6 @@ fn begin_pause_frame(mut pause: ResMut<PauseMenuState>) {
     pause.begin_frame();
 }
 
-fn sync_simulation_menu_pause(pause: Res<PauseMenuState>, mut simulation: ResMut<AppSimulation>) {
-    simulation.pause.menu = pause.blocks_world_input();
-}
-
 #[allow(clippy::too_many_arguments)]
 fn handle_pause_escape(
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -555,31 +644,29 @@ fn handle_pause_escape(
     mut state: ResMut<EditorState>,
     mut selection: ResMut<SelectedTool>,
     mut wheel: ResMut<MaterialWheelState>,
-    simulation: Res<AppSimulation>,
     mut pause: ResMut<PauseMenuState>,
+    worlds: Res<world::WorldListState>,
 ) {
-    if !keyboard.just_pressed(KeyCode::Escape) {
+    if worlds.is_open() || !keyboard.just_pressed(KeyCode::Escape) {
         return;
     }
     if pause.binding_capture().is_some() {
         pause.cancel_binding_capture();
         return;
     }
-    let building = !simulation.is_running();
-    let world_state = building
-        && (state.block_drag.is_some()
-            || state.pipe_drag.is_some()
-            || state.delete_drag.is_some()
-            || graph.0.pending().is_some()
-            || state.wire_drag.is_some()
-            || shape_tool_is_busy(selection.0, &state));
+    let world_state = state.block_drag.is_some()
+        || state.pipe_drag.is_some()
+        || state.delete_drag.is_some()
+        || graph.0.pending().is_some()
+        || state.wire_drag.is_some()
+        || shape_tool_is_busy(selection.0, &state);
     let target = escape_target(
         pause.is_open(),
         pause.is_in_submenu(),
         menu.is_open() || overlay.escape_is_consumed(),
         panel.is_open(),
         world_state,
-        building && selection.0 != Some(Tool::Block),
+        selection.0 != Some(Tool::Block),
     );
     pause.consume_frame();
     match target {
@@ -637,9 +724,7 @@ fn handle_pause_request(
     mut pause: ResMut<PauseMenuState>,
     mut settings: ResMut<AppSettings>,
     history: Res<EditorHistory>,
-    mut simulation: ResMut<AppSimulation>,
-    mut hammer: ResMut<HammerInteraction>,
-    mut state: ResMut<EditorState>,
+    space: Res<State<world::AppSpace>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(request) = pause.take_request() else {
@@ -666,16 +751,14 @@ fn handle_pause_request(
                 warn!("could not save settings: {error}");
             }
         }
-        PauseRequest::ReturnToBuild => {
-            stop_simulation_for_build_mode(&mut simulation, &mut hammer, &mut state);
-            pause.close();
-        }
-        PauseRequest::Exit => match exit_disposition(history.is_dirty()) {
-            ExitDisposition::Exit => {
-                exit.write(AppExit::Success);
+        PauseRequest::Exit => {
+            match exit_disposition(*space.get() == world::AppSpace::Garage && history.is_dirty()) {
+                ExitDisposition::Exit => {
+                    exit.write(AppExit::Success);
+                }
+                ExitDisposition::ConfirmUnsaved => pause.confirm_exit(),
             }
-            ExitDisposition::ConfirmUnsaved => pause.confirm_exit(),
-        },
+        }
         PauseRequest::ExitWithoutSaving => {
             exit.write(AppExit::Success);
         }
@@ -747,70 +830,80 @@ fn capture_control_binding(
     pause.finish_binding_capture(chord);
 }
 
-fn stop_simulation_for_build_mode(
-    simulation: &mut AppSimulation,
-    hammer: &mut HammerInteraction,
-    state: &mut EditorState,
-) {
-    *simulation = AppSimulation::default();
-    *hammer = HammerInteraction::default();
-    state.construction_mesh_dirty = true;
-    state.feedback = Some("Returned to build mode".to_owned());
-}
-
 #[derive(Clone, Copy, Debug)]
 enum DeleteTarget {
     PlacedBearing(usize),
     Part(PartId),
 }
 
-#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
-fn handle_simulation_shortcut(
-    actions: Res<ButtonInput<GameAction>>,
-    mut graph: ResMut<EditorGraph>,
+#[allow(clippy::too_many_arguments)]
+fn maintain_space_simulation(
+    space: Res<State<world::AppSpace>>,
+    worlds: Res<world::WorldListState>,
+    graph: Res<EditorGraph>,
+    history: Res<EditorHistory>,
+    runtime: Res<world::WorldRuntime>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
     mut hammer: ResMut<HammerInteraction>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
-    overlay: Res<ui::UiInput>,
-    mut sequencer: ResMut<DriveSequencer>,
-    mut gearboxes: ResMut<GearboxRuntime>,
 ) {
-    if overlay.blocks_keyboard() {
+    if *space.get() == world::AppSpace::Garage {
+        if simulation.is_running() {
+            simulation.gpu = None;
+            simulation.world_revision = None;
+            *hammer = HammerInteraction::default();
+            state.construction_mesh_dirty = true;
+        }
         return;
     }
-    let Some(shortcut) = requested_simulation_shortcut(&actions) else {
-        return;
-    };
-    let restarting = simulation.is_running();
-    if restarting && shortcut == SimulationShortcut::TogglePlayback {
-        simulation.pause.playback = !simulation.pause.playback;
-        *hammer = HammerInteraction::default();
-        state.feedback = Some(if simulation.pause.playback {
-            "Simulation paused — Space resumes, Shift+Space restarts".to_owned()
-        } else {
-            "Simulation resumed".to_owned()
-        });
+    if worlds.is_open() {
+        simulation.gpu = None;
+        simulation.world_revision = None;
         return;
     }
-    state.block_drag = None;
-    state.pipe_drag = None;
-    state.delete_drag = None;
-    state.delete_target = None;
-    *hammer = HammerInteraction::default();
 
-    if graph.0.pending().is_some() {
-        let _ = graph.0.apply(BuildCommand::CancelPending);
+    let revision = (history.current_revision, runtime.foundation_revision());
+    if simulation.world_revision == Some(revision) {
+        return;
     }
-    let creation = match graph.0.compile() {
+    if graph.0.part_count() == 0 {
+        *simulation = AppSimulation {
+            world_revision: Some(revision),
+            ..default()
+        };
+        return;
+    }
+    let anchored = runtime.anchored_parts().collect::<Vec<_>>();
+    let creation = match graph.0.compile_with_static_parts(anchored) {
         Ok(creation) => creation,
         Err(error) => {
-            state.feedback = Some(format!("Cannot start simulation: {error}"));
+            *simulation = AppSimulation {
+                world_revision: Some(revision),
+                ..default()
+            };
+            state.feedback = Some(format!("Cannot update live world physics: {error}"));
             return;
         }
     };
+    let (transforms, velocities) = rebuilt_body_states(&creation, &simulation);
+    let next_tick = simulation.next_tick.max(1);
+    if !creation_requires_live_physics(&creation) {
+        *simulation = AppSimulation {
+            creation: Some(creation),
+            next_tick,
+            previous_transforms: transforms.clone(),
+            transforms,
+            previous_snapshot_tick: next_tick.saturating_sub(1),
+            snapshot_tick: next_tick,
+            world_revision: Some(revision),
+            ..default()
+        };
+        return;
+    }
     let physics_config = GpuPhysicsConfig {
+        ground_plane_enabled: false,
         mechanism_self_collisions: !showcase::uses_reduced_collision_mode(&graph.0),
         ..GpuPhysicsConfig::default()
     };
@@ -822,55 +915,106 @@ fn handle_simulation_shortcut(
     ) {
         Ok(gpu) => gpu,
         Err(error) => {
-            state.feedback = Some(format!("Cannot start simulation: {error}"));
+            *simulation = AppSimulation {
+                world_revision: Some(revision),
+                ..default()
+            };
+            state.feedback = Some(format!("Cannot update live world physics: {error}"));
             return;
         }
     };
-    let transforms: Vec<GpuTransform> = creation
-        .compounds
-        .iter()
-        .map(|compound| {
-            let position = compound.root_translation;
-            let rotation = compound.root_rotation;
-            GpuTransform {
-                position: [position.x, position.y, position.z, 0.0],
-                rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
-            }
-        })
-        .collect();
-    sequencer.stop();
-    gearboxes.stop();
+    if let Err(error) = gpu.write_body_states(&render_queue, &transforms, &velocities) {
+        state.feedback = Some(format!("Cannot preserve live world body state: {error}"));
+    }
     *simulation = AppSimulation {
         gpu: Some(gpu),
         creation: Some(creation),
-        pause: SimulationPause::default(),
         scheduler: FixedStepScheduler::new(),
-        next_tick: 1,
+        next_tick,
         previous_transforms: transforms.clone(),
         transforms,
-        previous_snapshot_tick: 0,
-        snapshot_tick: 0,
+        previous_snapshot_tick: next_tick.saturating_sub(1),
+        snapshot_tick: next_tick,
         visual_ticks_since_publish: 0,
         static_mesh_dirty: true,
         render_dirty: true,
         physics_cpu_ms: None,
         last_tick_readback: None,
+        world_revision: Some(revision),
     };
-    state.feedback = Some(if restarting {
-        "Simulation restarted".to_owned()
-    } else {
-        "Simulation running (throttled mesh preview)".to_owned()
-    });
 }
 
-fn requested_simulation_shortcut(actions: &ButtonInput<GameAction>) -> Option<SimulationShortcut> {
-    if actions.just_pressed(GameAction::RestartSimulation) {
-        Some(SimulationShortcut::Restart)
-    } else if actions.just_pressed(GameAction::ToggleSimulation) {
-        Some(SimulationShortcut::TogglePlayback)
-    } else {
-        None
+fn creation_requires_live_physics(creation: &CompiledCreation) -> bool {
+    creation
+        .compounds
+        .iter()
+        .any(|compound| !compound.is_static)
+}
+
+fn rebuilt_body_states(
+    creation: &CompiledCreation,
+    previous: &AppSimulation,
+) -> (Vec<GpuTransform>, Vec<GpuVelocity>) {
+    let mut transforms = creation
+        .compounds
+        .iter()
+        .map(|compound| GpuTransform {
+            position: compound.root_translation.extend(0.0).to_array(),
+            rotation: compound.root_rotation.to_array(),
+        })
+        .collect::<Vec<_>>();
+    let mut velocities = vec![
+        GpuVelocity {
+            linear: [0.0; 4],
+            angular: [0.0; 4],
+        };
+        creation.compounds.len()
+    ];
+    let Some(previous_creation) = previous.creation.as_ref() else {
+        return (transforms, velocities);
+    };
+    let tick_delta = previous
+        .snapshot_tick
+        .saturating_sub(previous.previous_snapshot_tick);
+    let tick_delta = u16::try_from(tick_delta).unwrap_or(u16::MAX);
+    let elapsed = f32::from(tick_delta) * FIXED_DT_SECONDS;
+    for (new_index, compound) in creation.compounds.iter().enumerate() {
+        if compound.is_static {
+            continue;
+        }
+        let Some(old_index) = previous_creation
+            .compounds
+            .iter()
+            .position(|old| !old.is_static && old.source_parts == compound.source_parts)
+        else {
+            continue;
+        };
+        let Some(&current) = previous.transforms.get(old_index) else {
+            continue;
+        };
+        transforms[new_index] = current;
+        if elapsed <= f32::EPSILON {
+            continue;
+        }
+        let prior = previous
+            .previous_transforms
+            .get(old_index)
+            .copied()
+            .unwrap_or(current);
+        let current_position = Vec3::from_slice(&current.position[..3]);
+        let prior_position = Vec3::from_slice(&prior.position[..3]);
+        let current_rotation = Quat::from_array(current.rotation);
+        let prior_rotation = Quat::from_array(prior.rotation);
+        let delta = (current_rotation * prior_rotation.inverse()).normalize();
+        let (axis, angle) = delta.to_axis_angle();
+        velocities[new_index] = GpuVelocity {
+            linear: ((current_position - prior_position) / elapsed)
+                .extend(0.0)
+                .to_array(),
+            angular: (axis * (angle / elapsed)).extend(0.0).to_array(),
+        };
     }
+    (transforms, velocities)
 }
 
 /// Whether the primary modifier plus `S` was pressed this frame.
@@ -892,23 +1036,24 @@ fn handle_creation_menu_shortcut(
     actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
-    simulation: Res<AppSimulation>,
+    space: Res<State<world::AppSpace>>,
     store: Res<CreationStore>,
     current: Res<CurrentCreation>,
     panel: Res<ControlPanelState>,
     pause: Res<PauseMenuState>,
     mut menu: ResMut<CreationMenuState>,
+    worlds: Res<world::WorldListState>,
 ) {
-    if menu.is_open() || panel.blocks_keyboard() || pause.blocks_world_input() {
+    if worlds.is_open() || menu.is_open() || panel.blocks_keyboard() || pause.blocks_world_input() {
         return;
     }
     let saving = save_shortcut_requested(&actions);
     if !saving && !actions.just_pressed(GameAction::Creations) {
         return;
     }
-    if simulation.is_running() {
+    if *space.get() == world::AppSpace::World {
         state.feedback =
-            Some("Creations are saved and opened in build mode — press Escape first".to_owned());
+            Some("Saved creations are managed in the Garage — press F6 first".to_owned());
         return;
     }
     cancel_transient_editor_state(&mut graph.0, &mut state);
@@ -935,6 +1080,7 @@ fn handle_control_panel_shortcut(
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut panel: ResMut<ControlPanelState>,
+    space: Res<State<world::AppSpace>>,
     simulation: Res<AppSimulation>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
@@ -944,9 +1090,6 @@ fn handle_control_panel_shortcut(
         return;
     }
     if panel.is_open() {
-        return;
-    }
-    if simulation.is_running() {
         return;
     }
     if !actions.just_pressed(GameAction::Interact) || !player.world_input_active() || wheel.open {
@@ -963,6 +1106,11 @@ fn handle_control_panel_shortcut(
         state.feedback = Some("Point at a control block, or select one, then press E".to_owned());
         return;
     };
+    if *space.get() == world::AppSpace::World && !simulation_part_is_static(&simulation, controller)
+    {
+        state.feedback = Some("Moving constructions cannot be programmed".to_owned());
+        return;
+    }
     state.selected_controller = Some(controller);
     panel.open(controller);
 }
@@ -1116,8 +1264,8 @@ fn run_drive_sequencer(
         .seat
         .filter(|seat| graph.0.seat_input(*seat).is_some())
         .and_then(|seat| graph.0.seat_controller(seat));
-    let sequencer_changed = !simulation.is_paused()
-        && sequencer.step(&graph.0, &keys, keyboard_controller, simulation.next_tick);
+    let sequencer_changed =
+        sequencer.step(&graph.0, &keys, keyboard_controller, simulation.next_tick);
     let measured_speeds = measured_engine_speeds(&graph.0, &simulation, &sequencer);
     let gearbox_changed = gearboxes.step(
         &graph.0,
@@ -1128,7 +1276,7 @@ fn run_drive_sequencer(
             .flatten(),
         simulation.next_tick,
         &measured_speeds,
-        simulation.is_paused(),
+        false,
     );
     if sequencer_changed || gearbox_changed {
         state.drive_rows_dirty = true;
@@ -1280,7 +1428,7 @@ fn handle_creation_request(
                         Vec::new(),
                     );
                     state.feedback = Some(format!(
-                        "Opened {}: {} welds, {} bearings, {} bodies — Space to simulate",
+                        "Opened {}: {} welds, {} bearings, {} bodies — F6 enters the live World",
                         preset.label(),
                         graph.0.weld_count(),
                         graph.0.bearing_count(),
@@ -1310,13 +1458,13 @@ fn handle_creation_request(
                     adopt_loaded_creation(&mut state, &mut player, &mut camera, &graph.0, placed);
                     state.feedback = Some(if let Some(bodies) = bodies {
                         format!(
-                            "Opened \"{name}\": {} parts, {} bearings, {bodies} bodies — Space to simulate",
+                            "Opened \"{name}\": {} parts, {} bearings, {bodies} bodies — F6 enters the live World",
                             graph.0.part_count(),
                             graph.0.bearing_count(),
                         )
                     } else {
                         format!(
-                            "Opened \"{name}\" — complete matching transmission stacks before simulation"
+                            "Opened \"{name}\" — complete matching transmission stacks before entering the World"
                         )
                     });
                     current.0 = Some(name);
@@ -1510,14 +1658,13 @@ fn advance_simulation(
         }
     }
 
-    let effectively_paused = simulation.is_paused();
     let tick = {
         let AppSimulation {
             scheduler,
             next_tick,
             ..
         } = &mut *simulation;
-        next_simulation_tick(scheduler, next_tick, time.delta(), effectively_paused)
+        next_simulation_tick(scheduler, next_tick, time.delta(), false)
     };
     if let Some(tick) = tick {
         let physics_started = std::time::Instant::now();
@@ -1601,18 +1748,23 @@ fn advance_simulation(
             .as_ref()
             .expect("running simulation has compiled creation");
         for material in ConstructionMaterial::ALL {
-            let mesh = combined_simulation_material_mesh(
+            let visible = simulation_material_is_present(
                 &graph.0,
                 creation,
-                &simulation.transforms,
                 SimulationMeshKind::Static,
                 material,
             );
-            let visible = mesh.count_vertices() > 0;
-            if let Some(mut asset) =
-                meshes.get_mut(&visuals.construction_meshes[material_index(material)])
+            if visible
+                && let Some(mut asset) =
+                    meshes.get_mut(&visuals.construction_meshes[material_index(material)])
             {
-                *asset = renderable_mesh(mesh);
+                *asset = renderable_mesh(combined_simulation_material_mesh(
+                    &graph.0,
+                    creation,
+                    &simulation.transforms,
+                    SimulationMeshKind::Static,
+                    material,
+                ));
             }
             for (visual, mut visibility) in &mut construction_visuals {
                 if visual.0 == material {
@@ -1635,18 +1787,23 @@ fn advance_simulation(
         .as_ref()
         .expect("running simulation has compiled creation");
     for material in ConstructionMaterial::ALL {
-        let mesh = combined_simulation_material_mesh(
+        let visible = simulation_material_is_present(
             &graph.0,
             creation,
-            &simulation.transforms,
             SimulationMeshKind::Dynamic,
             material,
         );
-        let visible = mesh.count_vertices() > 0;
-        if let Some(mut asset) =
-            meshes.get_mut(&visuals.simulation_meshes[material_index(material)])
+        if visible
+            && let Some(mut asset) =
+                meshes.get_mut(&visuals.simulation_meshes[material_index(material)])
         {
-            *asset = renderable_mesh(mesh);
+            *asset = renderable_mesh(combined_simulation_material_mesh(
+                &graph.0,
+                creation,
+                &simulation.transforms,
+                SimulationMeshKind::Dynamic,
+                material,
+            ));
         }
         for (visual, mut visibility) in &mut simulation_visuals {
             if visual.0 == material {
@@ -1744,10 +1901,6 @@ impl AppSimulation {
         self.gpu.is_some()
     }
 
-    const fn is_paused(&self) -> bool {
-        self.is_running() && effective_simulation_pause(self.pause.playback, self.pause.menu)
-    }
-
     fn record_performance(
         &mut self,
         cpu_elapsed: std::time::Duration,
@@ -1764,13 +1917,11 @@ impl AppSimulation {
     }
 }
 
-const fn effective_simulation_pause(space_paused: bool, menu_paused: bool) -> bool {
-    space_paused || menu_paused
-}
-
 #[derive(Resource, Default)]
 struct EditorState {
+    placement_bounds: PlacementBounds,
     hovered: Option<SurfaceHit>,
+    world_edit_blocker: Option<WorldEditBlocker>,
     /// Unattached bearing surface directly hit by the pointer ray.
     hovered_bearing: Option<usize>,
     /// Unattached bearing that would claim the current block preview.
@@ -1785,6 +1936,8 @@ struct EditorState {
     authored_orientation: u8,
     feedback: Option<String>,
     construction_mesh_dirty: bool,
+    /// Last immutable graph revision atomically published to construction meshes.
+    rendered_graph: ConstructionGraph,
     delete_target: Option<DeleteTarget>,
     block_drag: Option<BlockDrag>,
     block_preview_revision: u64,
@@ -1818,6 +1971,11 @@ struct EditorState {
     paint_selecting: bool,
     /// The new cage vertex the pointer is currently being offered.
     edge_offer: Option<shape_tool::EdgeInsertion>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorldEditBlocker {
+    MovingConstruction,
 }
 
 impl EditorState {
@@ -2169,13 +2327,15 @@ const fn material_index(material: ConstructionMaterial) -> usize {
         ConstructionMaterial::Aluminium => 0,
         ConstructionMaterial::CarbonFiber => 1,
         ConstructionMaterial::Concrete => 2,
-        ConstructionMaterial::Graphite => 3,
-        ConstructionMaterial::Iron => 4,
-        ConstructionMaterial::Plastic => 5,
-        ConstructionMaterial::Rubber => 6,
-        ConstructionMaterial::Steel => 7,
-        ConstructionMaterial::Stone => 8,
-        ConstructionMaterial::Wood => 9,
+        ConstructionMaterial::Dirt => 3,
+        ConstructionMaterial::Graphite => 4,
+        ConstructionMaterial::Iron => 5,
+        ConstructionMaterial::Plastic => 6,
+        ConstructionMaterial::Rubber => 7,
+        ConstructionMaterial::Sand => 8,
+        ConstructionMaterial::Steel => 9,
+        ConstructionMaterial::Stone => 10,
+        ConstructionMaterial::Wood => 11,
     }
 }
 
@@ -2188,9 +2348,11 @@ fn construction_material(
         ConstructionMaterial::Graphite => "materials/graphite/graphite",
         ConstructionMaterial::CarbonFiber => "materials/carbon_fiber/carbon_fiber",
         ConstructionMaterial::Concrete => "materials/concrete/concrete",
+        ConstructionMaterial::Dirt => "materials/dirt/dirt",
         ConstructionMaterial::Iron => "materials/iron/iron",
         ConstructionMaterial::Plastic => "materials/plastic/plastic",
         ConstructionMaterial::Rubber => "materials/rubber/rubber",
+        ConstructionMaterial::Sand => "materials/sand/sand",
         ConstructionMaterial::Steel => "materials/steel/steel",
         ConstructionMaterial::Stone => "materials/stone/stone",
         ConstructionMaterial::Wood => "materials/wood/wood",
@@ -2220,6 +2382,9 @@ fn configure_repeating_texture(settings: &mut ImageLoaderSettings, is_srgb: bool
     let sampler = settings.sampler.get_or_init_descriptor();
     sampler.address_mode_u = ImageAddressMode::Repeat;
     sampler.address_mode_v = ImageAddressMode::Repeat;
+    sampler.mag_filter = ImageFilterMode::Linear;
+    sampler.min_filter = ImageFilterMode::Linear;
+    sampler.mipmap_filter = ImageFilterMode::Linear;
 }
 
 fn authored_preview_material(
@@ -2248,6 +2413,9 @@ fn main() {
             FrameTimeDiagnosticsPlugin::new(120),
             bevy::render::diagnostic::RenderDiagnosticsPlugin,
         ))
+        .add_plugins(StreamingMeshAllocatorPlugin)
+        .add_plugins(OneShotEnvironmentMapPlugin)
+        .add_plugins(MaterialPlugin::<world::TerrainRenderMaterial>::default())
         // After DefaultPlugins: the overlay's render pass installs into the
         // render sub-app, which does not exist until RenderPlugin has run.
         .add_plugins(bevy_mosaic::MosaicPlugin)
@@ -2275,13 +2443,15 @@ fn main() {
         .init_resource::<PlayerState>()
         .init_resource::<MaterialWheelState>()
         .init_resource::<ButtonInput<GameAction>>()
-        // A floor so deep cavities are not pure black. Everything else now
-        // comes from the sky environment map, which has direction.
+        .add_plugins(world::WorldPrototypePlugin)
+        // A dim base fill keeps occluded construction readable without
+        // overpowering the garage's authored lighting.
         .insert_resource(GlobalAmbientLight {
-            color: Color::srgb(0.75, 0.80, 0.90),
+            color: Color::srgb_u8(43, 60, 76),
             brightness: 20.0,
             ..Default::default()
         })
+        .insert_resource(ClearColor(garage::VOID_COLOR))
         .add_systems(Startup, (setup, ui::mount).chain())
         .add_systems(
             Update,
@@ -2299,7 +2469,6 @@ fn main() {
                             ui::drain,
                             handle_pause_request,
                             handle_pause_escape,
-                            sync_simulation_menu_pause,
                         )
                             .chain(),
                         (
@@ -2318,7 +2487,6 @@ fn main() {
                         apply_camera_fov,
                         camera::update_material_wheel,
                         camera::update_player_camera,
-                        handle_simulation_shortcut,
                         handle_seat_interaction,
                         handle_shortcuts,
                     )
@@ -2343,8 +2511,9 @@ fn main() {
                         (sync_shape_nodes, sync_region_focus, sync_drag_plane).chain(),
                         update_wire_drag_preview,
                         update_wire_hover_preview,
+                        maintain_space_simulation.after(world::sync_world_foundations),
                         run_drive_sequencer,
-                        advance_simulation,
+                        advance_simulation.run_if(world::world_playing),
                         sync_player_avatar,
                         update_previews,
                         (performance::sample, ui::push_performance).chain(),
@@ -2499,21 +2668,7 @@ fn setup(
         weld_selection_preview_mesh,
     });
 
-    commands.spawn((
-        Name::new("Ground platform"),
-        Mesh3d(
-            meshes.add(
-                Plane3d::default()
-                    .mesh()
-                    .size(GROUND_HALF_SIZE * 2.0, GROUND_HALF_SIZE * 2.0),
-            ),
-        ),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.16, 0.19, 0.22),
-            perceptual_roughness: 1.0,
-            ..default()
-        })),
-    ));
+    garage::spawn(&mut commands, &asset_server, &mut meshes, &mut materials);
     for material in ConstructionMaterial::ALL {
         let index = material_index(material);
         commands.spawn((
@@ -2719,18 +2874,8 @@ fn setup(
         DeletePreview,
     ));
 
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 12_000.0,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-        Transform::from_xyz(8.0, 14.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-
-    // Light arriving from the whole sky, not one lamp: undersides pick up warm
-    // bounce off the platform and vertical faces catch the sky at a graze, so
-    // the build reads round without the key light being cranked into clipping.
+    // Filter the authored sky once, then retain the resulting diffuse and
+    // roughness-aware specular maps without regenerating them every frame.
     let environment_map = images.add(sky_cubemap(SKY_CUBEMAP_SIZE));
 
     let player_camera = PlayerCamera::default();
@@ -2747,8 +2892,9 @@ fn setup(
             Name::new("Player camera"),
             Camera3d::default(),
             projection.clone(),
-            Exposure::OVERCAST,
+            garage::EXPOSURE,
             Tonemapping::SomewhatBoringDisplayTransform,
+            garage::fog(),
             GeneratedEnvironmentMapLight {
                 environment_map,
                 intensity: SKY_ENVIRONMENT_INTENSITY,
@@ -2838,17 +2984,6 @@ mod pause_feature_tests {
             escape_target(true, false, true, true, true, true),
             EscapeTarget::PauseMenu
         );
-    }
-
-    #[test]
-    fn menu_pause_does_not_change_the_prior_space_pause_state() {
-        for space_paused in [false, true] {
-            assert!(effective_simulation_pause(space_paused, true));
-            assert_eq!(
-                effective_simulation_pause(space_paused, false),
-                space_paused
-            );
-        }
     }
 
     #[test]
@@ -3109,14 +3244,13 @@ pub(crate) fn sync_player_avatar(
     }
 }
 
-/// Edge of each cubemap face, in texels. The generator filters this down to a
-/// 32x32 diffuse map, so a modest source is plenty for a smooth gradient.
+/// Edge of each source cubemap face, in texels. Bevy filters this once into a
+/// 32x32 diffuse map and a roughness-aware specular mip chain.
 const SKY_CUBEMAP_SIZE: u32 = 64;
 
 /// Radiance the sky cubemap is scaled to, in cd/m². A uniform hemisphere of
 /// radiance `L` delivers `pi * L` lux, so this is roughly two thousand lux of
-/// fill against the key light's twelve thousand — enough to open the shadows
-/// up, far short of flattening them.
+/// fill — enough to open the shadows up, far short of flattening them.
 const SKY_ENVIRONMENT_INTENSITY: f32 = 700.0;
 
 /// Straight up: cool and bright, the way an overcast sky reads.
@@ -3126,12 +3260,7 @@ const SKY_HORIZON: Vec3 = Vec3::new(0.80, 0.82, 0.88);
 /// Straight down: dim and warm, standing in for bounce off the platform.
 const SKY_GROUND: Vec3 = Vec3::new(0.26, 0.22, 0.18);
 
-/// Builds a cubemap of sky above and warm ground below, for image-based
-/// lighting.
-///
-/// Cheaper and more controllable than shipping an HDRI, and unlike a flat
-/// ambient term it carries direction, which is what makes a face read as
-/// facing up or down.
+/// Builds the garage's sky-and-ground source cubemap for one-time filtering.
 fn sky_cubemap(size: u32) -> Image {
     let edge = f32::from(u16::try_from(size).expect("a cubemap face is a modest number of texels"));
     let mut texels: Vec<u8> =
@@ -3139,7 +3268,6 @@ fn sky_cubemap(size: u32) -> Image {
     for face in 0..6_usize {
         for row in 0..size {
             for column in 0..size {
-                // Texel centres across the face, in [-1, 1].
                 let along = |index: u32| {
                     let index =
                         f32::from(u16::try_from(index).expect("a texel index is within its face"));
@@ -3190,18 +3318,13 @@ fn cubemap_direction(face: usize, u: f32, v: f32) -> Vec3 {
 fn sky_colour(direction: Vec3) -> Vec3 {
     let height = direction.y;
     if height >= 0.0 {
-        // The square root keeps the sky bright well down towards the horizon
-        // rather than fading away over the top half of the view.
         SKY_HORIZON.lerp(SKY_ZENITH, height.sqrt())
     } else {
         SKY_HORIZON.lerp(SKY_GROUND, (-height).powf(0.7))
     }
 }
 
-/// Encodes a finite, non-negative value as IEEE 754 binary16.
-///
-/// The sky map is authored in the 0 to 1 range, so this handles neither
-/// negatives nor the subnormal and infinite ends of the format.
+/// Encodes the sky's finite, non-negative values as IEEE 754 binary16.
 fn half_bits(value: f32) -> u16 {
     let bits = value.clamp(0.0, 65_504.0).to_bits();
     let exponent = i32::try_from((bits >> 23) & 0xff).expect("a float exponent fits in i32") - 127;
@@ -3228,7 +3351,6 @@ fn handle_history_shortcut(
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
-    simulation: Res<AppSimulation>,
     overlay: Res<ui::UiInput>,
 ) {
     if overlay.blocks_keyboard() {
@@ -3237,13 +3359,7 @@ fn handle_history_shortcut(
     let Some(action) = requested_history_action(&actions) else {
         return;
     };
-    apply_history_action(
-        action,
-        &mut graph.0,
-        &mut state,
-        &mut history,
-        simulation.is_running(),
-    );
+    apply_history_action(action, &mut graph.0, &mut state, &mut history, false);
 }
 
 fn apply_history_action(
@@ -3277,7 +3393,7 @@ fn apply_history_action(
         return false;
     };
 
-    *graph = restored.graph;
+    *graph = Arc::unwrap_or_clone(restored.graph);
     state.placed_bearings = restored.placed_bearings;
     cancel_transient_editor_state(graph, state);
     state.construction_mesh_dirty = true;
@@ -3366,9 +3482,6 @@ fn handle_shortcuts(
                 state.feedback = Some("Nothing to pick up".to_owned());
             }
         }
-    }
-    if simulation.is_running() {
-        return;
     }
     if actions.just_pressed(GameAction::Rotate)
         && let Some(tool) = selection.0
@@ -3712,7 +3825,6 @@ fn adjusted_bearing_dimensions(
 
 fn handle_bearing_dimension_shortcuts(
     actions: Res<ButtonInput<GameAction>>,
-    simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     menu: Res<CreationMenuState>,
     mut settings: ResMut<BearingToolSettings>,
@@ -3721,7 +3833,7 @@ fn handle_bearing_dimension_shortcuts(
     let Some((target, direction)) = requested_bearing_dimension_adjustment(
         &actions,
         selection.0,
-        simulation.is_running(),
+        false,
         menu.blocks_keyboard(),
     ) else {
         return;
@@ -3853,7 +3965,6 @@ fn adjusted_cylinder_dimensions(
 
 fn handle_cylinder_dimension_shortcuts(
     actions: Res<ButtonInput<GameAction>>,
-    simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     menu: Res<CreationMenuState>,
     mut settings: ResMut<CylinderToolSettings>,
@@ -3865,7 +3976,7 @@ fn handle_cylinder_dimension_shortcuts(
     let Some((target, direction)) = requested_cylinder_dimension_adjustment(
         &actions,
         selection.0,
-        simulation.is_running(),
+        false,
         menu.blocks_keyboard(),
     ) else {
         return;
@@ -3916,12 +4027,17 @@ fn update_hover(
     overlay: Res<ui::UiInput>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
+    space: Res<State<world::AppSpace>>,
+    world_runtime: Res<world::WorldRuntime>,
 ) {
-    if simulation.is_running()
-        || overlay.blocks_pointer()
-        || !player.world_input_active()
-        || wheel.open
-    {
+    let placement_bounds = match space.get() {
+        world::AppSpace::Garage => PlacementBounds::Garage,
+        world::AppSpace::World => PlacementBounds::World {
+            origin: world_runtime.horizontal_origin(),
+        },
+    };
+    state.placement_bounds = placement_bounds;
+    if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
         clear_hover(&mut state);
         return;
     }
@@ -3951,12 +4067,89 @@ fn update_hover(
                 selected_material
                     .as_deref()
                     .map_or(ConstructionMaterial::Steel, |value| value.0),
+                actions.pressed(GameAction::FinePlacement),
             );
         }
         return;
     };
     state.pointer_position = Some(cursor);
     state.pointer_ray = Some((ray.origin, ray.direction.as_vec3()));
+    let ray_direction = ray.direction.as_vec3();
+    let terrain_ground = placement_bounds
+        .is_world()
+        .then(|| world_runtime.raycast_terrain(ray.origin, ray_direction, 64.0))
+        .flatten()
+        .map(|(point, distance)| SurfaceHit {
+            distance,
+            point,
+            face: FaceRef::ground(),
+        });
+    let moving_hit = (*space.get() == world::AppSpace::World)
+        .then(|| {
+            simulation
+                .creation
+                .as_ref()
+                .and_then(|creation| {
+                    raycast_simulation(
+                        &graph.0,
+                        creation,
+                        &simulation.transforms,
+                        ray.origin,
+                        ray_direction,
+                    )
+                })
+                .filter(|hit| {
+                    !simulation.creation.as_ref().is_some_and(|creation| {
+                        creation.compounds[hit.body_index as usize].is_static
+                    })
+                })
+        })
+        .flatten();
+    let nearest_editable =
+        raycast_construction_with_ground(&graph.0, ray.origin, ray_direction, terrain_ground)
+            .filter(|hit| match hit.face.owner {
+                FaceOwner::Ground => true,
+                FaceOwner::Part(part) => simulation_part_is_static(&simulation, part),
+            });
+    state.world_edit_blocker = moving_hit
+        .is_some_and(|moving| nearest_editable.is_none_or(|hit| moving.distance <= hit.distance))
+        .then_some(WorldEditBlocker::MovingConstruction);
+    let raycast_surface = |annulus: Option<(f32, f32)>| {
+        let hit = match annulus {
+            Some((inner, outer)) if placement_bounds.is_world() => {
+                raycast_construction_for_annulus_with_ground(
+                    &graph.0,
+                    ray.origin,
+                    ray_direction,
+                    inner,
+                    outer,
+                    terrain_ground,
+                )
+            }
+            Some((inner, outer)) => {
+                raycast_construction_for_annulus(&graph.0, ray.origin, ray_direction, inner, outer)
+            }
+            None if placement_bounds.is_world() => raycast_construction_with_ground(
+                &graph.0,
+                ray.origin,
+                ray_direction,
+                terrain_ground,
+            ),
+            None => raycast_construction(&graph.0, ray.origin, ray_direction),
+        };
+        let hit = hit.filter(|hit| match hit.face.owner {
+            FaceOwner::Ground => true,
+            FaceOwner::Part(part) if !placement_bounds.is_world() => graph.0.part(part).is_some(),
+            FaceOwner::Part(part) => simulation_part_is_static(&simulation, part),
+        });
+        if moving_hit
+            .is_some_and(|moving| hit.is_none_or(|editable| moving.distance <= editable.distance))
+        {
+            None
+        } else {
+            hit
+        }
+    };
     if state.block_drag.is_some() {
         refresh_block_drag(
             &graph.0,
@@ -3987,9 +4180,8 @@ fn update_hover(
         );
         return;
     }
-    let ray_direction = ray.direction.as_vec3();
     let Some(tool) = selection.0 else {
-        let construction_hit = raycast_construction(&graph.0, ray.origin, ray_direction);
+        let construction_hit = raycast_surface(None);
         let bearing_hit =
             raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction);
         if let Some((bearing, distance)) = bearing_hit
@@ -4006,23 +4198,17 @@ fn update_hover(
         return;
     };
     let construction_hit = if actions.pressed(GameAction::Secondary) {
-        raycast_construction(&graph.0, ray.origin, ray_direction)
+        raycast_surface(None)
     } else {
         match tool {
-            Tool::Bearing => raycast_construction_for_annulus(
-                &graph.0,
-                ray.origin,
-                ray_direction,
+            Tool::Bearing => raycast_surface(Some((
                 bearing_settings.dimensions.inner_diameter(),
                 bearing_settings.dimensions.outer_diameter(),
-            ),
-            Tool::Cylinder => raycast_construction_for_annulus(
-                &graph.0,
-                ray.origin,
-                ray_direction,
+            ))),
+            Tool::Cylinder => raycast_surface(Some((
                 cylinder_settings.dimensions.inner_diameter(),
                 cylinder_settings.dimensions.outer_diameter(),
-            ),
+            ))),
             Tool::Block
             | Tool::Weld
             | Tool::Hammer
@@ -4034,7 +4220,7 @@ fn update_hover(
             | Tool::Servo
             | Tool::Seat
             | Tool::Input
-            | Tool::Shape => raycast_construction(&graph.0, ray.origin, ray_direction),
+            | Tool::Shape => raycast_surface(None),
         }
     };
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
@@ -4067,6 +4253,7 @@ fn update_hover(
             selected_material
                 .as_deref()
                 .map_or(ConstructionMaterial::Steel, |value| value.0),
+            actions.pressed(GameAction::FinePlacement),
         );
         return;
     }
@@ -4080,6 +4267,7 @@ fn update_hover(
             selected_material
                 .as_deref()
                 .map_or(ConstructionMaterial::Steel, |value| value.0),
+            actions.pressed(GameAction::FinePlacement),
         );
         return;
     };
@@ -4093,6 +4281,7 @@ fn update_hover(
         selected_material
             .as_deref()
             .map_or(ConstructionMaterial::Steel, |value| value.0),
+        actions.pressed(GameAction::FinePlacement),
     );
 }
 
@@ -4137,7 +4326,7 @@ fn refresh_block_drag(
         return;
     }
     let result = block_box_specs(start.spec, span).and_then(|specs| {
-        validate_block_batch(graph, start, &specs)?;
+        validate_block_batch_in_bounds(graph, start, &specs, state.placement_bounds)?;
         Ok(specs)
     });
     let drag = state
@@ -4293,7 +4482,7 @@ fn rebuild_pipe_drag(graph: &ConstructionGraph, state: &mut EditorState) {
         )
     };
     let result = pipe_run_pieces(&points, &bend_radii, dimensions, material).and_then(|pieces| {
-        validate_pipe_run(graph, &pieces)?;
+        validate_pipe_run_in_bounds(graph, &pieces, state.placement_bounds)?;
         Ok(pieces)
     });
     let drag = state.pipe_drag.as_mut().expect("pipe drag remains active");
@@ -4484,13 +4673,13 @@ fn delete_box_parts(
 ) -> Result<Vec<PartId>, PlacementError> {
     let centers = block_box_specs(start, span)?
         .into_iter()
-        .map(|spec| spec.pose.translation_half_units())
+        .map(|spec| spec.pose.translation_position_ticks())
         .collect::<HashSet<_>>();
     Ok(graph
         .parts()
         .filter_map(|(part, spec)| {
             matches!(spec, PartSpec::Cuboid(_))
-                .then(|| centers.contains(&spec.pose().translation_half_units()))
+                .then(|| centers.contains(&spec.pose().translation_position_ticks()))
                 .unwrap_or(false)
                 .then_some(part)
         })
@@ -4508,6 +4697,7 @@ fn weld_lockup_warning(before: &ConstructionGraph, after: &ConstructionGraph) ->
 
 fn clear_hover(state: &mut EditorState) {
     state.hovered = None;
+    state.world_edit_blocker = None;
     state.hovered_bearing = None;
     state.attachment_bearing = None;
     state.preview = None;
@@ -4523,6 +4713,7 @@ fn refresh_tool_preview_with_cylinder(
     tool: Tool,
     cylinder_dimensions: CylinderDimensions,
     material: ConstructionMaterial,
+    fine_placement: bool,
 ) {
     state.preview = None;
     state.cylinder_preview = None;
@@ -4542,7 +4733,7 @@ fn refresh_tool_preview_with_cylinder(
             let surface_candidate = state.hovered.and_then(|hit| {
                 try_face_geometry_from_ref(hit.face, Some(graph))
                     .is_some()
-                    .then(|| candidate_from_hit(graph, hit))
+                    .then(|| candidate_from_hit_with_step(graph, hit, fine_placement))
                     .map(|mut candidate| {
                         candidate.spec = candidate.spec.with_material(material);
                         candidate
@@ -4584,19 +4775,26 @@ fn refresh_tool_preview_with_cylinder(
                     candidate.spec = candidate.spec.with_material(material);
                     candidate
                 });
-                let error = stage_bearing_attachment(
+                let error = stage_bearing_attachment_in_bounds(
                     graph,
                     candidate,
                     bearing.source,
                     bearing.anchor,
                     bearing.dimensions,
+                    state.placement_bounds,
                 )
                 .err();
                 state.preview = Some(candidate);
                 error
             } else {
                 surface_candidate.and_then(|candidate| {
-                    let error = validate_block_batch(graph, candidate, &[candidate.spec]).err();
+                    let error = validate_block_batch_in_bounds(
+                        graph,
+                        candidate,
+                        &[candidate.spec],
+                        state.placement_bounds,
+                    )
+                    .err();
                     state.preview = Some(candidate);
                     error
                 })
@@ -4620,7 +4818,15 @@ fn refresh_tool_preview_with_cylinder(
         (Tool::Cylinder, _) => {
             let surface_candidate = state
                 .hovered
-                .and_then(|hit| cylinder_candidate_from_hit(graph, hit, cylinder_dimensions).ok())
+                .and_then(|hit| {
+                    cylinder_candidate_from_hit_with_step(
+                        graph,
+                        hit,
+                        cylinder_dimensions,
+                        fine_placement,
+                    )
+                    .ok()
+                })
                 .map(|mut candidate| {
                     candidate.spec = candidate.spec.with_material(material);
                     candidate
@@ -4661,43 +4867,49 @@ fn refresh_tool_preview_with_cylinder(
                         point: bearing.anchor,
                         face: bearing.source,
                     };
-                    cylinder_candidate_from_hit(graph, hit, cylinder_dimensions)
-                        .ok()
-                        .map(|mut candidate| {
-                            candidate.spec = candidate.spec.with_material(material);
-                            candidate
-                        })
+                    cylinder_candidate_from_hit_with_step(
+                        graph,
+                        hit,
+                        cylinder_dimensions,
+                        fine_placement,
+                    )
+                    .ok()
+                    .map(|mut candidate| {
+                        candidate.spec = candidate.spec.with_material(material);
+                        candidate
+                    })
                 })
             } else {
                 surface_candidate
             };
             candidate.and_then(|candidate| {
-                let error = validate_cylinder_candidate(graph, candidate).err();
+                let error =
+                    validate_cylinder_candidate_in_bounds(graph, candidate, state.placement_bounds)
+                        .err();
                 state.cylinder_preview = Some(candidate);
                 error
             })
         }
-        (Tool::Transmission, _) => {
-            state
-                .hovered
-                .and_then(|hit| match transmission_candidate_from_hit(graph, hit) {
-                    Ok((_, candidate)) => {
-                        state.preview = Some(candidate);
-                        None
+        (Tool::Transmission, _) => state.hovered.and_then(|hit| {
+            match transmission_candidate_from_hit_in_bounds(graph, hit, state.placement_bounds) {
+                Ok((_, candidate)) => {
+                    state.preview = Some(candidate);
+                    None
+                }
+                Err(error) => {
+                    if try_face_geometry_from_ref(hit.face, Some(graph)).is_some() {
+                        state.preview = Some(oriented_cuboid_candidate_from_hit_with_step(
+                            graph,
+                            hit,
+                            TransmissionSpec::GRID_UNITS,
+                            GridRotation::default(),
+                            fine_placement,
+                        ));
                     }
-                    Err(error) => {
-                        if try_face_geometry_from_ref(hit.face, Some(graph)).is_some() {
-                            state.preview = Some(oriented_cuboid_candidate_from_hit(
-                                graph,
-                                hit,
-                                TransmissionSpec::GRID_UNITS,
-                                GridRotation::default(),
-                            ));
-                        }
-                        Some(error)
-                    }
-                })
-        }
+                    Some(error)
+                }
+            }
+        }),
         (
             tool @ (Tool::Controller
             | Tool::GasEngine
@@ -4719,13 +4931,20 @@ fn refresh_tool_preview_with_cylinder(
                     Tool::Input => InputSpec::GRID_UNITS,
                     _ => unreachable!(),
                 };
-                let candidate = oriented_cuboid_candidate_from_hit(
+                let candidate = oriented_cuboid_candidate_from_hit_with_step(
                     graph,
                     hit,
                     dimensions,
                     authored_orientation(state.authored_orientation),
+                    fine_placement,
                 );
-                let error = validate_block_batch(graph, candidate, &[candidate.spec]).err();
+                let error = validate_block_batch_in_bounds(
+                    graph,
+                    candidate,
+                    &[candidate.spec],
+                    state.placement_bounds,
+                )
+                .err();
                 state.preview = Some(candidate);
                 error
             }),
@@ -4750,6 +4969,7 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
         tool,
         CylinderDimensions::default(),
         ConstructionMaterial::Steel,
+        false,
     );
 }
 
@@ -4767,14 +4987,14 @@ fn handle_shape_actions(
     mut history: ResMut<EditorHistory>,
     mut mirror: ResMut<shape_tool::ShapeMirror>,
     mut snap: ResMut<shape_tool::ShapeSnap>,
-    simulation: Res<AppSimulation>,
+    _simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     overlay: Res<ui::UiInput>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
     camera_transform: Single<&GlobalTransform, With<MainCamera>>,
 ) {
-    if selection.0 != Some(Tool::Shape) || simulation.is_running() {
+    if selection.0 != Some(Tool::Shape) {
         if state.vertex_drag.take().is_some() {
             state.construction_mesh_dirty = true;
         }
@@ -5353,13 +5573,13 @@ fn sync_shape_nodes(
     state: Res<EditorState>,
     mirror: Res<shape_tool::ShapeMirror>,
     selection: Res<SelectedTool>,
-    simulation: Res<AppSimulation>,
+    _simulation: Res<AppSimulation>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut markers: ShapeOverlay<ShapeNodeVisual, ShapeSelectedVisual, ShapePlaneVisual>,
     mut selected_markers: ShapeOverlay<ShapeSelectedVisual, ShapeNodeVisual, ShapePlaneVisual>,
 ) {
-    let hide = selection.0 != Some(Tool::Shape) || simulation.is_running();
+    let hide = selection.0 != Some(Tool::Shape);
 
     // Two batches rather than one: a selected corner reads by colour as well as
     // by size, which size alone was not carrying.
@@ -5443,9 +5663,7 @@ fn sync_drag_plane(
 ) {
     let mut sheet = OverlayGeometry::default();
     let mut arrows = OverlayGeometry::default();
-    if !simulation.is_running()
-        && let Some(drag) = state.pipe_drag.as_ref()
-    {
+    if let Some(drag) = state.pipe_drag.as_ref() {
         let direction = *drag
             .directions
             .last()
@@ -5470,9 +5688,7 @@ fn sync_drag_plane(
     } else if let Some((low, high, plane)) = active_drag_plane(&state, &simulation) {
         append_drag_plane(low, high, plane, &mut sheet);
         append_plane_arrows(low, high, plane, &mut arrows);
-    } else if !simulation.is_running()
-        && let Some(drag) = state.vertex_drag.as_ref()
-    {
+    } else if let Some(drag) = state.vertex_drag.as_ref() {
         append_axis_arrows(drag.position(), drag.axis, &mut arrows);
     }
     **plane_marker = write_overlay(&mut meshes, &visuals.shape_plane_mesh, sheet);
@@ -5482,11 +5698,8 @@ fn sync_drag_plane(
 /// The bounds and plane of whichever drag is open, if one is.
 fn active_drag_plane(
     state: &EditorState,
-    simulation: &AppSimulation,
+    _simulation: &AppSimulation,
 ) -> Option<(Vec3, Vec3, PlacementPlane)> {
-    if simulation.is_running() {
-        return None;
-    }
     if let Some(drag) = state.region_drag.as_ref() {
         let (low, high) = region_world_bounds(&drag.region);
         return Some((low, high, drag.plane));
@@ -5704,7 +5917,7 @@ fn handle_build_actions(
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
-    simulation: Res<AppSimulation>,
+    _simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     mut cylinder_settings: ResMut<CylinderToolSettings>,
@@ -5713,7 +5926,13 @@ fn handle_build_actions(
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
 ) {
-    if simulation.is_running() {
+    if state.world_edit_blocker == Some(WorldEditBlocker::MovingConstruction)
+        && (actions.just_pressed(GameAction::Primary)
+            || actions.just_pressed(GameAction::Secondary))
+    {
+        state.feedback = Some(
+            "Moving constructions cannot be edited; anchor them before changing parts".to_owned(),
+        );
         return;
     }
     if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
@@ -5865,7 +6084,7 @@ fn handle_build_actions(
                                     .then_some(id)
                             })
                             .collect::<Vec<_>>();
-                        let mut staged = graph.0.clone();
+                        let mut staged = graph.0.begin_edit();
                         let commands = rigid_links
                             .iter()
                             .copied()
@@ -5873,7 +6092,7 @@ fn handle_build_actions(
                             .chain(attached.iter().copied().map(BuildCommand::RemoveBearing));
                         match staged.apply_batch(commands) {
                             Ok(_) => {
-                                graph.0 = staged;
+                                graph.0 = staged.finish();
                                 state.placed_bearings.remove(index);
                                 history.commit(previous);
                                 state.feedback = Some(format!(
@@ -5975,13 +6194,14 @@ fn handle_build_actions(
                     state.feedback = Some("Bearing is no longer available".to_owned());
                     return;
                 };
-                if let Err(error) = stage_bearing_cylinder(
+                if let Err(error) = stage_bearing_cylinder_in_bounds(
                     &graph.0,
                     candidate,
                     bearing.source,
                     bearing.anchor,
                     bearing.dimensions,
                     &bearing_socket_targets(&graph.0, bearing),
+                    state.placement_bounds,
                 ) {
                     state.feedback = Some(error.to_string());
                     return;
@@ -5995,7 +6215,11 @@ fn handle_build_actions(
                 let Some(hit) = state.hovered else {
                     return;
                 };
-                if let Err(error) = validate_cylinder_candidate(&graph.0, candidate) {
+                if let Err(error) = validate_cylinder_candidate_in_bounds(
+                    &graph.0,
+                    candidate,
+                    state.placement_bounds,
+                ) {
                     state.feedback = Some(error.to_string());
                     return;
                 }
@@ -6075,10 +6299,11 @@ fn handle_build_actions(
             }
             let previous = EditorSnapshot::capture(&graph.0, &state);
             let staged = match drag.attachment {
-                BlockAttachment::AutoWeld { source } => stage_pipe_run(
+                BlockAttachment::AutoWeld { source } => stage_pipe_run_in_bounds(
                     &graph.0,
                     &drag.pieces,
                     PipeRunAttachment::AutoWeld { source },
+                    state.placement_bounds,
                 ),
                 BlockAttachment::Bearing {
                     source,
@@ -6091,7 +6316,7 @@ fn handle_build_actions(
                         dimensions,
                     };
                     let rigid_targets = bearing_socket_targets(&graph.0, socket);
-                    stage_pipe_run(
+                    stage_pipe_run_in_bounds(
                         &graph.0,
                         &drag.pieces,
                         PipeRunAttachment::Bearing {
@@ -6100,6 +6325,7 @@ fn handle_build_actions(
                             dimensions,
                             rigid_targets: &rigid_targets,
                         },
+                        state.placement_bounds,
                     )
                 }
             };
@@ -6215,7 +6441,7 @@ fn handle_build_actions(
             }
         }
         Tool::Hammer => {
-            state.feedback = Some("Hammer is available while simulating — press Space".to_owned());
+            state.feedback = Some("Hammer is available in the live World".to_owned());
         }
         Tool::Controller => {
             if let Some(hit) = state.hovered
@@ -6238,7 +6464,12 @@ fn handle_build_actions(
             };
             let previous = EditorSnapshot::capture(&graph.0, &state);
             let existing = graph.0.parts().map(|(part, _)| part).collect::<Vec<_>>();
-            match stage_controller_from_source(&graph.0, candidate, hit.face.owner) {
+            match stage_controller_from_source_in_bounds(
+                &graph.0,
+                candidate,
+                hit.face.owner,
+                state.placement_bounds,
+            ) {
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
@@ -6273,7 +6504,13 @@ fn handle_build_actions(
                 EngineKind::Electric
             };
             let previous = EditorSnapshot::capture(&graph.0, &state);
-            match stage_engine_from_source(&graph.0, candidate, hit.face.owner, kind) {
+            match stage_engine_from_source_in_bounds(
+                &graph.0,
+                candidate,
+                hit.face.owner,
+                kind,
+                state.placement_bounds,
+            ) {
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
@@ -6289,7 +6526,11 @@ fn handle_build_actions(
                 state.feedback = Some("Point at an engine or transmission +Z output".to_owned());
                 return;
             };
-            let (parent, candidate) = match transmission_candidate_from_hit(&graph.0, hit) {
+            let (parent, candidate) = match transmission_candidate_from_hit_in_bounds(
+                &graph.0,
+                hit,
+                state.placement_bounds,
+            ) {
                 Ok(candidate) => candidate,
                 Err(error) => {
                     state.feedback = Some(error.to_string());
@@ -6330,9 +6571,24 @@ fn handle_build_actions(
             };
             let previous = EditorSnapshot::capture(&graph.0, &state);
             let staged = match tool {
-                Tool::Servo => stage_servo_from_source(&graph.0, candidate, hit.face.owner),
-                Tool::Seat => stage_seat_from_source(&graph.0, candidate, hit.face.owner),
-                Tool::Input => stage_input_from_source(&graph.0, candidate, hit.face.owner),
+                Tool::Servo => stage_servo_from_source_in_bounds(
+                    &graph.0,
+                    candidate,
+                    hit.face.owner,
+                    state.placement_bounds,
+                ),
+                Tool::Seat => stage_seat_from_source_in_bounds(
+                    &graph.0,
+                    candidate,
+                    hit.face.owner,
+                    state.placement_bounds,
+                ),
+                Tool::Input => stage_input_from_source_in_bounds(
+                    &graph.0,
+                    candidate,
+                    hit.face.owner,
+                    state.placement_bounds,
+                ),
                 _ => unreachable!(),
             };
             match staged {
@@ -6356,7 +6612,19 @@ fn handle_build_actions(
         selected_material
             .as_deref()
             .map_or(ConstructionMaterial::Steel, |value| value.0),
+        actions.pressed(GameAction::FinePlacement),
     );
+}
+
+fn simulation_part_is_static(simulation: &AppSimulation, part: PartId) -> bool {
+    let Some(creation) = simulation.creation.as_ref() else {
+        return false;
+    };
+    creation
+        .part_to_compound
+        .iter()
+        .find_map(|&(candidate, compound)| (candidate == part).then_some(compound))
+        .is_some_and(|compound| creation.compounds[compound as usize].is_static)
 }
 
 fn bearing_location_occupied(
@@ -6682,10 +6950,10 @@ fn connect_drive_wire(
     };
     let reversing = !existing.is_empty();
 
-    let mut staged = graph.clone();
+    let mut staged = graph.begin_edit();
     match staged.apply_batch(commands) {
         Ok(_) => {
-            *graph = staged;
+            *graph = staged.finish();
             history.commit(previous);
             state.selected_controller = Some(controller);
             state.construction_mesh_dirty = true;
@@ -6766,10 +7034,10 @@ fn disconnect_drive_wires(
         return "That bearing is not wired to a control block".to_owned();
     }
     let previous = EditorSnapshot::capture(graph, state);
-    let mut staged = graph.clone();
+    let mut staged = graph.begin_edit();
     match staged.apply_batch(links.iter().copied().map(BuildCommand::RemoveDriveLink)) {
         Ok(_) => {
-            *graph = staged;
+            *graph = staged.finish();
             history.commit(previous);
             state.construction_mesh_dirty = true;
             "Removed this bearing's drive wire".to_owned()
@@ -6855,7 +7123,7 @@ fn stage_part_deletion_preserving_bearings(
                 .then_some(id)
         })
         .collect::<Vec<_>>();
-    let mut staged = graph.clone();
+    let mut staged = graph.begin_edit();
     staged.apply_batch(
         rigid_links
             .into_iter()
@@ -6878,7 +7146,7 @@ fn stage_part_deletion_preserving_bearings(
         .collect::<Vec<_>>();
     staged.apply_batch(replacement_bearings)?;
 
-    Ok((staged, next_bearings, migrated_count))
+    Ok((staged.finish(), next_bearings, migrated_count))
 }
 
 fn visible_bearing_count(graph: &ConstructionGraph, placed_bearings: &[PlacedBearing]) -> usize {
@@ -6910,12 +7178,13 @@ fn handle_block_actions(
                 state.feedback = Some("Bearing is no longer available".to_owned());
                 return;
             };
-            if let Some(error) = stage_bearing_attachment(
+            if let Some(error) = stage_bearing_attachment_in_bounds(
                 graph,
                 candidate,
                 bearing.source,
                 bearing.anchor,
                 bearing.dimensions,
+                state.placement_bounds,
             )
             .err()
             {
@@ -6931,7 +7200,14 @@ fn handle_block_actions(
                 face_geometry_from_ref(bearing.source, Some(graph)).normal,
             )
         } else {
-            if let Some(error) = validate_block_batch(graph, candidate, &[candidate.spec]).err() {
+            if let Some(error) = validate_block_batch_in_bounds(
+                graph,
+                candidate,
+                &[candidate.spec],
+                state.placement_bounds,
+            )
+            .err()
+            {
                 state.feedback = Some(error.to_string());
                 return;
             }
@@ -6995,9 +7271,13 @@ fn handle_block_actions(
     let count = drag.specs.len();
     let previous = EditorSnapshot::capture(graph, state);
     let staged = match drag.attachment {
-        BlockAttachment::AutoWeld { source } => {
-            stage_block_batch_from_source(graph, drag.start, &drag.specs, source)
-        }
+        BlockAttachment::AutoWeld { source } => stage_block_batch_from_source_in_bounds(
+            graph,
+            drag.start,
+            &drag.specs,
+            source,
+            state.placement_bounds,
+        ),
         BlockAttachment::Bearing {
             source,
             anchor,
@@ -7010,7 +7290,7 @@ fn handle_block_actions(
                 dimensions,
             };
             let rigid_targets = bearing_socket_targets(graph, socket);
-            stage_bearing_block_batch(
+            stage_bearing_block_batch_in_bounds(
                 graph,
                 drag.start,
                 &drag.specs,
@@ -7018,6 +7298,7 @@ fn handle_block_actions(
                 anchor,
                 dimensions,
                 &rigid_targets,
+                state.placement_bounds,
             )
         }
     };
@@ -7061,11 +7342,7 @@ fn handle_hammer_actions(
         hammer.pending = None;
         return;
     }
-    if simulation.is_paused()
-        || overlay.blocks_pointer()
-        || !player.world_input_active()
-        || wheel.open
-    {
+    if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
         hammer.charging = None;
         hammer.pending = None;
         return;
@@ -7076,12 +7353,6 @@ fn handle_hammer_actions(
     };
     if !tool.works_in_mode(true) {
         hammer.charging = None;
-        if actions.just_pressed(GameAction::Primary) && !overlay.blocks_pointer() {
-            state.feedback = Some(format!(
-                "{} is available in build mode — press Escape first",
-                tool.label()
-            ));
-        }
         return;
     }
     if overlay.blocks_pointer() && hammer.charging.is_none() {
@@ -7575,7 +7846,11 @@ fn raycast_bearing_annulus(
     nearest.is_finite().then_some(nearest)
 }
 
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+#[allow(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
 fn sync_visual_meshes(
     graph: Res<EditorGraph>,
     mirror: Res<shape_tool::ShapeMirror>,
@@ -7613,8 +7888,35 @@ fn sync_visual_meshes(
     if !state.construction_mesh_dirty {
         return;
     }
+    let edit_delta = ConstructionEditDelta::between(&state.rendered_graph, &graph.0);
+    let rebuild_all = edit_delta.is_empty();
+    let affected_parts = edit_delta.affected_parts();
+    let mut dirty_materials = affected_parts
+        .iter()
+        .filter_map(|&part| {
+            graph
+                .0
+                .part(part)
+                .or_else(|| state.rendered_graph.part(part))
+                .copied()
+                .and_then(ordinary_material)
+        })
+        .collect::<HashSet<_>>();
+    for &region in &edit_delta.region_owned_geometry {
+        if let Some(material) = graph
+            .0
+            .region(region)
+            .or_else(|| state.rendered_graph.region(region))
+            .map(ShapeRegion::material)
+        {
+            dirty_materials.insert(material);
+        }
+    }
     let preview = preview_region(&graph.0, &state, *mirror);
     for material in ConstructionMaterial::ALL {
+        if !rebuild_all && !dirty_materials.contains(&material) {
+            continue;
+        }
         let mesh = combined_material_construction_mesh(&graph.0, preview.as_ref(), material);
         let visible = mesh.count_vertices() > 0;
         if let Some(mut asset) =
@@ -7636,6 +7938,20 @@ fn sync_visual_meshes(
         *visibility = Visibility::Hidden;
     }
     for appearance in AuthoredPart::ALL {
+        let appearance_changed = rebuild_all
+            || affected_parts.iter().any(|&part| {
+                graph
+                    .0
+                    .part(part)
+                    .is_some_and(|spec| appearance.matches(&graph.0, part, *spec))
+                    || state
+                        .rendered_graph
+                        .part(part)
+                        .is_some_and(|spec| appearance.matches(&state.rendered_graph, part, *spec))
+            });
+        if !appearance_changed {
+            continue;
+        }
         let visible = graph
             .0
             .parts()
@@ -7675,6 +7991,7 @@ fn sync_visual_meshes(
     {
         *mesh = combined_drive_xray_mesh(&graph.0, &state.placed_bearings, &sequencer);
     }
+    state.rendered_graph = graph.0.clone();
     state.construction_mesh_dirty = false;
 }
 
@@ -7788,7 +8105,7 @@ fn update_joint_xray(
 fn update_previews(
     graph: Res<EditorGraph>,
     state: Res<EditorState>,
-    simulation: Res<AppSimulation>,
+    _simulation: Res<AppSimulation>,
     selected_tool: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
@@ -7852,10 +8169,6 @@ fn update_previews(
     } else {
         *rendered_weld_hover = None;
         *rendered_weld_selection = None;
-    }
-
-    if simulation.is_running() {
-        return;
     }
 
     if let Some(drag) = state.delete_drag.as_ref() {
@@ -9023,6 +9336,27 @@ fn combined_simulation_material_mesh(
     combined_simulation_mesh_filtered(graph, creation, transforms, kind, Some(material))
 }
 
+fn simulation_material_is_present(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    kind: SimulationMeshKind,
+    material: ConstructionMaterial,
+) -> bool {
+    creation.part_to_compound.iter().any(|&(part, compound)| {
+        let is_static = creation.compounds[compound as usize].is_static;
+        let right_motion = match kind {
+            SimulationMeshKind::Static => is_static,
+            SimulationMeshKind::Dynamic => !is_static,
+        };
+        right_motion
+            && graph
+                .part(part)
+                .copied()
+                .and_then(ordinary_material)
+                .is_some_and(|candidate| candidate == material)
+    })
+}
+
 fn combined_simulation_mesh_filtered(
     graph: &ConstructionGraph,
     creation: &CompiledCreation,
@@ -9977,13 +10311,13 @@ fn update_wire_hover_preview(
     graph: Res<EditorGraph>,
     state: Res<EditorState>,
     selection: Res<SelectedTool>,
-    simulation: Res<AppSimulation>,
+    _simulation: Res<AppSimulation>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: Local<Option<WireEnd>>,
     mut transform: Single<&mut Transform, With<WireHoverVisual>>,
 ) {
-    let hovered = if selection.0 == Some(Tool::Connector) && !simulation.is_running() {
+    let hovered = if selection.0 == Some(Tool::Connector) {
         wire_end_under_cursor(&graph.0, &state)
     } else {
         None
@@ -11075,7 +11409,8 @@ mod rendering_tests {
         image::{ImageAddressMode, ImageLoaderSettings},
         mesh::VertexAttributeValues,
         prelude::{
-            AlphaMode, Color, Handle, IVec3, Image, Mesh, Quat, StandardMaterial, Vec2, Vec3,
+            AlphaMode, App, Color, EnvironmentMapLight, GeneratedEnvironmentMapLight, Handle,
+            IVec3, Image, Mesh, Quat, StandardMaterial, Update, Vec2, Vec3,
         },
     };
     use mechanic_core::{
@@ -11098,13 +11433,12 @@ mod rendering_tests {
         combined_controller_mesh, combined_drive_xray_mesh, combined_material_construction_mesh,
         combined_simulation_bearing_mesh, combined_simulation_material_mesh,
         combined_simulation_mesh, configure_repeating_texture, drive_xray_is_visible,
-        joint_xray_is_visible, preview_material, renderable_mesh, single_authored_part_mesh,
-        single_bearing_mesh, single_cylinder_mesh,
+        joint_xray_is_visible, preview_material, renderable_mesh, simulation_material_is_present,
+        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
     use super::{
-        OverlayGeometry, SKY_GROUND, SKY_HORIZON, SKY_ZENITH, append_axis_arrows,
-        append_drag_plane, append_plane_arrows, cubemap_direction, half_bits, region_world_bounds,
-        sky_colour, sky_cubemap,
+        EnvironmentMapGenerationReady, OverlayGeometry, append_axis_arrows, append_drag_plane,
+        append_plane_arrows, region_world_bounds, retain_generated_environment_map, sky_cubemap,
     };
     use crate::PlacementPlane;
     use crate::builder::block_sheet_specs;
@@ -11217,72 +11551,33 @@ mod rendering_tests {
     }
 
     #[test]
-    fn half_precision_encodes_the_values_the_sky_map_uses() {
-        // The bit patterns IEEE 754 binary16 defines for these.
-        assert_eq!(half_bits(0.0), 0x0000);
-        assert_eq!(half_bits(0.5), 0x3800);
-        assert_eq!(half_bits(1.0), 0x3c00);
-        assert_eq!(half_bits(2.0), 0x4000);
-        // Round trip every channel the sky actually holds.
-        for colour in [SKY_ZENITH, SKY_HORIZON, SKY_GROUND] {
-            for channel in [colour.x, colour.y, colour.z] {
-                let decoded = decode_half(half_bits(channel));
-                assert!(
-                    (decoded - channel).abs() < 1.0e-3,
-                    "{channel} survives the encoding"
-                );
-            }
-        }
-    }
-
-    fn decode_half(bits: u16) -> f32 {
-        if bits == 0 {
-            return 0.0;
-        }
-        let exponent = i32::from(bits >> 10) - 15;
-        let mantissa = f32::from(bits & 0x03ff) / 1024.0;
-        (1.0 + mantissa) * 2.0_f32.powi(exponent)
-    }
-
-    #[test]
-    fn the_sky_map_is_bright_above_and_dim_below() {
-        // Whichever face it lands on, a direction gets the same colour, which
-        // is what makes the six faces meet without a seam.
-        assert!(sky_colour(Vec3::Y).abs_diff_eq(SKY_ZENITH, 1.0e-6));
-        assert!(sky_colour(Vec3::NEG_Y).abs_diff_eq(SKY_GROUND, 1.0e-6));
-        for horizontal in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z] {
-            assert!(sky_colour(horizontal).abs_diff_eq(SKY_HORIZON, 1.0e-6));
-        }
-        // Up is brighter than down, which is the whole point of it.
-        assert!(sky_colour(Vec3::Y).length() > sky_colour(Vec3::NEG_Y).length() * 2.0);
-    }
-
-    #[test]
-    fn every_cubemap_face_looks_the_way_its_index_says() {
-        // Face centres are the six axes, in the order the graphics API expects.
-        let centres = [
-            Vec3::X,
-            Vec3::NEG_X,
-            Vec3::Y,
-            Vec3::NEG_Y,
-            Vec3::Z,
-            Vec3::NEG_Z,
-        ];
-        for (face, expected) in centres.into_iter().enumerate() {
-            assert!(
-                cubemap_direction(face, 0.0, 0.0).abs_diff_eq(expected, 1.0e-6),
-                "face {face} points along {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_sky_map_is_a_cube_of_the_size_it_was_asked_for() {
+    fn the_source_sky_map_is_a_cube_of_the_requested_size() {
         let map = sky_cubemap(8);
         assert_eq!(map.texture_descriptor.size.depth_or_array_layers, 6);
         assert_eq!(map.texture_descriptor.size.width, 8);
-        // Four half-precision channels per texel, six faces.
-        assert_eq!(map.data.as_ref().map(Vec::len), Some(6 * 8 * 8 * 8));
+        assert_eq!(map.texture_descriptor.mip_level_count, 1);
+    }
+
+    #[test]
+    fn completed_generation_keeps_the_filtered_map_and_removes_its_generator() {
+        let ready = EnvironmentMapGenerationReady::default();
+        ready.0.store(true, std::sync::atomic::Ordering::Release);
+        let mut app = App::new();
+        app.insert_resource(ready)
+            .add_systems(Update, retain_generated_environment_map);
+        let entity = app
+            .world_mut()
+            .spawn((
+                GeneratedEnvironmentMapLight::default(),
+                EnvironmentMapLight::default(),
+            ))
+            .id();
+
+        app.update();
+
+        let entity = app.world().entity(entity);
+        assert!(!entity.contains::<GeneratedEnvironmentMapLight>());
+        assert!(entity.contains::<EnvironmentMapLight>());
     }
 
     #[test]
@@ -11921,6 +12216,57 @@ mod rendering_tests {
             mesh.count_vertices(),
             single_cylinder_mesh(CylinderDimensions::new(1.0, 0.5, 1.0).unwrap()).count_vertices()
         );
+    }
+
+    #[test]
+    fn simulation_publication_only_touches_materials_in_each_motion_family() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(anchored) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default())
+                    .unwrap()
+                    .with_material(ConstructionMaterial::Steel),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(4, 0, 0), GridRotation::default()),
+                )
+                .unwrap()
+                .with_material(ConstructionMaterial::Wood),
+            ))
+            .unwrap();
+        let creation = graph.compile_with_static_parts([anchored]).unwrap();
+
+        assert!(simulation_material_is_present(
+            &graph,
+            &creation,
+            SimulationMeshKind::Static,
+            ConstructionMaterial::Steel,
+        ));
+        assert!(!simulation_material_is_present(
+            &graph,
+            &creation,
+            SimulationMeshKind::Dynamic,
+            ConstructionMaterial::Steel,
+        ));
+        assert!(simulation_material_is_present(
+            &graph,
+            &creation,
+            SimulationMeshKind::Dynamic,
+            ConstructionMaterial::Wood,
+        ));
+        assert!(!simulation_material_is_present(
+            &graph,
+            &creation,
+            SimulationMeshKind::Static,
+            ConstructionMaterial::Wood,
+        ));
     }
 
     #[test]
@@ -12574,7 +12920,7 @@ mod interaction_tests {
         CylinderToolSettings, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
         HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, MaterialWheelState, PipeDrag,
         PipeEditMode, PlacedBearing, PlacementPlane, PlayerState, PointerSample, SelectedTool,
-        SimulationShortcut, SurfaceHit, Tool, active_drag_plane, adjusted_bearing_dimensions,
+        SurfaceHit, Tool, active_drag_plane, adjusted_bearing_dimensions,
         adjusted_cylinder_dimensions, apply_history_action, bearing_attachment_candidate,
         bearing_attachment_is_highlighted, block_sheet_bounds, candidate_from_hit,
         closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
@@ -12584,8 +12930,8 @@ mod interaction_tests {
         raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
         refresh_block_drag, refresh_region_drag, refresh_tool_preview,
         requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
-        requested_simulation_shortcut, rigid_body_parts, stage_part_deletion_preserving_bearings,
-        tool_status_line, wire_drag_step,
+        rigid_body_parts, stage_part_deletion_preserving_bearings, tool_status_line,
+        wire_drag_step,
     };
     use super::{RegionDrag, commit_region_drag, region_area};
     use crate::builder::block_sheet_specs;
@@ -12681,23 +13027,6 @@ mod interaction_tests {
         let (minimum, maximum) = super::part_world_bounds(preview.spec.into());
         assert!((maximum.y - minimum.y - 0.75).abs() < 1.0e-6);
         assert!((maximum.z - minimum.z - 0.50).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn space_toggles_playback_and_shift_space_restarts() {
-        let mut keyboard = ButtonInput::default();
-        keyboard.press(GameAction::ToggleSimulation);
-        assert_eq!(
-            requested_simulation_shortcut(&keyboard),
-            Some(SimulationShortcut::TogglePlayback)
-        );
-
-        keyboard.reset_all();
-        keyboard.press(GameAction::RestartSimulation);
-        assert_eq!(
-            requested_simulation_shortcut(&keyboard),
-            Some(SimulationShortcut::Restart)
-        );
     }
 
     #[test]
@@ -14790,13 +15119,34 @@ mod showcase_loading_tests {
     use std::time::Duration;
 
     use bevy::prelude::IVec3;
-    use mechanic_core::{BuildCommand, BuildPose, CuboidSpec, GridRotation, TopologyError};
+    use mechanic_core::{
+        BuildCommand, BuildOutcome, BuildPose, CuboidSpec, GridRotation, TopologyError,
+    };
     use mechanic_gpu::FixedStepScheduler;
 
     use super::{
         ConstructionGraph, EditorHistory, EditorSnapshot, EditorState, HistoryAction,
-        apply_history_action, install_editor_graph, next_simulation_tick, showcase,
+        apply_history_action, creation_requires_live_physics, install_editor_graph,
+        next_simulation_tick, showcase,
     };
+
+    #[test]
+    fn terrain_anchored_construction_does_not_start_live_physics() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        assert!(creation_requires_live_physics(&graph.compile().unwrap()));
+        assert!(!creation_requires_live_physics(
+            &graph.compile_with_static_parts([part]).unwrap()
+        ));
+    }
 
     #[test]
     fn app_simulation_drops_catch_up_backlog() {

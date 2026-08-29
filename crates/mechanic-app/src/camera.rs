@@ -8,9 +8,15 @@ use bevy::{
 use mechanic_core::{ConstructionMaterial, PartId};
 
 use crate::{
-    AppSimulation, EditorState, builder::GROUND_HALF_SIZE, control_panel::ControlPanelState,
-    controls::GameAction, creation_menu::CreationMenuState, hotbar::SelectedMaterial,
-    pause_menu::PauseMenuState, ui::UiInput,
+    EditorState,
+    builder::GROUND_HALF_SIZE,
+    control_panel::ControlPanelState,
+    controls::GameAction,
+    creation_menu::CreationMenuState,
+    hotbar::SelectedMaterial,
+    pause_menu::PauseMenuState,
+    ui::UiInput,
+    world::{AppSpace, WorldListState},
 };
 
 pub(crate) const EYE_HEIGHT: f32 = 1.65;
@@ -21,6 +27,7 @@ pub(crate) const AVATAR_OPAQUE_PULLBACK: f32 = 1.0;
 pub(crate) const MAX_PITCH: f32 = FRAC_PI_2 - 0.08;
 pub(crate) const MIN_PITCH: f32 = -MAX_PITCH;
 pub(crate) const WALK_SPEED: f32 = 4.0;
+pub(crate) const SPRINT_SPEED: f32 = 7.0;
 pub(crate) const MOUSE_SENSITIVITY: f32 = 0.0025;
 pub(crate) const PULLBACK_DAMPING_SECONDS: f32 = 0.120;
 pub(crate) const MAX_CAMERA_LIFT: f32 = 0.35;
@@ -246,8 +253,9 @@ pub(crate) fn camera_relative_movement(axis: Vec2, yaw: f32) -> Vec3 {
     (right * axis.x + forward * axis.y).normalize_or_zero()
 }
 
-pub(crate) fn walking_step(axis: Vec2, yaw: f32, delta_seconds: f32) -> Vec3 {
-    camera_relative_movement(axis, yaw) * WALK_SPEED * delta_seconds
+pub(crate) fn walking_step(axis: Vec2, yaw: f32, delta_seconds: f32, sprinting: bool) -> Vec3 {
+    let speed = if sprinting { SPRINT_SPEED } else { WALK_SPEED };
+    camera_relative_movement(axis, yaw) * speed * delta_seconds
 }
 
 pub(crate) fn clamp_to_platform(position: Vec3) -> Vec3 {
@@ -298,7 +306,6 @@ pub(crate) const fn committed_material(
 pub(crate) fn update_material_wheel(
     actions: Res<ButtonInput<GameAction>>,
     motion: Res<AccumulatedMouseMotion>,
-    simulation: Res<AppSimulation>,
     menu: Res<CreationMenuState>,
     panel: Res<ControlPanelState>,
     pause: Res<PauseMenuState>,
@@ -310,7 +317,6 @@ pub(crate) fn update_material_wheel(
     if wheel.open {
         wheel.move_selector(motion.delta);
         if actions.just_released(GameAction::MaterialWheel)
-            || simulation.is_running()
             || menu.is_open()
             || panel.is_open()
             || pause.blocks_world_input()
@@ -328,11 +334,7 @@ pub(crate) fn update_material_wheel(
     let interactive_panel =
         menu.is_open() || panel.is_open() || overlay.blocks_pointer() || overlay.blocks_keyboard();
     if actions.just_pressed(GameAction::MaterialWheel)
-        && material_wheel_may_open(
-            simulation.is_running(),
-            interactive_panel,
-            state.world_drag_active(),
-        )
+        && material_wheel_may_open(false, interactive_panel, state.world_drag_active())
     {
         wheel.open(material.0);
     }
@@ -346,13 +348,20 @@ pub(crate) fn update_player_camera(
     menu: Res<CreationMenuState>,
     panel: Res<ControlPanelState>,
     pause: Res<PauseMenuState>,
+    worlds: Res<WorldListState>,
     wheel: Res<MaterialWheelState>,
     editor: Res<EditorState>,
+    space: Res<State<AppSpace>>,
     mut player: ResMut<PlayerState>,
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut camera: Single<(&mut PlayerCamera, &mut Transform, &mut GlobalTransform), With<MainCamera>>,
 ) {
-    let panel_open = menu.is_open() || panel.is_open() || pause.is_open();
+    let panel_open = player_controls_blocked([
+        menu.is_open(),
+        panel.is_open(),
+        pause.is_open(),
+        worlds.is_open(),
+    ]);
     cursor.grab_mode = if panel_open {
         CursorGrabMode::None
     } else {
@@ -376,14 +385,23 @@ pub(crate) fn update_player_camera(
     }
     view.damp_pullback(player.seat.is_some(), time.delta_secs());
     if player.seat.is_none() {
-        if world_active {
-            player.position += walking_step(movement_axis(&actions), view.yaw, time.delta_secs());
+        if world_active && space.get().uses_bounded_garage_walking() {
+            player.position += walking_step(
+                movement_axis(&actions),
+                view.yaw,
+                time.delta_secs(),
+                actions.pressed(GameAction::Sprint),
+            );
             player.position = clamp_to_platform(player.position);
         }
         **transform =
             view.apply_pullback(player.position + Vec3::Y * EYE_HEIGHT, view.look_rotation());
         **global = GlobalTransform::from(**transform);
     }
+}
+
+fn player_controls_blocked(open_panels: [bool; 4]) -> bool {
+    open_panels.into_iter().any(core::convert::identity)
 }
 
 #[cfg(test)]
@@ -399,6 +417,12 @@ mod tests {
         camera.set_target_pullback(true, -2.0);
         assert_eq!(camera.target_pullback(false), MAX_PULLBACK);
         assert_eq!(camera.target_pullback(true), 0.0);
+    }
+
+    #[test]
+    fn world_picker_releases_character_controls() {
+        assert!(player_controls_blocked([false, false, false, true]));
+        assert!(!player_controls_blocked([false; 4]));
     }
 
     #[test]
@@ -456,8 +480,16 @@ mod tests {
 
     #[test]
     fn walking_step_remains_available_to_world_gestures() {
-        let step = walking_step(Vec2::Y, 0.0, 0.25);
+        let step = walking_step(Vec2::Y, 0.0, 0.25, false);
         assert!((step - Vec3::Z).length() < 1.0e-6);
+    }
+
+    #[test]
+    fn sprinting_uses_the_faster_movement_speed() {
+        let walking = walking_step(Vec2::Y, 0.0, 1.0, false);
+        let sprinting = walking_step(Vec2::Y, 0.0, 1.0, true);
+        assert!((walking.length() - WALK_SPEED).abs() < 1.0e-6);
+        assert!((sprinting.length() - SPRINT_SPEED).abs() < 1.0e-6);
     }
 
     #[test]
@@ -501,15 +533,17 @@ mod tests {
         assert_eq!(material_at_selector(Vec2::ZERO), None);
         let directions = [
             Vec2::new(0.0, -80.0),
-            Vec2::new(47.0, -65.0),
-            Vec2::new(76.0, -25.0),
-            Vec2::new(76.0, 25.0),
-            Vec2::new(47.0, 65.0),
+            Vec2::new(40.0, -69.282),
+            Vec2::new(69.282, -40.0),
+            Vec2::new(80.0, 0.0),
+            Vec2::new(69.282, 40.0),
+            Vec2::new(40.0, 69.282),
             Vec2::new(0.0, 80.0),
-            Vec2::new(-47.0, 65.0),
-            Vec2::new(-76.0, 25.0),
-            Vec2::new(-76.0, -25.0),
-            Vec2::new(-47.0, -65.0),
+            Vec2::new(-40.0, 69.282),
+            Vec2::new(-69.282, 40.0),
+            Vec2::new(-80.0, 0.0),
+            Vec2::new(-69.282, -40.0),
+            Vec2::new(-40.0, -69.282),
         ];
         for (direction, material) in directions.into_iter().zip(ConstructionMaterial::ALL) {
             assert_eq!(material_at_selector(direction), Some(material));

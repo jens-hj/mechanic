@@ -21,7 +21,6 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Model {
     pub(crate) open: bool,
-    pub(crate) simulating: bool,
     pub(crate) page: PausePage,
     pub(crate) camera_fov_degrees: f32,
     pub(crate) controls: Controls,
@@ -195,13 +194,12 @@ fn PauseMain(handles: Handles, model: State<Model>) -> Element {
     let continue_action = handles.clone();
     let options_action = handles.clone();
     let controls_action = handles.clone();
-    let build_action = handles.clone();
     let exit_action = handles.clone();
     let cancel_exit = handles.clone();
     let confirm_exit = handles.clone();
     view! {
         col width:fill height:min-content gap:16px {
-            text #mechanic.title "PAUSED"
+            text #mechanic.title "MENU"
             Action label:"Continue"
                 on-click:(move || continue_action.ask(UiIntent::Pause(PauseAction::Continue)))
                 width:fill height:42px {
@@ -216,16 +214,6 @@ fn PauseMain(handles: Handles, model: State<Model>) -> Element {
                 on-click:(move || controls_action.ask(UiIntent::Pause(PauseAction::OpenControls)))
                 width:fill height:42px {
                 text #mechanic.value "Controls"
-            }
-            if model.with(|found| found.simulating) {
-                Action label:"Return to Build Mode"
-                    on-click:({
-                        let action = build_action.clone();
-                        move || action.ask(UiIntent::Pause(PauseAction::ReturnToBuild))
-                    })
-                    width:fill height:42px {
-                    text #mechanic.value "Return to Build Mode"
-                }
             }
             if model.with(|found| found.page == PausePage::ExitConfirmation) {
                 col #mechanic.pause-confirm width:fill height:min-content gap:10px pad:14px {
@@ -272,11 +260,10 @@ mod tests {
     use crate::pause_menu::PausePage;
     use crate::ui::{PauseAction, UiIntent, testing::Overlay};
 
-    fn showing(simulating: bool, page: PausePage) -> Overlay {
+    fn showing(page: PausePage) -> Overlay {
         let overlay = Overlay::mount();
         overlay.handles.pause.set(Model {
             open: true,
-            simulating,
             page,
             camera_fov_degrees: 65.0,
             controls: Controls::default(),
@@ -290,7 +277,7 @@ mod tests {
 
     #[test]
     fn the_modal_owns_every_pointer_position() {
-        let overlay = showing(false, PausePage::Main);
+        let overlay = showing(PausePage::Main);
         for point in [
             mosaic_core::Vector2::new(0.0, 0.0),
             mosaic_core::Vector2::new(800.0, 450.0),
@@ -301,21 +288,8 @@ mod tests {
     }
 
     #[test]
-    fn simulation_adds_one_full_width_action() {
-        let building = showing(false, PausePage::Main).reachable_boxes();
-        let simulating = showing(true, PausePage::Main).reachable_boxes();
-        let actions = |boxes: &[mosaic_core::Rect]| {
-            boxes
-                .iter()
-                .filter(|rect| (rect.size.height - 42.0).abs() < 0.5)
-                .count()
-        };
-        assert_eq!(actions(&simulating), actions(&building) + 1);
-    }
-
-    #[test]
     fn continue_and_exit_emit_their_intents() {
-        let overlay = showing(false, PausePage::Main);
+        let overlay = showing(PausePage::Main);
         let mut actions: Vec<_> = overlay
             .reachable_boxes()
             .into_iter()
@@ -335,7 +309,7 @@ mod tests {
 
     #[test]
     fn options_is_a_main_menu_action() {
-        let overlay = showing(false, PausePage::Main);
+        let overlay = showing(PausePage::Main);
         let mut actions: Vec<_> = overlay
             .reachable_boxes()
             .into_iter()
@@ -351,7 +325,7 @@ mod tests {
 
     #[test]
     fn fov_uses_native_slider_semantics_and_themed_parts() {
-        let overlay = showing(false, PausePage::Options);
+        let overlay = showing(PausePage::Options);
         assert_eq!(overlay.numeric_semantics(), Some((65.0, 45.0, 100.0, 5.0)));
         assert!(
             overlay.labels().iter().any(|label| label.contains("65°")),
@@ -369,7 +343,7 @@ mod tests {
 
     #[test]
     fn controls_page_exposes_two_slots_capture_and_conflicts() {
-        let overlay = showing(false, PausePage::Controls);
+        let overlay = showing(PausePage::Controls);
         let mut model = overlay.handles.pause.get_untracked();
         model.capture = Some(crate::pause_menu::BindingCapture {
             action: crate::controls::GameAction::MoveForward,

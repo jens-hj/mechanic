@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use bevy_math::{IVec3, Vec2, Vec3};
 use thiserror::Error;
@@ -612,8 +615,9 @@ pub enum GraphError {
 }
 
 /// Editable, CPU-owned construction topology.
+#[doc(hidden)]
 #[derive(Clone, Debug, Default)]
-pub struct ConstructionGraph {
+pub struct ConstructionGraphData {
     pub(crate) parts: Arena<PartSpec, PartId>,
     pub(crate) welds: Arena<WeldSpec, WeldId>,
     pub(crate) rigid_links: Arena<RigidLinkSpec, RigidLinkId>,
@@ -633,10 +637,88 @@ pub struct ConstructionGraph {
     pending: Option<PendingOperation>,
 }
 
+/// Copy-on-write editable construction graph.
+///
+/// Clones are immutable shared revisions. The first mutation of a staged edit
+/// copies graph storage once, which keeps history capture constant-time.
+#[derive(Clone, Debug, Default)]
+pub struct ConstructionGraph {
+    data: Arc<ConstructionGraphData>,
+}
+
+impl core::ops::Deref for ConstructionGraph {
+    type Target = ConstructionGraphData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl core::ops::DerefMut for ConstructionGraph {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.data)
+    }
+}
+
+/// One privately owned graph revision being staged with a single deep clone.
+///
+/// Dropping an edit discards every mutation. Call [`Self::finish`] only after
+/// every command succeeds.
+#[derive(Clone, Debug)]
+pub struct ConstructionGraphEdit {
+    graph: ConstructionGraph,
+}
+
+impl ConstructionGraphEdit {
+    /// Applies one validated command without cloning the staged graph again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError`] when the command violates graph or geometry invariants.
+    pub fn apply(&mut self, command: BuildCommand) -> Result<BuildOutcome, GraphError> {
+        self.graph.apply_validated(command)
+    }
+
+    /// Applies ordered validated commands without cloning the staged graph again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`GraphError`]. The caller must discard this edit on failure.
+    pub fn apply_batch(
+        &mut self,
+        commands: impl IntoIterator<Item = BuildCommand>,
+    ) -> Result<Vec<BuildOutcome>, GraphError> {
+        commands
+            .into_iter()
+            .map(|command| self.graph.apply_validated(command))
+            .collect()
+    }
+
+    /// Commits the staged revision to its caller.
+    pub fn finish(self) -> ConstructionGraph {
+        self.graph
+    }
+}
+
+impl core::ops::Deref for ConstructionGraphEdit {
+    type Target = ConstructionGraph;
+
+    fn deref(&self) -> &Self::Target {
+        &self.graph
+    }
+}
+
 impl ConstructionGraph {
     /// Creates an empty graph in paused build mode.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Starts a transaction by deep-cloning this revision exactly once.
+    pub fn begin_edit(&self) -> ConstructionGraphEdit {
+        ConstructionGraphEdit {
+            graph: self.clone(),
+        }
     }
 
     /// Applies an edit transactionally. On failure, no mutation is retained.
@@ -815,32 +897,32 @@ impl ConstructionGraph {
     }
 
     /// Current incomplete two-step operation, if any.
-    pub const fn pending(&self) -> Option<PendingOperation> {
+    pub fn pending(&self) -> Option<PendingOperation> {
         self.pending
     }
 
     /// Number of live parts.
-    pub const fn part_count(&self) -> usize {
+    pub fn part_count(&self) -> usize {
         self.parts.len()
     }
 
     /// Number of live welds.
-    pub const fn weld_count(&self) -> usize {
+    pub fn weld_count(&self) -> usize {
         self.welds.len()
     }
 
     /// Number of live non-geometric rigid links.
-    pub const fn rigid_link_count(&self) -> usize {
+    pub fn rigid_link_count(&self) -> usize {
         self.rigid_links.len()
     }
 
     /// Number of live bearings.
-    pub const fn bearing_count(&self) -> usize {
+    pub fn bearing_count(&self) -> usize {
         self.bearings.len()
     }
 
     /// Number of live control-block wires.
-    pub const fn drive_link_count(&self) -> usize {
+    pub fn drive_link_count(&self) -> usize {
         self.drive_links.len()
     }
 
@@ -936,9 +1018,9 @@ impl ConstructionGraph {
         };
         let local_z = root_pose.rotation.quaternion() * Vec3::Z;
         let direction = local_z.round().as_ivec3();
-        let centre = parent_spec.pose().translation_half_units()
-            + direction * i32::from(parent_z_units + TransmissionSpec::GRID_UNITS[2]);
-        Ok(TransmissionSpec::new(BuildPose::from_half_grid(
+        let centre = parent_spec.pose().translation_position_ticks()
+            + direction * i32::from(parent_z_units + TransmissionSpec::GRID_UNITS[2]) * 5;
+        Ok(TransmissionSpec::new(BuildPose::from_position_ticks(
             centre,
             root_pose.rotation,
         )))
@@ -1226,7 +1308,7 @@ impl ConstructionGraph {
             for z in 0..counts.z {
                 for y in 0..counts.y {
                     for x in 0..counts.x {
-                        let corner = cells.corner_half_units(IVec3::new(x, y, z), 0);
+                        let corner = cells.corner_steps(IVec3::new(x, y, z), 0);
                         occupants.insert(corner.to_array(), (id, cuboid.material));
                     }
                 }
@@ -1234,7 +1316,7 @@ impl ConstructionGraph {
         }
 
         let size = region.size_cells();
-        let origin = region.origin_half_units();
+        let origin = region.origin_half_units() * crate::shape::STEPS_PER_HALF_UNIT;
         let mut material: Option<ConstructionMaterial> = None;
         let mut members: Vec<PartId> = Vec::new();
         let mut claimed: BTreeMap<PartId, i32> = BTreeMap::new();
@@ -1242,7 +1324,7 @@ impl ConstructionGraph {
         for z in 0..size.z {
             for y in 0..size.y {
                 for x in 0..size.x {
-                    let corner = origin + IVec3::new(x, y, z) * 2;
+                    let corner = origin + IVec3::new(x, y, z) * crate::shape::STEPS_PER_CELL;
                     let Some(&(part, cell_material)) = occupants.get(&corner.to_array()) else {
                         empty += 1;
                         continue;

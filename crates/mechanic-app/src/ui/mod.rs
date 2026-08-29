@@ -27,6 +27,7 @@ mod styles;
 #[cfg(test)]
 mod testing;
 pub(crate) mod theme;
+mod worlds;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -69,6 +70,7 @@ use reticle::{WorldReticle, WorldReticleProps};
 #[allow(unused_imports, clippy::wildcard_imports)]
 // Style constants are consumed by `view!` expansion.
 use styles::*;
+use worlds::{WorldList, WorldListProps};
 
 /// What the overlay is asking the world to do.
 ///
@@ -89,8 +91,18 @@ pub(crate) enum UiIntent {
     Gearbox(control_block::GearboxIntent),
     /// An action in the full-screen pause menu.
     Pause(PauseAction),
+    /// World-list creation, opening, or deletion.
+    Worlds(WorldAction),
     /// Put away the control-block panel.
     CloseControlPanel,
+}
+
+/// Action requested by the world-list modal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WorldAction {
+    Create { name: String, seed: String },
+    Open(std::path::PathBuf),
+    Delete(std::path::PathBuf),
 }
 
 /// What was changed or requested in the pause menu.
@@ -104,7 +116,6 @@ pub(crate) enum PauseAction {
     BeginBindingCapture(GameAction, usize),
     ClearBinding(GameAction, usize),
     ResetControls,
-    ReturnToBuild,
     Exit,
     CancelExit,
     ExitWithoutSaving,
@@ -159,6 +170,8 @@ pub(crate) struct Handles {
     hovered: MosaicState<Option<Tool>>,
     /// What the creation picker shows.
     creations: MosaicState<creations::Model>,
+    /// Current world-list modal.
+    worlds: MosaicState<worlds::Model>,
     /// Where each driven joint's number sits on screen.
     markers: MosaicState<Vec<markers::Marker>>,
     /// Dimensions for the live block-sheet preview.
@@ -191,6 +204,7 @@ impl Handles {
             material_wheel: MosaicState::new(material_wheel::Model::default()),
             hovered: MosaicState::new(None),
             creations: MosaicState::new(creations::Model::default()),
+            worlds: MosaicState::new(worlds::Model::default()),
             markers: MosaicState::new(Vec::new()),
             dimensions: MosaicState::new(dimensions::Model::default()),
             pause: MosaicState::new(pause::Model::default()),
@@ -229,6 +243,7 @@ pub(crate) struct AppUi {
 struct Pushed {
     help: help::Model,
     creations: creations::Model,
+    worlds: worlds::Model,
     markers: Vec<markers::Marker>,
     dimensions: dimensions::Model,
     pause: pause::Model,
@@ -323,34 +338,52 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let dimensions_panel = handles.clone();
     let block_panel = handles.clone();
     let creations_panel = handles.clone();
+    let worlds_model = handles.worlds;
+    let worlds_panel = handles.clone();
     let pause_model = handles.pause;
     let pause_panel = handles.clone();
     let performance_model = handles.performance;
     let performance_viewport = handles.viewport;
     view! {
         stack #mechanic.overlay width:fill height:fill align:start justify:start {
-            MarkerOverlay handles:(markers_panel)
-            DimensionOverlay handles:(dimensions_panel)
-            if material_wheel_model.with(|model| !model.open) && !pause_model.with(|model| model.open) {
+            if !worlds_model.with(|model| model.open) {
+                MarkerOverlay handles:(markers_panel.clone())
+            }
+            if !worlds_model.with(|model| model.open) {
+                DimensionOverlay handles:(dimensions_panel.clone())
+            }
+            if material_wheel_model.with(|model| !model.open)
+                && !pause_model.with(|model| model.open)
+                && !worlds_model.with(|model| model.open) {
                 WorldReticle
             }
-            if $help_open {
+            if $help_open && !worlds_model.with(|model| model.open) {
                 HelpPanel handles:(help_panel.clone())
             }
-            Hotbar handles:(hotbar_panel)
-            if material_wheel_model.with(|model| model.open) {
+            if !worlds_model.with(|model| model.open) {
+                Hotbar handles:(hotbar_panel.clone())
+            }
+            if material_wheel_model.with(|model| model.open)
+                && !worlds_model.with(|model| model.open) {
                 MaterialWheel model:(material_wheel_model)
             }
-            if block_open.with(control_block::PanelModel::is_open) {
+            if block_open.with(control_block::PanelModel::is_open)
+                && !worlds_model.with(|model| model.open) {
                 ControlPanel handles:(block_panel.block.clone())
             }
-            if creations_open.with(|model| model.open) {
+            if creations_open.with(|model| model.open)
+                && !worlds_model.with(|model| model.open) {
                 CreationPicker handles:(creations_panel.clone())
             }
-            if pause_model.with(|model| model.open) {
+            if pause_model.with(|model| model.open)
+                && !worlds_model.with(|model| model.open) {
                 PauseMenu handles:(pause_panel.clone())
             }
-            if performance_model.with(performance::Model::is_open) {
+            if worlds_model.with(|model| model.open) {
+                WorldList handles:(worlds_panel.clone())
+            }
+            if performance_model.with(performance::Model::is_open)
+                && !worlds_model.with(|model| model.open) {
                 PerformanceOverlay model:(performance_model) viewport:(performance_viewport)
             }
         }
@@ -413,6 +446,7 @@ pub(crate) fn drain(
     mut panel: ResMut<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
     mut pause: ResMut<PauseMenuState>,
+    mut worlds: ResMut<crate::world::WorldListState>,
     mut selection: ToolSelection,
     mut target: EditTarget,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -445,6 +479,7 @@ pub(crate) fn drain(
                 ui.handles.block.located.set(None);
             }
             UiIntent::Pause(action) => pause.act(action),
+            UiIntent::Worlds(action) => worlds.act(action),
         }
     }
 }
@@ -459,8 +494,8 @@ pub(crate) fn push(
     selection: Res<SelectedTool>,
     material: Res<SelectedMaterial>,
     graph: Res<EditorGraph>,
-    simulation: Res<AppSimulation>,
     pause: Res<PauseMenuState>,
+    worlds_state: Res<crate::world::WorldListState>,
     settings: Res<AppSettings>,
     gearboxes: Res<crate::sequencer::GearboxRuntime>,
     mut located: ResMut<LocatedJoint>,
@@ -481,9 +516,13 @@ pub(crate) fn push(
         ui.handles.creations.set(creations.clone());
         ui.pushed.creations = creations;
     }
+    let worlds = worlds::capture(&worlds_state);
+    if worlds != ui.pushed.worlds {
+        ui.handles.worlds.set(worlds.clone());
+        ui.pushed.worlds = worlds;
+    }
     let pause_model = pause::Model {
         open: pause.is_open(),
-        simulating: simulation.is_running(),
         page: pause.page(),
         camera_fov_degrees: settings.camera_fov_degrees(),
         controls: settings.controls().clone(),
@@ -588,7 +627,7 @@ pub(crate) fn push_performance(
     let Some(mut ui) = ui else {
         return;
     };
-    let next = performance::capture(metrics.snapshot());
+    let next = performance::capture(&metrics.snapshot());
     if next != ui.pushed.performance {
         ui.handles.performance.set(next.clone());
         ui.pushed.performance = next;
@@ -599,13 +638,14 @@ pub(crate) fn push_performance(
 ///
 /// Last of the overlay's systems, because it reports on a tree the others have
 /// finished changing.
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)] // Bevy system parameters are value-typed wrappers.
 pub(crate) fn sync_input(
     mosaic: Option<NonSend<MosaicContext>>,
     ui: Option<NonSend<AppUi>>,
     menu: Res<CreationMenuState>,
     panel: Res<ControlPanelState>,
     pause: Res<PauseMenuState>,
+    worlds: Res<crate::world::WorldListState>,
     windows: Query<&Window>,
     mut input: ResMut<UiInput>,
 ) {
@@ -629,10 +669,15 @@ pub(crate) fn sync_input(
     let panel_keyboard = panel.blocks_keyboard();
     let capturing = ui.handles.block.capturing.get_untracked().is_some();
     *input = UiInput {
-        pointer: mosaic.wants_pointer() || pause.blocks_world_input(),
-        keyboard: mosaic_keyboard || menu_open || panel_keyboard || pause.blocks_world_input(),
+        pointer: mosaic.wants_pointer() || pause.blocks_world_input() || worlds.is_open(),
+        keyboard: mosaic_keyboard
+            || menu_open
+            || panel_keyboard
+            || pause.blocks_world_input()
+            || worlds.is_open(),
         escape: escape_is_consumed(mosaic_keyboard, menu_open, capturing)
-            || pause.blocks_world_input(),
+            || pause.blocks_world_input()
+            || worlds.is_open(),
     };
 }
 
@@ -880,6 +925,34 @@ mod tests {
                 "a modal that lets clicks through at {at:?} is not a modal",
             );
         }
+    }
+
+    #[test]
+    fn world_picker_is_an_opaque_standalone_launch_screen() {
+        let overlay = Overlay::mount();
+        overlay.handles.worlds.update(|model| model.open = true);
+        overlay.settle();
+
+        let screen = overlay
+            .shapes()
+            .into_iter()
+            .find(|shape| {
+                (shape.rect.size.width - VIEWPORT.width).abs() < 0.5
+                    && (shape.rect.size.height - VIEWPORT.height).abs() < 0.5
+                    && shape.fill.as_solid() == Some(color(theme::picker.screen))
+            })
+            .expect("the world picker paints the full window");
+        assert_eq!(screen.fill.as_solid(), Some(color(theme::picker.screen)));
+
+        let centre = Vector2::new(VIEWPORT.width / 2.0, VIEWPORT.height / 2.0);
+        assert!(overlay.wants_pointer_at(centre));
+        assert!(
+            !overlay
+                .ink()
+                .into_iter()
+                .any(|rect| away(rect.center(), centre) < 1.0 && rect.size.width < 40.0),
+            "the in-game reticle is not mounted behind the world picker",
+        );
     }
 
     /// A `scroll` fills its parent whatever size is written on it — the size

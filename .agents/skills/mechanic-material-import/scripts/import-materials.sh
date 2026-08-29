@@ -31,6 +31,7 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 block_thumbnail_renderer="$script_dir/render-block-thumbnail.sh"
 repo_root=$(cd "$script_dir/../../../.." && pwd -P)
 asset_root="$repo_root/crates/mechanic-app/assets/materials"
+terrain_asset_root="$repo_root/crates/mechanic-app/assets/terrain"
 [[ -d $asset_root ]] || {
     printf 'material asset directory not found: %s\n' "$asset_root" >&2
     exit 1
@@ -42,20 +43,51 @@ cleanup() {
 }
 trap cleanup EXIT
 
-materials=(aluminium carbon carbon_fiber concrete iron plastic rubber steel stone wood)
+# Each construction entry is runtime-name:archive-name. Graphite deliberately
+# consumes Claude Design's `carbon` source set while retaining Mechanic's name.
+construction_materials=(
+    aluminium:aluminium
+    carbon_fiber:carbon_fiber
+    concrete:concrete
+    dirt:dirt
+    graphite:carbon
+    iron:iron
+    plastic:plastic
+    rubber:rubber
+    sand:sand
+    steel:steel
+    stone:stone
+    wood:wood
+)
+terrain_only_materials=(grass)
+terrain_materials=(grass dirt stone)
 maps=(base_color normal orm)
 expected_manifest="$staging_dir/expected-manifest"
 actual_manifest="$staging_dir/actual-manifest"
 expected_materials="$staging_dir/expected-materials"
 actual_materials="$staging_dir/actual-materials"
 
-for material in "${materials[@]}"; do
-    for map in "${maps[@]}"; do
-        printf 'materials_styled/%s/%s_%s.png\n' "$material" "$material" "$map"
+{
+    for entry in "${construction_materials[@]}"; do
+        source_material=${entry#*:}
+        for map in "${maps[@]}"; do
+            printf 'materials_styled/%s/%s_%s.png\n' \
+                "$source_material" "$source_material" "$map"
+        done
     done
-done | LC_ALL=C sort >"$expected_manifest"
+    for material in "${terrain_only_materials[@]}"; do
+        for map in "${maps[@]}"; do
+            printf 'materials_styled/%s/%s_%s.png\n' "$material" "$material" "$map"
+        done
+    done
+} | LC_ALL=C sort >"$expected_manifest"
 
-printf '%s\n' "${materials[@]}" | LC_ALL=C sort >"$expected_materials"
+{
+    for entry in "${construction_materials[@]}"; do
+        printf '%s\n' "${entry#*:}"
+    done
+    printf '%s\n' "${terrain_only_materials[@]}"
+} | LC_ALL=C sort -u >"$expected_materials"
 
 unzip -tqq "$archive"
 unzip -Z1 "$archive" | LC_ALL=C sort >"$actual_manifest"
@@ -98,11 +130,13 @@ image_dimensions() {
 }
 
 normalized_count=0
-for material in "${materials[@]}"; do
-    mkdir -p "$output_root/$material"
+for entry in "${construction_materials[@]}"; do
+    target_material=${entry%%:*}
+    source_material=${entry#*:}
+    mkdir -p "$output_root/$target_material"
     for map in "${maps[@]}"; do
-        source="$extracted_root/materials_styled/$material/${material}_${map}.png"
-        output="$output_root/$material/${material}_${map}.png"
+        source="$extracted_root/materials_styled/$source_material/${source_material}_${map}.png"
+        output="$output_root/$target_material/${target_material}_${map}.png"
         read -r width height < <(image_dimensions "$source")
         [[ $width == "$height" && ( $width == 1024 || $width == 2048 || $width == 3072 ) ]] || {
             printf 'expected a 1024, 2048, or 3072 pixel square map: %s (%sx%s)\n' \
@@ -116,15 +150,45 @@ for material in "${materials[@]}"; do
         fi
     done
 
-    thumbnail="$output_root/$material/${material}_thumbnail.png"
-    cp "$output_root/$material/${material}_base_color.png" "$thumbnail"
+    thumbnail="$output_root/$target_material/${target_material}_thumbnail.png"
+    cp "$output_root/$target_material/${target_material}_base_color.png" "$thumbnail"
     sips -z 48 48 "$thumbnail" >/dev/null
     bash "$block_thumbnail_renderer" \
         "$thumbnail" \
-        "$output_root/$material/${material}_block_thumbnail.png"
+        "$output_root/$target_material/${target_material}_block_thumbnail.png"
 done
 
-for material in "${materials[@]}"; do
+for material in "${terrain_only_materials[@]}"; do
+    mkdir -p "$output_root/terrain/$material"
+    for map in "${maps[@]}"; do
+        source="$extracted_root/materials_styled/$material/${material}_${map}.png"
+        output="$output_root/terrain/$material/${material}_${map}.png"
+        read -r width height < <(image_dimensions "$source")
+        [[ $width == "$height" && ( $width == 1024 || $width == 2048 || $width == 3072 ) ]] || {
+            printf 'expected a 1024, 2048, or 3072 pixel square map: %s (%sx%s)\n' \
+                "$source" "$width" "$height" >&2
+            exit 1
+        }
+        cp "$source" "$output"
+        if [[ $width != 1536 ]]; then
+            sips -z 1536 1536 "$output" >/dev/null
+            ((normalized_count += 1))
+        fi
+    done
+done
+
+for material in dirt stone; do
+    mkdir -p "$output_root/terrain/$material"
+    for map in "${maps[@]}"; do
+        output="$output_root/terrain/$material/${material}_${map}.png"
+        cp "$output_root/$material/${material}_${map}.png" "$output"
+        sips -z 1536 1536 "$output" >/dev/null
+        ((normalized_count += 1))
+    done
+done
+
+for entry in "${construction_materials[@]}"; do
+    material=${entry%%:*}
     for map in "${maps[@]}"; do
         output="$output_root/$material/${material}_${map}.png"
         read -r width height < <(image_dimensions "$output")
@@ -137,15 +201,24 @@ for material in "${materials[@]}"; do
     read -r width height < <(image_dimensions "$block_thumbnail")
     [[ $width == 96 && $height == 106 ]] || exit 1
 done
+for material in "${terrain_materials[@]}"; do
+    for map in "${maps[@]}"; do
+        output="$output_root/terrain/$material/${material}_${map}.png"
+        read -r width height < <(image_dimensions "$output")
+        [[ $width == 1536 && $height == 1536 ]] || exit 1
+    done
+done
 
 if $check_only; then
-    printf 'validated %d maps and %d flat plus isometric thumbnails; normalized %d source maps; no files changed\n' \
-        "$(( ${#materials[@]} * ${#maps[@]} ))" "${#materials[@]}" "$normalized_count"
+    printf 'validated %d maps, %d construction thumbnail pairs, and %d terrain texture sets; normalized %d source maps; no files changed\n' \
+        "$(( (${#construction_materials[@]} + ${#terrain_only_materials[@]}) * ${#maps[@]} ))" \
+        "${#construction_materials[@]}" "${#terrain_materials[@]}" "$normalized_count"
     exit 0
 fi
 
 changed_count=0
-for material in "${materials[@]}"; do
+for entry in "${construction_materials[@]}"; do
+    material=${entry%%:*}
     mkdir -p "$asset_root/$material"
     for filename in "${material}_base_color.png" "${material}_normal.png" \
         "${material}_orm.png" "${material}_thumbnail.png" \
@@ -155,6 +228,20 @@ for material in "${materials[@]}"; do
         if ! cmp -s "$source" "$target"; then
             install -m 0644 "$source" "$target"
             printf 'updated %s/%s\n' "$material" "$filename"
+            ((changed_count += 1))
+        fi
+    done
+done
+
+for material in "${terrain_materials[@]}"; do
+    mkdir -p "$terrain_asset_root/$material"
+    for filename in "${material}_base_color.png" "${material}_normal.png" \
+        "${material}_orm.png"; do
+        source="$output_root/terrain/$material/$filename"
+        target="$terrain_asset_root/$material/$filename"
+        if ! cmp -s "$source" "$target"; then
+            install -m 0644 "$source" "$target"
+            printf 'updated terrain/%s/%s\n' "$material" "$filename"
             ((changed_count += 1))
         fi
     done

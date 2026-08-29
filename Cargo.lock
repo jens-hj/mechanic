@@ -1966,6 +1966,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastnoise-lite"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e5f3c3cc9081e5d0e18bcd50e80cd33cba47fc22f88a9da9c33ecd1c87ea5c0"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2820,6 +2829,7 @@ dependencies = [
  "bevy_mosaic",
  "mechanic-core",
  "mechanic-gpu",
+ "mechanic-world",
  "mosaic-core",
  "mosaic-macros",
  "mosaic-widgets",
@@ -2837,6 +2847,7 @@ dependencies = [
  "bevy_math",
  "mechanic-core",
  "mechanic-gpu",
+ "mechanic-world",
  "pollster",
  "wgpu",
 ]
@@ -2858,10 +2869,24 @@ dependencies = [
  "bevy_math",
  "bytemuck",
  "mechanic-core",
+ "mechanic-world",
  "naga",
  "pollster",
  "thiserror 2.0.20",
  "wgpu",
+]
+
+[[package]]
+name = "mechanic-world"
+version = "0.1.0"
+dependencies = [
+ "bevy_math",
+ "fastnoise-lite",
+ "getrandom 0.3.4",
+ "mechanic-core",
+ "ron",
+ "serde",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

@@ -21,7 +21,6 @@ pub(crate) enum PauseRequest {
     BeginBindingCapture(BindingCapture),
     ClearBinding(GameAction, usize),
     ResetControls,
-    ReturnToBuild,
     Exit,
     CancelExit,
     ExitWithoutSaving,
@@ -133,7 +132,6 @@ impl PauseMenuState {
             }
             PauseAction::ClearBinding(action, slot) => PauseRequest::ClearBinding(action, slot),
             PauseAction::ResetControls => PauseRequest::ResetControls,
-            PauseAction::ReturnToBuild => PauseRequest::ReturnToBuild,
             PauseAction::Exit => PauseRequest::Exit,
             PauseAction::CancelExit => PauseRequest::CancelExit,
             PauseAction::ExitWithoutSaving => PauseRequest::ExitWithoutSaving,

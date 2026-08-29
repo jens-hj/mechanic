@@ -57,7 +57,7 @@ impl Tone {
     }
 }
 
-pub(crate) fn capture(snapshot: PerformanceSnapshot) -> Model {
+pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
     let timings = snapshot.kernel_timings.unwrap_or_default();
     let has_kernel_timings = snapshot.kernel_timings.is_some();
     Model {
@@ -110,6 +110,47 @@ pub(crate) fn capture(snapshot: PerformanceSnapshot) -> Model {
             capacity_row("Broadphase pairs", snapshot.pair_count),
             contact_row(snapshot.active_contact_count, snapshot.contact_count),
             flags_row(snapshot.error_flags),
+            timing_row("Terrain stage", snapshot.terrain_stage_ms, 2.0, 8.0),
+            timing_row(
+                "Terrain selection",
+                snapshot.terrain_selection_ms,
+                8.0,
+                100.0,
+            ),
+            timing_row("Terrain sampling", snapshot.terrain_sampling_ms, 2.0, 4.0),
+            timing_row(
+                "Terrain polygonize",
+                snapshot.terrain_polygonization_ms,
+                2.0,
+                4.0,
+            ),
+            timing_row("Terrain seams/caps", snapshot.terrain_seams_ms, 1.0, 4.0),
+            timing_row("Terrain BVH", snapshot.terrain_bvh_ms, 1.0, 4.0),
+            timing_row("Terrain publish", snapshot.terrain_publication_ms, 1.0, 2.0),
+            timing_row(
+                "Oldest terrain job",
+                snapshot.terrain_queue_age_ms,
+                16.0,
+                100.0,
+            ),
+            count_pair_row(
+                "Local terrain ready",
+                snapshot.terrain_local_resolved,
+                snapshot.terrain_local_total,
+            ),
+            count_u64_row("Bounds cache bytes", snapshot.terrain_bounds_cache_bytes),
+            count_u64_row("Terrain triangles", snapshot.terrain_triangle_count),
+            count_row("Streaming backlog", snapshot.terrain_streaming_backlog),
+            count_u64_row("Terrain remeshes", snapshot.terrain_remesh_count),
+            flags_row_named("Terrain overflow", snapshot.terrain_overflow_flags),
+            timing_row(
+                "Foundation refresh",
+                snapshot.foundation_refresh_ms,
+                1.0,
+                2.0,
+            ),
+            count_u64_row("Foundation candidates", snapshot.foundation_candidate_count),
+            count_u64_row("Foundation samples", snapshot.foundation_sample_count),
         ],
     }
 }
@@ -221,6 +262,22 @@ fn capacity_row(label: &'static str, value: Option<u32>) -> Row {
     }
 }
 
+fn count_row(label: &'static str, value: Option<u32>) -> Row {
+    Row {
+        label,
+        value: value.map_or_else(not_available, |value| value.to_string()),
+        tone: Tone::Neutral,
+    }
+}
+
+fn count_u64_row(label: &'static str, value: Option<u64>) -> Row {
+    Row {
+        label,
+        value: value.map_or_else(not_available, |value| value.to_string()),
+        tone: Tone::Neutral,
+    }
+}
+
 fn contact_row(active: Option<u32>, generated: Option<u32>) -> Row {
     Row {
         label: "Contacts active / made",
@@ -234,8 +291,12 @@ fn contact_row(active: Option<u32>, generated: Option<u32>) -> Row {
 }
 
 fn flags_row(flags: Option<u32>) -> Row {
+    flags_row_named("Failure flags", flags)
+}
+
+fn flags_row_named(label: &'static str, flags: Option<u32>) -> Row {
     Row {
-        label: "Failure flags",
+        label,
         value: flags.map_or_else(not_available, |flags| format!("0x{flags:08X}")),
         tone: flags.map_or(Tone::Neutral, |flags| {
             if flags == 0 { Tone::Good } else { Tone::Bad }
@@ -257,7 +318,7 @@ mod tests {
 
     #[test]
     fn capture_keeps_the_expensive_contact_counters_visible() {
-        let model = capture(PerformanceSnapshot {
+        let model = capture(&PerformanceSnapshot {
             open: true,
             fps: Some(42.0),
             kernel_timings: Some(GpuKernelTimings {
@@ -286,7 +347,7 @@ mod tests {
         overlay
             .handles
             .performance
-            .set(capture(PerformanceSnapshot {
+            .set(capture(&PerformanceSnapshot {
                 open: true,
                 fps: Some(60.0),
                 ..PerformanceSnapshot::default()

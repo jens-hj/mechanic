@@ -9,6 +9,7 @@ license.workspace = true
 bevy_math.workspace = true
 bytemuck.workspace = true
 mechanic-core = { path = "../mechanic-core" }
+mechanic-world = { path = "../mechanic-world" }
 thiserror.workspace = true
 wgpu.workspace = true
 

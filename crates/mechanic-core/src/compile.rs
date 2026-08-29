@@ -378,12 +378,31 @@ impl ConstructionGraph {
     /// Returns [`TopologyError`] when the graph is empty, a bearing collapses
     /// into a weld group, or derived mass properties are invalid.
     pub fn compile(&self) -> Result<CompiledCreation, TopologyError> {
-        compile_graph(self)
+        compile_graph(self, &BTreeSet::new())
+    }
+
+    /// Compiles the graph while treating compounds containing any supplied part as static.
+    ///
+    /// World terrain anchors are instance state rather than authored construction data, so
+    /// they must not be represented by a weld to the Garage's flat ground plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same topology and capacity errors as [`Self::compile`].
+    pub fn compile_with_static_parts(
+        &self,
+        static_parts: impl IntoIterator<Item = PartId>,
+    ) -> Result<CompiledCreation, TopologyError> {
+        let static_parts = static_parts.into_iter().collect::<BTreeSet<_>>();
+        compile_graph(self, &static_parts)
     }
 }
 
 #[allow(clippy::too_many_lines)]
-fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, TopologyError> {
+fn compile_graph(
+    graph: &ConstructionGraph,
+    externally_static_parts: &BTreeSet<PartId>,
+) -> Result<CompiledCreation, TopologyError> {
     if graph.parts.is_empty() {
         return Err(TopologyError::EmptyConstruction);
     }
@@ -396,6 +415,12 @@ fn compile_graph(graph: &ConstructionGraph) -> Result<CompiledCreation, Topology
         .collect::<BTreeMap<_, _>>();
     let mut weld_groups = DisjointSet::new(part_rows.len());
     let mut directly_grounded = vec![false; part_rows.len()];
+
+    for part in externally_static_parts {
+        if let Some(&dense) = dense_by_part.get(part) {
+            directly_grounded[dense] = true;
+        }
+    }
 
     for (_, weld) in graph.welds.iter() {
         match (weld.first.owner, weld.second.owner) {
@@ -2333,6 +2358,32 @@ mod tests {
         assert!(compiled.compounds[0].is_static);
         assert!(compiled.compounds[0].mass_properties.inverse_mass.abs() < f32::EPSILON);
         assert!(!compiled.compounds[1].is_static);
+    }
+
+    #[test]
+    fn external_world_anchor_makes_only_its_rigid_group_static() {
+        let mut graph = ConstructionGraph::new();
+        let anchored = spawn(&mut graph, IVec3::new(0, 20, 0));
+        let floating = spawn(&mut graph, IVec3::new(8, 20, 0));
+
+        let ordinary = graph.compile().unwrap();
+        assert!(
+            ordinary
+                .compounds
+                .iter()
+                .all(|compound| !compound.is_static)
+        );
+
+        let compiled = graph.compile_with_static_parts([anchored]).unwrap();
+        let compound_for = |part| {
+            compiled
+                .part_to_compound
+                .iter()
+                .find_map(|&(candidate, compound)| (candidate == part).then_some(compound))
+                .unwrap()
+        };
+        assert!(compiled.compounds[compound_for(anchored) as usize].is_static);
+        assert!(!compiled.compounds[compound_for(floating) as usize].is_static);
     }
 
     /// Two blocks on a bearing, then welded to each other as well.

@@ -44,7 +44,7 @@ mosaic_macros::scheme! {
         bar { fill:Color, slot:Color, slot-over:Color, slot-on:Color,
               edge:Color, edge-over:Color, edge-on:Color, shortcut:Color },
         help { title:Color, body:Color, muted:Color, good:Color, warn:Color, bad:Color },
-        picker { veil:Color, sheet:Color, edge:Color, row:Color, row-over:Color,
+        picker { screen:Color, veil:Color, sheet:Color, edge:Color, row:Color, row-over:Color,
                  row-edge:Color, danger:Color, danger-over:Color, notice:Color },
     }
 }
@@ -127,7 +127,7 @@ pub(crate) fn palette() -> MechanicPalette {
               edge:#1B2C39, edge-over:#3A5F72, edge-on:#2FD8B4, shortcut:#54697A },
         help { title:#2FD8B4, body:#DCE9F2, muted:#7E95A6, good:#2FD8B4,
                warn:#F2A33C, bad:#E2565A },
-        picker { veil:#03060AC2, sheet:#070C11FA, edge:#24444C, row:#0B141C,
+        picker { screen:#03060A, veil:#03060AC2, sheet:#070C11FA, edge:#24444C, row:#0B141C,
                  row-over:#12202B, row-edge:#1D3644, danger:#2A1416,
                  danger-over:#3A1A1D, notice:#F2A33C },
     } }

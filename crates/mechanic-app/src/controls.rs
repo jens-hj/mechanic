@@ -15,9 +15,16 @@ pub(crate) enum GameAction {
     MoveBackward,
     MoveLeft,
     MoveRight,
+    Sprint,
+    Jump,
     Primary,
     Secondary,
     Interact,
+    ToggleSpace,
+    FinePlacement,
+    ToolTerrainBrush,
+    TerrainBrushDecrease,
+    TerrainBrushIncrease,
     ToggleSimulation,
     RestartSimulation,
     MaterialWheel,
@@ -68,16 +75,21 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 54] = [
+    pub(crate) const ALL: [Self; 59] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
         Self::MoveRight,
+        Self::Sprint,
+        Self::Jump,
         Self::Primary,
         Self::Secondary,
         Self::Interact,
-        Self::ToggleSimulation,
-        Self::RestartSimulation,
+        Self::ToggleSpace,
+        Self::FinePlacement,
+        Self::ToolTerrainBrush,
+        Self::TerrainBrushDecrease,
+        Self::TerrainBrushIncrease,
         Self::MaterialWheel,
         Self::ZoomIn,
         Self::ZoomOut,
@@ -170,9 +182,16 @@ impl GameAction {
             Self::MoveBackward => "Move Backward",
             Self::MoveLeft => "Move Left",
             Self::MoveRight => "Move Right",
+            Self::Sprint => "Sprint",
+            Self::Jump => "Jump",
             Self::Primary => "Primary Action",
             Self::Secondary => "Secondary Action",
             Self::Interact => "Interact",
+            Self::ToggleSpace => "Toggle Garage / World",
+            Self::FinePlacement => "Fine Placement",
+            Self::ToolTerrainBrush => "Terrain Brush",
+            Self::TerrainBrushDecrease => "Terrain Brush Radius -",
+            Self::TerrainBrushIncrease => "Terrain Brush Radius +",
             Self::ToggleSimulation => "Toggle Simulation",
             Self::RestartSimulation => "Restart Simulation",
             Self::MaterialWheel => "Material Wheel",
@@ -229,12 +248,18 @@ impl GameAction {
             | Self::MoveBackward
             | Self::MoveLeft
             | Self::MoveRight
+            | Self::Sprint
+            | Self::Jump
             | Self::Primary
             | Self::Secondary
             | Self::Interact
             | Self::ZoomIn
             | Self::ZoomOut => "Movement & Camera",
-            Self::ToggleSimulation
+            Self::ToggleSpace
+            | Self::FinePlacement
+            | Self::TerrainBrushDecrease
+            | Self::TerrainBrushIncrease
+            | Self::ToggleSimulation
             | Self::RestartSimulation
             | Self::MaterialWheel
             | Self::ToggleHelp
@@ -246,6 +271,7 @@ impl GameAction {
             | Self::Rotate
             | Self::PipeTurn => "General",
             Self::ToolBlock
+            | Self::ToolTerrainBrush
             | Self::ToolCylinder
             | Self::ToolBearing
             | Self::ToolWeld
@@ -278,10 +304,20 @@ impl GameAction {
                 | Self::MoveBackward
                 | Self::MoveLeft
                 | Self::MoveRight
+                | Self::Sprint
                 | Self::Primary
                 | Self::Secondary
                 | Self::MaterialWheel
+                | Self::FinePlacement
                 | Self::SelectionModifier
+        )
+    }
+
+    const fn intentionally_shares_binding_with(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Sprint, Self::FinePlacement | Self::SelectionModifier)
+                | (Self::FinePlacement | Self::SelectionModifier, Self::Sprint)
         )
     }
 }
@@ -469,6 +505,12 @@ impl Default for Controls {
         set(A::MoveBackward, Some(InputChord::key(K::KeyS)), None);
         set(A::MoveLeft, Some(InputChord::key(K::KeyA)), None);
         set(A::MoveRight, Some(InputChord::key(K::KeyD)), None);
+        set(
+            A::Sprint,
+            Some(InputChord::key(K::ShiftLeft)),
+            Some(InputChord::key(K::ShiftRight)),
+        );
+        set(A::Jump, Some(InputChord::key(K::Space)), None);
         set(A::Primary, Some(InputChord::mouse(MouseButton::Left)), None);
         set(
             A::Secondary,
@@ -476,12 +518,25 @@ impl Default for Controls {
             None,
         );
         set(A::Interact, Some(InputChord::key(K::KeyE)), None);
-        set(A::ToggleSimulation, Some(InputChord::key(K::Space)), None);
+        set(A::ToggleSpace, Some(InputChord::key(K::F6)), None);
         set(
-            A::RestartSimulation,
-            Some(InputChord::key(K::Space).with_shift()),
+            A::FinePlacement,
+            Some(InputChord::key(K::ShiftLeft)),
+            Some(InputChord::key(K::ShiftRight)),
+        );
+        set(A::ToolTerrainBrush, Some(InputChord::key(K::KeyT)), None);
+        set(
+            A::TerrainBrushDecrease,
+            Some(InputChord::key(K::PageDown)),
             None,
         );
+        set(
+            A::TerrainBrushIncrease,
+            Some(InputChord::key(K::PageUp)),
+            None,
+        );
+        set(A::ToggleSimulation, None, None);
+        set(A::RestartSimulation, None, None);
         set(A::MaterialWheel, Some(InputChord::key(K::Tab)), None);
         set(A::ZoomIn, Some(InputChord::wheel(WheelDirection::Up)), None);
         set(
@@ -649,9 +704,11 @@ impl Controls {
     }
     pub(crate) fn conflicts(&self, action: GameAction) -> bool {
         self[action].0.into_iter().flatten().any(|chord| {
-            GameAction::ALL
-                .into_iter()
-                .any(|other| other != action && self[other].0.contains(&Some(chord)))
+            GameAction::ALL.into_iter().any(|other| {
+                other != action
+                    && !action.intentionally_shares_binding_with(other)
+                    && self[other].0.contains(&Some(chord))
+            })
         })
     }
     pub(crate) fn conflicts_with_vehicle(
@@ -817,6 +874,9 @@ impl<'a> ActionInput<'a> {
             // This keeps Shift+Space from also pausing while still allowing
             // Shift+left mouse and Shift+W when no such chord is configured.
             let shadowed = GameAction::ALL.into_iter().any(|candidate| {
+                if action.intentionally_shares_binding_with(candidate) {
+                    return false;
+                }
                 self.controls[candidate]
                     .0
                     .into_iter()
@@ -899,7 +959,11 @@ mod tests {
         let controls = Controls::default();
         assert_eq!(controls.label(GameAction::Rotate), "R");
         assert_eq!(controls.label(GameAction::ClearPipette), "Q");
+        assert_eq!(controls.label(GameAction::Sprint), "ShiftLeft");
+        assert_eq!(controls.label(GameAction::Jump), "Space");
         assert_eq!(controls[GameAction::Save].0.iter().flatten().count(), 2);
+        assert!(!controls.conflicts(GameAction::Sprint));
+        assert!(!controls.conflicts(GameAction::Jump));
     }
 
     #[test]
@@ -954,8 +1018,10 @@ mod tests {
             mouse: &mouse,
             scroll: Vec2::ZERO,
         };
-        assert!(input.just_pressed(GameAction::RestartSimulation));
+        assert!(!input.just_pressed(GameAction::RestartSimulation));
         assert!(!input.just_pressed(GameAction::ToggleSimulation));
+        assert!(input.just_pressed(GameAction::Jump));
+        assert!(input.just_pressed(GameAction::Sprint));
 
         mouse.press(MouseButton::Left);
         let input = ActionInput {

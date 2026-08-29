@@ -185,80 +185,94 @@ fn sector_arc(model: State<Model>, material: ConstructionMaterial, index: usize)
     match index {
         0 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-107deg to:-73deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-104deg to:-76deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         1 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-71deg to:-37deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-74deg to:-46deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         2 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-35deg to:-1deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-44deg to:-16deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         3 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:1deg to:35deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-14deg to:14deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         4 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:37deg to:71deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:16deg to:44deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         5 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:73deg to:107deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:46deg to:74deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         6 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:109deg to:143deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:76deg to:104deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         7 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:145deg to:179deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:106deg to:134deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         8 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:181deg to:215deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:136deg to:164deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
         9 => {
             view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:217deg to:251deg)
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:166deg to:194deg)
                     stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
             }
         }
-        _ => unreachable!("material wheel has ten sectors"),
+        10 => {
+            view! {
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:196deg to:224deg)
+                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
+            }
+        }
+        11 => {
+            view! {
+                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:226deg to:254deg)
+                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
+            }
+        }
+        _ => unreachable!("material wheel has twelve sectors"),
     }
 }
 
 fn material_block_thumbnail(material: ConstructionMaterial, index: usize) -> Element {
     let position = [
         (0.0, -MATERIAL_RADIUS),
-        (77.6, -106.8),
-        (125.5, -40.8),
-        (125.5, 40.8),
-        (77.6, 106.8),
+        (66.0, -114.3),
+        (114.3, -66.0),
+        (MATERIAL_RADIUS, 0.0),
+        (114.3, 66.0),
+        (66.0, 114.3),
         (0.0, MATERIAL_RADIUS),
-        (-77.6, 106.8),
-        (-125.5, 40.8),
-        (-125.5, -40.8),
-        (-77.6, -106.8),
+        (-66.0, 114.3),
+        (-114.3, 66.0),
+        (-MATERIAL_RADIUS, 0.0),
+        (-114.3, -66.0),
+        (-66.0, -114.3),
     ][index];
     let source = ImageSource::encoded(block_thumbnail_bytes(material));
     view! {
@@ -289,6 +303,10 @@ const fn block_thumbnail_bytes(material: ConstructionMaterial) -> &'static [u8] 
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/concrete/concrete_block_thumbnail.png"
         )),
+        ConstructionMaterial::Dirt => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/dirt/dirt_block_thumbnail.png"
+        )),
         ConstructionMaterial::Iron => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/iron/iron_block_thumbnail.png"
@@ -300,6 +318,10 @@ const fn block_thumbnail_bytes(material: ConstructionMaterial) -> &'static [u8] 
         ConstructionMaterial::Rubber => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/rubber/rubber_block_thumbnail.png"
+        )),
+        ConstructionMaterial::Sand => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/sand/sand_block_thumbnail.png"
         )),
         ConstructionMaterial::Steel => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -334,6 +356,10 @@ const fn material_base_color_bytes(material: ConstructionMaterial) -> &'static [
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/concrete/concrete_base_color.png"
         )),
+        ConstructionMaterial::Dirt => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/dirt/dirt_base_color.png"
+        )),
         ConstructionMaterial::Iron => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/iron/iron_base_color.png"
@@ -345,6 +371,10 @@ const fn material_base_color_bytes(material: ConstructionMaterial) -> &'static [
         ConstructionMaterial::Rubber => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/rubber/rubber_base_color.png"
+        )),
+        ConstructionMaterial::Sand => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/sand/sand_base_color.png"
         )),
         ConstructionMaterial::Steel => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -26,6 +26,10 @@ Follow standard `rustfmt` output with four-space indentation. Use `snake_case` f
 
 Treat Mosaic as a first-party UI dependency, not a fixed limitation to work around. Do not add Mechanic-specific hacks, duplicate rendering paths, or brittle layout tricks to compensate for missing or incorrect Mosaic behavior. Identify the capability or fix that belongs in Mosaic, propose it explicitly, and prefer implementing and consuming that upstream change before continuing the Mechanic feature.
 
+## Pre-production Compatibility
+
+Mechanic is pre-production. Do not add backward-compatibility readers, migrations, legacy fallbacks, or backup formats unless explicitly requested. Replace formats directly and update fixtures and tests.
+
 ## Testing Guidelines
 
 Add focused regression tests beside the code being changed. Name tests after observable behavior, for example `off_centre_external_impulse_changes_linear_and_angular_motion`. Exercise both graph compilation and GPU behavior when a change crosses that boundary. Hardware-specific GPU tests may require a real adapter; report the adapter and command used. Do not claim scale-gate completion unless the exact body count, kernel coverage, failure flags, throughput, and p95 requirements in `README.md` are satisfied.

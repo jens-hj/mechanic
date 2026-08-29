@@ -153,6 +153,8 @@ pub struct CellGrid {
     /// Plane positions in half-grid units, ascending, one list per axis. Each
     /// list holds `cells + 1` entries.
     planes_half_units: [Vec<i32>; 3],
+    /// Fine v8 translation not representable by the legacy half-grid planes.
+    offset_steps: IVec3,
 }
 
 impl CellGrid {
@@ -167,12 +169,18 @@ impl CellGrid {
                 .map(|step| min_half_units[axis] + step * 2)
                 .collect()
         });
-        Self { planes_half_units }
+        Self {
+            planes_half_units,
+            offset_steps: IVec3::ZERO,
+        }
     }
 
     /// A grid from explicit plane positions.
     pub fn from_planes(planes_half_units: [Vec<i32>; 3]) -> Self {
-        Self { planes_half_units }
+        Self {
+            planes_half_units,
+            offset_steps: IVec3::ZERO,
+        }
     }
 
     /// Cell counts along each axis.
@@ -207,6 +215,11 @@ impl CellGrid {
         )
     }
 
+    /// Exact shape-step coordinate of one cell corner, including a fine v8 offset.
+    pub fn corner_steps(&self, cell: IVec3, corner: usize) -> IVec3 {
+        self.corner_half_units(cell, corner) * STEPS_PER_HALF_UNIT + self.offset_steps
+    }
+
     /// Whether a cell index lies inside the grid.
     pub fn contains(&self, cell: IVec3) -> bool {
         cell.cmpge(IVec3::ZERO).all() && cell.cmplt(self.counts()).all()
@@ -220,10 +233,16 @@ impl CellGrid {
 /// coordinate.
 pub fn part_cells(spec: CuboidSpec) -> CellGrid {
     let world_dimensions = world_grid_dimensions(spec);
-    CellGrid::uniform(
-        spec.pose.translation_half_units() - world_dimensions,
-        world_dimensions,
-    )
+    let minimum_ticks = spec.pose.translation_position_ticks() - world_dimensions * 5;
+    let mut minimum_half_units = IVec3::ZERO;
+    let mut offset_steps = IVec3::ZERO;
+    for axis in 0..3 {
+        minimum_half_units[axis] = minimum_ticks[axis].div_euclid(5);
+        offset_steps[axis] = minimum_ticks[axis].rem_euclid(5) * 2;
+    }
+    let mut grid = CellGrid::uniform(minimum_half_units, world_dimensions);
+    grid.offset_steps = offset_steps;
+    grid
 }
 
 /// Cuboid side lengths in grid units, permuted into world axes.
@@ -271,7 +290,7 @@ pub fn has_inverted_cell(grid: &CellGrid, corner_steps: &dyn Fn(IVec3, usize) ->
 
 /// Where a cell corner sits when nothing has moved it.
 pub fn undisplaced_steps(grid: &CellGrid, cell: IVec3, corner: usize) -> IVec3 {
-    grid.corner_half_units(cell, corner) * STEPS_PER_HALF_UNIT
+    grid.corner_steps(cell, corner)
 }
 
 fn cell_is_shaped(
@@ -385,10 +404,8 @@ fn append_box_cover(grid: &CellGrid, plain: &[bool], pieces: &mut Vec<PartPiece>
         for member in cell_indices(span) {
             used[cell_slot(counts, cell + member)] = true;
         }
-        let min = grid.corner_half_units(cell, 0);
-        let max = grid.corner_half_units(cell + span - IVec3::ONE, 7);
-        let min_meters = half_units_to_meters(min);
-        let max_meters = half_units_to_meters(max);
+        let min_meters = steps_to_meters(grid.corner_steps(cell, 0));
+        let max_meters = steps_to_meters(grid.corner_steps(cell + span - IVec3::ONE, 7));
         pieces.push(PartPiece::Cuboid {
             center: (min_meters + max_meters) * 0.5,
             half_extents: (max_meters - min_meters) * 0.5,
@@ -413,10 +430,6 @@ fn run_available(
         let slot = cell_slot(counts, cell);
         plain[slot] && !used[slot]
     })
-}
-
-fn half_units_to_meters(half_units: IVec3) -> Vec3 {
-    steps_to_meters(half_units * STEPS_PER_HALF_UNIT)
 }
 
 /// Splits one shaped cell into tetrahedra, then fuses them back into the

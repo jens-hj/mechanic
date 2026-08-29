@@ -161,6 +161,8 @@ pub struct GpuGroundSurface {
     pub response: [f32; 4],
     /// Nominal block compliance, Young's modulus, and two reserved lanes.
     pub elasticity: [f32; 4],
+    /// xyz upward plane normal and w signed plane offset (`dot(point, normal)`).
+    pub plane: [f32; 4],
 }
 
 /// One exact passive-bearing row.
@@ -351,7 +353,7 @@ const _: () = {
     assert!(size_of::<GpuMass>() == 64);
     assert!(size_of::<GpuSpatialInertia>() == 64);
     assert!(size_of::<GpuCollider>() == 112);
-    assert!(size_of::<GpuGroundSurface>() == 32);
+    assert!(size_of::<GpuGroundSurface>() == 48);
     assert!(size_of::<GpuBearing>() == 80);
     assert!(size_of::<GpuPair>() == 8);
     assert!(size_of::<GpuContact>() == 64);
@@ -411,7 +413,7 @@ mod tests {
     #[test]
     fn contact_rows_and_capacities_remain_fixed() {
         assert_eq!(size_of::<GpuCollider>(), 112);
-        assert_eq!(size_of::<GpuGroundSurface>(), 32);
+        assert_eq!(size_of::<GpuGroundSurface>(), 48);
         assert_eq!(size_of::<GpuContact>(), 64);
         assert_eq!(size_of::<GpuPersistentManifold>(), 64);
         assert_eq!(crate::MAX_COLLIDERS, 131_072);

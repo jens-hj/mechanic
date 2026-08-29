@@ -23,6 +23,7 @@ use super::theme::*;
 use crate::camera::PlayerState;
 use crate::controls::GameAction;
 use crate::hotbar::{SelectedMaterial, SelectedTool, Tool};
+use crate::world::AppSpace;
 use crate::{
     AppSimulation, BearingToolSettings, BlockAttachment, CylinderToolSettings, EditorGraph,
     EditorState, HAMMER_CHARGE_SECONDS, HammerInteraction, WireEnd, visible_bearing_count,
@@ -125,6 +126,7 @@ pub(crate) struct Sources<'w> {
     cylinder: Res<'w, CylinderToolSettings>,
     player: Res<'w, PlayerState>,
     settings: Res<'w, crate::settings::AppSettings>,
+    app_space: Res<'w, bevy::prelude::State<AppSpace>>,
 }
 
 /// Reads the editor into what the panel says.
@@ -141,6 +143,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         cylinder,
         player,
         settings,
+        app_space,
     } = sources;
     let selected_tool = selection.0.unwrap_or(Tool::Block);
     let controls = settings.controls();
@@ -180,9 +183,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     } else {
         Tone::Good
     };
-    let tool_hint = if simulation.is_paused() {
-        "Simulation paused at the current pose — press Space to resume".to_owned()
-    } else if let Some(drag) = state.delete_drag.as_ref() {
+    let in_world = *app_space.get() == AppSpace::World;
+    let live_hammer = in_world && selected_tool == Tool::Hammer;
+    let tool_hint = if let Some(drag) = state.delete_drag.as_ref() {
         format!(
             "Release to delete {} cuboid(s) — Q rotates the {} plane and keeps the extent",
             drag.parts.len(),
@@ -190,7 +193,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         )
     } else {
         match (
-            simulation.is_running(),
+            live_hammer,
             selected_tool,
             graph.0.pending(),
             state.block_drag.as_ref(),
@@ -219,9 +222,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (true, Tool::Hammer, _, _, _) => {
                 "Hold left mouse on a moving cuboid; release to strike".to_owned()
             }
-            (true, _, _, _, _) => {
-                "This tool is build-only — press Escape to return to build mode".to_owned()
-            }
+            (true, _, _, _, _) => unreachable!("only the Hammer is a live-only tool"),
             (false, Tool::Block, _, _, _) => {
                 "Click for one block or drag to place a welded sheet".to_owned()
             }
@@ -237,7 +238,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Left click places a bearing; use Blocker Placer to attach it".to_owned()
             }
             (false, Tool::Hammer, _, _, _) => {
-                "Hammer is available while simulating — press Space to start".to_owned()
+                "The Hammer is available in the live World".to_owned()
             }
             (false, Tool::Controller, _, _, _) => {
                 "Q cycles all 24 orientations; left click places a control block; click one to retune it"
@@ -283,35 +284,23 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             },
         }
     }.replace('Q', &rotate);
-    let (phase, title_tone, primary_controls) = if simulation.is_paused() {
+    let (phase, title_tone, primary_controls) = if in_world {
         (
-            "PAUSED",
-            Tone::Warn,
-            format!(
-                "{}  Resume     {}  Restart     ESC  Build mode     {}  Hide help",
-                controls.label(GameAction::ToggleSimulation),
-                controls.label(GameAction::RestartSimulation),
-                controls.label(GameAction::ToggleHelp)
-            ),
-        )
-    } else if simulation.is_running() {
-        (
-            "SIMULATING",
+            "WORLD  •  LIVE",
             Tone::Good,
             format!(
-                "{}  Pause     {}  Restart     ESC  Build mode     {}  Hide help",
-                controls.label(GameAction::ToggleSimulation),
-                controls.label(GameAction::RestartSimulation),
+                "{}  Garage     SPACE  Jump     SHIFT  Sprint     {}  Hide help",
+                controls.label(GameAction::ToggleSpace),
                 controls.label(GameAction::ToggleHelp)
             ),
         )
     } else {
         (
-            "BUILDING",
+            "GARAGE  •  EDITOR",
             Tone::Title,
             format!(
-                "{}  Start simulation     {}  Creations     {}  Save     {}  Hide help",
-                controls.label(GameAction::ToggleSimulation),
+                "{}  World     {}  Creations     {}  Save     {}  Hide help",
+                controls.label(GameAction::ToggleSpace),
                 controls.label(GameAction::Creations),
                 controls.label(GameAction::Save),
                 controls.label(GameAction::ToggleHelp)
@@ -321,14 +310,10 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     let action_controls = if state.delete_drag.is_some() {
         "RELEASE RIGHT  Delete     ESC  Cancel"
     } else {
-        match (
-            simulation.is_running(),
-            selected_tool,
-            state.block_drag.is_some(),
-        ) {
+        match (live_hammer, selected_tool, state.block_drag.is_some()) {
             (false, Tool::Block, true) => "RELEASE  Place     RIGHT / ESC  Cancel",
-            (true, Tool::Hammer, _) if !simulation.is_paused() => "HOLD LEFT  Charge hammer",
-            (true, _, _) => "Construction actions unavailable",
+            (true, Tool::Hammer, _) => "HOLD LEFT  Charge hammer",
+            (true, _, _) => unreachable!("only the Hammer is a live-only tool"),
             (false, _, _) => "LEFT  Action     RIGHT DRAG  Delete",
         }
     };
@@ -339,12 +324,8 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     } else {
         format!("{rotate}  Cycle plane while dragging or deleting")
     };
-    let edit_controls = if simulation.is_running() {
-        if simulation.is_paused() {
-            "Current pose is frozen; construction editing remains locked".to_owned()
-        } else {
-            "Physics is live; construction editing remains locked".to_owned()
-        }
+    let edit_controls = if in_world {
+        format!("{plane_controls}     EDIT GROUNDED/STATIC ONLY     CTRL/CMD+Z  Undo")
     } else {
         format!("{plane_controls}     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo")
     };
@@ -360,7 +341,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         pointer: Line::new(
             format!(
                 "{action_controls}     WASD  Walk     MOUSE  Look     WHEEL  FP↔TP     TAB  Materials{}",
-                if simulation.is_running() {
+                if in_world && simulation.is_running() {
                     if player.seat.is_some() {
                         "     E  Leave Seat"
                     } else {

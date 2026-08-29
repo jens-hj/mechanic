@@ -16,12 +16,16 @@ pub enum ConstructionMaterial {
     CarbonFiber,
     /// Dense, high-friction concrete.
     Concrete,
+    /// Compactable earth fill.
+    Dirt,
     /// General-purpose structural iron.
     Iron,
     /// Lightweight resilient plastic.
     Plastic,
     /// Compliant high-grip rubber.
     Rubber,
+    /// Granular mineral fill.
+    Sand,
     /// General-purpose structural steel.
     #[default]
     Steel,
@@ -33,14 +37,16 @@ pub enum ConstructionMaterial {
 
 impl ConstructionMaterial {
     /// Every selectable material in alphabetical display order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Aluminium,
         Self::CarbonFiber,
         Self::Concrete,
+        Self::Dirt,
         Self::Graphite,
         Self::Iron,
         Self::Plastic,
         Self::Rubber,
+        Self::Sand,
         Self::Steel,
         Self::Stone,
         Self::Wood,
@@ -52,10 +58,12 @@ impl ConstructionMaterial {
             Self::Aluminium => "Aluminium",
             Self::CarbonFiber => "Carbon Fiber",
             Self::Concrete => "Concrete",
+            Self::Dirt => "Dirt",
             Self::Graphite => "Graphite",
             Self::Iron => "Iron",
             Self::Plastic => "Plastic",
             Self::Rubber => "Rubber",
+            Self::Sand => "Sand",
             Self::Steel => "Steel",
             Self::Stone => "Stone",
             Self::Wood => "Wood",
@@ -68,10 +76,12 @@ impl ConstructionMaterial {
             Self::Aluminium => MaterialProperties::new(2_700.0, 0.61, 0.47, 0.25, 0.004, 69.0e9),
             Self::CarbonFiber => MaterialProperties::new(1_600.0, 0.40, 0.30, 0.20, 0.008, 70.0e9),
             Self::Concrete => MaterialProperties::new(2_400.0, 0.80, 0.65, 0.05, 0.020, 30.0e9),
+            Self::Dirt => MaterialProperties::new(1_600.0, 0.72, 0.55, 0.05, 0.030, 0.05e9),
             Self::Graphite => MaterialProperties::new(1_900.0, 0.25, 0.15, 0.10, 0.010, 12.0e9),
             Self::Iron => MaterialProperties::new(7_870.0, 0.70, 0.55, 0.15, 0.003, 170.0e9),
             Self::Plastic => MaterialProperties::new(950.0, 0.40, 0.30, 0.40, 0.020, 1.0e9),
             Self::Rubber => MaterialProperties::new(1_100.0, 1.00, 0.80, 0.70, 0.040, 0.01e9),
+            Self::Sand => MaterialProperties::new(1_700.0, 0.65, 0.50, 0.05, 0.035, 0.03e9),
             Self::Steel => MaterialProperties::new(7_850.0, 0.74, 0.57, 0.20, 0.002, 200.0e9),
             Self::Stone => MaterialProperties::new(2_700.0, 0.60, 0.48, 0.05, 0.015, 50.0e9),
             Self::Wood => MaterialProperties::new(700.0, 0.48, 0.30, 0.15, 0.025, 10.0e9),
@@ -268,16 +278,16 @@ impl GridRotation {
 
 /// Grid-aligned build pose.
 ///
-/// The primary translation remains in quarter-metre units. An internal
-/// half-grid offset allows odd-sized cuboids to sit flush against grid-aligned
-/// faces without changing the positions produced by [`BuildPose::new`].
+/// The primary translation remains in quarter-metre units. An internal exact
+/// 2.5 cm tick offset allows fine placement while preserving the positions
+/// produced by [`BuildPose::new`] and legacy half-grid construction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct BuildPose {
     /// Translation in integer construction-grid units.
     pub translation_units: IVec3,
     /// Discrete 90-degree orientation.
     pub rotation: GridRotation,
-    half_grid_offset: [u8; 3],
+    position_tick_offset: [u8; 3],
 }
 
 impl BuildPose {
@@ -286,7 +296,23 @@ impl BuildPose {
         Self {
             translation_units,
             rotation,
-            half_grid_offset: [0; 3],
+            position_tick_offset: [0; 3],
+        }
+    }
+
+    /// Creates a build pose from exact integer 2.5 cm centre coordinates.
+    pub fn from_position_ticks(translation_ticks: IVec3, rotation: GridRotation) -> Self {
+        let mut translation_units = IVec3::ZERO;
+        let mut position_tick_offset = [0; 3];
+        for axis in 0..3 {
+            let remainder = translation_ticks[axis].rem_euclid(10);
+            translation_units[axis] = translation_ticks[axis].div_euclid(10);
+            position_tick_offset[axis] = u8::try_from(remainder).unwrap_or_default();
+        }
+        Self {
+            translation_units,
+            rotation,
+            position_tick_offset,
         }
     }
 
@@ -295,33 +321,40 @@ impl BuildPose {
     /// Half-grid coordinates are useful for odd-sized cuboids, whose centres
     /// lie halfway between construction-grid lines when resting on a face.
     pub fn from_half_grid(translation_half_units: IVec3, rotation: GridRotation) -> Self {
-        let mut translation_units = IVec3::ZERO;
-        let mut half_grid_offset = [0; 3];
-        for axis in 0..3 {
-            let remainder = translation_half_units[axis].rem_euclid(2);
-            translation_units[axis] = (translation_half_units[axis] - remainder) / 2;
-            half_grid_offset[axis] = u8::from(remainder != 0);
-        }
-        Self {
-            translation_units,
-            rotation,
-            half_grid_offset,
-        }
+        Self::from_position_ticks(translation_half_units * 5, rotation)
     }
 
-    /// Translation in integer eighth-metre half-grid units.
-    pub fn translation_half_units(self) -> IVec3 {
-        self.translation_units * 2
+    /// Translation in exact integer 2.5 cm position ticks.
+    pub fn translation_position_ticks(self) -> IVec3 {
+        self.translation_units * 10
             + IVec3::new(
-                i32::from(self.half_grid_offset[0]),
-                i32::from(self.half_grid_offset[1]),
-                i32::from(self.half_grid_offset[2]),
+                i32::from(self.position_tick_offset[0]),
+                i32::from(self.position_tick_offset[1]),
+                i32::from(self.position_tick_offset[2]),
             )
+    }
+
+    /// Translation in legacy integer eighth-metre half-grid units.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this pose was authored on the finer v8 grid and therefore
+    /// cannot be represented by the legacy format without loss.
+    pub fn translation_half_units(self) -> IVec3 {
+        let ticks = self.translation_position_ticks();
+        assert!(
+            ticks
+                .to_array()
+                .into_iter()
+                .all(|tick| tick.rem_euclid(5) == 0),
+            "a fine-grid v8 pose has no exact legacy half-grid representation"
+        );
+        ticks / 5
     }
 
     /// Translation in metres.
     pub fn translation(self) -> Vec3 {
-        self.translation_half_units().as_vec3() * (GRID_UNIT_METERS * 0.5)
+        self.translation_position_ticks().as_vec3() * 0.025
     }
 }
 
@@ -1341,6 +1374,17 @@ mod tests {
     }
 
     #[test]
+    fn v8_pose_preserves_fine_position_ticks_in_both_directions() {
+        let pose =
+            BuildPose::from_position_ticks(IVec3::new(-13, 2, 19), GridRotation::new(1, 2, 3));
+        assert_eq!(pose.translation_position_ticks(), IVec3::new(-13, 2, 19));
+        assert!(
+            pose.translation()
+                .abs_diff_eq(Vec3::new(-0.325, 0.05, 0.475), 1.0e-6)
+        );
+    }
+
+    #[test]
     fn rejects_dimensions_outside_builder_range() {
         assert!(CuboidSpec::new([0, 4, 4], BuildPose::default()).is_err());
         assert!(CuboidSpec::new([33, 4, 4], BuildPose::default()).is_err());
@@ -1349,7 +1393,7 @@ mod tests {
 
     #[test]
     fn construction_material_property_rows_are_exact() {
-        let expected: [(ConstructionMaterial, [f32; 6]); 10] = [
+        let expected: [(ConstructionMaterial, [f32; 6]); 12] = [
             (
                 ConstructionMaterial::Aluminium,
                 [2_700.0, 0.61, 0.47, 0.25, 0.004, 69.0e9],
@@ -1361,6 +1405,10 @@ mod tests {
             (
                 ConstructionMaterial::Concrete,
                 [2_400.0, 0.80, 0.65, 0.05, 0.020, 30.0e9],
+            ),
+            (
+                ConstructionMaterial::Dirt,
+                [1_600.0, 0.72, 0.55, 0.05, 0.030, 0.05e9],
             ),
             (
                 ConstructionMaterial::Graphite,
@@ -1377,6 +1425,10 @@ mod tests {
             (
                 ConstructionMaterial::Rubber,
                 [1_100.0, 1.00, 0.80, 0.70, 0.040, 0.01e9],
+            ),
+            (
+                ConstructionMaterial::Sand,
+                [1_700.0, 0.65, 0.50, 0.05, 0.035, 0.03e9],
             ),
             (
                 ConstructionMaterial::Steel,

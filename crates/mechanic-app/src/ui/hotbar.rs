@@ -284,6 +284,11 @@ pub(crate) fn material_thumbnail(material: ConstructionMaterial) -> Element {
                     "assets/materials/concrete/concrete_thumbnail.png"
             }
         },
+        ConstructionMaterial::Dirt => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill "assets/materials/dirt/dirt_thumbnail.png"
+            }
+        },
         ConstructionMaterial::Iron => view! {
             el width:26px height:26px radius:4px clip {
                 img fit:cover width:fill height:fill "assets/materials/iron/iron_thumbnail.png"
@@ -298,6 +303,11 @@ pub(crate) fn material_thumbnail(material: ConstructionMaterial) -> Element {
         ConstructionMaterial::Rubber => view! {
             el width:26px height:26px radius:4px clip {
                 img fit:cover width:fill height:fill "assets/materials/rubber/rubber_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Sand => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill "assets/materials/sand/sand_thumbnail.png"
             }
         },
         ConstructionMaterial::Steel => view! {

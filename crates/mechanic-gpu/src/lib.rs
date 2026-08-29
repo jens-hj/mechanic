@@ -3,8 +3,10 @@
 mod abi;
 mod collision;
 mod device;
+mod render;
 mod runtime;
 mod scheduler;
+mod terrain;
 
 pub use abi::{
     COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, CONSTRAINT_NON_CONVERGENCE_FLAG,
@@ -18,14 +20,22 @@ pub use collision::{
     ContactManifold, ContactPoint, Obb, SatContact, obb_contact_manifold, obb_sat,
 };
 pub use device::{
-    GpuImpulseError, GpuKernelTimings, GpuPhysics, GpuPhysicsConfig, GpuPhysicsError,
-    GpuReadbackError, GpuTickReadback, GpuTickSubmission, SnapshotBuffers,
+    GpuBodyStateError, GpuImpulseError, GpuKernelTimings, GpuPhysics, GpuPhysicsConfig,
+    GpuPhysicsError, GpuReadbackError, GpuTickReadback, GpuTickSubmission, SnapshotBuffers,
+};
+pub use render::{
+    TerrainRenderAcknowledgement, TerrainRenderArena, TerrainRenderArenaLimits, TerrainRenderChunk,
+    TerrainRenderDelta, TerrainRenderDirtyRanges, TerrainRenderError,
 };
 pub use runtime::{
     CapacityKind, FailureStatus, PhysicsRuntime, PublishedGpuState, SimulationStatus,
     TickStatistics,
 };
 pub use scheduler::{FixedStepScheduler, ScheduledTicks};
+pub use terrain::{
+    TerrainBufferLimits, TerrainContact, TerrainContactShape, TerrainPhysicsScene,
+    TerrainStageMetrics, terrain_contacts,
+};
 
 /// Fixed 60 Hz physics frequency.
 pub const PHYSICS_TPS: u32 = 60;

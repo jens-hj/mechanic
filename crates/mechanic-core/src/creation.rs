@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use bevy_math::{IVec3, Vec3};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use thiserror::Error;
 
 use crate::{
@@ -28,7 +28,7 @@ use crate::{
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 7;
+pub const CREATION_FORMAT_VERSION: u32 = 8;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = 1;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -88,22 +88,22 @@ pub enum CreationError {
 
 /// Grid-aligned pose in its serialized form.
 ///
-/// The translation is kept in eighth-metre half-grid units, which is the one
-/// representation that survives a round trip for odd-sized cuboids resting
-/// flush against a face.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Translation uses exact 2.5 cm ticks. The custom decoder also accepts the
+/// `translation_half_units` field written by versions 1–7 and multiplies it by
+/// five before the document reaches graph replay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PoseDoc {
-    /// Centre in integer eighth-metre units.
-    pub translation_half_units: [i32; 3],
+    /// Centre in exact integer 2.5 cm ticks.
+    pub translation_ticks: [i32; 3],
     /// Quarter turns around local x, y, and z.
     pub rotation: [u8; 3],
 }
 
 impl From<BuildPose> for PoseDoc {
     fn from(pose: BuildPose) -> Self {
-        let translation = pose.translation_half_units();
+        let translation = pose.translation_position_ticks();
         Self {
-            translation_half_units: [translation.x, translation.y, translation.z],
+            translation_ticks: [translation.x, translation.y, translation.z],
             rotation: pose.rotation.quarter_turns_xyz(),
         }
     }
@@ -112,10 +112,72 @@ impl From<BuildPose> for PoseDoc {
 impl From<PoseDoc> for BuildPose {
     fn from(doc: PoseDoc) -> Self {
         let [x, y, z] = doc.rotation;
-        Self::from_half_grid(
-            doc.translation_half_units.into(),
-            GridRotation::new(x, y, z),
-        )
+        Self::from_position_ticks(doc.translation_ticks.into(), GridRotation::new(x, y, z))
+    }
+}
+
+impl Serialize for PoseDoc {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct CurrentPose {
+            translation_ticks: [i32; 3],
+            rotation: [u8; 3],
+        }
+
+        CurrentPose {
+            translation_ticks: self.translation_ticks,
+            rotation: self.rotation,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PoseDoc {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct CompatiblePose {
+            #[serde(default, deserialize_with = "present_coordinate")]
+            translation_ticks: Option<[i32; 3]>,
+            #[serde(default, deserialize_with = "present_coordinate")]
+            translation_half_units: Option<[i32; 3]>,
+            rotation: [u8; 3],
+        }
+
+        fn present_coordinate<'de, D>(deserializer: D) -> Result<Option<[i32; 3]>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            <[i32; 3]>::deserialize(deserializer).map(Some)
+        }
+
+        let pose = CompatiblePose::deserialize(deserializer)?;
+        let translation_ticks = match (pose.translation_ticks, pose.translation_half_units) {
+            (Some(ticks), None) => ticks,
+            (None, Some([x, y, z])) => {
+                let convert = |coordinate: i32| {
+                    coordinate.checked_mul(5).ok_or_else(|| {
+                        D::Error::custom("legacy creation position overflows v8 ticks")
+                    })
+                };
+                [convert(x)?, convert(y)?, convert(z)?]
+            }
+            (Some(_), Some(_)) => {
+                return Err(D::Error::custom(
+                    "creation pose contains both v8 ticks and legacy half-grid units",
+                ));
+            }
+            (None, None) => return Err(D::Error::missing_field("translation_ticks")),
+        };
+        Ok(Self {
+            translation_ticks,
+            rotation: pose.rotation,
+        })
     }
 }
 
@@ -973,6 +1035,7 @@ mod tests {
 
     use super::{
         BearingSocket, CREATION_FORMAT_VERSION, CreationDocument, CreationError, FaceOwnerDoc,
+        PartDoc, PoseDoc,
     };
     use crate::{
         ActuatorAssignment, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
@@ -1409,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn version_seven_round_trips_pipe_bends_and_versions_one_through_six_still_load() {
+    fn version_eight_round_trips_pipe_bends_and_versions_one_through_seven_still_load() {
         let mut graph = ConstructionGraph::new();
         graph
             .apply(BuildCommand::SpawnPipeBend(
@@ -1421,7 +1484,7 @@ mod tests {
             ))
             .unwrap();
         let document = CreationDocument::from_graph(&graph, "Bent Pipe", &[]);
-        assert_eq!(document.version, 7);
+        assert_eq!(document.version, 8);
         let loaded = round_trip(&document).into_graph().unwrap();
         let bend = loaded
             .graph
@@ -1432,7 +1495,7 @@ mod tests {
         assert!((bend.dimensions.radius() - 1.0).abs() < f32::EPSILON);
         assert!((bend.dimensions.inner_diameter() - 0.25).abs() < f32::EPSILON);
 
-        for version in 1..=6 {
+        for version in 1..=7 {
             let legacy = CreationDocument {
                 version,
                 name: format!("Legacy {version}"),
@@ -1468,6 +1531,47 @@ mod tests {
             .expect("the rebuild holds its cuboid");
 
         assert_eq!(rebuilt.pose(), original.pose());
+    }
+
+    #[test]
+    fn legacy_half_grid_pose_migrates_to_v8_ticks_without_moving() {
+        let legacy = "(translation_half_units:(-3,1,4),rotation:(1,2,3))";
+        let pose: PoseDoc = ron::from_str(legacy).expect("v7 pose remains readable");
+        assert_eq!(pose.translation_ticks, [-15, 5, 20]);
+        let runtime = BuildPose::from(pose);
+        assert!(
+            runtime
+                .translation()
+                .abs_diff_eq(Vec3::new(-0.375, 0.125, 0.5), 1.0e-6)
+        );
+        let current = ron::to_string(&pose).unwrap();
+        assert!(current.contains("translation_ticks"));
+        assert!(!current.contains("translation_half_units"));
+    }
+
+    #[test]
+    fn v8_document_round_trips_five_centimetre_fine_placement() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1, 1, 1],
+                    BuildPose::from_position_ticks(IVec3::new(2, 5, -2), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let document = round_trip(&CreationDocument::from_graph(&graph, "Fine", &[]));
+        let PartDoc::Cuboid { pose, .. } = document.parts[0] else {
+            unreachable!()
+        };
+        assert_eq!(pose.translation_ticks, [2, 5, -2]);
+        let rebuilt = document.into_graph().unwrap().graph;
+        let (_, part) = rebuilt.parts().next().unwrap();
+        assert_eq!(
+            part.pose().translation_position_ticks(),
+            IVec3::new(2, 5, -2)
+        );
     }
 
     #[test]
@@ -1515,7 +1619,7 @@ mod tests {
         document.parts[0] = super::PartDoc::Cuboid {
             dimensions: [0, 1, 1],
             pose: super::PoseDoc {
-                translation_half_units: [0, 0, 0],
+                translation_ticks: [0, 0, 0],
                 rotation: [0, 0, 0],
             },
             material: crate::ConstructionMaterial::Steel,
