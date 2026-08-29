@@ -70,6 +70,23 @@ struct Mass {
     inverse_inertia_z: vec4<f32>,
 };
 
+struct Bearing {
+    local_anchor_a: vec4<f32>,
+    local_anchor_b: vec4<f32>,
+    local_axis_a: vec4<f32>,
+    local_axis_b: vec4<f32>,
+    metadata: vec4<u32>,
+};
+
+struct BearingProjectionFrame {
+    arm_a: vec3<f32>,
+    arm_b: vec3<f32>,
+    tangent_a: vec3<f32>,
+    tangent_b: vec3<f32>,
+};
+
+var<private> bearing_projection_frames: array<BearingProjectionFrame, 64>;
+
 struct WorldMass {
     inverse_inertia_x_mass: vec4<f32>,
     inverse_inertia_y: vec4<f32>,
@@ -208,6 +225,7 @@ fn tangent_basis(normal: vec3<f32>) -> TangentBasis {
 @group(0) @binding(27) var<storage, read> body_components: array<u32>;
 @group(0) @binding(28) var<storage, read> convex_shapes: array<vec4<f32>>;
 @group(0) @binding(29) var<uniform> ground_surface: GroundSurface;
+@group(0) @binding(30) var<storage, read> bearings: array<Bearing>;
 
 fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(
@@ -1173,6 +1191,7 @@ fn finalize_active_contacts() {
     indirect_args[12] = select(0u, 1u, active_count > 0u);
     indirect_args[13] = 1u;
     indirect_args[14] = 1u;
+    active_contacts[active_count] = INVALID_MANIFOLD_SLOT;
 }
 
 fn contact_velocity(body: u32, arm: vec3<f32>) -> vec3<f32> {
@@ -1457,9 +1476,7 @@ fn solve_contact_immediate(contact_index: u32) {
     }
 }
 
-@compute @workgroup_size(1)
-fn solve_accumulate_serial() {
-    let active_count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
+fn solve_contacts_serial(active_count: u32) {
     if active_count > MAX_SORTED_SERIAL_CONTACTS {
         for (var active_index = 0u; active_index < active_count; active_index += 1u) {
             solve_contact_immediate(active_contacts[active_index]);
@@ -1525,6 +1542,226 @@ fn solve_accumulate_serial() {
         solve_contact_immediate(selected);
         previous_key = selected_key;
         has_previous = true;
+    }
+}
+
+@compute @workgroup_size(1)
+fn solve_accumulate_serial() {
+    solve_contacts_serial(min(atomicLoad(&diagnostics[5]), config.pair_capacity));
+}
+
+fn solve_bearing_linear_axis_immediate(
+    body_a: u32,
+    body_b: u32,
+    arm_a: vec3<f32>,
+    arm_b: vec3<f32>,
+    relative: vec3<f32>,
+    direction: vec3<f32>,
+) {
+    let angular_a = cross(arm_a, direction);
+    let angular_b = cross(arm_b, direction);
+    let inverse_mass_a = world_masses[body_a].inverse_inertia_x_mass.w;
+    let inverse_mass_b = world_masses[body_b].inverse_inertia_x_mass.w;
+    let denominator = inverse_mass_a + inverse_mass_b
+        + dot(angular_a, inverse_inertia(body_a, angular_a))
+        + dot(angular_b, inverse_inertia(body_b, angular_b));
+    if denominator <= 1.0e-12 {
+        return;
+    }
+    let impulse = direction * (dot(relative, direction) / denominator);
+    linear_velocities[body_a] = vec4<f32>(
+        linear_velocities[body_a].xyz + impulse * inverse_mass_a,
+        0.0,
+    );
+    angular_velocities[body_a] = vec4<f32>(
+        angular_velocities[body_a].xyz
+            + inverse_inertia(body_a, cross(arm_a, impulse)),
+        0.0,
+    );
+    linear_velocities[body_b] = vec4<f32>(
+        linear_velocities[body_b].xyz - impulse * inverse_mass_b,
+        0.0,
+    );
+    angular_velocities[body_b] = vec4<f32>(
+        angular_velocities[body_b].xyz
+            + inverse_inertia(body_b, cross(arm_b, -impulse)),
+        0.0,
+    );
+}
+
+fn solve_bearing_angular_axis_immediate(
+    body_a: u32,
+    body_b: u32,
+    relative: vec3<f32>,
+    axis: vec3<f32>,
+) {
+    let inverse_a = inverse_inertia(body_a, axis);
+    let inverse_b = inverse_inertia(body_b, axis);
+    let denominator = dot(axis, inverse_a + inverse_b);
+    if denominator <= 1.0e-12 {
+        return;
+    }
+    let impulse = dot(relative, axis) / denominator;
+    angular_velocities[body_a] = vec4<f32>(
+        angular_velocities[body_a].xyz + inverse_a * impulse,
+        0.0,
+    );
+    angular_velocities[body_b] = vec4<f32>(
+        angular_velocities[body_b].xyz - inverse_b * impulse,
+        0.0,
+    );
+}
+
+fn project_bearing_velocity_row_immediate(index: u32) {
+    let bearing = bearings[index];
+    let body_a = bearing.metadata.x;
+    let body_b = bearing.metadata.y;
+    let frame = bearing_projection_frames[index];
+    let arm_a = frame.arm_a;
+    let arm_b = frame.arm_b;
+
+    var anchor_velocity_a = linear_velocities[body_a].xyz
+        + cross(angular_velocities[body_a].xyz, arm_a);
+    var anchor_velocity_b = linear_velocities[body_b].xyz
+        + cross(angular_velocities[body_b].xyz, arm_b);
+    solve_bearing_linear_axis_immediate(
+        body_a,
+        body_b,
+        arm_a,
+        arm_b,
+        anchor_velocity_b - anchor_velocity_a,
+        vec3<f32>(1.0, 0.0, 0.0),
+    );
+    anchor_velocity_a = linear_velocities[body_a].xyz
+        + cross(angular_velocities[body_a].xyz, arm_a);
+    anchor_velocity_b = linear_velocities[body_b].xyz
+        + cross(angular_velocities[body_b].xyz, arm_b);
+    solve_bearing_linear_axis_immediate(
+        body_a,
+        body_b,
+        arm_a,
+        arm_b,
+        anchor_velocity_b - anchor_velocity_a,
+        vec3<f32>(0.0, 1.0, 0.0),
+    );
+    anchor_velocity_a = linear_velocities[body_a].xyz
+        + cross(angular_velocities[body_a].xyz, arm_a);
+    anchor_velocity_b = linear_velocities[body_b].xyz
+        + cross(angular_velocities[body_b].xyz, arm_b);
+    solve_bearing_linear_axis_immediate(
+        body_a,
+        body_b,
+        arm_a,
+        arm_b,
+        anchor_velocity_b - anchor_velocity_a,
+        vec3<f32>(0.0, 0.0, 1.0),
+    );
+
+    var relative_angular = angular_velocities[body_b].xyz - angular_velocities[body_a].xyz;
+    solve_bearing_angular_axis_immediate(body_a, body_b, relative_angular, frame.tangent_a);
+    relative_angular = angular_velocities[body_b].xyz - angular_velocities[body_a].xyz;
+    solve_bearing_angular_axis_immediate(body_a, body_b, relative_angular, frame.tangent_b);
+}
+
+fn prepare_bearing_projection_frames() {
+    for (var index = 0u; index < config.bearing_count; index += 1u) {
+        let bearing = bearings[index];
+        let body_a = bearing.metadata.x;
+        let body_b = bearing.metadata.y;
+        let axis_a = normalize(quat_rotate(rotations[body_a], bearing.local_axis_a.xyz));
+        let axis_b = normalize(quat_rotate(rotations[body_b], bearing.local_axis_b.xyz));
+        let hinge_axis = normalize(axis_a + axis_b);
+        let helper = select(
+            vec3<f32>(1.0, 0.0, 0.0),
+            vec3<f32>(0.0, 1.0, 0.0),
+            abs(hinge_axis.x) > 0.8,
+        );
+        let tangent_a = normalize(cross(hinge_axis, helper));
+        bearing_projection_frames[index] = BearingProjectionFrame(
+            quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz),
+            quat_rotate(rotations[body_b], bearing.local_anchor_b.xyz),
+            tangent_a,
+            cross(hinge_axis, tangent_a),
+        );
+    }
+}
+
+fn project_bearing_velocities_serial_immediate() {
+    for (var index = 0u; index < config.bearing_count; index += 1u) {
+        project_bearing_velocity_row_immediate(index);
+    }
+    for (var index = config.bearing_count; index > 0u; index -= 1u) {
+        project_bearing_velocity_row_immediate(index - 1u);
+    }
+}
+
+// The small articulated contact route keeps the established serial ordering
+// and iteration count inside one dispatch. This removes the Metal command-pass
+// boundary between every contact and bearing projection without changing the
+// equations, warm start, or impulse persistence.
+@compute @workgroup_size(1)
+fn solve_small_mechanism_contacts() {
+    var active_count = 0u;
+    while active_count < config.pair_capacity
+        && active_contacts[active_count] != INVALID_MANIFOLD_SLOT
+    {
+        active_count += 1u;
+    }
+    if active_count == 0u {
+        return;
+    }
+    prepare_bearing_projection_frames();
+    var sorted_contacts: array<u32, 64>;
+    if active_count <= MAX_SORTED_SERIAL_CONTACTS {
+        var previous_key = vec3<u32>(0u);
+        var has_previous = false;
+        for (var active_index = 0u; active_index < active_count; active_index += 1u) {
+            var selected = INVALID_MANIFOLD_SLOT;
+            var selected_key = vec3<u32>(INVALID_MANIFOLD_SLOT);
+            for (var candidate = 0u; candidate < active_count; candidate += 1u) {
+                let contact_index = active_contacts[candidate];
+                let contact = contacts[contact_index];
+                let key = vec3<u32>(contact.metadata.x, contact.metadata.y, contact.metadata.z);
+                let after_previous = !has_previous
+                    || key.x > previous_key.x
+                    || (key.x == previous_key.x && key.y > previous_key.y)
+                    || (all(key.xy == previous_key.xy) && key.z > previous_key.z);
+                let before_selected = selected == INVALID_MANIFOLD_SLOT
+                    || key.x < selected_key.x
+                    || (key.x == selected_key.x && key.y < selected_key.y)
+                    || (all(key.xy == selected_key.xy) && key.z < selected_key.z);
+                if after_previous && before_selected {
+                    selected = contact_index;
+                    selected_key = key;
+                }
+            }
+            if selected == INVALID_MANIFOLD_SLOT {
+                break;
+            }
+            sorted_contacts[active_index] = selected;
+            previous_key = selected_key;
+            has_previous = true;
+        }
+    }
+    project_bearing_velocities_serial_immediate();
+    let iterations = max(config.solver_iterations, 1u) * 12u;
+    for (var iteration = 1u; iteration < iterations; iteration += 1u) {
+        if active_count <= MAX_SORTED_SERIAL_CONTACTS {
+            for (var active_index = 0u; active_index < active_count; active_index += 1u) {
+                solve_contact_immediate(sorted_contacts[active_index]);
+            }
+            for (var active_index = active_count; active_index > 0u; active_index -= 1u) {
+                solve_contact_immediate(sorted_contacts[active_index - 1u]);
+            }
+        } else {
+            for (var active_index = 0u; active_index < active_count; active_index += 1u) {
+                solve_contact_immediate(active_contacts[active_index]);
+            }
+            for (var active_index = active_count; active_index > 0u; active_index -= 1u) {
+                solve_contact_immediate(active_contacts[active_index - 1u]);
+            }
+        }
+        project_bearing_velocities_serial_immediate();
     }
 }
 

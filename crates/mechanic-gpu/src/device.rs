@@ -1,6 +1,10 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::sync::mpsc;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 
 use bevy_math::Vec3;
 use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
@@ -17,8 +21,11 @@ use crate::{
     SNAPSHOT_RING_SIZE, pack_convex_counts,
 };
 
-const SERIAL_MECHANISM_BEARING_LIMIT: u32 = 64;
+const FUSED_VELOCITY_BEARING_LIMIT: u32 = 64;
+const FUSED_GROUND_CONTACT_BEARING_LIMIT: u32 = 4;
+const FUSED_STREAMED_CONTACT_BEARING_LIMIT: u32 = 64;
 const SERIAL_MECHANISM_SOLVER_MULTIPLIER: u32 = 12;
+const ASYNC_READBACK_RING_SIZE: usize = 3;
 
 /// Per-scene pipeline switches that do not adapt during simulation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +50,24 @@ impl Default for GpuPhysicsConfig {
             solver_iterations: 8,
         }
     }
+}
+
+const fn uses_fused_velocity_schedule(bearing_count: u32, body_count: u32) -> bool {
+    bearing_count <= FUSED_VELOCITY_BEARING_LIMIT && body_count <= 256
+}
+
+const fn uses_fused_contact_schedule(bearing_count: u32, ground_plane_enabled: bool) -> bool {
+    // Flat-ground scenes can generate one persistent contact per collider, so
+    // the serial fused solver only wins for the measured four-bearing class.
+    // Streamed worlds normally have sparse contacts; keeping their complete
+    // <=64-bearing solve in one dispatch removes the pass-count cliff seen by
+    // Bente. Both choices are immutable after the scene is loaded.
+    let limit = if ground_plane_enabled {
+        FUSED_GROUND_CONTACT_BEARING_LIMIT
+    } else {
+        FUSED_STREAMED_CONTACT_BEARING_LIMIT
+    };
+    bearing_count <= limit
 }
 
 /// GPU buffers containing one complete renderable physics snapshot.
@@ -94,6 +119,23 @@ pub struct GpuTickReadback {
     pub anchor_residual_meters: f32,
     /// Largest derived bearing axis residual in degrees.
     pub axis_residual_degrees: f32,
+}
+
+/// One asynchronously completed tick and its prototype-render snapshot.
+///
+/// The body rows are staged with the fixed-size diagnostics so application
+/// frames can consume them without ever waiting for the GPU. Production
+/// renderers should continue to bind [`SnapshotBuffers`] directly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GpuCompletedTickReadback {
+    /// Monotonic tick encoded into the submission.
+    pub tick_index: u64,
+    /// Snapshot-ring slot written by the completed tick.
+    pub snapshot_slot: u8,
+    /// Fixed-size validation and timestamp telemetry.
+    pub diagnostics: GpuTickReadback,
+    /// CPU prototype-render rows captured from the same tick.
+    pub transforms: Vec<GpuTransform>,
 }
 
 /// GPU timestamp durations for the fixed production pipeline stages.
@@ -261,6 +303,25 @@ pub struct GpuPhysics {
     snapshot_pipeline: wgpu::ComputePipeline,
     snapshot_bind_groups: Vec<wgpu::BindGroup>,
     timestamps: Option<TimestampResources>,
+    async_readback_enabled: AtomicBool,
+    async_readbacks: Mutex<Vec<AsyncReadbackSlot>>,
+}
+
+#[derive(Debug)]
+struct AsyncReadbackSlot {
+    diagnostics: wgpu::Buffer,
+    timestamps: Option<wgpu::Buffer>,
+    positions: wgpu::Buffer,
+    rotations: wgpu::Buffer,
+    pending: Option<PendingAsyncReadback>,
+}
+
+#[derive(Debug)]
+struct PendingAsyncReadback {
+    tick_index: u64,
+    snapshot_slot: u8,
+    receiver: mpsc::Receiver<Result<(), String>>,
+    remaining_callbacks: u8,
 }
 
 #[derive(Debug)]
@@ -292,8 +353,8 @@ struct CollisionResources {
     warm_start_bind_group: wgpu::BindGroup,
     solve_accumulate_pipeline: wgpu::ComputePipeline,
     solve_accumulate_bind_group: wgpu::BindGroup,
-    solve_accumulate_serial_pipeline: wgpu::ComputePipeline,
-    solve_accumulate_serial_bind_group: wgpu::BindGroup,
+    solve_small_mechanism_pipeline: wgpu::ComputePipeline,
+    solve_small_mechanism_bind_group: wgpu::BindGroup,
     solve_apply_pipeline: wgpu::ComputePipeline,
     solve_apply_bind_group: wgpu::BindGroup,
     persist_contacts_pipeline: wgpu::ComputePipeline,
@@ -369,6 +430,8 @@ struct MechanismResources {
     apply_closure_step_bind_group: wgpu::BindGroup,
     project_velocity_pipeline: wgpu::ComputePipeline,
     project_velocity_bind_group: wgpu::BindGroup,
+    project_small_velocity_pipeline: wgpu::ComputePipeline,
+    project_small_velocity_bind_group: wgpu::BindGroup,
     project_velocity_serial_pipeline: wgpu::ComputePipeline,
     project_velocity_serial_bind_group: wgpu::BindGroup,
     apply_velocity_pipeline: wgpu::ComputePipeline,
@@ -801,6 +864,7 @@ impl GpuPhysics {
                     entry(1, &rotations_buffer),
                     entry(2, &snapshot.positions),
                     entry(3, &snapshot.rotations),
+                    entry(4, &diagnostics),
                 ],
             ));
             snapshots.push(snapshot);
@@ -820,6 +884,7 @@ impl GpuPhysics {
             &colliders,
             &convex_shapes,
             &suppressed_pairs,
+            &bearings,
             &body_components,
             pipeline_config.mechanism_self_collisions,
         );
@@ -907,6 +972,8 @@ impl GpuPhysics {
             snapshot_pipeline,
             snapshot_bind_groups,
             timestamps,
+            async_readback_enabled: AtomicBool::new(false),
+            async_readbacks: Mutex::new(Vec::new()),
         })
     }
 
@@ -1034,7 +1101,34 @@ impl GpuPhysics {
         );
     }
 
+    /// Enables non-blocking per-tick telemetry and prototype snapshot staging.
+    ///
+    /// This is opt-in because correctness tests and headless benchmarks use
+    /// explicit synchronous sampling and should not allocate an application
+    /// readback ring for unobserved warm-up ticks.
+    pub fn enable_async_readback(&self) {
+        self.async_readback_enabled.store(true, Ordering::Release);
+    }
+
+    /// Number of ticks that can be staged without waiting or allocating.
+    ///
+    /// The application uses this as its in-flight submission budget. Logical
+    /// scheduler ticks remain in the CPU backlog until a fixed ring slot is
+    /// available, preventing a slow GPU from turning into an unbounded queue.
+    pub fn async_readback_slots_available(&self) -> usize {
+        if !self.async_readback_enabled.load(Ordering::Acquire) {
+            return usize::MAX;
+        }
+        let slots = self
+            .async_readbacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slots.iter().filter(|slot| slot.pending.is_none()).count()
+            + ASYNC_READBACK_RING_SIZE.saturating_sub(slots.len())
+    }
+
     /// Encodes and submits one 60 Hz integration/publication pass.
+    #[allow(clippy::too_many_lines)]
     pub fn dispatch_tick(
         &self,
         device: &wgpu::Device,
@@ -1061,10 +1155,13 @@ impl GpuPhysics {
             reserved_b: self.mechanism.coordinate_count,
         };
         queue.write_buffer(&self.config, 0, bytes_of(&config));
-        queue.write_buffer(&self.diagnostics, 0, bytes_of(&GpuDiagnostics::zeroed()));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("mechanic physics tick"),
         });
+        // Error flags are a persistent GPU failure latch. Per-tick counters are
+        // cleared independently, so a delayed CPU readback can never erase a
+        // terminal failure reported by an earlier submission.
+        encoder.clear_buffer(&self.diagnostics, 4, Some(28));
         let run_collisions = self.pipeline_config.collisions_enabled && self.collider_count > 0;
         let run_bearings = self.bearing_count > 0;
         if run_collisions {
@@ -1131,7 +1228,64 @@ impl GpuPhysics {
             encoder.resolve_query_set(&timestamps.query_set, 0..14, &timestamps.resolve, 0);
             encoder.copy_buffer_to_buffer(&timestamps.resolve, 0, &timestamps.readback, 0, 112);
         }
+        let mut async_readbacks = self
+            .async_readback_enabled
+            .load(Ordering::Acquire)
+            .then(|| {
+                self.async_readbacks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            });
+        let async_slot_index = async_readbacks.as_mut().and_then(|slots| {
+            let index = if let Some(index) = slots.iter().position(|slot| slot.pending.is_none()) {
+                index
+            } else if slots.len() < ASYNC_READBACK_RING_SIZE {
+                let index = slots.len();
+                slots.push(create_async_readback_slot(
+                    device,
+                    self.body_count,
+                    self.timestamps.is_some(),
+                    index,
+                ));
+                index
+            } else {
+                return None;
+            };
+            let slot = &slots[index];
+            let diagnostics_size = u64::try_from(size_of::<GpuDiagnostics>()).unwrap_or(32);
+            let snapshot_size = u64::from(self.body_count) * 16;
+            encoder.copy_buffer_to_buffer(
+                &self.diagnostics,
+                0,
+                &slot.diagnostics,
+                0,
+                diagnostics_size,
+            );
+            if let (Some(timestamps), Some(readback)) = (&self.timestamps, slot.timestamps.as_ref())
+            {
+                encoder.copy_buffer_to_buffer(&timestamps.resolve, 0, readback, 0, 112);
+            }
+            let snapshot = &self.snapshots[usize::from(snapshot_slot)];
+            encoder.copy_buffer_to_buffer(
+                snapshot.positions(),
+                0,
+                &slot.positions,
+                0,
+                snapshot_size,
+            );
+            encoder.copy_buffer_to_buffer(
+                snapshot.rotations(),
+                0,
+                &slot.rotations,
+                0,
+                snapshot_size,
+            );
+            Some(index)
+        });
         let submission_index = queue.submit([encoder.finish()]);
+        if let (Some(slots), Some(index)) = (&mut async_readbacks, async_slot_index) {
+            begin_async_mapping(&mut slots[index], tick_index, snapshot_slot);
+        }
         GpuTickSubmission {
             tick_index,
             snapshot_slot,
@@ -1231,6 +1385,21 @@ impl GpuPhysics {
         encoder: &mut wgpu::CommandEncoder,
         timestamp_start: bool,
     ) {
+        if uses_fused_velocity_schedule(self.bearing_count, self.body_count) {
+            direct_compute_pass(
+                encoder,
+                "mechanic fused small bearing velocity projection",
+                &self.mechanism.project_small_velocity_pipeline,
+                &self.mechanism.project_small_velocity_bind_group,
+                1,
+                if timestamp_start {
+                    timestamp_writes(self.timestamps.as_ref(), Some(2), None)
+                } else {
+                    None
+                },
+            );
+            return;
+        }
         for iteration in 0..self.pipeline_config.solver_iterations.max(1) {
             self.encode_bearing_velocity_projection_iteration(
                 encoder,
@@ -1247,7 +1416,7 @@ impl GpuPhysics {
         serial: bool,
     ) {
         let mechanism = &self.mechanism;
-        if serial && self.bearing_count <= SERIAL_MECHANISM_BEARING_LIMIT {
+        if serial {
             direct_compute_pass(
                 encoder,
                 "mechanic project bearing velocities serially",
@@ -1550,8 +1719,20 @@ impl GpuPhysics {
         );
         let serial_mechanism = self.mechanism.active
             && self.mechanism.has_dynamic_root
-            && self.bearing_count <= SERIAL_MECHANISM_BEARING_LIMIT;
-        if self.mechanism.active && self.mechanism.has_dynamic_root {
+            && uses_fused_contact_schedule(
+                self.bearing_count,
+                self.pipeline_config.ground_plane_enabled,
+            );
+        if serial_mechanism {
+            direct_compute_pass(
+                encoder,
+                "mechanic fused small mechanism contacts",
+                &collision.solve_small_mechanism_pipeline,
+                &collision.solve_small_mechanism_bind_group,
+                1,
+                None,
+            );
+        } else if self.mechanism.active && self.mechanism.has_dynamic_root {
             self.encode_contact_bearing_velocity_projection_iteration(encoder, serial_mechanism);
         }
         let iterations = if serial_mechanism {
@@ -1559,17 +1740,8 @@ impl GpuPhysics {
         } else {
             self.pipeline_config.solver_iterations.max(1)
         };
-        for _ in 1..iterations {
-            if serial_mechanism {
-                direct_compute_pass(
-                    encoder,
-                    "mechanic contact projection serially",
-                    &collision.solve_accumulate_serial_pipeline,
-                    &collision.solve_accumulate_serial_bind_group,
-                    1,
-                    None,
-                );
-            } else {
+        if !serial_mechanism {
+            for _ in 1..iterations {
                 indirect_compute_pass(
                     encoder,
                     "mechanic contact projection",
@@ -1588,12 +1760,9 @@ impl GpuPhysics {
                     36,
                     None,
                 );
-            }
-            if self.mechanism.active && self.mechanism.has_dynamic_root {
-                self.encode_contact_bearing_velocity_projection_iteration(
-                    encoder,
-                    serial_mechanism,
-                );
+                if self.mechanism.active && self.mechanism.has_dynamic_root {
+                    self.encode_contact_bearing_velocity_projection_iteration(encoder, false);
+                }
             }
         }
         indirect_compute_pass(
@@ -1609,6 +1778,171 @@ impl GpuPhysics {
                 timestamp_writes(self.timestamps.as_ref(), None, Some(9))
             },
         );
+    }
+
+    /// Polls asynchronous telemetry and prototype-render staging without
+    /// waiting for queue completion.
+    ///
+    /// Completed ticks are returned in submission order. `None` means the GPU
+    /// has not completed another staged tick yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuReadbackError`] if device polling or a completed mapping
+    /// failed. The caller should latch that as a terminal simulation failure.
+    pub fn poll_tick_readback(
+        &self,
+        device: &wgpu::Device,
+    ) -> Result<Option<GpuCompletedTickReadback>, GpuReadbackError> {
+        device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|error| GpuReadbackError::DevicePoll(error.to_string()))?;
+        let mut slots = self
+            .async_readbacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        for slot in &mut *slots {
+            let Some(pending) = &mut slot.pending else {
+                continue;
+            };
+            while pending.remaining_callbacks > 0 {
+                match pending.receiver.try_recv() {
+                    Ok(Ok(())) => pending.remaining_callbacks -= 1,
+                    Ok(Err(error)) => {
+                        unmap_async_slot(slot);
+                        slot.pending = None;
+                        return Err(GpuReadbackError::BufferMap(error));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        unmap_async_slot(slot);
+                        slot.pending = None;
+                        return Err(GpuReadbackError::CallbackLost);
+                    }
+                }
+            }
+        }
+
+        let Some(slot_index) = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| {
+                let pending = slot.pending.as_ref()?;
+                (pending.remaining_callbacks == 0).then_some((index, pending.tick_index))
+            })
+            .min_by_key(|&(_, tick)| tick)
+            .map(|(index, _)| index)
+        else {
+            return Ok(None);
+        };
+        let slot = &mut slots[slot_index];
+        let Some(pending) = slot.pending.take() else {
+            return Ok(None);
+        };
+        let diagnostics = {
+            let bytes = slot
+                .diagnostics
+                .get_mapped_range(0..u64::try_from(size_of::<GpuDiagnostics>()).unwrap_or(32));
+            bytemuck::pod_read_unaligned::<GpuDiagnostics>(&bytes)
+        };
+        let timestamp_values = slot.timestamps.as_ref().map(|buffer| {
+            let bytes = buffer.get_mapped_range(0..112);
+            let mut values = [0_u64; 14];
+            for (index, chunk) in bytes.chunks_exact(8).enumerate() {
+                let mut raw = [0_u8; 8];
+                raw.copy_from_slice(chunk);
+                values[index] = u64::from_ne_bytes(raw);
+            }
+            values
+        });
+        let byte_len = u64::from(self.body_count) * 16;
+        let positions = {
+            let bytes = slot.positions.get_mapped_range(0..byte_len);
+            cast_slice::<u8, [f32; 4]>(&bytes).to_vec()
+        };
+        let rotations = {
+            let bytes = slot.rotations.get_mapped_range(0..byte_len);
+            cast_slice::<u8, [f32; 4]>(&bytes).to_vec()
+        };
+        unmap_async_slot(slot);
+
+        Ok(Some(GpuCompletedTickReadback {
+            tick_index: pending.tick_index,
+            snapshot_slot: pending.snapshot_slot,
+            diagnostics: self.decode_tick_readback(diagnostics, timestamp_values),
+            transforms: positions
+                .into_iter()
+                .zip(rotations)
+                .map(|(position, rotation)| GpuTransform { position, rotation })
+                .collect(),
+        }))
+    }
+
+    fn decode_tick_readback(
+        &self,
+        diagnostics: GpuDiagnostics,
+        timestamp_values: Option<[u64; 14]>,
+    ) -> GpuTickReadback {
+        let timestamp_readback =
+            timestamp_values
+                .zip(self.timestamps.as_ref())
+                .map(|(values, timestamps)| {
+                    let elapsed = |start, end| {
+                        timestamp_milliseconds(
+                            values[start],
+                            values[end],
+                            timestamps.period_nanoseconds,
+                        )
+                    };
+                    let timings = GpuKernelTimings {
+                        integration_ms: elapsed(0, 1),
+                        mechanism_ms: if self.mechanism.active {
+                            elapsed(2, 3)
+                        } else {
+                            0.0
+                        },
+                        broadphase_ms: if self.pipeline_config.collisions_enabled {
+                            elapsed(4, 5)
+                        } else {
+                            0.0
+                        },
+                        narrowphase_ms: if self.pipeline_config.collisions_enabled {
+                            elapsed(6, 7)
+                        } else {
+                            0.0
+                        },
+                        contact_solver_ms: if self.pipeline_config.collisions_enabled {
+                            elapsed(8, 9)
+                        } else {
+                            0.0
+                        },
+                        bearings_ms: if self.bearing_count > 0 {
+                            elapsed(10, 11)
+                        } else {
+                            0.0
+                        },
+                        snapshot_ms: elapsed(12, 13),
+                    };
+                    let total = timings.integration_ms
+                        + timings.mechanism_ms
+                        + timings.broadphase_ms
+                        + timings.narrowphase_ms
+                        + timings.contact_solver_ms
+                        + timings.bearings_ms
+                        + timings.snapshot_ms;
+                    (total, timings)
+                });
+        GpuTickReadback {
+            gpu_tick_ms: timestamp_readback.map(|(total, _)| total),
+            kernel_timings: timestamp_readback.map(|(_, timings)| timings),
+            error_flags: diagnostics.error_flags,
+            pair_count: diagnostics.pair_count,
+            contact_count: diagnostics.contact_count,
+            active_contact_count: diagnostics.active_contact_count,
+            anchor_residual_meters: diagnostic_units(diagnostics.max_anchor_micrometers),
+            axis_residual_degrees: diagnostic_units(diagnostics.max_axis_microdegrees),
+        }
     }
 
     /// Reads only stage timestamps and fixed-size diagnostics after a completed
@@ -2162,6 +2496,26 @@ fn create_mechanism_resources(
             entry(9, &velocity_deltas),
         ],
     );
+    let project_small_velocity_pipeline = compute_pipeline(
+        device,
+        "mechanic fused small bearing velocity projection",
+        &articulated_shader,
+        "project_small_mechanism_velocities",
+    );
+    let project_small_velocity_bind_group = bind_group(
+        device,
+        "mechanic fused small bearing velocity bindings",
+        &project_small_velocity_pipeline,
+        &[
+            entry(0, config),
+            entry(2, rotations),
+            entry(3, linear_velocities),
+            entry(4, angular_velocities),
+            entry(5, masses),
+            entry(6, bearings),
+            entry(9, &velocity_deltas),
+        ],
+    );
     let project_velocity_serial_pipeline = compute_pipeline(
         device,
         "mechanic serial bearing velocity projection",
@@ -2394,6 +2748,8 @@ fn create_mechanism_resources(
         apply_closure_step_bind_group,
         project_velocity_pipeline,
         project_velocity_bind_group,
+        project_small_velocity_pipeline,
+        project_small_velocity_bind_group,
         project_velocity_serial_pipeline,
         project_velocity_serial_bind_group,
         apply_velocity_pipeline,
@@ -2684,6 +3040,7 @@ fn create_collision_resources(
     colliders: &wgpu::Buffer,
     convex_shapes: &wgpu::Buffer,
     suppressed_pairs: &wgpu::Buffer,
+    bearings: &wgpu::Buffer,
     body_components: &[u32],
     mechanism_self_collisions: bool,
 ) -> CollisionResources {
@@ -2739,7 +3096,7 @@ fn create_collision_resources(
     let active_contacts = create_sized_buffer(
         device,
         "mechanic active contact indices",
-        pair_capacity * size_of::<u32>(),
+        pair_capacity.saturating_add(1) * size_of::<u32>(),
         wgpu::BufferUsages::STORAGE,
     );
     let indirect_args = create_sized_buffer(
@@ -2896,6 +3253,7 @@ fn create_collision_resources(
             entry(0, config),
             entry(5, diagnostics),
             entry(12, &indirect_args),
+            entry(16, &active_contacts),
         ],
     );
     let warm_start_pipeline = compute_pipeline(
@@ -2942,25 +3300,26 @@ fn create_collision_resources(
             entry(25, angular_velocities),
         ],
     );
-    let solve_accumulate_serial_pipeline = compute_pipeline(
+    let solve_small_mechanism_pipeline = compute_pipeline(
         device,
-        "mechanic serial contact projection",
+        "mechanic fused small mechanism contact projection",
         &shader,
-        "solve_accumulate_serial",
+        "solve_small_mechanism_contacts",
     );
-    let solve_accumulate_serial_bind_group = bind_group(
+    let solve_small_mechanism_bind_group = bind_group(
         device,
-        "mechanic serial contact projection bindings",
-        &solve_accumulate_serial_pipeline,
+        "mechanic fused small mechanism contact bindings",
+        &solve_small_mechanism_pipeline,
         &[
             entry(0, config),
+            entry(2, rotations),
             entry(3, linear_velocities),
-            entry(5, diagnostics),
             entry(10, &contacts),
-            entry(16, &active_contacts),
             entry(15, &persistent_manifolds),
+            entry(16, &active_contacts),
             entry(25, angular_velocities),
             entry(26, &world_masses),
+            entry(30, bearings),
         ],
     );
     let solve_apply_pipeline = compute_pipeline(
@@ -3026,8 +3385,8 @@ fn create_collision_resources(
         warm_start_bind_group,
         solve_accumulate_pipeline,
         solve_accumulate_bind_group,
-        solve_accumulate_serial_pipeline,
-        solve_accumulate_serial_bind_group,
+        solve_small_mechanism_pipeline,
+        solve_small_mechanism_bind_group,
         solve_apply_pipeline,
         solve_apply_bind_group,
         persist_contacts_pipeline,
@@ -3303,6 +3662,71 @@ fn map_for_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> Result<(), GpuR
         .map_err(|error| GpuReadbackError::BufferMap(error.to_string()))
 }
 
+fn create_async_readback_slot(
+    device: &wgpu::Device,
+    body_count: u32,
+    timestamps_enabled: bool,
+    index: usize,
+) -> AsyncReadbackSlot {
+    let readback_buffer = |label: String, size: u64| {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&label),
+            size: size.max(4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        })
+    };
+    let snapshot_size = u64::from(body_count) * 16;
+    AsyncReadbackSlot {
+        diagnostics: readback_buffer(
+            format!("mechanic async diagnostics {index}"),
+            u64::try_from(size_of::<GpuDiagnostics>()).unwrap_or(32),
+        ),
+        timestamps: timestamps_enabled
+            .then(|| readback_buffer(format!("mechanic async timestamps {index}"), 112)),
+        positions: readback_buffer(
+            format!("mechanic async snapshot positions {index}"),
+            snapshot_size,
+        ),
+        rotations: readback_buffer(
+            format!("mechanic async snapshot rotations {index}"),
+            snapshot_size,
+        ),
+        pending: None,
+    }
+}
+
+fn begin_async_mapping(slot: &mut AsyncReadbackSlot, tick_index: u64, snapshot_slot: u8) {
+    let callback_count = 3 + u8::from(slot.timestamps.is_some());
+    let (sender, receiver) = mpsc::sync_channel(usize::from(callback_count));
+    let map = |buffer: &wgpu::Buffer, sender: mpsc::SyncSender<Result<(), String>>| {
+        buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = sender.send(result.map_err(|error| error.to_string()));
+        });
+    };
+    map(&slot.diagnostics, sender.clone());
+    if let Some(timestamps) = &slot.timestamps {
+        map(timestamps, sender.clone());
+    }
+    map(&slot.positions, sender.clone());
+    map(&slot.rotations, sender);
+    slot.pending = Some(PendingAsyncReadback {
+        tick_index,
+        snapshot_slot,
+        receiver,
+        remaining_callbacks: callback_count,
+    });
+}
+
+fn unmap_async_slot(slot: &AsyncReadbackSlot) {
+    slot.diagnostics.unmap();
+    if let Some(timestamps) = &slot.timestamps {
+        timestamps.unmap();
+    }
+    slot.positions.unmap();
+    slot.rotations.unmap();
+}
+
 fn read_vec4_buffer(
     device: &wgpu::Device,
     buffer: &wgpu::Buffer,
@@ -3330,8 +3754,20 @@ mod tests {
 
     use super::{
         FULL_CYLINDER_GROUND_FIRST, GpuPhysics, GpuPhysicsConfig, contact_pair_capacity,
-        full_cylinder_ground_data,
+        full_cylinder_ground_data, uses_fused_contact_schedule, uses_fused_velocity_schedule,
     };
+
+    #[test]
+    fn fused_small_mechanism_schedule_has_explicit_size_and_scene_boundaries() {
+        assert!(uses_fused_velocity_schedule(64, 256));
+        assert!(!uses_fused_velocity_schedule(65, 256));
+        assert!(!uses_fused_velocity_schedule(64, 257));
+
+        assert!(uses_fused_contact_schedule(4, true));
+        assert!(!uses_fused_contact_schedule(5, true));
+        assert!(uses_fused_contact_schedule(64, false));
+        assert!(!uses_fused_contact_schedule(65, false));
+    }
 
     #[test]
     fn collision_buffers_scale_with_the_scene_up_to_the_hard_limit() {
@@ -4400,6 +4836,34 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn asynchronous_tick_readback_is_monotonic_and_tick_matched() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let creation = pendulum_creation(false);
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        gpu.enable_async_readback();
+        for tick in 1..=3 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        assert_eq!(gpu.async_readback_slots_available(), 0);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+        let mut completed = Vec::new();
+        while let Some(readback) = gpu.poll_tick_readback(&device).unwrap() {
+            assert_eq!(readback.snapshot_slot, (readback.tick_index % 3) as u8);
+            assert_eq!(readback.transforms.len(), creation.compounds.len());
+            completed.push(readback.tick_index);
+        }
+        assert_eq!(gpu.async_readback_slots_available(), 3);
+        gpu.dispatch_tick(&device, &queue, 4);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let readback = gpu.poll_tick_readback(&device).unwrap().unwrap();
+        completed.push(readback.tick_index);
+        assert_eq!(completed, vec![1, 2, 3, 4]);
     }
 
     #[test]

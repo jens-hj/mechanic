@@ -91,6 +91,9 @@ fn apply_external_impulse() {
 
 @compute @workgroup_size(256)
 fn integrate(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    if atomicLoad(&error_flags) != 0u {
+        return;
+    }
     let index = invocation.x;
     if index >= config.body_count {
         return;

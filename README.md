@@ -366,18 +366,24 @@ and match the geometry affected by the action. Bearing rings may visually
 overhang their supporting faces. Their holes are visual only: they do not cut,
 bore, change the mass of, or alter collisions for connected blocks. Bearings
 remain visible and follow their supporting bodies during simulation, but still
-have no mass or collision geometry. To keep heavy scenes responsive, simulation
-runs at most one fixed tick per rendered frame and updates moving geometry at a
-throttled cadence. It still uses synchronous CPU snapshot readback, so it is not
-evidence for the integrated-render gate.
+have no mass or collision geometry. The independent 60 Hz scheduler retains
+every due tick without dropping catch-up work and submits only when one of three
+fixed staging slots is available. Diagnostics and prototype-render transforms
+arrive through tick-sequenced asynchronous staging, so an app frame never
+blocks on GPU mapping, an overloaded GPU cannot create an unbounded submission
+queue, and a failed tick never overwrites a snapshot. The
+prototype still maps bulk transforms and rebuilds CPU meshes after completion,
+so it is not evidence for the integrated GPU-render gate.
 
 Each full cylinder is rendered and picked as one smooth 24-segment annular mesh;
 slices retain the same 15° visual resolution and add their exact radial cut
 walls. Physics compiles every cylinder or slice to 16 radial cuboid colliders,
 leaving the bore and omitted sector physically passable without changing the
-GPU ABI or collision kernels. Cuboids still compile to one collider each; under the
-131,072-collider limit an all-cylinder creation therefore supports about 8,192
-parts.
+GPU ABI or collision kernels. Adjacent grid-aligned cuboids in the same rigid
+body compact greedily when their contact material matches. Authored mass and
+inertia, material boundaries, separate rigid bodies, cylinders, shaped regions,
+and non-grid geometry remain unchanged. Under the 131,072-collider limit an
+all-cylinder creation therefore supports about 8,192 parts.
 
 Construction materials carry density, separate static and kinetic friction,
 restitution, rolling resistance, and Young's modulus. Contact pairs mix both
@@ -401,6 +407,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p mechanic-app
 cargo run -p mechanic-bench -- --scenario smoke
+cargo run -p mechanic-bench --release -- --scenario open_bearing
+cargo run -p mechanic-bench --release -- --scenario four_bearing_contact
+cargo run -p mechanic-bench --release -- --scenario bearings_16
+cargo run -p mechanic-bench --release -- --scenario bearings_64
+cargo run -p mechanic-bench --release -- --scenario bearings_65
+cargo run -p mechanic-bench --release -- --scenario bearings_256
 cargo run -p mechanic-bench --release -- --scenario four_bar
 cargo run -p mechanic-bench --release -- --scenario invalid_loop
 cargo run -p mechanic-bench --release -- --scenario dense_100k --seconds 30 --warmup 5

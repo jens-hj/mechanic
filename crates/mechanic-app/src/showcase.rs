@@ -850,13 +850,14 @@ mod tests {
 
     #[test]
     fn showcase_has_exact_deterministic_topology() {
+        const COMPACTED_COLLIDER_COUNT: usize = 5_609;
         let graph = build().unwrap();
         let creation = graph.compile().unwrap();
 
         assert_eq!(graph.part_count(), PART_COUNT);
         assert_eq!(graph.weld_count(), WELD_COUNT);
         assert_eq!(graph.bearing_count(), BEARING_COUNT);
-        assert_eq!(creation.colliders.len(), PART_COUNT);
+        assert_eq!(creation.colliders.len(), COMPACTED_COLLIDER_COUNT);
         assert_eq!(creation.compounds.len(), COMPOUND_COUNT);
         assert_eq!(creation.bearings.len(), BEARING_COUNT);
         assert!(

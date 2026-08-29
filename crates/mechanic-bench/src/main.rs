@@ -29,6 +29,12 @@ const SCALE_BODY_COUNT: usize = 100_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     Smoke,
+    OpenBearing,
+    FourBearingContact,
+    Bearings16,
+    Bearings64,
+    Bearings65,
+    Bearings256,
     FourBar,
     InvalidLoop,
     Dense100k,
@@ -41,6 +47,12 @@ impl Scenario {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "smoke" => Some(Self::Smoke),
+            "open_bearing" | "bearings_1" => Some(Self::OpenBearing),
+            "four_bearing_contact" | "bearings_4" => Some(Self::FourBearingContact),
+            "bearings_16" => Some(Self::Bearings16),
+            "bearings_64" => Some(Self::Bearings64),
+            "bearings_65" => Some(Self::Bearings65),
+            "bearings_256" => Some(Self::Bearings256),
             "four_bar" => Some(Self::FourBar),
             "invalid_loop" => Some(Self::InvalidLoop),
             "dense_100k" => Some(Self::Dense100k),
@@ -54,12 +66,30 @@ impl Scenario {
     const fn name(self) -> &'static str {
         match self {
             Self::Smoke => "smoke",
+            Self::OpenBearing => "open_bearing",
+            Self::FourBearingContact => "four_bearing_contact",
+            Self::Bearings16 => "bearings_16",
+            Self::Bearings64 => "bearings_64",
+            Self::Bearings65 => "bearings_65",
+            Self::Bearings256 => "bearings_256",
             Self::FourBar => "four_bar",
             Self::InvalidLoop => "invalid_loop",
             Self::Dense100k => "dense_100k",
             Self::Loops100k => "loops_100k",
             Self::TerrainStream => "terrain_stream",
             Self::TerrainDig => "terrain_dig",
+        }
+    }
+
+    const fn bearing_count(self) -> Option<usize> {
+        match self {
+            Self::OpenBearing => Some(1),
+            Self::FourBearingContact => Some(4),
+            Self::Bearings16 => Some(16),
+            Self::Bearings64 => Some(64),
+            Self::Bearings65 => Some(65),
+            Self::Bearings256 => Some(256),
+            _ => None,
         }
     }
 }
@@ -99,6 +129,12 @@ fn run() -> Result<bool, String> {
     let construction_ms = construction_start.elapsed().as_secs_f64() * 1000.0;
     let expected_bodies = match options.scenario {
         Scenario::Smoke => 1_024,
+        scenario @ (Scenario::OpenBearing
+        | Scenario::FourBearingContact
+        | Scenario::Bearings16
+        | Scenario::Bearings64
+        | Scenario::Bearings65
+        | Scenario::Bearings256) => scenario.bearing_count().unwrap_or_default() + 1,
         Scenario::FourBar | Scenario::InvalidLoop => 4,
         Scenario::Dense100k | Scenario::Loops100k => SCALE_BODY_COUNT,
         Scenario::TerrainStream | Scenario::TerrainDig => unreachable!(),
@@ -130,7 +166,8 @@ fn run() -> Result<bool, String> {
         &queue,
         &creation,
         GpuPhysicsConfig {
-            collisions_enabled: matches!(options.scenario, Scenario::Smoke | Scenario::Dense100k),
+            collisions_enabled: matches!(options.scenario, Scenario::Smoke | Scenario::Dense100k)
+                || options.scenario.bearing_count().is_some(),
             ground_plane_enabled: true,
             mechanism_self_collisions: true,
             solver_iterations: 8,
@@ -170,6 +207,7 @@ fn run() -> Result<bool, String> {
     let measured_capacity = usize::try_from(measured_ticks)
         .map_err(|_| "measured tick count does not fit this platform".to_owned())?;
     let mut engine_tick_costs_ms = Vec::with_capacity(measured_capacity);
+    let mut blocking_wait_costs_ms = Vec::with_capacity(measured_capacity);
     let mut gpu_tick_costs_ms = Vec::with_capacity(measured_capacity);
     let mut kernel_costs_ms: [Vec<f64>; 7] =
         core::array::from_fn(|_| Vec::with_capacity(measured_capacity));
@@ -182,9 +220,11 @@ fn run() -> Result<bool, String> {
     for tick in 1..=measured_ticks {
         let start = Instant::now();
         gpu.dispatch_tick(&device, &queue, warmup_ticks + tick);
+        let blocking_wait_started = Instant::now();
         device
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|error| format!("device failed during measured tick: {error}"))?;
+        blocking_wait_costs_ms.push(blocking_wait_started.elapsed().as_secs_f64() * 1_000.0);
         let readback = gpu
             .read_last_tick(&device)
             .map_err(|error| format!("tick diagnostic readback failed: {error}"))?;
@@ -213,14 +253,23 @@ fn run() -> Result<bool, String> {
         engine_tick_costs_ms.push(start.elapsed().as_secs_f64() * 1000.0);
     }
     engine_tick_costs_ms.sort_by(f64::total_cmp);
+    blocking_wait_costs_ms.sort_by(f64::total_cmp);
     gpu_tick_costs_ms.sort_by(f64::total_cmp);
     for costs in &mut kernel_costs_ms {
         costs.sort_by(f64::total_cmp);
     }
     let engine_p95_ms = percentile_95(&engine_tick_costs_ms);
+    let engine_p50_ms = percentile(&engine_tick_costs_ms, 50);
+    let engine_p99_ms = percentile(&engine_tick_costs_ms, 99);
     let sample_count = u32::try_from(engine_tick_costs_ms.len()).unwrap_or(u32::MAX);
     let engine_mean_ms = engine_tick_costs_ms.iter().sum::<f64>() / f64::from(sample_count);
     let gpu_p95_ms = (!gpu_tick_costs_ms.is_empty()).then(|| percentile_95(&gpu_tick_costs_ms));
+    let gpu_p50_ms = (!gpu_tick_costs_ms.is_empty()).then(|| percentile(&gpu_tick_costs_ms, 50));
+    let gpu_p99_ms = (!gpu_tick_costs_ms.is_empty()).then(|| percentile(&gpu_tick_costs_ms, 99));
+    let blocking_wait_p95_ms = percentile_95(&blocking_wait_costs_ms);
+    let diagnostics_bytes_per_tick = core::mem::size_of::<mechanic_gpu::GpuDiagnostics>()
+        + usize::from(gpu.has_gpu_timestamps()) * 14 * core::mem::size_of::<u64>();
+    let mapped_bytes = measured_capacity.saturating_mul(diagnostics_bytes_per_tick);
     let achieved_tps = 1000.0 / engine_mean_ms;
     let timing_source = if gpu.has_gpu_timestamps() {
         "gpu_timestamp"
@@ -234,14 +283,24 @@ fn run() -> Result<bool, String> {
     let kernel_coverage_complete = matches!(
         options.scenario,
         Scenario::Smoke | Scenario::FourBar | Scenario::InvalidLoop
-    );
+    ) || options.scenario.bearing_count().is_some();
     let expected_constraint_failure = options.scenario == Scenario::InvalidLoop;
     let correctness_passed = if expected_constraint_failure {
         error_flags & CONSTRAINT_NON_CONVERGENCE_FLAG != 0
     } else {
         error_flags == 0
     };
-    let budget_passed = achieved_tps >= 60.0 && gpu_p95_ms.is_some_and(|cost| cost <= 16.67);
+    let gpu_budget_ms = if options
+        .scenario
+        .bearing_count()
+        .is_some_and(|count| count <= 64)
+    {
+        4.0
+    } else {
+        16.67
+    };
+    let budget_passed =
+        achieved_tps >= 60.0 && gpu_p95_ms.is_some_and(|cost| cost <= gpu_budget_ms);
     let gate_passed = kernel_coverage_complete && correctness_passed && budget_passed;
     println!(
         concat!(
@@ -250,7 +309,12 @@ fn run() -> Result<bool, String> {
             "\"bodies\":{},\"colliders\":{},\"bearings\":{},",
             "\"warmup_ticks\":{},\"measured_ticks\":{},",
             "\"construction_ms\":{:.3},\"mean_engine_tick_ms\":{:.3},",
-            "\"p95_engine_tick_ms\":{:.3},\"p95_gpu_tick_ms\":{},",
+            "\"p50_engine_tick_ms\":{:.3},\"p95_engine_tick_ms\":{:.3},",
+            "\"p99_engine_tick_ms\":{:.3},",
+            "\"p50_gpu_tick_ms\":{},\"p95_gpu_tick_ms\":{},\"p99_gpu_tick_ms\":{},",
+            "\"submission_count\":{},\"blocking_wait_p95_ms\":{:.3},",
+            "\"mapped_bytes\":{},\"bulk_snapshot_readback_bytes\":0,",
+            "\"dynamic_mesh_upload_bytes\":0,\"tick_backlog\":0,",
             "\"kernel_pipeline_p95_ms\":{},\"physics_tps\":{:.2},",
             "\"kernel_integration_p95_ms\":{},\"kernel_mechanism_p95_ms\":{},",
             "\"kernel_broadphase_p95_ms\":{},\"kernel_narrowphase_p95_ms\":{},",
@@ -274,8 +338,15 @@ fn run() -> Result<bool, String> {
         measured_ticks,
         construction_ms,
         engine_mean_ms,
+        engine_p50_ms,
         engine_p95_ms,
+        engine_p99_ms,
+        gpu_p50_ms.map_or_else(|| "null".to_owned(), |value| format!("{value:.3}")),
         gpu_p95_ms.map_or_else(|| "null".to_owned(), |value| format!("{value:.3}")),
+        gpu_p99_ms.map_or_else(|| "null".to_owned(), |value| format!("{value:.3}")),
+        measured_ticks,
+        blocking_wait_p95_ms,
+        mapped_bytes,
         gpu_p95_ms.map_or_else(|| "null".to_owned(), |value| format!("{value:.3}")),
         achieved_tps,
         optional_percentile_95(&kernel_costs_ms[0]),
@@ -321,7 +392,7 @@ fn parse_options() -> Result<Options, String> {
                 scenario = args.get(index).and_then(|value| Scenario::parse(value));
                 if scenario.is_none() {
                     return Err(
-                        "--scenario must be smoke, four_bar, invalid_loop, dense_100k, loops_100k, terrain_stream, or terrain_dig"
+                        "--scenario must be smoke, open_bearing, four_bearing_contact, bearings_16, bearings_64, bearings_65, bearings_256, four_bar, invalid_loop, dense_100k, loops_100k, terrain_stream, or terrain_dig"
                             .to_owned(),
                     );
                 }
@@ -336,7 +407,7 @@ fn parse_options() -> Result<Options, String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "usage: mechanic-bench --scenario smoke|four_bar|invalid_loop|dense_100k|loops_100k|terrain_stream|terrain_dig [--seconds N] [--warmup N]"
+                    "usage: mechanic-bench --scenario smoke|open_bearing|four_bearing_contact|bearings_16|bearings_64|bearings_65|bearings_256|four_bar|invalid_loop|dense_100k|loops_100k|terrain_stream|terrain_dig [--seconds N] [--warmup N]"
                         .to_owned(),
                 );
             }
@@ -351,6 +422,12 @@ fn parse_options() -> Result<Options, String> {
             if matches!(
                 scenario,
                 Scenario::Smoke
+                    | Scenario::OpenBearing
+                    | Scenario::FourBearingContact
+                    | Scenario::Bearings16
+                    | Scenario::Bearings64
+                    | Scenario::Bearings65
+                    | Scenario::Bearings256
                     | Scenario::FourBar
                     | Scenario::InvalidLoop
                     | Scenario::TerrainStream
@@ -365,6 +442,12 @@ fn parse_options() -> Result<Options, String> {
             if matches!(
                 scenario,
                 Scenario::Smoke
+                    | Scenario::OpenBearing
+                    | Scenario::FourBearingContact
+                    | Scenario::Bearings16
+                    | Scenario::Bearings64
+                    | Scenario::Bearings65
+                    | Scenario::Bearings256
                     | Scenario::FourBar
                     | Scenario::InvalidLoop
                     | Scenario::TerrainStream
@@ -397,6 +480,14 @@ fn parse_nonnegative(value: Option<&String>, flag: &str) -> Result<u64, String> 
 fn build_scenario(scenario: Scenario) -> Result<CompiledCreation, String> {
     match scenario {
         Scenario::Smoke => build_dense(1_024),
+        scenario @ (Scenario::OpenBearing
+        | Scenario::FourBearingContact
+        | Scenario::Bearings16
+        | Scenario::Bearings64
+        | Scenario::Bearings65
+        | Scenario::Bearings256) => {
+            build_bearing_chain(scenario.bearing_count().unwrap_or_default())
+        }
         Scenario::FourBar => build_four_bar(false),
         Scenario::InvalidLoop => build_four_bar(true),
         Scenario::Dense100k => build_dense(SCALE_BODY_COUNT),
@@ -1010,6 +1101,36 @@ fn build_four_bar(invalid: bool) -> Result<CompiledCreation, String> {
     Ok(creation)
 }
 
+fn build_bearing_chain(bearing_count: usize) -> Result<CompiledCreation, String> {
+    let mut graph = ConstructionGraph::new();
+    let outcomes = graph
+        .apply_batch((0..=bearing_count).map(|index| {
+            let x = i32::try_from(index.saturating_mul(4)).expect("chain coordinate fits i32");
+            BuildCommand::Spawn(unit_cube(IVec3::new(x, 2, 0)))
+        }))
+        .map_err(|error| format!("bearing-chain part generation failed: {error}"))?;
+    let parts = outcomes
+        .into_iter()
+        .map(|outcome| match outcome {
+            BuildOutcome::Spawned(part) => part,
+            _ => unreachable!("batch contains only spawn commands"),
+        })
+        .collect::<Vec<_>>();
+    graph
+        .apply_batch((0..bearing_count).map(|index| {
+            bearing_command(
+                parts[index],
+                FaceKind::PositiveX,
+                parts[index + 1],
+                FaceKind::NegativeX,
+                Vec3::new(grid_f32(index) + 0.5, 0.5, 0.0),
+                Vec3::X,
+            )
+        }))
+        .map_err(|error| format!("bearing-chain joint generation failed: {error}"))?;
+    graph.compile().map_err(|error| error.to_string())
+}
+
 fn build_dense(count: usize) -> Result<CompiledCreation, String> {
     let mut graph = ConstructionGraph::new();
     let commands = (0..count).map(|index| {
@@ -1116,7 +1237,11 @@ fn bearing_command(
 }
 
 fn percentile_95(sorted: &[f64]) -> f64 {
-    let rank = sorted.len().saturating_mul(95).div_ceil(100);
+    percentile(sorted, 95)
+}
+
+fn percentile(sorted: &[f64], percentage: usize) -> f64 {
+    let rank = sorted.len().saturating_mul(percentage).div_ceil(100);
     sorted[rank.saturating_sub(1)]
 }
 
@@ -1147,6 +1272,24 @@ mod tests {
             assert_eq!(creation.compounds.len(), 4);
             assert_eq!(creation.loop_topology.tree_bearings.len(), 3);
             assert_eq!(creation.loop_topology.closure_bearings.len(), 1);
+        }
+    }
+
+    #[test]
+    fn bearing_sweep_preserves_the_64_65_topology_boundary() {
+        for (scenario, bearings) in [
+            (Scenario::OpenBearing, 1),
+            (Scenario::FourBearingContact, 4),
+            (Scenario::Bearings16, 16),
+            (Scenario::Bearings64, 64),
+            (Scenario::Bearings65, 65),
+            (Scenario::Bearings256, 256),
+        ] {
+            let creation = build_scenario(scenario).unwrap();
+            assert_eq!(creation.compounds.len(), bearings + 1);
+            assert_eq!(creation.bearings.len(), bearings);
+            assert_eq!(creation.loop_topology.tree_bearings.len(), bearings);
+            assert!(creation.loop_topology.closure_bearings.is_empty());
         }
     }
 }

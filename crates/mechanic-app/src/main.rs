@@ -102,7 +102,7 @@ use performance::PerformanceMetrics;
 use sequencer::{DriveKeyState, DriveSequencer, GearboxRuntime, geared_gpu_drive_rows};
 use settings::AppSettings;
 
-const SIMULATION_VISUAL_TICK_INTERVAL: u32 = 2;
+const SIMULATION_VISUAL_TICK_INTERVAL: u64 = 2;
 const HAMMER_CHARGE_SECONDS: f32 = 1.5;
 const HAMMER_MIN_IMPULSE: f32 = 25.0;
 const HAMMER_MAX_IMPULSE: f32 = 4_000.0;
@@ -313,15 +313,17 @@ struct AppSimulation {
     creation: Option<CompiledCreation>,
     scheduler: FixedStepScheduler,
     next_tick: u64,
+    tick_backlog: u64,
+    completed_tick: u64,
     previous_transforms: Vec<GpuTransform>,
     transforms: Vec<GpuTransform>,
     previous_snapshot_tick: u64,
     snapshot_tick: u64,
-    visual_ticks_since_publish: u32,
     static_mesh_dirty: bool,
     render_dirty: bool,
     physics_cpu_ms: Option<f64>,
     last_tick_readback: Option<GpuTickReadback>,
+    failure: Option<String>,
     world_revision: Option<(u64, u64)>,
 }
 
@@ -850,7 +852,7 @@ fn maintain_space_simulation(
     render_queue: Res<RenderQueue>,
 ) {
     if *space.get() == world::AppSpace::Garage {
-        if simulation.is_running() {
+        if simulation.gpu.is_some() {
             simulation.gpu = None;
             simulation.world_revision = None;
             *hammer = HammerInteraction::default();
@@ -923,6 +925,7 @@ fn maintain_space_simulation(
             return;
         }
     };
+    gpu.enable_async_readback();
     if let Err(error) = gpu.write_body_states(&render_queue, &transforms, &velocities) {
         state.feedback = Some(format!("Cannot preserve live world body state: {error}"));
     }
@@ -931,15 +934,17 @@ fn maintain_space_simulation(
         creation: Some(creation),
         scheduler: FixedStepScheduler::new(),
         next_tick,
+        tick_backlog: 0,
+        completed_tick: next_tick.saturating_sub(1),
         previous_transforms: transforms.clone(),
         transforms,
-        previous_snapshot_tick: next_tick.saturating_sub(1),
-        snapshot_tick: next_tick,
-        visual_ticks_since_publish: 0,
+        previous_snapshot_tick: next_tick.saturating_sub(2),
+        snapshot_tick: next_tick.saturating_sub(1),
         static_mesh_dirty: true,
         render_dirty: true,
         physics_cpu_ms: None,
         last_tick_readback: None,
+        failure: None,
         world_revision: Some(revision),
     };
 }
@@ -1645,6 +1650,49 @@ fn advance_simulation(
         return;
     }
 
+    // Poll before scheduling more work. This is deliberately non-blocking:
+    // completed tick telemetry and transforms arrive whenever the shared GPU
+    // queue reaches their staging copies.
+    loop {
+        let completed = simulation
+            .gpu
+            .as_ref()
+            .expect("running simulation has GPU state")
+            .poll_tick_readback(render_device.wgpu_device());
+        match completed {
+            Ok(Some(completed)) if completed.diagnostics.error_flags == 0 => {
+                if completed.tick_index <= simulation.completed_tick {
+                    continue;
+                }
+                simulation.completed_tick = completed.tick_index;
+                simulation.last_tick_readback = Some(completed.diagnostics);
+                if visual_snapshot_is_due(simulation.snapshot_tick, completed.tick_index) {
+                    simulation.previous_transforms =
+                        core::mem::replace(&mut simulation.transforms, completed.transforms);
+                    simulation.previous_snapshot_tick = simulation.snapshot_tick;
+                    simulation.snapshot_tick = completed.tick_index;
+                    simulation.render_dirty = true;
+                }
+            }
+            Ok(Some(completed)) => {
+                stop_failed_simulation(
+                    &mut simulation,
+                    &mut state,
+                    format!(
+                        "physics tick {} reported flags {}",
+                        completed.tick_index, completed.diagnostics.error_flags
+                    ),
+                );
+                return;
+            }
+            Ok(None) => break,
+            Err(error) => {
+                stop_failed_simulation(&mut simulation, &mut state, error.to_string());
+                return;
+            }
+        }
+    }
+
     if state.drive_rows_dirty {
         state.drive_rows_dirty = false;
         if let (Some(gpu), Some(creation)) = (simulation.gpu.as_ref(), simulation.creation.as_ref())
@@ -1658,88 +1706,44 @@ fn advance_simulation(
         }
     }
 
-    let tick = {
+    let ticks = {
+        let available = simulation
+            .gpu
+            .as_ref()
+            .expect("running simulation has GPU state")
+            .async_readback_slots_available();
         let AppSimulation {
             scheduler,
             next_tick,
+            tick_backlog,
             ..
         } = &mut *simulation;
-        next_simulation_tick(scheduler, next_tick, time.delta(), false)
+        next_simulation_ticks(
+            scheduler,
+            next_tick,
+            tick_backlog,
+            time.delta(),
+            false,
+            u64::try_from(available).unwrap_or(u64::MAX),
+        )
     };
-    if let Some(tick) = tick {
+    if !ticks.is_empty() {
         let physics_started = std::time::Instant::now();
-        if let Err(error) =
-            apply_pending_hammer_impact(&simulation, &mut hammer, &render_device, &render_queue)
-        {
-            hammer.pending = None;
-            stop_failed_simulation(&mut simulation, &mut state, error);
-            return;
-        }
-        let publishing =
-            simulation.visual_ticks_since_publish + 1 >= SIMULATION_VISUAL_TICK_INTERVAL;
-        let diagnostics = {
-            let gpu = simulation
-                .gpu
-                .as_ref()
-                .expect("running simulation has GPU state");
-            gpu.dispatch_tick(render_device.wgpu_device(), &render_queue, tick);
-            // Reading diagnostics drains the whole queue, so it is only done on
-            // the ticks that already stall to publish a snapshot. The kernels of
-            // every other tick overlap with rendering instead, and a failure is
-            // still caught on the next published tick.
-            publishing.then(|| {
-                gpu.read_last_tick(render_device.wgpu_device())
-                    .map_err(|error| error.to_string())
-            })
-        };
-        let mut successful_readback = None;
-        match diagnostics {
-            None => {}
-            Some(Ok(diagnostics)) if diagnostics.error_flags == 0 => {
-                successful_readback = Some(diagnostics);
-            }
-            Some(Ok(diagnostics)) => {
-                stop_failed_simulation(
-                    &mut simulation,
-                    &mut state,
-                    format!("physics kernel reported flags {}", diagnostics.error_flags),
-                );
-                return;
-            }
-            Some(Err(error)) => {
+        for tick in ticks {
+            if let Err(error) =
+                apply_pending_hammer_impact(&simulation, &mut hammer, &render_device, &render_queue)
+            {
+                hammer.pending = None;
                 stop_failed_simulation(&mut simulation, &mut state, error);
                 return;
             }
-        }
-
-        simulation.visual_ticks_since_publish += 1;
-        if simulation.visual_ticks_since_publish >= SIMULATION_VISUAL_TICK_INTERVAL {
-            let transforms = simulation
+            simulation
                 .gpu
                 .as_ref()
                 .expect("running simulation has GPU state")
-                .read_snapshot_transforms(
-                    render_device.wgpu_device(),
-                    &render_queue,
-                    u8::try_from(tick % 3).unwrap_or(0),
-                )
-                .map_err(|error| error.to_string());
-            match transforms {
-                Ok(transforms) => {
-                    simulation.previous_transforms =
-                        core::mem::replace(&mut simulation.transforms, transforms);
-                    simulation.previous_snapshot_tick = simulation.snapshot_tick;
-                    simulation.snapshot_tick = tick;
-                    simulation.visual_ticks_since_publish = 0;
-                    simulation.render_dirty = true;
-                }
-                Err(error) => {
-                    stop_failed_simulation(&mut simulation, &mut state, error);
-                    return;
-                }
-            }
+                .dispatch_tick(render_device.wgpu_device(), &render_queue, tick);
         }
-        simulation.record_performance(physics_started.elapsed(), successful_readback);
+        simulation.record_performance(physics_started.elapsed(), None);
     }
 
     if simulation.static_mesh_dirty {
@@ -1873,32 +1877,37 @@ fn advance_simulation(
     simulation.render_dirty = false;
 }
 
-fn next_simulation_tick(
+fn next_simulation_ticks(
     scheduler: &mut FixedStepScheduler,
     next_tick: &mut u64,
+    tick_backlog: &mut u64,
     elapsed: std::time::Duration,
     paused: bool,
-) -> Option<u64> {
+    maximum_batch: u64,
+) -> std::ops::Range<u64> {
     if paused {
-        return None;
+        return *next_tick..*next_tick;
     }
-    if scheduler.advance(elapsed).count() == 0 {
-        return None;
-    }
-    let tick = *next_tick;
-    *next_tick = next_tick.saturating_add(1);
-    Some(tick)
+    *tick_backlog = tick_backlog.saturating_add(scheduler.advance(elapsed).count());
+    let first = *next_tick;
+    let batch = (*tick_backlog).min(maximum_batch);
+    *tick_backlog -= batch;
+    *next_tick = next_tick.saturating_add(batch);
+    first..*next_tick
+}
+
+const fn visual_snapshot_is_due(snapshot_tick: u64, completed_tick: u64) -> bool {
+    completed_tick.saturating_sub(snapshot_tick) >= SIMULATION_VISUAL_TICK_INTERVAL
 }
 
 fn stop_failed_simulation(simulation: &mut AppSimulation, state: &mut EditorState, error: String) {
-    *simulation = AppSimulation::default();
-    state.construction_mesh_dirty = true;
+    simulation.failure = Some(error.clone());
     state.feedback = Some(format!("Simulation stopped: {error}"));
 }
 
 impl AppSimulation {
     const fn is_running(&self) -> bool {
-        self.gpu.is_some()
+        self.gpu.is_some() && self.failure.is_none()
     }
 
     fn record_performance(
@@ -2280,13 +2289,71 @@ const PREVIEW_RENDER_DEPTH_BIAS: f32 = 1.0;
 /// large sheet previews shrink in proportion to their full width.
 const BLOCK_SHEET_PREVIEW_INSET_METERS: f32 = 0.001;
 
-fn bearing_surface_material() -> StandardMaterial {
+fn bearing_surface_material(asset_server: &AssetServer) -> StandardMaterial {
+    let texture = |suffix: &str, is_srgb: bool| {
+        asset_server
+            .load_builder()
+            .with_settings(move |settings: &mut ImageLoaderSettings| {
+                configure_bearing_texture(settings, is_srgb);
+            })
+            .load(format!("machines/bearing/bearing_{suffix}.png"))
+    };
+    bearing_pbr_material(
+        texture("base_color", true),
+        texture("normal", false),
+        texture("orm", false),
+    )
+}
+
+fn bearing_pbr_material(
+    base_color: Handle<Image>,
+    normal: Handle<Image>,
+    orm: Handle<Image>,
+) -> StandardMaterial {
     StandardMaterial {
-        base_color: Color::srgb(0.95, 0.58, 0.08),
-        metallic: 0.35,
-        perceptual_roughness: 0.55,
+        base_color_texture: Some(base_color),
+        metallic: 1.0,
+        perceptual_roughness: 1.0,
+        metallic_roughness_texture: Some(orm.clone()),
+        occlusion_texture: Some(orm),
+        normal_map_texture: Some(normal),
         depth_bias: BEARING_RENDER_DEPTH_BIAS,
         ..default()
+    }
+}
+
+fn configure_bearing_texture(settings: &mut ImageLoaderSettings, is_srgb: bool) {
+    settings.is_srgb = is_srgb;
+    let sampler = settings.sampler.get_or_init_descriptor();
+    sampler.address_mode_u = ImageAddressMode::Repeat;
+    sampler.address_mode_v = ImageAddressMode::ClampToEdge;
+    sampler.mag_filter = ImageFilterMode::Linear;
+    sampler.min_filter = ImageFilterMode::Linear;
+    sampler.mipmap_filter = ImageFilterMode::Linear;
+    sampler.anisotropy_clamp = 8;
+}
+
+#[derive(Resource)]
+struct BearingTextureMipsPending(Vec<Handle<Image>>);
+
+fn prepare_bearing_texture_mips(
+    mut images: ResMut<Assets<Image>>,
+    mut pending: ResMut<BearingTextureMipsPending>,
+) {
+    let Some(index) = pending
+        .0
+        .iter()
+        .position(|handle| images.contains(handle.id()))
+    else {
+        return;
+    };
+    let handle = pending.0.swap_remove(index);
+    let Some(mut image) = images.get_mut(&handle) else {
+        return;
+    };
+    if let Err(error) = world::generate_rgba8_mip_chain(&mut image) {
+        warn!("failed to generate bearing texture mipmaps: {error}");
+        pending.0.clear();
     }
 }
 
@@ -2457,6 +2524,7 @@ fn main() {
             Update,
             (
                 update_debug_frame_freeze,
+                prepare_bearing_texture_mips,
                 performance::toggle,
                 (
                     (
@@ -2575,7 +2643,22 @@ fn setup(
         ghost.alpha_mode = AlphaMode::Blend;
         materials.add(ghost)
     });
-    let bearing_material = materials.add(bearing_surface_material());
+    let bearing_material = bearing_surface_material(&asset_server);
+    commands.insert_resource(BearingTextureMipsPending(vec![
+        bearing_material
+            .base_color_texture
+            .clone()
+            .expect("the bearing has a base-color map"),
+        bearing_material
+            .normal_map_texture
+            .clone()
+            .expect("the bearing has a normal map"),
+        bearing_material
+            .metallic_roughness_texture
+            .clone()
+            .expect("the bearing has an ORM map"),
+    ]));
+    let bearing_material = materials.add(bearing_material);
     let authored_materials = [
         authored_part_material(&asset_server, "machines/controller/controller"),
         authored_part_material(&asset_server, "machines/gas_engine/gas_engine"),
@@ -9494,13 +9577,11 @@ fn combined_simulation_authored_mesh(
 }
 
 fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBearing]) -> Mesh {
-    const SEGMENTS: usize = 24;
-    let vertices_per_bearing = SEGMENTS * 8;
-    let indices_per_bearing = SEGMENTS * 24;
-    let bearing_count = visible_bearing_count(graph, placed_bearings);
-    let mut positions = Vec::with_capacity(bearing_count * vertices_per_bearing);
-    let mut normals = Vec::with_capacity(bearing_count * vertices_per_bearing);
-    let mut indices = Vec::with_capacity(bearing_count * indices_per_bearing);
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut tangents = Vec::new();
+    let mut indices = Vec::new();
     for (_, bearing) in graph.bearings().filter(|(_, bearing)| {
         !placed_bearings
             .iter()
@@ -9512,6 +9593,8 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
             bearing.dimensions,
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
     }
@@ -9523,6 +9606,8 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
             bearing.dimensions,
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
     }
@@ -9533,6 +9618,8 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -9542,11 +9629,11 @@ fn combined_simulation_bearing_mesh(
     transforms: &[GpuTransform],
     placed_bearings: &[PlacedBearing],
 ) -> Mesh {
-    const SEGMENTS: usize = 24;
-    let bearing_count = creation.bearings.len() + placed_bearings.len();
-    let mut positions = Vec::with_capacity(bearing_count * SEGMENTS * 8);
-    let mut normals = Vec::with_capacity(bearing_count * SEGMENTS * 8);
-    let mut indices = Vec::with_capacity(bearing_count * SEGMENTS * 24);
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut tangents = Vec::new();
+    let mut indices = Vec::new();
 
     for compiled in &creation.bearings {
         let bearing = graph
@@ -9569,6 +9656,8 @@ fn combined_simulation_bearing_mesh(
             bearing.dimensions,
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
     }
@@ -9600,6 +9689,8 @@ fn combined_simulation_bearing_mesh(
             bearing.dimensions,
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
     }
@@ -9610,6 +9701,8 @@ fn combined_simulation_bearing_mesh(
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -9701,6 +9794,8 @@ fn transform_bearing_pose(
 fn single_bearing_mesh(dimensions: BearingDimensions) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    let mut tangents = Vec::new();
     let mut indices = Vec::new();
     append_bearing_cylinder(
         Vec3::ZERO,
@@ -9708,6 +9803,8 @@ fn single_bearing_mesh(dimensions: BearingDimensions) -> Mesh {
         dimensions,
         &mut positions,
         &mut normals,
+        &mut uvs,
+        &mut tangents,
         &mut indices,
     );
     Mesh::new(
@@ -9716,33 +9813,348 @@ fn single_bearing_mesh(dimensions: BearingDimensions) -> Mesh {
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
 }
 
-#[allow(clippy::too_many_lines)] // Solid and annular surfaces share one indexed mesh layout.
+const BEARING_SEGMENTS: u16 = 24;
+const BEARING_ATLAS_PIXELS: f32 = 1_024.0;
+const BEARING_ARC_METERS_PER_TILE: f32 = 0.05;
+const BEARING_LAND_METERS: f32 = 0.008;
+const BEARING_LIP_METERS: f32 = 0.006;
+const BEARING_RELIEF_MIN_METERS: f32 = 0.005;
+const BEARING_RELIEF_MAX_METERS: f32 = 0.040;
+const BEARING_RELIEF_WALL_FRACTION: f32 = 0.10;
+const BEARING_TERRACE_NOMINAL_METERS: f32 = 0.014;
+const BEARING_TURN_METERS: f32 = 0.009;
+const BEARING_STEP_SPLIT: f32 = 0.66;
+
+#[derive(Clone, Copy, Debug)]
+struct BearingProfilePlan {
+    steps: u8,
+    terrace_meters: f32,
+    turns: u16,
+    relief_meters: f32,
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn bearing_profile_plan(outer_radius: f32, inner_radius: f32) -> BearingProfilePlan {
+    let wall = outer_radius - inner_radius;
+    let middle = (wall - BEARING_LAND_METERS - BEARING_LIP_METERS).max(0.0005);
+    let steps = (middle / BEARING_TERRACE_NOMINAL_METERS)
+        .round()
+        .clamp(1.0, 4.0) as u8;
+    let unit = middle / f32::from(steps);
+    let relief_meters = (wall * BEARING_RELIEF_WALL_FRACTION)
+        .clamp(BEARING_RELIEF_MIN_METERS, BEARING_RELIEF_MAX_METERS);
+    let terrace_meters = (unit - relief_meters).max(0.0015);
+    let turns = (terrace_meters / BEARING_TURN_METERS).round().max(1.0) as u16;
+    BearingProfilePlan {
+        steps,
+        terrace_meters,
+        turns,
+        relief_meters,
+    }
+}
+
+fn bearing_band_v(start_row: f32, end_row: f32, t: f32) -> f32 {
+    1.0 - (start_row + (end_row - start_row) * t) / BEARING_ATLAS_PIXELS
+}
+
+fn bearing_u_repeat(radius: f32) -> f32 {
+    (std::f32::consts::TAU * radius.max(0.02) / BEARING_ARC_METERS_PER_TILE)
+        .round()
+        .max(1.0)
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn append_bearing_cylinder(
     anchor: Vec3,
     axis: Vec3,
     dimensions: BearingDimensions,
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
     indices: &mut Vec<u32>,
 ) {
-    let inner_diameter = if dimensions.inner_diameter() > 0.0 {
-        dimensions.inner_diameter() + BEARING_RENDER_RADIAL_SKIN * 2.0
+    const LAND_TS: [f32; 5] = [0.0, 0.17, 0.34, 0.62, 1.0];
+    const RELIEF_TS: [f32; 7] = [0.0, 0.12, 0.235, 0.40, 0.55, 0.75, 1.0];
+    const LIP_TS: [f32; 7] = [0.0, 0.24, 0.46, 0.60, 0.74, 0.87, 1.0];
+
+    let axis = axis.normalize();
+    let radial_u = if axis.y.abs() < 0.9 {
+        axis.cross(Vec3::Y).normalize()
+    } else {
+        axis.cross(Vec3::X).normalize()
+    };
+    let radial_v = axis.cross(radial_u);
+    let outer_radius = dimensions.outer_diameter() * 0.5 - BEARING_RENDER_RADIAL_SKIN;
+    let inner_radius = if dimensions.inner_diameter() > 0.0 {
+        dimensions.inner_diameter() * 0.5 + BEARING_RENDER_RADIAL_SKIN
     } else {
         0.0
     };
-    append_annular_cylinder(
-        anchor,
-        axis,
-        dimensions.outer_diameter() - BEARING_RENDER_RADIAL_SKIN * 2.0,
-        inner_diameter,
-        BEARING_DEPTH,
+    let plan = bearing_profile_plan(outer_radius, inner_radius);
+    let repeat = bearing_u_repeat(outer_radius);
+
+    for (center, normal, front) in [
+        (anchor + axis * BEARING_DEPTH * 0.5, axis, true),
+        (anchor - axis * BEARING_DEPTH * 0.5, -axis, false),
+    ] {
+        let mut radius = outer_radius;
+        let land = LAND_TS.map(|t| {
+            (
+                radius - BEARING_LAND_METERS * t,
+                bearing_band_v(192.0, 320.0, t),
+            )
+        });
+        append_bearing_face_strip(
+            center, normal, front, radial_u, radial_v, repeat, &land, positions, normals, uvs,
+            tangents, indices,
+        );
+        radius -= BEARING_LAND_METERS;
+
+        let terrace_tile = plan.terrace_meters / f32::from(plan.turns);
+        for _ in 0..plan.steps {
+            for _ in 0..plan.turns {
+                let terrace = [
+                    (radius, bearing_band_v(320.0, 704.0, 0.0)),
+                    (
+                        radius - terrace_tile,
+                        bearing_band_v(320.0, 704.0, BEARING_STEP_SPLIT),
+                    ),
+                ];
+                append_bearing_face_strip(
+                    center, normal, front, radial_u, radial_v, repeat, &terrace, positions,
+                    normals, uvs, tangents, indices,
+                );
+                radius -= terrace_tile;
+            }
+            let relief = RELIEF_TS.map(|t| {
+                (
+                    radius - plan.relief_meters * t,
+                    bearing_band_v(
+                        320.0,
+                        704.0,
+                        BEARING_STEP_SPLIT + t * (1.0 - BEARING_STEP_SPLIT),
+                    ),
+                )
+            });
+            append_bearing_face_strip(
+                center, normal, front, radial_u, radial_v, repeat, &relief, positions, normals,
+                uvs, tangents, indices,
+            );
+            radius -= plan.relief_meters;
+        }
+
+        let lip_span = radius - inner_radius;
+        let lip = LIP_TS.map(|t| (radius - lip_span * t, bearing_band_v(704.0, 832.0, t)));
+        append_bearing_face_strip(
+            center, normal, front, radial_u, radial_v, repeat, &lip, positions, normals, uvs,
+            tangents, indices,
+        );
+    }
+
+    let upper = anchor + axis * BEARING_DEPTH * 0.5;
+    let lower = anchor - axis * BEARING_DEPTH * 0.5;
+    let outer_upper = append_bearing_profile_ring(
+        upper,
+        outer_radius,
+        radial_u,
+        radial_v,
+        repeat,
+        bearing_band_v(0.0, 192.0, 0.0),
+        BearingRingNormal::Radial(1.0),
+        1.0,
         positions,
         normals,
-        indices,
+        uvs,
+        tangents,
     );
+    let outer_lower = append_bearing_profile_ring(
+        lower,
+        outer_radius,
+        radial_u,
+        radial_v,
+        repeat,
+        bearing_band_v(0.0, 192.0, 1.0),
+        BearingRingNormal::Radial(1.0),
+        1.0,
+        positions,
+        normals,
+        uvs,
+        tangents,
+    );
+    stitch_bearing_side(outer_upper, outer_lower, true, indices);
+
+    if inner_radius > 0.0 {
+        let bore_repeat = bearing_u_repeat(inner_radius);
+        let inner_upper = append_bearing_profile_ring(
+            upper,
+            inner_radius,
+            radial_u,
+            radial_v,
+            bore_repeat,
+            bearing_band_v(832.0, 1_024.0, 0.0),
+            BearingRingNormal::Radial(-1.0),
+            -1.0,
+            positions,
+            normals,
+            uvs,
+            tangents,
+        );
+        let inner_lower = append_bearing_profile_ring(
+            lower,
+            inner_radius,
+            radial_u,
+            radial_v,
+            bore_repeat,
+            bearing_band_v(832.0, 1_024.0, 1.0),
+            BearingRingNormal::Radial(-1.0),
+            -1.0,
+            positions,
+            normals,
+            uvs,
+            tangents,
+        );
+        stitch_bearing_side(inner_upper, inner_lower, false, indices);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BearingRingNormal {
+    Face(Vec3),
+    Radial(f32),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_bearing_face_strip(
+    center: Vec3,
+    normal: Vec3,
+    front: bool,
+    radial_u: Vec3,
+    radial_v: Vec3,
+    repeat: f32,
+    rings: &[(f32, f32)],
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+) {
+    let handedness = if front { -1.0 } else { 1.0 };
+    let mut previous = None;
+    for &(radius, v) in rings {
+        let current = append_bearing_profile_ring(
+            center,
+            radius.max(0.0),
+            radial_u,
+            radial_v,
+            repeat,
+            v,
+            BearingRingNormal::Face(normal),
+            handedness,
+            positions,
+            normals,
+            uvs,
+            tangents,
+        );
+        if let Some((previous_start, previous_radius)) = previous {
+            stitch_bearing_face(
+                previous_start,
+                current,
+                front,
+                radius <= f32::EPSILON && previous_radius > f32::EPSILON,
+                indices,
+            );
+        }
+        previous = Some((current, radius));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_bearing_profile_ring(
+    center: Vec3,
+    radius: f32,
+    radial_u: Vec3,
+    radial_v: Vec3,
+    repeat: f32,
+    v: f32,
+    ring_normal: BearingRingNormal,
+    handedness: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+) -> u32 {
+    let start = u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
+    for segment in 0..=BEARING_SEGMENTS {
+        let phase = f32::from(segment) / f32::from(BEARING_SEGMENTS);
+        let angle = std::f32::consts::TAU * phase;
+        let radial = radial_u * angle.cos() + radial_v * angle.sin();
+        let tangent = -radial_u * angle.sin() + radial_v * angle.cos();
+        let normal = match ring_normal {
+            BearingRingNormal::Face(normal) => normal,
+            BearingRingNormal::Radial(sign) => radial * sign,
+        };
+        positions.push((center + radial * radius).to_array());
+        normals.push(normal.to_array());
+        uvs.push([phase * repeat, v]);
+        tangents.push([tangent.x, tangent.y, tangent.z, handedness]);
+    }
+    start
+}
+
+fn stitch_bearing_face(
+    outer: u32,
+    inner: u32,
+    front: bool,
+    inner_is_center: bool,
+    indices: &mut Vec<u32>,
+) {
+    for segment in 0..BEARING_SEGMENTS {
+        let current = u32::from(segment);
+        let next = current + 1;
+        if front {
+            indices.extend([outer + current, outer + next, inner + current]);
+            if !inner_is_center {
+                indices.extend([outer + next, inner + next, inner + current]);
+            }
+        } else {
+            indices.extend([outer + current, inner + current, outer + next]);
+            if !inner_is_center {
+                indices.extend([outer + next, inner + current, inner + next]);
+            }
+        }
+    }
+}
+
+fn stitch_bearing_side(upper: u32, lower: u32, outward: bool, indices: &mut Vec<u32>) {
+    for segment in 0..BEARING_SEGMENTS {
+        let current = u32::from(segment);
+        let next = current + 1;
+        if outward {
+            indices.extend([
+                upper + current,
+                lower + current,
+                upper + next,
+                upper + next,
+                lower + current,
+                lower + next,
+            ]);
+        } else {
+            indices.extend([
+                upper + current,
+                upper + next,
+                lower + current,
+                upper + next,
+                lower + next,
+                lower + current,
+            ]);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -10580,32 +10992,6 @@ fn append_mesh_quad_with_normals(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn append_annular_cylinder(
-    anchor: Vec3,
-    axis: Vec3,
-    outer_diameter: f32,
-    inner_diameter: f32,
-    axial_length: f32,
-    positions: &mut Vec<[f32; 3]>,
-    normals: &mut Vec<[f32; 3]>,
-    indices: &mut Vec<u32>,
-) {
-    append_annular_cylinder_with_end_faces(
-        anchor,
-        axis,
-        outer_diameter,
-        inner_diameter,
-        axial_length,
-        PipeEndFaces::ALL,
-        false,
-        None,
-        positions,
-        normals,
-        indices,
-    );
-}
-
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn append_annular_cylinder_with_end_faces(
     anchor: Vec3,
     axis: Vec3,
@@ -11406,7 +11792,7 @@ fn append_authored_cuboid(
 #[cfg(test)]
 mod rendering_tests {
     use bevy::{
-        image::{ImageAddressMode, ImageLoaderSettings},
+        image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings},
         mesh::VertexAttributeValues,
         prelude::{
             AlphaMode, App, Color, EnvironmentMapLight, GeneratedEnvironmentMapLight, Handle,
@@ -11428,13 +11814,15 @@ mod rendering_tests {
         MATERIAL_TEXTURE_PIXELS_PER_SIDE, PlacedBearing, SimulationMeshKind,
         append_bearing_cylinder, append_cylinder_shape, append_pipe_bend_shape,
         append_pipe_bend_texture_coordinates, authored_preview_material, authored_uvs,
-        bearing_preview_dimensions_changed, bearing_surface_material, block_sheet_bounds,
-        block_sheet_preview_mesh, combined_authored_construction_mesh, combined_bearing_mesh,
-        combined_controller_mesh, combined_drive_xray_mesh, combined_material_construction_mesh,
+        bearing_pbr_material, bearing_preview_dimensions_changed, bearing_profile_plan,
+        bearing_u_repeat, block_sheet_bounds, block_sheet_preview_mesh,
+        combined_authored_construction_mesh, combined_bearing_mesh, combined_controller_mesh,
+        combined_drive_xray_mesh, combined_material_construction_mesh,
         combined_simulation_bearing_mesh, combined_simulation_material_mesh,
-        combined_simulation_mesh, configure_repeating_texture, drive_xray_is_visible,
-        joint_xray_is_visible, preview_material, renderable_mesh, simulation_material_is_present,
-        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
+        combined_simulation_mesh, configure_bearing_texture, configure_repeating_texture,
+        drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
+        simulation_material_is_present, single_authored_part_mesh, single_bearing_mesh,
+        single_cylinder_mesh,
     };
     use super::{
         EnvironmentMapGenerationReady, OverlayGeometry, append_axis_arrows, append_drag_plane,
@@ -11691,6 +12079,8 @@ mod rendering_tests {
         let dimensions = BearingDimensions::new(0.80, 0.30).unwrap();
         let mut positions = Vec::new();
         let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        let mut tangents = Vec::new();
         let mut indices = Vec::new();
         append_bearing_cylinder(
             anchor,
@@ -11698,6 +12088,8 @@ mod rendering_tests {
             dimensions,
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
 
@@ -11738,7 +12130,74 @@ mod rendering_tests {
 
     #[test]
     fn bearing_material_biases_coplanar_surfaces_toward_the_camera() {
-        assert!(bearing_surface_material().depth_bias > 0.0);
+        let material = bearing_pbr_material(
+            Handle::<Image>::default(),
+            Handle::<Image>::default(),
+            Handle::<Image>::default(),
+        );
+        assert!(material.depth_bias > 0.0);
+    }
+
+    #[test]
+    fn bearing_maps_repeat_around_the_ring_and_clamp_across_the_profile() {
+        let mut settings = ImageLoaderSettings::default();
+        configure_bearing_texture(&mut settings, false);
+        assert!(!settings.is_srgb);
+        let sampler = settings.sampler.get_or_init_descriptor();
+        assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
+        assert_eq!(sampler.address_mode_v, ImageAddressMode::ClampToEdge);
+        assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.min_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.mipmap_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.anisotropy_clamp, 8);
+    }
+
+    #[test]
+    fn bearing_profile_fit_rule_matches_the_authored_sanity_sizes() {
+        let minimum_wall = bearing_profile_plan(0.050, 0.025);
+        assert_eq!(minimum_wall.steps, 1);
+        assert!((minimum_wall.terrace_meters - 0.006).abs() < 1.0e-6);
+        assert!((minimum_wall.relief_meters - 0.005).abs() < 1.0e-6);
+        assert_eq!(minimum_wall.turns, 1);
+
+        let common_ring = bearing_profile_plan(0.120, 0.050);
+        assert_eq!(common_ring.steps, 4);
+        assert!((common_ring.terrace_meters - 0.007).abs() < 1.0e-6);
+        assert!((common_ring.relief_meters - 0.007).abs() < 1.0e-6);
+        assert_eq!(common_ring.turns, 1);
+
+        let wide_solid = bearing_profile_plan(0.200, 0.0);
+        assert_eq!(wide_solid.steps, 4);
+        assert!((wide_solid.terrace_meters - 0.0265).abs() < 1.0e-6);
+        assert!((wide_solid.relief_meters - 0.020).abs() < 1.0e-6);
+        assert_eq!(wide_solid.turns, 3);
+    }
+
+    #[test]
+    fn bearing_mesh_carries_profile_uvs_and_normal_map_tangents() {
+        let dimensions = BearingDimensions::default();
+        let mesh = single_bearing_mesh(dimensions);
+        let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("bearing UVs use Float32x2")
+        };
+        let Some(VertexAttributeValues::Float32x4(tangents)) =
+            mesh.attribute(Mesh::ATTRIBUTE_TANGENT)
+        else {
+            panic!("bearing tangents use Float32x4")
+        };
+        assert_eq!(uvs.len(), mesh.count_vertices());
+        assert_eq!(tangents.len(), mesh.count_vertices());
+
+        let outer_radius = dimensions.outer_diameter() * 0.5 - BEARING_RENDER_RADIAL_SKIN;
+        let repeat = bearing_u_repeat(outer_radius);
+        let seam = usize::from(super::BEARING_SEGMENTS);
+        assert!(uvs[0][0].abs() < f32::EPSILON);
+        assert!((uvs[0][1] - 0.8125).abs() < f32::EPSILON);
+        assert!((uvs[seam][0] - repeat).abs() < f32::EPSILON);
+        assert!((uvs[0][1] - uvs[seam][1]).abs() < f32::EPSILON);
+        assert!(uvs.iter().any(|uv| uv[1].abs() < f32::EPSILON));
+        assert!(uvs.iter().any(|uv| (uv[1] - 1.0).abs() < f32::EPSILON));
     }
 
     #[test]
@@ -12274,6 +12733,8 @@ mod rendering_tests {
         let dimensions = BearingDimensions::new(0.50, 0.0).unwrap();
         let mut positions = Vec::new();
         let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        let mut tangents = Vec::new();
         let mut indices = Vec::new();
         append_bearing_cylinder(
             Vec3::ZERO,
@@ -12281,6 +12742,8 @@ mod rendering_tests {
             dimensions,
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
 
@@ -12305,6 +12768,8 @@ mod rendering_tests {
     fn annular_mesh_inner_wall_and_faces_have_outward_winding() {
         let mut positions = Vec::new();
         let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        let mut tangents = Vec::new();
         let mut indices = Vec::new();
         append_bearing_cylinder(
             Vec3::ZERO,
@@ -12312,6 +12777,8 @@ mod rendering_tests {
             BearingDimensions::default(),
             &mut positions,
             &mut normals,
+            &mut uvs,
+            &mut tangents,
             &mut indices,
         );
 
@@ -12389,7 +12856,7 @@ mod rendering_tests {
         else {
             panic!("bearing mesh positions use Float32x3")
         };
-        let attached_vertices = 24 * 8;
+        let attached_vertices = single_bearing_mesh(attached_dimensions).count_vertices();
         let attached_radius = positions[..attached_vertices]
             .iter()
             .map(|position| {
@@ -12420,8 +12887,6 @@ mod rendering_tests {
 
     #[test]
     fn reusable_socket_with_multiple_attachments_renders_as_one_ring() {
-        const VERTICES_PER_BEARING: usize = 24 * 8;
-
         let mut graph = ConstructionGraph::new();
         let support = CuboidSpec::new(
             [4, 4, 4],
@@ -12470,7 +12935,8 @@ mod rendering_tests {
             .unwrap();
 
         let build_mesh = combined_bearing_mesh(&graph, &[socket]);
-        assert_eq!(build_mesh.count_vertices(), VERTICES_PER_BEARING);
+        let expected_vertices = single_bearing_mesh(socket.dimensions).count_vertices();
+        assert_eq!(build_mesh.count_vertices(), expected_vertices);
 
         let creation = graph.compile().unwrap();
         assert_eq!(creation.bearings.len(), 1);
@@ -12489,13 +12955,11 @@ mod rendering_tests {
             .collect::<Vec<_>>();
         let simulation_mesh =
             combined_simulation_bearing_mesh(&graph, &creation, &transforms, &[socket]);
-        assert_eq!(simulation_mesh.count_vertices(), VERTICES_PER_BEARING);
+        assert_eq!(simulation_mesh.count_vertices(), expected_vertices);
     }
 
     #[test]
     fn simulation_bearing_mesh_follows_attached_and_unattached_source_bodies() {
-        const VERTICES_PER_BEARING: usize = 24 * 8;
-
         let mut graph = ConstructionGraph::new();
         let specs = [IVec3::new(0, 2, 0), IVec3::new(4, 2, 0)].map(|center| {
             CuboidSpec::new([4, 4, 4], BuildPose::new(center, GridRotation::default())).unwrap()
@@ -12557,16 +13021,20 @@ mod rendering_tests {
         };
         let attached_anchor = Vec3::new(3.0, 4.5, 5.0);
         let placed_anchor = Vec3::new(2.5, 4.0, 5.0);
+        let attached_vertices = single_bearing_mesh(attached_dimensions).count_vertices();
         for (vertices, expected_anchor) in [
-            (&positions[..VERTICES_PER_BEARING], attached_anchor),
-            (&positions[VERTICES_PER_BEARING..], placed_anchor),
+            (&positions[..attached_vertices], attached_anchor),
+            (&positions[attached_vertices..], placed_anchor),
         ] {
-            let centroid = vertices
+            let minimum = vertices
                 .iter()
                 .map(|position| Vec3::from_array(*position))
-                .sum::<Vec3>()
-                / 192.0;
-            assert!(centroid.abs_diff_eq(expected_anchor, 1.0e-5));
+                .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+            let maximum = vertices
+                .iter()
+                .map(|position| Vec3::from_array(*position))
+                .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+            assert!(((minimum + maximum) * 0.5).abs_diff_eq(expected_anchor, 1.0e-5));
         }
     }
 
@@ -15127,7 +15595,7 @@ mod showcase_loading_tests {
     use super::{
         ConstructionGraph, EditorHistory, EditorSnapshot, EditorState, HistoryAction,
         apply_history_action, creation_requires_live_physics, install_editor_graph,
-        next_simulation_tick, showcase,
+        next_simulation_ticks, showcase, visual_snapshot_is_due,
     };
 
     #[test]
@@ -15149,48 +15617,80 @@ mod showcase_loading_tests {
     }
 
     #[test]
-    fn app_simulation_drops_catch_up_backlog() {
+    fn app_simulation_stages_catch_up_ticks_without_dropping_backlog() {
         let mut scheduler = FixedStepScheduler::new();
         let mut next_tick = 1;
+        let mut backlog = 0;
 
         assert_eq!(
-            next_simulation_tick(
+            next_simulation_ticks(
                 &mut scheduler,
                 &mut next_tick,
+                &mut backlog,
                 Duration::from_secs(1),
                 false,
+                3,
             ),
-            Some(1)
+            1..4
         );
         assert_eq!(scheduler.next_tick(), 61);
+        assert_eq!(backlog, 57);
         assert_eq!(
-            next_simulation_tick(
+            next_simulation_ticks(
                 &mut scheduler,
                 &mut next_tick,
+                &mut backlog,
                 Duration::from_millis(17),
                 false,
+                3,
             ),
-            Some(2)
+            4..7
         );
+        assert_eq!(backlog, 55);
+        assert_eq!(
+            next_simulation_ticks(
+                &mut scheduler,
+                &mut next_tick,
+                &mut backlog,
+                Duration::ZERO,
+                false,
+                u64::MAX,
+            ),
+            7..62
+        );
+        assert_eq!(next_tick, 62);
+        assert_eq!(backlog, 0);
     }
 
     #[test]
     fn paused_simulation_does_not_advance_or_accumulate_time() {
         let mut scheduler = FixedStepScheduler::new();
         let mut next_tick = 7;
+        let mut backlog = 5;
         let scheduler_tick = scheduler.next_tick();
 
         assert_eq!(
-            next_simulation_tick(
+            next_simulation_ticks(
                 &mut scheduler,
                 &mut next_tick,
+                &mut backlog,
                 Duration::from_secs(10),
                 true,
+                3,
             ),
-            None
+            7..7
         );
         assert_eq!(next_tick, 7);
+        assert_eq!(backlog, 5);
         assert_eq!(scheduler.next_tick(), scheduler_tick);
+    }
+
+    #[test]
+    fn prototype_meshes_publish_every_second_completed_physics_tick() {
+        assert!(!visual_snapshot_is_due(10, 10));
+        assert!(!visual_snapshot_is_due(10, 11));
+        assert!(visual_snapshot_is_due(10, 12));
+        assert!(visual_snapshot_is_due(10, 14));
     }
 
     #[test]

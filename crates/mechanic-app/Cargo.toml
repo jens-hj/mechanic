@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+profiling-tracy = ["bevy/trace_tracy"]
+
 [dependencies]
 # No `bevy_ui_render` or `default_font`: every panel is drawn by Mosaic, and
 # `bevy_ui` draws after the overlay's render pass, so anything left on it would

@@ -340,6 +340,95 @@ fn apply_velocity_deltas(@builtin(global_invocation_id) invocation: vec3<u32>) {
     angular_velocities[body] = vec4<f32>(angular_velocities[body].xyz + angular_delta, 0.0);
 }
 
+// Small mechanisms fit in one workgroup, so every Jacobi projection/apply
+// boundary can use an explicit workgroup-wide storage barrier instead of a
+// separate Metal dispatch. The equations and iteration count remain identical
+// to the general two-entry-point route above.
+@compute @workgroup_size(256)
+fn project_small_mechanism_velocities(
+    @builtin(local_invocation_index) index: u32,
+) {
+    for (var iteration = 0u; iteration < max(config.solver_iterations, 1u); iteration += 1u) {
+        if index < config.bearing_count {
+            let bearing = bearings[index];
+            let body_a = bearing.metadata.x;
+            let body_b = bearing.metadata.y;
+            let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
+            let arm_b = quat_rotate(rotations[body_b], bearing.local_anchor_b.xyz);
+            let anchor_velocity_a = linear_velocities[body_a].xyz
+                + cross(angular_velocities[body_a].xyz, arm_a);
+            let anchor_velocity_b = linear_velocities[body_b].xyz
+                + cross(angular_velocities[body_b].xyz, arm_b);
+            let relative_linear = anchor_velocity_b - anchor_velocity_a;
+            solve_linear_axis(
+                body_a,
+                body_b,
+                arm_a,
+                arm_b,
+                relative_linear,
+                vec3<f32>(1.0, 0.0, 0.0),
+            );
+            solve_linear_axis(
+                body_a,
+                body_b,
+                arm_a,
+                arm_b,
+                relative_linear,
+                vec3<f32>(0.0, 1.0, 0.0),
+            );
+            solve_linear_axis(
+                body_a,
+                body_b,
+                arm_a,
+                arm_b,
+                relative_linear,
+                vec3<f32>(0.0, 0.0, 1.0),
+            );
+
+            let axis_a = normalize(quat_rotate(rotations[body_a], bearing.local_axis_a.xyz));
+            let axis_b = normalize(quat_rotate(rotations[body_b], bearing.local_axis_b.xyz));
+            let hinge_axis = normalize(axis_a + axis_b);
+            let helper = select(
+                vec3<f32>(1.0, 0.0, 0.0),
+                vec3<f32>(0.0, 1.0, 0.0),
+                abs(hinge_axis.x) > 0.8,
+            );
+            let tangent_a = normalize(cross(hinge_axis, helper));
+            let tangent_b = cross(hinge_axis, tangent_a);
+            let relative_angular = angular_velocities[body_b].xyz
+                - angular_velocities[body_a].xyz;
+            solve_angular_axis(body_a, body_b, relative_angular, tangent_a);
+            solve_angular_axis(body_a, body_b, relative_angular, tangent_b);
+        }
+        storageBarrier();
+        workgroupBarrier();
+
+        if index < config.body_count {
+            let base = index * 6u;
+            let linear_delta = vec3<f32>(
+                f32(atomicExchange(&velocity_deltas[base], 0)),
+                f32(atomicExchange(&velocity_deltas[base + 1u], 0)),
+                f32(atomicExchange(&velocity_deltas[base + 2u], 0)),
+            ) / FIXED_VELOCITY_SCALE;
+            let angular_delta = vec3<f32>(
+                f32(atomicExchange(&velocity_deltas[base + 3u], 0)),
+                f32(atomicExchange(&velocity_deltas[base + 4u], 0)),
+                f32(atomicExchange(&velocity_deltas[base + 5u], 0)),
+            ) / FIXED_VELOCITY_SCALE;
+            linear_velocities[index] = vec4<f32>(
+                linear_velocities[index].xyz + linear_delta,
+                0.0,
+            );
+            angular_velocities[index] = vec4<f32>(
+                angular_velocities[index].xyz + angular_delta,
+                0.0,
+            );
+        }
+        storageBarrier();
+        workgroupBarrier();
+    }
+}
+
 fn permitted_axis(body: u32) -> vec3<f32> {
     let mechanism = mechanism_bodies[body];
     let parent = mechanism.metadata.x;

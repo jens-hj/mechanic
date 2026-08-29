@@ -76,6 +76,7 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
                 55.0,
                 30.0,
             ),
+            count_u64_row("Physics backlog", snapshot.tick_backlog),
             timing_row("Physics CPU", snapshot.physics_cpu_ms, 8.0, 16.7),
             timing_row("Physics GPU", snapshot.physics_gpu_ms, 8.0, 16.7),
             timing_row(
@@ -334,11 +335,11 @@ mod tests {
 
         assert!(model.open);
         assert_eq!(model.frame_rows[0].value, "42.0");
-        assert_eq!(model.physics_rows[3].value, "12.00 ms");
-        assert_eq!(model.physics_rows[3].tone, Tone::Bad);
-        assert_eq!(model.physics_rows[8].tone, Tone::Bad);
-        assert_eq!(model.physics_rows[9].value, "700 / 900");
-        assert_eq!(model.physics_rows[10].tone, Tone::Good);
+        assert_eq!(model.physics_rows[4].value, "12.00 ms");
+        assert_eq!(model.physics_rows[4].tone, Tone::Bad);
+        assert_eq!(model.physics_rows[9].tone, Tone::Bad);
+        assert_eq!(model.physics_rows[10].value, "700 / 900");
+        assert_eq!(model.physics_rows[11].tone, Tone::Good);
     }
 
     #[test]

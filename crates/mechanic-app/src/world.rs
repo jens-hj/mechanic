@@ -857,7 +857,7 @@ fn prepare_terrain_texture_mips(
     }
 }
 
-fn generate_rgba8_mip_chain(image: &mut Image) -> Result<(), String> {
+pub(crate) fn generate_rgba8_mip_chain(image: &mut Image) -> Result<(), String> {
     if image.texture_descriptor.mip_level_count > 1 {
         return Ok(());
     }
@@ -866,23 +866,23 @@ fn generate_rgba8_mip_chain(image: &mut Image) -> Result<(), String> {
         TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
     ) {
         return Err(format!(
-            "terrain texture has unsupported runtime format {:?}",
+            "texture has unsupported runtime format {:?}",
             image.texture_descriptor.format
         ));
     }
     let width = image.texture_descriptor.size.width;
     let height = image.texture_descriptor.size.height;
     if image.texture_descriptor.size.depth_or_array_layers != 1 {
-        return Err("terrain texture must be a single 2D image".to_owned());
+        return Err("texture must be a single 2D image".to_owned());
     }
     let expected_top_bytes = usize::try_from(u64::from(width) * u64::from(height) * 4)
         .map_err(|_| "terrain texture dimensions overflow memory size".to_owned())?;
     let Some(top) = image.data.as_ref() else {
-        return Err("terrain texture has no CPU pixel data".to_owned());
+        return Err("texture has no CPU pixel data".to_owned());
     };
     if top.len() != expected_top_bytes {
         return Err(format!(
-            "terrain texture contains {} bytes, expected {expected_top_bytes}",
+            "texture contains {} bytes, expected {expected_top_bytes}",
             top.len()
         ));
     }

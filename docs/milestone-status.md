@@ -101,9 +101,10 @@ partial kernel cannot unlock editor work.
 The next implementation slice is contraction-schedule optimization and a fresh
 Metal profiling pass for both full physics windows, including nested-loop and
 larger-perturbation cases, before starting the integrated render proof.
-The prototype is not a gate result: its GPU snapshots are synchronously read
-back to a CPU-built mesh rather than consumed by indirect draws, production
-culling, interpolation, and a render benchmark.
+The prototype is not a gate result: tick diagnostics and transforms now use a
+non-blocking sequenced staging ring, but transforms are still mapped in bulk to
+a CPU-built mesh rather than consumed by indirect draws, production culling,
+interpolation, and a render benchmark.
 Bearings still attach only a new cuboid and cannot connect two existing
 compounds, so the UI cannot create closed bearing loops yet. Production renderer
 and production-scale editor work remain stopped.
