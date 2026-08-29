@@ -3,3 +3,4 @@
 *.jsonl
 .DS_Store
 /design
+.cargo/local-mosaic.toml

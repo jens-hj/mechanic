@@ -1,0 +1,4 @@
+[net]
+# Use the system Git/SSH stack for the private first-party Mosaic dependency.
+# This respects the same SSH agent and known-hosts configuration on every host.
+git-fetch-with-cli = true

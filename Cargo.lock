@@ -2917,10 +2917,12 @@ dependencies = [
 [[package]]
 name = "mosaic-core"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 
 [[package]]
 name = "mosaic-layout"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 dependencies = [
  "mosaic-core",
 ]
@@ -2928,6 +2930,7 @@ dependencies = [
 [[package]]
 name = "mosaic-macros"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 dependencies = [
  "mosaic-syntax",
  "proc-macro-crate",
@@ -2939,6 +2942,7 @@ dependencies = [
 [[package]]
 name = "mosaic-render"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 dependencies = [
  "mosaic-core",
 ]
@@ -2946,6 +2950,7 @@ dependencies = [
 [[package]]
 name = "mosaic-render-wgpu"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 dependencies = [
  "bytemuck",
  "log",
@@ -2958,6 +2963,7 @@ dependencies = [
 [[package]]
 name = "mosaic-syntax"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2967,6 +2973,7 @@ dependencies = [
 [[package]]
 name = "mosaic-text"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 dependencies = [
  "cosmic-text",
  "mosaic-core",
@@ -2977,6 +2984,7 @@ dependencies = [
 [[package]]
 name = "mosaic-widgets"
 version = "0.28.0"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=01d89b614db2cf832a5eb38f88063f93d146600e#01d89b614db2cf832a5eb38f88063f93d146600e"
 dependencies = [
  "accesskit",
  "image",

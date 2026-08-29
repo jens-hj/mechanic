@@ -20,6 +20,63 @@ physics pipeline. The production GPU-driven render path remains gated until both
 100,000-body scenarios pass the physics and integrated-render budgets on the
 reference M1 Pro.
 
+## Platform setup
+
+The repository pins Rust in `rust-toolchain.toml`, Cargo dependencies in
+`Cargo.lock`, and the macOS/Linux environment in `flake.lock`. Mosaic is a
+private first-party dependency, so every machine must have an SSH key with
+access to `gitlab.com/unincorporated/mosaic/mosaic.git`.
+
+### macOS and Linux with Nix
+
+Install Nix with flakes enabled, then run the app directly:
+
+```sh
+nix run .
+```
+
+For a development shell containing the pinned Rust toolchain and, on Linux,
+the Vulkan, Wayland, and X11 runtime libraries:
+
+```sh
+nix develop
+cargo build --workspace
+cargo run -p mechanic-app
+```
+
+The flake supports Intel and Apple Silicon macOS plus x86-64 and AArch64 Linux.
+A working Metal or Vulkan driver is still required to run the GPU application.
+
+### Native Windows
+
+Install Git, [rustup](https://rustup.rs/), and Visual Studio 2022 Build Tools
+with the **Desktop development with C++** workload. In PowerShell, the helper
+uses the repository-pinned toolchain and propagates command failures:
+
+```powershell
+.\scripts\dev.ps1 build
+.\scripts\dev.ps1 run
+.\scripts\dev.ps1 test
+.\scripts\dev.ps1 check
+```
+
+Nix does not provide the native Windows environment; use WSL only when a Linux
+build is acceptable. Running the graphical app natively uses DirectX 12 and
+requires a current GPU driver.
+
+### Developing Mechanic and Mosaic together
+
+Normal builds use the exact upstream Mosaic revision in `Cargo.toml`. To test
+uncommitted Mosaic work, copy `.cargo/local-mosaic.toml.example` to
+`.cargo/local-mosaic.toml`, replace the placeholder paths, and opt into it:
+
+```sh
+cargo --config .cargo/local-mosaic.toml run -p mechanic-app
+```
+
+Removing that ignored local file returns immediately to the portable pinned
+dependency; no manifest edit is needed.
+
 ## Builder and simulation prototype
 
 ```sh

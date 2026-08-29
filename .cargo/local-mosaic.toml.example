@@ -1,0 +1,14 @@
+# Opt-in override for first-party Mosaic development.
+#
+# Copy this file to `.cargo/local-mosaic.toml`, replace the placeholder root,
+# and pass it explicitly with `cargo --config .cargo/local-mosaic.toml ...`.
+# The default build always uses the portable pinned Git revision.
+
+[patch."ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git"]
+mosaic-core = { path = "/absolute/path/to/mosaic/crates/mosaic-core" }
+mosaic-layout = { path = "/absolute/path/to/mosaic/crates/mosaic-layout" }
+mosaic-macros = { path = "/absolute/path/to/mosaic/crates/mosaic-macros" }
+mosaic-render = { path = "/absolute/path/to/mosaic/crates/mosaic-render" }
+mosaic-render-wgpu = { path = "/absolute/path/to/mosaic/crates/mosaic-render-wgpu" }
+mosaic-text = { path = "/absolute/path/to/mosaic/crates/mosaic-text" }
+mosaic-widgets = { path = "/absolute/path/to/mosaic/crates/mosaic-widgets" }
