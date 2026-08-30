@@ -148,8 +148,31 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     let selected_tool = selection.active_editor_tool().unwrap_or(Tool::Block);
     let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
         && selection.matter_mode == MatterMode::Terrain;
+    let item_mode = selection.tool == Some(MainTool::MatterManipulator)
+        && selection.matter_mode == MatterMode::Item;
     let controls = settings.controls();
     let rotate = controls.label(GameAction::Rotate);
+    let selector_controls = match (selection.tool, selection.matter_mode) {
+        (Some(MainTool::MatterManipulator), MatterMode::Block | MatterMode::Cylinder) => {
+            format!(
+                "     {}  Choose material",
+                controls.label(GameAction::MaterialWheel)
+            )
+        }
+        (Some(MainTool::MatterManipulator), MatterMode::Item) => {
+            format!(
+                "     {}  Choose item",
+                controls.label(GameAction::MaterialWheel)
+            )
+        }
+        (Some(MainTool::MatterManipulator), MatterMode::Terrain) => {
+            format!(
+                "     {}  Choose terrain",
+                controls.label(GameAction::MaterialWheel)
+            )
+        }
+        _ => String::new(),
+    };
 
     let active_error = state
         .delete_drag
@@ -275,6 +298,10 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::Input, _, _, _) => {
                 "Q cycles all 24 orientations; place Input, then wire it to a Seat".to_owned()
             }
+            (false, Tool::DimensionLink, _, _, _) => {
+                "Q rotates; place a Dimension Link, aim at it, then press E to activate"
+                    .to_owned()
+            }
             (false, Tool::Shape, _, _, _) => {
                 "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows/WASD nudge"
                     .to_owned()
@@ -292,7 +319,16 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 }
             },
         }
-    }.replace('Q', &rotate);
+    }
+    .replace('Q', &rotate);
+    let tool_hint = if item_mode {
+        format!(
+            "{tool_hint} — hold {}, point at an item, and release to select another",
+            controls.label(GameAction::MaterialWheel)
+        )
+    } else {
+        tool_hint
+    };
     let (phase, title_tone, primary_controls) = if in_world {
         (
             "WORLD  •  LIVE",
@@ -349,7 +385,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         edit: Line::new(edit_controls, Tone::Muted),
         pointer: Line::new(
             format!(
-                "{action_controls}     WASD  Walk     MOUSE  Look     WHEEL  FP↔TP     TAB  Selector{}",
+                "{action_controls}     WASD  Walk     MOUSE  Look     WHEEL  FP↔TP{selector_controls}{}",
                 if in_world && simulation.is_running() {
                     if player.seat.is_some() {
                         "     E  Leave Seat"
@@ -395,7 +431,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
 const fn tool_tone(tool: Option<Tool>) -> Tone {
     match tool {
         Some(Tool::Bearing | Tool::Hammer | Tool::GasEngine | Tool::Servo) => Tone::Angle,
-        Some(Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input) => Tone::Key,
+        Some(
+            Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input | Tool::DimensionLink,
+        ) => Tone::Key,
         Some(
             Tool::Block
             | Tool::Cylinder

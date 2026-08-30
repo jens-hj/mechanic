@@ -78,37 +78,65 @@ pub(crate) fn Hotbar(handles: Handles) -> Element {
     let selected_material = handles.material;
     let selected_terrain_material = handles.terrain_material;
     let selection = handles.hotbar;
+    let controls = handles.controls;
     let material_menu = handles.material_menu;
     let mode_slots = handles.clone();
     let tool_slots = handles.clone();
     let size: State<Size> = State::new(Size::ZERO);
     let named = move || {
-        hovered.get().map_or_else(String::new, |target| {
-            let selected = selection.get();
-            match target {
-                HoverTarget::Tool(MainTool::MatterManipulator) => format!(
-                    "Matter Manipulator · {} · {}",
-                    selected.matter_mode.label(),
-                    contextual_choice(
-                        selected.matter_mode,
-                        selected.item.label(),
-                        selected_material.get().label(),
-                        terrain_material_label(selected_terrain_material.get()),
-                    )
-                ),
-                HoverTarget::Tool(tool) => tool.label().to_owned(),
-                HoverTarget::Mode(matter_mode) => format!(
-                    "{} · {}",
-                    matter_mode.label(),
-                    contextual_choice(
-                        matter_mode,
-                        selected.item.label(),
-                        selected_material.get().label(),
-                        terrain_material_label(selected_terrain_material.get()),
-                    )
-                ),
-            }
-        })
+        let selected = selection.get();
+        hovered
+            .get()
+            .map_or_else(
+                || {
+                    (selected.tool == Some(MainTool::MatterManipulator)).then(|| {
+                        let choose = if selected.matter_mode == MatterMode::Item {
+                            format!(
+                                " · Hold {} to choose",
+                                controls.with(|bindings| bindings.label(GameAction::MaterialWheel))
+                            )
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "Matter Manipulator · {} · {}{choose}",
+                            selected.matter_mode.label(),
+                            contextual_choice(
+                                selected.matter_mode,
+                                selected.item.label(),
+                                selected_material.get().label(),
+                                terrain_material_label(selected_terrain_material.get()),
+                            )
+                        )
+                    })
+                },
+                |target| {
+                    Some(match target {
+                        HoverTarget::Tool(MainTool::MatterManipulator) => format!(
+                            "Matter Manipulator · {} · {}",
+                            selected.matter_mode.label(),
+                            contextual_choice(
+                                selected.matter_mode,
+                                selected.item.label(),
+                                selected_material.get().label(),
+                                terrain_material_label(selected_terrain_material.get()),
+                            )
+                        ),
+                        HoverTarget::Tool(tool) => tool.label().to_owned(),
+                        HoverTarget::Mode(matter_mode) => format!(
+                            "{} · {}",
+                            matter_mode.label(),
+                            contextual_choice(
+                                matter_mode,
+                                selected.item.label(),
+                                selected_material.get().label(),
+                                terrain_material_label(selected_terrain_material.get()),
+                            )
+                        ),
+                    })
+                },
+            )
+            .unwrap_or_default()
     };
     let at = move || {
         let window = viewport.get();
@@ -126,7 +154,8 @@ pub(crate) fn Hotbar(handles: Handles) -> Element {
                     size.set(bounds.size);
                 }
             } } {
-            if hovered.get().is_some() && material_menu.get().is_none() {
+            if (hovered.get().is_some() || selection.get().tool == Some(MainTool::MatterManipulator))
+                && material_menu.get().is_none() {
                 OverlayBadge width:max-content height:24px
                     pad:(left:10px right:12px top:0px bottom:0px) radius:12px {
                     text #mechanic.caption text-wrap:none font-color:accent.key { named() }
@@ -297,6 +326,8 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
             }
             text #mechanic.caption font-color:bar.shortcut translate:(x:-22px y:-20px)
                 { shortcut() }
+            text #mechanic.caption font-color:bar.shortcut translate:(x:0px y:23px)
+                { matter_mode.short_label() }
         }
     }
 }
@@ -313,7 +344,11 @@ const fn terrain_material_label(material: mechanic_world::TerrainMaterial) -> &'
 }
 
 fn hotbar_shortcut_label(label: String) -> String {
-    label.strip_prefix("Shift+").unwrap_or(&label).to_owned()
+    if let Some(shortcut_key) = label.strip_prefix("Shift+") {
+        format!("⇧{shortcut_key}")
+    } else {
+        label
+    }
 }
 
 const fn contextual_choice(
@@ -558,6 +593,14 @@ pub(super) fn icon(tool: Tool) -> Element {
                 circle at:(x:28px y:20px) radius:2.5px fill:accent.key
             }
         },
+        Tool::DimensionLink => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:20px) size:(w:31px h:18px) radius:4px fill:bar.slot
+                    stroke:(width:2px color:accent.key)
+                circle at:(x:20px y:20px) radius:6px stroke:(width:3px color:accent.key)
+                circle at:(x:20px y:20px) radius:2px fill:ink.fg
+            }
+        },
         // A block with one corner pulled away, and handles on the corners that
         // move: the wedge is what shaping is for.
         Tool::Shape => view! {
@@ -647,8 +690,8 @@ mod consolidated_tests {
     }
 
     #[test]
-    fn matter_mode_shortcuts_omit_the_shift_prefix() {
-        assert_eq!(hotbar_shortcut_label("Shift+4".to_owned()), "4");
+    fn matter_mode_shortcuts_show_the_shift_modifier_compactly() {
+        assert_eq!(hotbar_shortcut_label("Shift+4".to_owned()), "⇧4");
         assert_eq!(hotbar_shortcut_label("Unbound".to_owned()), "Unbound");
     }
 

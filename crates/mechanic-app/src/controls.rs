@@ -17,6 +17,7 @@ pub(crate) enum GameAction {
     MoveRight,
     Sprint,
     Jump,
+    Descend,
     Primary,
     Secondary,
     Interact,
@@ -67,13 +68,14 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 51] = [
+    pub(crate) const ALL: [Self; 52] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
         Self::MoveRight,
         Self::Sprint,
         Self::Jump,
+        Self::Descend,
         Self::Primary,
         Self::Secondary,
         Self::Interact,
@@ -169,6 +171,7 @@ impl GameAction {
             Self::MoveRight => "Move Right",
             Self::Sprint => "Sprint",
             Self::Jump => "Jump",
+            Self::Descend => "Descend",
             Self::Primary => "Primary Action",
             Self::Secondary => "Secondary Action",
             Self::Interact => "Interact",
@@ -176,7 +179,7 @@ impl GameAction {
             Self::FinePlacement => "Fine Placement",
             Self::ToggleSimulation => "Toggle Simulation",
             Self::RestartSimulation => "Restart Simulation",
-            Self::MaterialWheel => "Material Wheel",
+            Self::MaterialWheel => "Matter Selector",
             Self::ZoomIn => "Zoom In",
             Self::ZoomOut => "Zoom Out",
             Self::ToggleHelp => "Toggle Help",
@@ -190,7 +193,7 @@ impl GameAction {
             Self::ToolHammer => "Hammer",
             Self::MatterBlock => "Matter: Block",
             Self::MatterCylinder => "Matter: Cylinder",
-            Self::MatterItem => "Matter: Item",
+            Self::MatterItem => "Matter: Item Placer",
             Self::MatterTerrain => "Matter: Terrain",
             Self::MatterManipulate => "Matter: Manipulate",
             Self::ClearPipette => "Clear / Pipette",
@@ -227,6 +230,7 @@ impl GameAction {
             | Self::MoveRight
             | Self::Sprint
             | Self::Jump
+            | Self::Descend
             | Self::Primary
             | Self::Secondary
             | Self::Interact
@@ -274,6 +278,8 @@ impl GameAction {
                 | Self::MoveLeft
                 | Self::MoveRight
                 | Self::Sprint
+                | Self::Jump
+                | Self::Descend
                 | Self::Primary
                 | Self::Secondary
                 | Self::MaterialWheel
@@ -480,6 +486,11 @@ impl Default for Controls {
             Some(InputChord::key(K::ShiftRight)),
         );
         set(A::Jump, Some(InputChord::key(K::Space)), None);
+        set(
+            A::Descend,
+            Some(InputChord::key(K::ControlLeft)),
+            Some(InputChord::key(K::ControlRight)),
+        );
         set(A::Primary, Some(InputChord::mouse(MouseButton::Left)), None);
         set(
             A::Secondary,

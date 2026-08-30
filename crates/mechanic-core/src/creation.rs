@@ -11,25 +11,26 @@
 use std::collections::HashMap;
 
 use bevy_math::{IVec3, Vec3};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     ActuatorAssignment, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
     BuildOutcome, BuildPose, CageIndex, ConstructionGraph, ConstructionMaterial, ControllerSpec,
     CuboidSpec, CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError,
-    DriveDwell, DriveKey, DriveLimits, DriveLimitsError, DriveLinkSpec, DriveName, DriveProgram,
-    DriveProgramError, DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec,
-    FaceKind, FaceOwner, FaceRef, GearKeyChord, GraphError, GridDimension, GridRotation,
-    InputSeatLinkSpec, InputSpec, PartId, PartSpec, PipeBendDimensionError, PipeBendDimensions,
-    PipeBendSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion,
-    ShiftMode, TransmissionSpec, WeldSpec,
+    DimensionLinkId, DimensionLinkSpec, DriveDwell, DriveKey, DriveLimits, DriveLimitsError,
+    DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
+    DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GearKeyChord,
+    GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec, PartId, PartSpec,
+    PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
+    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec,
+    WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 8;
-const OLDEST_CREATION_FORMAT_VERSION: u32 = 1;
+pub const CREATION_FORMAT_VERSION: u32 = 9;
+const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
 ///
@@ -60,6 +61,9 @@ pub enum CreationError {
     /// A drive wire referenced a bearing the file does not define.
     #[error("creation references bearing {0}, which the file does not define")]
     MissingBearing(u32),
+    /// Combining documents exceeded the on-disk 32-bit row index space.
+    #[error("creation has too many rows to combine")]
+    TooManyRows,
     /// A drive state was bound to something that is not a letter or a digit.
     #[error("drive state key {0:?} is not a letter or a digit")]
     InvalidDriveKey(char),
@@ -88,10 +92,8 @@ pub enum CreationError {
 
 /// Grid-aligned pose in its serialized form.
 ///
-/// Translation uses exact 2.5 cm ticks. The custom decoder also accepts the
-/// `translation_half_units` field written by versions 1–7 and multiplies it by
-/// five before the document reaches graph replay.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Translation uses exact 2.5 cm ticks. Older coordinate encodings are rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PoseDoc {
     /// Centre in exact integer 2.5 cm ticks.
     pub translation_ticks: [i32; 3],
@@ -113,71 +115,6 @@ impl From<PoseDoc> for BuildPose {
     fn from(doc: PoseDoc) -> Self {
         let [x, y, z] = doc.rotation;
         Self::from_position_ticks(doc.translation_ticks.into(), GridRotation::new(x, y, z))
-    }
-}
-
-impl Serialize for PoseDoc {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        #[derive(Serialize)]
-        struct CurrentPose {
-            translation_ticks: [i32; 3],
-            rotation: [u8; 3],
-        }
-
-        CurrentPose {
-            translation_ticks: self.translation_ticks,
-            rotation: self.rotation,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for PoseDoc {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct CompatiblePose {
-            #[serde(default, deserialize_with = "present_coordinate")]
-            translation_ticks: Option<[i32; 3]>,
-            #[serde(default, deserialize_with = "present_coordinate")]
-            translation_half_units: Option<[i32; 3]>,
-            rotation: [u8; 3],
-        }
-
-        fn present_coordinate<'de, D>(deserializer: D) -> Result<Option<[i32; 3]>, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            <[i32; 3]>::deserialize(deserializer).map(Some)
-        }
-
-        let pose = CompatiblePose::deserialize(deserializer)?;
-        let translation_ticks = match (pose.translation_ticks, pose.translation_half_units) {
-            (Some(ticks), None) => ticks,
-            (None, Some([x, y, z])) => {
-                let convert = |coordinate: i32| {
-                    coordinate.checked_mul(5).ok_or_else(|| {
-                        D::Error::custom("legacy creation position overflows v8 ticks")
-                    })
-                };
-                [convert(x)?, convert(y)?, convert(z)?]
-            }
-            (Some(_), Some(_)) => {
-                return Err(D::Error::custom(
-                    "creation pose contains both v8 ticks and legacy half-grid units",
-                ));
-            }
-            (None, None) => return Err(D::Error::missing_field("translation_ticks")),
-        };
-        Ok(Self {
-            translation_ticks,
-            rotation: pose.rotation,
-        })
     }
 }
 
@@ -255,6 +192,13 @@ pub enum PartDoc {
     },
     /// Fixed-size keyboard Input block.
     Input {
+        /// Centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Fixed-size Dimension Link portal anchor.
+    DimensionLink {
+        /// Stable identity within its owning world and Garage.
+        id: DimensionLinkId,
         /// Centre and orientation.
         pose: PoseDoc,
     },
@@ -504,6 +448,133 @@ pub struct LoadedCreation {
 }
 
 impl CreationDocument {
+    /// Reassigns every Dimension Link identity for insertion as a reusable creation.
+    ///
+    /// Transfers between a world and its Garage must not call this: those retain IDs.
+    pub fn remap_dimension_links(&mut self, next_id: &mut u64) {
+        for part in &mut self.parts {
+            if let PartDoc::DimensionLink { id, .. } = part {
+                *id = DimensionLinkId(*next_id);
+                *next_id = next_id.saturating_add(1);
+            }
+        }
+    }
+
+    /// Appends another complete construction document, remapping all dense row references.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CreationError::TooManyRows`] if a remapped row index exceeds `u32`.
+    pub fn append(&mut self, mut other: Self) -> Result<(), CreationError> {
+        let part_offset =
+            u32::try_from(self.parts.len()).map_err(|_| CreationError::TooManyRows)?;
+        let bearing_offset =
+            u32::try_from(self.bearings.len()).map_err(|_| CreationError::TooManyRows)?;
+        let add_part = |index: &mut u32| -> Result<(), CreationError> {
+            *index = index
+                .checked_add(part_offset)
+                .ok_or(CreationError::TooManyRows)?;
+            Ok(())
+        };
+        let add_face = |face: &mut FaceRefDoc| -> Result<(), CreationError> {
+            if let FaceOwnerDoc::Part(index) = &mut face.owner {
+                add_part(index)?;
+            }
+            Ok(())
+        };
+        for part in &mut other.parts {
+            if let PartDoc::Transmission { parent, .. } = part {
+                add_part(parent)?;
+            }
+        }
+        for weld in &mut other.welds {
+            add_face(&mut weld.first)?;
+            add_face(&mut weld.second)?;
+        }
+        for link in &mut other.rigid_links {
+            add_part(&mut link.first)?;
+            add_part(&mut link.second)?;
+        }
+        for bearing in &mut other.bearings {
+            add_face(&mut bearing.source)?;
+            add_face(&mut bearing.target)?;
+        }
+        for link in &mut other.drive_links {
+            add_part(&mut link.controller)?;
+            link.bearing = link
+                .bearing
+                .checked_add(bearing_offset)
+                .ok_or(CreationError::TooManyRows)?;
+        }
+        for link in &mut other.input_seat_links {
+            add_part(&mut link.input)?;
+            add_part(&mut link.seat)?;
+        }
+        for link in &mut other.seat_controller_links {
+            add_part(&mut link.seat)?;
+            add_part(&mut link.controller)?;
+        }
+        for config in &mut other.gearbox_configs {
+            add_part(&mut config.controller)?;
+        }
+        for socket in &mut other.sockets {
+            add_face(&mut socket.source)?;
+        }
+        self.parts.append(&mut other.parts);
+        self.welds.append(&mut other.welds);
+        self.rigid_links.append(&mut other.rigid_links);
+        self.bearings.append(&mut other.bearings);
+        self.drive_links.append(&mut other.drive_links);
+        self.input_seat_links.append(&mut other.input_seat_links);
+        self.seat_controller_links
+            .append(&mut other.seat_controller_links);
+        self.gearbox_configs.append(&mut other.gearbox_configs);
+        self.regions.append(&mut other.regions);
+        self.sockets.append(&mut other.sockets);
+        Ok(())
+    }
+
+    /// Rotates the authored construction around the world origin and then translates it.
+    ///
+    /// Translation uses half-grid units so shape-region cage data remains exact.
+    pub fn transform_cardinal(&mut self, yaw_quarter_turns: u8, translation_half_units: IVec3) {
+        let yaw = yaw_quarter_turns % 4;
+        for part in &mut self.parts {
+            let pose = match part {
+                PartDoc::Cuboid { pose, .. }
+                | PartDoc::Cylinder { pose, .. }
+                | PartDoc::PipeBend { pose, .. }
+                | PartDoc::Controller { pose }
+                | PartDoc::Engine { pose, .. }
+                | PartDoc::Transmission { pose, .. }
+                | PartDoc::Servo { pose }
+                | PartDoc::Seat { pose }
+                | PartDoc::Input { pose }
+                | PartDoc::DimensionLink { pose, .. } => pose,
+            };
+            let rotated = rotate_y_i32(IVec3::from_array(pose.translation_ticks), yaw)
+                + translation_half_units * 5;
+            pose.translation_ticks = rotated.to_array();
+            let [x, y, z] = pose.rotation;
+            pose.rotation = GridRotation::new(x, y, z)
+                .rotated_y(yaw)
+                .quarter_turns_xyz();
+        }
+        let translation = translation_half_units.as_vec3() * (crate::GRID_UNIT_METERS * 0.5);
+        for bearing in &mut self.bearings {
+            bearing.anchor =
+                (rotate_y_vec3(Vec3::from_array(bearing.anchor), yaw) + translation).to_array();
+            bearing.axis = rotate_y_vec3(Vec3::from_array(bearing.axis), yaw).to_array();
+        }
+        for socket in &mut self.sockets {
+            socket.anchor =
+                (rotate_y_vec3(Vec3::from_array(socket.anchor), yaw) + translation).to_array();
+        }
+        for region in &mut self.regions {
+            transform_region_doc(region, yaw, translation_half_units);
+        }
+    }
+
     /// Captures a construction and its unattached bearing rings.
     ///
     /// Any pending two-step operation on `graph` is ignored: it is transient
@@ -832,6 +903,109 @@ fn index_map<I: Copy + Eq + std::hash::Hash>(ids: impl Iterator<Item = I>) -> Ha
         .collect()
 }
 
+const fn rotate_y_i32(position: IVec3, yaw: u8) -> IVec3 {
+    match yaw % 4 {
+        0 => position,
+        1 => IVec3::new(position.z, position.y, -position.x),
+        2 => IVec3::new(-position.x, position.y, -position.z),
+        _ => IVec3::new(-position.z, position.y, position.x),
+    }
+}
+
+fn rotate_y_vec3(position: Vec3, yaw: u8) -> Vec3 {
+    match yaw % 4 {
+        0 => position,
+        1 => Vec3::new(position.z, position.y, -position.x),
+        2 => Vec3::new(-position.x, position.y, -position.z),
+        _ => Vec3::new(-position.z, position.y, position.x),
+    }
+}
+
+fn transform_region_doc(region: &mut RegionDoc, yaw: u8, translation: IVec3) {
+    let origin = IVec3::from_array(region.origin_half_units);
+    let size = IVec3::from_array(region.size_cells);
+    let maximum = origin + size * 2;
+    let corners = [
+        IVec3::new(origin.x, origin.y, origin.z),
+        IVec3::new(maximum.x, origin.y, origin.z),
+        IVec3::new(origin.x, maximum.y, origin.z),
+        IVec3::new(origin.x, origin.y, maximum.z),
+        IVec3::new(maximum.x, maximum.y, maximum.z),
+    ]
+    .map(|corner| rotate_y_i32(corner, yaw) + translation);
+    let minimum = corners
+        .iter()
+        .copied()
+        .reduce(IVec3::min)
+        .expect("region has corners");
+    let maximum = corners
+        .iter()
+        .copied()
+        .reduce(IVec3::max)
+        .expect("region has corners");
+    let old_divisions = core::mem::take(&mut region.divisions);
+    let old_vertices = core::mem::take(&mut region.vertices);
+    let old_counts = old_divisions.each_ref().map(|axis| axis.len() + 2);
+    region.origin_half_units = minimum.to_array();
+    region.size_cells = ((maximum - minimum) / 2).to_array();
+    region.divisions = match yaw % 4 {
+        0 => old_divisions,
+        1 => [
+            old_divisions[2].clone(),
+            old_divisions[1].clone(),
+            reflected_divisions(&old_divisions[0], size.x),
+        ],
+        2 => [
+            reflected_divisions(&old_divisions[0], size.x),
+            old_divisions[1].clone(),
+            reflected_divisions(&old_divisions[2], size.z),
+        ],
+        _ => [
+            reflected_divisions(&old_divisions[2], size.z),
+            old_divisions[1].clone(),
+            old_divisions[0].clone(),
+        ],
+    };
+    region.vertices = old_vertices
+        .into_iter()
+        .map(|([i, j, k], [x, y, z])| match yaw % 4 {
+            0 => ([i, j, k], [x, y, z]),
+            1 => (
+                [
+                    k,
+                    j,
+                    u16::try_from(old_counts[0] - 1).unwrap_or(u16::MAX) - i,
+                ],
+                [z, y, -x],
+            ),
+            2 => (
+                [
+                    u16::try_from(old_counts[0] - 1).unwrap_or(u16::MAX) - i,
+                    j,
+                    u16::try_from(old_counts[2] - 1).unwrap_or(u16::MAX) - k,
+                ],
+                [-x, y, -z],
+            ),
+            _ => (
+                [
+                    u16::try_from(old_counts[2] - 1).unwrap_or(u16::MAX) - k,
+                    j,
+                    i,
+                ],
+                [-z, y, x],
+            ),
+        })
+        .collect();
+}
+
+fn reflected_divisions(divisions: &[i32], size: i32) -> Vec<i32> {
+    divisions
+        .iter()
+        .rev()
+        .map(|position| size - position)
+        .collect()
+}
+
 fn face_doc(face: FaceRef, parts: &HashMap<PartId, u32>) -> FaceRefDoc {
     FaceRefDoc {
         owner: match face.owner {
@@ -887,6 +1061,10 @@ fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
         },
         PartSpec::Input(input) => PartDoc::Input {
             pose: input.pose.into(),
+        },
+        PartSpec::DimensionLink(link) => PartDoc::DimensionLink {
+            id: link.id,
+            pose: link.pose.into(),
         },
     }
 }
@@ -976,6 +1154,9 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
         PartDoc::Servo { pose } => BuildCommand::SpawnServo(ServoSpec::new(pose.into())),
         PartDoc::Seat { pose } => BuildCommand::SpawnSeat(SeatSpec::new(pose.into())),
         PartDoc::Input { pose } => BuildCommand::SpawnInput(InputSpec::new(pose.into())),
+        PartDoc::DimensionLink { id, pose } => {
+            BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(id, pose.into()))
+        }
     })
 }
 
@@ -1035,16 +1216,17 @@ mod tests {
 
     use super::{
         BearingSocket, CREATION_FORMAT_VERSION, CreationDocument, CreationError, FaceOwnerDoc,
-        PartDoc, PoseDoc,
+        PartDoc,
     };
     use crate::{
         ActuatorAssignment, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
         ConstructionGraph, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions,
-        CylinderSpec, DriveDwell, DriveKey, DriveLimits, DriveLinkSpec, DriveName, DriveProgram,
-        DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind,
-        FaceRef, GearKey, GearKeyChord, GridRotation, InputSeatLinkSpec, InputSpec, PartSpec,
-        PipeBendDimensions, PipeBendSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec,
-        ServoSpec, ShapeRegion, ShiftMode, WeldSpec,
+        CylinderSpec, DimensionLinkId, DimensionLinkSpec, DriveDwell, DriveKey, DriveLimits,
+        DriveLinkSpec, DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget,
+        DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceRef, GearKey, GearKeyChord,
+        GridRotation, InputSeatLinkSpec, InputSpec, PartSpec, PipeBendDimensions, PipeBendSpec,
+        RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode,
+        WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -1199,6 +1381,26 @@ mod tests {
     }
 
     #[test]
+    fn reusable_creation_remaps_every_dimension_link_id() {
+        let mut graph = ConstructionGraph::new();
+        for id in [2, 9] {
+            graph
+                .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                    DimensionLinkId(id),
+                    BuildPose::default(),
+                )))
+                .unwrap();
+        }
+        let mut document = CreationDocument::from_graph(&graph, "Links", &[]);
+        let mut next_id = 40;
+        document.remap_dimension_links(&mut next_id);
+        let restored = document.into_graph().unwrap().graph;
+        assert!(restored.dimension_link(DimensionLinkId(40)).is_some());
+        assert!(restored.dimension_link(DimensionLinkId(41)).is_some());
+        assert_eq!(next_id, 42);
+    }
+
+    #[test]
     fn engine_kinds_survive_a_serialized_round_trip() {
         let mut graph = ConstructionGraph::new();
         for (kind, x) in [(EngineKind::Gas, -2), (EngineKind::Electric, 2)] {
@@ -1287,49 +1489,18 @@ mod tests {
     }
 
     #[test]
-    fn version_two_drive_links_without_assignments_load_unpowered() {
-        let (graph, sockets) = sample();
-        let mut document = CreationDocument::from_graph(&graph, "Old Drives", &sockets);
-        document.version = 2;
-        let text =
-            ron::ser::to_string_pretty(&document, ron::ser::PrettyConfig::default()).unwrap();
-        let legacy = text.replace("actuator: Unpowered,", "");
-        assert_ne!(legacy, text, "the fixture removed the version-three field");
-
-        let restored: CreationDocument = ron::from_str(&legacy).unwrap();
-        assert!(
-            restored
-                .drive_links
-                .iter()
-                .all(|link| link.actuator == ActuatorAssignment::Unpowered)
-        );
-        restored.into_graph().unwrap();
-    }
-
-    #[test]
-    fn version_one_creation_remains_readable() {
-        let (graph, sockets) = sample();
-        let mut document = CreationDocument::from_graph(&graph, "Old Rig", &sockets);
-        document.version = 1;
-
-        let restored = round_trip(&document)
-            .into_graph()
-            .expect("version-one documents migrate on read");
-        assert_eq!(restored.name, "Old Rig");
-        assert_eq!(restored.graph.part_count(), graph.part_count());
-    }
-
-    #[test]
-    fn version_five_creation_remains_readable_after_material_expansion() {
-        let (graph, sockets) = sample();
-        let mut document = CreationDocument::from_graph(&graph, "Version Five", &sockets);
-        document.version = 5;
-
-        let restored = round_trip(&document)
-            .into_graph()
-            .expect("version-five documents remain readable");
-        assert_eq!(restored.name, "Version Five");
-        assert_eq!(restored.graph.part_count(), graph.part_count());
+    fn obsolete_creation_versions_are_rejected() {
+        for version in 1..CREATION_FORMAT_VERSION {
+            let document = CreationDocument {
+                version,
+                name: format!("Obsolete {version}"),
+                ..CreationDocument::from_graph(&ConstructionGraph::new(), "obsolete", &[])
+            };
+            assert!(matches!(
+                document.into_graph(),
+                Err(CreationError::UnsupportedVersion(found)) if found == version
+            ));
+        }
     }
 
     #[test]
@@ -1359,36 +1530,6 @@ mod tests {
         let parsed: ConstructionMaterial = ron::from_str("Carbon").unwrap();
         assert_eq!(parsed, ConstructionMaterial::Graphite);
         assert_eq!(ron::to_string(&parsed).unwrap(), "Graphite");
-    }
-
-    #[test]
-    fn versions_one_through_three_default_missing_materials_to_steel() {
-        let mut graph = ConstructionGraph::new();
-        graph
-            .apply(BuildCommand::Spawn(cuboid([1; 3], IVec3::ZERO)))
-            .unwrap();
-        graph
-            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
-                CylinderDimensions::default(),
-                BuildPose::new(IVec3::new(4, 0, 0), GridRotation::default()),
-            )))
-            .unwrap();
-
-        for version in 1..=3 {
-            let mut document = CreationDocument::from_graph(&graph, "Legacy Materials", &[]);
-            document.version = version;
-            let current =
-                ron::ser::to_string_pretty(&document, ron::ser::PrettyConfig::default()).unwrap();
-            let legacy = current.replace("material: Steel,", "");
-            assert_ne!(legacy, current);
-            let parsed: CreationDocument = ron::from_str(&legacy).unwrap();
-            let restored = parsed.into_graph().unwrap();
-            assert!(restored.graph.parts().all(|(_, spec)| match spec {
-                PartSpec::Cuboid(cuboid) => cuboid.material == ConstructionMaterial::Steel,
-                PartSpec::Cylinder(cylinder) => cylinder.material == ConstructionMaterial::Steel,
-                _ => true,
-            }));
-        }
     }
 
     #[test]
@@ -1472,7 +1613,7 @@ mod tests {
     }
 
     #[test]
-    fn version_eight_round_trips_pipe_bends_and_versions_one_through_seven_still_load() {
+    fn current_version_round_trips_pipe_bends() {
         let mut graph = ConstructionGraph::new();
         graph
             .apply(BuildCommand::SpawnPipeBend(
@@ -1484,7 +1625,7 @@ mod tests {
             ))
             .unwrap();
         let document = CreationDocument::from_graph(&graph, "Bent Pipe", &[]);
-        assert_eq!(document.version, 8);
+        assert_eq!(document.version, CREATION_FORMAT_VERSION);
         let loaded = round_trip(&document).into_graph().unwrap();
         let bend = loaded
             .graph
@@ -1494,18 +1635,6 @@ mod tests {
         assert_eq!(bend.material, ConstructionMaterial::Aluminium);
         assert!((bend.dimensions.radius() - 1.0).abs() < f32::EPSILON);
         assert!((bend.dimensions.inner_diameter() - 0.25).abs() < f32::EPSILON);
-
-        for version in 1..=7 {
-            let legacy = CreationDocument {
-                version,
-                name: format!("Legacy {version}"),
-                ..CreationDocument::from_graph(&ConstructionGraph::new(), "legacy", &[])
-            };
-            assert!(
-                legacy.into_graph().is_ok(),
-                "version {version} remains readable"
-            );
-        }
     }
 
     #[test]
@@ -1531,22 +1660,6 @@ mod tests {
             .expect("the rebuild holds its cuboid");
 
         assert_eq!(rebuilt.pose(), original.pose());
-    }
-
-    #[test]
-    fn legacy_half_grid_pose_migrates_to_v8_ticks_without_moving() {
-        let legacy = "(translation_half_units:(-3,1,4),rotation:(1,2,3))";
-        let pose: PoseDoc = ron::from_str(legacy).expect("v7 pose remains readable");
-        assert_eq!(pose.translation_ticks, [-15, 5, 20]);
-        let runtime = BuildPose::from(pose);
-        assert!(
-            runtime
-                .translation()
-                .abs_diff_eq(Vec3::new(-0.375, 0.125, 0.5), 1.0e-6)
-        );
-        let current = ron::to_string(&pose).unwrap();
-        assert!(current.contains("translation_ticks"));
-        assert!(!current.contains("translation_half_units"));
     }
 
     #[test]
@@ -1701,15 +1814,6 @@ mod tests {
         let restored = document.into_graph().unwrap().graph;
         let (_, replayed) = restored.regions().next().unwrap();
         assert_eq!(replayed.plane_counts(), [3, 2, 2]);
-    }
-
-    #[test]
-    fn a_file_written_before_regions_loads_without_any() {
-        // The regions field defaults, so existing saves keep working untouched.
-        let text = r#"(version: 1, name: "legacy", parts: [])"#;
-        let document: CreationDocument = ron::from_str(text).unwrap();
-        assert!(document.regions.is_empty());
-        assert_eq!(document.into_graph().unwrap().graph.regions().count(), 0);
     }
 
     #[test]

@@ -61,10 +61,11 @@ use builder::{
     candidate_from_hit_with_step, cylinder_candidate_from_hit_with_step, face_geometry_from_ref,
     oriented_cuboid_candidate_from_hit_with_step, part_world_bounds, pipe_run_pieces,
     raycast_construction, raycast_construction_for_annulus,
-    raycast_construction_for_annulus_with_ground, raycast_construction_with_ground,
-    raycast_oriented_cuboid, rigid_body_parts, stage_bearing_attachment_in_bounds,
-    stage_bearing_block_batch_in_bounds, stage_bearing_cylinder_in_bounds,
-    stage_block_batch_from_source_in_bounds, stage_controller_from_source_in_bounds,
+    raycast_construction_for_annulus_with_ground, raycast_construction_for_annulus_with_scaffold,
+    raycast_construction_with_ground, raycast_construction_with_scaffold, raycast_oriented_cuboid,
+    rigid_body_parts, stage_bearing_attachment_in_bounds, stage_bearing_block_batch_in_bounds,
+    stage_bearing_cylinder_in_bounds, stage_block_batch_from_source_in_bounds,
+    stage_controller_from_source_in_bounds, stage_dimension_link_from_source_in_bounds,
     stage_engine_from_source_in_bounds, stage_input_from_source_in_bounds,
     stage_pipe_run_in_bounds, stage_seat_from_source_in_bounds, stage_servo_from_source_in_bounds,
     stage_transmission, stage_weld_objects, transmission_candidate_from_hit_in_bounds,
@@ -86,13 +87,14 @@ use mechanic_core::{
     ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand, BuildOutcome,
     CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape, CompiledCreation,
     ConstructionEditDelta, ConstructionGraph, ConstructionMaterial, ControllerSpec,
-    CreationDocument, CuboidSpec, CylinderDimensions, DriveLinkSpec, DriveState, DriveTarget,
-    EngineKind, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec,
-    InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
-    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
-    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId, PartPiece, PartSpec,
-    PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec,
-    ServoSpec, ShapeRegion, TopologyError, TransmissionSpec, face_neighbour_offset, part_cells,
+    CreationDocument, CuboidSpec, CylinderDimensions, DimensionLinkSpec, DriveLinkSpec, DriveState,
+    DriveTarget, EngineKind, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridRotation,
+    InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER,
+    MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER,
+    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId,
+    PartPiece, PartSpec, PendingOperation, PipeBendDimensions, RegionId, STEP_METERS,
+    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError, TransmissionSpec,
+    face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTickReadback,
@@ -1066,6 +1068,50 @@ fn handle_creation_menu_shortcut(
     });
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
+fn handle_dimension_link_interaction(
+    actions: Res<ButtonInput<GameAction>>,
+    graph: Res<EditorGraph>,
+    mut state: ResMut<EditorState>,
+    mut runtime: ResMut<world::WorldRuntime>,
+    space: Res<State<world::AppSpace>>,
+    player: Res<PlayerState>,
+    overlay: Res<ui::UiInput>,
+    wheel: Res<MaterialWheelState>,
+) {
+    if !actions.just_pressed(GameAction::Interact)
+        || !player.world_input_active()
+        || overlay.blocks_keyboard()
+        || wheel.open
+    {
+        return;
+    }
+    let aimed = state
+        .hovered
+        .and_then(|hit| match hit.face.owner {
+            FaceOwner::Part(part) => Some((part, hit.distance)),
+            FaceOwner::Ground => None,
+        })
+        .or_else(|| state.hovered_simulation.map(|hit| (hit.part, hit.distance)));
+    let Some((part, distance)) = aimed else {
+        return;
+    };
+    let Some(id) = graph.0.dimension_link_id(part) else {
+        return;
+    };
+    if distance > 3.0 {
+        state.feedback = Some("Dimension Link is out of interaction range (3 m)".to_owned());
+        return;
+    }
+    state.feedback = Some(
+        match runtime.activate_dimension_link(*space.get(), &graph.0, part) {
+            Ok(_) => format!("Activated Dimension Link {}", id.0),
+            Err(error) => error,
+        },
+    );
+    state.construction_mesh_dirty = true;
+}
+
 /// Opens or closes the control-block panel with `E`.
 ///
 /// The panel targets the hovered control block, falling back to the selected
@@ -1090,6 +1136,13 @@ fn handle_control_panel_shortcut(
         return;
     }
     if !actions.just_pressed(GameAction::Interact) || !player.world_input_active() || wheel.open {
+        return;
+    }
+    if hovered_part(state.hovered).is_some_and(|part| graph.0.dimension_link_id(part).is_some())
+        || state
+            .hovered_simulation
+            .is_some_and(|hit| graph.0.dimension_link_id(hit.part).is_some())
+    {
         return;
     }
     let target = hovered_part(state.hovered)
@@ -1403,6 +1456,7 @@ fn handle_creation_request(
     store: Res<CreationStore>,
     mut player: ResMut<PlayerState>,
     mut camera: Single<(&mut PlayerCamera, &mut Transform, &mut GlobalTransform), With<MainCamera>>,
+    mut world_runtime: ResMut<world::WorldRuntime>,
 ) {
     let Some(request) = menu.take_request() else {
         return;
@@ -1439,7 +1493,7 @@ fn handle_creation_request(
         }
         CreationRequest::Load(path) => {
             let previous = EditorSnapshot::capture(&graph.0, &state);
-            match load_creation(&mut graph.0, &path) {
+            match load_creation_remapped(&mut graph.0, &path, &mut world_runtime) {
                 Ok((name, sockets, creation)) => {
                     history.commit(previous);
                     history.mark_clean();
@@ -1526,11 +1580,14 @@ fn capture_creation(
 /// Reads a creation file and installs it, compiling before it commits.
 type LoadedCreation = (String, Vec<BearingSocket>, Option<CompiledCreation>);
 
-fn load_creation(
+fn load_creation_remapped(
     current: &mut ConstructionGraph,
     path: &Path,
+    runtime: &mut world::WorldRuntime,
 ) -> Result<LoadedCreation, Box<dyn Error>> {
-    let loaded = creation_store::read_document(path)?.into_graph()?;
+    let mut document = creation_store::read_document(path)?;
+    runtime.remap_imported_dimension_links(&mut document);
+    let loaded = document.into_graph()?;
     match loaded.graph.compile() {
         Ok(creation) => {
             *current = loaded.graph;
@@ -1602,7 +1659,7 @@ fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
 )]
 fn advance_simulation(
     time: Res<Time>,
-    graph: Res<EditorGraph>,
+    graph_and_world: (Res<EditorGraph>, Res<world::WorldRuntime>),
     sequencer: Res<DriveSequencer>,
     gearboxes: Res<GearboxRuntime>,
     selection: Res<SelectedTool>,
@@ -1638,6 +1695,7 @@ fn advance_simulation(
         (Without<ConstructionVisual>, Without<BearingVisual>),
     >,
 ) {
+    let (graph, world_runtime) = graph_and_world;
     if !simulation.is_running() {
         return;
     }
@@ -1815,17 +1873,19 @@ fn advance_simulation(
     // hidden mesh has no slab allocation, so writing to one both wastes the
     // rebuild and makes the renderer log a use-after-free every frame.
     let bearings_visible = graph.0.bearing_count() > 0 || !state.placed_bearings.is_empty();
+    let active_dimension_link = world_runtime.active_dimension_link();
     for appearance in AuthoredPart::ALL {
         let visible = graph
             .0
             .parts()
-            .any(|(part, spec)| appearance.matches(&graph.0, part, *spec));
+            .any(|(part, spec)| appearance.matches(&graph.0, part, *spec, active_dimension_link));
         if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
             *mesh = combined_simulation_authored_mesh(
                 &graph.0,
                 creation,
                 &simulation.transforms,
                 appearance,
+                active_dimension_link,
             );
         }
         for (visual, mut visibility) in &mut authored_visuals {
@@ -1902,6 +1962,29 @@ impl AppSimulation {
         self.gpu.is_some() && self.failure.is_none()
     }
 
+    pub(crate) fn live_part_pose(
+        &self,
+        graph: &ConstructionGraph,
+        part: PartId,
+    ) -> Option<(Vec3, Quat)> {
+        let spec = *graph.part(part)?;
+        let Some(creation) = self.creation.as_ref() else {
+            return Some((spec.pose().translation(), spec.pose().rotation.quaternion()));
+        };
+        let body = creation
+            .part_to_compound
+            .iter()
+            .find_map(|(candidate, body)| (*candidate == part).then_some(*body))?;
+        let transform = self.transforms.get(body as usize)?;
+        let root_position = Vec3::from_slice(&transform.position[..3]);
+        let root_rotation = Quat::from_array(transform.rotation);
+        let initial = &creation.compounds[body as usize];
+        Some((
+            root_position + root_rotation * (spec.pose().translation() - initial.root_translation),
+            root_rotation * spec.pose().rotation.quaternion(),
+        ))
+    }
+
     fn record_performance(
         &mut self,
         cpu_elapsed: std::time::Duration,
@@ -1922,6 +2005,7 @@ impl AppSimulation {
 struct EditorState {
     placement_bounds: PlacementBounds,
     hovered: Option<SurfaceHit>,
+    hovered_simulation: Option<SimulationHit>,
     world_edit_blocker: Option<WorldEditBlocker>,
     /// Unattached bearing surface directly hit by the pointer ray.
     hovered_bearing: Option<usize>,
@@ -2029,6 +2113,8 @@ struct EditorVisuals {
     servo_mesh: Handle<Mesh>,
     seat_mesh: Handle<Mesh>,
     input_mesh: Handle<Mesh>,
+    dimension_link_disabled_mesh: Handle<Mesh>,
+    dimension_link_enabled_mesh: Handle<Mesh>,
     authored_preview_meshes: [Handle<Mesh>; AuthoredPart::ALL.len()],
     authored_preview_materials: [Handle<StandardMaterial>; AuthoredPart::ALL.len()],
     invalid_authored_preview_materials: [Handle<StandardMaterial>; AuthoredPart::ALL.len()],
@@ -2067,6 +2153,8 @@ impl EditorVisuals {
             AuthoredPart::Servo => &self.servo_mesh,
             AuthoredPart::Seat => &self.seat_mesh,
             AuthoredPart::Input => &self.input_mesh,
+            AuthoredPart::DimensionLinkDisabled => &self.dimension_link_disabled_mesh,
+            AuthoredPart::DimensionLinkEnabled => &self.dimension_link_enabled_mesh,
         }
     }
 
@@ -2157,10 +2245,12 @@ enum AuthoredPart {
     Servo,
     Seat,
     Input,
+    DimensionLinkDisabled,
+    DimensionLinkEnabled,
 }
 
 impl AuthoredPart {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::Controller,
         Self::GasEngine,
         Self::ElectricEngine,
@@ -2169,6 +2259,8 @@ impl AuthoredPart {
         Self::Servo,
         Self::Seat,
         Self::Input,
+        Self::DimensionLinkDisabled,
+        Self::DimensionLinkEnabled,
     ];
 
     const fn index(self) -> usize {
@@ -2181,6 +2273,8 @@ impl AuthoredPart {
             Self::Servo => 5,
             Self::Seat => 6,
             Self::Input => 7,
+            Self::DimensionLinkDisabled => 8,
+            Self::DimensionLinkEnabled => 9,
         }
     }
 
@@ -2192,11 +2286,25 @@ impl AuthoredPart {
             Tool::Servo => Some(Self::Servo),
             Tool::Seat => Some(Self::Seat),
             Tool::Input => Some(Self::Input),
+            Tool::DimensionLink => Some(Self::DimensionLinkDisabled),
             _ => None,
         }
     }
 
-    fn matches(self, graph: &ConstructionGraph, part: PartId, spec: PartSpec) -> bool {
+    fn matches(
+        self,
+        graph: &ConstructionGraph,
+        part: PartId,
+        spec: PartSpec,
+        active: Option<mechanic_core::DimensionLinkId>,
+    ) -> bool {
+        if let PartSpec::DimensionLink(link) = spec {
+            return match self {
+                Self::DimensionLinkDisabled => Some(link.id) != active,
+                Self::DimensionLinkEnabled => Some(link.id) == active,
+                _ => false,
+            };
+        }
         matches!(
             (self, spec),
             (Self::Controller, PartSpec::Controller(_))
@@ -2361,24 +2469,36 @@ fn preview_material(base_color: Color) -> StandardMaterial {
 }
 
 fn authored_part_material(asset_server: &AssetServer, stem: &str) -> StandardMaterial {
-    let linear_texture = |suffix: &str| {
+    let texture = |suffix: &str, is_srgb: bool| {
         asset_server
             .load_builder()
-            .with_settings(|settings: &mut ImageLoaderSettings| settings.is_srgb = false)
+            .with_settings(move |settings: &mut ImageLoaderSettings| {
+                configure_authored_texture(settings, is_srgb);
+            })
             .load(format!("{stem}_{suffix}.png"))
     };
-    let orm = linear_texture("orm");
+    let orm = texture("orm", false);
     StandardMaterial {
-        base_color_texture: Some(asset_server.load(format!("{stem}_base_color.png"))),
+        base_color_texture: Some(texture("base_color", true)),
         metallic: 1.0,
         perceptual_roughness: 1.0,
         metallic_roughness_texture: Some(orm.clone()),
         occlusion_texture: Some(orm),
-        normal_map_texture: Some(linear_texture("normal")),
+        normal_map_texture: Some(texture("normal", false)),
         emissive: LinearRgba::WHITE,
-        emissive_texture: Some(asset_server.load(format!("{stem}_emissive.png"))),
+        emissive_texture: Some(texture("emissive", true)),
         ..default()
     }
+}
+
+fn configure_authored_texture(settings: &mut ImageLoaderSettings, is_srgb: bool) {
+    settings.is_srgb = is_srgb;
+    let sampler = settings.sampler.get_or_init_descriptor();
+    sampler.address_mode_u = ImageAddressMode::ClampToEdge;
+    sampler.address_mode_v = ImageAddressMode::ClampToEdge;
+    sampler.mag_filter = ImageFilterMode::Linear;
+    sampler.min_filter = ImageFilterMode::Linear;
+    sampler.mipmap_filter = ImageFilterMode::Linear;
 }
 
 const fn material_index(material: ConstructionMaterial) -> usize {
@@ -2527,6 +2647,7 @@ fn main() {
                             controls::update_action_state,
                             capture_control_binding,
                             handle_creation_menu_shortcut,
+                            handle_dimension_link_interaction,
                             handle_control_panel_shortcut,
                             ui::drain,
                             handle_pause_request,
@@ -2615,6 +2736,8 @@ fn setup(
     let servo_mesh = meshes.add(Cuboid::default());
     let seat_mesh = meshes.add(Cuboid::default());
     let input_mesh = meshes.add(Cuboid::default());
+    let dimension_link_disabled_mesh = meshes.add(Cuboid::default());
+    let dimension_link_enabled_mesh = meshes.add(Cuboid::default());
     let authored_preview_meshes =
         AuthoredPart::ALL.map(|appearance| meshes.add(single_authored_part_mesh(appearance)));
     let drive_xray_mesh = meshes.add(Cuboid::default());
@@ -2665,6 +2788,14 @@ fn setup(
         authored_part_material(&asset_server, "machines/servo/servo"),
         authored_part_material(&asset_server, "machines/seat/seat"),
         authored_part_material(&asset_server, "machines/input/input"),
+        authored_part_material(
+            &asset_server,
+            "machines/dimension_link/disabled/dimension_link",
+        ),
+        authored_part_material(
+            &asset_server,
+            "machines/dimension_link/enabled/dimension_link",
+        ),
     ];
     let authored_preview_materials = std::array::from_fn(|index| {
         materials.add(authored_preview_material(
@@ -2726,6 +2857,8 @@ fn setup(
         servo_mesh: servo_mesh.clone(),
         seat_mesh: seat_mesh.clone(),
         input_mesh: input_mesh.clone(),
+        dimension_link_disabled_mesh: dimension_link_disabled_mesh.clone(),
+        dimension_link_enabled_mesh: dimension_link_enabled_mesh.clone(),
         authored_preview_meshes,
         authored_preview_materials,
         invalid_authored_preview_materials,
@@ -2836,6 +2969,22 @@ fn setup(
         NoFrustumCulling,
         Visibility::Hidden,
         AuthoredPartVisual(AuthoredPart::Input),
+    ));
+    commands.spawn((
+        Name::new("Disabled Dimension Link mesh"),
+        Mesh3d(dimension_link_disabled_mesh),
+        MeshMaterial3d(authored_materials[AuthoredPart::DimensionLinkDisabled.index()].clone()),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::DimensionLinkDisabled),
+    ));
+    commands.spawn((
+        Name::new("Enabled Dimension Link mesh"),
+        Mesh3d(dimension_link_enabled_mesh),
+        MeshMaterial3d(authored_materials[AuthoredPart::DimensionLinkEnabled.index()].clone()),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        AuthoredPartVisual(AuthoredPart::DimensionLinkEnabled),
     ));
     commands.spawn((
         Name::new("Joint x-ray mesh"),
@@ -3706,6 +3855,7 @@ fn apply_pipette_setup(
                     PartSpec::Servo(_) => Tool::Servo,
                     PartSpec::Seat(_) => Tool::Seat,
                     PartSpec::Input(_) => Tool::Input,
+                    PartSpec::DimensionLink(_) => Tool::DimensionLink,
                 }
             }
         }
@@ -4099,7 +4249,7 @@ fn update_hover(
     world_runtime: Res<world::WorldRuntime>,
 ) {
     let placement_bounds = match space.get() {
-        world::AppSpace::Garage => PlacementBounds::Garage,
+        world::AppSpace::Garage => PlacementBounds::GarageBuild,
         world::AppSpace::World => PlacementBounds::World {
             origin: world_runtime.horizontal_origin(),
         },
@@ -4173,6 +4323,7 @@ fn update_hover(
                 })
         })
         .flatten();
+    state.hovered_simulation = moving_hit;
     let nearest_editable =
         raycast_construction_with_ground(&graph.0, ray.origin, ray_direction, terrain_ground)
             .filter(|hit| match hit.face.owner {
@@ -4194,6 +4345,15 @@ fn update_hover(
                     terrain_ground,
                 )
             }
+            Some((inner, outer)) if placement_bounds == PlacementBounds::GarageBuild => {
+                raycast_construction_for_annulus_with_scaffold(
+                    &graph.0,
+                    ray.origin,
+                    ray_direction,
+                    inner,
+                    outer,
+                )
+            }
             Some((inner, outer)) => {
                 raycast_construction_for_annulus(&graph.0, ray.origin, ray_direction, inner, outer)
             }
@@ -4203,6 +4363,9 @@ fn update_hover(
                 ray_direction,
                 terrain_ground,
             ),
+            None if placement_bounds == PlacementBounds::GarageBuild => {
+                raycast_construction_with_scaffold(&graph.0, ray.origin, ray_direction)
+            }
             None => raycast_construction(&graph.0, ray.origin, ray_direction),
         };
         let hit = hit.filter(|hit| match hit.face.owner {
@@ -4288,6 +4451,7 @@ fn update_hover(
             | Tool::Servo
             | Tool::Seat
             | Tool::Input
+            | Tool::DimensionLink
             | Tool::Shape => raycast_surface(None),
         }
     };
@@ -4765,6 +4929,7 @@ fn weld_lockup_warning(before: &ConstructionGraph, after: &ConstructionGraph) ->
 
 fn clear_hover(state: &mut EditorState) {
     state.hovered = None;
+    state.hovered_simulation = None;
     state.world_edit_blocker = None;
     state.hovered_bearing = None;
     state.attachment_bearing = None;
@@ -4984,7 +5149,8 @@ fn refresh_tool_preview_with_cylinder(
             | Tool::ElectricEngine
             | Tool::Servo
             | Tool::Seat
-            | Tool::Input),
+            | Tool::Input
+            | Tool::DimensionLink),
             _,
         ) => state
             .hovered
@@ -4997,6 +5163,7 @@ fn refresh_tool_preview_with_cylinder(
                     Tool::Servo => ServoSpec::GRID_UNITS,
                     Tool::Seat => SeatSpec::GRID_UNITS,
                     Tool::Input => InputSpec::GRID_UNITS,
+                    Tool::DimensionLink => DimensionLinkSpec::GRID_UNITS,
                     _ => unreachable!(),
                 };
                 let candidate = oriented_cuboid_candidate_from_hit_with_step(
@@ -5994,6 +6161,7 @@ fn handle_build_actions(
     overlay: Res<ui::UiInput>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
+    mut world_runtime: Option<ResMut<world::WorldRuntime>>,
 ) {
     if state.world_edit_blocker == Some(WorldEditBlocker::MovingConstruction)
         && (actions.just_pressed(GameAction::Primary)
@@ -6126,6 +6294,11 @@ fn handle_build_actions(
                     state.delete_target = Some(DeleteTarget::Part(part));
                     state.feedback = Some("Release right mouse to delete Input".to_owned());
                 }
+                PartSpec::DimensionLink(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback =
+                        Some("Release right mouse to delete Dimension Link".to_owned());
+                }
             }
         }
     }
@@ -6176,6 +6349,7 @@ fn handle_build_actions(
                     }
                 }
                 DeleteTarget::Part(part) => {
+                    let deleted_link = graph.0.dimension_link_id(part);
                     let previous = EditorSnapshot::capture(&graph.0, &state);
                     match stage_part_deletion_preserving_bearings(
                         &graph.0,
@@ -6192,6 +6366,11 @@ fn handle_build_actions(
                                 format!("Deleted cylinder; moved {migrated} bearing(s)")
                             });
                             state.construction_mesh_dirty = true;
+                            if let (Some(id), Some(world_runtime)) =
+                                (deleted_link, world_runtime.as_deref_mut())
+                            {
+                                world_runtime.clear_active_dimension_link_if(id);
+                            }
                             clear_hover(&mut state);
                         }
                         Err(error) => state.feedback = Some(error.to_string()),
@@ -6665,6 +6844,37 @@ fn handle_build_actions(
                     graph.0 = staged;
                     history.commit(previous);
                     state.feedback = Some(format!("Placed {}", tool.label()));
+                    state.construction_mesh_dirty = true;
+                    clear_hover(&mut state);
+                }
+                Err(error) => state.feedback = Some(error.to_string()),
+            }
+        }
+        Tool::DimensionLink => {
+            let Some(candidate) = state.preview else {
+                state.feedback = Some("Point at the scaffold or a face".to_owned());
+                return;
+            };
+            let Some(hit) = state.hovered else {
+                return;
+            };
+            let Some(world_runtime) = world_runtime.as_deref_mut() else {
+                state.feedback = Some("World state is unavailable".to_owned());
+                return;
+            };
+            let id = world_runtime.allocate_dimension_link_id();
+            let previous = EditorSnapshot::capture(&graph.0, &state);
+            match stage_dimension_link_from_source_in_bounds(
+                &graph.0,
+                candidate,
+                hit.face.owner,
+                id,
+                state.placement_bounds,
+            ) {
+                Ok(staged) => {
+                    graph.0 = staged;
+                    history.commit(previous);
+                    state.feedback = Some(format!("Placed Dimension Link {}", id.0));
                     state.construction_mesh_dirty = true;
                     clear_hover(&mut state);
                 }
@@ -7639,7 +7849,8 @@ fn raycast_simulation(
                 | PartSpec::Transmission(_)
                 | PartSpec::Servo(_)
                 | PartSpec::Seat(_)
-                | PartSpec::Input(_) => {
+                | PartSpec::Input(_)
+                | PartSpec::DimensionLink(_) => {
                     let hit = raycast_oriented_cuboid(
                         origin,
                         direction,
@@ -7922,6 +8133,7 @@ fn raycast_bearing_annulus(
 )]
 fn sync_visual_meshes(
     graph: Res<EditorGraph>,
+    world_runtime: Res<world::WorldRuntime>,
     mirror: Res<shape_tool::ShapeMirror>,
     sequencer: Res<DriveSequencer>,
     selection: Res<SelectedTool>,
@@ -7982,6 +8194,7 @@ fn sync_visual_meshes(
         }
     }
     let preview = preview_region(&graph.0, &state, *mirror);
+    let active_dimension_link = world_runtime.active_dimension_link();
     for material in ConstructionMaterial::ALL {
         if !rebuild_all && !dirty_materials.contains(&material) {
             continue;
@@ -8009,14 +8222,11 @@ fn sync_visual_meshes(
     for appearance in AuthoredPart::ALL {
         let appearance_changed = rebuild_all
             || affected_parts.iter().any(|&part| {
-                graph
-                    .0
-                    .part(part)
-                    .is_some_and(|spec| appearance.matches(&graph.0, part, *spec))
-                    || state
-                        .rendered_graph
-                        .part(part)
-                        .is_some_and(|spec| appearance.matches(&state.rendered_graph, part, *spec))
+                graph.0.part(part).is_some_and(|spec| {
+                    appearance.matches(&graph.0, part, *spec, active_dimension_link)
+                }) || state.rendered_graph.part(part).is_some_and(|spec| {
+                    appearance.matches(&state.rendered_graph, part, *spec, active_dimension_link)
+                })
             });
         if !appearance_changed {
             continue;
@@ -8024,9 +8234,10 @@ fn sync_visual_meshes(
         let visible = graph
             .0
             .parts()
-            .any(|(part, spec)| appearance.matches(&graph.0, part, *spec));
+            .any(|(part, spec)| appearance.matches(&graph.0, part, *spec, active_dimension_link));
         if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
-            *mesh = combined_authored_construction_mesh(&graph.0, appearance);
+            *mesh =
+                combined_authored_construction_mesh(&graph.0, appearance, active_dimension_link);
         }
         for (visual, mut visibility) in &mut authored_visuals {
             if visual.0 == appearance {
@@ -8453,7 +8664,8 @@ fn update_previews(
                 | Tool::ElectricEngine
                 | Tool::Servo
                 | Tool::Seat
-                | Tool::Input,
+                | Tool::Input
+                | Tool::DimensionLink,
             ),
             _,
         ) => {
@@ -8950,6 +9162,32 @@ const INPUT_UVS: [[f32; 2]; 24] = [
     [1.0, 1.0],
     [1.0, 0.75],
 ];
+const DIMENSION_LINK_UVS: [[f32; 2]; 24] = [
+    [0.0, 0.5],
+    [0.0, 0.25],
+    [0.25, 0.25],
+    [0.25, 0.5],
+    [0.25, 0.5],
+    [0.25, 0.25],
+    [0.5, 0.25],
+    [0.5, 0.5],
+    [0.0, 0.75],
+    [0.0, 0.5],
+    [0.5, 0.5],
+    [0.5, 0.75],
+    [0.5, 0.75],
+    [0.5, 0.5],
+    [1.0, 0.5],
+    [1.0, 0.75],
+    [0.0, 1.0],
+    [0.0, 0.75],
+    [0.5, 0.75],
+    [0.5, 1.0],
+    [0.5, 1.0],
+    [0.5, 0.75],
+    [1.0, 0.75],
+    [1.0, 1.0],
+];
 
 fn authored_uvs(appearance: AuthoredPart) -> [[f32; 2]; 24] {
     let assimp_uvs = match appearance {
@@ -8960,6 +9198,9 @@ fn authored_uvs(appearance: AuthoredPart) -> [[f32; 2]; 24] {
         AuthoredPart::Servo => SERVO_UVS,
         AuthoredPart::Seat => SEAT_UVS,
         AuthoredPart::Input => INPUT_UVS,
+        AuthoredPart::DimensionLinkDisabled | AuthoredPart::DimensionLinkEnabled => {
+            DIMENSION_LINK_UVS
+        }
     };
     // Assimp's dump uses an OpenGL-style bottom-left texture origin. Bevy
     // samples the PNG atlases from the top left, matching the original glTF
@@ -9091,7 +9332,8 @@ const fn ordinary_material(spec: PartSpec) -> Option<ConstructionMaterial> {
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
-        | PartSpec::Input(_) => None,
+        | PartSpec::Input(_)
+        | PartSpec::DimensionLink(_) => None,
     }
 }
 
@@ -9276,12 +9518,13 @@ fn pipe_end_faces(part: PartId, welded_ends: &HashSet<FaceRef>) -> PipeEndFaces 
 /// construction they steer.
 #[cfg(test)]
 fn combined_controller_mesh(graph: &ConstructionGraph) -> Mesh {
-    combined_authored_construction_mesh(graph, AuthoredPart::Controller)
+    combined_authored_construction_mesh(graph, AuthoredPart::Controller, None)
 }
 
 fn combined_authored_construction_mesh(
     graph: &ConstructionGraph,
     appearance: AuthoredPart,
+    active_dimension_link: Option<mechanic_core::DimensionLinkId>,
 ) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
@@ -9290,7 +9533,7 @@ fn combined_authored_construction_mesh(
     let mut indices = Vec::new();
     for (_, spec) in graph
         .parts()
-        .filter(|(part, spec)| appearance.matches(graph, *part, **spec))
+        .filter(|(part, spec)| appearance.matches(graph, *part, **spec, active_dimension_link))
     {
         let cuboid = spec
             .as_cuboid()
@@ -9522,6 +9765,7 @@ fn combined_simulation_authored_mesh(
     creation: &CompiledCreation,
     transforms: &[GpuTransform],
     appearance: AuthoredPart,
+    active_dimension_link: Option<mechanic_core::DimensionLinkId>,
 ) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
@@ -9531,7 +9775,7 @@ fn combined_simulation_authored_mesh(
     for &(part, compound_index) in creation.part_to_compound.iter().filter(|(part, _)| {
         graph
             .part(*part)
-            .is_some_and(|spec| appearance.matches(graph, *part, *spec))
+            .is_some_and(|spec| appearance.matches(graph, *part, *spec, active_dimension_link))
     }) {
         let transform = transforms[compound_index as usize];
         let root_translation = Vec3::from_array(transform.position[..3].try_into().unwrap());
@@ -11268,6 +11512,14 @@ fn append_part(
             normals,
             indices,
         ),
+        PartSpec::DimensionLink(spec) => append_transformed_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec.cuboid().size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
         PartSpec::Cylinder(spec) => append_cylinder_shape(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
@@ -11574,7 +11826,8 @@ fn append_textured_part(
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
-        | PartSpec::Input(_) => {
+        | PartSpec::Input(_)
+        | PartSpec::DimensionLink(_) => {
             unreachable!("authored parts render in their own texture batches")
         }
     }
@@ -11626,7 +11879,8 @@ fn append_textured_part(
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
-        | PartSpec::Input(_) => unreachable!(),
+        | PartSpec::Input(_)
+        | PartSpec::DimensionLink(_) => unreachable!(),
     }
     for uv in &mut uvs[first..] {
         uv[0] += texture_offset.u / MATERIAL_TEXTURE_METERS_PER_REPEAT;
@@ -11791,9 +12045,9 @@ mod rendering_tests {
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveLimits, DriveLinkSpec, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec,
-        FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartSpec, PipeBendDimensions,
-        SeatSpec, ServoSpec,
+        DimensionLinkId, DimensionLinkSpec, DriveLimits, DriveLinkSpec, DriveProgram, DriveState,
+        DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec,
+        PartSpec, PipeBendDimensions, SeatSpec, ServoSpec,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -11808,10 +12062,10 @@ mod rendering_tests {
         combined_authored_construction_mesh, combined_bearing_mesh, combined_controller_mesh,
         combined_drive_xray_mesh, combined_material_construction_mesh,
         combined_simulation_bearing_mesh, combined_simulation_material_mesh,
-        combined_simulation_mesh, configure_bearing_texture, configure_repeating_texture,
-        drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
-        simulation_material_is_present, single_authored_part_mesh, single_bearing_mesh,
-        single_cylinder_mesh,
+        combined_simulation_mesh, configure_authored_texture, configure_bearing_texture,
+        configure_repeating_texture, drive_xray_is_visible, joint_xray_is_visible,
+        preview_material, renderable_mesh, simulation_material_is_present,
+        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
     use super::{
         EnvironmentMapGenerationReady, OverlayGeometry, append_axis_arrows, append_drag_plane,
@@ -11829,6 +12083,32 @@ mod rendering_tests {
             panic!("mesh must have float3 positions")
         };
         values.iter().copied().map(Vec3::from_array).collect()
+    }
+
+    #[test]
+    fn only_the_active_dimension_link_uses_the_enabled_batch() {
+        let mut graph = ConstructionGraph::new();
+        let spec = DimensionLinkSpec::new(DimensionLinkId(7), BuildPose::default());
+        let BuildOutcome::Spawned(part) =
+            graph.apply(BuildCommand::SpawnDimensionLink(spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        let part_spec = *graph.part(part).unwrap();
+        assert!(AuthoredPart::DimensionLinkDisabled.matches(&graph, part, part_spec, None));
+        assert!(!AuthoredPart::DimensionLinkEnabled.matches(&graph, part, part_spec, None));
+        assert!(AuthoredPart::DimensionLinkEnabled.matches(
+            &graph,
+            part,
+            part_spec,
+            Some(DimensionLinkId(7))
+        ));
+        assert!(!AuthoredPart::DimensionLinkDisabled.matches(
+            &graph,
+            part,
+            part_spec,
+            Some(DimensionLinkId(7))
+        ));
     }
 
     /// A region offset from the origin, so a centred overlay cannot pass by
@@ -12059,6 +12339,26 @@ mod rendering_tests {
         let data_sampler = data_map.sampler.get_or_init_descriptor();
         assert_eq!(data_sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(data_sampler.address_mode_v, ImageAddressMode::Repeat);
+    }
+
+    #[test]
+    fn authored_maps_clamp_and_use_their_declared_color_spaces() {
+        let mut color_map = ImageLoaderSettings::default();
+        configure_authored_texture(&mut color_map, true);
+        assert!(color_map.is_srgb);
+        let color_sampler = color_map.sampler.get_or_init_descriptor();
+        assert_eq!(color_sampler.address_mode_u, ImageAddressMode::ClampToEdge);
+        assert_eq!(color_sampler.address_mode_v, ImageAddressMode::ClampToEdge);
+        assert_eq!(color_sampler.mag_filter, ImageFilterMode::Linear);
+        assert_eq!(color_sampler.min_filter, ImageFilterMode::Linear);
+        assert_eq!(color_sampler.mipmap_filter, ImageFilterMode::Linear);
+
+        let mut data_map = ImageLoaderSettings::default();
+        configure_authored_texture(&mut data_map, false);
+        assert!(!data_map.is_srgb);
+        let data_sampler = data_map.sampler.get_or_init_descriptor();
+        assert_eq!(data_sampler.address_mode_u, ImageAddressMode::ClampToEdge);
+        assert_eq!(data_sampler.address_mode_v, ImageAddressMode::ClampToEdge);
     }
 
     #[test]
@@ -13128,15 +13428,16 @@ mod rendering_tests {
             .unwrap();
         let construction = super::combined_construction_mesh(&graph);
         let controllers = combined_controller_mesh(&graph);
-        let gas = combined_authored_construction_mesh(&graph, AuthoredPart::GasEngine);
-        let electric = combined_authored_construction_mesh(&graph, AuthoredPart::ElectricEngine);
+        let gas = combined_authored_construction_mesh(&graph, AuthoredPart::GasEngine, None);
+        let electric =
+            combined_authored_construction_mesh(&graph, AuthoredPart::ElectricEngine, None);
         let gas_transmission =
-            combined_authored_construction_mesh(&graph, AuthoredPart::GasTransmission);
+            combined_authored_construction_mesh(&graph, AuthoredPart::GasTransmission, None);
         let electric_transmission =
-            combined_authored_construction_mesh(&graph, AuthoredPart::ElectricTransmission);
-        let servo = combined_authored_construction_mesh(&graph, AuthoredPart::Servo);
-        let seat = combined_authored_construction_mesh(&graph, AuthoredPart::Seat);
-        let input = combined_authored_construction_mesh(&graph, AuthoredPart::Input);
+            combined_authored_construction_mesh(&graph, AuthoredPart::ElectricTransmission, None);
+        let servo = combined_authored_construction_mesh(&graph, AuthoredPart::Servo, None);
+        let seat = combined_authored_construction_mesh(&graph, AuthoredPart::Seat, None);
+        let input = combined_authored_construction_mesh(&graph, AuthoredPart::Input, None);
 
         // Two hinged blocks remain in the construction mesh; every authored part
         // has an independent batch so its material can use its own texture set.
@@ -13257,6 +13558,35 @@ mod rendering_tests {
             authored_uvs(AuthoredPart::Input)[0],
             [0.0, 0.75]
         ));
+    }
+
+    #[test]
+    fn dimension_link_states_share_the_archive_atlas_layout() {
+        let uvs = authored_uvs(AuthoredPart::DimensionLinkDisabled);
+        assert_eq!(
+            uvs,
+            authored_uvs(AuthoredPart::DimensionLinkEnabled),
+            "state changes swap maps without changing the mesh atlas",
+        );
+        let bounds = |face: usize| {
+            uvs[face * 4..face * 4 + 4].iter().fold(
+                ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]),
+                |(minimum, maximum), uv| {
+                    (
+                        [minimum[0].min(uv[0]), minimum[1].min(uv[1])],
+                        [maximum[0].max(uv[0]), maximum[1].max(uv[1])],
+                    )
+                },
+            )
+        };
+
+        // +X, -X, +Y, -Y, +Z, -Z in the archive's 4x4 atlas.
+        assert_eq!(bounds(0), ([0.0, 0.5], [0.25, 0.75]));
+        assert_eq!(bounds(1), ([0.25, 0.5], [0.5, 0.75]));
+        assert_eq!(bounds(2), ([0.0, 0.25], [0.5, 0.5]));
+        assert_eq!(bounds(3), ([0.5, 0.25], [1.0, 0.5]));
+        assert_eq!(bounds(4), ([0.0, 0.0], [0.5, 0.25]));
+        assert_eq!(bounds(5), ([0.5, 0.0], [1.0, 0.25]));
     }
 
     #[test]

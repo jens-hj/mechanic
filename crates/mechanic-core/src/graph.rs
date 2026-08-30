@@ -8,11 +8,11 @@ use thiserror::Error;
 
 use crate::{
     ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, ActuatorAssignment, BearingId, BuildPose,
-    CageIndex, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderSpec, DriveLimits,
-    DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner,
-    FaceRef, GearKeyChord, GearboxConfig, GearboxError, InputSeatLinkId, InputSpec, PartId,
-    PartSpec, PipeBendSpec, RegionError, RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec,
-    ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec, WeldId,
+    CageIndex, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderSpec, DimensionLinkId,
+    DimensionLinkSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineKind,
+    EngineSpec, FaceKind, FaceOwner, FaceRef, GearKeyChord, GearboxConfig, GearboxError,
+    InputSeatLinkId, InputSpec, PartId, PartSpec, PipeBendSpec, RegionError, RegionId, RigidLinkId,
+    SeatControllerLinkId, SeatSpec, ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec, WeldId,
     geometry::{
         FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face, pipe_bend_face,
     },
@@ -344,6 +344,8 @@ pub enum BuildCommand {
     SpawnSeat(SeatSpec),
     /// Spawn an Input block.
     SpawnInput(InputSpec),
+    /// Spawn a Dimension Link with a stable per-world identity.
+    SpawnDimensionLink(DimensionLinkSpec),
     /// Add a passive bearing.
     AddBearing(BearingSpec),
     /// Wire a control block to one bearing.
@@ -543,6 +545,9 @@ pub enum GraphError {
     /// A part referenced as an Input block is a different kind of part.
     #[error("part {0:?} is not an Input block")]
     NotAnInput(PartId),
+    /// Another Dimension Link in this graph already carries the same world identity.
+    #[error("Dimension Link ID {0:?} already exists in this construction")]
+    DuplicateDimensionLink(DimensionLinkId),
     /// A part referenced as a Seat is a different kind of part.
     #[error("part {0:?} is not a Seat")]
     NotASeat(PartId),
@@ -669,6 +674,39 @@ pub struct ConstructionGraphEdit {
     graph: ConstructionGraph,
 }
 
+/// Complete structural assembly reached from one seed part.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructuralComponent {
+    parts: BTreeSet<PartId>,
+    touches_authored_ground: bool,
+}
+
+impl StructuralComponent {
+    /// Whether this assembly contains a part.
+    pub fn contains(&self, part: PartId) -> bool {
+        self.parts.contains(&part)
+    }
+
+    /// Parts in stable graph order.
+    pub fn parts(&self) -> impl Iterator<Item = PartId> + '_ {
+        self.parts.iter().copied()
+    }
+
+    /// Whether a graph weld or caller-provided terrain anchor grounds the assembly.
+    pub const fn touches_authored_ground(&self) -> bool {
+        self.touches_authored_ground
+    }
+}
+
+/// A construction separated into the selected assembly and everything left behind.
+#[derive(Clone, Debug)]
+pub struct GraphPartition {
+    /// Graph with the selected structural assembly removed.
+    pub remainder: ConstructionGraph,
+    /// Graph containing only the selected structural assembly.
+    pub component: ConstructionGraph,
+}
+
 impl ConstructionGraphEdit {
     /// Applies one validated command without cloning the staged graph again.
     ///
@@ -718,6 +756,116 @@ impl ConstructionGraph {
     pub fn begin_edit(&self) -> ConstructionGraphEdit {
         ConstructionGraphEdit {
             graph: self.clone(),
+        }
+    }
+
+    /// Traverses every structural connection from `seed`.
+    ///
+    /// Welds, rigid links, bearings, and shared shape regions all join the
+    /// component. `authored_ground_parts` supplies terrain-foundation anchors
+    /// owned by the application in addition to explicit graph ground welds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError::MissingPart`] when `seed` is not live in this graph.
+    pub fn structural_component(
+        &self,
+        seed: PartId,
+        authored_ground_parts: impl IntoIterator<Item = PartId>,
+    ) -> Result<StructuralComponent, GraphError> {
+        self.parts.get(seed).ok_or(GraphError::MissingPart(seed))?;
+        let authored_ground_parts = authored_ground_parts.into_iter().collect::<BTreeSet<_>>();
+        let mut parts = BTreeSet::from([seed]);
+        let mut frontier = vec![seed];
+        let mut touches_authored_ground = false;
+        while let Some(part) = frontier.pop() {
+            touches_authored_ground |= authored_ground_parts.contains(&part);
+            let mut visit = |other: PartId| {
+                if parts.insert(other) {
+                    frontier.push(other);
+                }
+            };
+            for (_, weld) in self.welds.iter() {
+                match (weld.first.owner, weld.second.owner) {
+                    (FaceOwner::Part(first), FaceOwner::Part(second)) if first == part => {
+                        visit(second);
+                    }
+                    (FaceOwner::Part(first), FaceOwner::Part(second)) if second == part => {
+                        visit(first);
+                    }
+                    (FaceOwner::Part(candidate), FaceOwner::Ground)
+                    | (FaceOwner::Ground, FaceOwner::Part(candidate))
+                        if candidate == part =>
+                    {
+                        touches_authored_ground = true;
+                    }
+                    _ => {}
+                }
+            }
+            for (_, link) in self.rigid_links.iter() {
+                if link.first == part {
+                    visit(link.second);
+                } else if link.second == part {
+                    visit(link.first);
+                }
+            }
+            for (_, bearing) in self.bearings.iter() {
+                let endpoints = match (bearing.source.owner, bearing.target.owner) {
+                    (FaceOwner::Part(first), FaceOwner::Part(second)) => Some((first, second)),
+                    _ => None,
+                };
+                if let Some((first, second)) = endpoints {
+                    if first == part {
+                        visit(second);
+                    } else if second == part {
+                        visit(first);
+                    }
+                }
+            }
+            if let Some(region) = self.region_of(part) {
+                let members = self
+                    .parts()
+                    .filter_map(|(candidate, _)| {
+                        (self.region_of(candidate) == Some(region)).then_some(candidate)
+                    })
+                    .collect::<Vec<_>>();
+                for member in members {
+                    visit(member);
+                }
+            }
+        }
+        Ok(StructuralComponent {
+            parts,
+            touches_authored_ground,
+        })
+    }
+
+    /// Splits one complete structural assembly from this graph while retaining
+    /// every connection, program, region, and graph-owned relation on its side.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if removing a live part from an internally valid cloned graph fails.
+    pub fn partition(&self, component: &StructuralComponent) -> GraphPartition {
+        let all_parts = self.parts().map(|(part, _)| part).collect::<Vec<_>>();
+        let mut remainder = self.clone();
+        let mut extracted = self.clone();
+        for part in &all_parts {
+            if component.contains(*part) {
+                if remainder.part(*part).is_some() {
+                    remainder
+                        .apply(BuildCommand::Remove(*part))
+                        .expect("partition removes live parts");
+                }
+            } else if extracted.part(*part).is_some() {
+                extracted
+                    .apply(BuildCommand::Remove(*part))
+                    .expect("partition removes live parts");
+            }
+        }
+        GraphPartition {
+            remainder,
+            component: extracted,
         }
     }
 
@@ -826,6 +974,21 @@ impl ConstructionGraph {
     /// Whether a live part is an Input block.
     pub fn is_input(&self, part: PartId) -> bool {
         matches!(self.parts.get(part), Some(PartSpec::Input(_)))
+    }
+
+    /// Retrieves the Dimension Link identity carried by a part, when present.
+    pub fn dimension_link_id(&self, part: PartId) -> Option<DimensionLinkId> {
+        match self.parts.get(part)? {
+            PartSpec::DimensionLink(link) => Some(link.id),
+            _ => None,
+        }
+    }
+
+    /// Finds the unique part carrying a Dimension Link identity.
+    pub fn dimension_link(&self, id: DimensionLinkId) -> Option<PartId> {
+        self.parts.iter().find_map(|(part, spec)| {
+            matches!(spec, PartSpec::DimensionLink(link) if link.id == id).then_some(part)
+        })
     }
 
     /// Input block linked to a Seat, when present.
@@ -1230,6 +1393,7 @@ impl ConstructionGraph {
                     | PartSpec::Engine(_)
                     | PartSpec::Transmission(_)
                     | PartSpec::Servo(_)
+                    | PartSpec::DimensionLink(_)
             )
         )
     }
@@ -1244,6 +1408,7 @@ impl ConstructionGraph {
                 Some(PartSpec::Servo(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Seat(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Input(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                Some(PartSpec::DimensionLink(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
                 Some(PartSpec::Cylinder(spec)) => {
                     cylinder_face(spec, face.face).ok_or(GraphError::InvalidCylinderFace)
                 }
@@ -1452,6 +1617,13 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnInput(spec) => {
+                let id = self.parts.insert(spec.into());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnDimensionLink(spec) => {
+                if self.dimension_link(spec.id).is_some() {
+                    return Err(GraphError::DuplicateDimensionLink(spec.id));
+                }
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
@@ -2228,10 +2400,10 @@ mod tests {
     };
     use crate::{
         ActuatorAssignment, BearingId, BuildPose, ConstructionMaterial, ControllerSpec, CuboidSpec,
-        CylinderDimensions, CylinderSpec, DriveLimits, DriveName, DriveProgram, DriveState,
-        DriveTarget, EngineKind, EngineSpec, FaceKind, FaceRef, GridRotation, InputSeatLinkSpec,
-        InputSpec, PartId, PartSpec, RegionError, RegionId, SeatControllerLinkSpec, SeatSpec,
-        ShapeRegion, ShiftMode, TransmissionSpec,
+        CylinderDimensions, CylinderSpec, DimensionLinkId, DimensionLinkSpec, DriveLimits,
+        DriveName, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind,
+        FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, PartId, PartSpec, RegionError,
+        RegionId, SeatControllerLinkSpec, SeatSpec, ShapeRegion, ShiftMode, TransmissionSpec,
     };
 
     fn cube_at(x: i32) -> CuboidSpec {
@@ -2263,6 +2435,62 @@ mod tests {
             unreachable!()
         };
         id
+    }
+
+    #[test]
+    fn dimension_link_ids_are_unique_and_queryable() {
+        let mut graph = ConstructionGraph::new();
+        let spec = DimensionLinkSpec::new(DimensionLinkId(9), BuildPose::default());
+        let BuildOutcome::Spawned(link) =
+            graph.apply(BuildCommand::SpawnDimensionLink(spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(graph.dimension_link(DimensionLinkId(9)), Some(link));
+        assert_eq!(graph.dimension_link_id(link), Some(DimensionLinkId(9)));
+        assert_eq!(
+            graph.apply(BuildCommand::SpawnDimensionLink(spec)),
+            Err(GraphError::DuplicateDimensionLink(DimensionLinkId(9)))
+        );
+    }
+
+    #[test]
+    fn structural_component_crosses_every_joint_and_partitions_cleanly() {
+        let mut graph = ConstructionGraph::new();
+        let welded = spawn(&mut graph, cube_at(0));
+        let hinged = spawn(&mut graph, cube_at(4));
+        let linked = spawn(&mut graph, cube_at(8));
+        let cargo = spawn(&mut graph, cube_at(20));
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(welded, FaceKind::PositiveX),
+                second: FaceRef::part(hinged, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(hinged, FaceKind::PositiveX),
+                FaceRef::part(linked, FaceKind::NegativeX),
+                Vec3::new(1.5, 0.5, 0.0),
+                Vec3::X,
+            )))
+            .unwrap();
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: linked,
+                second: cargo,
+            }))
+            .unwrap();
+
+        let component = graph.structural_component(welded, [cargo]).unwrap();
+        assert_eq!(component.parts().count(), 4);
+        assert!(component.touches_authored_ground());
+        let partition = graph.partition(&component);
+        assert_eq!(partition.component.part_count(), 4);
+        assert_eq!(partition.component.weld_count(), 1);
+        assert_eq!(partition.component.bearing_count(), 1);
+        assert_eq!(partition.component.rigid_link_count(), 1);
+        assert_eq!(partition.remainder.part_count(), 0);
     }
 
     #[test]

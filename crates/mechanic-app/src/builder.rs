@@ -8,9 +8,10 @@ use bevy::{math::DVec2, prelude::*};
 use mechanic_core::{
     BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
     ConstructionGraph, ControllerSpec, ConvexPiece, CuboidSpec, CylinderDimensions, CylinderSpec,
-    EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec, PartId,
-    PartPiece, PartSpec, PendingOperation, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
-    SeatSpec, ServoSpec, ShapeRegion, TransmissionSpec, WeldSpec, snap_world_to_grid,
+    DimensionLinkId, DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
+    GridRotation, InputSpec, PartId, PartPiece, PartSpec, PendingOperation, PipeBendDimensions,
+    PipeBendSpec, RigidLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TransmissionSpec, WeldSpec,
+    snap_world_to_grid,
 };
 use mechanic_world::WORLD_HALF_EXTENT_METERS;
 
@@ -37,6 +38,7 @@ const ALL_FACES: [FaceKind; 6] = [
 pub(crate) enum PlacementBounds {
     #[default]
     Garage,
+    GarageBuild,
     World {
         origin: DVec2,
     },
@@ -242,6 +244,19 @@ pub(crate) fn raycast_construction(
     raycast_construction_with_ground(graph, origin, direction, raycast_ground(origin, direction))
 }
 
+pub(crate) fn raycast_construction_with_scaffold(
+    graph: &ConstructionGraph,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<SurfaceHit> {
+    raycast_construction_with_ground(
+        graph,
+        origin,
+        direction,
+        raycast_horizontal_surface(origin, direction, crate::garage::BUILD_MIN_Y),
+    )
+}
+
 pub(crate) fn raycast_construction_with_ground(
     graph: &ConstructionGraph,
     origin: Vec3,
@@ -290,6 +305,24 @@ pub(crate) fn raycast_construction_for_annulus(
     )
 }
 
+pub(crate) fn raycast_construction_for_annulus_with_scaffold(
+    graph: &ConstructionGraph,
+    origin: Vec3,
+    direction: Vec3,
+    inner_diameter: f32,
+    outer_diameter: f32,
+) -> Option<SurfaceHit> {
+    let scaffold = raycast_horizontal_surface(origin, direction, crate::garage::BUILD_MIN_Y);
+    raycast_construction_for_annulus_with_ground(
+        graph,
+        origin,
+        direction,
+        inner_diameter,
+        outer_diameter,
+        scaffold,
+    )
+}
+
 pub(crate) fn raycast_construction_for_annulus_with_ground(
     graph: &ConstructionGraph,
     origin: Vec3,
@@ -326,7 +359,8 @@ pub(crate) fn raycast_construction_for_annulus_with_ground(
             | PartSpec::Transmission(_)
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
-            | PartSpec::Input(_) => None,
+            | PartSpec::Input(_)
+            | PartSpec::DimensionLink(_) => None,
         }))
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
 }
@@ -728,6 +762,24 @@ pub(crate) fn stage_input_from_source_in_bounds(
     )
 }
 
+pub(crate) fn stage_dimension_link_from_source_in_bounds(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    source: FaceOwner,
+    id: DimensionLinkId,
+    bounds: PlacementBounds,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_part_batch(
+        graph,
+        start,
+        &[start.spec],
+        None,
+        Some(source),
+        FixedPartSpawn::DimensionLink(id),
+        bounds,
+    )
+}
+
 #[cfg(test)]
 pub(crate) fn stage_block_batch_from_source(
     graph: &ConstructionGraph,
@@ -874,7 +926,7 @@ fn stage_connected_cylinder(
         }));
     } else {
         if weld_scope.is_none()
-            && !bounds.is_world()
+            && bounds == PlacementBounds::Garage
             && let Some((first, second)) =
                 touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Ground)
         {
@@ -1179,7 +1231,7 @@ pub(crate) fn stage_pipe_run_in_bounds(
         PipeRunAttachment::AutoWeld { .. } => {
             for &part in &spawned {
                 if weld_scope.is_none()
-                    && !bounds.is_world()
+                    && bounds == PlacementBounds::Garage
                     && let Some((first, second)) =
                         touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Ground)
                 {
@@ -1273,6 +1325,7 @@ enum FixedPartSpawn {
     Servo,
     Seat,
     Input,
+    DimensionLink(DimensionLinkId),
 }
 
 #[allow(clippy::too_many_arguments)] // Placement, bearing attachment, and welding share one transaction.
@@ -1312,6 +1365,9 @@ fn stage_connected_part_batch(
             FixedPartSpawn::Servo => BuildCommand::SpawnServo(ServoSpec::new(spec.pose)),
             FixedPartSpawn::Seat => BuildCommand::SpawnSeat(SeatSpec::new(spec.pose)),
             FixedPartSpawn::Input => BuildCommand::SpawnInput(InputSpec::new(spec.pose)),
+            FixedPartSpawn::DimensionLink(id) => {
+                BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(id, spec.pose))
+            }
         }))
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
     let new_parts = outcomes
@@ -1347,7 +1403,7 @@ fn stage_connected_part_batch(
     for (index, &part) in new_parts.iter().enumerate() {
         if bearing.is_none()
             && weld_scope.is_none()
-            && !bounds.is_world()
+            && bounds == PlacementBounds::Garage
             && let Some((first, second)) =
                 touching_face_pair(&staged, FaceOwner::Part(part), FaceOwner::Ground)
         {
@@ -2004,6 +2060,7 @@ fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceGeometry> {
         PartSpec::Servo(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Seat(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Input(spec) => Some(face_geometry(spec.cuboid(), face)),
+        PartSpec::DimensionLink(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Cylinder(spec) => cylinder_face_geometry(spec, face),
         PartSpec::PipeBend(spec) => pipe_bend_face_geometry(spec, face),
     }
@@ -2085,6 +2142,14 @@ fn validate_part_in_bounds(
                 || maximum.z > GROUND_HALF_SIZE + CONTACT_EPSILON
                 || minimum.y < -CONTACT_EPSILON
         }
+        PlacementBounds::GarageBuild => {
+            minimum.x < -GROUND_HALF_SIZE - CONTACT_EPSILON
+                || maximum.x > GROUND_HALF_SIZE + CONTACT_EPSILON
+                || minimum.z < -GROUND_HALF_SIZE - CONTACT_EPSILON
+                || maximum.z > GROUND_HALF_SIZE + CONTACT_EPSILON
+                || minimum.y < crate::garage::BUILD_MIN_Y - CONTACT_EPSILON
+                || maximum.y > crate::garage::BUILD_MAX_Y + CONTACT_EPSILON
+        }
         PlacementBounds::World { origin } => {
             f64::from(minimum.x) + origin.x < -WORLD_HALF_EXTENT_METERS
                 || f64::from(maximum.x) + origin.x > WORLD_HALF_EXTENT_METERS
@@ -2134,7 +2199,8 @@ fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
                 | PartSpec::Transmission(_)
                 | PartSpec::Servo(_)
                 | PartSpec::Seat(_)
-                | PartSpec::Input(_),
+                | PartSpec::Input(_)
+                | PartSpec::DimensionLink(_),
             ) => ALL_FACES
                 .into_iter()
                 .map(|face| FaceRef::part(part, face))
@@ -2153,12 +2219,16 @@ fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<FaceRef> {
 }
 
 fn raycast_ground(origin: Vec3, direction: Vec3) -> Option<SurfaceHit> {
+    raycast_horizontal_surface(origin, direction, 0.0)
+}
+
+fn raycast_horizontal_surface(origin: Vec3, direction: Vec3, height: f32) -> Option<SurfaceHit> {
     // The platform is a build surface from above, not a wall that hides the
     // construction when the camera is underneath it.
     if direction.y >= -f32::EPSILON {
         return None;
     }
-    let distance = -origin.y / direction.y;
+    let distance = (height - origin.y) / direction.y;
     let point = origin + direction * distance;
     (distance >= 0.0 && point.x.abs() <= GROUND_HALF_SIZE && point.z.abs() <= GROUND_HALF_SIZE)
         .then_some(SurfaceHit {
@@ -2292,6 +2362,7 @@ fn raycast_part(origin: Vec3, direction: Vec3, part: PartId, spec: PartSpec) -> 
         PartSpec::Servo(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Seat(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Input(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
+        PartSpec::DimensionLink(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Cylinder(spec) => raycast_cylinder(origin, direction, part, spec),
         PartSpec::PipeBend(spec) => raycast_pipe_bend(origin, direction, part, spec),
     }
@@ -2796,6 +2867,7 @@ pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
         PartSpec::Servo(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Seat(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Input(spec) => cuboid_world_bounds(spec.cuboid()),
+        PartSpec::DimensionLink(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Cylinder(spec) => {
             let rotation = Mat3::from_quat(spec.pose.rotation.quaternion());
             let (local_minimum, local_maximum) = cylinder_local_bounds(spec.dimensions);
@@ -2887,7 +2959,7 @@ struct CollisionBox {
     half: Vec3,
 }
 
-fn parts_overlap(first: PartSpec, second: PartSpec) -> bool {
+pub(crate) fn parts_overlap(first: PartSpec, second: PartSpec) -> bool {
     part_collision_boxes(first).into_iter().any(|first| {
         part_collision_boxes(second)
             .into_iter()
@@ -2903,6 +2975,7 @@ fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
         PartSpec::Servo(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Seat(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Input(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
+        PartSpec::DimensionLink(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Cuboid(spec) => vec![CollisionBox {
             center: spec.pose.translation(),
             rotation: spec.pose.rotation.quaternion(),
@@ -3747,6 +3820,28 @@ mod tests {
             PlacementBounds::World {
                 origin: DVec2::ZERO,
             },
+        )
+        .unwrap();
+
+        assert_eq!(staged.weld_count(), 0);
+        assert!(!staged.compile().unwrap().compounds[0].is_static);
+    }
+
+    #[test]
+    fn garage_scaffold_support_does_not_create_a_structural_ground_weld() {
+        let graph = ConstructionGraph::new();
+        let scaffold_hit = SurfaceHit {
+            distance: 4.0,
+            point: Vec3::new(0.0, crate::garage::BUILD_MIN_Y, 0.0),
+            face: FaceRef::ground(),
+        };
+        let candidate = candidate_from_hit(&graph, scaffold_hit);
+        let staged = stage_block_batch_from_source_in_bounds(
+            &graph,
+            candidate,
+            &[candidate.spec],
+            FaceOwner::Ground,
+            PlacementBounds::GarageBuild,
         )
         .unwrap();
 

@@ -456,6 +456,7 @@ fn compile_graph(
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
             | PartSpec::Input(_)
+            | PartSpec::DimensionLink(_)
             | PartSpec::Cuboid(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
             PartSpec::PipeBend(_) => PIPE_BEND_COLLIDER_COUNT,
@@ -1335,6 +1336,7 @@ fn physical_spec(spec: PartSpec) -> PartSpec {
         PartSpec::Servo(servo) => PartSpec::Cuboid(servo.cuboid()),
         PartSpec::Seat(seat) => PartSpec::Cuboid(seat.cuboid()),
         PartSpec::Input(input) => PartSpec::Cuboid(input.cuboid()),
+        PartSpec::DimensionLink(link) => PartSpec::Cuboid(link.cuboid()),
         other => other,
     }
 }
@@ -1381,6 +1383,9 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
         PartSpec::Servo(servo) => cuboid_mass_properties(servo.cuboid(), CUBOID_DENSITY_KG_M3),
         PartSpec::Seat(seat) => cuboid_mass_properties(seat.cuboid(), CUBOID_DENSITY_KG_M3),
         PartSpec::Input(input) => cuboid_mass_properties(input.cuboid(), CUBOID_DENSITY_KG_M3),
+        PartSpec::DimensionLink(link) => {
+            cuboid_mass_properties(link.cuboid(), CUBOID_DENSITY_KG_M3)
+        }
     }
 }
 
@@ -1723,7 +1728,8 @@ fn contact_properties(spec: PartSpec) -> MaterialProperties {
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
-        | PartSpec::Input(_) => AUTHORED_CONTACT_PROPERTIES,
+        | PartSpec::Input(_)
+        | PartSpec::DimensionLink(_) => AUTHORED_CONTACT_PROPERTIES,
     }
 }
 
@@ -1811,7 +1817,8 @@ fn append_part_colliders(
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
-        | PartSpec::Input(_) => {
+        | PartSpec::Input(_)
+        | PartSpec::DimensionLink(_) => {
             unreachable!("fixed-size authored parts resolve to cuboids")
         }
     }

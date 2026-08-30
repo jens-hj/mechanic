@@ -23,6 +23,7 @@ pub(crate) enum Tool {
     Servo,
     Seat,
     Input,
+    DimensionLink,
     Shape,
 }
 
@@ -78,14 +79,24 @@ impl MatterMode {
         match self {
             Self::Block => "Block",
             Self::Cylinder => "Cylinder",
-            Self::Item => "Item",
+            Self::Item => "Item Placer",
             Self::Terrain => "Terrain",
             Self::Manipulate => "Manipulate",
         }
     }
+
+    pub(crate) const fn short_label(self) -> &'static str {
+        match self {
+            Self::Block => "BLOCK",
+            Self::Cylinder => "PIPE",
+            Self::Item => "ITEMS",
+            Self::Terrain => "TERRAIN",
+            Self::Manipulate => "SHAPE",
+        }
+    }
 }
 
-/// Placeable selected inside Matter Manipulator → Item.
+/// Placeable selected inside Matter Manipulator → Item Placer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum PlaceableItem {
     #[default]
@@ -97,6 +108,7 @@ pub(crate) enum PlaceableItem {
     Servo,
     Seat,
     Input,
+    DimensionLink,
 }
 
 /// One contextual choice shown by the hold-Tab selector.
@@ -139,6 +151,14 @@ impl WheelChoice {
 }
 
 impl WheelContext {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::ConstructionMaterial => "MATERIALS",
+            Self::Item => "ITEMS",
+            Self::TerrainMaterial => "TERRAIN",
+        }
+    }
+
     pub(crate) const fn count(self) -> usize {
         match self {
             Self::ConstructionMaterial => ConstructionMaterial::ALL.len(),
@@ -170,7 +190,7 @@ impl WheelContext {
 }
 
 impl PlaceableItem {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Bearing,
         Self::ControlBlock,
         Self::GasEngine,
@@ -179,6 +199,7 @@ impl PlaceableItem {
         Self::Servo,
         Self::Seat,
         Self::Input,
+        Self::DimensionLink,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -195,6 +216,7 @@ impl PlaceableItem {
             Self::Servo => Tool::Servo,
             Self::Seat => Tool::Seat,
             Self::Input => Tool::Input,
+            Self::DimensionLink => Tool::DimensionLink,
         }
     }
 
@@ -208,6 +230,7 @@ impl PlaceableItem {
             Tool::Servo => Some(Self::Servo),
             Tool::Seat => Some(Self::Seat),
             Tool::Input => Some(Self::Input),
+            Tool::DimensionLink => Some(Self::DimensionLink),
             _ => None,
         }
     }
@@ -229,6 +252,7 @@ impl Tool {
             Self::Servo => "Servo",
             Self::Seat => "Seat",
             Self::Input => "Input",
+            Self::DimensionLink => "Dimension Link",
             Self::Shape => "Shape",
         }
     }
@@ -345,6 +369,34 @@ mod tests {
         selected.select_mode(MatterMode::Item);
         assert_eq!(selected.item, PlaceableItem::Servo);
         assert_eq!(selected.active_editor_tool(), Some(Tool::Servo));
+    }
+
+    #[test]
+    fn dimension_link_is_the_ninth_item_choice() {
+        assert_eq!(
+            PlaceableItem::ALL,
+            [
+                PlaceableItem::Bearing,
+                PlaceableItem::ControlBlock,
+                PlaceableItem::GasEngine,
+                PlaceableItem::ElectricEngine,
+                PlaceableItem::Transmission,
+                PlaceableItem::Servo,
+                PlaceableItem::Seat,
+                PlaceableItem::Input,
+                PlaceableItem::DimensionLink,
+            ]
+        );
+        assert_eq!(
+            PlaceableItem::DimensionLink.editor_tool(),
+            Tool::DimensionLink
+        );
+    }
+
+    #[test]
+    fn item_mode_is_named_as_a_placer_in_the_ui() {
+        assert_eq!(MatterMode::Item.label(), "Item Placer");
+        assert_eq!(MatterMode::Item.short_label(), "ITEMS");
     }
 
     #[test]

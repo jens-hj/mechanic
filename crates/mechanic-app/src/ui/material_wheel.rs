@@ -1,4 +1,4 @@
-//! Reusable hold-Tab radial selector for contextual Matter choices.
+//! Reusable hold-Tab radial selector for materials, items, and terrain.
 
 #![allow(clippy::wildcard_imports)]
 
@@ -37,6 +37,12 @@ pub(crate) struct Model {
 pub(crate) fn RadialSelector(model: State<Model>) -> Element {
     let name = move || model.get().highlighted.map_or("", WheelChoice::label);
     let shadow_name = move || model.get().highlighted.map_or("", WheelChoice::label);
+    let context_name = move || {
+        model
+            .get()
+            .highlighted
+            .map_or("", |choice| choice.context().label())
+    };
     view! {
         stack align:center justify:center nohit {
             stack width:{ Length::px(WHEEL_SIZE) } height:{ Length::px(WHEEL_SIZE) }
@@ -48,6 +54,8 @@ pub(crate) fn RadialSelector(model: State<Model>) -> Element {
                     (choice_thumbnail(*choice, *index, sector_count(*choice)))
                 }
                 circle radius:36px fill:shell stroke:(width:3px color:shell-edge)
+                text font-family:typeface.display font-size:10px font-weight:700
+                    letter-spacing:0.6px font-color:accent.key { context_name() }
                 stack width:{ Length::px(LABEL_WIDTH) } height:{ Length::px(LABEL_HEIGHT) }
                     align:center justify:center translate:(x:0px y:{ Length::px(LABEL_OFFSET_Y) })
                     nohit {
@@ -433,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn contextual_wheels_have_twelve_eight_and_six_sectors() {
+    fn contextual_wheels_cover_every_choice() {
         assert_eq!(
             ordered_sectors(Some(WheelChoice::ConstructionMaterial(
                 ConstructionMaterial::Steel
@@ -451,6 +459,10 @@ mod tests {
             )))
             .len(),
             mechanic_world::TerrainMaterial::ALL.len()
+        );
+        assert_eq!(
+            WheelChoice::Item(PlaceableItem::Bearing).context().label(),
+            "ITEMS"
         );
     }
 

@@ -8,10 +8,12 @@ use bevy::{
 use crate::{builder::GROUND_HALF_SIZE, configure_repeating_texture};
 
 pub(crate) const CELL_SIZE: f32 = 5.0;
-pub(crate) const CELL_COUNT: u8 = 4;
-const CELL_COUNT_FLOAT: f32 = 4.0;
+pub(crate) const CELL_COUNT: u8 = 6;
+const CELL_COUNT_FLOAT: f32 = 6.0;
 pub(crate) const SIDE_LENGTH: f32 = CELL_SIZE * CELL_COUNT_FLOAT;
-pub(crate) const HEIGHT: f32 = CELL_SIZE;
+pub(crate) const HEIGHT: f32 = CELL_SIZE * 3.0;
+pub(crate) const BUILD_MIN_Y: f32 = CELL_SIZE;
+pub(crate) const BUILD_MAX_Y: f32 = CELL_SIZE * 2.0;
 pub(crate) const VOID_COLOR: Color = Color::srgb(0.0196, 0.0314, 0.0431);
 pub(crate) const EXPOSURE: Exposure = Exposure::BLENDER;
 
@@ -34,18 +36,28 @@ struct GarageMaterials {
     light_glow: Handle<StandardMaterial>,
 }
 
-/// Adds the 4 x 4-cell, single-course garage around the existing logical ground plane.
+/// Adds the 6 × 6-cell, three-course Garage and its editor-only build scaffold.
 pub(crate) fn spawn(
     commands: &mut Commands,
     asset_server: &AssetServer,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) {
-    debug_assert!((SIDE_LENGTH - GROUND_HALF_SIZE * 2.0).abs() < f32::EPSILON);
+    debug_assert!((CELL_SIZE * 4.0 - GROUND_HALF_SIZE * 2.0).abs() < f32::EPSILON);
     let garage_materials = garage_materials(asset_server, materials);
     spawn_surfaces(commands, meshes, &garage_materials);
 
     let cube = meshes.add(Cuboid::default());
+    commands.spawn((
+        Name::new("Garage build scaffold"),
+        Mesh3d(cube.clone()),
+        MeshMaterial3d(garage_materials.mint_glow.clone()),
+        Transform::from_xyz(0.0, BUILD_MIN_Y - 0.01, 0.0).with_scale(Vec3::new(
+            GROUND_HALF_SIZE * 2.0,
+            0.02,
+            GROUND_HALF_SIZE * 2.0,
+        )),
+    ));
     spawn_kerbs(commands, &cube, &garage_materials);
     spawn_columns(commands, &cube, &garage_materials);
     spawn_trusses(commands, &cube, &garage_materials);
@@ -487,29 +499,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn four_cells_fill_the_twenty_metre_construction_platform() {
-        assert_eq!(CELL_COUNT, 4);
-        assert!((SIDE_LENGTH - 20.0).abs() < f32::EPSILON);
-        assert!((SIDE_LENGTH - GROUND_HALF_SIZE * 2.0).abs() < f32::EPSILON);
+    fn six_cells_fill_the_thirty_metre_room() {
+        assert_eq!(CELL_COUNT, 6);
+        assert!((SIDE_LENGTH - 30.0).abs() < f32::EPSILON);
+        assert!((CELL_SIZE * 6.0 - SIDE_LENGTH).abs() < f32::EPSILON);
+        assert!((GROUND_HALF_SIZE * 2.0 - 20.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn columns_cover_every_perimeter_cell_line_without_duplicate_corners() {
         let positions = column_positions();
-        assert_eq!(positions.len(), 16);
+        assert_eq!(positions.len(), 24);
         assert_eq!(
             positions
                 .iter()
-                .filter(|position| (position.x.abs() - 9.8).abs() < f32::EPSILON)
+                .filter(|position| (position.x.abs() - 14.8).abs() < f32::EPSILON)
                 .count(),
-            10
+            14
         );
         assert_eq!(
             positions
                 .iter()
-                .filter(|position| (position.y.abs() - 9.8).abs() < f32::EPSILON)
+                .filter(|position| (position.y.abs() - 14.8).abs() < f32::EPSILON)
                 .count(),
-            10
+            14
         );
     }
 

@@ -19,6 +19,7 @@ use crate::{
     control_panel::ControlPanelState,
     controls::GameAction,
     creation_menu::CreationMenuState,
+    garage,
     hotbar::{
         MainTool, MatterMode, SelectedMaterial, SelectedTerrainMaterial, SelectedTool, WheelChoice,
     },
@@ -55,7 +56,7 @@ pub(crate) struct PlayerState {
 impl Default for PlayerState {
     fn default() -> Self {
         Self {
-            position: Vec3::new(0.0, 0.0, -6.0),
+            position: Vec3::new(0.0, garage::BUILD_MIN_Y, -6.0),
             seat: None,
             input_captured: false,
         }
@@ -252,15 +253,41 @@ pub(crate) fn movement_axis(actions: &ButtonInput<GameAction>) -> Vec2 {
     axis.normalize_or_zero()
 }
 
+#[cfg(test)]
 pub(crate) fn camera_relative_movement(axis: Vec2, yaw: f32) -> Vec3 {
     let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
     let right = Vec3::new(-forward.z, 0.0, forward.x);
     (right * axis.x + forward * axis.y).normalize_or_zero()
 }
 
+#[cfg(test)]
 pub(crate) fn walking_step(axis: Vec2, yaw: f32, delta_seconds: f32, sprinting: bool) -> Vec3 {
     let speed = if sprinting { SPRINT_SPEED } else { WALK_SPEED };
     camera_relative_movement(axis, yaw) * speed * delta_seconds
+}
+
+pub(crate) fn flight_step(
+    axis: Vec2,
+    look_rotation: Quat,
+    vertical: f32,
+    delta_seconds: f32,
+    sprinting: bool,
+) -> Vec3 {
+    let speed = if sprinting { SPRINT_SPEED } else { WALK_SPEED };
+    let forward = look_rotation * Vec3::NEG_Z;
+    let right = look_rotation * Vec3::X;
+    (right * axis.x + forward * axis.y + Vec3::Y * vertical).normalize_or_zero()
+        * speed
+        * delta_seconds
+}
+
+pub(crate) fn clamp_to_garage(position: Vec3) -> Vec3 {
+    let half = garage::SIDE_LENGTH * 0.5;
+    Vec3::new(
+        position.x.clamp(-half, half),
+        position.y.clamp(0.0, garage::HEIGHT - EYE_HEIGHT),
+        position.z.clamp(-half, half),
+    )
 }
 
 pub(crate) fn clamp_to_platform(position: Vec3) -> Vec3 {
@@ -417,14 +444,17 @@ pub(crate) fn update_player_camera(
     }
     view.damp_pullback(player.seat.is_some(), time.delta_secs());
     if player.seat.is_none() {
-        if world_active && space.get().uses_bounded_garage_walking() {
-            player.position += walking_step(
+        if world_active && space.get().uses_garage_flight() {
+            let vertical = f32::from(actions.pressed(GameAction::Jump))
+                - f32::from(actions.pressed(GameAction::Descend));
+            player.position += flight_step(
                 movement_axis(&actions),
-                view.yaw,
+                view.look_rotation(),
+                vertical,
                 time.delta_secs(),
                 actions.pressed(GameAction::Sprint),
             );
-            player.position = clamp_to_platform(player.position);
+            player.position = clamp_to_garage(player.position);
         }
         **transform =
             view.apply_pullback(player.position + Vec3::Y * EYE_HEIGHT, view.look_rotation());
@@ -536,7 +566,7 @@ mod tests {
     fn player_lifecycle_starts_standing_and_exit_returns_to_safe_ground() {
         let mut player = PlayerState::default();
         assert!(player.seat.is_none());
-        assert_eq!(player.position.y, 0.0);
+        assert_eq!(player.position.y, 5.0);
         player.leave_seat_at(Vec3::new(30.0, 8.0, -40.0));
         assert_eq!(
             player.position,
@@ -589,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cast_precision_loss)] // Test sector counts are at most eight.
+    #[allow(clippy::cast_precision_loss)] // Test sector counts are small.
     fn item_and_terrain_selectors_cover_every_contextual_sector() {
         for (index, item) in PlaceableItem::ALL.into_iter().enumerate() {
             let angle = TAU * index as f32 / PlaceableItem::ALL.len() as f32;

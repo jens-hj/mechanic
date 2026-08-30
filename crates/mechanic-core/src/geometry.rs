@@ -4,6 +4,10 @@ use thiserror::Error;
 
 use crate::PartId;
 
+/// Stable identity of a Dimension Link within one saved world and its Garage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct DimensionLinkId(pub u64);
+
 /// A selectable material for ordinary construction parts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConstructionMaterial {
@@ -273,6 +277,20 @@ impl GridRotation {
             .quarter_turns_xyz
             .map(|turns| f32::from(turns) * core::f32::consts::FRAC_PI_2);
         Quat::from_euler(EulerRot::XYZ, radians[0], radians[1], radians[2])
+    }
+
+    /// Applies a world-space positive-Y cardinal rotation before this rotation.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the finite cardinal-rotation set is not closed under composition.
+    #[must_use]
+    pub fn rotated_y(self, quarter_turns: u8) -> Self {
+        let target = GridRotation::new(0, quarter_turns, 0).quaternion() * self.quaternion();
+        (0_u8..4)
+            .flat_map(|x| (0_u8..4).flat_map(move |y| (0_u8..4).map(move |z| Self::new(x, y, z))))
+            .find(|candidate| candidate.quaternion().abs_diff_eq(target, 1.0e-5))
+            .expect("cardinal rotations are closed under composition")
     }
 }
 
@@ -850,6 +868,34 @@ pub struct InputSpec {
     pub pose: BuildPose,
 }
 
+/// Fixed-size portal anchor used to move one structural assembly to and from a Garage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DimensionLinkSpec {
+    /// Stable per-world identity retained when the assembly changes spaces.
+    pub id: DimensionLinkId,
+    /// Link centre and cardinal orientation.
+    pub pose: BuildPose,
+}
+
+impl DimensionLinkSpec {
+    /// Fixed local x/y/z side lengths in grid units (50 × 25 × 25 cm).
+    pub const GRID_UNITS: [u8; 3] = [2, 1, 1];
+
+    /// Creates a Dimension Link with a stable per-world identity.
+    pub const fn new(id: DimensionLinkId, pose: BuildPose) -> Self {
+        Self { id, pose }
+    }
+
+    /// Fixed collision and placement envelope backing every Dimension Link.
+    ///
+    /// # Panics
+    ///
+    /// Never panics because the fixed dimensions are valid grid dimensions.
+    pub fn cuboid(self) -> CuboidSpec {
+        CuboidSpec::new(Self::GRID_UNITS, self.pose).expect("Dimension Link dimensions are valid")
+    }
+}
+
 impl InputSpec {
     /// Fixed local x/y/z side lengths in grid units.
     pub const GRID_UNITS: [u8; 3] = [2, 1, 1];
@@ -933,6 +979,8 @@ pub enum PartSpec {
     Seat(SeatSpec),
     /// Fixed-size keyboard input router.
     Input(InputSpec),
+    /// Fixed-size Dimension Link portal anchor.
+    DimensionLink(DimensionLinkSpec),
 }
 
 impl PartSpec {
@@ -948,6 +996,54 @@ impl PartSpec {
             Self::Servo(spec) => spec.pose,
             Self::Seat(spec) => spec.pose,
             Self::Input(spec) => spec.pose,
+            Self::DimensionLink(spec) => spec.pose,
+        }
+    }
+
+    /// Returns this part with a replacement authored pose.
+    #[must_use]
+    pub const fn with_pose(self, pose: BuildPose) -> Self {
+        match self {
+            Self::Cuboid(mut spec) => {
+                spec.pose = pose;
+                Self::Cuboid(spec)
+            }
+            Self::Cylinder(mut spec) => {
+                spec.pose = pose;
+                Self::Cylinder(spec)
+            }
+            Self::PipeBend(mut spec) => {
+                spec.pose = pose;
+                Self::PipeBend(spec)
+            }
+            Self::Controller(mut spec) => {
+                spec.pose = pose;
+                Self::Controller(spec)
+            }
+            Self::Engine(mut spec) => {
+                spec.pose = pose;
+                Self::Engine(spec)
+            }
+            Self::Transmission(mut spec) => {
+                spec.pose = pose;
+                Self::Transmission(spec)
+            }
+            Self::Servo(mut spec) => {
+                spec.pose = pose;
+                Self::Servo(spec)
+            }
+            Self::Seat(mut spec) => {
+                spec.pose = pose;
+                Self::Seat(spec)
+            }
+            Self::Input(mut spec) => {
+                spec.pose = pose;
+                Self::Input(spec)
+            }
+            Self::DimensionLink(mut spec) => {
+                spec.pose = pose;
+                Self::DimensionLink(spec)
+            }
         }
     }
 
@@ -962,6 +1058,7 @@ impl PartSpec {
             Self::Servo(spec) => Some(spec.cuboid()),
             Self::Seat(spec) => Some(spec.cuboid()),
             Self::Input(spec) => Some(spec.cuboid()),
+            Self::DimensionLink(spec) => Some(spec.cuboid()),
             Self::Cylinder(_) | Self::PipeBend(_) => None,
         }
     }
@@ -977,7 +1074,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
-            | Self::Input(_) => None,
+            | Self::Input(_)
+            | Self::DimensionLink(_) => None,
         }
     }
 
@@ -992,7 +1090,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
-            | Self::Input(_) => None,
+            | Self::Input(_)
+            | Self::DimensionLink(_) => None,
         }
     }
 
@@ -1007,7 +1106,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
-            | Self::Input(_) => None,
+            | Self::Input(_)
+            | Self::DimensionLink(_) => None,
         }
     }
 
@@ -1021,6 +1121,7 @@ impl PartSpec {
             Self::Servo(spec) => spec.cuboid().size_meters(),
             Self::Seat(spec) => spec.cuboid().size_meters(),
             Self::Input(spec) => spec.cuboid().size_meters(),
+            Self::DimensionLink(spec) => spec.cuboid().size_meters(),
             Self::Cylinder(spec) => Vec3::new(
                 spec.dimensions.outer_diameter(),
                 spec.dimensions.axial_length(),
@@ -1092,6 +1193,12 @@ impl From<SeatSpec> for PartSpec {
 impl From<InputSpec> for PartSpec {
     fn from(value: InputSpec) -> Self {
         Self::Input(value)
+    }
+}
+
+impl From<DimensionLinkSpec> for PartSpec {
+    fn from(value: DimensionLinkSpec) -> Self {
+        Self::DimensionLink(value)
     }
 }
 
@@ -1345,9 +1452,9 @@ mod tests {
 
     use super::{
         BuildPose, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensionError,
-        CylinderDimensions, CylinderSpec, EngineKind, EngineSpec, FaceKind, GridRotation,
-        InputSpec, PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, SeatSpec, ServoSpec,
-        cuboid_face, pipe_bend_face, snap_world_to_grid,
+        CylinderDimensions, CylinderSpec, DimensionLinkId, DimensionLinkSpec, EngineKind,
+        EngineSpec, FaceKind, GridRotation, InputSpec, PipeBendDimensionError, PipeBendDimensions,
+        PipeBendSpec, SeatSpec, ServoSpec, cuboid_face, pipe_bend_face, snap_world_to_grid,
     };
 
     #[test]
@@ -1355,6 +1462,24 @@ mod tests {
         assert_eq!(
             snap_world_to_grid(Vec3::new(0.37, -0.13, 1.99)),
             IVec3::new(1, -1, 8)
+        );
+    }
+
+    #[test]
+    fn dimension_link_has_a_fixed_two_by_one_by_one_block_envelope() {
+        let pose =
+            BuildPose::from_position_ticks(IVec3::new(7, 200, -3), GridRotation::new(0, 1, 0));
+        let link = DimensionLinkSpec::new(DimensionLinkId(42), pose);
+        assert_eq!(link.id, DimensionLinkId(42));
+        assert_eq!(
+            link.cuboid().dimensions.map(super::GridDimension::units),
+            [2, 1, 1]
+        );
+        assert_eq!(link.cuboid().pose, pose);
+        assert!(
+            link.cuboid()
+                .size_meters()
+                .abs_diff_eq(Vec3::new(0.5, 0.25, 0.25), 1.0e-6)
         );
     }
 

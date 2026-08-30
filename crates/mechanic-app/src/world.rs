@@ -17,31 +17,35 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::Exposure,
     light::NotShadowCaster,
-    math::DVec2,
+    math::{DVec2, DVec3},
     mesh::Indices,
     prelude::*,
     render::render_resource::{AsBindGroup, Face, PrimitiveTopology, TextureFormat},
     shader::ShaderRef,
     tasks::{AsyncComputeTaskPool, Task, block_on, futures::check_ready},
 };
-use mechanic_core::{ConstructionEditDelta, ConstructionGraph, PartId, PartSpec};
+use mechanic_core::{
+    BearingSocket, ConstructionEditDelta, ConstructionGraph, CreationDocument, DimensionLinkId,
+    PartId, PartSpec,
+};
 #[cfg(test)]
 use mechanic_world::TerrainFace;
 use mechanic_world::{
     ActiveTerrainNode, ActiveTerrainScene, AutosaveState, FloatingOrigin, FoundationSpatialIndex,
     FoundationSupport, KinematicCapsule, KinematicInput, OpenWorldResult, SavedWorld,
-    SavedWorldStatus, TerrainBoundsCache, TerrainEditBatch, TerrainEditOutcome, TerrainField,
-    TerrainMaterial, TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest, TerrainNodeId,
-    TerrainOctree, TerrainRayHit, TerrainReadiness, TerrainSelection, TerrainSpatialIndex,
-    TerrainStreamer, TerrainTransitionMask, WorldCreationInstanceDoc, WorldDocument,
-    WorldInstanceIndexDoc, WorldPoseDoc, WorldPosition, WorldSeed, WorldStore, mesh_chunk_profiled,
-    select_active_nodes_cached, terrain_loading_worker_count, terrain_worker_count,
+    SavedWorldStatus, TerrainBoundsCache, TerrainDensity, TerrainEditBatch, TerrainEditOutcome,
+    TerrainField, TerrainMaterial, TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest,
+    TerrainNodeId, TerrainOctree, TerrainRayHit, TerrainReadiness, TerrainScene, TerrainSelection,
+    TerrainSpatialIndex, TerrainStreamer, TerrainTransitionMask, WorldCreationInstanceDoc,
+    WorldDocument, WorldInstanceIndexDoc, WorldPoseDoc, WorldPosition, WorldSeed, WorldStore,
+    mesh_chunk_profiled, raycast_density, select_active_nodes_cached, terrain_loading_worker_count,
+    terrain_worker_count,
 };
 
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
 use crate::{
     AppSimulation, EditorGraph, EditorHistory, EditorState, PlacedBearing,
-    builder::part_world_bounds,
+    builder::{GROUND_HALF_SIZE, part_world_bounds, parts_overlap},
     camera::{MainCamera, PlayerCamera, PlayerState},
     controls::GameAction,
     garage,
@@ -59,7 +63,7 @@ pub(crate) enum AppSpace {
 }
 
 impl AppSpace {
-    pub(crate) const fn uses_bounded_garage_walking(self) -> bool {
+    pub(crate) const fn uses_garage_flight(self) -> bool {
         matches!(self, Self::Garage)
     }
 }
@@ -313,6 +317,7 @@ pub(crate) struct WorldRuntime {
     clock: Duration,
     load_error: Option<String>,
     garage_editor: Option<SpaceEditorState>,
+    pending_garage_editor: Option<SpaceEditorState>,
     world_editor: Option<SpaceEditorState>,
     known_world_parts: BTreeMap<PartId, PartSpec>,
     foundations: Vec<TerrainFoundation>,
@@ -373,26 +378,90 @@ impl WorldRuntime {
     pub(crate) const fn foundation_revision(&self) -> u64 {
         self.foundation_revision
     }
+
+    pub(crate) fn allocate_dimension_link_id(&mut self) -> DimensionLinkId {
+        let id = DimensionLinkId(self.document.next_dimension_link_id);
+        self.document.next_dimension_link_id =
+            self.document.next_dimension_link_id.saturating_add(1);
+        id
+    }
+
+    pub(crate) fn remap_imported_dimension_links(&mut self, document: &mut CreationDocument) {
+        document.remap_dimension_links(&mut self.document.next_dimension_link_id);
+    }
+
+    pub(crate) const fn active_dimension_link(&self) -> Option<DimensionLinkId> {
+        self.document.active_dimension_link
+    }
+
+    pub(crate) fn activate_dimension_link(
+        &mut self,
+        space: AppSpace,
+        graph: &ConstructionGraph,
+        part: PartId,
+    ) -> Result<DimensionLinkId, String> {
+        let id = graph
+            .dimension_link_id(part)
+            .ok_or_else(|| "aimed part is not a Dimension Link".to_owned())?;
+        if space == AppSpace::World {
+            let component = graph
+                .structural_component(part, self.anchored_parts())
+                .map_err(|error| error.to_string())?;
+            if component.touches_authored_ground() {
+                return Err(
+                    "Dimension Link assembly is grounded and cannot enter the Garage".to_owned(),
+                );
+            }
+            let mut minimum = Vec3::splat(f32::INFINITY);
+            let mut maximum = Vec3::splat(f32::NEG_INFINITY);
+            for member in component.parts() {
+                if let Some(spec) = graph.part(member).copied() {
+                    let (low, high) = part_world_bounds(spec);
+                    minimum = minimum.min(low);
+                    maximum = maximum.max(high);
+                }
+            }
+            let size = maximum - minimum;
+            if size.x > GROUND_HALF_SIZE * 2.0 + 1.0e-4
+                || size.z > GROUND_HALF_SIZE * 2.0 + 1.0e-4
+                || size.y > garage::BUILD_MAX_Y - garage::BUILD_MIN_Y + 1.0e-4
+            {
+                return Err("Dimension Link assembly exceeds the Garage build volume".to_owned());
+            }
+            if self.garage_editor.as_ref().is_some_and(|garage| {
+                garage
+                    .graph
+                    .parts()
+                    .any(|(_, spec)| matches!(spec, PartSpec::DimensionLink(_)))
+            }) {
+                return Err("Another linked creation already occupies the Garage".to_owned());
+            }
+        }
+        if self.document.active_dimension_link == Some(id) {
+            return Ok(id);
+        }
+        let previous = self.document.active_dimension_link;
+        self.document.active_dimension_link = Some(id);
+        if let Err(error) = self.store.save_world(&self.document) {
+            self.document.active_dimension_link = previous;
+            return Err(error.to_string());
+        }
+        Ok(id)
+    }
+
+    pub(crate) fn clear_active_dimension_link_if(&mut self, id: DimensionLinkId) {
+        if self.document.active_dimension_link == Some(id) {
+            self.document.active_dimension_link = None;
+            let _ = self.store.save_world(&self.document);
+        }
+    }
 }
 
-fn load_world_editor(
-    store: &WorldStore,
-    document: &WorldDocument,
-) -> Result<SpaceEditorState, String> {
-    let Some(index) = document.instances.first() else {
-        return Ok(SpaceEditorState::default());
-    };
-    let path = store
-        .directory_for(&document.name)
-        .join("instances")
-        .join(format!("{}.ron", index.id));
-    let instance = store
-        .load_instance(&path)
-        .map_err(|error| error.to_string())?;
+fn editor_from_instance(instance: WorldCreationInstanceDoc) -> Result<SpaceEditorState, String> {
     let loaded = instance
         .creation
         .into_graph()
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+        .map_err(|error| error.to_string())?;
     Ok(SpaceEditorState {
         graph: loaded.graph,
         placed_bearings: loaded
@@ -406,6 +475,49 @@ fn load_world_editor(
             .collect(),
         ..SpaceEditorState::default()
     })
+}
+
+fn load_space_editors(
+    store: &WorldStore,
+    document: &WorldDocument,
+) -> Result<(SpaceEditorState, SpaceEditorState), String> {
+    let Some((world, garage)) = store
+        .load_space_pair(document)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok((SpaceEditorState::default(), SpaceEditorState::default()));
+    };
+    let world = editor_from_instance(world)?;
+    let garage = editor_from_instance(garage)?;
+    let mut ids = BTreeMap::<DimensionLinkId, usize>::new();
+    for graph in [&world.graph, &garage.graph] {
+        for (_, spec) in graph.parts() {
+            if let PartSpec::DimensionLink(link) = spec {
+                *ids.entry(link.id).or_default() += 1;
+            }
+        }
+    }
+    if let Some((&duplicate, _)) = ids.iter().find(|(_, count)| **count != 1) {
+        return Err(format!(
+            "Dimension Link ID {duplicate:?} exists more than once"
+        ));
+    }
+    if let Some(active) = document.active_dimension_link
+        && ids.get(&active) != Some(&1)
+    {
+        return Err(format!(
+            "active Dimension Link {active:?} does not exist exactly once"
+        ));
+    }
+    if let Some((&id, _)) = ids.last_key_value()
+        && id.0 >= document.next_dimension_link_id
+    {
+        return Err(format!(
+            "next Dimension Link ID {} does not follow existing ID {}",
+            document.next_dimension_link_id, id.0
+        ));
+    }
+    Ok((world, garage))
 }
 
 impl FromWorld for WorldRuntime {
@@ -432,10 +544,14 @@ impl FromWorld for WorldRuntime {
             Ok(edits) => (edits, None),
             Err(error) => (TerrainOctree::default(), Some(error.to_string())),
         };
-        let (world_editor, instance_error) = match load_world_editor(&store, &document) {
-            Ok(editor) => (editor, None),
-            Err(error) => (SpaceEditorState::default(), Some(error)),
-        };
+        let ((world_editor, garage_editor), instance_error) =
+            match load_space_editors(&store, &document) {
+                Ok(editors) => (editors, None),
+                Err(error) => (
+                    (SpaceEditorState::default(), SpaceEditorState::default()),
+                    Some(error),
+                ),
+            };
         let load_error = load_error.or(instance_error);
         let capsule = KinematicCapsule::new(document.player_pose.translation);
         Self {
@@ -455,6 +571,7 @@ impl FromWorld for WorldRuntime {
             clock: Duration::ZERO,
             load_error,
             garage_editor: None,
+            pending_garage_editor: Some(garage_editor),
             world_editor: Some(world_editor),
             known_world_parts: BTreeMap::new(),
             foundations: Vec::new(),
@@ -492,6 +609,7 @@ impl Plugin for WorldPrototypePlugin {
             .init_resource::<WorldRuntime>()
             .init_resource::<WorldListState>()
             .init_resource::<WorldDiagnostics>()
+            .add_systems(Startup, restore_initial_garage)
             .add_systems(OnEnter(AppSpace::World), enter_world)
             .add_systems(OnExit(AppSpace::World), leave_world)
             .add_systems(
@@ -524,6 +642,21 @@ impl Plugin for WorldPrototypePlugin {
 
 fn world_list_closed(list: Res<WorldListState>) -> bool {
     !list.is_open()
+}
+
+fn restore_initial_garage(
+    mut runtime: ResMut<WorldRuntime>,
+    mut graph: ResMut<EditorGraph>,
+    mut history: ResMut<EditorHistory>,
+    mut editor: ResMut<EditorState>,
+) {
+    let Some(garage) = runtime.pending_garage_editor.take() else {
+        return;
+    };
+    graph.0 = garage.graph;
+    *history = garage.history;
+    editor.placed_bearings = garage.placed_bearings;
+    editor.construction_mesh_dirty = true;
 }
 
 pub(crate) fn world_playing(list: Res<WorldListState>) -> bool {
@@ -621,7 +754,7 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
         .store
         .load_octree(&document.name)
         .map_err(|error| error.to_string())?;
-    let world_editor = load_world_editor(&runtime.store, &document)?;
+    let (world_editor, garage_editor) = load_space_editors(&runtime.store, &document)?;
     runtime.field = Arc::new(TerrainField::with_version(
         document.seed,
         document.generator_version,
@@ -630,6 +763,7 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.document = document;
     runtime.edits = terrain;
     runtime.world_editor = Some(world_editor);
+    runtime.pending_garage_editor = Some(garage_editor);
     runtime.known_world_parts.clear();
     runtime.foundations.clear();
     runtime.foundation_index = FoundationSpatialIndex::default();
@@ -662,6 +796,387 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     Ok(())
 }
 
+fn component_surface_distance(
+    player: Vec3,
+    center: Vec3,
+    rotation: Quat,
+    half_extents: Vec3,
+) -> f32 {
+    let local = (rotation.inverse() * (player - center)).abs();
+    let outside = (local - half_extents).max(Vec3::ZERO);
+    if outside.length_squared() > 0.0 {
+        outside.length()
+    } else {
+        (half_extents - local).min_element()
+    }
+}
+
+fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
+    let mut minimum = Vec3::splat(f32::INFINITY);
+    let mut maximum = Vec3::splat(f32::NEG_INFINITY);
+    for (_, spec) in graph.parts() {
+        let (low, high) = part_world_bounds(*spec);
+        minimum = minimum.min(low);
+        maximum = maximum.max(high);
+    }
+    minimum.is_finite().then_some((minimum, maximum))
+}
+
+fn collision_free(candidate: &ConstructionGraph, destination: &ConstructionGraph) -> bool {
+    candidate.parts().all(|(_, incoming)| {
+        destination
+            .parts()
+            .all(|(_, existing)| !parts_overlap(*incoming, *existing))
+    })
+}
+
+fn terrain_clear(
+    candidate: &ConstructionGraph,
+    terrain: &impl TerrainDensity,
+    floating_origin: FloatingOrigin,
+) -> bool {
+    candidate.parts().all(|(_, part)| {
+        let (low, high) = part_world_bounds(*part);
+        let inset_low = low + Vec3::splat(0.02);
+        let inset_high = high - Vec3::splat(0.02);
+        [0.0_f32, 0.5, 1.0].into_iter().all(|x| {
+            [0.0_f32, 0.5, 1.0].into_iter().all(|y| {
+                [0.0_f32, 0.5, 1.0].into_iter().all(|z| {
+                    let local = inset_low + (inset_high - inset_low) * Vec3::new(x, y, z);
+                    terrain.density(WorldPosition(floating_origin.0 + local.as_dvec3())) <= 0.0
+                })
+            })
+        })
+    })
+}
+
+fn player_clear(candidate: &ConstructionGraph, feet: Vec3) -> bool {
+    const PLAYER_RADIUS: f32 = 0.30;
+    const PLAYER_HEIGHT: f32 = 1.8;
+    candidate.parts().all(|(_, part)| {
+        let (low, high) = part_world_bounds(*part);
+        if high.y <= feet.y || low.y >= feet.y + PLAYER_HEIGHT {
+            return true;
+        }
+        let closest_x = feet.x.clamp(low.x, high.x);
+        let closest_z = feet.z.clamp(low.z, high.z);
+        Vec2::new(feet.x - closest_x, feet.z - closest_z).length_squared()
+            > PLAYER_RADIUS * PLAYER_RADIUS
+    })
+}
+
+fn deterministic_offsets(maximum_radius_cells: i32) -> Vec<IVec2> {
+    let mut offsets = (-maximum_radius_cells..=maximum_radius_cells)
+        .flat_map(|z| (-maximum_radius_cells..=maximum_radius_cells).map(move |x| IVec2::new(x, z)))
+        .filter(|offset| offset.x * offset.x + offset.y * offset.y <= maximum_radius_cells.pow(2))
+        .collect::<Vec<_>>();
+    offsets.sort_by_key(|offset| {
+        (
+            offset.x * offset.x + offset.y * offset.y,
+            offset.y,
+            offset.x,
+        )
+    });
+    offsets
+}
+
+fn component_document(
+    graph: &ConstructionGraph,
+    bearings: &[PlacedBearing],
+    name: &str,
+) -> CreationDocument {
+    let sockets = bearings
+        .iter()
+        .map(|bearing| BearingSocket {
+            source: bearing.source,
+            anchor: bearing.anchor,
+            dimensions: bearing.dimensions,
+        })
+        .collect::<Vec<_>>();
+    CreationDocument::from_graph(graph, name, &sockets)
+}
+
+fn merge_document(
+    destination: &SpaceEditorState,
+    incoming: CreationDocument,
+) -> Result<SpaceEditorState, String> {
+    let mut document = component_document(
+        &destination.graph,
+        &destination.placed_bearings,
+        "Combined construction",
+    );
+    document
+        .append(incoming)
+        .map_err(|error| error.to_string())?;
+    let loaded = document.into_graph().map_err(|error| error.to_string())?;
+    Ok(SpaceEditorState {
+        graph: loaded.graph,
+        history: EditorHistory::default(),
+        placed_bearings: loaded
+            .sockets
+            .into_iter()
+            .map(|socket| PlacedBearing {
+                source: socket.source,
+                anchor: socket.anchor,
+                dimensions: socket.dimensions,
+            })
+            .collect(),
+    })
+}
+
+fn place_in_garage(
+    component: &ConstructionGraph,
+    bearings: &[PlacedBearing],
+    destination: &SpaceEditorState,
+) -> Result<SpaceEditorState, String> {
+    let original = component_document(component, bearings, "Transferred construction");
+    let offsets = deterministic_offsets(40);
+    let mut dimension_overage = true;
+    for yaw in 0_u8..4 {
+        let mut rotated = original.clone();
+        rotated.transform_cardinal(yaw, IVec3::ZERO);
+        let rotated_loaded = rotated
+            .clone()
+            .into_graph()
+            .map_err(|error| error.to_string())?;
+        let Some((minimum, maximum)) = graph_bounds(&rotated_loaded.graph) else {
+            continue;
+        };
+        let size = maximum - minimum;
+        if size.x > GROUND_HALF_SIZE * 2.0 + 1.0e-4
+            || size.z > GROUND_HALF_SIZE * 2.0 + 1.0e-4
+            || size.y > garage::BUILD_MAX_Y - garage::BUILD_MIN_Y + 1.0e-4
+        {
+            continue;
+        }
+        dimension_overage = false;
+        let center = (minimum + maximum) * 0.5;
+        let base = IVec3::new(
+            (-center.x / 0.125).round() as i32,
+            ((garage::BUILD_MIN_Y - minimum.y) / 0.125).round() as i32,
+            (-center.z / 0.125).round() as i32,
+        );
+        for offset in &offsets {
+            let mut candidate = rotated.clone();
+            candidate.transform_cardinal(0, base + IVec3::new(offset.x * 4, 0, offset.y * 4));
+            let loaded = candidate
+                .clone()
+                .into_graph()
+                .map_err(|error| error.to_string())?;
+            let Some((low, high)) = graph_bounds(&loaded.graph) else {
+                continue;
+            };
+            if low.x < -GROUND_HALF_SIZE - 1.0e-4
+                || high.x > GROUND_HALF_SIZE + 1.0e-4
+                || low.z < -GROUND_HALF_SIZE - 1.0e-4
+                || high.z > GROUND_HALF_SIZE + 1.0e-4
+                || low.y < garage::BUILD_MIN_Y - 1.0e-4
+                || high.y > garage::BUILD_MAX_Y + 1.0e-4
+                || !collision_free(&loaded.graph, &destination.graph)
+            {
+                continue;
+            }
+            return merge_document(destination, candidate);
+        }
+    }
+    Err(if dimension_overage {
+        "Linked assembly exceeds the Garage dimensions in every orientation".to_owned()
+    } else {
+        "Garage has no collision-free volume for the linked assembly".to_owned()
+    })
+}
+
+fn place_in_world(
+    component: &ConstructionGraph,
+    bearings: &[PlacedBearing],
+    destination: &SpaceEditorState,
+    target: Vec3,
+    terrain: &impl TerrainDensity,
+    floating_origin: FloatingOrigin,
+) -> Result<SpaceEditorState, String> {
+    let original = component_document(component, bearings, "Returned construction");
+    let loaded = original
+        .clone()
+        .into_graph()
+        .map_err(|error| error.to_string())?;
+    let (minimum, maximum) =
+        graph_bounds(&loaded.graph).ok_or_else(|| "linked assembly is empty".to_owned())?;
+    let center = (minimum + maximum) * 0.5;
+    let horizontal_base = IVec2::new(
+        ((target.x - center.x) / 0.125).round() as i32,
+        ((target.z - center.z) / 0.125).round() as i32,
+    );
+    for offset in deterministic_offsets(40) {
+        let horizontal = horizontal_base + offset * 4;
+        let local_center = Vec3::new(
+            center.x + horizontal.x as f32 * 0.125,
+            target.y,
+            center.z + horizontal.y as f32 * 0.125,
+        );
+        let ray_origin =
+            WorldPosition(floating_origin.0 + (local_center + Vec3::Y * 20.0).as_dvec3());
+        let Some(surface) = raycast_density(terrain, ray_origin, DVec3::NEG_Y, 40.0) else {
+            continue;
+        };
+        let surface_y = surface.position.relative_to(floating_origin).y;
+        let vertical = ((surface_y - minimum.y) / 0.125).round() as i32;
+        let mut candidate = original.clone();
+        candidate.transform_cardinal(0, IVec3::new(horizontal.x, vertical, horizontal.y));
+        let loaded = candidate
+            .clone()
+            .into_graph()
+            .map_err(|error| error.to_string())?;
+        if collision_free(&loaded.graph, &destination.graph)
+            && terrain_clear(&loaded.graph, terrain, floating_origin)
+            && player_clear(&loaded.graph, target)
+        {
+            return merge_document(destination, candidate);
+        }
+    }
+    Err("No terrain- and construction-safe return placement was found within 20 m".to_owned())
+}
+
+enum TransferAttempt {
+    PlayerOnly,
+    Transferred,
+    Refused(String),
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn transfer_active_assembly(
+    space: AppSpace,
+    runtime: &mut WorldRuntime,
+    graph: &mut ConstructionGraph,
+    history: &mut EditorHistory,
+    editor: &mut EditorState,
+    player: PlayerState,
+    simulation: &mut AppSimulation,
+) -> TransferAttempt {
+    let Some(active) = runtime.document.active_dimension_link else {
+        return TransferAttempt::PlayerOnly;
+    };
+    let Some(link_part) = graph.dimension_link(active) else {
+        return TransferAttempt::PlayerOnly;
+    };
+    let Some(link) = graph.part(link_part).copied().and_then(|spec| match spec {
+        PartSpec::DimensionLink(link) => Some(link),
+        _ => None,
+    }) else {
+        return TransferAttempt::PlayerOnly;
+    };
+    let (live_center, live_rotation) = simulation
+        .live_part_pose(graph, link_part)
+        .unwrap_or((link.pose.translation(), link.pose.rotation.quaternion()));
+    if component_surface_distance(
+        player.position,
+        live_center,
+        live_rotation,
+        link.cuboid().size_meters() * 0.5,
+    ) > 5.0
+    {
+        return TransferAttempt::PlayerOnly;
+    }
+    let component = match graph.structural_component(link_part, runtime.anchored_parts()) {
+        Ok(component) => component,
+        Err(error) => return TransferAttempt::Refused(error.to_string()),
+    };
+    if space == AppSpace::World && component.touches_authored_ground() {
+        return TransferAttempt::Refused(
+            "Linked assembly is terrain-anchored or welded to ground".to_owned(),
+        );
+    }
+    let partition = graph.partition(&component);
+    let (component_bearings, remainder_bearings): (Vec<_>, Vec<_>) = editor
+        .placed_bearings
+        .iter()
+        .copied()
+        .partition(|bearing| {
+            matches!(bearing.source.owner, mechanic_core::FaceOwner::Part(part) if component.contains(part))
+        });
+    let destination = match space {
+        AppSpace::World => {
+            let Some(garage) = runtime.garage_editor.as_ref() else {
+                return TransferAttempt::Refused("Garage state is unavailable".to_owned());
+            };
+            match place_in_garage(&partition.component, &component_bearings, garage) {
+                Ok(placed) => placed,
+                Err(error) => return TransferAttempt::Refused(error),
+            }
+        }
+        AppSpace::Garage => {
+            let Some(world) = runtime.world_editor.as_ref() else {
+                return TransferAttempt::Refused("World state is unavailable".to_owned());
+            };
+            let anchor = runtime
+                .document
+                .return_anchor
+                .unwrap_or(runtime.document.player_pose.translation)
+                .relative_to(runtime.floating_origin);
+            let terrain = TerrainScene {
+                field: &runtime.field,
+                edits: &runtime.edits,
+            };
+            match place_in_world(
+                &partition.component,
+                &component_bearings,
+                world,
+                anchor,
+                &terrain,
+                runtime.floating_origin,
+            ) {
+                Ok(placed) => placed,
+                Err(error) => return TransferAttempt::Refused(error),
+            }
+        }
+    };
+    let remainder = SpaceEditorState {
+        graph: partition.remainder,
+        history: EditorHistory::default(),
+        placed_bearings: remainder_bearings,
+    };
+    let (world_state, garage_state) = match space {
+        AppSpace::World => (&remainder, &destination),
+        AppSpace::Garage => (&destination, &remainder),
+    };
+    let world_doc = space_instance(
+        &world_state.graph,
+        &world_state.placed_bearings,
+        "World construction",
+    );
+    let garage_doc = space_instance(
+        &garage_state.graph,
+        &garage_state.placed_bearings,
+        "Garage construction",
+    );
+    let previous_document = runtime.document.clone();
+    runtime.document.instances = (world_state.graph.part_count() != 0)
+        .then(|| WorldInstanceIndexDoc {
+            id: 1,
+            name: "World construction".to_owned(),
+        })
+        .into_iter()
+        .collect();
+    if let Err(error) =
+        runtime
+            .store
+            .save_space_pair(&mut runtime.document, &world_doc, &garage_doc)
+    {
+        runtime.document = previous_document;
+        return TransferAttempt::Refused(format!("Could not persist transfer: {error}"));
+    }
+    match space {
+        AppSpace::World => runtime.garage_editor = Some(destination),
+        AppSpace::Garage => runtime.world_editor = Some(destination),
+    }
+    graph.clone_from(&remainder.graph);
+    *history = EditorHistory::default();
+    editor.placed_bearings = remainder.placed_bearings;
+    editor.construction_mesh_dirty = true;
+    *simulation = AppSimulation::default();
+    runtime.autosave.saved();
+    TransferAttempt::Transferred
+}
+
 #[allow(clippy::too_many_arguments)]
 fn toggle_space(
     actions: Res<ButtonInput<GameAction>>,
@@ -669,30 +1184,70 @@ fn toggle_space(
     mut next: ResMut<NextState<AppSpace>>,
     mut runtime: ResMut<WorldRuntime>,
     player: Res<PlayerState>,
-    graph: Res<EditorGraph>,
+    mut graph: ResMut<EditorGraph>,
+    mut history: ResMut<EditorHistory>,
     mut editor: ResMut<EditorState>,
     mut list: ResMut<WorldListState>,
+    mut simulation: ResMut<AppSimulation>,
 ) {
     if !actions.just_pressed(GameAction::ToggleSpace) {
         return;
     }
-    match space.get() {
+    let current = *space.get();
+    if current == AppSpace::World {
+        if runtime.terrain_edit_task.is_some() || !runtime.pending_terrain_edits.is_empty() {
+            editor.feedback = Some("Finishing queued terrain edits…".to_owned());
+            return;
+        }
+        let global = WorldPosition(runtime.floating_origin.0 + player.position.as_dvec3());
+        runtime.document.return_anchor = Some(global);
+        runtime.document.player_pose.translation = global;
+        if let Err(error) = save_all(&mut runtime) {
+            editor.feedback = Some(error);
+            return;
+        }
+    }
+    let transferred = match transfer_active_assembly(
+        current,
+        &mut runtime,
+        &mut graph.0,
+        &mut history,
+        &mut editor,
+        *player,
+        &mut simulation,
+    ) {
+        TransferAttempt::Transferred => {
+            editor.feedback = Some(match current {
+                AppSpace::World => "Transferred linked assembly to the Garage".to_owned(),
+                AppSpace::Garage => "Returned linked assembly to the World".to_owned(),
+            });
+            true
+        }
+        TransferAttempt::Refused(error) => {
+            editor.feedback = Some(error);
+            return;
+        }
+        TransferAttempt::PlayerOnly => false,
+    };
+    match current {
         AppSpace::Garage => {
+            if !transferred
+                && let Err(error) = save_garage_instance(&mut runtime, &graph.0, &editor)
+            {
+                editor.feedback = Some(error);
+                return;
+            }
             list.phase = WorldListPhase::Loading;
             list.loading_progress = TerrainReadiness::default();
             list.notice = None;
             next.set(AppSpace::World);
         }
         AppSpace::World => {
-            if runtime.terrain_edit_task.is_some() || !runtime.pending_terrain_edits.is_empty() {
-                editor.feedback = Some("Finishing queued terrain edits…".to_owned());
+            if !transferred && let Err(error) = save_world_instance(&mut runtime, &graph.0, &editor)
+            {
+                editor.feedback = Some(error);
                 return;
             }
-            let global = WorldPosition(runtime.floating_origin.0 + player.position.as_dvec3());
-            runtime.document.return_anchor = Some(global);
-            runtime.document.player_pose.translation = global;
-            let _ = save_all(&mut runtime);
-            let _ = save_world_instance(&mut runtime, &graph.0, &editor);
             next.set(AppSpace::Garage);
         }
     }
@@ -729,11 +1284,17 @@ fn enter_world(
     };
     *exposure = exposure_for_space(AppSpace::World);
     debug_assert!(runtime.garage_editor.is_none());
-    runtime.garage_editor = Some(SpaceEditorState {
-        graph: core::mem::take(&mut graph.0),
-        history: core::mem::take(&mut *history),
-        placed_bearings: core::mem::take(&mut editor.placed_bearings),
-    });
+    runtime.garage_editor =
+        Some(
+            runtime
+                .pending_garage_editor
+                .take()
+                .unwrap_or_else(|| SpaceEditorState {
+                    graph: core::mem::take(&mut graph.0),
+                    history: core::mem::take(&mut *history),
+                    placed_bearings: core::mem::take(&mut editor.placed_bearings),
+                }),
+        );
     let world_editor = runtime.world_editor.take().unwrap_or_default();
     graph.0 = world_editor.graph;
     *history = world_editor.history;
@@ -2222,38 +2783,76 @@ fn save_world_instance(
     graph: &ConstructionGraph,
     editor: &EditorState,
 ) -> Result<(), String> {
-    const INSTANCE_ID: u64 = 1;
-    if graph.part_count() == 0 {
-        runtime.autosave.saved();
-        return Ok(());
-    }
-    if runtime
-        .document
-        .instances
-        .iter()
-        .all(|entry| entry.id != INSTANCE_ID)
-    {
-        runtime.document.instances.push(WorldInstanceIndexDoc {
-            id: INSTANCE_ID,
+    let world = space_instance(graph, &editor.placed_bearings, "World construction");
+    let garage = runtime.garage_editor.as_ref().map_or_else(
+        || space_instance(&ConstructionGraph::new(), &[], "Garage construction"),
+        |garage| {
+            space_instance(
+                &garage.graph,
+                &garage.placed_bearings,
+                "Garage construction",
+            )
+        },
+    );
+    runtime.document.instances = (graph.part_count() != 0)
+        .then(|| WorldInstanceIndexDoc {
+            id: 1,
             name: "World construction".to_owned(),
-        });
-        runtime
-            .store
-            .save_world(&runtime.document)
-            .map_err(|error| error.to_string())?;
-    }
-    let instance = WorldCreationInstanceDoc {
-        id: INSTANCE_ID,
-        creation: crate::capture_creation(graph, editor, "World construction"),
-        root_pose: WorldPoseDoc::default(),
-        joint_coordinates: Vec::new(),
-    };
+        })
+        .into_iter()
+        .collect();
     runtime
         .store
-        .save_instance(&runtime.document.name, &instance)
+        .save_space_pair(&mut runtime.document, &world, &garage)
         .map_err(|error| error.to_string())?;
     runtime.autosave.saved();
     Ok(())
+}
+
+fn save_garage_instance(
+    runtime: &mut WorldRuntime,
+    graph: &ConstructionGraph,
+    editor: &EditorState,
+) -> Result<(), String> {
+    let garage = space_instance(graph, &editor.placed_bearings, "Garage construction");
+    let world = runtime.world_editor.as_ref().map_or_else(
+        || space_instance(&ConstructionGraph::new(), &[], "World construction"),
+        |world| space_instance(&world.graph, &world.placed_bearings, "World construction"),
+    );
+    runtime.document.instances = (!world.creation.parts.is_empty())
+        .then(|| WorldInstanceIndexDoc {
+            id: 1,
+            name: "World construction".to_owned(),
+        })
+        .into_iter()
+        .collect();
+    runtime
+        .store
+        .save_space_pair(&mut runtime.document, &world, &garage)
+        .map_err(|error| error.to_string())?;
+    runtime.autosave.saved();
+    Ok(())
+}
+
+fn space_instance(
+    graph: &ConstructionGraph,
+    bearings: &[PlacedBearing],
+    name: &str,
+) -> WorldCreationInstanceDoc {
+    let sockets = bearings
+        .iter()
+        .map(|bearing| BearingSocket {
+            source: bearing.source,
+            anchor: bearing.anchor,
+            dimensions: bearing.dimensions,
+        })
+        .collect::<Vec<_>>();
+    WorldCreationInstanceDoc {
+        id: 1,
+        creation: CreationDocument::from_graph(graph, name, &sockets),
+        root_pose: WorldPoseDoc::default(),
+        joint_coordinates: Vec::new(),
+    }
 }
 
 fn terrain_chunk_mesh(chunk: &TerrainMeshChunk, indices: Vec<u32>) -> Mesh {
@@ -2318,11 +2917,11 @@ mod tests {
 
     use super::{
         AppSpace, TerrainAcknowledgements, TerrainEditOperation, TerrainStrokeSample,
-        WorldListPhase, WorldListState, WorldPrototypePlugin, exposure_for_space,
-        foundation_edit_is_ready, full_rgba8_mip_byte_count, generate_rgba8_mip_chain,
-        load_world_editor, nodes_touch_on_face, player_collision_nodes, ready_obsolete_nodes,
-        terrain_chunk_has_collision_near, terrain_chunk_mesh, terrain_edit_commands,
-        terrain_mesh_is_renderable,
+        WorldListPhase, WorldListState, WorldPrototypePlugin, component_surface_distance,
+        exposure_for_space, foundation_edit_is_ready, full_rgba8_mip_byte_count,
+        generate_rgba8_mip_chain, load_space_editors, nodes_touch_on_face, player_collision_nodes,
+        ready_obsolete_nodes, terrain_chunk_has_collision_near, terrain_chunk_mesh,
+        terrain_edit_commands, terrain_mesh_is_renderable,
     };
     use crate::{garage, showcase};
 
@@ -2357,6 +2956,26 @@ mod tests {
     }
 
     #[test]
+    fn travel_range_is_measured_from_the_link_box_surface() {
+        let half_extents = bevy::prelude::Vec3::new(0.25, 0.125, 0.125);
+        let at_limit = component_surface_distance(
+            bevy::prelude::Vec3::new(5.25, 0.0, 0.0),
+            bevy::prelude::Vec3::ZERO,
+            bevy::prelude::Quat::IDENTITY,
+            half_extents,
+        );
+        assert!((at_limit - 5.0).abs() < f32::EPSILON);
+        assert!(
+            component_surface_distance(
+                bevy::prelude::Vec3::new(5.251, 0.0, 0.0),
+                bevy::prelude::Vec3::ZERO,
+                bevy::prelude::Quat::IDENTITY,
+                half_extents,
+            ) > 5.0
+        );
+    }
+
+    #[test]
     fn loading_world_ignores_picker_actions_until_playing() {
         let mut state = WorldListState {
             phase: WorldListPhase::Loading,
@@ -2387,7 +3006,7 @@ mod tests {
         let store = WorldStore::new(&temporary.0);
         let document = store.create_world("Fresh", Some(42)).unwrap();
 
-        editor = load_world_editor(&store, &document).unwrap();
+        editor = load_space_editors(&store, &document).unwrap().0;
 
         assert_eq!(editor.graph.part_count(), 0);
         assert!(editor.placed_bearings.is_empty());

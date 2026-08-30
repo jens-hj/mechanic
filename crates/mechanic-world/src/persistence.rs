@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use mechanic_core::CreationDocument;
+use mechanic_core::{CreationDocument, DimensionLinkId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// World document version written by this build.
-pub const WORLD_FORMAT_VERSION: u32 = 2;
+pub const WORLD_FORMAT_VERSION: u32 = 3;
 /// Delay after the last mutation before an ordinary autosave.
 pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 /// Maximum time dirty data waits even while mutations continue.
@@ -79,6 +79,12 @@ pub struct WorldDocument {
     pub player_pose: WorldPoseDoc,
     /// Position from which this Garage visit began.
     pub return_anchor: Option<WorldPosition>,
+    /// Published paired World/Garage construction generation. Zero is empty.
+    pub construction_generation: u64,
+    /// Sole active Dimension Link across this world's paired spaces.
+    pub active_dimension_link: Option<DimensionLinkId>,
+    /// Next stable Dimension Link identity allocated in this world.
+    pub next_dimension_link_id: u64,
     /// Independently saved placed creations.
     pub instances: Vec<WorldInstanceIndexDoc>,
 }
@@ -97,6 +103,9 @@ impl WorldDocument {
                 ..WorldPoseDoc::default()
             },
             return_anchor: None,
+            construction_generation: 0,
+            active_dimension_link: None,
+            next_dimension_link_id: 1,
             instances: Vec::new(),
         }
     }
@@ -230,6 +239,69 @@ impl WorldStore {
             })?;
         atomic_write(&path, text.as_bytes())?;
         Ok(path)
+    }
+
+    /// Writes both construction spaces, then atomically publishes their generation.
+    ///
+    /// The caller's document is updated only after both generation files exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact encode or I/O failure without publishing the new generation.
+    pub fn save_space_pair(
+        &self,
+        world: &mut WorldDocument,
+        world_space: &WorldCreationInstanceDoc,
+        garage_space: &WorldCreationInstanceDoc,
+    ) -> Result<(), WorldSaveError> {
+        let generation = world.construction_generation.saturating_add(1);
+        let directory = self
+            .directory_for(&world.name)
+            .join("generations")
+            .join(generation.to_string());
+        Self::save_generation_space(&directory.join("world.ron"), world_space)?;
+        Self::save_generation_space(&directory.join("garage.ron"), garage_space)?;
+        let previous = world.construction_generation;
+        world.construction_generation = generation;
+        if let Err(error) = self.save_world(world) {
+            world.construction_generation = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn save_generation_space(
+        path: &Path,
+        instance: &WorldCreationInstanceDoc,
+    ) -> Result<(), WorldSaveError> {
+        let text = ron::ser::to_string_pretty(instance, ron::ser::PrettyConfig::default())
+            .map_err(|source| WorldSaveError::Encode {
+                path: path.to_owned(),
+                source,
+            })?;
+        atomic_write(path, text.as_bytes())
+    }
+
+    /// Loads the published paired construction generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact I/O or parse failure for either published space document.
+    pub fn load_space_pair(
+        &self,
+        world: &WorldDocument,
+    ) -> Result<Option<(WorldCreationInstanceDoc, WorldCreationInstanceDoc)>, WorldSaveError> {
+        if world.construction_generation == 0 {
+            return Ok(None);
+        }
+        let directory = self
+            .directory_for(&world.name)
+            .join("generations")
+            .join(world.construction_generation.to_string());
+        Ok(Some((
+            self.load_instance(&directory.join("world.ron"))?,
+            self.load_instance(&directory.join("garage.ron"))?,
+        )))
     }
 
     /// Atomically writes one versioned RLE edited brick.
@@ -743,6 +815,43 @@ mod tests {
         let brick = edits.brick(crate::BrickCoord::new(0, 0, 0)).unwrap();
         let brick_path = store.save_brick(&world.name, brick).unwrap();
         assert_eq!(store.load_brick(&brick_path).unwrap(), *brick);
+    }
+
+    #[test]
+    fn paired_spaces_publish_and_reload_one_generation() {
+        let temporary = TempDir::new();
+        let store = WorldStore::new(&temporary.0);
+        let field = TerrainField::new(WorldSeed(91));
+        let mut world = WorldDocument::new("Paired", field.seed(), field.safe_spawn());
+        let world_space = WorldCreationInstanceDoc {
+            id: 1,
+            creation: empty_creation(),
+            root_pose: WorldPoseDoc::default(),
+            joint_coordinates: Vec::new(),
+        };
+        let garage_space = WorldCreationInstanceDoc {
+            id: 2,
+            creation: CreationDocument {
+                name: "Garage".to_owned(),
+                ..empty_creation()
+            },
+            root_pose: WorldPoseDoc::default(),
+            joint_coordinates: Vec::new(),
+        };
+
+        store
+            .save_space_pair(&mut world, &world_space, &garage_space)
+            .unwrap();
+        assert_eq!(world.construction_generation, 1);
+        let published = store.load_world(&store.directory_for("Paired")).unwrap();
+        assert_eq!(published.construction_generation, 1);
+        let interrupted = store.directory_for("Paired").join("generations").join("2");
+        fs::create_dir_all(&interrupted).unwrap();
+        fs::write(interrupted.join("world.ron"), b"incomplete generation").unwrap();
+        assert_eq!(
+            store.load_space_pair(&published).unwrap(),
+            Some((world_space, garage_space))
+        );
     }
 
     #[test]

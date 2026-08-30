@@ -40,19 +40,21 @@ pub use gearbox::{
 };
 pub use geometry::{
     Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ConstructionMaterial, ControllerSpec, CuboidSpec,
-    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, EngineKind,
-    EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridDimension, GridRotation,
-    InputSpec, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS,
-    MAX_PIPE_BEND_RADIUS, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
-    MIN_CYLINDER_SWEEP_DEGREES, MIN_PIPE_BEND_RADIUS, MaterialProperties, PIPE_BEND_ARC_SLICES,
-    PIPE_BEND_RADIAL_SIDES, PartSpec, PipeBendDimensionError, PipeBendDimensions, PipeBendSpec,
-    SeatSpec, ServoSpec, TransmissionSpec, snap_world_to_grid,
+    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, DimensionLinkId,
+    DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS,
+    GridDimension, GridRotation, InputSpec, MAX_CYLINDER_OUTER_DIAMETER,
+    MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS, MAX_PIPE_BEND_RADIUS, MIN_CYLINDER_DIAMETER_GAP,
+    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, MIN_PIPE_BEND_RADIUS,
+    MaterialProperties, PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, PartSpec,
+    PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, SeatSpec, ServoSpec,
+    TransmissionSpec, snap_world_to_grid,
 };
 pub use graph::{
     ActuatorInventory, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
     BuildOutcome, ConstructionGraph, ConstructionGraphEdit, DriveLinkSpec, GraphError,
-    InputSeatLinkSpec, MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP,
-    MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec, SeatControllerLinkSpec, WeldSpec,
+    GraphPartition, InputSeatLinkSpec, MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP,
+    MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec, SeatControllerLinkSpec,
+    StructuralComponent, WeldSpec,
 };
 pub use id::{
     BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
