@@ -5,6 +5,7 @@
 
 use bevy::prelude::*;
 use mechanic_core::ConstructionMaterial;
+use mechanic_world::TerrainMaterial;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum Tool {
@@ -23,6 +24,193 @@ pub(crate) enum Tool {
     Seat,
     Input,
     Shape,
+}
+
+/// The four tools exposed by the primary hotbar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum MainTool {
+    #[default]
+    MatterManipulator,
+    Welder,
+    Connector,
+    Hammer,
+}
+
+impl MainTool {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::MatterManipulator,
+        Self::Welder,
+        Self::Connector,
+        Self::Hammer,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::MatterManipulator => "Matter Manipulator",
+            Self::Welder => "Welder",
+            Self::Connector => "Connector",
+            Self::Hammer => "Hammer",
+        }
+    }
+}
+
+/// The operation exposed by the Matter Manipulator's secondary hotbar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum MatterMode {
+    #[default]
+    Block,
+    Cylinder,
+    Item,
+    Terrain,
+    Manipulate,
+}
+
+impl MatterMode {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Block,
+        Self::Cylinder,
+        Self::Item,
+        Self::Terrain,
+        Self::Manipulate,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Block => "Block",
+            Self::Cylinder => "Cylinder",
+            Self::Item => "Item",
+            Self::Terrain => "Terrain",
+            Self::Manipulate => "Manipulate",
+        }
+    }
+}
+
+/// Placeable selected inside Matter Manipulator → Item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum PlaceableItem {
+    #[default]
+    Bearing,
+    ControlBlock,
+    GasEngine,
+    ElectricEngine,
+    Transmission,
+    Servo,
+    Seat,
+    Input,
+}
+
+/// One contextual choice shown by the hold-Tab selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum WheelChoice {
+    ConstructionMaterial(ConstructionMaterial),
+    Item(PlaceableItem),
+    TerrainMaterial(TerrainMaterial),
+}
+
+/// A radial selector's data model, shared by input and rendering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum WheelContext {
+    ConstructionMaterial,
+    Item,
+    TerrainMaterial,
+}
+
+impl WheelChoice {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::ConstructionMaterial(material) => material.label(),
+            Self::Item(item) => item.label(),
+            Self::TerrainMaterial(TerrainMaterial::SurfaceCover) => "Grass",
+            Self::TerrainMaterial(TerrainMaterial::Soil) => "Dirt",
+            Self::TerrainMaterial(TerrainMaterial::Rock) => "Stone",
+            Self::TerrainMaterial(TerrainMaterial::Sand) => "Sand",
+            Self::TerrainMaterial(TerrainMaterial::Iron) => "Iron",
+            Self::TerrainMaterial(TerrainMaterial::Graphite) => "Graphite",
+        }
+    }
+
+    pub(crate) const fn context(self) -> WheelContext {
+        match self {
+            Self::ConstructionMaterial(_) => WheelContext::ConstructionMaterial,
+            Self::Item(_) => WheelContext::Item,
+            Self::TerrainMaterial(_) => WheelContext::TerrainMaterial,
+        }
+    }
+}
+
+impl WheelContext {
+    pub(crate) const fn count(self) -> usize {
+        match self {
+            Self::ConstructionMaterial => ConstructionMaterial::ALL.len(),
+            Self::Item => PlaceableItem::ALL.len(),
+            Self::TerrainMaterial => TerrainMaterial::ALL.len(),
+        }
+    }
+
+    pub(crate) fn choice(self, index: usize) -> Option<WheelChoice> {
+        match self {
+            Self::ConstructionMaterial => ConstructionMaterial::ALL
+                .get(index)
+                .copied()
+                .map(WheelChoice::ConstructionMaterial),
+            Self::Item => PlaceableItem::ALL
+                .get(index)
+                .copied()
+                .map(WheelChoice::Item),
+            Self::TerrainMaterial => TerrainMaterial::ALL
+                .get(index)
+                .copied()
+                .map(WheelChoice::TerrainMaterial),
+        }
+    }
+
+    pub(crate) fn choices(self) -> impl Iterator<Item = WheelChoice> {
+        (0..self.count()).filter_map(move |index| self.choice(index))
+    }
+}
+
+impl PlaceableItem {
+    pub(crate) const ALL: [Self; 8] = [
+        Self::Bearing,
+        Self::ControlBlock,
+        Self::GasEngine,
+        Self::ElectricEngine,
+        Self::Transmission,
+        Self::Servo,
+        Self::Seat,
+        Self::Input,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        self.editor_tool().label()
+    }
+
+    pub(crate) const fn editor_tool(self) -> Tool {
+        match self {
+            Self::Bearing => Tool::Bearing,
+            Self::ControlBlock => Tool::Controller,
+            Self::GasEngine => Tool::GasEngine,
+            Self::ElectricEngine => Tool::ElectricEngine,
+            Self::Transmission => Tool::Transmission,
+            Self::Servo => Tool::Servo,
+            Self::Seat => Tool::Seat,
+            Self::Input => Tool::Input,
+        }
+    }
+
+    pub(crate) const fn from_editor_tool(tool: Tool) -> Option<Self> {
+        match tool {
+            Tool::Bearing => Some(Self::Bearing),
+            Tool::Controller => Some(Self::ControlBlock),
+            Tool::GasEngine => Some(Self::GasEngine),
+            Tool::ElectricEngine => Some(Self::ElectricEngine),
+            Tool::Transmission => Some(Self::Transmission),
+            Tool::Servo => Some(Self::Servo),
+            Tool::Seat => Some(Self::Seat),
+            Tool::Input => Some(Self::Input),
+            _ => None,
+        }
+    }
 }
 
 impl Tool {
@@ -45,47 +233,86 @@ impl Tool {
         }
     }
 
-    pub(crate) const fn works_while_simulating(self) -> bool {
-        matches!(self, Self::Hammer)
-    }
-
     /// Whether this tool works with control blocks and their wires.
     pub(crate) const fn edits_drives(self) -> bool {
         matches!(self, Self::Controller | Self::Connector)
     }
-
-    pub(crate) const fn works_in_mode(self, simulating: bool) -> bool {
-        self.works_while_simulating() == simulating
-    }
 }
 
-#[cfg(test)]
-pub(crate) const fn shortcut_tool(key: KeyCode) -> Option<Tool> {
-    match key {
-        KeyCode::Digit1 => Some(Tool::Block),
-        KeyCode::Digit2 => Some(Tool::Cylinder),
-        KeyCode::Digit3 => Some(Tool::Bearing),
-        KeyCode::Digit4 => Some(Tool::Weld),
-        KeyCode::Digit5 => Some(Tool::Hammer),
-        KeyCode::Digit6 => Some(Tool::Controller),
-        KeyCode::Digit7 => Some(Tool::Connector),
-        KeyCode::Digit8 => Some(Tool::GasEngine),
-        KeyCode::Digit9 => Some(Tool::ElectricEngine),
-        KeyCode::BracketRight => Some(Tool::Transmission),
-        KeyCode::Digit0 => Some(Tool::Servo),
-        KeyCode::Minus => Some(Tool::Seat),
-        KeyCode::Equal => Some(Tool::Input),
-        KeyCode::BracketLeft => Some(Tool::Shape),
-        _ => None,
-    }
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectedTool {
+    pub(crate) tool: Option<MainTool>,
+    pub(crate) matter_mode: MatterMode,
+    pub(crate) item: PlaceableItem,
 }
-
-#[derive(Resource, Debug)]
-pub(crate) struct SelectedTool(pub(crate) Option<Tool>);
 
 impl Default for SelectedTool {
     fn default() -> Self {
-        Self(Some(Tool::Block))
+        Self {
+            tool: Some(MainTool::MatterManipulator),
+            matter_mode: MatterMode::Block,
+            item: PlaceableItem::Bearing,
+        }
+    }
+}
+
+impl SelectedTool {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn from_editor_tool(tool: Tool) -> Self {
+        let mut selection = Self::default();
+        selection.select_editor_tool(tool);
+        selection
+    }
+
+    pub(crate) const fn active_editor_tool(self) -> Option<Tool> {
+        let Some(tool) = self.tool else {
+            return None;
+        };
+        match tool {
+            MainTool::MatterManipulator => match self.matter_mode {
+                MatterMode::Block => Some(Tool::Block),
+                MatterMode::Cylinder => Some(Tool::Cylinder),
+                MatterMode::Item => Some(self.item.editor_tool()),
+                MatterMode::Terrain => None,
+                MatterMode::Manipulate => Some(Tool::Shape),
+            },
+            MainTool::Welder => Some(Tool::Weld),
+            MainTool::Connector => Some(Tool::Connector),
+            MainTool::Hammer => Some(Tool::Hammer),
+        }
+    }
+
+    pub(crate) fn select_tool(&mut self, tool: MainTool) {
+        self.tool = Some(tool);
+    }
+
+    pub(crate) fn select_mode(&mut self, mode: MatterMode) {
+        self.tool = Some(MainTool::MatterManipulator);
+        self.matter_mode = mode;
+    }
+
+    pub(crate) fn select_item(&mut self, item: PlaceableItem) {
+        self.item = item;
+        self.select_mode(MatterMode::Item);
+    }
+
+    pub(crate) fn select_editor_tool(&mut self, tool: Tool) {
+        match tool {
+            Tool::Block => self.select_mode(MatterMode::Block),
+            Tool::Cylinder => self.select_mode(MatterMode::Cylinder),
+            Tool::Shape => self.select_mode(MatterMode::Manipulate),
+            Tool::Weld => self.select_tool(MainTool::Welder),
+            Tool::Connector => self.select_tool(MainTool::Connector),
+            Tool::Hammer => self.select_tool(MainTool::Hammer),
+            item => self.select_item(
+                PlaceableItem::from_editor_tool(item)
+                    .expect("every remaining editor tool is a placeable item"),
+            ),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.tool = None;
     }
 }
 
@@ -93,31 +320,44 @@ impl Default for SelectedTool {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SelectedMaterial(pub(crate) ConstructionMaterial);
 
+/// Terrain material remembered by Matter Manipulator → Terrain.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectedTerrainMaterial(pub(crate) TerrainMaterial);
+
+impl Default for SelectedTerrainMaterial {
+    fn default() -> Self {
+        Self(TerrainMaterial::Soil)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Tool, shortcut_tool};
-    use bevy::prelude::KeyCode;
+    use super::{MainTool, MatterMode, PlaceableItem, SelectedTool, Tool};
 
     #[test]
-    fn every_tool_has_a_keyboard_shortcut_including_brackets() {
-        let mappings = [
-            (KeyCode::Digit1, Tool::Block),
-            (KeyCode::Digit2, Tool::Cylinder),
-            (KeyCode::Digit3, Tool::Bearing),
-            (KeyCode::Digit4, Tool::Weld),
-            (KeyCode::Digit5, Tool::Hammer),
-            (KeyCode::Digit6, Tool::Controller),
-            (KeyCode::Digit7, Tool::Connector),
-            (KeyCode::Digit8, Tool::GasEngine),
-            (KeyCode::Digit9, Tool::ElectricEngine),
-            (KeyCode::BracketRight, Tool::Transmission),
-            (KeyCode::Digit0, Tool::Servo),
-            (KeyCode::Minus, Tool::Seat),
-            (KeyCode::Equal, Tool::Input),
-            (KeyCode::BracketLeft, Tool::Shape),
-        ];
-        for (key, tool) in mappings {
-            assert_eq!(shortcut_tool(key), Some(tool));
+    fn defaults_to_matter_block_and_remembers_context() {
+        let mut selected = SelectedTool::default();
+        assert_eq!(selected.tool, Some(MainTool::MatterManipulator));
+        assert_eq!(selected.active_editor_tool(), Some(Tool::Block));
+
+        selected.select_item(PlaceableItem::Servo);
+        selected.select_tool(MainTool::Welder);
+        selected.select_mode(MatterMode::Item);
+        assert_eq!(selected.item, PlaceableItem::Servo);
+        assert_eq!(selected.active_editor_tool(), Some(Tool::Servo));
+    }
+
+    #[test]
+    fn every_legacy_placement_path_maps_to_a_matter_mode() {
+        for item in PlaceableItem::ALL {
+            let mut selected = SelectedTool::default();
+            selected.select_editor_tool(item.editor_tool());
+            assert_eq!(selected.tool, Some(MainTool::MatterManipulator));
+            assert_eq!(selected.matter_mode, MatterMode::Item);
+            assert_eq!(selected.item, item);
         }
+        let mut selected = SelectedTool::default();
+        selected.select_editor_tool(Tool::Shape);
+        assert_eq!(selected.matter_mode, MatterMode::Manipulate);
     }
 }

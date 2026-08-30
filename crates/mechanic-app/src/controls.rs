@@ -22,9 +22,6 @@ pub(crate) enum GameAction {
     Interact,
     ToggleSpace,
     FinePlacement,
-    ToolTerrainBrush,
-    TerrainBrushDecrease,
-    TerrainBrushIncrease,
     ToggleSimulation,
     RestartSimulation,
     MaterialWheel,
@@ -35,20 +32,15 @@ pub(crate) enum GameAction {
     Save,
     Undo,
     Redo,
-    ToolBlock,
-    ToolCylinder,
-    ToolBearing,
-    ToolWeld,
-    ToolHammer,
-    ToolController,
+    ToolMatterManipulator,
+    ToolWelder,
     ToolConnector,
-    ToolGasEngine,
-    ToolElectricEngine,
-    ToolTransmission,
-    ToolServo,
-    ToolSeat,
-    ToolInput,
-    ToolShape,
+    ToolHammer,
+    MatterBlock,
+    MatterCylinder,
+    MatterItem,
+    MatterTerrain,
+    MatterManipulate,
     ClearPipette,
     Rotate,
     PipeTurn,
@@ -75,7 +67,7 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 59] = [
+    pub(crate) const ALL: [Self; 51] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -87,9 +79,6 @@ impl GameAction {
         Self::Interact,
         Self::ToggleSpace,
         Self::FinePlacement,
-        Self::ToolTerrainBrush,
-        Self::TerrainBrushDecrease,
-        Self::TerrainBrushIncrease,
         Self::MaterialWheel,
         Self::ZoomIn,
         Self::ZoomOut,
@@ -98,20 +87,15 @@ impl GameAction {
         Self::Save,
         Self::Undo,
         Self::Redo,
-        Self::ToolBlock,
-        Self::ToolCylinder,
-        Self::ToolBearing,
-        Self::ToolWeld,
-        Self::ToolHammer,
-        Self::ToolController,
+        Self::ToolMatterManipulator,
+        Self::ToolWelder,
         Self::ToolConnector,
-        Self::ToolGasEngine,
-        Self::ToolElectricEngine,
-        Self::ToolTransmission,
-        Self::ToolServo,
-        Self::ToolSeat,
-        Self::ToolInput,
-        Self::ToolShape,
+        Self::ToolHammer,
+        Self::MatterBlock,
+        Self::MatterCylinder,
+        Self::MatterItem,
+        Self::MatterTerrain,
+        Self::MatterManipulate,
         Self::ClearPipette,
         Self::Rotate,
         Self::PipeTurn,
@@ -137,42 +121,43 @@ impl GameAction {
         Self::CylinderSweepIncrease,
     ];
 
-    pub(crate) const TOOL_ACTIONS: [(Self, crate::hotbar::Tool); 14] = [
-        (Self::ToolBlock, crate::hotbar::Tool::Block),
-        (Self::ToolCylinder, crate::hotbar::Tool::Cylinder),
-        (Self::ToolBearing, crate::hotbar::Tool::Bearing),
-        (Self::ToolWeld, crate::hotbar::Tool::Weld),
-        (Self::ToolHammer, crate::hotbar::Tool::Hammer),
-        (Self::ToolController, crate::hotbar::Tool::Controller),
-        (Self::ToolConnector, crate::hotbar::Tool::Connector),
-        (Self::ToolGasEngine, crate::hotbar::Tool::GasEngine),
+    pub(crate) const TOOL_ACTIONS: [(Self, crate::hotbar::MainTool); 4] = [
         (
-            Self::ToolElectricEngine,
-            crate::hotbar::Tool::ElectricEngine,
+            Self::ToolMatterManipulator,
+            crate::hotbar::MainTool::MatterManipulator,
         ),
-        (Self::ToolTransmission, crate::hotbar::Tool::Transmission),
-        (Self::ToolServo, crate::hotbar::Tool::Servo),
-        (Self::ToolSeat, crate::hotbar::Tool::Seat),
-        (Self::ToolInput, crate::hotbar::Tool::Input),
-        (Self::ToolShape, crate::hotbar::Tool::Shape),
+        (Self::ToolWelder, crate::hotbar::MainTool::Welder),
+        (Self::ToolConnector, crate::hotbar::MainTool::Connector),
+        (Self::ToolHammer, crate::hotbar::MainTool::Hammer),
     ];
 
-    pub(crate) const fn for_tool(tool: crate::hotbar::Tool) -> Self {
+    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 5] = [
+        (Self::MatterBlock, crate::hotbar::MatterMode::Block),
+        (Self::MatterCylinder, crate::hotbar::MatterMode::Cylinder),
+        (Self::MatterItem, crate::hotbar::MatterMode::Item),
+        (Self::MatterTerrain, crate::hotbar::MatterMode::Terrain),
+        (
+            Self::MatterManipulate,
+            crate::hotbar::MatterMode::Manipulate,
+        ),
+    ];
+
+    pub(crate) const fn for_tool(tool: crate::hotbar::MainTool) -> Self {
         match tool {
-            crate::hotbar::Tool::Block => Self::ToolBlock,
-            crate::hotbar::Tool::Cylinder => Self::ToolCylinder,
-            crate::hotbar::Tool::Bearing => Self::ToolBearing,
-            crate::hotbar::Tool::Weld => Self::ToolWeld,
-            crate::hotbar::Tool::Hammer => Self::ToolHammer,
-            crate::hotbar::Tool::Controller => Self::ToolController,
-            crate::hotbar::Tool::Connector => Self::ToolConnector,
-            crate::hotbar::Tool::GasEngine => Self::ToolGasEngine,
-            crate::hotbar::Tool::ElectricEngine => Self::ToolElectricEngine,
-            crate::hotbar::Tool::Transmission => Self::ToolTransmission,
-            crate::hotbar::Tool::Servo => Self::ToolServo,
-            crate::hotbar::Tool::Seat => Self::ToolSeat,
-            crate::hotbar::Tool::Input => Self::ToolInput,
-            crate::hotbar::Tool::Shape => Self::ToolShape,
+            crate::hotbar::MainTool::MatterManipulator => Self::ToolMatterManipulator,
+            crate::hotbar::MainTool::Welder => Self::ToolWelder,
+            crate::hotbar::MainTool::Connector => Self::ToolConnector,
+            crate::hotbar::MainTool::Hammer => Self::ToolHammer,
+        }
+    }
+
+    pub(crate) const fn for_mode(mode: crate::hotbar::MatterMode) -> Self {
+        match mode {
+            crate::hotbar::MatterMode::Block => Self::MatterBlock,
+            crate::hotbar::MatterMode::Cylinder => Self::MatterCylinder,
+            crate::hotbar::MatterMode::Item => Self::MatterItem,
+            crate::hotbar::MatterMode::Terrain => Self::MatterTerrain,
+            crate::hotbar::MatterMode::Manipulate => Self::MatterManipulate,
         }
     }
 
@@ -189,9 +174,6 @@ impl GameAction {
             Self::Interact => "Interact",
             Self::ToggleSpace => "Toggle Garage / World",
             Self::FinePlacement => "Fine Placement",
-            Self::ToolTerrainBrush => "Terrain Brush",
-            Self::TerrainBrushDecrease => "Terrain Brush Radius -",
-            Self::TerrainBrushIncrease => "Terrain Brush Radius +",
             Self::ToggleSimulation => "Toggle Simulation",
             Self::RestartSimulation => "Restart Simulation",
             Self::MaterialWheel => "Material Wheel",
@@ -202,20 +184,15 @@ impl GameAction {
             Self::Save => "Save",
             Self::Undo => "Undo",
             Self::Redo => "Redo",
-            Self::ToolBlock => "Blocker Placer",
-            Self::ToolCylinder => "Cylinder Tool",
-            Self::ToolBearing => "Bearing Tool",
-            Self::ToolWeld => "Weld Tool",
-            Self::ToolHammer => "Hammer Tool",
-            Self::ToolController => "Control Block Tool",
-            Self::ToolConnector => "Connector Tool",
-            Self::ToolGasEngine => "Gas Engine Tool",
-            Self::ToolElectricEngine => "Electric Engine Tool",
-            Self::ToolTransmission => "Transmission Tool",
-            Self::ToolServo => "Servo Tool",
-            Self::ToolSeat => "Seat Tool",
-            Self::ToolInput => "Input Tool",
-            Self::ToolShape => "Shape Tool",
+            Self::ToolMatterManipulator => "Matter Manipulator",
+            Self::ToolWelder => "Welder",
+            Self::ToolConnector => "Connector",
+            Self::ToolHammer => "Hammer",
+            Self::MatterBlock => "Matter: Block",
+            Self::MatterCylinder => "Matter: Cylinder",
+            Self::MatterItem => "Matter: Item",
+            Self::MatterTerrain => "Matter: Terrain",
+            Self::MatterManipulate => "Matter: Manipulate",
             Self::ClearPipette => "Clear / Pipette",
             Self::Rotate => "Rotate / Cycle",
             Self::PipeTurn => "Add Pipe Bend",
@@ -257,8 +234,6 @@ impl GameAction {
             | Self::ZoomOut => "Movement & Camera",
             Self::ToggleSpace
             | Self::FinePlacement
-            | Self::TerrainBrushDecrease
-            | Self::TerrainBrushIncrease
             | Self::ToggleSimulation
             | Self::RestartSimulation
             | Self::MaterialWheel
@@ -270,21 +245,15 @@ impl GameAction {
             | Self::ClearPipette
             | Self::Rotate
             | Self::PipeTurn => "General",
-            Self::ToolBlock
-            | Self::ToolTerrainBrush
-            | Self::ToolCylinder
-            | Self::ToolBearing
-            | Self::ToolWeld
-            | Self::ToolHammer
-            | Self::ToolController
+            Self::ToolMatterManipulator
+            | Self::ToolWelder
             | Self::ToolConnector
-            | Self::ToolGasEngine
-            | Self::ToolElectricEngine
-            | Self::ToolTransmission
-            | Self::ToolServo
-            | Self::ToolSeat
-            | Self::ToolInput
-            | Self::ToolShape => "Tools",
+            | Self::ToolHammer
+            | Self::MatterBlock
+            | Self::MatterCylinder
+            | Self::MatterItem
+            | Self::MatterTerrain
+            | Self::MatterManipulate => "Tools",
             Self::ShapeMirrorX
             | Self::ShapeMirrorZ
             | Self::ShapeSnap
@@ -524,17 +493,6 @@ impl Default for Controls {
             Some(InputChord::key(K::ShiftLeft)),
             Some(InputChord::key(K::ShiftRight)),
         );
-        set(A::ToolTerrainBrush, Some(InputChord::key(K::KeyT)), None);
-        set(
-            A::TerrainBrushDecrease,
-            Some(InputChord::key(K::PageDown)),
-            None,
-        );
-        set(
-            A::TerrainBrushIncrease,
-            Some(InputChord::key(K::PageUp)),
-            None,
-        );
         set(A::ToggleSimulation, None, None);
         set(A::RestartSimulation, None, None);
         set(A::MaterialWheel, Some(InputChord::key(K::Tab)), None);
@@ -565,24 +523,13 @@ impl Default for Controls {
             Some(InputChord::key(K::KeyZ).with_control().with_shift()),
             Some(InputChord::key(K::KeyZ).with_super().with_shift()),
         );
-        let tool_keys = [
-            K::Digit1,
-            K::Digit2,
-            K::Digit3,
-            K::Digit4,
-            K::Digit5,
-            K::Digit6,
-            K::Digit7,
-            K::Digit8,
-            K::Digit9,
-            K::BracketRight,
-            K::Digit0,
-            K::Minus,
-            K::Equal,
-            K::BracketLeft,
-        ];
+        let tool_keys = [K::Digit1, K::Digit2, K::Digit3, K::Digit4];
         for ((action, _), key) in A::TOOL_ACTIONS.into_iter().zip(tool_keys) {
             set(action, Some(InputChord::key(key)), None);
+        }
+        let mode_keys = [K::Digit1, K::Digit2, K::Digit3, K::Digit4, K::Digit5];
+        for ((action, _), key) in A::MODE_ACTIONS.into_iter().zip(mode_keys) {
+            set(action, Some(InputChord::key(key).with_shift()), None);
         }
         set(A::ClearPipette, Some(InputChord::key(K::KeyQ)), None);
         set(A::Rotate, Some(InputChord::key(K::KeyR)), None);
@@ -964,6 +911,39 @@ mod tests {
         assert_eq!(controls[GameAction::Save].0.iter().flatten().count(), 2);
         assert!(!controls.conflicts(GameAction::Sprint));
         assert!(!controls.conflicts(GameAction::Jump));
+    }
+
+    #[test]
+    fn defaults_bind_four_tools_and_five_shift_modes_without_shadowing() {
+        let controls = Controls::default();
+        for ((action, _), digit) in GameAction::TOOL_ACTIONS.into_iter().zip([
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+        ]) {
+            assert_eq!(controls.binding(action).0[0], Some(InputChord::key(digit)));
+        }
+        for ((action, _), digit) in GameAction::MODE_ACTIONS.into_iter().zip([
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+        ]) {
+            assert_eq!(
+                controls.binding(action).0[0],
+                Some(InputChord::key(digit).with_shift())
+            );
+        }
+
+        let mut keyboard = ButtonInput::default();
+        let mouse = ButtonInput::default();
+        keyboard.press(KeyCode::ShiftLeft);
+        keyboard.press(KeyCode::Digit1);
+        let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
+        assert!(input.just_pressed(GameAction::MatterBlock));
+        assert!(!input.just_pressed(GameAction::ToolMatterManipulator));
     }
 
     #[test]

@@ -333,7 +333,7 @@ pub fn raycast_density(
             let hit_distance = (empty + solid) * 0.5;
             let hit_position = WorldPosition(origin.0 + direction * hit_distance);
             let normal = density_normal(terrain, hit_position);
-            let mut material_weights = [0.0; 3];
+            let mut material_weights = [0.0; TerrainMaterial::COUNT];
             material_weights[terrain
                 .material(WorldPosition(hit_position.0 - DVec3::from(normal) * step))
                 .code() as usize] = 1.0;

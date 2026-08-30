@@ -1,4 +1,4 @@
-//! Hold-Tab radial construction-material selector.
+//! Reusable hold-Tab radial selector for contextual Matter choices.
 
 #![allow(clippy::wildcard_imports)]
 
@@ -6,6 +6,8 @@ use bevy_mosaic::ui::*;
 use mechanic_core::ConstructionMaterial;
 use mosaic_core::theme::color;
 use mosaic_macros::{component, view};
+
+use crate::hotbar::WheelChoice;
 
 #[allow(clippy::wildcard_imports)]
 use super::theme::*;
@@ -28,32 +30,22 @@ const RATINGS_OFFSET_Y: f32 = 318.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Model {
     pub(crate) open: bool,
-    pub(crate) highlighted: Option<ConstructionMaterial>,
+    pub(crate) highlighted: Option<WheelChoice>,
 }
 
 #[component]
-pub(crate) fn MaterialWheel(model: State<Model>) -> Element {
-    let name = move || {
-        model
-            .get()
-            .highlighted
-            .map_or("", ConstructionMaterial::label)
-    };
-    let shadow_name = move || {
-        model
-            .get()
-            .highlighted
-            .map_or("", ConstructionMaterial::label)
-    };
+pub(crate) fn RadialSelector(model: State<Model>) -> Element {
+    let name = move || model.get().highlighted.map_or("", WheelChoice::label);
+    let shadow_name = move || model.get().highlighted.map_or("", WheelChoice::label);
     view! {
         stack align:center justify:center nohit {
             stack width:{ Length::px(WHEEL_SIZE) } height:{ Length::px(WHEEL_SIZE) }
                 align:center justify:center nohit {
-                for (material, index) in { ordered_sectors(model.get().highlighted) } {
-                    (sector_arc(model, *material, *index))
+                for (choice, index) in { ordered_sectors(model.get().highlighted) } {
+                    (sector_arc(model, *choice, *index))
                 }
-                for (material, index) in { ordered_sectors(model.get().highlighted) } {
-                    (material_block_thumbnail(*material, *index))
+                for (choice, index) in { ordered_sectors(model.get().highlighted) } {
+                    (choice_thumbnail(*choice, *index, sector_count(*choice)))
                 }
                 circle radius:36px fill:shell stroke:(width:3px color:shell-edge)
                 stack width:{ Length::px(LABEL_WIDTH) } height:{ Length::px(LABEL_HEIGHT) }
@@ -64,12 +56,14 @@ pub(crate) fn MaterialWheel(model: State<Model>) -> Element {
                         fill:#090C0F {}
                     stack width:{ Length::px(LABEL_WIDTH) } height:{ Length::px(LABEL_HEIGHT) }
                         align:center justify:center radius:{ Length::px(LABEL_CORNER_RADIUS) } clip {
-                        for (material, ()) in {
-                            model.get().highlighted.into_iter().map(|material| (material, ()))
+                        for (texture, ()) in {
+                            model.get().highlighted.into_iter().filter_map(|choice| {
+                                choice_base_color_bytes(choice).map(|bytes| (bytes, ()))
+                            })
                         } {
                             img fit:cover width:{ Length::px(LABEL_WIDTH) }
                                 height:{ Length::px(LABEL_HEIGHT) }
-                                (ImageSource::encoded(material_base_color_bytes(*material)))
+                                (ImageSource::encoded(*texture))
                         }
                         text font-family:typeface.display translate:(x:0px y:2px)
                             font-size:{ Length::px(LABEL_FONT_SIZE) } font-weight:700
@@ -80,7 +74,10 @@ pub(crate) fn MaterialWheel(model: State<Model>) -> Element {
                     }
                 }
                 for (material, ()) in {
-                    model.get().highlighted.into_iter().map(|material| (material, ()))
+                    model.get().highlighted.into_iter().filter_map(|choice| match choice {
+                        WheelChoice::ConstructionMaterial(material) => Some((material, ())),
+                        _ => None,
+                    })
                 } {
                     stack width:{ Length::px(RATINGS_WIDTH) }
                         height:{ Length::px(RATINGS_HEIGHT) }
@@ -165,16 +162,26 @@ fn rating(normalized: f32) -> u8 {
     1 + extra
 }
 
-fn ordered_sectors(
-    highlighted: Option<ConstructionMaterial>,
-) -> [(ConstructionMaterial, usize); ConstructionMaterial::ALL.len()] {
-    let mut sectors = std::array::from_fn(|index| (ConstructionMaterial::ALL[index], index));
-    sectors.sort_by_key(|(material, _)| Some(*material) == highlighted);
+fn ordered_sectors(highlighted: Option<WheelChoice>) -> Vec<(WheelChoice, usize)> {
+    let mut sectors = choices(highlighted)
+        .into_iter()
+        .enumerate()
+        .map(|(index, choice)| (choice, index))
+        .collect::<Vec<_>>();
+    sectors.sort_by_key(|(choice, _)| Some(*choice) == highlighted);
     sectors
 }
 
-fn sector_arc(model: State<Model>, material: ConstructionMaterial, index: usize) -> Element {
-    let selected = move || model.get().highlighted == Some(material);
+fn choices(highlighted: Option<WheelChoice>) -> Vec<WheelChoice> {
+    highlighted.map_or_else(Vec::new, |choice| choice.context().choices().collect())
+}
+
+const fn sector_count(choice: WheelChoice) -> usize {
+    choice.context().count()
+}
+
+fn sector_arc(model: State<Model>, choice: WheelChoice, index: usize) -> Element {
+    let selected = move || model.get().highlighted == Some(choice);
     let stroke = move || {
         if selected() {
             color(accent.key)
@@ -182,107 +189,57 @@ fn sector_arc(model: State<Model>, material: ConstructionMaterial, index: usize)
             color(bar.fill)
         }
     };
-    match index {
-        0 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-104deg to:-76deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        1 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-74deg to:-46deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        2 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-44deg to:-16deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        3 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:-14deg to:14deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        4 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:16deg to:44deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        5 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:46deg to:74deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        6 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:76deg to:104deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        7 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:106deg to:134deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        8 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:136deg to:164deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        9 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:166deg to:194deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        10 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:196deg to:224deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        11 => {
-            view! {
-                circle radius:{ Length::px(SECTOR_RADIUS) } arc:(from:226deg to:254deg)
-                    stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
-            }
-        }
-        _ => unreachable!("material wheel has twelve sectors"),
+    let count = small_f32(sector_count(choice));
+    let span = 360.0 / count;
+    let gap = 2.0_f32.min(span * 0.1);
+    let centre = -90.0 + small_f32(index) * span;
+    view! {
+        circle radius:{ Length::px(SECTOR_RADIUS) }
+            arc:(from:{ centre - span * 0.5 + gap } to:{ centre + span * 0.5 - gap })
+            stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
     }
 }
 
-fn material_block_thumbnail(material: ConstructionMaterial, index: usize) -> Element {
-    let position = [
-        (0.0, -MATERIAL_RADIUS),
-        (66.0, -114.3),
-        (114.3, -66.0),
-        (MATERIAL_RADIUS, 0.0),
-        (114.3, 66.0),
-        (66.0, 114.3),
-        (0.0, MATERIAL_RADIUS),
-        (-66.0, 114.3),
-        (-114.3, 66.0),
-        (-MATERIAL_RADIUS, 0.0),
-        (-114.3, -66.0),
-        (-66.0, -114.3),
-    ][index];
-    let source = ImageSource::encoded(block_thumbnail_bytes(material));
-    view! {
-        stack width:{ Length::px(BLOCK_THUMBNAIL_WIDTH) }
-            height:{ Length::px(BLOCK_THUMBNAIL_HEIGHT) } align:center justify:center nohit
-            translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
-            img fit:contain width:{ Length::px(BLOCK_THUMBNAIL_WIDTH) }
-                height:{ Length::px(BLOCK_THUMBNAIL_HEIGHT) } (source)
+fn choice_thumbnail(choice: WheelChoice, index: usize, count: usize) -> Element {
+    let angle = std::f32::consts::TAU * small_f32(index) / small_f32(count);
+    let position = (
+        angle.sin() * MATERIAL_RADIUS,
+        -angle.cos() * MATERIAL_RADIUS,
+    );
+    match choice {
+        WheelChoice::ConstructionMaterial(material) => {
+            let source = ImageSource::encoded(block_thumbnail_bytes(material));
+            view! {
+                stack width:{ Length::px(BLOCK_THUMBNAIL_WIDTH) }
+                    height:{ Length::px(BLOCK_THUMBNAIL_HEIGHT) } align:center justify:center nohit
+                    translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                    img fit:contain width:{ Length::px(BLOCK_THUMBNAIL_WIDTH) }
+                        height:{ Length::px(BLOCK_THUMBNAIL_HEIGHT) } (source)
+                }
+            }
+        }
+        WheelChoice::Item(item) => view! {
+            stack width:{ Length::px(BLOCK_THUMBNAIL_WIDTH) }
+                height:{ Length::px(BLOCK_THUMBNAIL_HEIGHT) } align:center justify:center nohit
+                translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                (super::hotbar::icon(item.editor_tool()))
+            }
+        },
+        WheelChoice::TerrainMaterial(material) => {
+            let source = ImageSource::encoded(terrain_base_color_bytes(material));
+            view! {
+                stack width:48px height:48px radius:24px clip
+                    stroke:(width:3px color:shell-edge) align:center justify:center
+                    translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                    img fit:cover width:52px height:52px (source)
+                }
+            }
         }
     }
+}
+
+fn small_f32(value: usize) -> f32 {
+    f32::from(u16::try_from(value).expect("selector sector counts fit u16"))
 }
 
 const fn block_thumbnail_bytes(material: ConstructionMaterial) -> &'static [u8] {
@@ -391,29 +348,79 @@ const fn material_base_color_bytes(material: ConstructionMaterial) -> &'static [
     }
 }
 
+const fn terrain_base_color_bytes(material: mechanic_world::TerrainMaterial) -> &'static [u8] {
+    match material {
+        mechanic_world::TerrainMaterial::SurfaceCover => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/terrain/grass/grass_base_color.png"
+        )),
+        mechanic_world::TerrainMaterial::Soil => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/terrain/dirt/dirt_base_color.png"
+        )),
+        mechanic_world::TerrainMaterial::Rock => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/terrain/stone/stone_base_color.png"
+        )),
+        mechanic_world::TerrainMaterial::Sand => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/sand/sand_base_color.png"
+        )),
+        mechanic_world::TerrainMaterial::Iron => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/iron/iron_base_color.png"
+        )),
+        mechanic_world::TerrainMaterial::Graphite => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/graphite/graphite_base_color.png"
+        )),
+    }
+}
+
+const fn choice_base_color_bytes(choice: WheelChoice) -> Option<&'static [u8]> {
+    match choice {
+        WheelChoice::ConstructionMaterial(material) => Some(material_base_color_bytes(material)),
+        WheelChoice::TerrainMaterial(material) => Some(terrain_base_color_bytes(material)),
+        WheelChoice::Item(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Model, block_thumbnail_bytes, material_base_color_bytes, material_ratings, ordered_sectors,
+        terrain_base_color_bytes,
     };
+    use crate::hotbar::{PlaceableItem, WheelChoice};
     use mechanic_core::ConstructionMaterial;
 
     #[test]
     fn model_preserves_open_and_highlight_state() {
         let model = Model {
             open: true,
-            highlighted: Some(ConstructionMaterial::Wood),
+            highlighted: Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Wood,
+            )),
         };
         assert!(model.open);
-        assert_eq!(model.highlighted, Some(ConstructionMaterial::Wood));
+        assert_eq!(
+            model.highlighted,
+            Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Wood
+            ))
+        );
     }
 
     #[test]
     fn highlighted_sector_is_painted_last() {
-        let ordered = ordered_sectors(Some(ConstructionMaterial::Concrete));
+        let ordered = ordered_sectors(Some(WheelChoice::ConstructionMaterial(
+            ConstructionMaterial::Concrete,
+        )));
         assert_eq!(
             ordered.last().map(|(material, _)| *material),
-            Some(ConstructionMaterial::Concrete)
+            Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Concrete
+            ))
         );
         assert_eq!(
             ordered
@@ -422,6 +429,28 @@ mod tests {
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
             ConstructionMaterial::ALL.len(),
+        );
+    }
+
+    #[test]
+    fn contextual_wheels_have_twelve_eight_and_six_sectors() {
+        assert_eq!(
+            ordered_sectors(Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Steel
+            )))
+            .len(),
+            ConstructionMaterial::ALL.len()
+        );
+        assert_eq!(
+            ordered_sectors(Some(WheelChoice::Item(PlaceableItem::Bearing))).len(),
+            PlaceableItem::ALL.len()
+        );
+        assert_eq!(
+            ordered_sectors(Some(WheelChoice::TerrainMaterial(
+                mechanic_world::TerrainMaterial::Soil
+            )))
+            .len(),
+            mechanic_world::TerrainMaterial::ALL.len()
         );
     }
 
@@ -458,6 +487,14 @@ mod tests {
                 3072,
                 "{material:?}",
             );
+        }
+    }
+
+    #[test]
+    fn every_terrain_material_has_a_textured_blob_and_nameplate_source() {
+        for material in mechanic_world::TerrainMaterial::ALL {
+            let png = terrain_base_color_bytes(material);
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "{material:?}");
         }
     }
 

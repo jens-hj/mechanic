@@ -239,8 +239,8 @@ pub struct TerrainContact {
     pub triangle: u32,
     /// Chunk generation used to invalidate stale manifolds.
     pub chunk_generation: u64,
-    /// Surface-cover, soil, and rock weights at the contact.
-    pub material_weights: [f32; 3],
+    /// One weight per terrain material at the contact.
+    pub material_weights: [f32; mechanic_world::TerrainMaterial::COUNT],
 }
 
 /// Generates contacts against one chunk's triangle BVH contract.
@@ -385,14 +385,21 @@ fn candidate_triangles(
     candidates
 }
 
-fn triangle_material_weights(chunk: &TerrainCollisionChunk, indices: &[u32]) -> [f32; 3] {
-    let mut weights = [0.0; 3];
+fn triangle_material_weights(
+    chunk: &TerrainCollisionChunk,
+    indices: &[u32],
+) -> [f32; mechanic_world::TerrainMaterial::COUNT] {
+    let mut weights = [0.0; mechanic_world::TerrainMaterial::COUNT];
     for &index in indices {
         let source = usize::try_from(index)
             .ok()
             .and_then(|index| chunk.material_weights.get(index))
             .copied()
-            .unwrap_or([0.0, 0.0, 1.0]);
+            .unwrap_or_else(|| {
+                let mut weights = [0.0; mechanic_world::TerrainMaterial::COUNT];
+                weights[mechanic_world::TerrainMaterial::Rock.code() as usize] = 1.0;
+                weights
+            });
         for (target, source) in weights.iter_mut().zip(source) {
             *target += source / 3.0;
         }
@@ -477,7 +484,14 @@ mod tests {
         TerrainCollisionChunk {
             vertices: vec![[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [0.0, 0.0, 5.0]],
             indices: vec![0, 2, 1],
-            material_weights: vec![[0.0, 0.0, 1.0]; 3],
+            material_weights: vec![
+                {
+                    let mut weights = [0.0; mechanic_world::TerrainMaterial::COUNT];
+                    weights[mechanic_world::TerrainMaterial::Rock.code() as usize] = 1.0;
+                    weights
+                };
+                3
+            ],
             bounds,
             generation,
             triangle_bvh: TriangleBvh {

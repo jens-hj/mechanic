@@ -29,10 +29,11 @@ pub const REMOVED_CELL_CUBIC_METERS: f64 = 0.000_125;
 /// Exact volume of one newly emptied terrain cell in litres.
 pub const REMOVED_CELL_LITRES: f64 = 0.125;
 
-/// Material-specific result of one subtractive brush operation.
+/// Material-specific result of one terrain brush operation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerrainEditOutcome {
-    removed_cells: [u64; 3],
+    removed_cells: [u64; TerrainMaterial::COUNT],
+    added_cells: [u64; TerrainMaterial::COUNT],
     /// Number of 32³ bricks whose density changed.
     pub changed_bricks: usize,
     changed_brick_coordinates: Vec<BrickCoord>,
@@ -100,7 +101,34 @@ impl TerrainEditOutcome {
 
     /// Total number of newly removed cells across all materials.
     pub const fn total_removed_cells(&self) -> u64 {
-        self.removed_cells[0] + self.removed_cells[1] + self.removed_cells[2]
+        let mut total = 0;
+        let mut index = 0;
+        while index < TerrainMaterial::COUNT {
+            total += self.removed_cells[index];
+            index += 1;
+        }
+        total
+    }
+
+    /// Number of empty cells newly filled with one material.
+    pub const fn added_cells(&self, material: TerrainMaterial) -> u64 {
+        self.added_cells[material.code() as usize]
+    }
+
+    /// Total number of newly filled cells across all materials.
+    pub const fn total_added_cells(&self) -> u64 {
+        let mut total = 0;
+        let mut index = 0;
+        while index < TerrainMaterial::COUNT {
+            total += self.added_cells[index];
+            index += 1;
+        }
+        total
+    }
+
+    /// Total number of cells changed by this operation.
+    pub const fn total_changed_cells(&self) -> u64 {
+        self.total_removed_cells() + self.total_added_cells()
     }
 
     /// Stable coordinates of bricks whose samples changed in this operation.
@@ -197,6 +225,27 @@ impl TerrainBrick {
                 .fold(f32::NEG_INFINITY, f32::max);
         }
         Some(removed)
+    }
+
+    fn set_solid(&mut self, local: IVec3, material: TerrainMaterial, density: f32) -> bool {
+        let Some(index) = local_index(local) else {
+            return false;
+        };
+        let sample = &mut self.cells[index];
+        if sample.is_solid() {
+            return false;
+        }
+        let previous_density = sample.density;
+        *sample = TerrainSample { density, material };
+        self.maximum_density = self.maximum_density.max(density);
+        if previous_density <= self.minimum_density {
+            self.minimum_density = self
+                .cells
+                .iter()
+                .map(|cell| cell.density)
+                .fold(f32::INFINITY, f32::min);
+        }
+        true
     }
 }
 
@@ -653,6 +702,136 @@ impl TerrainOctree {
             for cell in cells {
                 if let Some(material) = brick.set_empty(cell.local_in_brick()) {
                     outcome.removed_cells[material.code() as usize] += 1;
+                    changed.insert(coordinate);
+                }
+            }
+            if changed.contains(&coordinate) {
+                brick.revision = revision;
+                self.insert_brick(brick);
+            }
+        }
+        outcome.changed_bricks = changed.len();
+        outcome.changed_brick_coordinates = changed.iter().copied().collect();
+        if !changed.is_empty() {
+            self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        }
+        self.dirty
+            .extend(changed.into_iter().map(TerrainNodeId::leaf));
+        Ok(outcome)
+    }
+
+    /// Fills empty cells inside a spherical brush with `material`.
+    ///
+    /// Existing solid cells are never repainted.
+    ///
+    /// # Errors
+    ///
+    /// Refuses invalid radii and any brush that reaches the unbreakable outer
+    /// world boundary. No brick is promoted when an edit is refused.
+    pub fn add_sphere(
+        &mut self,
+        field: &TerrainField,
+        centre: WorldPosition,
+        radius_metres: f64,
+        material: TerrainMaterial,
+    ) -> Result<TerrainEditOutcome, TerrainEditError> {
+        self.add_sphere_delta(field, centre, radius_metres, material, None)
+    }
+
+    /// Fills only the part of a spherical brush not covered by the previous sample.
+    ///
+    /// Passing the last successfully applied sample makes a continuous stroke
+    /// proportional to its newly swept volume. Existing solids remain untouched.
+    ///
+    /// # Errors
+    ///
+    /// Refuses invalid radii and any current brush that reaches the unbreakable
+    /// outer world boundary. No brick is promoted when an edit is refused.
+    pub fn add_sphere_delta(
+        &mut self,
+        field: &TerrainField,
+        centre: WorldPosition,
+        radius_metres: f64,
+        material: TerrainMaterial,
+        previous: Option<(WorldPosition, f64)>,
+    ) -> Result<TerrainEditOutcome, TerrainEditError> {
+        if !radius_metres.is_finite() || !(0.10..=2.00).contains(&radius_metres) {
+            return Err(TerrainEditError::InvalidRadius(radius_metres));
+        }
+        if centre.0.x.abs() + radius_metres >= WORLD_HALF_EXTENT_METERS
+            || centre.0.z.abs() + radius_metres >= WORLD_HALF_EXTENT_METERS
+        {
+            return Err(TerrainEditError::UnbreakableBoundary);
+        }
+
+        let minimum = cell_containing(centre.0 - DVec3::splat(radius_metres));
+        let maximum = cell_containing(centre.0 + DVec3::splat(radius_metres));
+        let radius_squared = radius_metres * radius_metres;
+        let mut cells_to_fill = Vec::new();
+        let mut touched_bricks = BTreeSet::new();
+        for z in minimum.z..=maximum.z {
+            for x in minimum.x..=maximum.x {
+                let column_position = WorldCell::new(x, minimum.y, z).centre();
+                let Some(current_y) = sphere_y_cell_range(
+                    centre,
+                    radius_squared,
+                    column_position.0.x,
+                    column_position.0.z,
+                ) else {
+                    continue;
+                };
+                let column = field.sample_column(column_position.0.x, column_position.0.z);
+                let previous_y = previous.and_then(|(previous_centre, previous_radius)| {
+                    sphere_y_cell_range(
+                        previous_centre,
+                        previous_radius * previous_radius,
+                        column_position.0.x,
+                        column_position.0.z,
+                    )
+                });
+                let mut sample_range = |first: i32, last: i32| {
+                    for y in first..=last {
+                        let cell = WorldCell::new(x, y, z);
+                        if self.sample_cell_in_column(field, cell, column).is_solid() {
+                            continue;
+                        }
+                        let distance = cell.centre().0.distance(centre.0);
+                        let density =
+                            (radius_metres - distance).max(TERRAIN_CELL_METERS * 0.5) as f32;
+                        cells_to_fill.push((cell, density));
+                        touched_bricks.insert(cell.brick());
+                    }
+                };
+                if let Some(previous_y) = previous_y {
+                    sample_range(current_y.start, current_y.end.min(previous_y.start - 1));
+                    sample_range(current_y.start.max(previous_y.end + 1), current_y.end);
+                } else {
+                    sample_range(current_y.start, current_y.end);
+                }
+            }
+        }
+
+        let mut outcome = TerrainEditOutcome::default();
+        let mut changed = BTreeSet::new();
+        let mut by_leaf = BTreeMap::<BrickCoord, Vec<(WorldCell, f32)>>::new();
+        for (cell, density) in cells_to_fill {
+            by_leaf
+                .entry(cell.brick())
+                .or_default()
+                .push((cell, density));
+        }
+        let revision = self.next_revision;
+        for coordinate in touched_bricks {
+            let mut brick = self
+                .brick(coordinate)
+                .cloned()
+                .unwrap_or_else(|| TerrainBrick::promote(field, coordinate));
+            let Some(cells) = by_leaf.get(&coordinate) else {
+                continue;
+            };
+            for (cell, density) in cells {
+                if brick.set_solid(cell.local_in_brick(), material, *density) {
+                    outcome.added_cells[material.code() as usize] += 1;
                     changed.insert(coordinate);
                 }
             }
@@ -1449,6 +1628,70 @@ mod tests {
     }
 
     #[test]
+    fn addition_assigns_material_without_repainting_existing_solids() {
+        let field = TerrainField::new(WorldSeed(456));
+        let surface = field.surface_height(300.0, 300.0);
+        let centre = WorldPosition(DVec3::new(300.0, surface + 0.3, 300.0));
+        let existing_cell = super::cell_containing(DVec3::new(300.0, surface - 0.1, 300.0));
+        let mut terrain = TerrainOctree::default();
+        let existing = terrain.sample_cell(&field, existing_cell);
+        assert!(existing.is_solid());
+
+        let first = terrain
+            .add_sphere(&field, centre, 0.5, TerrainMaterial::Rock)
+            .expect("addition is valid");
+        assert!(first.added_cells(TerrainMaterial::Rock) > 0);
+        assert_eq!(first.total_added_cells(), first.total_changed_cells());
+        assert_eq!(terrain.sample_cell(&field, existing_cell), existing);
+
+        let added_cell = super::cell_containing(centre.0);
+        let added = terrain.sample_cell(&field, added_cell);
+        assert!(added.is_solid());
+        assert_eq!(added.material, TerrainMaterial::Rock);
+
+        let second = terrain
+            .add_sphere(&field, centre, 0.5, TerrainMaterial::Soil)
+            .expect("repeat addition is valid");
+        assert_eq!(second.total_added_cells(), 0);
+        assert_eq!(
+            terrain.sample_cell(&field, added_cell).material,
+            TerrainMaterial::Rock
+        );
+    }
+
+    #[test]
+    fn delta_addition_matches_two_complete_overlapping_spheres() {
+        let field = TerrainField::new(WorldSeed(654));
+        let surface = field.surface_height(300.0, 300.0);
+        let first_centre = WorldPosition(DVec3::new(300.0, surface + 0.4, 300.0));
+        let second_centre = WorldPosition(first_centre.0 + DVec3::new(0.05, 0.0, 0.0));
+
+        let mut complete = TerrainOctree::default();
+        complete
+            .add_sphere(&field, first_centre, 0.6, TerrainMaterial::Soil)
+            .unwrap();
+        complete
+            .add_sphere(&field, second_centre, 0.6, TerrainMaterial::Soil)
+            .unwrap();
+
+        let mut delta = TerrainOctree::default();
+        delta
+            .add_sphere(&field, first_centre, 0.6, TerrainMaterial::Soil)
+            .unwrap();
+        delta
+            .add_sphere_delta(
+                &field,
+                second_centre,
+                0.6,
+                TerrainMaterial::Soil,
+                Some((first_centre, 0.6)),
+            )
+            .unwrap();
+
+        assert_eq!(delta, complete);
+    }
+
+    #[test]
     fn boundary_refusal_does_not_promote_bricks() {
         let field = TerrainField::new(WorldSeed(1));
         let mut edits = TerrainOctree::default();
@@ -1475,5 +1718,27 @@ mod tests {
         let original = edits.brick(coordinate).unwrap();
         let decoded = decode_brick(&encode_brick(original)).expect("payload is valid");
         assert_eq!(&decoded, original);
+    }
+
+    #[test]
+    fn added_material_rle_round_trips_exactly() {
+        let field = TerrainField::new(WorldSeed(9));
+        let surface = field.surface_height(0.0, 0.0);
+        for material in TerrainMaterial::ALL {
+            let mut edits = TerrainOctree::default();
+            edits
+                .add_sphere(
+                    &field,
+                    WorldPosition(DVec3::new(0.0, surface + 0.3, 0.0)),
+                    0.5,
+                    material,
+                )
+                .unwrap();
+            assert!(edits.snapshot().bricks().next().is_some(), "{material:?}");
+            for original in edits.snapshot().bricks() {
+                let decoded = decode_brick(&encode_brick(original)).expect("payload is valid");
+                assert_eq!(&decoded, original, "{material:?}");
+            }
+        }
     }
 }

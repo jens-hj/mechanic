@@ -20,6 +20,7 @@ mod creation_menu;
 mod creation_store;
 mod garage;
 mod hotbar;
+mod multitool;
 mod pause_menu;
 mod performance;
 mod sequencer;
@@ -80,7 +81,7 @@ use control_panel::ControlPanelState;
 use controls::{BindingInput, GameAction, InputChord, Modifiers, WheelDirection};
 use creation_menu::{CreationMenuState, CreationRequest};
 use creation_store::CreationStore;
-use hotbar::{SelectedMaterial, SelectedTool, Tool};
+use hotbar::{SelectedMaterial, SelectedTerrainMaterial, SelectedTool, Tool};
 use mechanic_core::{
     ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand, BuildOutcome,
     CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape, CompiledCreation,
@@ -587,7 +588,6 @@ enum EscapeTarget {
     ExistingUi,
     ControlPanel,
     WorldState,
-    Tool,
     OpenPause,
 }
 
@@ -613,7 +613,6 @@ const fn escape_target(
     existing_ui: bool,
     panel_open: bool,
     world_state: bool,
-    non_default_tool: bool,
 ) -> EscapeTarget {
     if pause_open && submenu_open {
         EscapeTarget::PauseSubmenu
@@ -625,8 +624,6 @@ const fn escape_target(
         EscapeTarget::ControlPanel
     } else if world_state {
         EscapeTarget::WorldState
-    } else if non_default_tool {
-        EscapeTarget::Tool
     } else {
         EscapeTarget::OpenPause
     }
@@ -644,7 +641,7 @@ fn handle_pause_escape(
     mut panel: ResMut<ControlPanelState>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
-    mut selection: ResMut<SelectedTool>,
+    selection: Res<SelectedTool>,
     mut wheel: ResMut<MaterialWheelState>,
     mut pause: ResMut<PauseMenuState>,
     worlds: Res<world::WorldListState>,
@@ -661,14 +658,13 @@ fn handle_pause_escape(
         || state.delete_drag.is_some()
         || graph.0.pending().is_some()
         || state.wire_drag.is_some()
-        || shape_tool_is_busy(selection.0, &state);
+        || shape_tool_is_busy(selection.active_editor_tool(), &state);
     let target = escape_target(
         pause.is_open(),
         pause.is_in_submenu(),
         menu.is_open() || overlay.escape_is_consumed(),
         panel.is_open(),
         world_state,
-        selection.0 != Some(Tool::Block),
     );
     pause.consume_frame();
     match target {
@@ -680,10 +676,6 @@ fn handle_pause_escape(
             state.feedback = Some("Control block panel closed".to_owned());
         }
         EscapeTarget::WorldState => cancel_one_world_escape_owner(&mut graph.0, &mut state),
-        EscapeTarget::Tool => {
-            selection.0 = Some(Tool::Block);
-            state.feedback = None;
-        }
         EscapeTarget::OpenPause => {
             wheel.close();
             pause.open();
@@ -1858,7 +1850,7 @@ fn advance_simulation(
     // from the same published snapshot -- but only while it is on screen. A
     // hidden mesh has no slab allocation, so writing to it every frame both
     // wastes the rebuild and makes the renderer log a use-after-free.
-    if drive_xray_is_visible(selection.0, control_link_count(&graph.0))
+    if drive_xray_is_visible(selection.active_editor_tool(), control_link_count(&graph.0))
         && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
     {
         *mesh = combined_simulation_drive_xray_mesh(
@@ -2507,10 +2499,12 @@ fn main() {
         .init_resource::<shape_tool::ShapeSnap>()
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
+        .init_resource::<SelectedTerrainMaterial>()
         .init_resource::<PlayerState>()
         .init_resource::<MaterialWheelState>()
         .init_resource::<ButtonInput<GameAction>>()
         .add_plugins(world::WorldPrototypePlugin)
+        .add_plugins(multitool::MultitoolPlugin)
         // A dim base fill keeps occluded construction readable without
         // overpowering the garage's authored lighting.
         .insert_resource(GlobalAmbientLight {
@@ -2998,7 +2992,7 @@ fn setup(
                 // over by the joints showing through.
                 bevy_mosaic::MosaicCamera,
                 Camera {
-                    order: 1,
+                    order: 2,
                     clear_color: ClearColorConfig::None,
                     ..default()
                 },
@@ -3036,23 +3030,19 @@ mod pause_feature_tests {
     #[test]
     fn existing_escape_owners_take_priority_before_pause() {
         assert_eq!(
-            escape_target(false, false, true, true, true, true),
+            escape_target(false, false, true, true, true),
             EscapeTarget::ExistingUi
         );
         assert_eq!(
-            escape_target(false, false, false, true, true, true),
+            escape_target(false, false, false, true, true),
             EscapeTarget::ControlPanel
         );
         assert_eq!(
-            escape_target(false, false, false, false, true, true),
+            escape_target(false, false, false, false, true),
             EscapeTarget::WorldState
         );
         assert_eq!(
-            escape_target(false, false, false, false, false, true),
-            EscapeTarget::Tool
-        );
-        assert_eq!(
-            escape_target(false, false, false, false, false, false),
+            escape_target(false, false, false, false, false),
             EscapeTarget::OpenPause
         );
     }
@@ -3060,11 +3050,11 @@ mod pause_feature_tests {
     #[test]
     fn pause_confirmation_cancels_before_pause_continues() {
         assert_eq!(
-            escape_target(true, true, true, true, true, true),
+            escape_target(true, true, true, true, true),
             EscapeTarget::PauseSubmenu
         );
         assert_eq!(
-            escape_target(true, false, true, true, true, true),
+            escape_target(true, false, true, true, true),
             EscapeTarget::PauseMenu
         );
     }
@@ -3442,7 +3432,7 @@ fn handle_history_shortcut(
     let Some(action) = requested_history_action(&actions) else {
         return;
     };
-    apply_history_action(action, &mut graph.0, &mut state, &mut history, false);
+    apply_history_action(action, &mut graph.0, &mut state, &mut history);
 }
 
 fn apply_history_action(
@@ -3450,19 +3440,7 @@ fn apply_history_action(
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
-    simulation_running: bool,
 ) -> bool {
-    if simulation_running {
-        state.feedback = Some(format!(
-            "{} is available in build mode — press Escape first",
-            match action {
-                HistoryAction::Undo => "Undo",
-                HistoryAction::Redo => "Redo",
-            }
-        ));
-        return false;
-    }
-
     let current = EditorSnapshot::capture(graph, state);
     let restored = match action {
         HistoryAction::Undo => history.undo(current),
@@ -3532,12 +3510,18 @@ fn handle_shortcuts(
     }
     for (action, tool) in GameAction::TOOL_ACTIONS {
         if actions.just_pressed(action) {
-            selection.0 = Some(tool);
+            selection.select_tool(tool);
+            break;
+        }
+    }
+    for (action, mode) in GameAction::MODE_ACTIONS {
+        if actions.just_pressed(action) {
+            selection.select_mode(mode);
             break;
         }
     }
     if actions.just_pressed(GameAction::ClearPipette) {
-        if selection.0.is_some() {
+        if selection.tool.is_some() {
             clear_held_tool(&mut graph.0, &mut state, &mut selection, &mut hammer);
         } else {
             let cursor = camera::viewport_center(Vec2::new(window.width(), window.height()));
@@ -3567,11 +3551,13 @@ fn handle_shortcuts(
         }
     }
     if actions.just_pressed(GameAction::Rotate)
-        && let Some(tool) = selection.0
+        && let Some(tool) = selection.active_editor_tool()
     {
         state.feedback = Some(cycle_orientation(&mut state, tool));
     }
-    if actions.just_pressed(GameAction::PipeTurn) && selection.0 == Some(Tool::Cylinder) {
+    if actions.just_pressed(GameAction::PipeTurn)
+        && selection.active_editor_tool() == Some(Tool::Cylinder)
+    {
         state.feedback = Some(begin_pipe_turn(&mut state));
     }
 }
@@ -3596,7 +3582,7 @@ fn clear_held_tool(
     state.selected_vertices.clear();
     state.active_region = None;
     *hammer = HammerInteraction::default();
-    selection.0 = None;
+    selection.clear();
     state.construction_mesh_dirty = true;
     state.feedback =
         Some("Hand cleared — Clear / Pipette picks the object under the reticle".to_owned());
@@ -3724,7 +3710,7 @@ fn apply_pipette_setup(
             }
         }
     };
-    selection.0 = Some(tool);
+    selection.select_editor_tool(tool);
     state.construction_mesh_dirty = true;
     state.feedback = Some(format!("Picked up {}", tool.label()));
 }
@@ -3845,10 +3831,9 @@ enum BearingDimensionTarget {
 fn requested_bearing_dimension_adjustment(
     actions: &ButtonInput<GameAction>,
     tool: Option<Tool>,
-    simulating: bool,
     menu_blocks_input: bool,
 ) -> Option<(BearingDimensionTarget, i8)> {
-    if tool != Some(Tool::Bearing) || simulating || menu_blocks_input {
+    if tool != Some(Tool::Bearing) || menu_blocks_input {
         return None;
     }
     [
@@ -3915,8 +3900,7 @@ fn handle_bearing_dimension_shortcuts(
 ) {
     let Some((target, direction)) = requested_bearing_dimension_adjustment(
         &actions,
-        selection.0,
-        false,
+        selection.active_editor_tool(),
         menu.blocks_keyboard(),
     ) else {
         return;
@@ -3940,10 +3924,9 @@ enum CylinderDimensionTarget {
 fn requested_cylinder_dimension_adjustment(
     actions: &ButtonInput<GameAction>,
     tool: Option<Tool>,
-    simulating: bool,
     menu_blocks_input: bool,
 ) -> Option<(CylinderDimensionTarget, i8)> {
-    if tool != Some(Tool::Cylinder) || simulating || menu_blocks_input {
+    if tool != Some(Tool::Cylinder) || menu_blocks_input {
         return None;
     }
     [
@@ -4058,8 +4041,7 @@ fn handle_cylinder_dimension_shortcuts(
     }
     let Some((target, direction)) = requested_cylinder_dimension_adjustment(
         &actions,
-        selection.0,
-        false,
+        selection.active_editor_tool(),
         menu.blocks_keyboard(),
     ) else {
         return;
@@ -4090,7 +4072,10 @@ fn handle_tool_change(
     state.pipe_drag = None;
     state.delete_drag = None;
     state.wire_drag = None;
-    if !selection.0.is_some_and(Tool::edits_drives) {
+    if !selection
+        .active_editor_tool()
+        .is_some_and(Tool::edits_drives)
+    {
         state.selected_controller = None;
     }
 }
@@ -4141,7 +4126,7 @@ fn update_hover(
             return;
         }
         clear_hover(&mut state);
-        if let Some(tool) = selection.0 {
+        if let Some(tool) = selection.active_editor_tool() {
             refresh_tool_preview_with_cylinder(
                 &graph.0,
                 &mut state,
@@ -4263,7 +4248,7 @@ fn update_hover(
         );
         return;
     }
-    let Some(tool) = selection.0 else {
+    let Some(tool) = selection.active_editor_tool() else {
         let construction_hit = raycast_surface(None);
         let bearing_hit =
             raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction);
@@ -5077,7 +5062,7 @@ fn handle_shape_actions(
     wheel: Res<MaterialWheelState>,
     camera_transform: Single<&GlobalTransform, With<MainCamera>>,
 ) {
-    if selection.0 != Some(Tool::Shape) {
+    if selection.active_editor_tool() != Some(Tool::Shape) {
         if state.vertex_drag.take().is_some() {
             state.construction_mesh_dirty = true;
         }
@@ -5276,7 +5261,7 @@ fn choose_region(
     if !actions.just_pressed(GameAction::Primary) {
         return;
     }
-    let Some(hit) = builder::raycast_construction(graph, ray_origin, ray_direction) else {
+    let Some(hit) = state.hovered else {
         state.feedback = Some("Aim at a block to choose an area".to_owned());
         return;
     };
@@ -5631,7 +5616,8 @@ fn sync_region_focus(
     visuals: Res<EditorVisuals>,
     mut construction_visuals: Query<(&ConstructionVisual, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    let editing = selection.0 == Some(Tool::Shape) && state.active_region.is_some();
+    let editing =
+        selection.active_editor_tool() == Some(Tool::Shape) && state.active_region.is_some();
     for (visual, mut material) in &mut construction_visuals {
         let index = material_index(visual.0);
         let wanted = if editing {
@@ -5662,7 +5648,7 @@ fn sync_shape_nodes(
     mut markers: ShapeOverlay<ShapeNodeVisual, ShapeSelectedVisual, ShapePlaneVisual>,
     mut selected_markers: ShapeOverlay<ShapeSelectedVisual, ShapeNodeVisual, ShapePlaneVisual>,
 ) {
-    let hide = selection.0 != Some(Tool::Shape);
+    let hide = selection.active_editor_tool() != Some(Tool::Shape);
 
     // Two batches rather than one: a selected corner reads by colour as well as
     // by size, which size alone was not carrying.
@@ -6032,7 +6018,7 @@ fn handle_build_actions(
         }
         return;
     }
-    let Some(tool) = selection.0 else {
+    let Some(tool) = selection.active_editor_tool() else {
         return;
     };
     if tool == Tool::Shape {
@@ -7430,11 +7416,11 @@ fn handle_hammer_actions(
         hammer.pending = None;
         return;
     }
-    let Some(tool) = selection.0 else {
+    let Some(tool) = selection.active_editor_tool() else {
         hammer.charging = None;
         return;
     };
-    if !tool.works_in_mode(true) {
+    if tool != Tool::Hammer {
         hammer.charging = None;
         return;
     }
@@ -8057,7 +8043,7 @@ fn sync_visual_meshes(
     } else {
         let rings = combined_bearing_mesh(&graph.0, &state.placed_bearings);
         if joint_xray_is_visible(
-            selection.0,
+            selection.active_editor_tool(),
             simulation.is_running(),
             visible_bearing_count(&graph.0, &state.placed_bearings),
         ) && let Some(mut mesh) = meshes.get_mut(&visuals.joint_xray_mesh)
@@ -8069,7 +8055,7 @@ fn sync_visual_meshes(
         }
         **bearing_visibility = Visibility::Visible;
     }
-    if drive_xray_is_visible(selection.0, control_link_count(&graph.0))
+    if drive_xray_is_visible(selection.active_editor_tool(), control_link_count(&graph.0))
         && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
     {
         *mesh = combined_drive_xray_mesh(&graph.0, &state.placed_bearings, &sequencer);
@@ -8151,9 +8137,10 @@ fn update_joint_xray(
     >,
     mut visibility: Single<&mut Visibility, (With<JointXrayVisual>, Without<DriveXrayVisual>)>,
 ) {
-    let drive_visible = drive_xray_is_visible(selection.0, control_link_count(&graph.0));
+    let drive_visible =
+        drive_xray_is_visible(selection.active_editor_tool(), control_link_count(&graph.0));
     let joint_visible = joint_xray_is_visible(
-        selection.0,
+        selection.active_editor_tool(),
         simulation.is_running(),
         visible_bearing_count(&graph.0, &state.placed_bearings),
     );
@@ -8242,7 +8229,7 @@ fn update_previews(
     hide_preview(&mut selection.2);
     hide_preview(&mut delete.2);
 
-    if selected_tool.0 == Some(Tool::Weld) {
+    if selected_tool.active_editor_tool() == Some(Tool::Weld) {
         if hovered_part(state.hovered).is_none() {
             *rendered_weld_hover = None;
         }
@@ -8308,7 +8295,7 @@ fn update_previews(
         return;
     }
 
-    let bearing_attachment_highlighted = selected_tool.0.is_some_and(|tool| {
+    let bearing_attachment_highlighted = selected_tool.active_editor_tool().is_some_and(|tool| {
         bearing_attachment_is_highlighted(
             tool,
             state.attachment_bearing,
@@ -8348,7 +8335,7 @@ fn update_previews(
         );
         selection.1.scale = Vec3::splat(1.12);
     }
-    match (selected_tool.0, graph.0.pending()) {
+    match (selected_tool.active_editor_tool(), graph.0.pending()) {
         (None | Some(Tool::Shape), _) => {
             *action.2 = Visibility::Hidden;
         }
@@ -8472,7 +8459,9 @@ fn update_previews(
         ) => {
             if let (Some(candidate), Some(appearance)) = (
                 state.preview,
-                selected_tool.0.and_then(AuthoredPart::from_tool),
+                selected_tool
+                    .active_editor_tool()
+                    .and_then(AuthoredPart::from_tool),
             ) {
                 show_cuboid_preview(
                     &mut action,
@@ -10729,7 +10718,7 @@ fn update_wire_hover_preview(
     mut drawn: Local<Option<WireEnd>>,
     mut transform: Single<&mut Transform, With<WireHoverVisual>>,
 ) {
-    let hovered = if selection.0 == Some(Tool::Connector) {
+    let hovered = if selection.active_editor_tool() == Some(Tool::Connector) {
         wire_end_under_cursor(&graph.0, &state)
     } else {
         None
@@ -13390,7 +13379,7 @@ mod interaction_tests {
         PipeEditMode, PlacedBearing, PlacementPlane, PlayerState, PointerSample, SelectedTool,
         SurfaceHit, Tool, active_drag_plane, adjusted_bearing_dimensions,
         adjusted_cylinder_dimensions, apply_history_action, bearing_attachment_candidate,
-        bearing_attachment_is_highlighted, block_sheet_bounds, candidate_from_hit,
+        bearing_attachment_is_highlighted, block_sheet_bounds, candidate_from_hit, choose_region,
         closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
         delete_box_parts, disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude,
         hammer_point_travel, handle_block_actions, handle_build_actions, handle_tool_change,
@@ -13502,26 +13491,22 @@ mod interaction_tests {
         let mut keyboard = ButtonInput::default();
         keyboard.press(GameAction::BearingOuterIncrease);
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false),
             Some((BearingDimensionTarget::Outer, 1))
         );
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Block), false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Block), false),
             None
         );
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), true, false),
-            None
-        );
-        assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, true),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), true),
             None
         );
 
         keyboard.reset_all();
         keyboard.press(GameAction::NudgeUp);
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false),
             None
         );
 
@@ -13536,7 +13521,7 @@ mod interaction_tests {
         keyboard.reset_all();
         keyboard.press(GameAction::BearingInnerIncrease);
         assert_eq!(
-            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false, false),
+            requested_bearing_dimension_adjustment(&keyboard, Some(Tool::Bearing), false),
             Some((BearingDimensionTarget::Inner, 1))
         );
     }
@@ -13546,24 +13531,23 @@ mod interaction_tests {
         let mut keyboard = ButtonInput::default();
         keyboard.press(GameAction::CylinderOuterIncrease);
         assert_eq!(
-            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false, false),
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false),
             Some((CylinderDimensionTarget::Outer, 1))
         );
         keyboard.reset_all();
         keyboard.press(GameAction::CylinderInnerIncrease);
         assert_eq!(
-            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false, false),
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false),
             Some((CylinderDimensionTarget::Inner, 1))
         );
         keyboard.reset_all();
         keyboard.press(GameAction::CylinderSweepDecrease);
         assert_eq!(
-            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false, false),
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Cylinder), false),
             Some((CylinderDimensionTarget::Sweep, -1))
         );
         assert!(
-            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Block), false, false)
-                .is_none()
+            requested_cylinder_dimension_adjustment(&keyboard, Some(Tool::Block), false).is_none()
         );
 
         let dimensions = CylinderDimensions::new(0.25, 0.20, 0.25).unwrap();
@@ -13825,6 +13809,35 @@ mod interaction_tests {
     }
 
     #[test]
+    fn shape_selection_uses_the_world_resolved_hover_hit() {
+        let mut graph = welded_slab(IVec3::ONE);
+        let ray_origin = Vec3::new(0.125, 2.0, 0.125);
+        let ray_direction = Vec3::NEG_Y;
+        let hit = raycast_construction(&graph, ray_origin, ray_direction)
+            .expect("the world-resolved ray hits the block");
+        let mut state = EditorState {
+            hovered: Some(hit),
+            pointer_position: Some(Vec2::ZERO),
+            pointer_ray: Some((ray_origin, ray_direction)),
+            ..EditorState::default()
+        };
+        let mut actions = ButtonInput::default();
+        actions.press(GameAction::Primary);
+
+        choose_region(
+            &actions,
+            &mut graph,
+            &mut state,
+            &mut EditorHistory::default(),
+            Some(Vec2::ZERO),
+            ray_origin,
+            ray_direction,
+        );
+
+        assert!(state.region_drag.is_some());
+    }
+
+    #[test]
     fn dragging_across_blocks_claims_all_of_them_as_one_region() {
         let graph = welded_slab(IVec3::new(3, 2, 1));
         // Straight down onto the top of the first block, which is the XZ plane
@@ -14007,7 +14020,7 @@ mod interaction_tests {
         let mut app = App::new();
         app.insert_resource(EditorGraph(graph))
             .insert_resource(EditorState::default())
-            .insert_resource(SelectedTool(Some(Tool::Bearing)))
+            .insert_resource(SelectedTool::from_editor_tool(Tool::Bearing))
             .add_systems(Update, handle_tool_change);
 
         app.update();
@@ -14250,13 +14263,7 @@ mod interaction_tests {
         assert_eq!(graph.part_count(), 6);
         assert_eq!(graph.weld_count(), 13);
         assert_eq!(history.undo.len(), 1);
-        apply_history_action(
-            HistoryAction::Undo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
+        apply_history_action(HistoryAction::Undo, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 0);
         assert_eq!(graph.weld_count(), 0);
     }
@@ -14470,7 +14477,7 @@ mod interaction_tests {
             .insert_resource(state)
             .insert_resource(EditorHistory::default())
             .insert_resource(AppSimulation::default())
-            .insert_resource(SelectedTool(Some(Tool::Block)))
+            .insert_resource(SelectedTool::from_editor_tool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
             .insert_resource(CylinderToolSettings::default())
             .insert_resource(crate::ui::UiInput::default())
@@ -14630,7 +14637,7 @@ mod interaction_tests {
             .insert_resource(state)
             .insert_resource(EditorHistory::default())
             .insert_resource(AppSimulation::default())
-            .insert_resource(SelectedTool(Some(Tool::Block)))
+            .insert_resource(SelectedTool::from_editor_tool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
             .insert_resource(CylinderToolSettings::default())
             .insert_resource(crate::ui::UiInput::default())
@@ -15031,7 +15038,8 @@ mod interaction_tests {
         };
 
         let mut state = EditorState::default();
-        let mut selection = SelectedTool(None);
+        let mut selection = SelectedTool::default();
+        selection.clear();
         let mut material = super::SelectedMaterial(ConstructionMaterial::Steel);
         let mut bearing = BearingToolSettings::default();
         let mut cylinder_settings = CylinderToolSettings::default();
@@ -15050,30 +15058,30 @@ mod interaction_tests {
         }
 
         apply!(super::PipetteSetup::Part(cuboid));
-        assert_eq!(selection.0, Some(Tool::Block));
+        assert_eq!(selection.active_editor_tool(), Some(Tool::Block));
         assert_eq!(material.0, ConstructionMaterial::Wood);
 
         apply!(super::PipetteSetup::Part(cylinder));
-        assert_eq!(selection.0, Some(Tool::Cylinder));
+        assert_eq!(selection.active_editor_tool(), Some(Tool::Cylinder));
         assert_eq!(material.0, ConstructionMaterial::Concrete);
         assert_eq!(cylinder_settings.dimensions, cylinder_dimensions);
 
         apply!(super::PipetteSetup::Part(controller));
-        assert_eq!(selection.0, Some(Tool::Controller));
+        assert_eq!(selection.active_editor_tool(), Some(Tool::Controller));
         assert_eq!(state.authored_orientation, 17);
 
         let dimensions = BearingDimensions::new(0.9, 0.4).unwrap();
         apply!(super::PipetteSetup::Bearing(dimensions));
-        assert_eq!(selection.0, Some(Tool::Bearing));
+        assert_eq!(selection.active_editor_tool(), Some(Tool::Bearing));
         assert_eq!(bearing.dimensions, dimensions);
 
         material.0 = ConstructionMaterial::Wood;
         apply!(super::PipetteSetup::Ground);
-        assert_eq!(selection.0, Some(Tool::Block));
+        assert_eq!(selection.active_editor_tool(), Some(Tool::Block));
         assert_eq!(material.0, ConstructionMaterial::Wood);
 
         apply!(super::PipetteSetup::Part(shaped));
-        assert_eq!(selection.0, Some(Tool::Shape));
+        assert_eq!(selection.active_editor_tool(), Some(Tool::Shape));
         assert_eq!(state.active_region, Some(region));
         assert_eq!(material.0, ConstructionMaterial::Concrete);
     }
@@ -15133,7 +15141,7 @@ mod interaction_tests {
         };
         super::begin_weld(&mut graph, FaceRef::part(part, FaceKind::PositiveY)).unwrap();
         let mut state = EditorState::default();
-        let mut selection = SelectedTool(Some(Tool::Weld));
+        let mut selection = SelectedTool::from_editor_tool(Tool::Weld);
         let mut hammer = super::HammerInteraction {
             charging: Some(super::HammerCharge {
                 body_index: 0,
@@ -15144,7 +15152,7 @@ mod interaction_tests {
             pending: None,
         };
         super::clear_held_tool(&mut graph, &mut state, &mut selection, &mut hammer);
-        assert_eq!(selection.0, None);
+        assert_eq!(selection.active_editor_tool(), None);
         assert!(graph.pending().is_none());
         assert!(hammer.charging.is_none() && hammer.pending.is_none());
     }
@@ -15413,13 +15421,7 @@ mod history_tests {
         });
         state.delete_target = Some(DeleteTarget::PlacedBearing(0));
 
-        apply_history_action(
-            HistoryAction::Undo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
+        apply_history_action(HistoryAction::Undo, &mut graph, &mut state, &mut history);
 
         assert_eq!(graph.part_count(), 1);
         assert_eq!(graph.bearing_count(), 0);
@@ -15432,13 +15434,7 @@ mod history_tests {
         assert!(state.preview.is_none());
         assert!(state.construction_mesh_dirty);
 
-        apply_history_action(
-            HistoryAction::Redo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
+        apply_history_action(HistoryAction::Redo, &mut graph, &mut state, &mut history);
 
         assert_eq!(
             graph.parts().map(|(id, _)| id).collect::<Vec<_>>(),
@@ -15499,13 +15495,7 @@ mod history_tests {
         assert_eq!(graph.weld_count(), 0);
         assert_eq!(graph.bearing_count(), 0);
 
-        apply_history_action(
-            HistoryAction::Undo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
+        apply_history_action(HistoryAction::Undo, &mut graph, &mut state, &mut history);
         assert_eq!(
             graph.parts().map(|(id, _)| id).collect::<Vec<_>>(),
             original_part_ids
@@ -15535,7 +15525,6 @@ mod history_tests {
             &mut graph.clone(),
             &mut state,
             &mut history,
-            false,
         );
         assert_eq!(history.redo.len(), 1);
         state.feedback = Some("camera and tool changes are transient".to_owned());
@@ -15547,37 +15536,16 @@ mod history_tests {
     }
 
     #[test]
-    fn simulation_and_empty_stacks_report_guidance_without_mutation() {
+    fn empty_history_stacks_report_guidance_without_mutation() {
         let mut graph = ConstructionGraph::new();
         let part = spawn_cube(&mut graph, IVec3::new(0, 2, 0));
         let mut state = EditorState::default();
         let mut history = EditorHistory::default();
 
-        apply_history_action(
-            HistoryAction::Undo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            true,
-        );
+        apply_history_action(HistoryAction::Undo, &mut graph, &mut state, &mut history);
         assert_eq!(graph.parts().next().unwrap().0, part);
-        assert!(state.feedback.as_deref().unwrap().contains("build mode"));
-
-        apply_history_action(
-            HistoryAction::Undo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
         assert_eq!(state.feedback.as_deref(), Some("Nothing to undo"));
-        apply_history_action(
-            HistoryAction::Redo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
+        apply_history_action(HistoryAction::Redo, &mut graph, &mut state, &mut history);
         assert_eq!(state.feedback.as_deref(), Some("Nothing to redo"));
     }
 }
@@ -15707,21 +15675,9 @@ mod showcase_loading_tests {
         assert_eq!(creation.compounds.len(), preset.part_count());
         assert!(preset.matches(&graph));
 
-        apply_history_action(
-            HistoryAction::Undo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
+        apply_history_action(HistoryAction::Undo, &mut graph, &mut state, &mut history);
         assert_eq!(graph.part_count(), 0);
-        apply_history_action(
-            HistoryAction::Redo,
-            &mut graph,
-            &mut state,
-            &mut history,
-            false,
-        );
+        apply_history_action(HistoryAction::Redo, &mut graph, &mut state, &mut history);
         assert!(preset.matches(&graph));
     }
 

@@ -38,6 +38,7 @@ use mechanic_world::{
     select_active_nodes_cached, terrain_loading_worker_count, terrain_worker_count,
 };
 
+use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
 use crate::{
     AppSimulation, EditorGraph, EditorHistory, EditorState, PlacedBearing,
     builder::part_world_bounds,
@@ -85,24 +86,36 @@ struct TerrainNodeRender;
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub(crate) struct TerrainRenderMaterial {
     #[texture(0)]
-    #[sampler(9)]
+    #[sampler(15)]
     grass_base_color: Handle<Image>,
     #[texture(1)]
     dirt_base_color: Handle<Image>,
     #[texture(2)]
     stone_base_color: Handle<Image>,
     #[texture(3)]
-    grass_normal: Handle<Image>,
+    sand_base_color: Handle<Image>,
     #[texture(4)]
-    dirt_normal: Handle<Image>,
+    iron_base_color: Handle<Image>,
     #[texture(5)]
-    stone_normal: Handle<Image>,
+    graphite_base_color: Handle<Image>,
     #[texture(6)]
-    grass_orm: Handle<Image>,
+    grass_normal: Handle<Image>,
     #[texture(7)]
-    dirt_orm: Handle<Image>,
+    dirt_normal: Handle<Image>,
     #[texture(8)]
+    stone_normal: Handle<Image>,
+    #[texture(9)]
+    grass_orm: Handle<Image>,
+    #[texture(10)]
+    dirt_orm: Handle<Image>,
+    #[texture(11)]
     stone_orm: Handle<Image>,
+    #[texture(12)]
+    sand_orm: Handle<Image>,
+    #[texture(13)]
+    iron_orm: Handle<Image>,
+    #[texture(14)]
+    graphite_orm: Handle<Image>,
 }
 
 impl Material for TerrainRenderMaterial {
@@ -137,6 +150,20 @@ struct TerrainEditCommand {
     centre: WorldPosition,
     radius_metres: f64,
     previous: Option<(WorldPosition, f64)>,
+    operation: TerrainEditOperation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerrainEditOperation {
+    Add(TerrainMaterial),
+    Remove,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainStrokeSample {
+    centre: WorldPosition,
+    radius_metres: f64,
+    operation: TerrainEditOperation,
 }
 
 struct TerrainEditTaskResult {
@@ -278,12 +305,11 @@ pub(crate) struct WorldRuntime {
     floating_origin: FloatingOrigin,
     autosave: AutosaveState,
     brush_radius: f64,
-    brush_selected: bool,
-    last_brush_edit: Option<(WorldPosition, f64)>,
+    last_brush_edit: Option<TerrainStrokeSample>,
     pending_terrain_edits: VecDeque<TerrainEditCommand>,
     terrain_edit_task: Option<Task<Result<TerrainEditTaskResult, String>>>,
     terrain_edit_error: Option<String>,
-    removed_cells: [u64; 3],
+    removed_cells: [u64; TerrainMaterial::COUNT],
     clock: Duration,
     load_error: Option<String>,
     garage_editor: Option<SpaceEditorState>,
@@ -421,12 +447,11 @@ impl FromWorld for WorldRuntime {
             floating_origin: FloatingOrigin::default(),
             autosave: AutosaveState::default(),
             brush_radius: 0.5,
-            brush_selected: false,
             last_brush_edit: None,
             pending_terrain_edits: VecDeque::new(),
             terrain_edit_task: None,
             terrain_edit_error: None,
-            removed_cells: [0; 3],
+            removed_cells: [0; TerrainMaterial::COUNT],
             clock: Duration::ZERO,
             load_error,
             garage_editor: None,
@@ -619,7 +644,7 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.pending_terrain_edits.clear();
     runtime.terrain_edit_task = None;
     runtime.terrain_edit_error = None;
-    runtime.removed_cells = [0; 3];
+    runtime.removed_cells = [0; TerrainMaterial::COUNT];
     runtime.selected_terrain_revision = u64::MAX;
     runtime.selection_focus = None;
     runtime.terrain_streamer = TerrainStreamer::default();
@@ -725,7 +750,7 @@ fn enter_world(
     player.position = start.relative_to(runtime.floating_origin);
     player.seat = None;
     editor.feedback = runtime.load_error.clone().or_else(|| {
-        Some("World — Shift sprint · Space jump · F6 Garage · T terrain brush".to_owned())
+        Some("World — Shift sprint · Space jump · F6 Garage · Shift+4 terrain mode".to_owned())
     });
 
     spawn_world_terrain(
@@ -763,45 +788,9 @@ fn spawn_world_terrain(
     runtime.player_terrain_ready = false;
     runtime.selection_focus = None;
     runtime.selected_terrain_revision = u64::MAX;
-    let texture = |path: &'static str, is_srgb: bool| {
-        asset_server
-            .load_builder()
-            .with_settings(move |settings: &mut bevy::image::ImageLoaderSettings| {
-                crate::configure_repeating_texture(settings, is_srgb);
-            })
-            .load(path)
-    };
-    let grass_base_color = texture("terrain/grass/grass_base_color.png", true);
-    let dirt_base_color = texture("terrain/dirt/dirt_base_color.png", true);
-    let stone_base_color = texture("terrain/stone/stone_base_color.png", true);
-    let grass_normal = texture("terrain/grass/grass_normal.png", false);
-    let dirt_normal = texture("terrain/dirt/dirt_normal.png", false);
-    let stone_normal = texture("terrain/stone/stone_normal.png", false);
-    let grass_orm = texture("terrain/grass/grass_orm.png", false);
-    let dirt_orm = texture("terrain/dirt/dirt_orm.png", false);
-    let stone_orm = texture("terrain/stone/stone_orm.png", false);
-    runtime.terrain_texture_mips_pending = vec![
-        grass_base_color.clone(),
-        dirt_base_color.clone(),
-        stone_base_color.clone(),
-        grass_normal.clone(),
-        dirt_normal.clone(),
-        stone_normal.clone(),
-        grass_orm.clone(),
-        dirt_orm.clone(),
-        stone_orm.clone(),
-    ];
-    runtime.terrain_material = Some(terrain_materials.add(TerrainRenderMaterial {
-        grass_base_color,
-        dirt_base_color,
-        stone_base_color,
-        grass_normal,
-        dirt_normal,
-        stone_normal,
-        grass_orm,
-        dirt_orm,
-        stone_orm,
-    }));
+    let (terrain_material, pending_mips) = terrain_render_material(asset_server);
+    runtime.terrain_texture_mips_pending = pending_mips;
+    runtime.terrain_material = Some(terrain_materials.add(terrain_material));
     diagnostics.triangle_count = 0;
 
     let preview_mesh = Sphere::new(1.0)
@@ -834,6 +823,69 @@ fn spawn_world_terrain(
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.55, 0.0)),
         WorldOwned,
     ));
+}
+
+fn terrain_render_material(
+    asset_server: &AssetServer,
+) -> (TerrainRenderMaterial, Vec<Handle<Image>>) {
+    let texture = |path: &'static str, is_srgb: bool| {
+        asset_server
+            .load_builder()
+            .with_settings(move |settings: &mut bevy::image::ImageLoaderSettings| {
+                crate::configure_repeating_texture(settings, is_srgb);
+            })
+            .load(path)
+    };
+    let grass_base_color = texture("terrain/grass/grass_base_color.png", true);
+    let dirt_base_color = texture("terrain/dirt/dirt_base_color.png", true);
+    let stone_base_color = texture("terrain/stone/stone_base_color.png", true);
+    let sand_base_color = texture("materials/sand/sand_base_color.png", true);
+    let iron_base_color = texture("materials/iron/iron_base_color.png", true);
+    let graphite_base_color = texture("materials/graphite/graphite_base_color.png", true);
+    let grass_normal = texture("terrain/grass/grass_normal.png", false);
+    let dirt_normal = texture("terrain/dirt/dirt_normal.png", false);
+    let stone_normal = texture("terrain/stone/stone_normal.png", false);
+    let grass_orm = texture("terrain/grass/grass_orm.png", false);
+    let dirt_orm = texture("terrain/dirt/dirt_orm.png", false);
+    let stone_orm = texture("terrain/stone/stone_orm.png", false);
+    let sand_orm = texture("materials/sand/sand_orm.png", false);
+    let iron_orm = texture("materials/iron/iron_orm.png", false);
+    let graphite_orm = texture("materials/graphite/graphite_orm.png", false);
+    let pending_mips = vec![
+        grass_base_color.clone(),
+        dirt_base_color.clone(),
+        stone_base_color.clone(),
+        sand_base_color.clone(),
+        iron_base_color.clone(),
+        graphite_base_color.clone(),
+        grass_normal.clone(),
+        dirt_normal.clone(),
+        stone_normal.clone(),
+        grass_orm.clone(),
+        dirt_orm.clone(),
+        stone_orm.clone(),
+        sand_orm.clone(),
+        iron_orm.clone(),
+        graphite_orm.clone(),
+    ];
+    let material = TerrainRenderMaterial {
+        grass_base_color,
+        dirt_base_color,
+        stone_base_color,
+        sand_base_color,
+        iron_base_color,
+        graphite_base_color,
+        grass_normal,
+        dirt_normal,
+        stone_normal,
+        grass_orm,
+        dirt_orm,
+        stone_orm,
+        sand_orm,
+        iron_orm,
+        graphite_orm,
+    };
+    (material, pending_mips)
 }
 
 fn prepare_terrain_texture_mips(
@@ -1093,46 +1145,30 @@ fn select_and_size_brush(
     actions: Res<ButtonInput<GameAction>>,
     mut runtime: ResMut<WorldRuntime>,
     mut editor: ResMut<EditorState>,
-    mut selection: ResMut<crate::hotbar::SelectedTool>,
+    selection: Res<SelectedTool>,
 ) {
-    if runtime.brush_selected
-        && (selection.is_changed() && selection.0.is_some()
-            || GameAction::TOOL_ACTIONS
-                .into_iter()
-                .any(|(action, _)| actions.just_pressed(action)))
-    {
-        runtime.brush_selected = false;
+    let active = selection.tool == Some(MainTool::MatterManipulator)
+        && selection.matter_mode == MatterMode::Terrain;
+    if !active {
+        runtime.last_brush_edit = None;
+        return;
     }
-    if actions.just_pressed(GameAction::ToolTerrainBrush) {
-        runtime.brush_selected = !runtime.brush_selected;
-        selection.0 = if runtime.brush_selected {
-            None
-        } else {
-            Some(crate::hotbar::Tool::Block)
-        };
-    }
-    if actions.just_pressed(GameAction::TerrainBrushDecrease) {
+    let previous = runtime.brush_radius;
+    if actions.just_pressed(GameAction::ZoomOut) {
         runtime.brush_radius = (runtime.brush_radius - 0.05).max(0.10);
     }
-    if actions.just_pressed(GameAction::TerrainBrushIncrease) {
+    if actions.just_pressed(GameAction::ZoomIn) {
         runtime.brush_radius = (runtime.brush_radius + 0.05).min(2.00);
     }
-    if actions.just_pressed(GameAction::ToolTerrainBrush)
-        || actions.just_pressed(GameAction::TerrainBrushDecrease)
-        || actions.just_pressed(GameAction::TerrainBrushIncrease)
-    {
+    if (runtime.brush_radius - previous).abs() > f64::EPSILON {
         editor.feedback = Some(format!(
-            "Terrain brush {} — {:.2} m radius",
-            if runtime.brush_selected {
-                "selected"
-            } else {
-                "stowed"
-            },
-            runtime.brush_radius
+            "Terrain brush — {:.2} m radius",
+            runtime.brush_radius,
         ));
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Independent Bevy resources own brush input and output.
 fn use_brush(
     actions: Res<ButtonInput<GameAction>>,
     camera: Single<&GlobalTransform, With<MainCamera>>,
@@ -1140,13 +1176,17 @@ fn use_brush(
     list: Res<WorldListState>,
     mut runtime: ResMut<WorldRuntime>,
     mut editor: ResMut<EditorState>,
+    selection: Res<SelectedTool>,
+    material: Res<SelectedTerrainMaterial>,
 ) {
     if list.phase() != WorldListPhase::Playing {
         runtime.last_brush_edit = None;
         *preview.1 = Visibility::Hidden;
         return;
     }
-    if !runtime.brush_selected {
+    if selection.tool != Some(MainTool::MatterManipulator)
+        || selection.matter_mode != MatterMode::Terrain
+    {
         runtime.last_brush_edit = None;
         *preview.1 = Visibility::Hidden;
         return;
@@ -1175,13 +1215,22 @@ fn use_brush(
     preview.0.translation = hit.position.relative_to(runtime.floating_origin);
     preview.0.scale = Vec3::splat(runtime.brush_radius as f32);
     *preview.1 = Visibility::Visible;
-    if !actions.pressed(GameAction::Primary) {
+    let operation = if actions.pressed(GameAction::Secondary) {
+        Some(TerrainEditOperation::Remove)
+    } else if actions.pressed(GameAction::Primary) {
+        Some(TerrainEditOperation::Add(material.0))
+    } else {
+        None
+    };
+    let Some(operation) = operation else {
         runtime.last_brush_edit = None;
         return;
-    }
+    };
     let radius = runtime.brush_radius;
-    let previous = runtime.last_brush_edit;
-    let commands = terrain_edit_commands(previous, hit.position, radius);
+    let previous = runtime
+        .last_brush_edit
+        .filter(|previous| previous.operation == operation);
+    let commands = terrain_edit_commands(previous, hit.position, radius, operation);
     if runtime
         .pending_terrain_edits
         .len()
@@ -1197,22 +1246,30 @@ fn use_brush(
         return;
     }
     runtime.pending_terrain_edits.extend(commands);
-    runtime.last_brush_edit = Some((hit.position, radius));
+    runtime.last_brush_edit = Some(TerrainStrokeSample {
+        centre: hit.position,
+        radius_metres: radius,
+        operation,
+    });
 }
 
 fn terrain_edit_commands(
-    previous: Option<(WorldPosition, f64)>,
+    previous: Option<TerrainStrokeSample>,
     centre: WorldPosition,
     radius_metres: f64,
+    operation: TerrainEditOperation,
 ) -> Vec<TerrainEditCommand> {
     const SAMPLE_INTERVAL_METRES: f64 = 0.05;
-    let Some((previous_centre, previous_radius)) = previous else {
+    let Some(previous) = previous else {
         return vec![TerrainEditCommand {
             centre,
             radius_metres,
             previous: None,
+            operation,
         }];
     };
+    let previous_centre = previous.centre;
+    let previous_radius = previous.radius_metres;
     let distance = previous_centre.0.distance(centre.0);
     if distance <= f64::EPSILON && (previous_radius - radius_metres).abs() <= f64::EPSILON {
         return Vec::new();
@@ -1230,6 +1287,7 @@ fn terrain_edit_commands(
             centre: sample,
             radius_metres: radius,
             previous: Some(last),
+            operation,
         });
         last = (sample, radius);
     }
@@ -1244,8 +1302,8 @@ fn execute_terrain_edit_batch(
     let started = std::time::Instant::now();
     let mut outcomes = Vec::with_capacity(batch.len());
     for command in batch {
-        outcomes.push(
-            terrain
+        outcomes.push(match command.operation {
+            TerrainEditOperation::Remove => terrain
                 .excavate_sphere_delta(
                     field,
                     command.centre,
@@ -1253,7 +1311,16 @@ fn execute_terrain_edit_batch(
                     command.previous,
                 )
                 .map_err(|error| error.to_string())?,
-        );
+            TerrainEditOperation::Add(material) => terrain
+                .add_sphere_delta(
+                    field,
+                    command.centre,
+                    command.radius_metres,
+                    material,
+                    command.previous,
+                )
+                .map_err(|error| error.to_string())?,
+        });
     }
     Ok(TerrainEditTaskResult {
         terrain,
@@ -1270,15 +1337,11 @@ fn commit_terrain_edit_result(
     let mut changed = false;
     let mut changed_brick_coordinates = BTreeSet::new();
     for outcome in result.outcomes {
-        changed |= outcome.total_removed_cells() != 0;
+        changed |= outcome.total_changed_cells() != 0;
         changed_brick_coordinates.extend(outcome.changed_brick_coordinates().iter().copied());
         changed_bricks = changed_bricks
             .saturating_add(u64::try_from(outcome.changed_bricks).unwrap_or(u64::MAX));
-        for material in [
-            TerrainMaterial::SurfaceCover,
-            TerrainMaterial::Soil,
-            TerrainMaterial::Rock,
-        ] {
+        for material in TerrainMaterial::ALL {
             let index = material.code() as usize;
             runtime.removed_cells[index] =
                 runtime.removed_cells[index].saturating_add(outcome.removed_cells(material));
@@ -2031,7 +2094,7 @@ pub(crate) fn sync_world_foundations(
                 position,
                 normal: Vec3::Y,
                 distance: 0.0,
-                material_weights: [0.0; 3],
+                material_weights: [0.0; TerrainMaterial::COUNT],
                 chunk_generation: 0,
                 triangle: 0,
             },
@@ -2198,7 +2261,7 @@ fn terrain_chunk_mesh(chunk: &TerrainMeshChunk, indices: Vec<u32>) -> Mesh {
         .material_weights
         .iter()
         .copied()
-        .map(|weights| [weights[0], weights[1], weights[2], 1.0])
+        .map(|weights| [weights[0], weights[1], weights[2], weights[3]])
         .collect::<Vec<_>>();
     let uvs = chunk
         .vertices
@@ -2213,10 +2276,11 @@ fn terrain_chunk_mesh(chunk: &TerrainMeshChunk, indices: Vec<u32>) -> Mesh {
     let vertical_uvs = chunk
         .vertices
         .iter()
-        .map(|position| {
+        .zip(&chunk.material_weights)
+        .map(|(position, weights)| {
             [
                 (chunk.origin.0.y + f64::from(position[1])) as f32 / 1.5,
-                0.0,
+                weights[4],
             ]
         })
         .collect::<Vec<_>>();
@@ -2253,11 +2317,12 @@ mod tests {
     };
 
     use super::{
-        AppSpace, TerrainAcknowledgements, WorldListPhase, WorldListState, WorldPrototypePlugin,
-        exposure_for_space, foundation_edit_is_ready, full_rgba8_mip_byte_count,
-        generate_rgba8_mip_chain, load_world_editor, nodes_touch_on_face, player_collision_nodes,
-        ready_obsolete_nodes, terrain_chunk_has_collision_near, terrain_chunk_mesh,
-        terrain_edit_commands, terrain_mesh_is_renderable,
+        AppSpace, TerrainAcknowledgements, TerrainEditOperation, TerrainStrokeSample,
+        WorldListPhase, WorldListState, WorldPrototypePlugin, exposure_for_space,
+        foundation_edit_is_ready, full_rgba8_mip_byte_count, generate_rgba8_mip_chain,
+        load_world_editor, nodes_touch_on_face, player_collision_nodes, ready_obsolete_nodes,
+        terrain_chunk_has_collision_near, terrain_chunk_mesh, terrain_edit_commands,
+        terrain_mesh_is_renderable,
     };
     use crate::{garage, showcase};
 
@@ -2332,7 +2397,13 @@ mod tests {
     fn brush_paths_preserve_every_five_centimetre_sample() {
         let start = WorldPosition(DVec3::new(-1.0, 2.0, 3.0));
         let end = WorldPosition(DVec3::new(-0.77, 2.0, 3.0));
-        let commands = terrain_edit_commands(Some((start, 0.5)), end, 0.5);
+        let operation = TerrainEditOperation::Remove;
+        let previous = TerrainStrokeSample {
+            centre: start,
+            radius_metres: 0.5,
+            operation,
+        };
+        let commands = terrain_edit_commands(Some(previous), end, 0.5, operation);
 
         assert_eq!(commands.len(), 5);
         let mut previous = start;
@@ -2342,8 +2413,20 @@ mod tests {
             previous = command.centre;
         }
         assert_eq!(previous, end);
-        assert!(terrain_edit_commands(Some((end, 0.5)), end, 0.5).is_empty());
-        assert_eq!(terrain_edit_commands(None, end, 0.5).len(), 1);
+        assert!(
+            terrain_edit_commands(
+                Some(TerrainStrokeSample {
+                    centre: end,
+                    radius_metres: 0.5,
+                    operation,
+                }),
+                end,
+                0.5,
+                operation,
+            )
+            .is_empty()
+        );
+        assert_eq!(terrain_edit_commands(None, end, 0.5, operation).len(), 1);
     }
 
     #[test]
@@ -2423,7 +2506,7 @@ mod tests {
             origin: WorldPosition(DVec3::new(15.0, 30.0, 45.0)),
             vertices: vec![[1.5, 3.0, 4.5]],
             normals: vec![[0.0, 1.0, 0.0]],
-            material_weights: vec![[0.2, 0.3, 0.5]],
+            material_weights: vec![[0.1, 0.2, 0.3, 0.15, 0.1, 0.15]],
             ..TerrainMeshChunk::default()
         };
         let mesh = terrain_chunk_mesh(&chunk, Vec::new());
@@ -2443,8 +2526,8 @@ mod tests {
             panic!("terrain mesh must carry material weights as vertex colors")
         };
         assert_eq!(horizontal, &[[11.0, 33.0]]);
-        assert_eq!(vertical, &[[22.0, 0.0]]);
-        assert_eq!(weights, &[[0.2, 0.3, 0.5, 1.0]]);
+        assert_eq!(vertical, &[[22.0, 0.1]]);
+        assert_eq!(weights, &[[0.1, 0.2, 0.3, 0.15]]);
     }
 
     #[test]

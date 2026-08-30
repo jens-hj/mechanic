@@ -222,8 +222,8 @@ pub struct TerrainMeshChunk {
     pub normals: Vec<[f32; 3]>,
     /// Independently activatable triangle groups.
     pub index_groups: TerrainIndexGroups,
-    /// Surface-cover, soil, and rock weights per vertex.
-    pub material_weights: Vec<[f32; 3]>,
+    /// One weight per [`TerrainMaterial`] at each vertex.
+    pub material_weights: Vec<[f32; TerrainMaterial::COUNT]>,
     /// Owning global bounds.
     pub bounds: WorldBounds,
     /// Triangle query structure.
@@ -238,7 +238,7 @@ pub struct TerrainMeshChunk {
     pub vertex_cache: LatticeEdgeVertexCache,
 }
 
-type VertexKey = ([u32; 3], [u32; 3], [u32; 3]);
+type VertexKey = ([u32; 3], [u32; 3], [u32; TerrainMaterial::COUNT]);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 /// Transient incremental cache used while emitting one chunk's lattice vertices.
@@ -559,8 +559,8 @@ pub struct TerrainCollisionChunk {
     pub index_groups: TerrainIndexGroups,
     /// Currently active sealed or final indices.
     pub indices: Vec<u32>,
-    /// Surface-cover, soil, and rock weights.
-    pub material_weights: Vec<[f32; 3]>,
+    /// One weight per [`TerrainMaterial`] at each vertex.
+    pub material_weights: Vec<[f32; TerrainMaterial::COUNT]>,
     /// Global owning bounds.
     pub bounds: WorldBounds,
     /// Generation invalidating old manifolds after replacement.
@@ -580,8 +580,8 @@ pub struct TerrainRayHit {
     pub normal: Vec3,
     /// Distance along the normalized ray.
     pub distance: f64,
-    /// Surface-cover, soil, and rock weights.
-    pub material_weights: [f32; 3],
+    /// One weight per [`TerrainMaterial`] at the hit.
+    pub material_weights: [f32; TerrainMaterial::COUNT],
     /// Chunk generation hit by the ray.
     pub chunk_generation: u64,
     /// Triangle number within the chunk.
@@ -736,6 +736,13 @@ impl<'a> PreparedTerrainRegion<'a> {
 struct LatticePoint {
     sample: TerrainSample,
     normal: Vec3,
+    authored_material: Option<TerrainMaterial>,
+}
+
+#[derive(Clone, Copy)]
+struct LatticeSample {
+    sample: TerrainSample,
+    authored_material: Option<TerrainMaterial>,
 }
 
 #[derive(Clone, Copy)]
@@ -911,7 +918,7 @@ fn sample_halo(
     minimum: WorldCell,
     cubes: i32,
     stride: i32,
-) -> Vec<TerrainSample> {
+) -> Vec<LatticeSample> {
     let lattice_edge = usize::try_from(cubes + 1).expect("chunk edge is positive");
     let halo_edge = lattice_edge + 2;
     let mut halo = Vec::with_capacity(halo_edge.pow(3));
@@ -1024,7 +1031,7 @@ fn sample_halo(
     halo
 }
 
-fn lattice_from_halo(halo: &[TerrainSample], cubes: i32) -> Vec<LatticePoint> {
+fn lattice_from_halo(halo: &[LatticeSample], cubes: i32) -> Vec<LatticePoint> {
     let lattice_edge = usize::try_from(cubes + 1).expect("chunk edge is positive");
     let halo_edge = lattice_edge + 2;
     let halo_index = |x: usize, y: usize, z: usize| x + y * halo_edge + z * halo_edge.pow(2);
@@ -1035,15 +1042,19 @@ fn lattice_from_halo(halo: &[TerrainSample], cubes: i32) -> Vec<LatticePoint> {
                 let x = usize::try_from(x + 1).expect("halo coordinate is positive");
                 let y = usize::try_from(y + 1).expect("halo coordinate is positive");
                 let z = usize::try_from(z + 1).expect("halo coordinate is positive");
-                let sample = halo[halo_index(x, y, z)];
+                let sampled = halo[halo_index(x, y, z)];
                 let gradient = Vec3::new(
-                    halo[halo_index(x + 1, y, z)].density - halo[halo_index(x - 1, y, z)].density,
-                    halo[halo_index(x, y + 1, z)].density - halo[halo_index(x, y - 1, z)].density,
-                    halo[halo_index(x, y, z + 1)].density - halo[halo_index(x, y, z - 1)].density,
+                    halo[halo_index(x + 1, y, z)].sample.density
+                        - halo[halo_index(x - 1, y, z)].sample.density,
+                    halo[halo_index(x, y + 1, z)].sample.density
+                        - halo[halo_index(x, y - 1, z)].sample.density,
+                    halo[halo_index(x, y, z + 1)].sample.density
+                        - halo[halo_index(x, y, z - 1)].sample.density,
                 );
                 lattice.push(LatticePoint {
-                    sample,
+                    sample: sampled.sample,
                     normal: (-gradient).normalize_or(Vec3::Y),
+                    authored_material: sampled.authored_material,
                 });
             }
         }
@@ -1085,7 +1096,7 @@ fn synchronize_edited_boundary_lattice(
     {
         return;
     }
-    let mut coarse_samples = HashMap::<WorldCell, TerrainSample>::new();
+    let mut coarse_samples = HashMap::<WorldCell, LatticeSample>::new();
     let mut coarse_columns = HashMap::<(i32, i32), crate::generation::TerrainColumnSample>::new();
     for face in TerrainFace::ALL {
         for v in (0..=cubes).step_by(2) {
@@ -1214,15 +1225,17 @@ fn crossing(
             .normal
             .lerp(samples[empty].normal, along as f32)
             .normalize_or(Vec3::Y),
-        material: crossing_material(samples[solid].sample, samples[empty].sample),
+        material: crossing_material(samples[solid], samples[empty]),
     }
 }
 
-fn crossing_material(first: TerrainSample, second: TerrainSample) -> TerrainMaterial {
-    if first.is_solid() {
-        second.material
+fn crossing_material(first: LatticePoint, second: LatticePoint) -> TerrainMaterial {
+    if let Some(material) = first.authored_material.or(second.authored_material) {
+        material
+    } else if first.sample.is_solid() {
+        second.sample.material
     } else {
-        first.material
+        first.sample.material
     }
 }
 
@@ -1338,7 +1351,7 @@ fn append_triangle(chunk: &mut TerrainMeshChunk, triangle: [MeshVertex; 3]) -> O
     for (target, vertex) in indices.iter_mut().zip(triangle) {
         let position = vertex.position.as_vec3().to_array();
         let normal = vertex.normal.to_array();
-        let mut weights = [0.0; 3];
+        let mut weights = [0.0; TerrainMaterial::COUNT];
         weights[vertex.material.code() as usize] = 1.0;
         let key = (
             position.map(f32::to_bits),
@@ -1366,7 +1379,7 @@ fn coarse_sample_in_columns(
     cell: WorldCell,
     stride: i32,
     columns: [crate::generation::TerrainColumnSample; 4],
-) -> TerrainSample {
+) -> LatticeSample {
     let direct = lattice_sample_in_columns(field, edits, cell, columns);
     if edits.is_empty() {
         return direct;
@@ -1381,10 +1394,13 @@ fn coarse_sample_in_columns(
     };
     // A promoted negative sample must remain visible at coarser LODs even when
     // it lies between coarse lattice points.
-    if minimum_promoted < direct.density {
-        TerrainSample {
-            density: minimum_promoted,
-            material: direct.material,
+    if minimum_promoted < direct.sample.density {
+        LatticeSample {
+            sample: TerrainSample {
+                density: minimum_promoted,
+                material: direct.sample.material,
+            },
+            authored_material: direct.authored_material,
         }
     } else {
         direct
@@ -1396,7 +1412,7 @@ fn lattice_sample_in_columns(
     edits: &PreparedTerrainRegion<'_>,
     upper_cell: WorldCell,
     columns: [crate::generation::TerrainColumnSample; 4],
-) -> TerrainSample {
+) -> LatticeSample {
     // `WorldCell` values are cell-centred for exact removal accounting, while
     // the meshing lattice lies on their corners. Full signed distances retain
     // smooth procedural interpolation; only neighborhoods containing a real
@@ -1405,7 +1421,7 @@ fn lattice_sample_in_columns(
         density: 0.0,
         material: TerrainMaterial::Rock,
     }; 8];
-    let mut edited = false;
+    let mut edited = [false; 8];
     let mut sample_index = 0;
     for (column_index, (x, z)) in [(-1, -1), (0, -1), (-1, 0), (0, 0)].into_iter().enumerate() {
         for y in -1..=0 {
@@ -1420,7 +1436,7 @@ fn lattice_sample_in_columns(
                     .unwrap_or(generated)
             };
             samples[sample_index] = sample;
-            edited |= sample != generated;
+            edited[sample_index] = sample != generated;
             sample_index += 1;
         }
     }
@@ -1434,19 +1450,19 @@ fn lattice_sample_from_cells(
     upper_x: i32,
     upper_y: i32,
     upper_z: i32,
-) -> TerrainSample {
+) -> LatticeSample {
     let mut samples = [TerrainSample {
         density: 0.0,
         material: TerrainMaterial::Rock,
     }; 8];
-    let mut edited = false;
+    let mut edited = [false; 8];
     let mut sample_index = 0;
     for z in -1..=0 {
         for y in -1..=0 {
             for x in -1..=0 {
                 let index = cell_index(upper_x + x, upper_y + y, upper_z + z);
                 samples[sample_index] = cells[index];
-                edited |= edited_cells[index];
+                edited[sample_index] = edited_cells[index];
                 sample_index += 1;
             }
         }
@@ -1454,12 +1470,15 @@ fn lattice_sample_from_cells(
     blend_lattice_samples(samples, edited)
 }
 
-fn blend_lattice_samples(samples: [TerrainSample; 8], reconstructing_edit: bool) -> TerrainSample {
+fn blend_lattice_samples(samples: [TerrainSample; 8], edited: [bool; 8]) -> LatticeSample {
+    let reconstructing_edit = edited.into_iter().any(core::convert::identity);
     let half_cell = TERRAIN_CELL_METERS as f32 * 0.5;
     let mut density = 0.0;
     let mut material = TerrainMaterial::Rock;
     let mut nearest_surface = f32::INFINITY;
-    for sample in samples {
+    let mut authored_material = None;
+    let mut nearest_authored_solid = f32::INFINITY;
+    for (sample, edited) in samples.into_iter().zip(edited) {
         density += if reconstructing_edit {
             sample.density.clamp(-half_cell, half_cell)
         } else {
@@ -1469,10 +1488,17 @@ fn blend_lattice_samples(samples: [TerrainSample; 8], reconstructing_edit: bool)
             nearest_surface = sample.density.abs();
             material = sample.material;
         }
+        if edited && sample.is_solid() && sample.density.abs() < nearest_authored_solid {
+            nearest_authored_solid = sample.density.abs();
+            authored_material = Some(sample.material);
+        }
     }
-    TerrainSample {
-        density: density / 8.0,
-        material,
+    LatticeSample {
+        sample: TerrainSample {
+            density: density / 8.0,
+            material,
+        },
+        authored_material,
     }
 }
 
@@ -1570,7 +1596,7 @@ fn cap_crossing(
     let first_density = f64::from(first.0.sample.density);
     let second_density = f64::from(second.0.sample.density);
     let along = (first_density / (first_density - second_density)).clamp(0.0, 1.0);
-    let material = crossing_material(first.0.sample, second.0.sample);
+    let material = crossing_material(first.0, second.0);
     MeshVertex {
         position: first.1.lerp(second.1, along),
         normal: outward,
@@ -1637,7 +1663,7 @@ fn generate_transition_face(
                         .normal
                         .lerp(second.0.normal, along as f32)
                         .normalize_or(face_normal(face)),
-                    material: crossing_material(first.0.sample, second.0.sample),
+                    material: crossing_material(first.0, second.0),
                 };
                 if first_index < 9 || second_index < 9 {
                     apply_transition_inset(&mut vertex, chunk);
@@ -1664,13 +1690,13 @@ fn transition_coarse_lattice_point(
     edits: &PreparedTerrainRegion<'_>,
     cell: WorldCell,
     stride: i32,
-    samples: &mut HashMap<WorldCell, TerrainSample>,
+    samples: &mut HashMap<WorldCell, LatticeSample>,
     columns: &mut HashMap<(i32, i32), crate::generation::TerrainColumnSample>,
 ) -> LatticePoint {
     let sample = transition_coarse_sample(field, edits, cell, stride, samples, columns);
     let density =
         |offset: [i32; 3],
-         samples: &mut HashMap<WorldCell, TerrainSample>,
+         samples: &mut HashMap<WorldCell, LatticeSample>,
          columns: &mut HashMap<(i32, i32), crate::generation::TerrainColumnSample>| {
             transition_coarse_sample(
                 field,
@@ -1684,6 +1710,7 @@ fn transition_coarse_lattice_point(
                 samples,
                 columns,
             )
+            .sample
             .density
         };
     let gradient = Vec3::new(
@@ -1692,8 +1719,9 @@ fn transition_coarse_lattice_point(
         density([0, 0, 1], samples, columns) - density([0, 0, -1], samples, columns),
     );
     LatticePoint {
-        sample,
+        sample: sample.sample,
         normal: (-gradient).normalize_or(Vec3::Y),
+        authored_material: sample.authored_material,
     }
 }
 
@@ -1702,9 +1730,9 @@ fn transition_coarse_sample(
     edits: &PreparedTerrainRegion<'_>,
     cell: WorldCell,
     stride: i32,
-    samples: &mut HashMap<WorldCell, TerrainSample>,
+    samples: &mut HashMap<WorldCell, LatticeSample>,
     columns: &mut HashMap<(i32, i32), crate::generation::TerrainColumnSample>,
-) -> TerrainSample {
+) -> LatticeSample {
     if let Some(&sample) = samples.get(&cell) {
         return sample;
     }
@@ -1918,12 +1946,16 @@ fn ray_triangle(
     ))
 }
 
-fn weighted_materials(chunk: &TerrainMeshChunk, indices: &[u32], barycentric: Vec3) -> [f32; 3] {
-    let mut result = [0.0; 3];
+fn weighted_materials(
+    chunk: &TerrainMeshChunk,
+    indices: &[u32],
+    barycentric: Vec3,
+) -> [f32; TerrainMaterial::COUNT] {
+    let mut result = [0.0; TerrainMaterial::COUNT];
     for (corner, weight) in barycentric.to_array().into_iter().enumerate() {
         let source =
             chunk.material_weights[usize::try_from(indices[corner]).expect("index fits usize")];
-        for material in 0..3 {
+        for material in 0..TerrainMaterial::COUNT {
             result[material] += source[material] * weight;
         }
     }
@@ -1938,7 +1970,8 @@ mod tests {
     use super::{PreparedTerrainRegion, TerrainIndexGroups, TerrainMeshRequest, mesh_chunk};
     use crate::{
         BRICK_EDGE_CELLS, BrickCoord, TERRAIN_CELL_METERS, TerrainFace, TerrainField,
-        TerrainNodeId, TerrainOctree, TerrainTransitionMask, WorldCell, WorldPosition, WorldSeed,
+        TerrainMaterial, TerrainNodeId, TerrainOctree, TerrainSample, TerrainTransitionMask,
+        WorldCell, WorldPosition, WorldSeed,
     };
 
     fn surface_request(brick_x: i32) -> TerrainMeshRequest {
@@ -1951,6 +1984,80 @@ mod tests {
 
     fn final_indices(chunk: &super::TerrainMeshChunk) -> Vec<u32> {
         chunk.index_groups.final_indices(chunk.transition_mask)
+    }
+
+    #[test]
+    fn authored_addition_uses_solid_material_without_changing_procedural_cover() {
+        let dirt = TerrainSample {
+            density: 0.05,
+            material: TerrainMaterial::Soil,
+        };
+        let procedural_air = TerrainSample {
+            density: -0.05,
+            material: TerrainMaterial::SurfaceCover,
+        };
+        let lattice = |sample, authored_material| super::LatticePoint {
+            sample,
+            normal: Vec3::Y,
+            authored_material,
+        };
+        assert_eq!(
+            super::crossing_material(lattice(dirt, None), lattice(procedural_air, None)),
+            TerrainMaterial::SurfaceCover
+        );
+        assert_eq!(
+            super::crossing_material(
+                lattice(dirt, Some(TerrainMaterial::Soil)),
+                lattice(procedural_air, None),
+            ),
+            TerrainMaterial::Soil
+        );
+        assert_eq!(
+            super::crossing_material(
+                lattice(procedural_air, None),
+                lattice(dirt, Some(TerrainMaterial::Soil)),
+            ),
+            TerrainMaterial::Soil
+        );
+    }
+
+    #[test]
+    fn isolated_authored_addition_mesh_keeps_its_selected_material() {
+        let field = TerrainField::new(WorldSeed(92));
+        let surface = field.surface_height(300.0, 300.0);
+        let mut terrain = TerrainOctree::default();
+        terrain
+            .add_sphere(
+                &field,
+                WorldPosition(DVec3::new(300.0, surface + 4.0, 300.0)),
+                0.5,
+                TerrainMaterial::Soil,
+            )
+            .unwrap();
+        let coordinates = terrain
+            .dirty_leaves()
+            .map(|node| node.coordinates)
+            .collect::<Vec<_>>();
+        let snapshot = terrain.snapshot();
+        let mut vertex_count = 0;
+        for coordinate in coordinates {
+            let chunk = mesh_chunk(
+                &field,
+                &snapshot,
+                TerrainMeshRequest {
+                    node: TerrainNodeId::leaf(coordinate),
+                    generation: 1,
+                    transition_mask: TerrainTransitionMask::NONE,
+                },
+            );
+            vertex_count += chunk.vertices.len();
+            for weights in chunk.material_weights {
+                let mut expected = [0.0; TerrainMaterial::COUNT];
+                expected[TerrainMaterial::Soil.code() as usize] = 1.0;
+                assert_eq!(weights, expected);
+            }
+        }
+        assert!(vertex_count > 0);
     }
 
     #[test]
@@ -2137,7 +2244,7 @@ mod tests {
                 );
                 assert_eq!(
                     chunk.material_weights[index],
-                    [1.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                     "LOD {level} exposed a subsurface material"
                 );
             }

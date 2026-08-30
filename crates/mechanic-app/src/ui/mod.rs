@@ -43,13 +43,15 @@ use crate::camera::{MainCamera, MaterialWheelState};
 use crate::control_panel::ControlPanelState;
 use crate::controls::{Controls, GameAction};
 use crate::creation_menu::CreationMenuState;
-use crate::hotbar::SelectedMaterial;
-use crate::hotbar::{SelectedTool, Tool};
+use crate::hotbar::{
+    MainTool, MatterMode, SelectedMaterial, SelectedTerrainMaterial, SelectedTool,
+};
 use crate::pause_menu::PauseMenuState;
 use crate::settings::AppSettings;
 use crate::showcase::CreationPreset;
 use crate::{AppSimulation, EditorGraph, EditorState};
 use mechanic_core::ConstructionMaterial;
+use mechanic_world::TerrainMaterial;
 
 pub(crate) use control_block::{EditTarget, LocatedJoint};
 
@@ -63,7 +65,7 @@ use dimensions::{DimensionOverlay, DimensionOverlayProps};
 use help::{HelpPanel, HelpPanelProps};
 use hotbar::{Hotbar, HotbarProps};
 use markers::{MarkerOverlay, MarkerOverlayProps};
-use material_wheel::{MaterialWheel, MaterialWheelProps};
+use material_wheel::{RadialSelector, RadialSelectorProps};
 use pause::{PauseMenu, PauseMenuProps};
 use performance::{PerformanceOverlay, PerformanceOverlayProps};
 use reticle::{WorldReticle, WorldReticleProps};
@@ -80,9 +82,11 @@ use worlds::{WorldList, WorldListProps};
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiIntent {
     /// Pick up a tool.
-    Tool(Tool),
+    Tool(MainTool),
+    /// Pick a Matter Manipulator mode, activating the tool if necessary.
+    MatterMode(MatterMode),
     /// Pick a material and the material-capable tool that owns its menu.
-    MaterialTool(ConstructionMaterial, Tool),
+    MaterialMode(ConstructionMaterial, MatterMode),
     /// Something in the creation picker.
     Creations(CreationsAction),
     /// Change a joint's drive program.
@@ -155,19 +159,21 @@ pub(crate) struct Handles {
     /// Whether the help panel is showing.
     help_open: MosaicState<bool>,
     /// Which tool is in hand.
-    hotbar: MosaicState<Option<Tool>>,
+    hotbar: MosaicState<SelectedTool>,
     /// Current shortcuts, used by hotbar labels and other guidance.
     controls: MosaicState<Controls>,
     /// Shared material used by both ordinary shape tools.
     material: MosaicState<ConstructionMaterial>,
+    /// Material used by terrain additions.
+    terrain_material: MosaicState<TerrainMaterial>,
     /// Material tool whose press-and-drag menu is open.
-    material_menu: MosaicState<Option<Tool>>,
+    material_menu: MosaicState<Option<MatterMode>>,
     /// Material row currently under the captured pointer.
     material_hover: MosaicState<Option<ConstructionMaterial>>,
     /// Open/highlight state of the keyboard-owned radial material selector.
     material_wheel: MosaicState<material_wheel::Model>,
     /// Which tool the pointer is over, if any.
-    hovered: MosaicState<Option<Tool>>,
+    hovered: MosaicState<Option<hotbar::HoverTarget>>,
     /// What the creation picker shows.
     creations: MosaicState<creations::Model>,
     /// Current world-list modal.
@@ -196,9 +202,10 @@ impl Handles {
             viewport: MosaicState::new(MosaicSize::ZERO),
             help: MosaicState::new(help::Model::default()),
             help_open: MosaicState::new(false),
-            hotbar: MosaicState::new(Some(Tool::default())),
+            hotbar: MosaicState::new(SelectedTool::default()),
             controls: MosaicState::new(Controls::default()),
             material: MosaicState::new(ConstructionMaterial::Steel),
+            terrain_material: MosaicState::new(TerrainMaterial::Soil),
             material_menu: MosaicState::new(None),
             material_hover: MosaicState::new(None),
             material_wheel: MosaicState::new(material_wheel::Model::default()),
@@ -365,7 +372,7 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
             }
             if material_wheel_model.with(|model| model.open)
                 && !worlds_model.with(|model| model.open) {
-                MaterialWheel model:(material_wheel_model)
+                RadialSelector model:(material_wheel_model)
             }
             if block_open.with(control_block::PanelModel::is_open)
                 && !worlds_model.with(|model| model.open) {
@@ -464,10 +471,11 @@ pub(crate) fn drain(
     let intents: Vec<UiIntent> = ui.handles.intents.borrow_mut().drain(..).collect();
     for intent in intents {
         match intent {
-            UiIntent::Tool(tool) => selection.tool.0 = Some(tool),
-            UiIntent::MaterialTool(next, tool) => {
+            UiIntent::Tool(tool) => selection.tool.select_tool(tool),
+            UiIntent::MatterMode(mode) => selection.tool.select_mode(mode),
+            UiIntent::MaterialMode(next, mode) => {
                 selection.material.0 = next;
-                selection.tool.0 = Some(tool);
+                selection.tool.select_mode(mode);
             }
             UiIntent::Creations(action) => menu.act(action),
             UiIntent::Drive(edit) => control_block::write_joint(&mut panel, &mut target, &edit),
@@ -493,6 +501,7 @@ pub(crate) fn push(
     menu: Res<CreationMenuState>,
     selection: Res<SelectedTool>,
     material: Res<SelectedMaterial>,
+    terrain_material: Res<SelectedTerrainMaterial>,
     graph: Res<EditorGraph>,
     pause: Res<PauseMenuState>,
     worlds_state: Res<crate::world::WorldListState>,
@@ -503,9 +512,10 @@ pub(crate) fn push(
     let Some(mut ui) = ui else {
         return;
     };
-    ui.handles.hotbar.set(selection.0);
+    ui.handles.hotbar.set(*selection);
     ui.handles.controls.set(settings.controls().clone());
     ui.handles.material.set(material.0);
+    ui.handles.terrain_material.set(terrain_material.0);
     let block = control_block::capture(&panel, &graph, &gearboxes, settings.controls());
     if block != ui.pushed.block {
         ui.handles.block.model.set(block.clone());
@@ -577,7 +587,7 @@ pub(crate) fn push_markers(
     let Some(mut ui) = ui else {
         return;
     };
-    let next = markers::capture(&graph, &simulation, selection.0, &camera);
+    let next = markers::capture(&graph, &simulation, selection.active_editor_tool(), &camera);
     if next != ui.pushed.markers {
         ui.handles.markers.set(next.clone());
         ui.pushed.markers = next;
@@ -783,7 +793,9 @@ mod tests {
         let overlay = Overlay::mount();
         overlay.handles.material_wheel.set(material_wheel::Model {
             open: true,
-            highlighted: Some(ConstructionMaterial::Concrete),
+            highlighted: Some(crate::hotbar::WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Concrete,
+            )),
         });
         overlay.settle();
         let centre = Vector2::new(VIEWPORT.width / 2.0, VIEWPORT.height / 2.0);

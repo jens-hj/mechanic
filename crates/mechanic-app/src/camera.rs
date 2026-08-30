@@ -5,15 +5,23 @@ use bevy::{
     prelude::*,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
-use mechanic_core::{ConstructionMaterial, PartId};
+#[cfg(test)]
+use mechanic_core::ConstructionMaterial;
+use mechanic_core::PartId;
+#[cfg(test)]
+use mechanic_world::TerrainMaterial;
 
+#[cfg(test)]
+use crate::hotbar::PlaceableItem;
 use crate::{
     EditorState,
     builder::GROUND_HALF_SIZE,
     control_panel::ControlPanelState,
     controls::GameAction,
     creation_menu::CreationMenuState,
-    hotbar::SelectedMaterial,
+    hotbar::{
+        MainTool, MatterMode, SelectedMaterial, SelectedTerrainMaterial, SelectedTool, WheelChoice,
+    },
     pause_menu::PauseMenuState,
     ui::UiInput,
     world::{AppSpace, WorldListState},
@@ -158,25 +166,22 @@ impl PlayerCamera {
 pub(crate) struct MaterialWheelState {
     pub(crate) open: bool,
     pub(crate) selector: Vec2,
-    pub(crate) highlighted: Option<ConstructionMaterial>,
-    selection_started: bool,
+    pub(crate) highlighted: Option<WheelChoice>,
+    context: Option<WheelChoice>,
 }
 
 impl MaterialWheelState {
-    pub(crate) fn open(&mut self, current_material: ConstructionMaterial) {
+    pub(crate) fn open(&mut self, current: WheelChoice) {
         self.open = true;
         self.selector = Vec2::ZERO;
-        self.highlighted = Some(current_material);
-        self.selection_started = false;
+        self.highlighted = Some(current);
+        self.context = Some(current);
     }
 
     fn move_selector(&mut self, delta: Vec2) {
         self.selector = (self.selector + delta).clamp_length_max(MATERIAL_WHEEL_RADIUS);
-        if let Some(material) = material_at_selector(self.selector) {
-            self.highlighted = Some(material);
-            self.selection_started = true;
-        } else if self.selection_started {
-            self.highlighted = None;
+        if let Some(choice) = choice_at_selector(self.selector, self.context) {
+            self.highlighted = Some(choice);
         }
     }
 
@@ -276,15 +281,20 @@ pub(crate) fn avatar_alpha(pullback: f32) -> f32 {
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
 )]
-pub(crate) fn material_at_selector(selector: Vec2) -> Option<ConstructionMaterial> {
+pub(crate) fn choice_at_selector(
+    selector: Vec2,
+    current: Option<WheelChoice>,
+) -> Option<WheelChoice> {
     if selector.length() < MATERIAL_WHEEL_DEAD_ZONE {
         return None;
     }
+    let context = current?.context();
+    let count = context.count();
     let angle = selector.x.atan2(-selector.y).rem_euclid(TAU);
-    let sector = TAU / ConstructionMaterial::ALL.len() as f32;
+    let sector = TAU / count as f32;
     let centred = (angle + sector * 0.5).rem_euclid(TAU);
-    let index = (centred / sector).floor() as usize % ConstructionMaterial::ALL.len();
-    Some(ConstructionMaterial::ALL[index])
+    let index = (centred / sector).floor() as usize % count;
+    context.choice(index)
 }
 
 pub(crate) const fn material_wheel_may_open(
@@ -295,10 +305,10 @@ pub(crate) const fn material_wheel_may_open(
     !simulating && !interactive_panel && !world_drag
 }
 
-pub(crate) const fn committed_material(
+pub(crate) const fn committed_choice(
     tab_released: bool,
-    highlighted: Option<ConstructionMaterial>,
-) -> Option<ConstructionMaterial> {
+    highlighted: Option<WheelChoice>,
+) -> Option<WheelChoice> {
     if tab_released { highlighted } else { None }
 }
 
@@ -313,6 +323,8 @@ pub(crate) fn update_material_wheel(
     state: Res<EditorState>,
     mut wheel: ResMut<MaterialWheelState>,
     mut material: ResMut<SelectedMaterial>,
+    mut terrain_material: ResMut<SelectedTerrainMaterial>,
+    mut selection: ResMut<SelectedTool>,
 ) {
     if wheel.open {
         wheel.move_selector(motion.delta);
@@ -321,11 +333,15 @@ pub(crate) fn update_material_wheel(
             || panel.is_open()
             || pause.blocks_world_input()
         {
-            if let Some(highlighted) = committed_material(
+            if let Some(highlighted) = committed_choice(
                 actions.just_released(GameAction::MaterialWheel),
                 wheel.highlighted,
             ) {
-                material.0 = highlighted;
+                match highlighted {
+                    WheelChoice::ConstructionMaterial(next) => material.0 = next,
+                    WheelChoice::Item(next) => selection.select_item(next),
+                    WheelChoice::TerrainMaterial(next) => terrain_material.0 = next,
+                }
             }
             wheel.close();
         }
@@ -333,10 +349,23 @@ pub(crate) fn update_material_wheel(
     }
     let interactive_panel =
         menu.is_open() || panel.is_open() || overlay.blocks_pointer() || overlay.blocks_keyboard();
+    let current = match (selection.tool, selection.matter_mode) {
+        (Some(MainTool::MatterManipulator), MatterMode::Block | MatterMode::Cylinder) => {
+            Some(WheelChoice::ConstructionMaterial(material.0))
+        }
+        (Some(MainTool::MatterManipulator), MatterMode::Item) => {
+            Some(WheelChoice::Item(selection.item))
+        }
+        (Some(MainTool::MatterManipulator), MatterMode::Terrain) => {
+            Some(WheelChoice::TerrainMaterial(terrain_material.0))
+        }
+        _ => None,
+    };
     if actions.just_pressed(GameAction::MaterialWheel)
         && material_wheel_may_open(false, interactive_panel, state.world_drag_active())
+        && let Some(current) = current
     {
-        wheel.open(material.0);
+        wheel.open(current);
     }
 }
 
@@ -351,6 +380,7 @@ pub(crate) fn update_player_camera(
     worlds: Res<WorldListState>,
     wheel: Res<MaterialWheelState>,
     editor: Res<EditorState>,
+    selection: Res<SelectedTool>,
     space: Res<State<AppSpace>>,
     mut player: ResMut<PlayerState>,
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
@@ -375,7 +405,9 @@ pub(crate) fn update_player_camera(
     if world_active {
         view.yaw -= motion.delta.x * MOUSE_SENSITIVITY;
         view.pitch = (view.pitch - motion.delta.y * MOUSE_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
-        let zoom = if editor.pipe_bend_active() {
+        let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
+            && selection.matter_mode == MatterMode::Terrain;
+        let zoom = if editor.pipe_bend_active() || terrain_mode {
             0.0
         } else {
             f32::from(actions.just_pressed(GameAction::ZoomIn))
@@ -530,7 +562,10 @@ mod tests {
 
     #[test]
     fn material_sectors_run_clockwise_from_the_top_and_centre_cancels() {
-        assert_eq!(material_at_selector(Vec2::ZERO), None);
+        let context = Some(WheelChoice::ConstructionMaterial(
+            ConstructionMaterial::Steel,
+        ));
+        assert_eq!(choice_at_selector(Vec2::ZERO, context), None);
         let directions = [
             Vec2::new(0.0, -80.0),
             Vec2::new(40.0, -69.282),
@@ -546,7 +581,35 @@ mod tests {
             Vec2::new(-40.0, -69.282),
         ];
         for (direction, material) in directions.into_iter().zip(ConstructionMaterial::ALL) {
-            assert_eq!(material_at_selector(direction), Some(material));
+            assert_eq!(
+                choice_at_selector(direction, context),
+                Some(WheelChoice::ConstructionMaterial(material))
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)] // Test sector counts are at most eight.
+    fn item_and_terrain_selectors_cover_every_contextual_sector() {
+        for (index, item) in PlaceableItem::ALL.into_iter().enumerate() {
+            let angle = TAU * index as f32 / PlaceableItem::ALL.len() as f32;
+            let direction = Vec2::new(angle.sin(), -angle.cos()) * 80.0;
+            assert_eq!(
+                choice_at_selector(direction, Some(WheelChoice::Item(PlaceableItem::Bearing))),
+                Some(WheelChoice::Item(item)),
+            );
+        }
+        let materials = TerrainMaterial::ALL;
+        for (index, material) in materials.into_iter().enumerate() {
+            let angle = TAU * index as f32 / materials.len() as f32;
+            let direction = Vec2::new(angle.sin(), -angle.cos()) * 80.0;
+            assert_eq!(
+                choice_at_selector(
+                    direction,
+                    Some(WheelChoice::TerrainMaterial(TerrainMaterial::Soil)),
+                ),
+                Some(WheelChoice::TerrainMaterial(material)),
+            );
         }
     }
 
@@ -592,30 +655,64 @@ mod tests {
         assert!(!material_wheel_may_open(false, true, false));
         assert!(!material_wheel_may_open(false, false, true));
         assert_eq!(
-            committed_material(true, Some(ConstructionMaterial::Rubber)),
-            Some(ConstructionMaterial::Rubber)
+            committed_choice(
+                true,
+                Some(WheelChoice::ConstructionMaterial(
+                    ConstructionMaterial::Rubber
+                ))
+            ),
+            Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Rubber
+            ))
         );
         assert_eq!(
-            committed_material(false, Some(ConstructionMaterial::Rubber)),
+            committed_choice(
+                false,
+                Some(WheelChoice::ConstructionMaterial(
+                    ConstructionMaterial::Rubber
+                ))
+            ),
             None
         );
-        assert_eq!(committed_material(true, None), None);
+        assert_eq!(committed_choice(true, None), None);
     }
 
     #[test]
     fn material_wheel_opens_on_and_retains_the_current_material_in_its_dead_zone() {
         let mut wheel = MaterialWheelState::default();
-        wheel.open(ConstructionMaterial::Wood);
+        wheel.open(WheelChoice::ConstructionMaterial(
+            ConstructionMaterial::Wood,
+        ));
 
         assert!(wheel.open);
-        assert_eq!(wheel.highlighted, Some(ConstructionMaterial::Wood));
+        assert_eq!(
+            wheel.highlighted,
+            Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Wood
+            ))
+        );
 
         wheel.move_selector(Vec2::new(1.0, 1.0));
-        assert_eq!(wheel.highlighted, Some(ConstructionMaterial::Wood));
+        assert_eq!(
+            wheel.highlighted,
+            Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Wood
+            ))
+        );
 
         wheel.move_selector(Vec2::new(0.0, -100.0));
-        assert_eq!(wheel.highlighted, Some(ConstructionMaterial::Aluminium));
+        assert_eq!(
+            wheel.highlighted,
+            Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Aluminium
+            ))
+        );
         wheel.move_selector(Vec2::new(-1.0, 99.0));
-        assert_eq!(wheel.highlighted, None);
+        assert_eq!(
+            wheel.highlighted,
+            Some(WheelChoice::ConstructionMaterial(
+                ConstructionMaterial::Aluminium
+            ))
+        );
     }
 }

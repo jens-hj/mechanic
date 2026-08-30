@@ -22,7 +22,7 @@ use super::styles::*;
 use super::theme::*;
 use crate::camera::PlayerState;
 use crate::controls::GameAction;
-use crate::hotbar::{SelectedMaterial, SelectedTool, Tool};
+use crate::hotbar::{MainTool, MatterMode, SelectedMaterial, SelectedTool, Tool};
 use crate::world::AppSpace;
 use crate::{
     AppSimulation, BearingToolSettings, BlockAttachment, CylinderToolSettings, EditorGraph,
@@ -145,7 +145,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         settings,
         app_space,
     } = sources;
-    let selected_tool = selection.0.unwrap_or(Tool::Block);
+    let selected_tool = selection.active_editor_tool().unwrap_or(Tool::Block);
+    let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
+        && selection.matter_mode == MatterMode::Terrain;
     let controls = settings.controls();
     let rotate = controls.label(GameAction::Rotate);
 
@@ -185,7 +187,14 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     };
     let in_world = *app_space.get() == AppSpace::World;
     let live_hammer = in_world && selected_tool == Tool::Hammer;
-    let tool_hint = if let Some(drag) = state.delete_drag.as_ref() {
+    let tool_hint = if terrain_mode {
+        if in_world {
+            "Hold left to add terrain; hold right to remove; wheel changes brush radius"
+                .to_owned()
+        } else {
+            "Terrain editing is available in the World; press F6 to switch spaces".to_owned()
+        }
+    } else if let Some(drag) = state.delete_drag.as_ref() {
         format!(
             "Release to delete {} cuboid(s) — Q rotates the {} plane and keeps the extent",
             drag.parts.len(),
@@ -340,7 +349,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         edit: Line::new(edit_controls, Tone::Muted),
         pointer: Line::new(
             format!(
-                "{action_controls}     WASD  Walk     MOUSE  Look     WHEEL  FP↔TP     TAB  Materials{}",
+                "{action_controls}     WASD  Walk     MOUSE  Look     WHEEL  FP↔TP     TAB  Selector{}",
                 if in_world && simulation.is_running() {
                     if player.seat.is_some() {
                         "     E  Leave Seat"
@@ -353,16 +362,20 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             ),
             Tone::Muted,
         ),
-        tool: Line::new(
-            crate::tool_status_line(
-                selection.0,
-                bearing.dimensions,
-                cylinder.dimensions,
-                selected_wires,
-                material.0,
-            ),
-            tool_tone(selection.0),
-        ),
+        tool: if terrain_mode {
+            Line::new("Matter Manipulator · Terrain", Tone::Speed)
+        } else {
+            Line::new(
+                crate::tool_status_line(
+                    selection.active_editor_tool(),
+                    bearing.dimensions,
+                    cylinder.dimensions,
+                    selected_wires,
+                    material.0,
+                ),
+                tool_tone(selection.active_editor_tool()),
+            )
+        },
         counts: Line::new(
             format!(
                 "{} parts  •  {} welds  •  {} bearings",

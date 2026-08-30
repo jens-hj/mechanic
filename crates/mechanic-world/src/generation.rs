@@ -26,15 +26,37 @@ pub enum TerrainMaterial {
     Soil,
     /// Competent underlying rock.
     Rock,
+    /// Loose granular silica.
+    Sand,
+    /// Raw ferrous ore.
+    Iron,
+    /// Raw carbon mineral.
+    Graphite,
 }
 
 impl TerrainMaterial {
+    /// Every material terrain cells can carry, in selector order.
+    pub const ALL: [Self; 6] = [
+        Self::SurfaceCover,
+        Self::Soil,
+        Self::Sand,
+        Self::Rock,
+        Self::Iron,
+        Self::Graphite,
+    ];
+
+    /// Number of independently represented terrain materials.
+    pub const COUNT: usize = 6;
+
     /// Stable binary representation used in edited-brick files.
     pub const fn code(self) -> u8 {
         match self {
             Self::SurfaceCover => 0,
             Self::Soil => 1,
             Self::Rock => 2,
+            Self::Sand => 3,
+            Self::Iron => 4,
+            Self::Graphite => 5,
         }
     }
 
@@ -44,6 +66,9 @@ impl TerrainMaterial {
             0 => Some(Self::SurfaceCover),
             1 => Some(Self::Soil),
             2 => Some(Self::Rock),
+            3 => Some(Self::Sand),
+            4 => Some(Self::Iron),
+            5 => Some(Self::Graphite),
             _ => None,
         }
     }

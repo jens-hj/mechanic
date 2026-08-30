@@ -8,13 +8,19 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var grass_base_color: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var dirt_base_color: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var stone_base_color: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(3) var grass_normal: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(4) var dirt_normal: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(5) var stone_normal: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(6) var grass_orm: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(7) var dirt_orm: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(8) var stone_orm: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(9) var terrain_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(3) var sand_base_color: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(4) var iron_base_color: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(5) var graphite_base_color: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(6) var grass_normal: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(7) var dirt_normal: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var stone_normal: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(9) var grass_orm: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(10) var dirt_orm: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(11) var stone_orm: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(12) var sand_orm: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(13) var iron_orm: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(14) var graphite_orm: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(15) var terrain_sampler: sampler;
 
 fn projection_weights(normal: vec3<f32>) -> vec3<f32> {
     // The fourth power is exact for signed components after two squares and
@@ -119,8 +125,15 @@ fn fragment(
         coordinates,
         projection_weights(normalize(pbr_input.world_normal)),
     );
-    var material_weights = max(in.color.rgb, vec3<f32>(0.0));
-    material_weights /= max(dot(material_weights, vec3<f32>(1.0)), 0.0001);
+    var material_weights_a = max(in.color, vec4<f32>(0.0));
+    var material_weights_b = vec2<f32>(
+        max(in.uv_b.y, 0.0),
+        max(1.0 - dot(material_weights_a, vec4<f32>(1.0)) - max(in.uv_b.y, 0.0), 0.0),
+    );
+    let material_weight_sum = dot(material_weights_a, vec4<f32>(1.0))
+        + dot(material_weights_b, vec2<f32>(1.0));
+    material_weights_a /= max(material_weight_sum, 0.0001);
+    material_weights_b /= max(material_weight_sum, 0.0001);
 
     var base_color = vec4<f32>(0.0);
     var surface = vec3<f32>(0.0);
@@ -128,68 +141,131 @@ fn fragment(
     // Mesh vertices carry one-hot weights. Interpolation keeps an unused
     // channel exactly zero, so avoid its three triplanar map lookups without
     // changing material blends along layer boundaries.
-    if material_weights.x > 0.0 {
+    if material_weights_a.x > 0.0 {
         base_color += sample_triplanar(
             grass_base_color,
             terrain_sampler,
             coordinates,
             projection,
-        ) * material_weights.x;
+        ) * material_weights_a.x;
         surface += sample_triplanar(
             grass_orm,
             terrain_sampler,
             coordinates,
             projection,
-        ).rgb * material_weights.x;
+        ).rgb * material_weights_a.x;
         mapped_normal += sample_triplanar_normal(
             grass_normal,
             terrain_sampler,
             coordinates,
             projection,
             pbr_input.world_normal,
-        ) * material_weights.x;
+        ) * material_weights_a.x;
     }
-    if material_weights.y > 0.0 {
+    if material_weights_a.y > 0.0 {
         base_color += sample_triplanar(
             dirt_base_color,
             terrain_sampler,
             coordinates,
             projection,
-        ) * material_weights.y;
+        ) * material_weights_a.y;
         surface += sample_triplanar(
             dirt_orm,
             terrain_sampler,
             coordinates,
             projection,
-        ).rgb * material_weights.y;
+        ).rgb * material_weights_a.y;
         mapped_normal += sample_triplanar_normal(
             dirt_normal,
             terrain_sampler,
             coordinates,
             projection,
             pbr_input.world_normal,
-        ) * material_weights.y;
+        ) * material_weights_a.y;
     }
-    if material_weights.z > 0.0 {
+    if material_weights_a.z > 0.0 {
         base_color += sample_triplanar(
             stone_base_color,
             terrain_sampler,
             coordinates,
             projection,
-        ) * material_weights.z;
+        ) * material_weights_a.z;
         surface += sample_triplanar(
             stone_orm,
             terrain_sampler,
             coordinates,
             projection,
-        ).rgb * material_weights.z;
+        ).rgb * material_weights_a.z;
         mapped_normal += sample_triplanar_normal(
             stone_normal,
             terrain_sampler,
             coordinates,
             projection,
             pbr_input.world_normal,
-        ) * material_weights.z;
+        ) * material_weights_a.z;
+    }
+    if material_weights_a.w > 0.0 {
+        base_color += sample_triplanar(
+            sand_base_color,
+            terrain_sampler,
+            coordinates,
+            projection,
+        ) * material_weights_a.w;
+        surface += sample_triplanar(
+            sand_orm,
+            terrain_sampler,
+            coordinates,
+            projection,
+        ).rgb * material_weights_a.w;
+        mapped_normal += sample_triplanar_normal(
+            dirt_normal,
+            terrain_sampler,
+            coordinates,
+            projection,
+            pbr_input.world_normal,
+        ) * material_weights_a.w;
+    }
+    if material_weights_b.x > 0.0 {
+        base_color += sample_triplanar(
+            iron_base_color,
+            terrain_sampler,
+            coordinates,
+            projection,
+        ) * material_weights_b.x;
+        surface += sample_triplanar(
+            iron_orm,
+            terrain_sampler,
+            coordinates,
+            projection,
+        ).rgb * material_weights_b.x;
+        mapped_normal += sample_triplanar_normal(
+            stone_normal,
+            terrain_sampler,
+            coordinates,
+            projection,
+            pbr_input.world_normal,
+        ) * material_weights_b.x;
+    }
+    if material_weights_b.y > 0.0 {
+        base_color += sample_triplanar(
+            graphite_base_color,
+            terrain_sampler,
+            coordinates,
+            projection,
+        ) * material_weights_b.y;
+        surface += sample_triplanar(
+            graphite_orm,
+            terrain_sampler,
+            coordinates,
+            projection,
+        ).rgb * material_weights_b.y;
+        mapped_normal += sample_triplanar_normal(
+            stone_normal,
+            terrain_sampler,
+            coordinates,
+            projection,
+            pbr_input.world_normal,
+        ) * material_weights_b.y;
     }
     pbr_input.material.base_color = base_color;
     pbr_input.diffuse_occlusion = vec3<f32>(surface.r);
