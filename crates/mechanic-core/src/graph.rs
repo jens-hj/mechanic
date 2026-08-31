@@ -940,7 +940,7 @@ impl ConstructionGraph {
         let spec = self.parts.get(part)?;
         let cuboid = spec.as_cuboid()?;
         let cells = crate::part_cells(cuboid);
-        let origin = cells.corner_half_units(IVec3::ZERO, 0);
+        let origin = cells.corner_steps(IVec3::ZERO, 0);
         self.regions
             .iter()
             .find_map(|(id, region)| region.covers_cell(origin).then_some(id))
@@ -1508,7 +1508,7 @@ impl ConstructionGraph {
         }
 
         let size = region.size_cells();
-        let origin = region.origin_half_units() * crate::shape::STEPS_PER_HALF_UNIT;
+        let origin = region.origin_steps();
         let mut material: Option<ConstructionMaterial> = None;
         let mut appearance: Option<MaterialAppearance> = None;
         let mut members: Vec<PartId> = Vec::new();

@@ -183,6 +183,21 @@ impl CellGrid {
         }
     }
 
+    /// A grid whose cell-relative planes begin at an exact shape-step origin.
+    pub(crate) fn from_cell_planes(origin_steps: IVec3, planes_cells: &[Vec<i32>; 3]) -> Self {
+        let origin_half_units = origin_steps.div_euclid(IVec3::splat(STEPS_PER_HALF_UNIT));
+        let planes_half_units = core::array::from_fn(|axis| {
+            planes_cells[axis]
+                .iter()
+                .map(|cells| origin_half_units[axis] + cells * 2)
+                .collect()
+        });
+        Self {
+            planes_half_units,
+            offset_steps: origin_steps.rem_euclid(IVec3::splat(STEPS_PER_HALF_UNIT)),
+        }
+    }
+
     /// Cell counts along each axis.
     pub fn counts(&self) -> IVec3 {
         IVec3::new(

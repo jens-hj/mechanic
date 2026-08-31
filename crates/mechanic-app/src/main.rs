@@ -96,8 +96,8 @@ use mechanic_core::{
     MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
     MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
     MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, PartId, PartPiece, PartSpec, PendingOperation,
-    PipeBendDimensions, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec, ServoSpec,
-    ShapeRegion, TopologyError, TransmissionSpec, face_neighbour_offset, part_cells,
+    PipeBendDimensions, RegionId, STEP_METERS, STEPS_PER_CELL, SeatControllerLinkSpec, SeatSpec,
+    ServoSpec, ShapeRegion, TopologyError, TransmissionSpec, face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTickReadback,
@@ -5516,8 +5516,8 @@ fn leave_region(state: &mut EditorState) {
 /// The area a drag covers: the block it started on, grown by `span` cells.
 fn region_area(start: CuboidSpec, span: IVec3) -> ShapeRegion {
     let cells = part_cells(start);
-    ShapeRegion::new(
-        cells.corner_half_units(IVec3::ZERO, 0) + span.min(IVec3::ZERO) * 2,
+    ShapeRegion::from_origin_steps(
+        cells.corner_steps(IVec3::ZERO, 0) + span.min(IVec3::ZERO) * STEPS_PER_CELL,
         cells.counts() + span.abs(),
         start.material,
     )
@@ -13995,7 +13995,7 @@ mod interaction_tests {
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
         DriveLinkSpec, FaceKind, FaceOwner, FaceRef, GridRotation, MaterialAppearance,
         MaterialColor, MaterialDye, MaterialFinish, PartId, PartSpec, PendingOperation,
-        RigidLinkSpec, ShapeRegion,
+        RigidLinkSpec, STEP_METERS, ShapeRegion,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -14568,6 +14568,51 @@ mod interaction_tests {
         );
 
         assert!(state.region_drag.is_some());
+    }
+
+    #[test]
+    fn shape_selection_preserves_a_fine_placed_blocks_origin() {
+        let mut graph = ConstructionGraph::new();
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_position_ticks(IVec3::new(6, 5, 5), GridRotation::default()),
+        )
+        .unwrap();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let ray_origin = Vec3::new(0.15, 2.0, 0.125);
+        let ray_direction = Vec3::NEG_Y;
+        let hit = raycast_construction(&graph, ray_origin, ray_direction)
+            .expect("the ray hits the fine-placed block");
+        let FaceOwner::Part(part) = hit.face.owner else {
+            unreachable!("the ray hit a block")
+        };
+        let mut state = EditorState {
+            hovered: Some(hit),
+            pointer_position: Some(Vec2::ZERO),
+            pointer_ray: Some((ray_origin, ray_direction)),
+            ..EditorState::default()
+        };
+        let mut actions = ButtonInput::default();
+        actions.press(GameAction::Primary);
+
+        choose_region(
+            &actions,
+            &mut graph,
+            &mut state,
+            &mut EditorHistory::default(),
+            Some(Vec2::ZERO),
+            ray_origin,
+            ray_direction,
+        );
+        commit_region_drag(&mut graph, &mut state, &mut EditorHistory::default());
+
+        let region = state.active_region.and_then(|id| graph.region(id)).unwrap();
+        assert_eq!(region.origin_steps(), IVec3::new(2, 0, 0));
+        assert_eq!(
+            region.bounds_steps().0.as_vec3() * STEP_METERS,
+            Vec3::new(0.025, 0.0, 0.0)
+        );
+        assert_eq!(graph.region_of(part), state.active_region);
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub enum RegionError {
 /// A solid cuboid of blocks and the cage that shapes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShapeRegion {
-    origin_half_units: IVec3,
+    origin_steps: IVec3,
     size_cells: IVec3,
     material: ConstructionMaterial,
     appearance: MaterialAppearance,
@@ -74,11 +74,29 @@ impl ShapeRegion {
         size_cells: IVec3,
         material: ConstructionMaterial,
     ) -> Result<Self, RegionError> {
+        Self::from_origin_steps(
+            origin_half_units * STEPS_PER_HALF_UNIT,
+            size_cells,
+            material,
+        )
+    }
+
+    /// Creates an unshaped region at an exact shape-step origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegionError::EmptyExtent`] unless every axis spans at least one
+    /// cell.
+    pub fn from_origin_steps(
+        origin_steps: IVec3,
+        size_cells: IVec3,
+        material: ConstructionMaterial,
+    ) -> Result<Self, RegionError> {
         if size_cells.cmplt(IVec3::ONE).any() {
             return Err(RegionError::EmptyExtent(size_cells));
         }
         Ok(Self {
-            origin_half_units,
+            origin_steps,
             size_cells,
             material,
             appearance: MaterialAppearance::BAKED,
@@ -87,9 +105,9 @@ impl ShapeRegion {
         })
     }
 
-    /// Minimum corner, in half-grid units.
-    pub const fn origin_half_units(&self) -> IVec3 {
-        self.origin_half_units
+    /// Minimum corner, in shape steps.
+    pub const fn origin_steps(&self) -> IVec3 {
+        self.origin_steps
     }
 
     /// Extent in construction cells.
@@ -151,21 +169,15 @@ impl ShapeRegion {
 
     /// The cell grid the cage describes, in half-grid units.
     pub fn grid(&self) -> CellGrid {
-        CellGrid::from_planes(core::array::from_fn(|axis| {
-            self.planes[axis]
-                .iter()
-                .map(|cells| self.origin_half_units[axis] + cells * 2)
-                .collect()
-        }))
+        CellGrid::from_cell_planes(self.origin_steps, &self.planes)
     }
 
     /// Where a cage vertex sits with nothing moving it.
     pub fn base_steps(&self, index: CageIndex) -> Option<IVec3> {
-        let origin = self.origin_half_units * STEPS_PER_HALF_UNIT;
         let mut position = IVec3::ZERO;
         for axis in 0..3 {
             let cells = *self.planes[axis].get(usize::from(index[axis]))?;
-            position[axis] = origin[axis] + cells * STEPS_PER_CELL;
+            position[axis] = self.origin_steps[axis] + cells * STEPS_PER_CELL;
         }
         Some(position)
     }
@@ -200,8 +212,10 @@ impl ShapeRegion {
 
     /// The region's original bounding box, in steps.
     pub fn bounds_steps(&self) -> (IVec3, IVec3) {
-        let minimum = self.origin_half_units * STEPS_PER_HALF_UNIT;
-        (minimum, minimum + self.size_cells * STEPS_PER_CELL)
+        (
+            self.origin_steps,
+            self.origin_steps + self.size_cells * STEPS_PER_CELL,
+        )
     }
 
     /// Moves one cage vertex.
@@ -324,23 +338,23 @@ impl ShapeRegion {
     }
 
     /// Whether this region covers the cell whose minimum corner is at
-    /// `cell_min_half_units`.
-    pub fn covers_cell(&self, cell_min_half_units: IVec3) -> bool {
-        let relative = cell_min_half_units - self.origin_half_units;
+    /// `cell_min_steps`.
+    pub fn covers_cell(&self, cell_min_steps: IVec3) -> bool {
+        let relative = cell_min_steps - self.origin_steps;
         relative.cmpge(IVec3::ZERO).all()
-            && (relative % 2).cmpeq(IVec3::ZERO).all()
-            && (relative / 2).cmplt(self.size_cells).all()
+            && (relative % STEPS_PER_CELL).cmpeq(IVec3::ZERO).all()
+            && (relative / STEPS_PER_CELL).cmplt(self.size_cells).all()
     }
 
     /// Whether two regions claim any of the same space.
     pub fn overlaps(&self, other: &Self) -> bool {
         let (low, high) = (
-            self.origin_half_units,
-            self.origin_half_units + self.size_cells * 2,
+            self.origin_steps,
+            self.origin_steps + self.size_cells * STEPS_PER_CELL,
         );
         let (other_low, other_high) = (
-            other.origin_half_units,
-            other.origin_half_units + other.size_cells * 2,
+            other.origin_steps,
+            other.origin_steps + other.size_cells * STEPS_PER_CELL,
         );
         low.cmplt(other_high).all() && other_low.cmplt(high).all()
     }

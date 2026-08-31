@@ -291,10 +291,10 @@ pub(crate) fn edge_insertion(
 }
 
 fn plane_exists(region: &ShapeRegion, axis: usize, position: i32) -> bool {
-    let origin = region.origin_half_units()[axis];
-    region
-        .grid()
-        .planes(axis)
+    let grid = region.grid();
+    let planes = grid.planes(axis);
+    let origin = planes[0];
+    planes
         .iter()
         .any(|half_units| (half_units - origin) / 2 == position)
 }
@@ -309,7 +309,7 @@ fn edge_point(
     second: usize,
 ) -> Option<Vec3> {
     let planes = region.grid();
-    let origin = region.origin_half_units()[axis];
+    let origin = planes.planes(axis)[0];
     let cells = planes
         .planes(axis)
         .iter()

@@ -29,7 +29,7 @@ use crate::{
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 10;
+pub const CREATION_FORMAT_VERSION: u32 = 11;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -210,8 +210,8 @@ pub enum PartDoc {
 /// One shape region in its serialized form.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegionDoc {
-    /// Minimum corner in half-grid units.
-    pub origin_half_units: [i32; 3],
+    /// Minimum corner in shape steps (1.25 cm).
+    pub origin_steps: [i32; 3],
     /// Extent in construction cells.
     pub size_cells: [i32; 3],
     /// Material every block in the region shares.
@@ -609,15 +609,18 @@ impl CreationDocument {
             regions: graph
                 .regions()
                 .map(|(_, region)| RegionDoc {
-                    origin_half_units: region.origin_half_units().to_array(),
+                    origin_steps: region.origin_steps().to_array(),
                     size_cells: region.size_cells().to_array(),
                     material: region.material(),
                     appearance: region.appearance(),
                     divisions: core::array::from_fn(|axis| {
                         // The first and last planes are implied by the extent.
-                        region.grid().planes(axis)[1..region.grid().planes(axis).len() - 1]
+                        let grid = region.grid();
+                        let planes = grid.planes(axis);
+                        let origin = planes[0];
+                        planes[1..planes.len() - 1]
                             .iter()
-                            .map(|half_units| (half_units - region.origin_half_units()[axis]) / 2)
+                            .map(|half_units| (half_units - origin) / 2)
                             .collect()
                     }),
                     vertices: region.offsets().collect(),
@@ -773,8 +776,8 @@ impl CreationDocument {
         }
         let outcomes = graph.apply_batch(connections)?;
         for document in &self.regions {
-            let region = ShapeRegion::new(
-                IVec3::from_array(document.origin_half_units),
+            let region = ShapeRegion::from_origin_steps(
+                IVec3::from_array(document.origin_steps),
                 IVec3::from_array(document.size_cells),
                 document.material,
             )
@@ -929,9 +932,9 @@ fn rotate_y_vec3(position: Vec3, yaw: u8) -> Vec3 {
 }
 
 fn transform_region_doc(region: &mut RegionDoc, yaw: u8, translation: IVec3) {
-    let origin = IVec3::from_array(region.origin_half_units);
+    let origin = IVec3::from_array(region.origin_steps);
     let size = IVec3::from_array(region.size_cells);
-    let maximum = origin + size * 2;
+    let maximum = origin + size * crate::STEPS_PER_CELL;
     let corners = [
         IVec3::new(origin.x, origin.y, origin.z),
         IVec3::new(maximum.x, origin.y, origin.z),
@@ -939,7 +942,7 @@ fn transform_region_doc(region: &mut RegionDoc, yaw: u8, translation: IVec3) {
         IVec3::new(origin.x, origin.y, maximum.z),
         IVec3::new(maximum.x, maximum.y, maximum.z),
     ]
-    .map(|corner| rotate_y_i32(corner, yaw) + translation);
+    .map(|corner| rotate_y_i32(corner, yaw) + translation * crate::STEPS_PER_HALF_UNIT);
     let minimum = corners
         .iter()
         .copied()
@@ -953,8 +956,8 @@ fn transform_region_doc(region: &mut RegionDoc, yaw: u8, translation: IVec3) {
     let old_divisions = core::mem::take(&mut region.divisions);
     let old_vertices = core::mem::take(&mut region.vertices);
     let old_counts = old_divisions.each_ref().map(|axis| axis.len() + 2);
-    region.origin_half_units = minimum.to_array();
-    region.size_cells = ((maximum - minimum) / 2).to_array();
+    region.origin_steps = minimum.to_array();
+    region.size_cells = ((maximum - minimum) / crate::STEPS_PER_CELL).to_array();
     region.divisions = match yaw % 4 {
         0 => old_divisions,
         1 => [
@@ -1827,6 +1830,30 @@ mod tests {
         let (_, original) = graph.regions().next().unwrap();
         let (_, replayed) = restored.regions().next().unwrap();
         assert_eq!(replayed, original);
+    }
+
+    #[test]
+    fn a_fine_placed_shape_region_round_trips_its_exact_origin() {
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_position_ticks(IVec3::new(6, 5, 5), GridRotation::default()),
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::Spawn(spec)).unwrap();
+        let region = ShapeRegion::from_origin_steps(
+            IVec3::new(2, 0, 0),
+            IVec3::ONE,
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        graph.apply(BuildCommand::AddRegion(region)).unwrap();
+
+        let document = CreationDocument::from_graph(&graph, "fine shaped", &[]);
+        assert_eq!(document.regions[0].origin_steps, [2, 0, 0]);
+        let restored = document.into_graph().unwrap().graph;
+        let (_, replayed) = restored.regions().next().unwrap();
+        assert_eq!(replayed.origin_steps(), IVec3::new(2, 0, 0));
     }
 
     #[test]
