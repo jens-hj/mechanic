@@ -264,7 +264,7 @@ mod tests {
                     dimensions: [1, 1, 1],
                     pose: PoseDoc {
                         #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-                        translation_ticks: [index as i32 * 10, 5, 0],
+                        translation_ticks: [index as i32 * 100, 50, 0],
                         rotation: [0, 0, 0],
                     },
                     material: mechanic_core::ConstructionMaterial::Steel,

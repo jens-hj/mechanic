@@ -25,18 +25,18 @@
 
 use bevy_math::{IVec3, Quat, Vec3};
 
-use crate::GRID_UNIT_METERS;
+use crate::POSITION_TICKS_PER_HALF_GRID_UNIT;
 use crate::geometry::{CuboidSpec, FaceKind, GridRotation};
 
 /// Displacement steps spanning one half-grid unit (0.125 m), so one step is
-/// 12.5 mm. This is the resolution every control vertex moves in.
-pub const STEPS_PER_HALF_UNIT: i32 = 10;
+/// 2.5 mm. Shape's finest user-facing increment remains 12.5 mm.
+pub const STEPS_PER_HALF_UNIT: i32 = POSITION_TICKS_PER_HALF_GRID_UNIT;
 
 /// Steps spanning one construction cell.
 pub const STEPS_PER_CELL: i32 = 2 * STEPS_PER_HALF_UNIT;
 
 /// Length of one displacement step, in metres.
-pub const STEP_METERS: f32 = GRID_UNIT_METERS * 0.05;
+pub const STEP_METERS: f32 = crate::POSITION_TICK_METERS;
 
 /// Converts a position in integer steps to metres.
 pub fn steps_to_meters(steps: IVec3) -> Vec3 {
@@ -153,7 +153,7 @@ pub struct CellGrid {
     /// Plane positions in half-grid units, ascending, one list per axis. Each
     /// list holds `cells + 1` entries.
     planes_half_units: [Vec<i32>; 3],
-    /// Fine v8 translation not representable by the legacy half-grid planes.
+    /// Translation not representable by the half-grid planes.
     offset_steps: IVec3,
 }
 
@@ -230,7 +230,7 @@ impl CellGrid {
         )
     }
 
-    /// Exact shape-step coordinate of one cell corner, including a fine v8 offset.
+    /// Exact shape-step coordinate of one cell corner, including a precision offset.
     pub fn corner_steps(&self, cell: IVec3, corner: usize) -> IVec3 {
         self.corner_half_units(cell, corner) * STEPS_PER_HALF_UNIT + self.offset_steps
     }
@@ -248,12 +248,14 @@ impl CellGrid {
 /// coordinate.
 pub fn part_cells(spec: CuboidSpec) -> CellGrid {
     let world_dimensions = world_grid_dimensions(spec);
-    let minimum_ticks = spec.pose.translation_position_ticks() - world_dimensions * 5;
+    let minimum_ticks = spec.pose.translation_position_ticks()
+        - world_dimensions * POSITION_TICKS_PER_HALF_GRID_UNIT;
     let mut minimum_half_units = IVec3::ZERO;
     let mut offset_steps = IVec3::ZERO;
     for axis in 0..3 {
-        minimum_half_units[axis] = minimum_ticks[axis].div_euclid(5);
-        offset_steps[axis] = minimum_ticks[axis].rem_euclid(5) * 2;
+        minimum_half_units[axis] =
+            minimum_ticks[axis].div_euclid(POSITION_TICKS_PER_HALF_GRID_UNIT);
+        offset_steps[axis] = minimum_ticks[axis].rem_euclid(POSITION_TICKS_PER_HALF_GRID_UNIT);
     }
     let mut grid = CellGrid::uniform(minimum_half_units, world_dimensions);
     grid.offset_steps = offset_steps;

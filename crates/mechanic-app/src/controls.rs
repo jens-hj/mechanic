@@ -23,6 +23,10 @@ pub(crate) enum GameAction {
     Interact,
     ToggleSpace,
     FinePlacement,
+    PrecisionPlacement,
+    ToggleObjectSnap,
+    ObjectSnapRangeIncrease,
+    ObjectSnapRangeDecrease,
     ToggleSimulation,
     RestartSimulation,
     MaterialWheel,
@@ -69,7 +73,7 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 53] = [
+    pub(crate) const ALL: [Self; 57] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -82,6 +86,10 @@ impl GameAction {
         Self::Interact,
         Self::ToggleSpace,
         Self::FinePlacement,
+        Self::PrecisionPlacement,
+        Self::ToggleObjectSnap,
+        Self::ObjectSnapRangeIncrease,
+        Self::ObjectSnapRangeDecrease,
         Self::MaterialWheel,
         Self::ZoomIn,
         Self::ZoomOut,
@@ -181,6 +189,10 @@ impl GameAction {
             Self::Interact => "Interact",
             Self::ToggleSpace => "Toggle Garage / World",
             Self::FinePlacement => "Fine Placement",
+            Self::PrecisionPlacement => "Precision Placement",
+            Self::ToggleObjectSnap => "Toggle Object Snap",
+            Self::ObjectSnapRangeIncrease => "Object Snap Range +",
+            Self::ObjectSnapRangeDecrease => "Object Snap Range -",
             Self::ToggleSimulation => "Toggle Simulation",
             Self::RestartSimulation => "Restart Simulation",
             Self::MaterialWheel => "Matter Selector",
@@ -243,6 +255,10 @@ impl GameAction {
             | Self::ZoomOut => "Movement & Camera",
             Self::ToggleSpace
             | Self::FinePlacement
+            | Self::PrecisionPlacement
+            | Self::ToggleObjectSnap
+            | Self::ObjectSnapRangeIncrease
+            | Self::ObjectSnapRangeDecrease
             | Self::ToggleSimulation
             | Self::RestartSimulation
             | Self::MaterialWheel
@@ -290,6 +306,8 @@ impl GameAction {
                 | Self::Secondary
                 | Self::MaterialWheel
                 | Self::FinePlacement
+                | Self::PrecisionPlacement
+                | Self::ToggleObjectSnap
                 | Self::SelectionModifier
         )
     }
@@ -299,6 +317,8 @@ impl GameAction {
             (self, other),
             (Self::Sprint, Self::FinePlacement | Self::SelectionModifier)
                 | (Self::FinePlacement | Self::SelectionModifier, Self::Sprint)
+                | (Self::Descend, Self::PrecisionPlacement)
+                | (Self::PrecisionPlacement, Self::Descend)
         )
     }
 }
@@ -394,6 +414,10 @@ impl InputChord {
     }
     pub(crate) const fn with_control(mut self) -> Self {
         self.modifiers.control = true;
+        self
+    }
+    pub(crate) const fn with_alt(mut self) -> Self {
+        self.modifiers.alt = true;
         self
     }
     pub(crate) const fn with_super(mut self) -> Self {
@@ -509,6 +533,26 @@ impl Default for Controls {
             A::FinePlacement,
             Some(InputChord::key(K::ShiftLeft)),
             Some(InputChord::key(K::ShiftRight)),
+        );
+        set(
+            A::PrecisionPlacement,
+            Some(InputChord::key(K::ControlLeft)),
+            Some(InputChord::key(K::ControlRight)),
+        );
+        set(
+            A::ToggleObjectSnap,
+            Some(InputChord::key(K::AltLeft)),
+            Some(InputChord::key(K::AltRight)),
+        );
+        set(
+            A::ObjectSnapRangeIncrease,
+            Some(InputChord::wheel(WheelDirection::Up).with_alt()),
+            None,
+        );
+        set(
+            A::ObjectSnapRangeDecrease,
+            Some(InputChord::wheel(WheelDirection::Down).with_alt()),
+            None,
         );
         set(A::ToggleSimulation, None, None);
         set(A::RestartSimulation, None, None);

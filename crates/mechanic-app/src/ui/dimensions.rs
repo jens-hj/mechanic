@@ -218,7 +218,8 @@ fn capture_sheet(
     };
     let axes = plane.tangent_axes();
     let lengths = axes.map(|axis| maximum[axis] - minimum[axis]);
-    let block_position_ticks = i32::from(specs[0].dimensions[0].units()) * 10;
+    let block_position_ticks =
+        i32::from(specs[0].dimensions[0].units()) * mechanic_core::POSITION_TICKS_PER_GRID_UNIT;
     let counts = axes.map(|axis| {
         let (minimum, maximum) = specs.iter().fold((i32::MAX, i32::MIN), |bounds, spec| {
             let coordinate = spec.pose.translation_position_ticks()[axis];

@@ -384,7 +384,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     let edit_controls = if in_world {
         format!("{plane_controls}     EDIT GROUNDED/STATIC ONLY     CTRL/CMD+Z  Undo")
     } else {
-        format!("{plane_controls}     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo")
+        format!(
+            "{plane_controls}     ALT  Object snap     ALT+WHEEL  Snap range     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo"
+        )
     };
     let selected_wires = state
         .selected_controller
@@ -413,14 +415,44 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         tool: if terrain_mode {
             Line::new("Matter Manipulator · Terrain", Tone::Speed)
         } else {
+            let tool_status = crate::tool_status_line(
+                selection.active_editor_tool(),
+                bearing.dimensions,
+                cylinder.dimensions,
+                selected_wires,
+                material.0,
+            );
+            let placement_status = matches!(
+                selection.active_editor_tool(),
+                Some(
+                    Tool::Block
+                        | Tool::Cylinder
+                        | Tool::Bearing
+                        | Tool::Controller
+                        | Tool::GasEngine
+                        | Tool::ElectricEngine
+                        | Tool::Transmission
+                        | Tool::Servo
+                        | Tool::Seat
+                        | Tool::Input
+                        | Tool::DimensionLink
+                )
+            )
+            .then(|| {
+                format!(
+                    "    Grid: {}    Object snap: {} ({:.2} m)",
+                    state.placement_grid.label(),
+                    if state.smart_snap.enabled {
+                        "On"
+                    } else {
+                        "Off"
+                    },
+                    state.smart_snap.range,
+                )
+            })
+            .unwrap_or_default();
             Line::new(
-                crate::tool_status_line(
-                    selection.active_editor_tool(),
-                    bearing.dimensions,
-                    cylinder.dimensions,
-                    selected_wires,
-                    material.0,
-                ),
+                format!("{tool_status}{placement_status}"),
                 tool_tone(selection.active_editor_tool()),
             )
         },

@@ -24,7 +24,7 @@ const EDGE_PICK_RADIUS: f32 = 0.06;
 
 /// How far one vertex move travels, in lattice steps.
 ///
-/// Free movement at the lattice's own 12.5 mm resolution is too loose to line
+/// Free movement at the lattice's own 2.5 mm resolution is too loose to line
 /// anything up: two corners only meet if the user hits the same value twice by
 /// eye. Constraining every move to a fraction of a cell makes matching corners
 /// the default outcome instead of a careful act.
@@ -46,7 +46,12 @@ impl Default for ShapeSnap {
 
 impl ShapeSnap {
     /// Increments offered, coarsest first.
-    const CHOICES: [i32; 4] = [STEPS_PER_CELL, STEPS_PER_CELL / 2, STEPS_PER_CELL / 4, 1];
+    const CHOICES: [i32; 4] = [
+        STEPS_PER_CELL,
+        STEPS_PER_CELL / 2,
+        STEPS_PER_CELL / 4,
+        STEPS_PER_CELL / 20,
+    ];
 
     /// Moves to the next increment, wrapping back to the coarsest.
     pub(crate) fn cycle(&mut self) {
@@ -62,7 +67,10 @@ impl ShapeSnap {
             steps if steps == STEPS_PER_CELL => "Snap: 1 block".to_owned(),
             steps if steps == STEPS_PER_CELL / 2 => "Snap: 1/2 block".to_owned(),
             steps if steps == STEPS_PER_CELL / 4 => "Snap: 1/4 block".to_owned(),
-            _ => format!("Snap: fine ({:.1} mm)", STEP_METERS * 1000.0),
+            _ => format!(
+                "Snap: fine ({:.1} mm)",
+                f64::from(self.steps) * f64::from(STEP_METERS) * 1000.0
+            ),
         }
     }
 
@@ -709,9 +717,9 @@ mod tests {
             snap.cycle();
             seen.push(snap.steps);
         }
-        assert_eq!(seen, vec![20, 10, 5, 1]);
+        assert_eq!(seen, vec![100, 50, 25, 5]);
         snap.cycle();
-        assert_eq!(snap.steps, 20);
+        assert_eq!(snap.steps, 100);
     }
 
     #[test]

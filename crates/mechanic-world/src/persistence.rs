@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// World document version written by this build.
-pub const WORLD_FORMAT_VERSION: u32 = 3;
+pub const WORLD_FORMAT_VERSION: u32 = 4;
 /// Delay after the last mutation before an ordinary autosave.
 pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 /// Maximum time dirty data waits even while mutations continue.

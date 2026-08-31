@@ -862,7 +862,7 @@ mod tests {
                 CuboidSpec::new(
                     [1, 1, 1],
                     BuildPose::from_position_ticks(
-                        bevy_math::IVec3::new(160, 0, 0),
+                        bevy_math::IVec3::new(1600, 0, 0),
                         GridRotation::default(),
                     ),
                 )

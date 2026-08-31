@@ -29,7 +29,7 @@ use crate::{
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 11;
+pub const CREATION_FORMAT_VERSION: u32 = 12;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -92,10 +92,10 @@ pub enum CreationError {
 
 /// Grid-aligned pose in its serialized form.
 ///
-/// Translation uses exact 2.5 cm ticks. Older coordinate encodings are rejected.
+/// Translation uses exact 2.5 mm ticks. Older coordinate encodings are rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PoseDoc {
-    /// Centre in exact integer 2.5 cm ticks.
+    /// Centre in exact integer 2.5 mm ticks.
     pub translation_ticks: [i32; 3],
     /// Quarter turns around local x, y, and z.
     pub rotation: [u8; 3],
@@ -558,7 +558,7 @@ impl CreationDocument {
                 | PartDoc::DimensionLink { pose, .. } => pose,
             };
             let rotated = rotate_y_i32(IVec3::from_array(pose.translation_ticks), yaw)
-                + translation_half_units * 5;
+                + translation_half_units * crate::POSITION_TICKS_PER_HALF_GRID_UNIT;
             pose.translation_ticks = rotated.to_array();
             let [x, y, z] = pose.rotation;
             pose.rotation = GridRotation::new(x, y, z)
@@ -1726,7 +1726,10 @@ mod tests {
             .apply(BuildCommand::Spawn(
                 CuboidSpec::new(
                     [1, 1, 1],
-                    BuildPose::from_position_ticks(IVec3::new(2, 5, -2), GridRotation::default()),
+                    BuildPose::from_position_ticks(
+                        IVec3::new(20, 50, -20),
+                        GridRotation::default(),
+                    ),
                 )
                 .unwrap(),
             ))
@@ -1735,12 +1738,12 @@ mod tests {
         let PartDoc::Cuboid { pose, .. } = document.parts[0] else {
             unreachable!()
         };
-        assert_eq!(pose.translation_ticks, [2, 5, -2]);
+        assert_eq!(pose.translation_ticks, [20, 50, -20]);
         let rebuilt = document.into_graph().unwrap().graph;
         let (_, part) = rebuilt.parts().next().unwrap();
         assert_eq!(
             part.pose().translation_position_ticks(),
-            IVec3::new(2, 5, -2)
+            IVec3::new(20, 50, -20)
         );
     }
 
@@ -1836,13 +1839,13 @@ mod tests {
     fn a_fine_placed_shape_region_round_trips_its_exact_origin() {
         let spec = CuboidSpec::new(
             [1, 1, 1],
-            BuildPose::from_position_ticks(IVec3::new(6, 5, 5), GridRotation::default()),
+            BuildPose::from_position_ticks(IVec3::new(60, 50, 50), GridRotation::default()),
         )
         .unwrap();
         let mut graph = ConstructionGraph::new();
         graph.apply(BuildCommand::Spawn(spec)).unwrap();
         let region = ShapeRegion::from_origin_steps(
-            IVec3::new(2, 0, 0),
+            IVec3::new(10, 0, 0),
             IVec3::ONE,
             ConstructionMaterial::Steel,
         )
@@ -1850,10 +1853,10 @@ mod tests {
         graph.apply(BuildCommand::AddRegion(region)).unwrap();
 
         let document = CreationDocument::from_graph(&graph, "fine shaped", &[]);
-        assert_eq!(document.regions[0].origin_steps, [2, 0, 0]);
+        assert_eq!(document.regions[0].origin_steps, [10, 0, 0]);
         let restored = document.into_graph().unwrap().graph;
         let (_, replayed) = restored.regions().next().unwrap();
-        assert_eq!(replayed.origin_steps(), IVec3::new(2, 0, 0));
+        assert_eq!(replayed.origin_steps(), IVec3::new(10, 0, 0));
     }
 
     #[test]

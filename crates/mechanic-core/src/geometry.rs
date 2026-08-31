@@ -4,6 +4,13 @@ use thiserror::Error;
 
 use crate::{MaterialAppearance, PartId};
 
+/// Length of one exact authored position tick: 2.5 mm.
+pub const POSITION_TICK_METERS: f32 = 0.0025;
+/// Exact position ticks spanning one 25 cm construction cell.
+pub const POSITION_TICKS_PER_GRID_UNIT: i32 = 100;
+/// Exact position ticks spanning half a construction cell.
+pub const POSITION_TICKS_PER_HALF_GRID_UNIT: i32 = POSITION_TICKS_PER_GRID_UNIT / 2;
+
 /// Stable identity of a Dimension Link within one saved world and its Garage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct DimensionLinkId(pub u64);
@@ -302,7 +309,7 @@ impl GridRotation {
 /// Grid-aligned build pose.
 ///
 /// The primary translation remains in quarter-metre units. An internal exact
-/// 2.5 cm tick offset allows fine placement while preserving the positions
+/// 2.5 mm tick offset allows precision placement while preserving the positions
 /// produced by [`BuildPose::new`] and legacy half-grid construction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct BuildPose {
@@ -323,13 +330,14 @@ impl BuildPose {
         }
     }
 
-    /// Creates a build pose from exact integer 2.5 cm centre coordinates.
+    /// Creates a build pose from exact integer 2.5 mm centre coordinates.
     pub fn from_position_ticks(translation_ticks: IVec3, rotation: GridRotation) -> Self {
         let mut translation_units = IVec3::ZERO;
         let mut position_tick_offset = [0; 3];
         for axis in 0..3 {
-            let remainder = translation_ticks[axis].rem_euclid(10);
-            translation_units[axis] = translation_ticks[axis].div_euclid(10);
+            let remainder = translation_ticks[axis].rem_euclid(POSITION_TICKS_PER_GRID_UNIT);
+            translation_units[axis] =
+                translation_ticks[axis].div_euclid(POSITION_TICKS_PER_GRID_UNIT);
             position_tick_offset[axis] = u8::try_from(remainder).unwrap_or_default();
         }
         Self {
@@ -344,12 +352,15 @@ impl BuildPose {
     /// Half-grid coordinates are useful for odd-sized cuboids, whose centres
     /// lie halfway between construction-grid lines when resting on a face.
     pub fn from_half_grid(translation_half_units: IVec3, rotation: GridRotation) -> Self {
-        Self::from_position_ticks(translation_half_units * 5, rotation)
+        Self::from_position_ticks(
+            translation_half_units * POSITION_TICKS_PER_HALF_GRID_UNIT,
+            rotation,
+        )
     }
 
-    /// Translation in exact integer 2.5 cm position ticks.
+    /// Translation in exact integer 2.5 mm position ticks.
     pub fn translation_position_ticks(self) -> IVec3 {
-        self.translation_units * 10
+        self.translation_units * POSITION_TICKS_PER_GRID_UNIT
             + IVec3::new(
                 i32::from(self.position_tick_offset[0]),
                 i32::from(self.position_tick_offset[1]),
@@ -369,15 +380,15 @@ impl BuildPose {
             ticks
                 .to_array()
                 .into_iter()
-                .all(|tick| tick.rem_euclid(5) == 0),
-            "a fine-grid v8 pose has no exact legacy half-grid representation"
+                .all(|tick| tick.rem_euclid(POSITION_TICKS_PER_HALF_GRID_UNIT) == 0),
+            "a precision-grid pose has no exact half-grid representation"
         );
-        ticks / 5
+        ticks / POSITION_TICKS_PER_HALF_GRID_UNIT
     }
 
     /// Translation in metres.
     pub fn translation(self) -> Vec3 {
-        self.translation_position_ticks().as_vec3() * 0.025
+        self.translation_position_ticks().as_vec3() * POSITION_TICK_METERS
     }
 }
 
@@ -1568,12 +1579,24 @@ mod tests {
     #[test]
     fn pose_preserves_fine_position_ticks_in_both_directions() {
         let pose =
-            BuildPose::from_position_ticks(IVec3::new(-13, 2, 19), GridRotation::new(1, 2, 3));
-        assert_eq!(pose.translation_position_ticks(), IVec3::new(-13, 2, 19));
+            BuildPose::from_position_ticks(IVec3::new(-130, 20, 190), GridRotation::new(1, 2, 3));
+        assert_eq!(pose.translation_position_ticks(), IVec3::new(-130, 20, 190));
         assert!(
             pose.translation()
                 .abs_diff_eq(Vec3::new(-0.325, 0.05, 0.475), 1.0e-6)
         );
+    }
+
+    #[test]
+    fn one_centimetre_positions_round_trip_exactly_across_zero() {
+        for ticks in [IVec3::new(4, -4, 8), IVec3::new(-4, 4, -8)] {
+            let pose = BuildPose::from_position_ticks(ticks, GridRotation::default());
+            assert_eq!(pose.translation_position_ticks(), ticks);
+            assert!(
+                pose.translation()
+                    .abs_diff_eq(ticks.as_vec3() * 0.0025, 1.0e-7)
+            );
+        }
     }
 
     #[test]

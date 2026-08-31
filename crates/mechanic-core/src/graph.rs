@@ -1207,7 +1207,9 @@ impl ConstructionGraph {
         let local_z = root_pose.rotation.quaternion() * Vec3::Z;
         let direction = local_z.round().as_ivec3();
         let centre = parent_spec.pose().translation_position_ticks()
-            + direction * i32::from(parent_z_units + TransmissionSpec::GRID_UNITS[2]) * 5;
+            + direction
+                * i32::from(parent_z_units + TransmissionSpec::GRID_UNITS[2])
+                * crate::POSITION_TICKS_PER_HALF_GRID_UNIT;
         Ok(TransmissionSpec::new(BuildPose::from_position_ticks(
             centre,
             root_pose.rotation,

@@ -470,7 +470,10 @@ pub(crate) fn update_player_camera(
         view.pitch = (view.pitch - motion.delta.y * MOUSE_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
         let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
             && selection.matter_mode == MatterMode::Terrain;
-        let zoom = if editor.pipe_bend_active() || terrain_mode {
+        let zoom = if editor.pipe_bend_active()
+            || terrain_mode
+            || editor.smart_snap.range_adjusted_this_frame
+        {
             0.0
         } else {
             f32::from(actions.just_pressed(GameAction::ZoomIn))

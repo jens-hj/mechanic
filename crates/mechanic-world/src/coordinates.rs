@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Edge length of the hidden volumetric terrain cell.
 pub const TERRAIN_CELL_METERS: f64 = 0.05;
 /// Exact authored construction-position step.
-pub const BUILD_POSITION_TICK_METERS: f64 = 0.025;
+pub const BUILD_POSITION_TICK_METERS: f64 = mechanic_core::POSITION_TICK_METERS as f64;
 /// Half-width of the finite world from its centre.
 pub const WORLD_HALF_EXTENT_METERS: f64 = 8_000.0;
 /// Half-width of the finite world in terrain cells.

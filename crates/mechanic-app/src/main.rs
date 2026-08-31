@@ -56,23 +56,26 @@ use bevy::{
 };
 use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, PipeRunAttachment, PipeRunPiece,
-    PlacementBounds, PlacementCandidate, PlacementError, PlacementPlane, SurfaceHit,
-    bearing_anchor_from_hit, bearing_attachment_candidate, bearing_overlaps_candidate,
-    bearing_overlaps_cylinder_candidate, bearing_support_face, bearing_support_face_excluding,
-    begin_weld, block_box_bounds, block_box_specs, block_span_from_rays,
-    candidate_from_hit_with_step, cylinder_candidate_from_hit_with_step, face_geometry_from_ref,
-    oriented_cuboid_candidate_from_hit_with_step, part_world_bounds, pipe_run_pieces,
+    PlacementBounds, PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane,
+    PlacementSnapIndex, SmartGuide, SurfaceHit, bearing_anchor_from_hit_with_grid,
+    bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
+    bearing_support_face, bearing_support_face_excluding, begin_weld, block_box_bounds,
+    block_box_specs, block_span_from_rays, candidate_from_hit_with_grid,
+    cylinder_candidate_from_hit_with_grid, face_geometry_from_ref,
+    oriented_cuboid_candidate_from_hit_with_grid, part_world_bounds, pipe_run_pieces,
     raycast_construction, raycast_construction_for_annulus,
     raycast_construction_for_annulus_with_ground, raycast_construction_for_annulus_with_scaffold,
     raycast_construction_with_ground, raycast_construction_with_scaffold, raycast_oriented_cuboid,
-    rigid_body_parts, stage_bearing_attachment_in_bounds, stage_bearing_block_batch_in_bounds,
-    stage_bearing_cylinder_in_bounds, stage_block_batch_from_source_in_bounds,
-    stage_controller_from_source_in_bounds, stage_dimension_link_from_source_in_bounds,
-    stage_engine_from_source_in_bounds, stage_input_from_source_in_bounds,
-    stage_pipe_run_in_bounds, stage_seat_from_source_in_bounds, stage_servo_from_source_in_bounds,
-    stage_transmission, stage_weld_objects, transmission_candidate_from_hit_in_bounds,
-    try_face_geometry_from_ref, validate_block_batch_in_bounds,
-    validate_cylinder_candidate_in_bounds, validate_pipe_run_in_bounds,
+    rigid_body_parts, smart_snap_anchor, smart_snap_cuboid_candidate,
+    smart_snap_cylinder_candidate, stage_bearing_attachment_in_bounds,
+    stage_bearing_block_batch_in_bounds, stage_bearing_cylinder_in_bounds,
+    stage_block_batch_from_source_in_bounds, stage_controller_from_source_in_bounds,
+    stage_dimension_link_from_source_in_bounds, stage_engine_from_source_in_bounds,
+    stage_input_from_source_in_bounds, stage_pipe_run_in_bounds, stage_seat_from_source_in_bounds,
+    stage_servo_from_source_in_bounds, stage_transmission, stage_weld_objects,
+    transmission_candidate_from_hit_in_bounds, try_face_geometry_from_ref,
+    validate_block_batch_in_bounds, validate_cylinder_candidate_in_bounds,
+    validate_pipe_run_in_bounds,
 };
 #[cfg(test)]
 use builder::{candidate_from_hit, stage_bearing_attachment};
@@ -95,9 +98,11 @@ use mechanic_core::{
     GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER,
     MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
     MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
-    MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, PartId, PartPiece, PartSpec, PendingOperation,
-    PipeBendDimensions, RegionId, STEP_METERS, STEPS_PER_CELL, SeatControllerLinkSpec, SeatSpec,
-    ServoSpec, ShapeRegion, TopologyError, TransmissionSpec, face_neighbour_offset, part_cells,
+    MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, POSITION_TICK_METERS,
+    POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId, PartPiece, PartSpec,
+    PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, STEPS_PER_CELL,
+    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError, TransmissionSpec,
+    face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTickReadback,
@@ -454,6 +459,72 @@ struct BearingToolSettings {
 struct CylinderToolSettings {
     dimensions: CylinderDimensions,
     bend_radius: f32,
+}
+
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+struct SmartSnapSettings {
+    enabled: bool,
+    range: f32,
+    scrolled_during_hold: bool,
+    pub(crate) range_adjusted_this_frame: bool,
+}
+
+impl Default for SmartSnapSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            range: 1.0,
+            scrolled_during_hold: false,
+            range_adjusted_this_frame: false,
+        }
+    }
+}
+
+impl SmartSnapSettings {
+    fn update(&mut self, toggle_released: bool, range_steps: f32, used_during_hold: bool) {
+        self.range_adjusted_this_frame = false;
+        if range_steps != 0.0 {
+            self.range = (self.range + range_steps * 0.25).clamp(0.25, 5.0);
+            self.scrolled_during_hold = true;
+            self.range_adjusted_this_frame = true;
+        }
+        self.scrolled_during_hold |= used_during_hold;
+        if toggle_released {
+            if !self.scrolled_during_hold {
+                self.enabled = !self.enabled;
+            }
+            self.scrolled_during_hold = false;
+        }
+    }
+}
+
+fn update_smart_snap_settings(
+    actions: Res<ButtonInput<GameAction>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut state: ResMut<EditorState>,
+) {
+    let adjustment = f32::from(actions.just_pressed(GameAction::ObjectSnapRangeIncrease))
+        - f32::from(actions.just_pressed(GameAction::ObjectSnapRangeDecrease));
+    let used_during_hold = actions.pressed(GameAction::ToggleObjectSnap)
+        && mouse.any_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle]);
+    state.smart_snap.update(
+        actions.just_released(GameAction::ToggleObjectSnap),
+        adjustment,
+        used_during_hold,
+    );
+}
+
+fn rebuild_placement_snap_index(graph: Res<EditorGraph>, mut state: ResMut<EditorState>) {
+    if graph.is_changed() {
+        state.snap_index.rebuild(&graph.0);
+    }
+}
+
+fn active_placement_grid(actions: &ButtonInput<GameAction>) -> PlacementGrid {
+    PlacementGrid::from_modifiers(
+        actions.pressed(GameAction::FinePlacement),
+        actions.pressed(GameAction::PrecisionPlacement),
+    )
 }
 
 impl Default for CylinderToolSettings {
@@ -2025,10 +2096,15 @@ struct EditorState {
     attachment_bearing: Option<usize>,
     preview: Option<PlacementCandidate>,
     cylinder_preview: Option<CylinderPlacementCandidate>,
+    bearing_preview_anchor: Option<Vec3>,
     preview_error: Option<PlacementError>,
     /// A staged action that is allowed but costs something the player should
     /// see first — currently a weld that locks a bearing solid.
     preview_warning: Option<String>,
+    placement_grid: PlacementGrid,
+    smart_guides: Vec<SmartGuide>,
+    smart_snap: SmartSnapSettings,
+    snap_index: PlacementSnapIndex,
     /// One of the 24 grid-aligned orientations used by authored parts.
     authored_orientation: u8,
     feedback: Option<String>,
@@ -2228,6 +2304,24 @@ struct ShapePlaneVisual;
 /// The arrows naming that plane's two axes.
 #[derive(Component)]
 struct ShapeArrowVisual;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PlacementLatticeKey {
+    grid: PlacementGrid,
+    low_ticks: IVec3,
+    high_ticks: IVec3,
+    plane: Option<PlacementPlane>,
+}
+
+#[derive(Component, Default)]
+struct PlacementLatticeVisual {
+    key: Option<PlacementLatticeKey>,
+}
+
+#[derive(Component, Default)]
+struct SmartGuideVisual {
+    guides: Vec<SmartGuide>,
+}
 
 #[derive(Component)]
 pub(crate) struct PlayerAvatar;
@@ -2694,6 +2788,7 @@ fn main() {
                         (
                             begin_pause_frame,
                             controls::update_action_state,
+                            update_smart_snap_settings,
                             capture_control_binding,
                             handle_creation_menu_shortcut,
                             handle_dimension_link_interaction,
@@ -2731,6 +2826,7 @@ fn main() {
                             .chain(),
                         (
                             handle_tool_change,
+                            rebuild_placement_snap_index,
                             update_hover,
                             handle_build_actions,
                             handle_shape_actions,
@@ -2739,6 +2835,7 @@ fn main() {
                         )
                             .chain(),
                         update_joint_xray,
+                        sync_placement_overlays,
                         sync_visual_meshes,
                         (sync_shape_nodes, sync_region_focus, sync_drag_plane).chain(),
                         update_wire_drag_preview,
@@ -2778,6 +2875,8 @@ fn setup(
     let shape_selected_mesh = meshes.add(degenerate_overlay_mesh());
     let shape_plane_mesh = meshes.add(degenerate_overlay_mesh());
     let shape_arrow_mesh = meshes.add(degenerate_overlay_mesh());
+    let placement_lattice_mesh = meshes.add(degenerate_overlay_mesh());
+    let smart_guide_mesh = meshes.add(degenerate_overlay_mesh());
     let controller_mesh = meshes.add(Cuboid::default());
     let gas_engine_mesh = meshes.add(Cuboid::default());
     let electric_engine_mesh = meshes.add(Cuboid::default());
@@ -2908,6 +3007,21 @@ fn setup(
         materials.add(preview_material(Color::srgba(1.0, 0.60, 0.06, 0.46)));
     let green_preview_material =
         materials.add(preview_material(Color::srgba(0.12, 1.0, 0.28, 0.52)));
+    let placement_lattice_material = materials.add(StandardMaterial {
+        base_color: SHAPE_SELECTION_COLOR.with_alpha(0.24),
+        alpha_mode: AlphaMode::Blend,
+        cull_mode: None,
+        unlit: true,
+        depth_bias: PREVIEW_RENDER_DEPTH_BIAS,
+        ..default()
+    });
+    let smart_guide_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.86, 0.18),
+        cull_mode: None,
+        unlit: true,
+        depth_bias: PREVIEW_RENDER_DEPTH_BIAS,
+        ..default()
+    });
 
     spawn_player_avatar(&mut commands, &mut meshes, &mut materials);
 
@@ -3068,6 +3182,24 @@ fn setup(
         NoFrustumCulling,
         Visibility::Hidden,
         JointXrayVisual,
+    ));
+    commands.spawn((
+        Name::new("Placement lattice"),
+        Mesh3d(placement_lattice_mesh),
+        MeshMaterial3d(placement_lattice_material),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        PlacementLatticeVisual::default(),
+    ));
+    commands.spawn((
+        Name::new("Smart placement guides"),
+        Mesh3d(smart_guide_mesh),
+        MeshMaterial3d(smart_guide_material),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        SmartGuideVisual::default(),
     ));
     let shape_selected_material = materials.add(StandardMaterial {
         base_color: SHAPE_SELECTION_COLOR,
@@ -4341,6 +4473,9 @@ fn update_hover(
         },
     };
     state.placement_bounds = placement_bounds;
+    if state.block_drag.is_none() && state.pipe_drag.is_none() {
+        state.placement_grid = active_placement_grid(&actions);
+    }
     if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
         clear_hover(&mut state);
         return;
@@ -4368,11 +4503,11 @@ fn update_hover(
                 &mut state,
                 tool,
                 cylinder_settings.dimensions,
+                bearing_settings.dimensions,
                 selected_material
                     .as_deref()
                     .map_or(ConstructionMaterial::Steel, |value| value.0),
                 chroma_brush.appearance,
-                actions.pressed(GameAction::FinePlacement),
             );
         }
         return;
@@ -4570,11 +4705,11 @@ fn update_hover(
             &mut state,
             tool,
             cylinder_settings.dimensions,
+            bearing_settings.dimensions,
             selected_material
                 .as_deref()
                 .map_or(ConstructionMaterial::Steel, |value| value.0),
             chroma_brush.appearance,
-            actions.pressed(GameAction::FinePlacement),
         );
         return;
     }
@@ -4585,11 +4720,11 @@ fn update_hover(
             &mut state,
             tool,
             cylinder_settings.dimensions,
+            bearing_settings.dimensions,
             selected_material
                 .as_deref()
                 .map_or(ConstructionMaterial::Steel, |value| value.0),
             chroma_brush.appearance,
-            actions.pressed(GameAction::FinePlacement),
         );
         return;
     };
@@ -4600,11 +4735,11 @@ fn update_hover(
         &mut state,
         tool,
         cylinder_settings.dimensions,
+        bearing_settings.dimensions,
         selected_material
             .as_deref()
             .map_or(ConstructionMaterial::Steel, |value| value.0),
         chroma_brush.appearance,
-        actions.pressed(GameAction::FinePlacement),
     );
 }
 
@@ -5040,8 +5175,10 @@ fn clear_hover(state: &mut EditorState) {
     state.attachment_bearing = None;
     state.preview = None;
     state.cylinder_preview = None;
+    state.bearing_preview_anchor = None;
     state.preview_error = None;
     state.preview_warning = None;
+    state.smart_guides.clear();
 }
 
 #[allow(clippy::too_many_lines)]
@@ -5050,14 +5187,17 @@ fn refresh_tool_preview_with_cylinder(
     state: &mut EditorState,
     tool: Tool,
     cylinder_dimensions: CylinderDimensions,
+    bearing_dimensions: BearingDimensions,
     material: ConstructionMaterial,
     appearance: MaterialAppearance,
-    fine_placement: bool,
 ) {
+    let placement_grid = state.placement_grid;
     state.preview = None;
     state.cylinder_preview = None;
+    state.bearing_preview_anchor = None;
     state.attachment_bearing = None;
     state.preview_warning = None;
+    state.smart_guides.clear();
     // A shaped face is no longer an axis-aligned rectangle, so nothing can sit
     // flush on it until it is flattened back onto the grid.
     if let Some(hit) = state.hovered
@@ -5072,12 +5212,41 @@ fn refresh_tool_preview_with_cylinder(
             let surface_candidate = state.hovered.and_then(|hit| {
                 try_face_geometry_from_ref(hit.face, Some(graph))
                     .is_some()
-                    .then(|| candidate_from_hit_with_step(graph, hit, fine_placement))
+                    .then(|| {
+                        candidate_from_hit_with_grid(
+                            graph,
+                            hit,
+                            placement_grid,
+                            state.placement_bounds,
+                        )
+                    })
                     .map(|mut candidate| {
                         candidate.spec = candidate
                             .spec
                             .with_material(material)
                             .with_appearance(appearance);
+                        let smart_snap = state.smart_snap;
+                        if smart_snap.enabled {
+                            let bounds = state.placement_bounds;
+                            let (snapped_candidate, active_guides) = smart_snap_cuboid_candidate(
+                                graph,
+                                &state.snap_index,
+                                hit,
+                                candidate,
+                                smart_snap.range,
+                                |guided| {
+                                    validate_block_batch_in_bounds(
+                                        graph,
+                                        guided,
+                                        &[guided.spec],
+                                        bounds,
+                                    )
+                                    .is_ok()
+                                },
+                            );
+                            state.smart_guides = active_guides;
+                            candidate = snapped_candidate;
+                        }
                         candidate
                     })
             });
@@ -5161,24 +5330,37 @@ fn refresh_tool_preview_with_cylinder(
             })
         }
         (Tool::Cylinder, _) => {
-            let surface_candidate = state
-                .hovered
-                .and_then(|hit| {
-                    cylinder_candidate_from_hit_with_step(
+            let surface_candidate = state.hovered.and_then(|hit| {
+                let mut candidate = cylinder_candidate_from_hit_with_grid(
+                    graph,
+                    hit,
+                    cylinder_dimensions,
+                    placement_grid,
+                    state.placement_bounds,
+                )
+                .ok()?;
+                candidate.spec = candidate
+                    .spec
+                    .with_material(material)
+                    .with_appearance(appearance);
+                let smart_snap = state.smart_snap;
+                if smart_snap.enabled {
+                    let bounds = state.placement_bounds;
+                    let (snapped_candidate, active_guides) = smart_snap_cylinder_candidate(
                         graph,
+                        &state.snap_index,
                         hit,
-                        cylinder_dimensions,
-                        fine_placement,
-                    )
-                    .ok()
-                })
-                .map(|mut candidate| {
-                    candidate.spec = candidate
-                        .spec
-                        .with_material(material)
-                        .with_appearance(appearance);
-                    candidate
-                });
+                        candidate,
+                        smart_snap.range,
+                        |guided| {
+                            validate_cylinder_candidate_in_bounds(graph, guided, bounds).is_ok()
+                        },
+                    );
+                    state.smart_guides = active_guides;
+                    candidate = snapped_candidate;
+                }
+                Some(candidate)
+            });
             let direct_bearing = state.hovered_bearing.filter(|&index| {
                 state.placed_bearings.get(index).is_some_and(|bearing| {
                     surface_candidate.is_none_or(|candidate| {
@@ -5215,11 +5397,12 @@ fn refresh_tool_preview_with_cylinder(
                         point: bearing.anchor,
                         face: bearing.source,
                     };
-                    cylinder_candidate_from_hit_with_step(
+                    cylinder_candidate_from_hit_with_grid(
                         graph,
                         hit,
                         cylinder_dimensions,
-                        fine_placement,
+                        placement_grid,
+                        state.placement_bounds,
                     )
                     .ok()
                     .map(|mut candidate| {
@@ -5249,12 +5432,13 @@ fn refresh_tool_preview_with_cylinder(
                 }
                 Err(error) => {
                     if try_face_geometry_from_ref(hit.face, Some(graph)).is_some() {
-                        state.preview = Some(oriented_cuboid_candidate_from_hit_with_step(
+                        state.preview = Some(oriented_cuboid_candidate_from_hit_with_grid(
                             graph,
                             hit,
                             TransmissionSpec::GRID_UNITS,
                             GridRotation::default(),
-                            fine_placement,
+                            placement_grid,
+                            state.placement_bounds,
                         ));
                     }
                     Some(error)
@@ -5284,13 +5468,31 @@ fn refresh_tool_preview_with_cylinder(
                     Tool::DimensionLink => DimensionLinkSpec::GRID_UNITS,
                     _ => unreachable!(),
                 };
-                let candidate = oriented_cuboid_candidate_from_hit_with_step(
+                let mut candidate = oriented_cuboid_candidate_from_hit_with_grid(
                     graph,
                     hit,
                     dimensions,
                     authored_orientation(state.authored_orientation),
-                    fine_placement,
+                    placement_grid,
+                    state.placement_bounds,
                 );
+                let smart_snap = state.smart_snap;
+                if smart_snap.enabled {
+                    let bounds = state.placement_bounds;
+                    let (snapped_candidate, active_guides) = smart_snap_cuboid_candidate(
+                        graph,
+                        &state.snap_index,
+                        hit,
+                        candidate,
+                        smart_snap.range,
+                        |guided| {
+                            validate_block_batch_in_bounds(graph, guided, &[guided.spec], bounds)
+                                .is_ok()
+                        },
+                    );
+                    state.smart_guides = active_guides;
+                    candidate = snapped_candidate;
+                }
                 let error = validate_block_batch_in_bounds(
                     graph,
                     candidate,
@@ -5308,7 +5510,43 @@ fn refresh_tool_preview_with_cylinder(
             if try_face_geometry_from_ref(hit.face, Some(graph)).is_none() {
                 Some(PlacementError::CurvedSurface)
             } else {
-                bearing_anchor_from_hit(graph, hit).err()
+                match bearing_anchor_from_hit_with_grid(
+                    graph,
+                    hit,
+                    placement_grid,
+                    state.placement_bounds,
+                ) {
+                    Ok(mut anchor) => {
+                        let smart_snap = state.smart_snap;
+                        if smart_snap.enabled {
+                            let normal_axis = PlacementPlane::from_normal(
+                                face_geometry_from_ref(hit.face, Some(graph)).normal,
+                            )
+                            .normal_axis();
+                            let (snapped_anchor, active_guides) = smart_snap_anchor(
+                                &state.snap_index,
+                                hit.point,
+                                anchor,
+                                normal_axis,
+                                smart_snap.range,
+                                |guided| {
+                                    bearing_support_face(
+                                        graph,
+                                        hit.face,
+                                        guided,
+                                        bearing_dimensions,
+                                    )
+                                    .is_some()
+                                },
+                            );
+                            anchor = snapped_anchor;
+                            state.smart_guides = active_guides;
+                        }
+                        state.bearing_preview_anchor = Some(anchor);
+                        None
+                    }
+                    Err(error) => Some(error),
+                }
             }
         }),
     };
@@ -5316,14 +5554,15 @@ fn refresh_tool_preview_with_cylinder(
 
 #[cfg(test)]
 fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool: Tool) {
+    state.snap_index.rebuild(graph);
     refresh_tool_preview_with_cylinder(
         graph,
         state,
         tool,
         CylinderDimensions::default(),
+        BearingDimensions::default(),
         ConstructionMaterial::Steel,
         MaterialAppearance::BAKED,
-        false,
     );
 }
 
@@ -6103,6 +6342,347 @@ fn write_overlay(
     Visibility::Visible
 }
 
+#[allow(clippy::type_complexity)]
+fn sync_placement_overlays(
+    state: Res<EditorState>,
+    selection: Res<SelectedTool>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut lattice: Single<
+        (&Mesh3d, &mut Visibility, &mut PlacementLatticeVisual),
+        (With<PlacementLatticeVisual>, Without<SmartGuideVisual>),
+    >,
+    mut guides: Single<
+        (&Mesh3d, &mut Visibility, &mut SmartGuideVisual),
+        (With<SmartGuideVisual>, Without<PlacementLatticeVisual>),
+    >,
+) {
+    let tool = selection.active_editor_tool();
+    let placing = matches!(
+        tool,
+        Some(
+            Tool::Block
+                | Tool::Cylinder
+                | Tool::Bearing
+                | Tool::Controller
+                | Tool::GasEngine
+                | Tool::ElectricEngine
+                | Tool::Transmission
+                | Tool::Servo
+                | Tool::Seat
+                | Tool::Input
+                | Tool::DimensionLink
+        )
+    );
+    let target = state
+        .block_drag
+        .as_ref()
+        .and_then(|drag| {
+            block_sheet_bounds(&drag.specs).map(|(low, high)| (low, high, Some(drag.plane)))
+        })
+        .or_else(|| {
+            state
+                .pipe_drag
+                .as_ref()
+                .map(|drag| (drag.endpoint, drag.endpoint, None))
+        })
+        .or_else(|| {
+            state.preview.map(|candidate| {
+                let (low, high) = part_world_bounds(PartSpec::Cuboid(candidate.spec));
+                (low, high, None)
+            })
+        })
+        .or_else(|| {
+            state.cylinder_preview.map(|candidate| {
+                let (low, high) = part_world_bounds(PartSpec::Cylinder(candidate.spec));
+                (low, high, None)
+            })
+        })
+        .or_else(|| {
+            (tool == Some(Tool::Bearing))
+                .then_some(state.bearing_preview_anchor?)
+                .map(|anchor| (anchor, anchor, None))
+        });
+    let Some((low, high, plane)) = target.filter(|_| placing) else {
+        *lattice.1 = Visibility::Hidden;
+        *guides.1 = Visibility::Hidden;
+        return;
+    };
+
+    let origin = placement_origin_meters(state.placement_bounds);
+    let low_ticks = position_ticks(low + origin);
+    let high_ticks = position_ticks(high + origin);
+    let key = PlacementLatticeKey {
+        grid: state.placement_grid,
+        low_ticks,
+        high_ticks,
+        plane,
+    };
+    if lattice.2.key == Some(key) {
+        *lattice.1 = Visibility::Visible;
+    } else {
+        let geometry = placement_lattice_geometry(
+            low_ticks.as_vec3() * POSITION_TICK_METERS - origin,
+            high_ticks.as_vec3() * POSITION_TICK_METERS - origin,
+            origin,
+            state.placement_grid,
+            plane,
+        );
+        *lattice.1 = write_overlay(&mut meshes, &lattice.0.0, geometry);
+        lattice.2.key = Some(key);
+    }
+
+    if guides.2.guides == state.smart_guides {
+        *guides.1 = if state.smart_guides.is_empty() {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+    } else {
+        let geometry = smart_guide_geometry(&state.smart_guides);
+        *guides.1 = write_overlay(&mut meshes, &guides.0.0, geometry);
+        guides.2.guides.clone_from(&state.smart_guides);
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn placement_origin_meters(bounds: PlacementBounds) -> Vec3 {
+    match bounds {
+        PlacementBounds::Garage | PlacementBounds::GarageBuild => Vec3::ZERO,
+        PlacementBounds::World { origin } => Vec3::new(origin.x as f32, 0.0, origin.y as f32),
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn position_ticks(position: Vec3) -> IVec3 {
+    (position / POSITION_TICK_METERS).round().as_ivec3()
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn placement_lattice_geometry(
+    selection_low: Vec3,
+    selection_high: Vec3,
+    origin: Vec3,
+    grid: PlacementGrid,
+    plane: Option<PlacementPlane>,
+) -> OverlayGeometry {
+    let mut geometry = OverlayGeometry::default();
+    let step = grid.step_ticks() as f32 * POSITION_TICK_METERS;
+    let mut low = selection_low - Vec3::splat(step);
+    let mut high = selection_high + Vec3::splat(step);
+    if let Some(plane) = plane {
+        let normal = plane.normal_axis();
+        low[normal] = (selection_low[normal] + selection_high[normal]) * 0.5;
+        high[normal] = low[normal];
+        append_planar_lattice(
+            selection_low,
+            selection_high,
+            low,
+            high,
+            origin,
+            grid,
+            plane,
+            &mut geometry,
+        );
+        return geometry;
+    }
+
+    let coordinates: [Vec<f32>; 3] = core::array::from_fn(|axis| {
+        lattice_coordinates(
+            low[axis] + origin[axis],
+            high[axis] + origin[axis],
+            axis,
+            grid,
+        )
+        .into_iter()
+        .map(|global| global - origin[axis])
+        .collect::<Vec<_>>()
+    });
+    for direction in 0..3 {
+        let first = (direction + 1) % 3;
+        let second = (direction + 2) % 3;
+        for &a in &coordinates[first] {
+            for &b in &coordinates[second] {
+                if coordinate_inside(a, selection_low[first], selection_high[first])
+                    && coordinate_inside(b, selection_low[second], selection_high[second])
+                {
+                    continue;
+                }
+                let mut at = (low + high) * 0.5;
+                at[first] = a;
+                at[second] = b;
+                let first_tick = ((a + origin[first]) / POSITION_TICK_METERS).round() as i32;
+                let second_tick = ((b + origin[second]) / POSITION_TICK_METERS).round() as i32;
+                let thickness = lattice_thickness(first, first_tick)
+                    .max(lattice_thickness(second, second_tick));
+                append_lattice_line(
+                    low[direction],
+                    high[direction],
+                    direction,
+                    at,
+                    thickness,
+                    &mut geometry,
+                );
+            }
+        }
+    }
+    geometry
+}
+
+#[allow(clippy::too_many_arguments, clippy::cast_possible_truncation)]
+fn append_planar_lattice(
+    selection_low: Vec3,
+    selection_high: Vec3,
+    low: Vec3,
+    high: Vec3,
+    origin: Vec3,
+    grid: PlacementGrid,
+    plane: PlacementPlane,
+    geometry: &mut OverlayGeometry,
+) {
+    let [first, second] = plane.tangent_axes();
+    for (direction, cross) in [(first, second), (second, first)] {
+        let coordinates = lattice_coordinates(
+            low[cross] + origin[cross],
+            high[cross] + origin[cross],
+            cross,
+            grid,
+        );
+        for global_coordinate in coordinates {
+            let coordinate = global_coordinate - origin[cross];
+            let tick = (global_coordinate / POSITION_TICK_METERS).round() as i32;
+            let thickness = lattice_thickness(cross, tick);
+            let mut at = (low + high) * 0.5;
+            at[cross] = coordinate;
+            if coordinate_inside(coordinate, selection_low[cross], selection_high[cross]) {
+                append_lattice_line(
+                    low[direction],
+                    selection_low[direction],
+                    direction,
+                    at,
+                    thickness,
+                    geometry,
+                );
+                append_lattice_line(
+                    selection_high[direction],
+                    high[direction],
+                    direction,
+                    at,
+                    thickness,
+                    geometry,
+                );
+            } else {
+                append_lattice_line(
+                    low[direction],
+                    high[direction],
+                    direction,
+                    at,
+                    thickness,
+                    geometry,
+                );
+            }
+        }
+    }
+}
+
+fn coordinate_inside(coordinate: f32, low: f32, high: f32) -> bool {
+    const TOLERANCE: f32 = POSITION_TICK_METERS * 0.25;
+    coordinate >= low - TOLERANCE && coordinate <= high + TOLERANCE
+}
+
+fn append_lattice_line(
+    low: f32,
+    high: f32,
+    direction: usize,
+    mut at: Vec3,
+    thickness: f32,
+    geometry: &mut OverlayGeometry,
+) {
+    if high - low <= f32::EPSILON {
+        return;
+    }
+    at[direction] = (low + high) * 0.5;
+    let mut half = Vec3::splat(thickness * 0.5);
+    half[direction] = (high - low) * 0.5;
+    append_transformed_cuboid(
+        at,
+        Quat::IDENTITY,
+        half,
+        &mut geometry.positions,
+        &mut geometry.normals,
+        &mut geometry.indices,
+    );
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn lattice_coordinates(low: f32, high: f32, axis: usize, grid: PlacementGrid) -> Vec<f32> {
+    let step = grid.step_ticks();
+    let phase = if axis == 1 {
+        0
+    } else {
+        POSITION_TICKS_PER_HALF_GRID_UNIT.rem_euclid(step)
+    };
+    let low_tick = (low / POSITION_TICK_METERS).ceil() as i32;
+    let high_tick = (high / POSITION_TICK_METERS).floor() as i32;
+    let mut tick = low_tick + (phase - low_tick).rem_euclid(step);
+    let mut coordinates = Vec::new();
+    while tick <= high_tick {
+        coordinates.push(tick as f32 * POSITION_TICK_METERS);
+        tick = tick.saturating_add(step);
+    }
+    coordinates
+}
+
+fn lattice_thickness(axis: usize, tick: i32) -> f32 {
+    let major_phase = if axis == 1 {
+        0
+    } else {
+        POSITION_TICKS_PER_HALF_GRID_UNIT
+    };
+    if (tick - major_phase).rem_euclid(POSITION_TICKS_PER_GRID_UNIT) == 0 {
+        0.004
+    } else if (tick - major_phase).rem_euclid(20) == 0 {
+        0.002
+    } else {
+        0.0008
+    }
+}
+
+fn smart_guide_geometry(guides: &[SmartGuide]) -> OverlayGeometry {
+    let mut geometry = OverlayGeometry::default();
+    for guide in guides {
+        append_overlay_bar(guide.from, guide.to, 0.007, &mut geometry);
+        for point in [guide.from, guide.to] {
+            append_transformed_cuboid(
+                point,
+                Quat::IDENTITY,
+                Vec3::splat(0.012),
+                &mut geometry.positions,
+                &mut geometry.normals,
+                &mut geometry.indices,
+            );
+        }
+    }
+    geometry
+}
+
+fn append_overlay_bar(from: Vec3, to: Vec3, thickness: f32, geometry: &mut OverlayGeometry) {
+    let delta = to - from;
+    let length = delta.length().max(thickness);
+    let rotation = if delta.length_squared() <= f32::EPSILON {
+        Quat::IDENTITY
+    } else {
+        Quat::from_rotation_arc(Vec3::X, delta.normalize())
+    };
+    append_transformed_cuboid(
+        (from + to) * 0.5,
+        rotation,
+        Vec3::new(length * 0.5, thickness * 0.5, thickness * 0.5),
+        &mut geometry.positions,
+        &mut geometry.normals,
+        &mut geometry.indices,
+    );
+}
+
 /// Draws a region's bounding box as twelve thin bars, so a dragged area reads
 /// as a volume rather than a face.
 fn append_region_outline(region: &ShapeRegion, geometry: &mut OverlayGeometry) {
@@ -6864,8 +7444,17 @@ fn handle_build_actions(
                 state.feedback = Some("Point at a cuboid face".to_owned());
                 return;
             };
-            match bearing_anchor_from_hit(&graph.0, hit) {
-                Ok(anchor) => {
+            let anchor = state.bearing_preview_anchor.or_else(|| {
+                bearing_anchor_from_hit_with_grid(
+                    &graph.0,
+                    hit,
+                    state.placement_grid,
+                    state.placement_bounds,
+                )
+                .ok()
+            });
+            match anchor {
+                Some(anchor) => {
                     let Some(source) = bearing_support_face(
                         &graph.0,
                         hit.face,
@@ -6901,7 +7490,7 @@ fn handle_build_actions(
                         state.construction_mesh_dirty = true;
                     }
                 }
-                Err(error) => state.feedback = Some(error.to_string()),
+                None => state.feedback = Some("Bearing anchor is invalid".to_owned()),
             }
         }
         Tool::Hammer => {
@@ -7105,11 +7694,11 @@ fn handle_build_actions(
         &mut state,
         tool,
         cylinder_settings.dimensions,
+        bearing_settings.dimensions,
         selected_material
             .as_deref()
             .map_or(ConstructionMaterial::Steel, |value| value.0),
         chroma_brush.appearance,
-        actions.pressed(GameAction::FinePlacement),
     );
 }
 
@@ -8880,7 +9469,15 @@ fn update_previews(
             if let Some(hit) = state.hovered
                 && let Some(face) = try_face_geometry_from_ref(hit.face, Some(&graph.0))
             {
-                let anchor = bearing_anchor_from_hit(&graph.0, hit).unwrap_or(hit.point);
+                let anchor = state.bearing_preview_anchor.unwrap_or_else(|| {
+                    bearing_anchor_from_hit_with_grid(
+                        &graph.0,
+                        hit,
+                        state.placement_grid,
+                        state.placement_bounds,
+                    )
+                    .unwrap_or(hit.point)
+                });
                 update_bearing_preview_mesh(
                     &mut meshes,
                     &visuals.bearing_preview_mesh,
@@ -14575,7 +15172,7 @@ mod interaction_tests {
         let mut graph = ConstructionGraph::new();
         let spec = CuboidSpec::new(
             [1, 1, 1],
-            BuildPose::from_position_ticks(IVec3::new(6, 5, 5), GridRotation::default()),
+            BuildPose::from_position_ticks(IVec3::new(60, 50, 50), GridRotation::default()),
         )
         .unwrap();
         graph.apply(BuildCommand::Spawn(spec)).unwrap();
@@ -14607,10 +15204,10 @@ mod interaction_tests {
         commit_region_drag(&mut graph, &mut state, &mut EditorHistory::default());
 
         let region = state.active_region.and_then(|id| graph.region(id)).unwrap();
-        assert_eq!(region.origin_steps(), IVec3::new(2, 0, 0));
-        assert_eq!(
-            region.bounds_steps().0.as_vec3() * STEP_METERS,
-            Vec3::new(0.025, 0.0, 0.0)
+        assert_eq!(region.origin_steps(), IVec3::new(10, 0, 0));
+        assert!(
+            (region.bounds_steps().0.as_vec3() * STEP_METERS)
+                .abs_diff_eq(Vec3::new(0.025, 0.0, 0.0), 1.0e-7)
         );
         assert_eq!(graph.region_of(part), state.active_region);
     }
@@ -15192,7 +15789,7 @@ mod interaction_tests {
             state.preview_error.as_ref(),
         ));
         let preview = state.preview.unwrap();
-        assert!((preview.spec.pose.translation().x - 0.25).abs() < 1.0e-6);
+        assert!((preview.spec.pose.translation().x - 0.375).abs() < 1.0e-6);
 
         let mut mouse = ButtonInput::default();
         let mut history = EditorHistory::default();
@@ -16676,6 +17273,148 @@ mod joint_number_tests {
             !drive_xray_is_visible(Tool::Connector, 0),
             "nothing driven means nothing to number"
         );
+    }
+}
+
+#[cfg(test)]
+mod placement_snap_tests {
+    use super::*;
+
+    #[test]
+    fn modifier_precedence_selects_precision_only_with_shift_and_control() {
+        assert_eq!(
+            PlacementGrid::from_modifiers(false, false),
+            PlacementGrid::Centimetres25
+        );
+        assert_eq!(
+            PlacementGrid::from_modifiers(false, true),
+            PlacementGrid::Centimetres25
+        );
+        assert_eq!(
+            PlacementGrid::from_modifiers(true, false),
+            PlacementGrid::Centimetres5
+        );
+        assert_eq!(
+            PlacementGrid::from_modifiers(true, true),
+            PlacementGrid::Centimetres1
+        );
+    }
+
+    #[test]
+    fn alt_tap_toggles_but_range_adjustment_does_not() {
+        let mut settings = SmartSnapSettings::default();
+        settings.update(true, 0.0, false);
+        assert!(!settings.enabled);
+
+        settings.update(false, 1.0, false);
+        assert!((settings.range - 1.25).abs() <= f32::EPSILON);
+        assert!(settings.range_adjusted_this_frame);
+        settings.update(true, 0.0, false);
+        assert!(!settings.enabled);
+
+        settings.update(false, 100.0, false);
+        assert!((settings.range - 5.0).abs() <= f32::EPSILON);
+        settings.update(false, -100.0, false);
+        assert!((settings.range - 0.25).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn lattice_coordinates_keep_global_phase_and_emphasis_hierarchy() {
+        let coordinates = lattice_coordinates(-0.25, 0.25, 0, PlacementGrid::Centimetres1);
+        assert_eq!(coordinates.len(), 50);
+        let mut expected = -0.245;
+        for coordinate in coordinates {
+            assert!((coordinate - expected).abs() < 1.0e-5);
+            expected += 0.01;
+        }
+        assert!(lattice_thickness(0, 50) > lattice_thickness(0, 10));
+        assert!(lattice_thickness(0, 10) > lattice_thickness(0, 2));
+    }
+
+    #[test]
+    fn lattice_wraps_only_one_cell_beyond_the_preview() {
+        let selection_low = Vec3::ZERO;
+        let selection_high = Vec3::splat(0.25);
+        let geometry = placement_lattice_geometry(
+            selection_low,
+            selection_high,
+            Vec3::ZERO,
+            PlacementGrid::Centimetres5,
+            None,
+        );
+
+        let centers = lattice_line_centers(&geometry);
+        assert!(!centers.is_empty());
+        for center in centers {
+            assert!(
+                center.cmpge(Vec3::splat(-0.050_01)).all()
+                    && center.cmple(Vec3::splat(0.300_01)).all(),
+                "line centre {center:?} escaped the one-cell envelope"
+            );
+            assert!(
+                !(0..3).all(|axis| {
+                    coordinate_inside(center[axis], selection_low[axis], selection_high[axis])
+                }),
+                "line centre {center:?} crossed the preview interior"
+            );
+        }
+    }
+
+    #[test]
+    fn dragging_shows_only_a_one_cell_border_on_the_whole_active_plane() {
+        let selection_low = Vec3::ZERO;
+        let selection_high = Vec3::new(0.75, 0.25, 0.5);
+        let geometry = placement_lattice_geometry(
+            selection_low,
+            selection_high,
+            Vec3::ZERO,
+            PlacementGrid::Centimetres5,
+            Some(PlacementPlane::Xz),
+        );
+
+        let centers = lattice_line_centers(&geometry);
+        assert!(!centers.is_empty());
+        assert!(centers.iter().all(|center| {
+            (center.y - 0.125).abs() < 1.0e-6
+                && center.x >= -0.05
+                && center.x <= 0.80
+                && center.z >= -0.05
+                && center.z <= 0.55
+                && !(coordinate_inside(center.x, selection_low.x, selection_high.x)
+                    && coordinate_inside(center.z, selection_low.z, selection_high.z))
+        }));
+
+        for vertices in geometry.positions.chunks_exact(CUBE_POSITIONS.len()) {
+            let low = vertices
+                .iter()
+                .map(|position| Vec3::from_array(*position))
+                .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+            let high = vertices
+                .iter()
+                .map(|position| Vec3::from_array(*position))
+                .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+            let extent = high - low;
+            assert!(extent.y <= 0.004_1, "no line may run normal to XZ");
+            assert!(extent.x > 0.01 || extent.z > 0.01);
+        }
+    }
+
+    fn lattice_line_centers(geometry: &OverlayGeometry) -> Vec<Vec3> {
+        geometry
+            .positions
+            .chunks_exact(CUBE_POSITIONS.len())
+            .map(|vertices| {
+                let low = vertices
+                    .iter()
+                    .map(|position| Vec3::from_array(*position))
+                    .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+                let high = vertices
+                    .iter()
+                    .map(|position| Vec3::from_array(*position))
+                    .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+                (low + high) * 0.5
+            })
+            .collect()
     }
 }
 
