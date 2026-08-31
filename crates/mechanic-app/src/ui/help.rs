@@ -385,7 +385,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         format!("{plane_controls}     EDIT GROUNDED/STATIC ONLY     CTRL/CMD+Z  Undo")
     } else {
         format!(
-            "{plane_controls}     ALT  Object snap     ALT+WHEEL  Snap range     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo"
+            "{plane_controls}     TAP ALT  Object snap     HOLD ALT  Show range     ALT+WHEEL  Adjust range     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo"
         )
     };
     let selected_wires = state

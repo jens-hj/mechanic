@@ -51,6 +51,14 @@ impl PlacementGrid {
         }
     }
 
+    const fn step_meters(self) -> f32 {
+        match self {
+            Self::Centimetres25 => 0.25,
+            Self::Centimetres5 => 0.05,
+            Self::Centimetres1 => 0.01,
+        }
+    }
+
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Centimetres25 => "25 cm",
@@ -259,12 +267,20 @@ struct AxisGuide {
     target_center: Vec3,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BlockEndpointGuide {
+    span: i32,
+    pointer_delta: f32,
+    guide: AxisGuide,
+}
+
 /// Lets nearby committed object centers and edges override the global grid.
 pub(crate) fn smart_snap_cuboid_candidate(
     graph: &ConstructionGraph,
     index: &PlacementSnapIndex,
     hit: SurfaceHit,
     gridded: PlacementCandidate,
+    grid: PlacementGrid,
     range: f32,
     mut valid: impl FnMut(PlacementCandidate) -> bool,
 ) -> (PlacementCandidate, Vec<SmartGuide>) {
@@ -277,23 +293,20 @@ pub(crate) fn smart_snap_cuboid_candidate(
         1 => [0, 2],
         _ => [0, 1],
     };
-    let mut raw_ticks = gridded.spec.pose.translation_position_ticks();
-    let hit_ticks = snap_world_to_position_ticks(hit.point);
-    for &axis in &tangent_axes {
-        raw_ticks[axis] = hit_ticks[axis];
-    }
-    let raw_spec = CuboidSpec::new(
-        gridded.spec.dimensions.map(GridDimension::units),
-        BuildPose::from_position_ticks(raw_ticks, gridded.spec.pose.rotation),
-    )
-    .expect("an existing candidate remains dimensionally valid")
-    .with_material(gridded.spec.material)
-    .with_appearance(gridded.spec.appearance);
-    let (raw_minimum, raw_maximum) = cuboid_world_bounds(raw_spec);
-    let targets = index.nearby(raw_minimum, raw_maximum, range);
-    let choices = tangent_axes.map(|axis| axis_guides(axis, raw_minimum, raw_maximum, &targets));
+    let (grid_minimum, grid_maximum) = cuboid_world_bounds(gridded.spec);
+    let cell_margin = smart_snap_cell_margin(grid);
+    let targets = index.nearby(grid_minimum, grid_maximum, range + cell_margin);
+    let choices = tangent_axes.map(|axis| {
+        axis_guides(
+            axis,
+            grid_minimum,
+            grid_maximum,
+            &targets,
+            SMART_SNAP_CAPTURE_METERS + cell_margin,
+        )
+    });
     for axis_guides in guide_combinations(&choices) {
-        let mut ticks = raw_ticks;
+        let mut ticks = gridded.spec.pose.translation_position_ticks();
         for (choice_index, guide) in axis_guides.iter().enumerate() {
             if let Some(guide) = guide {
                 let axis = tangent_axes[choice_index];
@@ -315,24 +328,8 @@ pub(crate) fn smart_snap_cuboid_candidate(
         };
         if valid(candidate) {
             let center = candidate.spec.pose.translation();
-            let rendered = axis_guides
-                .iter()
-                .enumerate()
-                .filter_map(|(choice_index, guide)| {
-                    let guide = guide.as_ref()?;
-                    let axis = tangent_axes[choice_index];
-                    let mut from = center;
-                    let mut to = guide.target_center;
-                    from[axis] = guide.coordinate;
-                    to[axis] = guide.coordinate;
-                    Some(SmartGuide {
-                        axis,
-                        coordinate: guide.coordinate,
-                        from,
-                        to,
-                    })
-                })
-                .collect();
+            let rendered =
+                render_smart_guides(axis_guides, &choices, tangent_axes, normal_axis, center);
             return (candidate, rendered);
         }
     }
@@ -345,6 +342,7 @@ pub(crate) fn smart_snap_cylinder_candidate(
     index: &PlacementSnapIndex,
     hit: SurfaceHit,
     gridded: CylinderPlacementCandidate,
+    grid: PlacementGrid,
     range: f32,
     mut valid: impl FnMut(CylinderPlacementCandidate) -> bool,
 ) -> (CylinderPlacementCandidate, Vec<SmartGuide>) {
@@ -357,25 +355,24 @@ pub(crate) fn smart_snap_cylinder_candidate(
         1 => [0, 2],
         _ => [0, 1],
     };
-    let mut raw_ticks = gridded.spec.pose.translation_position_ticks();
-    let hit_ticks = snap_world_to_position_ticks(hit.point);
-    for &axis in &tangent_axes {
-        raw_ticks[axis] = hit_ticks[axis];
-    }
-    let raw_spec = CylinderSpec::new(
-        gridded.spec.dimensions,
-        BuildPose::from_position_ticks(raw_ticks, gridded.spec.pose.rotation),
-    )
-    .with_material(gridded.spec.material)
-    .with_appearance(gridded.spec.appearance);
-    let (raw_minimum, raw_maximum) = part_world_bounds(PartSpec::Cylinder(raw_spec));
-    let targets = index.nearby(raw_minimum, raw_maximum, range);
-    let choices = tangent_axes.map(|axis| axis_guides(axis, raw_minimum, raw_maximum, &targets));
+    let (grid_minimum, grid_maximum) = part_world_bounds(PartSpec::Cylinder(gridded.spec));
+    let cell_margin = smart_snap_cell_margin(grid);
+    let targets = index.nearby(grid_minimum, grid_maximum, range + cell_margin);
+    let choices = tangent_axes.map(|axis| {
+        axis_guides(
+            axis,
+            grid_minimum,
+            grid_maximum,
+            &targets,
+            SMART_SNAP_CAPTURE_METERS + cell_margin,
+        )
+    });
     for axis_guides in guide_combinations(&choices) {
-        let mut ticks = raw_ticks;
+        let mut ticks = gridded.spec.pose.translation_position_ticks();
         for (choice_index, guide) in axis_guides.iter().enumerate() {
             if let Some(guide) = guide {
-                ticks[tangent_axes[choice_index]] += rounded_position_tick(guide.delta);
+                let axis = tangent_axes[choice_index];
+                ticks[axis] += rounded_position_tick(guide.delta);
             }
         }
         let spec = CylinderSpec::new(
@@ -393,7 +390,8 @@ pub(crate) fn smart_snap_cylinder_candidate(
         };
         if valid(candidate) {
             let center = candidate.spec.pose.translation();
-            let rendered = render_smart_guides(axis_guides, tangent_axes, center);
+            let rendered =
+                render_smart_guides(axis_guides, &choices, tangent_axes, normal_axis, center);
             return (candidate, rendered);
         }
     }
@@ -403,9 +401,9 @@ pub(crate) fn smart_snap_cylinder_candidate(
 /// Point-sized smart snapping for bearing anchors constrained to a support face.
 pub(crate) fn smart_snap_anchor(
     index: &PlacementSnapIndex,
-    raw: Vec3,
     gridded: Vec3,
     normal_axis: usize,
+    grid: PlacementGrid,
     range: f32,
     mut valid: impl FnMut(Vec3) -> bool,
 ) -> (Vec3, Vec<SmartGuide>) {
@@ -414,14 +412,23 @@ pub(crate) fn smart_snap_anchor(
         1 => [0, 2],
         _ => [0, 1],
     };
-    let targets = index.nearby(raw, raw, range);
-    let choices = tangent_axes.map(|axis| axis_guides(axis, raw, raw, &targets));
+    let cell_margin = smart_snap_cell_margin(grid);
+    let targets = index.nearby(gridded, gridded, range + cell_margin);
+    let choices = tangent_axes.map(|axis| {
+        axis_guides(
+            axis,
+            gridded,
+            gridded,
+            &targets,
+            SMART_SNAP_CAPTURE_METERS + cell_margin,
+        )
+    });
     for axis_guides in guide_combinations(&choices) {
-        let mut anchor = raw;
-        anchor[normal_axis] = gridded[normal_axis];
+        let mut anchor = gridded;
         for (choice_index, guide) in axis_guides.iter().enumerate() {
             if let Some(guide) = guide {
-                anchor[tangent_axes[choice_index]] += guide.delta;
+                let axis = tangent_axes[choice_index];
+                anchor[axis] += guide.delta;
             }
         }
         anchor = (anchor / POSITION_TICK_METERS).round() * POSITION_TICK_METERS;
@@ -429,11 +436,258 @@ pub(crate) fn smart_snap_anchor(
         if valid(anchor) {
             return (
                 anchor,
-                render_smart_guides(axis_guides, tangent_axes, anchor),
+                render_smart_guides(axis_guides, &choices, tangent_axes, normal_axis, anchor),
             );
         }
     }
     (gridded, Vec::new())
+}
+
+/// Lets the opposite block of a plane drag acquire nearby object alignments.
+///
+/// The starting block remains sovereign: a guide may only select another whole
+/// block span on its 25 cm lattice. Guides are then rebuilt from that final span
+/// so their visibility cannot change while the selected plane stays unchanged.
+pub(crate) fn smart_snap_block_span(
+    index: &PlacementSnapIndex,
+    start: CuboidSpec,
+    plane: PlacementPlane,
+    gridded_span: IVec3,
+    pointer: Vec3,
+    range: f32,
+    mut valid: impl FnMut(IVec3) -> bool,
+) -> (IVec3, Vec<SmartGuide>) {
+    let block_size = f32::from(start.dimensions[0].units()) * GRID_UNIT_METERS;
+    let targets = index.nearby(pointer, pointer, range);
+    let tangent_axes = plane.tangent_axes();
+    let choices = tangent_axes
+        .map(|axis| block_endpoint_axis_guides(axis, start, pointer, block_size, &targets));
+
+    for selected in block_endpoint_guide_combinations(&choices) {
+        let mut span = gridded_span;
+        for (choice_index, guide) in selected.iter().enumerate() {
+            if let Some(guide) = guide {
+                span[tangent_axes[choice_index]] = guide.span;
+            }
+        }
+        if valid(span) {
+            return (
+                span,
+                block_endpoint_guides(index, start, span, plane, range),
+            );
+        }
+    }
+
+    if valid(gridded_span) {
+        (
+            gridded_span,
+            block_endpoint_guides(index, start, gridded_span, plane, range),
+        )
+    } else {
+        (gridded_span, Vec::new())
+    }
+}
+
+fn block_endpoint_axis_guides(
+    axis: usize,
+    start: CuboidSpec,
+    pointer: Vec3,
+    block_size: f32,
+    targets: &[SnapTarget],
+) -> Vec<BlockEndpointGuide> {
+    let start_center = start.pose.translation()[axis];
+    let mut choices = Vec::new();
+    for target in targets {
+        let target_center = (target.minimum + target.maximum) * 0.5;
+        if let Some(span) = integral_block_span(start_center, target_center[axis], block_size) {
+            push_block_endpoint_choice(
+                &mut choices,
+                span,
+                pointer[axis],
+                target_center[axis],
+                GuideKind::Center,
+                *target,
+            );
+        }
+        for target_edge in [target.minimum[axis], target.maximum[axis]] {
+            for direction in [-1.0, 1.0] {
+                let endpoint_center = target_edge - direction * block_size * 0.5;
+                let Some(span) = integral_block_span(start_center, endpoint_center, block_size)
+                else {
+                    continue;
+                };
+                if span != 0 && (span.is_positive() != direction.is_sign_positive()) {
+                    continue;
+                }
+                push_block_endpoint_choice(
+                    &mut choices,
+                    span,
+                    pointer[axis],
+                    target_edge,
+                    GuideKind::Edge,
+                    *target,
+                );
+            }
+        }
+    }
+    choices.sort_by(|left, right| {
+        left.pointer_delta
+            .abs()
+            .total_cmp(&right.pointer_delta.abs())
+            .then_with(|| left.guide.kind.cmp(&right.guide.kind))
+            .then_with(|| left.guide.part.cmp(&right.guide.part))
+            .then_with(|| left.span.cmp(&right.span))
+    });
+    let mut distinct = Vec::new();
+    for choice in choices {
+        if distinct
+            .iter()
+            .all(|existing: &BlockEndpointGuide| existing.span != choice.span)
+        {
+            distinct.push(choice);
+        }
+    }
+    distinct
+}
+
+fn push_block_endpoint_choice(
+    choices: &mut Vec<BlockEndpointGuide>,
+    span: i32,
+    pointer_coordinate: f32,
+    guide_coordinate: f32,
+    kind: GuideKind,
+    target: SnapTarget,
+) {
+    let pointer_delta = guide_coordinate - pointer_coordinate;
+    if pointer_delta.abs() > SMART_SNAP_CAPTURE_METERS {
+        return;
+    }
+    choices.push(BlockEndpointGuide {
+        span,
+        pointer_delta,
+        guide: AxisGuide {
+            delta: pointer_delta,
+            coordinate: guide_coordinate,
+            kind,
+            part: target.part,
+            target_center: (target.minimum + target.maximum) * 0.5,
+        },
+    });
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn integral_block_span(start: f32, endpoint: f32, block_size: f32) -> Option<i32> {
+    let steps = ((endpoint - start) / block_size).round();
+    let span = steps as i32;
+    ((start + steps * block_size - endpoint).abs() <= POSITION_TICK_METERS * 0.5).then_some(span)
+}
+
+fn block_endpoint_guide_combinations(
+    choices: &[Vec<BlockEndpointGuide>; 2],
+) -> Vec<[Option<BlockEndpointGuide>; 2]> {
+    let mut combinations = Vec::new();
+    for first in choices[0].iter().copied().map(Some).chain([None]) {
+        for second in choices[1].iter().copied().map(Some).chain([None]) {
+            if first.is_none() && second.is_none() {
+                continue;
+            }
+            let guides = [first, second];
+            let displacement = guides
+                .iter()
+                .flatten()
+                .map(|guide| guide.pointer_delta * guide.pointer_delta)
+                .sum::<f32>()
+                .sqrt();
+            let center_count = guides
+                .iter()
+                .flatten()
+                .filter(|guide| guide.guide.kind == GuideKind::Center)
+                .count();
+            let identities = guides.map(|guide| {
+                guide.map_or((u32::MAX, u32::MAX), |guide| {
+                    (guide.guide.part.index(), guide.guide.part.generation())
+                })
+            });
+            combinations.push((guides, displacement, center_count, identities));
+        }
+    }
+    combinations.sort_by(|left, right| {
+        let left_count = left.0.iter().flatten().count();
+        let right_count = right.0.iter().flatten().count();
+        right_count
+            .cmp(&left_count)
+            .then_with(|| left.1.total_cmp(&right.1))
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    combinations
+        .into_iter()
+        .map(|(guides, _, _, _)| guides)
+        .collect()
+}
+
+fn block_endpoint_guides(
+    index: &PlacementSnapIndex,
+    start: CuboidSpec,
+    span: IVec3,
+    plane: PlacementPlane,
+    range: f32,
+) -> Vec<SmartGuide> {
+    let block_size = f32::from(start.dimensions[0].units()) * GRID_UNIT_METERS;
+    let center = start.pose.translation() + span.as_vec3() * block_size;
+    let half = Vec3::splat(block_size * 0.5);
+    let targets = index.nearby(center - half, center + half, range);
+    let tangent_axes = plane.tangent_axes();
+    let normal_axis = plane.normal_axis();
+    let mut rendered = Vec::new();
+
+    for (choice_index, axis) in tangent_axes.into_iter().enumerate() {
+        let line_axis = tangent_axes[1 - choice_index];
+        let endpoint_edges: &[f32] = match span[axis].cmp(&0) {
+            Ordering::Less => &[center[axis] - block_size * 0.5],
+            Ordering::Greater => &[center[axis] + block_size * 0.5],
+            Ordering::Equal => &[
+                center[axis] - block_size * 0.5,
+                center[axis] + block_size * 0.5,
+            ],
+        };
+        for target in &targets {
+            let target_center = (target.minimum + target.maximum) * 0.5;
+            let mut coordinates = Vec::new();
+            if (target_center[axis] - center[axis]).abs() <= POSITION_TICK_METERS * 0.5 {
+                coordinates.push(target_center[axis]);
+            }
+            for endpoint_edge in endpoint_edges {
+                for target_edge in [target.minimum[axis], target.maximum[axis]] {
+                    if (target_edge - endpoint_edge).abs() <= POSITION_TICK_METERS * 0.5 {
+                        coordinates.push(target_edge);
+                    }
+                }
+            }
+            for coordinate in coordinates {
+                let mut from = center;
+                let mut to = center;
+                from[axis] = coordinate;
+                to[axis] = coordinate;
+                to[line_axis] = target_center[line_axis];
+                to[normal_axis] = from[normal_axis];
+                let guide = SmartGuide {
+                    axis,
+                    coordinate,
+                    from,
+                    to,
+                };
+                if !rendered.contains(&guide) {
+                    rendered.push(guide);
+                }
+            }
+        }
+    }
+    rendered
+}
+
+fn smart_snap_cell_margin(grid: PlacementGrid) -> f32 {
+    grid.step_meters() * 0.5
 }
 
 fn guide_combinations(choices: &[Vec<AxisGuide>; 2]) -> Vec<[Option<AxisGuide>; 2]> {
@@ -479,28 +733,41 @@ fn guide_combinations(choices: &[Vec<AxisGuide>; 2]) -> Vec<[Option<AxisGuide>; 
 }
 
 fn render_smart_guides(
-    guides: [Option<AxisGuide>; 2],
+    selected: [Option<AxisGuide>; 2],
+    choices: &[Vec<AxisGuide>; 2],
     tangent_axes: [usize; 2],
+    normal_axis: usize,
     center: Vec3,
 ) -> Vec<SmartGuide> {
-    guides
-        .iter()
-        .enumerate()
-        .filter_map(|(choice_index, guide)| {
-            let guide = guide.as_ref()?;
-            let axis = tangent_axes[choice_index];
+    let mut rendered = Vec::new();
+    for (choice_index, selected) in selected.iter().enumerate() {
+        let Some(selected) = selected else {
+            continue;
+        };
+        let axis = tangent_axes[choice_index];
+        let line_axis = tangent_axes[1 - choice_index];
+        for guide in &choices[choice_index] {
+            if guide.kind != selected.kind
+                || (guide.delta - selected.delta).abs() > POSITION_TICK_METERS * 0.5
+                || (guide.coordinate - selected.coordinate).abs() > POSITION_TICK_METERS * 0.5
+            {
+                continue;
+            }
             let mut from = center;
-            let mut to = guide.target_center;
+            let mut to = center;
             from[axis] = guide.coordinate;
             to[axis] = guide.coordinate;
-            Some(SmartGuide {
+            to[line_axis] = guide.target_center[line_axis];
+            to[normal_axis] = from[normal_axis];
+            rendered.push(SmartGuide {
                 axis,
                 coordinate: guide.coordinate,
                 from,
                 to,
-            })
-        })
-        .collect()
+            });
+        }
+    }
+    rendered
 }
 
 fn axis_guides(
@@ -508,13 +775,14 @@ fn axis_guides(
     raw_minimum: Vec3,
     raw_maximum: Vec3,
     targets: &[SnapTarget],
+    capture: f32,
 ) -> Vec<AxisGuide> {
     let raw_center = f32::midpoint(raw_minimum[axis], raw_maximum[axis]);
     let mut guides = Vec::new();
     for target in targets {
         let target_center = (target.minimum + target.maximum) * 0.5;
         let center_delta = target_center[axis] - raw_center;
-        if center_delta.abs() <= SMART_SNAP_CAPTURE_METERS {
+        if center_delta.abs() <= capture {
             guides.push(AxisGuide {
                 delta: center_delta,
                 coordinate: target_center[axis],
@@ -533,7 +801,7 @@ fn axis_guides(
                 })
         {
             let delta = target_edge - raw_edge;
-            if delta.abs() <= SMART_SNAP_CAPTURE_METERS {
+            if delta.abs() <= capture {
                 guides.push(AxisGuide {
                     delta,
                     coordinate: target_edge,
@@ -3669,8 +3937,8 @@ mod tests {
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, EngineSpec,
-        FaceKind, FaceOwner, FaceRef, GridRotation, PartId, PartSpec, PendingOperation,
-        RigidLinkSpec, WeldSpec,
+        FaceKind, FaceOwner, FaceRef, GridRotation, POSITION_TICKS_PER_GRID_UNIT, PartId, PartSpec,
+        PendingOperation, RigidLinkSpec, WeldSpec,
     };
 
     use super::{
@@ -3683,11 +3951,11 @@ mod tests {
         oriented_cuboid_candidate_from_hit, oriented_cuboid_candidate_from_hit_with_grid,
         pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
         raycast_construction_with_ground, raycast_placement_plane_point, rigid_body_parts,
-        smart_snap_cuboid_candidate, stage_bearing_attachment, stage_bearing_block_batch,
-        stage_block_batch, stage_block_batch_from_source, stage_block_batch_from_source_in_bounds,
-        stage_cuboid, stage_cylinder_from_source, stage_engine_from_source, stage_pipe_run,
-        stage_transmission, stage_weld_objects, transmission_candidate_from_hit,
-        validate_block_batch_in_bounds, validate_part,
+        smart_snap_block_span, smart_snap_cuboid_candidate, stage_bearing_attachment,
+        stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source,
+        stage_block_batch_from_source_in_bounds, stage_cuboid, stage_cylinder_from_source,
+        stage_engine_from_source, stage_pipe_run, stage_transmission, stage_weld_objects,
+        transmission_candidate_from_hit, validate_block_batch_in_bounds, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -3806,18 +4074,243 @@ mod tests {
         );
         let mut index = PlacementSnapIndex::default();
         index.rebuild(&graph);
-        let (snapped_candidate, active_guides) =
-            smart_snap_cuboid_candidate(&graph, &index, hit, gridded, 1.0, |_| true);
+        let (snapped_candidate, active_guides) = smart_snap_cuboid_candidate(
+            &graph,
+            &index,
+            hit,
+            gridded,
+            PlacementGrid::Centimetres25,
+            1.0,
+            |_| true,
+        );
         assert_eq!(active_guides.len(), 2);
         assert_eq!(
             snapped_candidate.spec.pose.translation_position_ticks(),
             IVec3::new(6, 50, 300)
         );
 
-        let (fallback, rejected_guides) =
-            smart_snap_cuboid_candidate(&graph, &index, hit, gridded, 1.0, |_| false);
+        let (fallback, rejected_guides) = smart_snap_cuboid_candidate(
+            &graph,
+            &index,
+            hit,
+            gridded,
+            PlacementGrid::Centimetres25,
+            1.0,
+            |_| false,
+        );
         assert!(rejected_guides.is_empty());
         assert_eq!(fallback.spec.pose, gridded.spec.pose);
+    }
+
+    #[test]
+    fn single_axis_smart_snap_preserves_the_other_grid_axis() {
+        let mut graph = ConstructionGraph::new();
+        let support = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1, 1, 1],
+                    BuildPose::from_position_ticks(
+                        IVec3::new(40, 50, 280),
+                        GridRotation::default(),
+                    ),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let BuildOutcome::Spawned(support) = support else {
+            unreachable!();
+        };
+        let mut target_graph = ConstructionGraph::new();
+        target_graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1, 1, 1],
+                    BuildPose::from_position_ticks(IVec3::new(6, 50, 480), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::new(0.014, 0.25, 0.63),
+            face: FaceRef::part(support, FaceKind::PositiveY),
+        };
+        let gridded = oriented_cuboid_candidate_from_hit_with_grid(
+            &graph,
+            hit,
+            [1, 1, 1],
+            GridRotation::default(),
+            PlacementGrid::Centimetres25,
+            PlacementBounds::Garage,
+        );
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&target_graph);
+
+        let (snapped, guides) = smart_snap_cuboid_candidate(
+            &graph,
+            &index,
+            hit,
+            gridded,
+            PlacementGrid::Centimetres25,
+            1.0,
+            |_| true,
+        );
+
+        assert_eq!(
+            snapped.spec.pose.translation_position_ticks(),
+            IVec3::new(6, 150, 300)
+        );
+        assert_eq!(guides.len(), 1);
+        assert_eq!(guides[0].axis, 0);
+        assert!((guides[0].from.x - guides[0].to.x).abs() < f32::EPSILON);
+        assert!((guides[0].from.y - guides[0].to.y).abs() < f32::EPSILON);
+        assert!((guides[0].from.z - guides[0].to.z).abs() > f32::EPSILON);
+    }
+
+    #[test]
+    fn smart_snap_is_stable_within_a_grid_cell_and_shows_coincident_guides() {
+        let mut graph = ConstructionGraph::new();
+        for ticks in [
+            IVec3::new(8, 50, 100),
+            IVec3::new(8, 50, 500),
+            IVec3::new(-8, 50, 700),
+        ] {
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1, 1, 1],
+                        BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+        }
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&graph);
+        let snap = |point| {
+            let hit = SurfaceHit {
+                distance: 1.0,
+                point,
+                face: FaceRef::ground(),
+            };
+            let gridded = oriented_cuboid_candidate_from_hit_with_grid(
+                &graph,
+                hit,
+                [1, 1, 1],
+                GridRotation::default(),
+                PlacementGrid::Centimetres25,
+                PlacementBounds::Garage,
+            );
+            smart_snap_cuboid_candidate(
+                &graph,
+                &index,
+                hit,
+                gridded,
+                PlacementGrid::Centimetres25,
+                1.0,
+                |_| true,
+            )
+        };
+
+        let (right_candidate, right_guides) = snap(Vec3::new(0.024, 0.0, 0.63));
+        let (left_candidate, left_guides) = snap(Vec3::new(-0.024, 0.0, 0.63));
+
+        assert_eq!(right_candidate.spec.pose, left_candidate.spec.pose);
+        assert_eq!(
+            right_candidate.spec.pose.translation_position_ticks(),
+            IVec3::new(8, 50, 300)
+        );
+        assert_eq!(right_guides, left_guides);
+        assert_eq!(right_guides.len(), 2);
+        assert!(right_guides.iter().all(|guide| guide.axis == 0));
+    }
+
+    #[test]
+    fn block_drag_snaps_its_other_corner_on_two_axes_and_keeps_whole_blocks() {
+        let mut graph = ConstructionGraph::new();
+        for ticks in [
+            IVec3::new(200, 0, 400),
+            IVec3::new(200, 0, -100),
+            IVec3::new(400, 0, 300),
+        ] {
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1, 1, 1],
+                        BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+        }
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&graph);
+        let start = CuboidSpec::new([1, 1, 1], BuildPose::default()).unwrap();
+        let snap = |pointer| {
+            smart_snap_block_span(
+                &index,
+                start,
+                PlacementPlane::Xz,
+                IVec3::new(1, 0, 2),
+                pointer,
+                1.0,
+                |_| true,
+            )
+        };
+
+        let (left, left_guides) = snap(Vec3::new(0.49, 0.0, 0.74));
+        let (right, right_guides) = snap(Vec3::new(0.51, 0.0, 0.76));
+
+        assert_eq!(left, IVec3::new(2, 0, 3));
+        assert_eq!(right, left);
+        assert_eq!(right_guides, left_guides);
+        assert!(left_guides.iter().any(|guide| guide.axis == 0));
+        assert!(left_guides.iter().any(|guide| guide.axis == 2));
+        assert!(
+            left_guides.iter().filter(|guide| guide.axis == 0).count() >= 2,
+            "every committed object sharing the endpoint alignment may show a guide"
+        );
+
+        let specs = block_box_specs(start, left).unwrap();
+        assert!(specs.iter().all(|spec| {
+            spec.pose
+                .translation_position_ticks()
+                .to_array()
+                .into_iter()
+                .all(|ticks| ticks % POSITION_TICKS_PER_GRID_UNIT == 0)
+        }));
+    }
+
+    #[test]
+    fn invalid_block_endpoint_guide_falls_back_independently_per_axis() {
+        let mut graph = ConstructionGraph::new();
+        for ticks in [IVec3::new(200, 0, 400), IVec3::new(400, 0, 300)] {
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1, 1, 1],
+                        BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+        }
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&graph);
+        let start = CuboidSpec::new([1, 1, 1], BuildPose::default()).unwrap();
+
+        let (span, guides) = smart_snap_block_span(
+            &index,
+            start,
+            PlacementPlane::Xz,
+            IVec3::new(1, 0, 2),
+            Vec3::new(0.50, 0.0, 0.75),
+            1.0,
+            |candidate| candidate.x != 2,
+        );
+
+        assert_eq!(span, IVec3::new(1, 0, 3));
+        assert!(guides.iter().any(|guide| guide.axis == 2));
     }
 
     #[test]

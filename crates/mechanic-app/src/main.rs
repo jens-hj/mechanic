@@ -66,8 +66,8 @@ use builder::{
     raycast_construction, raycast_construction_for_annulus,
     raycast_construction_for_annulus_with_ground, raycast_construction_for_annulus_with_scaffold,
     raycast_construction_with_ground, raycast_construction_with_scaffold, raycast_oriented_cuboid,
-    rigid_body_parts, smart_snap_anchor, smart_snap_cuboid_candidate,
-    smart_snap_cylinder_candidate, stage_bearing_attachment_in_bounds,
+    raycast_placement_plane_point, rigid_body_parts, smart_snap_anchor, smart_snap_block_span,
+    smart_snap_cuboid_candidate, smart_snap_cylinder_candidate, stage_bearing_attachment_in_bounds,
     stage_bearing_block_batch_in_bounds, stage_bearing_cylinder_in_bounds,
     stage_block_batch_from_source_in_bounds, stage_controller_from_source_in_bounds,
     stage_dimension_link_from_source_in_bounds, stage_engine_from_source_in_bounds,
@@ -372,6 +372,8 @@ struct SimulationHit {
 struct BlockDrag {
     start: PlacementCandidate,
     attachment: BlockAttachment,
+    /// Smart guides acquired by the starting block before the gesture began.
+    start_guides: Vec<SmartGuide>,
     /// Re-anchored whenever the plane rotates, so motion after Rotate is
     /// measured from that moment rather than from the original press.
     press: PointerSample,
@@ -2323,6 +2325,19 @@ struct SmartGuideVisual {
     guides: Vec<SmartGuide>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SmartSnapRangeKey {
+    low_ticks: IVec3,
+    high_ticks: IVec3,
+    range_ticks: i32,
+    plane: Option<PlacementPlane>,
+}
+
+#[derive(Component, Default)]
+struct SmartSnapRangeVisual {
+    key: Option<SmartSnapRangeKey>,
+}
+
 #[derive(Component)]
 pub(crate) struct PlayerAvatar;
 
@@ -2877,6 +2892,7 @@ fn setup(
     let shape_arrow_mesh = meshes.add(degenerate_overlay_mesh());
     let placement_lattice_mesh = meshes.add(degenerate_overlay_mesh());
     let smart_guide_mesh = meshes.add(degenerate_overlay_mesh());
+    let smart_snap_range_mesh = meshes.add(degenerate_overlay_mesh());
     let controller_mesh = meshes.add(Cuboid::default());
     let gas_engine_mesh = meshes.add(Cuboid::default());
     let electric_engine_mesh = meshes.add(Cuboid::default());
@@ -3017,6 +3033,14 @@ fn setup(
     });
     let smart_guide_material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.86, 0.18),
+        cull_mode: None,
+        unlit: true,
+        depth_bias: PREVIEW_RENDER_DEPTH_BIAS,
+        ..default()
+    });
+    let smart_snap_range_material = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.86, 0.18, 0.34),
+        alpha_mode: AlphaMode::Blend,
         cull_mode: None,
         unlit: true,
         depth_bias: PREVIEW_RENDER_DEPTH_BIAS,
@@ -3200,6 +3224,15 @@ fn setup(
         NoFrustumCulling,
         Visibility::Hidden,
         SmartGuideVisual::default(),
+    ));
+    commands.spawn((
+        Name::new("Smart snap range"),
+        Mesh3d(smart_snap_range_mesh),
+        MeshMaterial3d(smart_snap_range_material),
+        RenderLayers::layer(1),
+        NoFrustumCulling,
+        Visibility::Hidden,
+        SmartSnapRangeVisual::default(),
     ));
     let shape_selected_material = materials.add(StandardMaterial {
         base_color: SHAPE_SELECTION_COLOR,
@@ -4750,20 +4783,21 @@ fn refresh_block_drag(
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
-    let (start, press, plane, anchor_span, last_span) = {
+    let (start, start_guides, press, plane, anchor_span, last_span) = {
         let drag = state
             .block_drag
             .as_ref()
             .expect("block drag was checked by caller");
         (
             drag.start,
+            drag.start_guides.clone(),
             drag.press,
             drag.plane,
             drag.anchor_span,
             drag.last_span,
         )
     };
-    let span = if camera::ray_drag_started(press.ray_direction, ray_direction) {
+    let gridded_span = if camera::ray_drag_started(press.ray_direction, ray_direction) {
         let Some(span) = block_span_from_rays(
             start.spec,
             plane,
@@ -4780,7 +4814,40 @@ fn refresh_block_drag(
     } else {
         anchor_span
     };
-    if last_span == Some(span) {
+    let (span, endpoint_guides) = if state.smart_snap.enabled {
+        raycast_placement_plane_point(ray_origin, ray_direction, start.spec, plane).map_or(
+            (gridded_span, Vec::new()),
+            |pointer| {
+                let bounds = state.placement_bounds;
+                smart_snap_block_span(
+                    &state.snap_index,
+                    start.spec,
+                    plane,
+                    gridded_span,
+                    pointer,
+                    state.smart_snap.range,
+                    |guided_span| {
+                        block_box_specs(start.spec, guided_span).is_ok_and(|specs| {
+                            validate_block_batch_in_bounds(graph, start, &specs, bounds).is_ok()
+                        })
+                    },
+                )
+            },
+        )
+    } else {
+        (gridded_span, Vec::new())
+    };
+    let mut combined_guides = if state.smart_snap.enabled {
+        start_guides
+    } else {
+        Vec::new()
+    };
+    for guide in endpoint_guides {
+        if !combined_guides.contains(&guide) {
+            combined_guides.push(guide);
+        }
+    }
+    if last_span == Some(span) && state.smart_guides == combined_guides {
         return;
     }
     let result = block_box_specs(start.spec, span).and_then(|specs| {
@@ -4793,6 +4860,7 @@ fn refresh_block_drag(
         .expect("block drag remains active while refreshing");
     drag.span = span;
     drag.last_span = Some(span);
+    state.smart_guides = combined_guides;
     match result {
         Ok(specs) => {
             drag.specs = specs;
@@ -5233,6 +5301,7 @@ fn refresh_tool_preview_with_cylinder(
                                 &state.snap_index,
                                 hit,
                                 candidate,
+                                placement_grid,
                                 smart_snap.range,
                                 |guided| {
                                     validate_block_batch_in_bounds(
@@ -5351,6 +5420,7 @@ fn refresh_tool_preview_with_cylinder(
                         &state.snap_index,
                         hit,
                         candidate,
+                        placement_grid,
                         smart_snap.range,
                         |guided| {
                             validate_cylinder_candidate_in_bounds(graph, guided, bounds).is_ok()
@@ -5484,6 +5554,7 @@ fn refresh_tool_preview_with_cylinder(
                         &state.snap_index,
                         hit,
                         candidate,
+                        placement_grid,
                         smart_snap.range,
                         |guided| {
                             validate_block_batch_in_bounds(graph, guided, &[guided.spec], bounds)
@@ -5525,9 +5596,9 @@ fn refresh_tool_preview_with_cylinder(
                             .normal_axis();
                             let (snapped_anchor, active_guides) = smart_snap_anchor(
                                 &state.snap_index,
-                                hit.point,
                                 anchor,
                                 normal_axis,
+                                placement_grid,
                                 smart_snap.range,
                                 |guided| {
                                     bearing_support_face(
@@ -6342,18 +6413,35 @@ fn write_overlay(
     Visibility::Visible
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_lines)]
 fn sync_placement_overlays(
     state: Res<EditorState>,
     selection: Res<SelectedTool>,
+    actions: Res<ButtonInput<GameAction>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut lattice: Single<
         (&Mesh3d, &mut Visibility, &mut PlacementLatticeVisual),
-        (With<PlacementLatticeVisual>, Without<SmartGuideVisual>),
+        (
+            With<PlacementLatticeVisual>,
+            Without<SmartGuideVisual>,
+            Without<SmartSnapRangeVisual>,
+        ),
     >,
     mut guides: Single<
         (&Mesh3d, &mut Visibility, &mut SmartGuideVisual),
-        (With<SmartGuideVisual>, Without<PlacementLatticeVisual>),
+        (
+            With<SmartGuideVisual>,
+            Without<PlacementLatticeVisual>,
+            Without<SmartSnapRangeVisual>,
+        ),
+    >,
+    mut range: Single<
+        (&Mesh3d, &mut Visibility, &mut SmartSnapRangeVisual),
+        (
+            With<SmartSnapRangeVisual>,
+            Without<PlacementLatticeVisual>,
+            Without<SmartGuideVisual>,
+        ),
     >,
 ) {
     let tool = selection.active_editor_tool();
@@ -6405,6 +6493,7 @@ fn sync_placement_overlays(
     let Some((low, high, plane)) = target.filter(|_| placing) else {
         *lattice.1 = Visibility::Hidden;
         *guides.1 = Visibility::Hidden;
+        *range.1 = Visibility::Hidden;
         return;
     };
 
@@ -6442,6 +6531,30 @@ fn sync_placement_overlays(
         *guides.1 = write_overlay(&mut meshes, &guides.0.0, geometry);
         guides.2.guides.clone_from(&state.smart_guides);
     }
+
+    if actions.pressed(GameAction::ToggleObjectSnap) {
+        let range_ticks = position_tick(state.smart_snap.range);
+        let key = SmartSnapRangeKey {
+            low_ticks,
+            high_ticks,
+            range_ticks,
+            plane,
+        };
+        if range.2.key == Some(key) {
+            *range.1 = Visibility::Visible;
+        } else {
+            let geometry = smart_snap_range_geometry(
+                low_ticks.as_vec3() * POSITION_TICK_METERS - origin,
+                high_ticks.as_vec3() * POSITION_TICK_METERS - origin,
+                state.smart_snap.range,
+                plane,
+            );
+            *range.1 = write_overlay(&mut meshes, &range.0.0, geometry);
+            range.2.key = Some(key);
+        }
+    } else {
+        *range.1 = Visibility::Hidden;
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -6455,6 +6568,11 @@ fn placement_origin_meters(bounds: PlacementBounds) -> Vec3 {
 #[allow(clippy::cast_possible_truncation)]
 fn position_ticks(position: Vec3) -> IVec3 {
     (position / POSITION_TICK_METERS).round().as_ivec3()
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn position_tick(position: f32) -> i32 {
+    (position / POSITION_TICK_METERS).round() as i32
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
@@ -6663,6 +6781,117 @@ fn smart_guide_geometry(guides: &[SmartGuide]) -> OverlayGeometry {
         }
     }
     geometry
+}
+
+fn smart_snap_range_geometry(
+    selection_low: Vec3,
+    selection_high: Vec3,
+    range: f32,
+    plane: Option<PlacementPlane>,
+) -> OverlayGeometry {
+    let mut geometry = OverlayGeometry::default();
+    if let Some(plane) = plane {
+        let [first, second] = plane.tangent_axes();
+        append_snap_range_outline(
+            selection_low,
+            selection_high,
+            range,
+            first,
+            second,
+            plane.normal_axis(),
+            &mut geometry,
+        );
+    } else {
+        for (first, second, normal) in [(0, 1, 2), (0, 2, 1), (1, 2, 0)] {
+            append_snap_range_outline(
+                selection_low,
+                selection_high,
+                range,
+                first,
+                second,
+                normal,
+                &mut geometry,
+            );
+        }
+    }
+    geometry
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_snap_range_outline(
+    selection_low: Vec3,
+    selection_high: Vec3,
+    range: f32,
+    first: usize,
+    second: usize,
+    normal: usize,
+    geometry: &mut OverlayGeometry,
+) {
+    const CORNER_SEGMENTS: u8 = 8;
+    const THICKNESS: f32 = 0.004;
+
+    let normal_coordinate = (selection_low[normal] + selection_high[normal]) * 0.5;
+    let point = |first_coordinate: f32, second_coordinate: f32| {
+        let mut point = Vec3::ZERO;
+        point[first] = first_coordinate;
+        point[second] = second_coordinate;
+        point[normal] = normal_coordinate;
+        point
+    };
+
+    for second_coordinate in [
+        selection_low[second] - range,
+        selection_high[second] + range,
+    ] {
+        append_overlay_bar(
+            point(selection_low[first], second_coordinate),
+            point(selection_high[first], second_coordinate),
+            THICKNESS,
+            geometry,
+        );
+    }
+    for first_coordinate in [selection_low[first] - range, selection_high[first] + range] {
+        append_overlay_bar(
+            point(first_coordinate, selection_low[second]),
+            point(first_coordinate, selection_high[second]),
+            THICKNESS,
+            geometry,
+        );
+    }
+
+    for (center_first, center_second, start_angle) in [
+        (selection_high[first], selection_high[second], 0.0),
+        (
+            selection_low[first],
+            selection_high[second],
+            core::f32::consts::FRAC_PI_2,
+        ),
+        (
+            selection_low[first],
+            selection_low[second],
+            core::f32::consts::PI,
+        ),
+        (
+            selection_high[first],
+            selection_low[second],
+            3.0 * core::f32::consts::FRAC_PI_2,
+        ),
+    ] {
+        let mut previous = point(
+            center_first + range * start_angle.cos(),
+            center_second + range * start_angle.sin(),
+        );
+        for segment in 1..=CORNER_SEGMENTS {
+            let angle = start_angle
+                + core::f32::consts::FRAC_PI_2 * f32::from(segment) / f32::from(CORNER_SEGMENTS);
+            let next = point(
+                center_first + range * angle.cos(),
+                center_second + range * angle.sin(),
+            );
+            append_overlay_bar(previous, next, THICKNESS, geometry);
+            previous = next;
+        }
+    }
 }
 
 fn append_overlay_bar(from: Vec3, to: Vec3, thickness: f32, geometry: &mut OverlayGeometry) {
@@ -8317,6 +8546,7 @@ fn handle_block_actions(
         state.block_drag = Some(BlockDrag {
             start: candidate,
             attachment,
+            start_guides: state.smart_guides.clone(),
             press: PointerSample {
                 cursor,
                 ray_origin,
@@ -14616,7 +14846,7 @@ mod interaction_tests {
         wire_drag_step,
     };
     use super::{RegionDrag, commit_region_drag, region_area};
-    use crate::builder::block_sheet_specs;
+    use crate::builder::{SmartGuide, block_sheet_specs};
     use crate::controls::GameAction;
     use crate::{WireConnection, WireDrag, WireDragStep, WireEnd};
 
@@ -15350,6 +15580,7 @@ mod interaction_tests {
                 attachment: BlockAttachment::AutoWeld {
                     source: FaceOwner::Ground,
                 },
+                start_guides: Vec::new(),
                 press: pointer_sample(Vec2::ZERO, Vec3::Y, Vec3::NEG_Y),
                 plane: PlacementPlane::Xz,
                 anchor_span: IVec3::ZERO,
@@ -15504,12 +15735,19 @@ mod interaction_tests {
         };
         let candidate = candidate_from_hit(&graph, hit);
         let press = pointer_sample(Vec2::ZERO, Vec3::new(0.0, 2.0, 0.0), Vec3::NEG_Y);
+        let start_guide = SmartGuide {
+            axis: 0,
+            coordinate: 0.0,
+            from: Vec3::ZERO,
+            to: Vec3::Z,
+        };
         let mut state = EditorState {
             block_drag: Some(BlockDrag {
                 start: candidate,
                 attachment: BlockAttachment::AutoWeld {
                     source: FaceOwner::Ground,
                 },
+                start_guides: vec![start_guide],
                 press,
                 plane: PlacementPlane::Xz,
                 anchor_span: IVec3::ZERO,
@@ -15518,6 +15756,7 @@ mod interaction_tests {
                 specs: vec![candidate.spec],
                 error: None,
             }),
+            smart_guides: vec![start_guide],
             ..Default::default()
         };
 
@@ -15544,6 +15783,7 @@ mod interaction_tests {
                 (Vec3::new(target.x, 0.0, target.z) - press.ray_origin).normalize(),
             );
             assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), expected);
+            assert!(state.smart_guides.contains(&start_guide));
         }
     }
 
@@ -15567,6 +15807,7 @@ mod interaction_tests {
                 attachment: BlockAttachment::AutoWeld {
                     source: FaceOwner::Ground,
                 },
+                start_guides: Vec::new(),
                 press,
                 plane: PlacementPlane::Xz,
                 anchor_span: IVec3::ZERO,
@@ -15617,6 +15858,7 @@ mod interaction_tests {
                 attachment: BlockAttachment::AutoWeld {
                     source: FaceOwner::Ground,
                 },
+                start_guides: Vec::new(),
                 press: pointer_sample(Vec2::ZERO, Vec3::Y, Vec3::NEG_Y),
                 plane: PlacementPlane::Xz,
                 anchor_span: IVec3::ZERO,
@@ -16771,6 +17013,7 @@ mod history_tests {
             attachment: BlockAttachment::AutoWeld {
                 source: hit.face.owner,
             },
+            start_guides: Vec::new(),
             press: PointerSample {
                 cursor: Vec2::ZERO,
                 ray_origin: Vec3::Y,
@@ -17396,6 +17639,45 @@ mod placement_snap_tests {
             let extent = high - low;
             assert!(extent.y <= 0.004_1, "no line may run normal to XZ");
             assert!(extent.x > 0.01 || extent.z > 0.01);
+        }
+    }
+
+    #[test]
+    fn snap_range_wraps_the_whole_selection_on_the_active_plane() {
+        let geometry = smart_snap_range_geometry(
+            Vec3::ZERO,
+            Vec3::new(0.75, 0.25, 0.5),
+            1.0,
+            Some(PlacementPlane::Xz),
+        );
+
+        let centers = lattice_line_centers(&geometry);
+        assert_eq!(centers.len(), 36);
+        assert!(
+            centers
+                .iter()
+                .all(|center| (center.y - 0.125).abs() < 1.0e-6)
+        );
+        assert!(centers.iter().any(|center| center.x < -0.99));
+        assert!(centers.iter().any(|center| center.x > 1.74));
+        assert!(centers.iter().any(|center| center.z < -0.99));
+        assert!(centers.iter().any(|center| center.z > 1.49));
+    }
+
+    #[test]
+    fn free_preview_snap_range_uses_three_orthogonal_outlines() {
+        let geometry = smart_snap_range_geometry(Vec3::ZERO, Vec3::splat(0.25), 0.5, None);
+
+        let centers = lattice_line_centers(&geometry);
+        assert_eq!(centers.len(), 108);
+        for axis in 0..3 {
+            assert!(
+                centers
+                    .iter()
+                    .filter(|center| (center[axis] - 0.125).abs() < 1.0e-6)
+                    .count()
+                    >= 36
+            );
         }
     }
 

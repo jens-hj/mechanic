@@ -119,10 +119,11 @@ cargo run -p mechanic-app
 - Placement always uses the space's fixed global lattice: 25 cm normally,
   5 cm while holding Shift, and 1 cm while holding Shift+Ctrl. Ctrl alone keeps
   25 cm. Nearby-object snapping starts enabled; tap Alt/Option to toggle it.
-  While holding Alt/Option, scroll to change its search range in 25 cm steps
-  from 25 cm to 5 m; that scroll does not zoom the camera. The HUD reports the
-  active grid, object-snap state, and range. Block and pipe drags lock the grid
-  selected at their first point, then continue in 25 cm construction steps.
+  Holding Alt/Option shows the search boundary around the active preview;
+  scroll while holding it to change the range in 25 cm steps from 25 cm to 5 m.
+  That scroll does not zoom the camera. The HUD reports the active grid,
+  object-snap state, and range. Block and pipe drags lock the grid selected at
+  their first point, then continue in 25 cm construction steps.
 - With Shape selected, first choose an **editable area**: drag across blocks the
   same way the Block tool places them — `Q` mid-drag rotates the plane and keeps
   the extent already dragged, so one gesture claims a whole cuboid. The outline
