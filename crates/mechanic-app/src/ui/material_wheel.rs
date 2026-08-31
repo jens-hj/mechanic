@@ -30,6 +30,7 @@ const RATINGS_OFFSET_Y: f32 = 318.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Model {
     pub(crate) open: bool,
+    pub(crate) chroma_config: bool,
     pub(crate) highlighted: Option<WheelChoice>,
 }
 
@@ -268,6 +269,10 @@ const fn block_thumbnail_bytes(material: ConstructionMaterial) -> &'static [u8] 
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/concrete/concrete_block_thumbnail.png"
         )),
+        ConstructionMaterial::Copper => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/copper/copper_block_thumbnail.png"
+        )),
         ConstructionMaterial::Dirt => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/dirt/dirt_block_thumbnail.png"
@@ -320,6 +325,10 @@ const fn material_base_color_bytes(material: ConstructionMaterial) -> &'static [
         ConstructionMaterial::Concrete => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/concrete/concrete_base_color.png"
+        )),
+        ConstructionMaterial::Copper => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/copper/copper_base_color.png"
         )),
         ConstructionMaterial::Dirt => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -406,11 +415,13 @@ mod tests {
     fn model_preserves_open_and_highlight_state() {
         let model = Model {
             open: true,
+            chroma_config: false,
             highlighted: Some(WheelChoice::ConstructionMaterial(
                 ConstructionMaterial::Wood,
             )),
         };
         assert!(model.open);
+        assert!(!model.chroma_config);
         assert_eq!(
             model.highlighted,
             Some(WheelChoice::ConstructionMaterial(

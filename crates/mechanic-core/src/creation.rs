@@ -21,15 +21,15 @@ use crate::{
     DimensionLinkId, DimensionLinkSpec, DriveDwell, DriveKey, DriveLimits, DriveLimitsError,
     DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
     DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GearKeyChord,
-    GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec, PartId, PartSpec,
-    PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
+    GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec, MaterialAppearance,
+    PartId, PartSpec, PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
     SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec,
     WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 9;
+pub const CREATION_FORMAT_VERSION: u32 = 10;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -127,9 +127,10 @@ pub enum PartDoc {
         dimensions: [u8; 3],
         /// Centre and orientation.
         pose: PoseDoc,
-        /// Appearance and physical properties. Older files default to steel.
-        #[serde(default)]
+        /// Physical material.
         material: ConstructionMaterial,
+        /// Color and finish treatment.
+        appearance: MaterialAppearance,
     },
     /// Solid or hollow cylinder whose axis is local Y.
     Cylinder {
@@ -143,9 +144,10 @@ pub enum PartDoc {
         sweep_degrees: u16,
         /// Centre and orientation.
         pose: PoseDoc,
-        /// Appearance and physical properties. Older files default to steel.
-        #[serde(default)]
+        /// Physical material.
         material: ConstructionMaterial,
+        /// Color and finish treatment.
+        appearance: MaterialAppearance,
     },
     /// Cardinal 90-degree quarter-torus pipe bend.
     PipeBend {
@@ -157,9 +159,10 @@ pub enum PartDoc {
         radius_units: u8,
         /// Sharp-corner position and cardinal orientation.
         pose: PoseDoc,
-        /// Appearance and physical properties.
-        #[serde(default)]
+        /// Physical material.
         material: ConstructionMaterial,
+        /// Color and finish treatment.
+        appearance: MaterialAppearance,
     },
     /// Fixed-size control block.
     Controller {
@@ -205,7 +208,7 @@ pub enum PartDoc {
 }
 
 /// One shape region in its serialized form.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegionDoc {
     /// Minimum corner in half-grid units.
     pub origin_half_units: [i32; 3],
@@ -213,6 +216,8 @@ pub struct RegionDoc {
     pub size_cells: [i32; 3],
     /// Material every block in the region shares.
     pub material: ConstructionMaterial,
+    /// Color and finish shared by every region member.
+    pub appearance: MaterialAppearance,
     /// Cage planes beyond the two the extent implies, in cells, per axis.
     #[serde(default)]
     pub divisions: [Vec<i32>; 3],
@@ -607,6 +612,7 @@ impl CreationDocument {
                     origin_half_units: region.origin_half_units().to_array(),
                     size_cells: region.size_cells().to_array(),
                     material: region.material(),
+                    appearance: region.appearance(),
                     divisions: core::array::from_fn(|axis| {
                         // The first and last planes are implied by the extent.
                         region.grid().planes(axis)[1..region.grid().planes(axis).len() - 1]
@@ -772,7 +778,8 @@ impl CreationDocument {
                 IVec3::from_array(document.size_cells),
                 document.material,
             )
-            .map_err(GraphError::from)?;
+            .map_err(GraphError::from)?
+            .with_appearance(document.appearance);
             let BuildOutcome::RegionAdded(id) = graph.apply(BuildCommand::AddRegion(region))?
             else {
                 unreachable!("adding a region reports the region it added")
@@ -1026,6 +1033,7 @@ fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
             dimensions: cuboid.dimensions.map(GridDimension::units),
             pose: cuboid.pose.into(),
             material: cuboid.material,
+            appearance: cuboid.appearance,
         },
         PartSpec::Cylinder(cylinder) => PartDoc::Cylinder {
             outer_diameter: cylinder.dimensions.outer_diameter(),
@@ -1034,6 +1042,7 @@ fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
             sweep_degrees: cylinder.dimensions.sweep_angle_degrees(),
             pose: cylinder.pose.into(),
             material: cylinder.material,
+            appearance: cylinder.appearance,
         },
         PartSpec::PipeBend(bend) => PartDoc::PipeBend {
             outer_diameter: bend.dimensions.outer_diameter(),
@@ -1041,6 +1050,7 @@ fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
             radius_units: bend.dimensions.radius_units(),
             pose: bend.pose.into(),
             material: bend.material,
+            appearance: bend.appearance,
         },
         PartSpec::Controller(controller) => PartDoc::Controller {
             pose: controller.pose.into(),
@@ -1105,7 +1115,12 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
             dimensions,
             pose,
             material,
-        } => BuildCommand::Spawn(CuboidSpec::new(dimensions, pose.into())?.with_material(material)),
+            appearance,
+        } => BuildCommand::Spawn(
+            CuboidSpec::new(dimensions, pose.into())?
+                .with_material(material)
+                .with_appearance(appearance),
+        ),
         PartDoc::Cylinder {
             outer_diameter,
             inner_diameter,
@@ -1113,6 +1128,7 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
             sweep_degrees,
             pose,
             material,
+            appearance,
         } => BuildCommand::SpawnCylinder(
             CylinderSpec::new(
                 CylinderDimensions::new(
@@ -1123,7 +1139,8 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
                 .with_sweep_angle_degrees(sweep_degrees)?,
                 pose.into(),
             )
-            .with_material(material),
+            .with_material(material)
+            .with_appearance(appearance),
         ),
         PartDoc::PipeBend {
             outer_diameter,
@@ -1131,6 +1148,7 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
             radius_units,
             pose,
             material,
+            appearance,
         } => BuildCommand::SpawnPipeBend(
             PipeBendSpec::new(
                 PipeBendDimensions::new(
@@ -1140,7 +1158,8 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
                 )?,
                 pose.into(),
             )
-            .with_material(material),
+            .with_material(material)
+            .with_appearance(appearance),
         ),
         PartDoc::Controller { pose } => {
             BuildCommand::SpawnController(ControllerSpec::new(pose.into()))
@@ -1224,9 +1243,9 @@ mod tests {
         CylinderSpec, DimensionLinkId, DimensionLinkSpec, DriveDwell, DriveKey, DriveLimits,
         DriveLinkSpec, DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget,
         DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceRef, GearKey, GearKeyChord,
-        GridRotation, InputSeatLinkSpec, InputSpec, PartSpec, PipeBendDimensions, PipeBendSpec,
-        RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode,
-        WeldSpec,
+        GridRotation, InputSeatLinkSpec, InputSpec, MaterialAppearance, MaterialColor, MaterialDye,
+        MaterialFinish, PartSpec, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
+        SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode, WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -1526,6 +1545,41 @@ mod tests {
     }
 
     #[test]
+    fn current_version_round_trips_construction_appearances() {
+        let appearance = MaterialAppearance::new(
+            MaterialColor::Dye(MaterialDye::new([224, 86, 31], 2.0).unwrap()),
+            MaterialFinish::Anodised,
+        );
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                cuboid([1, 1, 1], IVec3::ZERO).with_appearance(appearance),
+            ))
+            .unwrap();
+        let document = CreationDocument::from_graph(&graph, "Chroma", &[]);
+        let encoded = ron::ser::to_string(&document).unwrap();
+        assert!(encoded.contains("appearance"));
+        let restored = ron::from_str::<CreationDocument>(&encoded)
+            .unwrap()
+            .into_graph()
+            .unwrap();
+        assert_eq!(
+            restored.graph.parts().next().unwrap().1.appearance(),
+            Some(appearance)
+        );
+    }
+
+    #[test]
+    fn construction_documents_without_appearance_are_rejected() {
+        let missing = r"Cuboid(
+            dimensions: [1, 1, 1],
+            pose: (translation_ticks: [0, 0, 0], rotation: [0, 0, 0]),
+            material: Steel,
+        )";
+        assert!(ron::from_str::<PartDoc>(missing).is_err());
+    }
+
+    #[test]
     fn legacy_carbon_material_deserializes_as_graphite_and_writes_graphite() {
         let parsed: ConstructionMaterial = ron::from_str("Carbon").unwrap();
         assert_eq!(parsed, ConstructionMaterial::Graphite);
@@ -1663,7 +1717,7 @@ mod tests {
     }
 
     #[test]
-    fn v8_document_round_trips_five_centimetre_fine_placement() {
+    fn current_document_round_trips_five_centimetre_fine_placement() {
         let mut graph = ConstructionGraph::new();
         graph
             .apply(BuildCommand::Spawn(
@@ -1736,6 +1790,7 @@ mod tests {
                 rotation: [0, 0, 0],
             },
             material: crate::ConstructionMaterial::Steel,
+            appearance: crate::MaterialAppearance::BAKED,
         };
 
         assert!(matches!(

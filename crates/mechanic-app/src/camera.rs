@@ -166,6 +166,7 @@ impl PlayerCamera {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct MaterialWheelState {
     pub(crate) open: bool,
+    pub(crate) chroma_config: bool,
     pub(crate) selector: Vec2,
     pub(crate) highlighted: Option<WheelChoice>,
     context: Option<WheelChoice>,
@@ -174,9 +175,18 @@ pub(crate) struct MaterialWheelState {
 impl MaterialWheelState {
     pub(crate) fn open(&mut self, current: WheelChoice) {
         self.open = true;
+        self.chroma_config = false;
         self.selector = Vec2::ZERO;
         self.highlighted = Some(current);
         self.context = Some(current);
+    }
+
+    pub(crate) fn open_chroma_config(&mut self) {
+        self.open = true;
+        self.chroma_config = true;
+        self.selector = Vec2::ZERO;
+        self.highlighted = None;
+        self.context = None;
     }
 
     fn move_selector(&mut self, delta: Vec2) {
@@ -339,6 +349,14 @@ pub(crate) const fn committed_choice(
     if tab_released { highlighted } else { None }
 }
 
+const fn chroma_config_should_close(
+    selector_pressed: bool,
+    another_panel_open: bool,
+    chroma_active: bool,
+) -> bool {
+    selector_pressed || another_panel_open || !chroma_active
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_material_wheel(
     actions: Res<ButtonInput<GameAction>>,
@@ -354,6 +372,18 @@ pub(crate) fn update_material_wheel(
     mut selection: ResMut<SelectedTool>,
 ) {
     if wheel.open {
+        let chroma_active = selection.tool == Some(MainTool::MatterManipulator)
+            && selection.matter_mode == MatterMode::Chroma;
+        if wheel.chroma_config {
+            if chroma_config_should_close(
+                actions.just_pressed(GameAction::MaterialWheel),
+                menu.is_open() || panel.is_open() || pause.blocks_world_input(),
+                chroma_active,
+            ) {
+                wheel.close();
+            }
+            return;
+        }
         wheel.move_selector(motion.delta);
         if actions.just_released(GameAction::MaterialWheel)
             || menu.is_open()
@@ -378,21 +408,26 @@ pub(crate) fn update_material_wheel(
         menu.is_open() || panel.is_open() || overlay.blocks_pointer() || overlay.blocks_keyboard();
     let current = match (selection.tool, selection.matter_mode) {
         (Some(MainTool::MatterManipulator), MatterMode::Block | MatterMode::Cylinder) => {
-            Some(WheelChoice::ConstructionMaterial(material.0))
+            Some(Some(WheelChoice::ConstructionMaterial(material.0)))
         }
         (Some(MainTool::MatterManipulator), MatterMode::Item) => {
-            Some(WheelChoice::Item(selection.item))
+            Some(Some(WheelChoice::Item(selection.item)))
         }
         (Some(MainTool::MatterManipulator), MatterMode::Terrain) => {
-            Some(WheelChoice::TerrainMaterial(terrain_material.0))
+            Some(Some(WheelChoice::TerrainMaterial(terrain_material.0)))
         }
+        (Some(MainTool::MatterManipulator), MatterMode::Chroma) => Some(None),
         _ => None,
     };
     if actions.just_pressed(GameAction::MaterialWheel)
         && material_wheel_may_open(false, interactive_panel, state.world_drag_active())
         && let Some(current) = current
     {
-        wheel.open(current);
+        if let Some(choice) = current {
+            wheel.open(choice);
+        } else {
+            wheel.open_chroma_config();
+        }
     }
 }
 
@@ -413,12 +448,13 @@ pub(crate) fn update_player_camera(
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut camera: Single<(&mut PlayerCamera, &mut Transform, &mut GlobalTransform), With<MainCamera>>,
 ) {
-    let panel_open = player_controls_blocked([
-        menu.is_open(),
-        panel.is_open(),
-        pause.is_open(),
-        worlds.is_open(),
-    ]);
+    let panel_open = wheel.chroma_config
+        || player_controls_blocked([
+            menu.is_open(),
+            panel.is_open(),
+            pause.is_open(),
+            worlds.is_open(),
+        ]);
     cursor.grab_mode = if panel_open {
         CursorGrabMode::None
     } else {
@@ -591,26 +627,15 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss)] // Test sector counts are small.
     fn material_sectors_run_clockwise_from_the_top_and_centre_cancels() {
         let context = Some(WheelChoice::ConstructionMaterial(
             ConstructionMaterial::Steel,
         ));
         assert_eq!(choice_at_selector(Vec2::ZERO, context), None);
-        let directions = [
-            Vec2::new(0.0, -80.0),
-            Vec2::new(40.0, -69.282),
-            Vec2::new(69.282, -40.0),
-            Vec2::new(80.0, 0.0),
-            Vec2::new(69.282, 40.0),
-            Vec2::new(40.0, 69.282),
-            Vec2::new(0.0, 80.0),
-            Vec2::new(-40.0, 69.282),
-            Vec2::new(-69.282, 40.0),
-            Vec2::new(-80.0, 0.0),
-            Vec2::new(-69.282, -40.0),
-            Vec2::new(-40.0, -69.282),
-        ];
-        for (direction, material) in directions.into_iter().zip(ConstructionMaterial::ALL) {
+        for (index, material) in ConstructionMaterial::ALL.into_iter().enumerate() {
+            let angle = TAU * index as f32 / ConstructionMaterial::ALL.len() as f32;
+            let direction = Vec2::new(angle.sin(), -angle.cos()) * 80.0;
             assert_eq!(
                 choice_at_selector(direction, context),
                 Some(WheelChoice::ConstructionMaterial(material))
@@ -744,5 +769,26 @@ mod tests {
                 ConstructionMaterial::Aluminium
             ))
         );
+    }
+
+    #[test]
+    fn chroma_configuration_uses_the_selector_without_a_radial_choice() {
+        let mut wheel = MaterialWheelState::default();
+        wheel.open_chroma_config();
+
+        assert!(wheel.open);
+        assert!(wheel.chroma_config);
+        assert_eq!(wheel.highlighted, None);
+        assert_eq!(wheel.selector, Vec2::ZERO);
+
+        wheel.close();
+        assert_eq!(wheel, MaterialWheelState::default());
+    }
+
+    #[test]
+    fn chroma_configuration_toggles_on_press_instead_of_release() {
+        assert!(!chroma_config_should_close(false, false, true));
+        assert!(chroma_config_should_close(true, false, true));
+        assert!(chroma_config_should_close(false, false, false));
     }
 }

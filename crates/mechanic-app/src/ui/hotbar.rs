@@ -21,6 +21,7 @@ use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use super::{Handles, UiIntent};
+use crate::chroma::representative_srgb;
 use crate::controls::GameAction;
 use crate::hotbar::{MainTool, MatterMode, Tool};
 
@@ -90,11 +91,17 @@ pub(crate) fn Hotbar(handles: Handles) -> Element {
             .map_or_else(
                 || {
                     (selected.tool == Some(MainTool::MatterManipulator)).then(|| {
-                        let choose = if selected.matter_mode == MatterMode::Item {
-                            format!(
-                                " · Hold {} to choose",
-                                controls.with(|bindings| bindings.label(GameAction::MaterialWheel))
-                            )
+                        let choose = if matches!(
+                            selected.matter_mode,
+                            MatterMode::Item | MatterMode::Chroma
+                        ) {
+                            let selector_key =
+                                controls.with(|bindings| bindings.label(GameAction::MaterialWheel));
+                            if selected.matter_mode == MatterMode::Chroma {
+                                format!(" · Press {selector_key} to configure")
+                            } else {
+                                format!(" · Hold {selector_key} to choose")
+                            }
                         } else {
                             String::new()
                         };
@@ -246,6 +253,8 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
     let hovered = handles.hovered;
     let menu = handles.material_menu;
     let material_hover = handles.material_hover;
+    let brush = handles.chroma;
+    let selected_material = handles.material;
     let material_mode = matches!(matter_mode, MatterMode::Block | MatterMode::Cylinder);
     let controls = handles.controls;
     let shortcut = move || {
@@ -264,6 +273,7 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
         MatterMode::Item => icon(selection.get().item.editor_tool()),
         MatterMode::Terrain => terrain_icon(),
         MatterMode::Manipulate => icon(Tool::Shape),
+        MatterMode::Chroma => icon(Tool::Chroma),
     };
     view! {
         stack width:{ Length::px(SLOT) } height:{ Length::px(SLOT) } align:center justify:center
@@ -315,6 +325,14 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
             hover { fill:bar.slot-over stroke:(width:1px color:bar.edge-over) }
             pressed { fill:control.pressed stroke:(width:1px color:bar.edge-on) } {
             (icon)
+            if material_mode && brush.get().color != mechanic_core::MaterialColor::Baked {
+                el width:14px height:14px radius:7px translate:(x:21px y:21px)
+                    fill:{
+                        let [r, g, b] = representative_srgb(selected_material.get(), brush.get());
+                        mosaic_core::Color::from_srgb8(r, g, b, 255)
+                    }
+                    stroke:(width:1px color:bar.edge-on) {}
+            }
             if menu.get() == Some(matter_mode) {
                 col width:{ Length::px(MATERIAL_MENU_WIDTH) } height:min-content
                     translate:(x:0px y:{ Length::px(MATERIAL_MENU_OFFSET_Y) }) radius:8px clip
@@ -362,6 +380,7 @@ const fn contextual_choice(
         MatterMode::Item => item,
         MatterMode::Terrain => terrain_material,
         MatterMode::Manipulate => "Region editing",
+        MatterMode::Chroma => "Appearance brush",
     }
 }
 
@@ -429,6 +448,12 @@ pub(crate) fn material_thumbnail(material: ConstructionMaterial) -> Element {
             el width:26px height:26px radius:4px clip {
                 img fit:cover width:fill height:fill
                     "assets/materials/concrete/concrete_thumbnail.png"
+            }
+        },
+        ConstructionMaterial::Copper => view! {
+            el width:26px height:26px radius:4px clip {
+                img fit:cover width:fill height:fill
+                    "assets/materials/copper/copper_thumbnail.png"
             }
         },
         ConstructionMaterial::Dirt => view! {
@@ -613,6 +638,13 @@ pub(super) fn icon(tool: Tool) -> Element {
                 circle at:(x:10px y:30px) radius:3px fill:ink.fg
             }
         },
+        Tool::Chroma => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                circle at:(x:14px y:16px) radius:6px fill:accent.angle
+                circle at:(x:26px y:16px) radius:6px fill:accent.key
+                circle at:(x:20px y:27px) radius:6px fill:accent.speed
+            }
+        },
     }
 }
 
@@ -681,7 +713,7 @@ mod consolidated_tests {
     }
 
     #[test]
-    fn matter_manipulator_shows_five_modes_above_four_main_tools() {
+    fn matter_manipulator_shows_six_modes_above_four_main_tools() {
         let overlay = Overlay::mount();
         let (main, modes) = slot_rows(&overlay);
         assert_eq!(main.len(), MainTool::ALL.len());

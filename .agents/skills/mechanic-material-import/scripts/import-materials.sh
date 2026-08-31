@@ -20,7 +20,7 @@ archive=$1
     exit 1
 }
 
-for required_command in awk cmp comm diff ffmpeg grep install mktemp sort sips unzip; do
+for required_command in awk cmp comm diff ffmpeg grep install mktemp od sort sips unzip; do
     command -v "$required_command" >/dev/null || {
         printf 'required command not found: %s\n' "$required_command" >&2
         exit 1
@@ -49,6 +49,7 @@ construction_materials=(
     aluminium:aluminium
     carbon_fiber:carbon_fiber
     concrete:concrete
+    copper:copper
     dirt:dirt
     graphite:carbon
     iron:iron
@@ -62,23 +63,42 @@ construction_materials=(
 terrain_only_materials=(grass)
 terrain_materials=(grass dirt stone)
 maps=(base_color normal orm)
+tinted_materials=(copper dirt)
+terrain_tinted_materials=(grass dirt)
 expected_manifest="$staging_dir/expected-manifest"
 actual_manifest="$staging_dir/actual-manifest"
 expected_materials="$staging_dir/expected-materials"
 actual_materials="$staging_dir/actual-materials"
 
+archive_listing="$staging_dir/archive-listing"
+unzip -tqq "$archive"
+unzip -Z1 "$archive" | LC_ALL=C sort >"$archive_listing"
+archive_roots="$staging_dir/archive-roots"
+awk -F/ 'NF >= 4 && $2 == "materials_styled" { print $1 }' "$archive_listing" \
+    | LC_ALL=C sort -u >"$archive_roots"
+[[ $(wc -l <"$archive_roots" | tr -d ' ') == 1 ]] || {
+    printf 'archive must contain one wrapper directory around materials_styled\n' >&2
+    exit 1
+}
+archive_root=$(<"$archive_roots")
+
 {
     for entry in "${construction_materials[@]}"; do
         source_material=${entry#*:}
         for map in "${maps[@]}"; do
-            printf 'materials_styled/%s/%s_%s.png\n' \
-                "$source_material" "$source_material" "$map"
+            printf '%s/materials_styled/%s/%s_%s.png\n' \
+                "$archive_root" "$source_material" "$source_material" "$map"
         done
     done
     for material in "${terrain_only_materials[@]}"; do
         for map in "${maps[@]}"; do
-            printf 'materials_styled/%s/%s_%s.png\n' "$material" "$material" "$map"
+            printf '%s/materials_styled/%s/%s_%s.png\n' \
+                "$archive_root" "$material" "$material" "$map"
         done
+    done
+    for material in copper dirt grass; do
+        printf '%s/materials_styled/%s/%s_tint.png\n' \
+            "$archive_root" "$material" "$material"
     done
 } | LC_ALL=C sort >"$expected_manifest"
 
@@ -89,9 +109,8 @@ actual_materials="$staging_dir/actual-materials"
     printf '%s\n' "${terrain_only_materials[@]}"
 } | LC_ALL=C sort -u >"$expected_materials"
 
-unzip -tqq "$archive"
-unzip -Z1 "$archive" | LC_ALL=C sort >"$actual_manifest"
-awk -F/ '$1 == "materials_styled" && NF >= 3 { print $2 }' "$actual_manifest" \
+cp "$archive_listing" "$actual_manifest"
+awk -F/ -v root="$archive_root" '$1 == root && $2 == "materials_styled" && NF >= 4 { print $3 }' "$actual_manifest" \
     | LC_ALL=C sort -u >"$actual_materials"
 if ! cmp -s "$expected_materials" "$actual_materials"; then
     printf 'archive material set differs from the supported set; ask the user how to handle additions and omissions:\n' >&2
@@ -135,7 +154,7 @@ for entry in "${construction_materials[@]}"; do
     source_material=${entry#*:}
     mkdir -p "$output_root/$target_material"
     for map in "${maps[@]}"; do
-        source="$extracted_root/materials_styled/$source_material/${source_material}_${map}.png"
+        source="$extracted_root/$archive_root/materials_styled/$source_material/${source_material}_${map}.png"
         output="$output_root/$target_material/${target_material}_${map}.png"
         read -r width height < <(image_dimensions "$source")
         [[ $width == "$height" && ( $width == 1024 || $width == 2048 || $width == 3072 ) ]] || {
@@ -150,6 +169,21 @@ for entry in "${construction_materials[@]}"; do
         fi
     done
 
+    if [[ " ${tinted_materials[*]} " == *" $target_material "* ]]; then
+        source="$extracted_root/$archive_root/materials_styled/$source_material/${source_material}_tint.png"
+        output="$output_root/$target_material/${target_material}_tint.png"
+        read -r width height < <(image_dimensions "$source")
+        [[ $width == "$height" ]] || {
+            printf 'expected a square tint map: %s (%sx%s)\n' "$source" "$width" "$height" >&2
+            exit 1
+        }
+        cp "$source" "$output"
+        if [[ $width != 3072 ]]; then
+            sips -z 3072 3072 "$output" >/dev/null
+            ((normalized_count += 1))
+        fi
+    fi
+
     thumbnail="$output_root/$target_material/${target_material}_thumbnail.png"
     cp "$output_root/$target_material/${target_material}_base_color.png" "$thumbnail"
     sips -z 48 48 "$thumbnail" >/dev/null
@@ -161,7 +195,7 @@ done
 for material in "${terrain_only_materials[@]}"; do
     mkdir -p "$output_root/terrain/$material"
     for map in "${maps[@]}"; do
-        source="$extracted_root/materials_styled/$material/${material}_${map}.png"
+        source="$extracted_root/$archive_root/materials_styled/$material/${material}_${map}.png"
         output="$output_root/terrain/$material/${material}_${map}.png"
         read -r width height < <(image_dimensions "$source")
         [[ $width == "$height" && ( $width == 1024 || $width == 2048 || $width == 3072 ) ]] || {
@@ -175,6 +209,11 @@ for material in "${terrain_only_materials[@]}"; do
             ((normalized_count += 1))
         fi
     done
+    source="$extracted_root/$archive_root/materials_styled/$material/${material}_tint.png"
+    output="$output_root/terrain/$material/${material}_tint.png"
+    cp "$source" "$output"
+    sips -z 1536 1536 "$output" >/dev/null
+    ((normalized_count += 1))
 done
 
 for material in dirt stone; do
@@ -185,7 +224,42 @@ for material in dirt stone; do
         sips -z 1536 1536 "$output" >/dev/null
         ((normalized_count += 1))
     done
+    if [[ $material == dirt ]]; then
+        cp "$output_root/$material/${material}_tint.png" \
+            "$output_root/terrain/$material/${material}_tint.png"
+        sips -z 1536 1536 "$output_root/terrain/$material/${material}_tint.png" >/dev/null
+        ((normalized_count += 1))
+    fi
 done
+
+profile="$output_root/color-profiles.ron"
+{
+    printf '(\n  materials: {\n'
+    profile_index=0
+    for entry in "${construction_materials[@]}"; do
+        material=${entry%%:*}
+        raw="$staging_dir/${material}-mean.rgba"
+        ffmpeg -loglevel error -y \
+            -i "$output_root/$material/${material}_base_color.png" \
+            -vf scale=1:1 -f rawvideo -pix_fmt rgba "$raw"
+        read -r red green blue alpha < <(od -An -tu1 -N4 "$raw")
+        lightness=$(awk -v r="$red" -v g="$green" -v b="$blue" '
+            function linear(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ^ 2.4 }
+            BEGIN {
+                r=linear(r); g=linear(g); b=linear(b)
+                l=0.4122214708*r+0.5363325363*g+0.0514459929*b
+                m=0.2119034982*r+0.6806995451*g+0.1073969566*b
+                s=0.0883024619*r+0.2817188376*g+0.6299787005*b
+                printf "%.6f", 0.2104542553*l^(1/3)+0.7936177850*m^(1/3)-0.0040720468*s^(1/3)
+            }')
+        ((profile_index += 1))
+        comma=,
+        [[ $profile_index -eq ${#construction_materials[@]} ]] && comma=
+        printf '    "%s": (representative_srgb: "#%02X%02X%02X", mean_oklab_lightness: %s)%s\n' \
+            "$material" "$red" "$green" "$blue" "$lightness" "$comma"
+    done
+    printf '  },\n)\n'
+} >"$profile"
 
 for entry in "${construction_materials[@]}"; do
     material=${entry%%:*}
@@ -200,6 +274,10 @@ for entry in "${construction_materials[@]}"; do
     block_thumbnail="$output_root/$material/${material}_block_thumbnail.png"
     read -r width height < <(image_dimensions "$block_thumbnail")
     [[ $width == 96 && $height == 106 ]] || exit 1
+    if [[ " ${tinted_materials[*]} " == *" $material "* ]]; then
+        read -r width height < <(image_dimensions "$output_root/$material/${material}_tint.png")
+        [[ $width == 3072 && $height == 3072 ]] || exit 1
+    fi
 done
 for material in "${terrain_materials[@]}"; do
     for map in "${maps[@]}"; do
@@ -207,6 +285,10 @@ for material in "${terrain_materials[@]}"; do
         read -r width height < <(image_dimensions "$output")
         [[ $width == 1536 && $height == 1536 ]] || exit 1
     done
+    if [[ " ${terrain_tinted_materials[*]} " == *" $material "* ]]; then
+        read -r width height < <(image_dimensions "$output_root/terrain/$material/${material}_tint.png")
+        [[ $width == 1536 && $height == 1536 ]] || exit 1
+    fi
 done
 
 if $check_only; then
@@ -231,7 +313,22 @@ for entry in "${construction_materials[@]}"; do
             ((changed_count += 1))
         fi
     done
+    if [[ " ${tinted_materials[*]} " == *" $material "* ]]; then
+        source="$output_root/$material/${material}_tint.png"
+        target="$asset_root/$material/${material}_tint.png"
+        if ! cmp -s "$source" "$target"; then
+            install -m 0644 "$source" "$target"
+            printf 'updated %s/%s_tint.png\n' "$material" "$material"
+            ((changed_count += 1))
+        fi
+    fi
 done
+
+if ! cmp -s "$profile" "$asset_root/color-profiles.ron"; then
+    install -m 0644 "$profile" "$asset_root/color-profiles.ron"
+    printf 'updated color-profiles.ron\n'
+    ((changed_count += 1))
+fi
 
 for material in "${terrain_materials[@]}"; do
     mkdir -p "$terrain_asset_root/$material"
@@ -245,6 +342,15 @@ for material in "${terrain_materials[@]}"; do
             ((changed_count += 1))
         fi
     done
+    if [[ " ${terrain_tinted_materials[*]} " == *" $material "* ]]; then
+        source="$output_root/terrain/$material/${material}_tint.png"
+        target="$terrain_asset_root/$material/${material}_tint.png"
+        if ! cmp -s "$source" "$target"; then
+            install -m 0644 "$source" "$target"
+            printf 'updated terrain/%s/%s_tint.png\n' "$material" "$material"
+            ((changed_count += 1))
+        fi
+    fi
 done
 
 printf 'installed %d changed assets; normalized %d source maps\n' \

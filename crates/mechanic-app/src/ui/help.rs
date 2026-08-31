@@ -171,6 +171,12 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 controls.label(GameAction::MaterialWheel)
             )
         }
+        (Some(MainTool::MatterManipulator), MatterMode::Chroma) => {
+            format!(
+                "     {}  Toggle appearance workbench",
+                controls.label(GameAction::MaterialWheel)
+            )
+        }
         _ => String::new(),
     };
 
@@ -306,6 +312,12 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows/WASD nudge"
                     .to_owned()
             }
+            (false, Tool::Chroma, _, _, _) => {
+                format!(
+                    "Left-drag paints; right-drag restores baked appearance; Q samples; press {} to configure",
+                    controls.label(GameAction::MaterialWheel),
+                )
+            }
             (false, Tool::Connector, _, _, _) => match state.wire_drag.map(|drag| drag.from) {
                 None => "Wire Controller↔Bearing, Input↔Seat, or Seat↔Controller".to_owned(),
                 Some(WireEnd::Controller(_)) => {
@@ -440,7 +452,8 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
             | Tool::ElectricEngine
             | Tool::Transmission
             | Tool::Seat
-            | Tool::Shape,
+            | Tool::Shape
+            | Tool::Chroma,
         ) => Tone::Speed,
         None => Tone::Muted,
     }

@@ -1,0 +1,17 @@
+(
+  materials: {
+    "aluminium": (representative_srgb: "#596A74", mean_oklab_lightness: 0.513854),
+    "carbon_fiber": (representative_srgb: "#1F252C", mean_oklab_lightness: 0.261586),
+    "concrete": (representative_srgb: "#595A52", mean_oklab_lightness: 0.464122),
+    "copper": (representative_srgb: "#9D653A", mean_oklab_lightness: 0.558346),
+    "dirt": (representative_srgb: "#4F3A2D", mean_oklab_lightness: 0.368107),
+    "graphite": (representative_srgb: "#2A2E34", mean_oklab_lightness: 0.299681),
+    "iron": (representative_srgb: "#72675C", mean_oklab_lightness: 0.520785),
+    "plastic": (representative_srgb: "#23272F", mean_oklab_lightness: 0.272168),
+    "rubber": (representative_srgb: "#16181A", mean_oklab_lightness: 0.207720),
+    "sand": (representative_srgb: "#A18C6A", mean_oklab_lightness: 0.650362),
+    "steel": (representative_srgb: "#27303B", mean_oklab_lightness: 0.305500),
+    "stone": (representative_srgb: "#666D76", mean_oklab_lightness: 0.531862),
+    "wood": (representative_srgb: "#734E2E", mean_oklab_lightness: 0.457315)
+  },
+)

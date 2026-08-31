@@ -11,8 +11,9 @@ use crate::{
     CageIndex, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderSpec, DimensionLinkId,
     DimensionLinkSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineKind,
     EngineSpec, FaceKind, FaceOwner, FaceRef, GearKeyChord, GearboxConfig, GearboxError,
-    InputSeatLinkId, InputSpec, PartId, PartSpec, PipeBendSpec, RegionError, RegionId, RigidLinkId,
-    SeatControllerLinkId, SeatSpec, ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec, WeldId,
+    InputSeatLinkId, InputSpec, MaterialAppearance, PartId, PartSpec, PipeBendSpec, RegionError,
+    RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec, ServoSpec, ShapeRegion, ShiftMode,
+    TransmissionSpec, WeldId,
     geometry::{
         FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face, pipe_bend_face,
     },
@@ -306,6 +307,15 @@ pub enum PendingOperation {
     DriveLink(PartId),
 }
 
+/// Scope of one construction appearance edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AppearanceTarget {
+    /// One ordinary construction part.
+    Part(PartId),
+    /// A whole shaped region and each of its member parts.
+    Region(RegionId),
+}
+
 /// Atomic edit request for a construction graph.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BuildCommand {
@@ -321,6 +331,13 @@ pub enum BuildCommand {
     RemoveWeld(WeldId),
     /// Remove one non-geometric rigid link.
     RemoveRigidLink(RigidLinkId),
+    /// Replace only a construction target's color and finish treatment.
+    SetAppearance {
+        /// Part or shaped region to update.
+        target: AppearanceTarget,
+        /// Replacement appearance.
+        appearance: MaterialAppearance,
+    },
     /// Remove one bearing while leaving its endpoint parts intact.
     RemoveBearing(BearingId),
     /// Merge the groups containing two touching faces.
@@ -463,6 +480,8 @@ pub enum BuildOutcome {
     RegionAdded(RegionId),
     /// A region's cage changed.
     RegionUpdated,
+    /// A part or region appearance changed.
+    AppearanceUpdated,
     /// A pending operation was recorded.
     Pending,
     /// A pending operation was cancelled, or there was nothing to cancel.
@@ -596,6 +615,9 @@ pub enum GraphError {
     /// A region handle is stale or unknown.
     #[error("region {0:?} is not live")]
     MissingRegion(RegionId),
+    /// Appearance editing was requested for an authored machine part.
+    #[error("part {0:?} has an authored appearance")]
+    AuthoredAppearance(PartId),
     /// A region rejected the change.
     #[error(transparent)]
     InvalidRegion(#[from] RegionError),
@@ -605,6 +627,9 @@ pub enum GraphError {
     /// The chosen area mixes materials.
     #[error("a region must be one material throughout")]
     RegionMixedMaterials,
+    /// The chosen area mixes color or finish treatments.
+    #[error("a region must have one appearance throughout")]
+    RegionMixedAppearances,
     /// The chosen area spans more than one rigid body.
     #[error("a region must lie within one rigid body")]
     RegionSpansBodies,
@@ -1458,7 +1483,8 @@ impl ConstructionGraph {
             return Err(GraphError::RegionOverlaps(id));
         }
 
-        let mut occupants: BTreeMap<[i32; 3], (PartId, ConstructionMaterial)> = BTreeMap::new();
+        let mut occupants: BTreeMap<[i32; 3], (PartId, ConstructionMaterial, MaterialAppearance)> =
+            BTreeMap::new();
         for (id, spec) in self.parts.iter() {
             let Some(cuboid) = spec.as_cuboid() else {
                 continue;
@@ -1474,7 +1500,8 @@ impl ConstructionGraph {
                 for y in 0..counts.y {
                     for x in 0..counts.x {
                         let corner = cells.corner_steps(IVec3::new(x, y, z), 0);
-                        occupants.insert(corner.to_array(), (id, cuboid.material));
+                        occupants
+                            .insert(corner.to_array(), (id, cuboid.material, cuboid.appearance));
                     }
                 }
             }
@@ -1483,6 +1510,7 @@ impl ConstructionGraph {
         let size = region.size_cells();
         let origin = region.origin_half_units() * crate::shape::STEPS_PER_HALF_UNIT;
         let mut material: Option<ConstructionMaterial> = None;
+        let mut appearance: Option<MaterialAppearance> = None;
         let mut members: Vec<PartId> = Vec::new();
         let mut claimed: BTreeMap<PartId, i32> = BTreeMap::new();
         let mut empty = 0_usize;
@@ -1490,12 +1518,17 @@ impl ConstructionGraph {
             for y in 0..size.y {
                 for x in 0..size.x {
                     let corner = origin + IVec3::new(x, y, z) * crate::shape::STEPS_PER_CELL;
-                    let Some(&(part, cell_material)) = occupants.get(&corner.to_array()) else {
+                    let Some(&(part, cell_material, cell_appearance)) =
+                        occupants.get(&corner.to_array())
+                    else {
                         empty += 1;
                         continue;
                     };
                     if *material.get_or_insert(cell_material) != cell_material {
                         return Err(GraphError::RegionMixedMaterials);
+                    }
+                    if *appearance.get_or_insert(cell_appearance) != cell_appearance {
+                        return Err(GraphError::RegionMixedAppearances);
                     }
                     if !members.contains(&part) {
                         members.push(part);
@@ -1509,6 +1542,9 @@ impl ConstructionGraph {
         }
         if material != Some(region.material()) {
             return Err(GraphError::RegionMixedMaterials);
+        }
+        if appearance != Some(region.appearance()) {
+            return Err(GraphError::RegionMixedAppearances);
         }
 
         // A member hands its whole surface and mass to the region, so an area
@@ -1626,6 +1662,58 @@ impl ConstructionGraph {
                 }
                 let id = self.parts.insert(spec.into());
                 Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SetAppearance { target, appearance } => {
+                let target = match target {
+                    AppearanceTarget::Part(part) => self
+                        .region_of(part)
+                        .map_or(AppearanceTarget::Part(part), AppearanceTarget::Region),
+                    AppearanceTarget::Region(region) => AppearanceTarget::Region(region),
+                };
+                match target {
+                    AppearanceTarget::Part(id) => {
+                        let spec = self
+                            .parts
+                            .get(id)
+                            .copied()
+                            .ok_or(GraphError::MissingPart(id))?;
+                        let replacement = spec
+                            .with_appearance(appearance)
+                            .ok_or(GraphError::AuthoredAppearance(id))?;
+                        *self
+                            .parts
+                            .get_mut(id)
+                            .expect("the validated part remains live") = replacement;
+                    }
+                    AppearanceTarget::Region(id) => {
+                        self.regions.get(id).ok_or(GraphError::MissingRegion(id))?;
+                        let members = self
+                            .parts()
+                            .filter_map(|(part, _)| {
+                                (self.region_of(part) == Some(id)).then_some(part)
+                            })
+                            .collect::<Vec<_>>();
+                        for part in members {
+                            let spec = self
+                                .parts
+                                .get(part)
+                                .copied()
+                                .ok_or(GraphError::MissingPart(part))?;
+                            let replacement = spec
+                                .with_appearance(appearance)
+                                .ok_or(GraphError::AuthoredAppearance(part))?;
+                            *self
+                                .parts
+                                .get_mut(part)
+                                .expect("a region member remains live") = replacement;
+                        }
+                        self.regions
+                            .get_mut(id)
+                            .expect("the validated region remains live")
+                            .set_appearance(appearance);
+                    }
+                }
+                Ok(BuildOutcome::AppearanceUpdated)
             }
             BuildCommand::Remove(id) => {
                 self.parts.get(id).ok_or(GraphError::MissingPart(id))?;
@@ -2395,15 +2483,17 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
 
     use super::{
-        BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome,
-        ConstructionGraph, DriveLinkSpec, GraphError, PendingOperation, RigidLinkSpec, WeldSpec,
+        AppearanceTarget, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
+        BuildOutcome, ConstructionGraph, DriveLinkSpec, GraphError, PendingOperation,
+        RigidLinkSpec, WeldSpec,
     };
     use crate::{
         ActuatorAssignment, BearingId, BuildPose, ConstructionMaterial, ControllerSpec, CuboidSpec,
         CylinderDimensions, CylinderSpec, DimensionLinkId, DimensionLinkSpec, DriveLimits,
         DriveName, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind,
-        FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, PartId, PartSpec, RegionError,
-        RegionId, SeatControllerLinkSpec, SeatSpec, ShapeRegion, ShiftMode, TransmissionSpec,
+        FaceRef, GridRotation, InputSeatLinkSpec, InputSpec, MaterialAppearance, MaterialColor,
+        MaterialDye, MaterialFinish, PartId, PartSpec, RegionError, RegionId,
+        SeatControllerLinkSpec, SeatSpec, ShapeRegion, ShiftMode, TransmissionSpec,
     };
 
     fn cube_at(x: i32) -> CuboidSpec {
@@ -3242,6 +3332,93 @@ mod tests {
             add_region(&mut graph, IVec3::new(2, 1, 1), ConstructionMaterial::Steel),
             Err(GraphError::RegionMixedMaterials)
         ));
+    }
+
+    fn blue_paint() -> MaterialAppearance {
+        MaterialAppearance::new(
+            MaterialColor::Dye(MaterialDye::new([42, 76, 199], 1.25).unwrap()),
+            MaterialFinish::Painted,
+        )
+    }
+
+    #[test]
+    fn a_region_requires_one_appearance_and_painting_it_updates_every_member() {
+        let size = IVec3::new(2, 1, 1);
+        let mut graph = welded_blocks(size, ConstructionMaterial::Steel);
+        let first = graph.parts().next().unwrap().0;
+        graph
+            .apply(BuildCommand::SetAppearance {
+                target: AppearanceTarget::Part(first),
+                appearance: blue_paint(),
+            })
+            .unwrap();
+        assert_eq!(
+            add_region(&mut graph, size, ConstructionMaterial::Steel),
+            Err(GraphError::RegionMixedAppearances)
+        );
+
+        graph
+            .apply(BuildCommand::SetAppearance {
+                target: AppearanceTarget::Part(first),
+                appearance: MaterialAppearance::BAKED,
+            })
+            .unwrap();
+        let region = add_region(&mut graph, size, ConstructionMaterial::Steel).unwrap();
+        graph
+            .apply(BuildCommand::SetAppearance {
+                target: AppearanceTarget::Part(first),
+                appearance: blue_paint(),
+            })
+            .unwrap();
+        assert_eq!(graph.region(region).unwrap().appearance(), blue_paint());
+        assert!(
+            graph
+                .parts()
+                .filter(|(part, _)| graph.region_of(*part) == Some(region))
+                .all(|(_, part)| part.appearance() == Some(blue_paint()))
+        );
+        graph
+            .apply(BuildCommand::SetAppearance {
+                target: AppearanceTarget::Region(region),
+                appearance: MaterialAppearance::BAKED,
+            })
+            .unwrap();
+        assert_eq!(
+            graph
+                .apply(BuildCommand::SetAppearance {
+                    target: AppearanceTarget::Region(region),
+                    appearance: blue_paint(),
+                })
+                .unwrap(),
+            BuildOutcome::AppearanceUpdated
+        );
+        assert_eq!(graph.region(region).unwrap().appearance(), blue_paint());
+        assert!(
+            graph
+                .parts()
+                .filter(|(part, _)| graph.region_of(*part) == Some(region))
+                .all(|(_, part)| part.appearance() == Some(blue_paint()))
+        );
+    }
+
+    #[test]
+    fn authored_machine_parts_reject_appearance_edits() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            graph.apply(BuildCommand::SetAppearance {
+                target: AppearanceTarget::Part(controller),
+                appearance: blue_paint(),
+            }),
+            Err(GraphError::AuthoredAppearance(controller))
+        );
     }
 
     #[test]

@@ -42,6 +42,7 @@ pub(crate) enum GameAction {
     MatterItem,
     MatterTerrain,
     MatterManipulate,
+    MatterChroma,
     ClearPipette,
     Rotate,
     PipeTurn,
@@ -68,7 +69,7 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 52] = [
+    pub(crate) const ALL: [Self; 53] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -98,6 +99,7 @@ impl GameAction {
         Self::MatterItem,
         Self::MatterTerrain,
         Self::MatterManipulate,
+        Self::MatterChroma,
         Self::ClearPipette,
         Self::Rotate,
         Self::PipeTurn,
@@ -133,7 +135,7 @@ impl GameAction {
         (Self::ToolHammer, crate::hotbar::MainTool::Hammer),
     ];
 
-    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 5] = [
+    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 6] = [
         (Self::MatterBlock, crate::hotbar::MatterMode::Block),
         (Self::MatterCylinder, crate::hotbar::MatterMode::Cylinder),
         (Self::MatterItem, crate::hotbar::MatterMode::Item),
@@ -142,6 +144,7 @@ impl GameAction {
             Self::MatterManipulate,
             crate::hotbar::MatterMode::Manipulate,
         ),
+        (Self::MatterChroma, crate::hotbar::MatterMode::Chroma),
     ];
 
     pub(crate) const fn for_tool(tool: crate::hotbar::MainTool) -> Self {
@@ -160,6 +163,7 @@ impl GameAction {
             crate::hotbar::MatterMode::Item => Self::MatterItem,
             crate::hotbar::MatterMode::Terrain => Self::MatterTerrain,
             crate::hotbar::MatterMode::Manipulate => Self::MatterManipulate,
+            crate::hotbar::MatterMode::Chroma => Self::MatterChroma,
         }
     }
 
@@ -196,6 +200,7 @@ impl GameAction {
             Self::MatterItem => "Matter: Item Placer",
             Self::MatterTerrain => "Matter: Terrain",
             Self::MatterManipulate => "Matter: Manipulate",
+            Self::MatterChroma => "Matter: Chroma",
             Self::ClearPipette => "Clear / Pipette",
             Self::Rotate => "Rotate / Cycle",
             Self::PipeTurn => "Add Pipe Bend",
@@ -257,7 +262,8 @@ impl GameAction {
             | Self::MatterCylinder
             | Self::MatterItem
             | Self::MatterTerrain
-            | Self::MatterManipulate => "Tools",
+            | Self::MatterManipulate
+            | Self::MatterChroma => "Tools",
             Self::ShapeMirrorX
             | Self::ShapeMirrorZ
             | Self::ShapeSnap
@@ -538,7 +544,14 @@ impl Default for Controls {
         for ((action, _), key) in A::TOOL_ACTIONS.into_iter().zip(tool_keys) {
             set(action, Some(InputChord::key(key)), None);
         }
-        let mode_keys = [K::Digit1, K::Digit2, K::Digit3, K::Digit4, K::Digit5];
+        let mode_keys = [
+            K::Digit1,
+            K::Digit2,
+            K::Digit3,
+            K::Digit4,
+            K::Digit5,
+            K::Digit6,
+        ];
         for ((action, _), key) in A::MODE_ACTIONS.into_iter().zip(mode_keys) {
             set(action, Some(InputChord::key(key).with_shift()), None);
         }
@@ -925,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_bind_four_tools_and_five_shift_modes_without_shadowing() {
+    fn defaults_bind_four_tools_and_six_shift_modes_without_shadowing() {
         let controls = Controls::default();
         for ((action, _), digit) in GameAction::TOOL_ACTIONS.into_iter().zip([
             KeyCode::Digit1,
@@ -941,6 +954,7 @@ mod tests {
             KeyCode::Digit3,
             KeyCode::Digit4,
             KeyCode::Digit5,
+            KeyCode::Digit6,
         ]) {
             assert_eq!(
                 controls.binding(action).0[0],

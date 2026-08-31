@@ -1,5 +1,6 @@
 //! Editable construction data and deterministic compilation into physics rows.
 
+mod appearance;
 mod compile;
 mod creation;
 mod drive;
@@ -50,11 +51,11 @@ pub use geometry::{
     TransmissionSpec, snap_world_to_grid,
 };
 pub use graph::{
-    ActuatorInventory, BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand,
-    BuildOutcome, ConstructionGraph, ConstructionGraphEdit, DriveLinkSpec, GraphError,
-    GraphPartition, InputSeatLinkSpec, MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP,
-    MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec, SeatControllerLinkSpec,
-    StructuralComponent, WeldSpec,
+    ActuatorInventory, AppearanceTarget, BearingDimensionError, BearingDimensions, BearingSpec,
+    BuildCommand, BuildOutcome, ConstructionGraph, ConstructionGraphEdit, DriveLinkSpec,
+    GraphError, GraphPartition, InputSeatLinkSpec, MAX_BEARING_OUTER_DIAMETER,
+    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec,
+    SeatControllerLinkSpec, StructuralComponent, WeldSpec,
 };
 pub use id::{
     BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
@@ -76,3 +77,6 @@ pub const ANCHOR_TOLERANCE_METERS: f32 = 0.000_01;
 
 /// Maximum acceptable derived bearing-axis separation, in degrees.
 pub const AXIS_TOLERANCE_DEGREES: f32 = 0.001;
+pub use appearance::{
+    AppearanceError, MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, MaterialShift,
+};

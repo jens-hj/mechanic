@@ -268,6 +268,7 @@ mod tests {
                         rotation: [0, 0, 0],
                     },
                     material: mechanic_core::ConstructionMaterial::Steel,
+                    appearance: mechanic_core::MaterialAppearance::BAKED,
                 })
                 .collect(),
             regions: Vec::new(),

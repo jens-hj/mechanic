@@ -14,6 +14,7 @@ use std::{
 
 mod builder;
 mod camera;
+mod chroma;
 mod control_panel;
 mod controls;
 mod creation_menu;
@@ -39,6 +40,7 @@ use bevy::{
     image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings},
     input::mouse::AccumulatedMouseScroll,
     mesh::Indices,
+    pbr::ExtendedMaterial,
     prelude::*,
     render::{
         Render, RenderApp,
@@ -78,23 +80,24 @@ use camera::{
     MainCamera, MaterialWheelState, PlayerCamera, PlayerState, SEATED_EYE_HEIGHT,
     seated_view_rotation,
 };
+use chroma::{ChromaBrush, ChromaMaterialExtension, ConstructionRenderMaterial};
 use control_panel::ControlPanelState;
 use controls::{BindingInput, GameAction, InputChord, Modifiers, WheelDirection};
 use creation_menu::{CreationMenuState, CreationRequest};
 use creation_store::CreationStore;
 use hotbar::{SelectedMaterial, SelectedTerrainMaterial, SelectedTool, Tool};
 use mechanic_core::{
-    ActuatorAssignment, BearingDimensions, BearingId, BearingSocket, BuildCommand, BuildOutcome,
-    CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape, CompiledCreation,
-    ConstructionEditDelta, ConstructionGraph, ConstructionMaterial, ControllerSpec,
-    CreationDocument, CuboidSpec, CylinderDimensions, DimensionLinkSpec, DriveLinkSpec, DriveState,
-    DriveTarget, EngineKind, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS, GridRotation,
-    InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER,
-    MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER,
-    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, PartId,
-    PartPiece, PartSpec, PendingOperation, PipeBendDimensions, RegionId, STEP_METERS,
-    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError, TransmissionSpec,
-    face_neighbour_offset, part_cells,
+    ActuatorAssignment, AppearanceTarget, BearingDimensions, BearingId, BearingSocket,
+    BuildCommand, BuildOutcome, CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape,
+    CompiledCreation, ConstructionEditDelta, ConstructionGraph, ConstructionMaterial,
+    ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions, DimensionLinkSpec,
+    DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceKind, FaceOwner, FaceRef,
+    GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
+    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
+    MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, PartId, PartPiece, PartSpec, PendingOperation,
+    PipeBendDimensions, RegionId, STEP_METERS, SeatControllerLinkSpec, SeatSpec, ServoSpec,
+    ShapeRegion, TopologyError, TransmissionSpec, face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTickReadback,
@@ -499,6 +502,7 @@ struct PipeDrag {
     pending_radius: f32,
     dimensions: CylinderDimensions,
     material: ConstructionMaterial,
+    appearance: MaterialAppearance,
     mode: PipeEditMode,
     choosing_direction: bool,
     press: PointerSample,
@@ -513,6 +517,14 @@ struct EditorSnapshot {
     graph: Arc<ConstructionGraph>,
     placed_bearings: Vec<PlacedBearing>,
     revision: u64,
+}
+
+#[derive(Clone, Debug)]
+struct ChromaStroke {
+    previous: EditorSnapshot,
+    targets: HashSet<AppearanceTarget>,
+    remove: bool,
+    changed: bool,
 }
 
 impl EditorSnapshot {
@@ -2056,6 +2068,8 @@ struct EditorState {
     paint_selecting: bool,
     /// The new cage vertex the pointer is currently being offered.
     edge_offer: Option<shape_tool::EdgeInsertion>,
+    /// Active paint/remove drag, committed to history as one edit on release.
+    chroma_stroke: Option<ChromaStroke>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2096,8 +2110,8 @@ impl EditorState {
 #[derive(Resource)]
 struct EditorVisuals {
     construction_meshes: [Handle<Mesh>; ConstructionMaterial::ALL.len()],
-    construction_materials: [Handle<StandardMaterial>; ConstructionMaterial::ALL.len()],
-    ghost_materials: [Handle<StandardMaterial>; ConstructionMaterial::ALL.len()],
+    construction_materials: [Handle<ConstructionRenderMaterial>; ConstructionMaterial::ALL.len()],
+    ghost_materials: [Handle<ConstructionRenderMaterial>; ConstructionMaterial::ALL.len()],
     simulation_meshes: [Handle<Mesh>; ConstructionMaterial::ALL.len()],
     bearing_mesh: Handle<Mesh>,
     joint_xray_mesh: Handle<Mesh>,
@@ -2125,6 +2139,7 @@ struct EditorVisuals {
     cylinder_preview_mesh: Handle<Mesh>,
     bearing_preview_mesh: Handle<Mesh>,
     white_preview_material: Handle<StandardMaterial>,
+    chroma_preview_material: Handle<StandardMaterial>,
     green_preview_material: Handle<StandardMaterial>,
     red_preview_material: Handle<StandardMaterial>,
     /// Allowed, but with a consequence worth seeing first.
@@ -2506,27 +2521,48 @@ const fn material_index(material: ConstructionMaterial) -> usize {
         ConstructionMaterial::Aluminium => 0,
         ConstructionMaterial::CarbonFiber => 1,
         ConstructionMaterial::Concrete => 2,
-        ConstructionMaterial::Dirt => 3,
-        ConstructionMaterial::Graphite => 4,
-        ConstructionMaterial::Iron => 5,
-        ConstructionMaterial::Plastic => 6,
-        ConstructionMaterial::Rubber => 7,
-        ConstructionMaterial::Sand => 8,
-        ConstructionMaterial::Steel => 9,
-        ConstructionMaterial::Stone => 10,
-        ConstructionMaterial::Wood => 11,
+        ConstructionMaterial::Copper => 3,
+        ConstructionMaterial::Dirt => 4,
+        ConstructionMaterial::Graphite => 5,
+        ConstructionMaterial::Iron => 6,
+        ConstructionMaterial::Plastic => 7,
+        ConstructionMaterial::Rubber => 8,
+        ConstructionMaterial::Sand => 9,
+        ConstructionMaterial::Steel => 10,
+        ConstructionMaterial::Stone => 11,
+        ConstructionMaterial::Wood => 12,
+    }
+}
+
+const fn construction_tint_mask_path(material: ConstructionMaterial) -> Option<&'static str> {
+    match material {
+        ConstructionMaterial::Copper => Some("materials/copper/copper_tint.png"),
+        ConstructionMaterial::Dirt => Some("materials/dirt/dirt_tint.png"),
+        ConstructionMaterial::Aluminium
+        | ConstructionMaterial::CarbonFiber
+        | ConstructionMaterial::Concrete
+        | ConstructionMaterial::Graphite
+        | ConstructionMaterial::Iron
+        | ConstructionMaterial::Plastic
+        | ConstructionMaterial::Rubber
+        | ConstructionMaterial::Sand
+        | ConstructionMaterial::Steel
+        | ConstructionMaterial::Stone
+        | ConstructionMaterial::Wood => None,
     }
 }
 
 fn construction_material(
     asset_server: &AssetServer,
     material: ConstructionMaterial,
-) -> StandardMaterial {
+    tint_mask: Handle<Image>,
+) -> ConstructionRenderMaterial {
     let stem = match material {
         ConstructionMaterial::Aluminium => "materials/aluminium/aluminium",
         ConstructionMaterial::Graphite => "materials/graphite/graphite",
         ConstructionMaterial::CarbonFiber => "materials/carbon_fiber/carbon_fiber",
         ConstructionMaterial::Concrete => "materials/concrete/concrete",
+        ConstructionMaterial::Copper => "materials/copper/copper",
         ConstructionMaterial::Dirt => "materials/dirt/dirt",
         ConstructionMaterial::Iron => "materials/iron/iron",
         ConstructionMaterial::Plastic => "materials/plastic/plastic",
@@ -2545,14 +2581,25 @@ fn construction_material(
             .load(format!("{stem}_{suffix}.png"))
     };
     let orm = texture("orm", false);
-    StandardMaterial {
-        base_color_texture: Some(texture("base_color", true)),
-        metallic: 1.0,
-        perceptual_roughness: 1.0,
-        metallic_roughness_texture: Some(orm.clone()),
-        occlusion_texture: Some(orm),
-        normal_map_texture: Some(texture("normal", false)),
-        ..default()
+    ExtendedMaterial {
+        base: StandardMaterial {
+            base_color_texture: Some(texture("base_color", true)),
+            metallic: 1.0,
+            perceptual_roughness: 1.0,
+            metallic_roughness_texture: Some(orm.clone()),
+            occlusion_texture: Some(orm),
+            normal_map_texture: Some(texture("normal", false)),
+            ..default()
+        },
+        extension: ChromaMaterialExtension {
+            tint_mask,
+            base_lightness: Vec4::new(
+                chroma::material_profile(material).mean_oklab_lightness,
+                0.0,
+                0.0,
+                0.0,
+            ),
+        },
     }
 }
 
@@ -2595,6 +2642,7 @@ fn main() {
         .add_plugins(StreamingMeshAllocatorPlugin)
         .add_plugins(OneShotEnvironmentMapPlugin)
         .add_plugins(MaterialPlugin::<world::TerrainRenderMaterial>::default())
+        .add_plugins(MaterialPlugin::<ConstructionRenderMaterial>::default())
         // After DefaultPlugins: the overlay's render pass installs into the
         // render sub-app, which does not exist until RenderPlugin has run.
         .add_plugins(bevy_mosaic::MosaicPlugin)
@@ -2619,6 +2667,7 @@ fn main() {
         .init_resource::<shape_tool::ShapeSnap>()
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
+        .init_resource::<ChromaBrush>()
         .init_resource::<SelectedTerrainMaterial>()
         .init_resource::<PlayerState>()
         .init_resource::<MaterialWheelState>()
@@ -2718,6 +2767,7 @@ fn setup(
     settings: Res<AppSettings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut construction_render_materials: ResMut<Assets<ConstructionRenderMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
     let construction_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
@@ -2750,15 +2800,36 @@ fn setup(
     let delete_drag_preview_mesh = meshes.add(Cuboid::default());
     let weld_hover_preview_mesh = meshes.add(Cuboid::default());
     let weld_selection_preview_mesh = meshes.add(Cuboid::default());
-    let construction_materials = ConstructionMaterial::ALL
-        .map(|material| materials.add(construction_material(&asset_server, material)));
+    let white_tint_mask = images.add(Image::new_fill(
+        Extent3d::default(),
+        TextureDimension::D2,
+        &[255, 255, 255, 255],
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    ));
+    let tint_mask = |material| match construction_tint_mask_path(material) {
+        Some(path) => asset_server
+            .load_builder()
+            .with_settings(|settings: &mut ImageLoaderSettings| {
+                configure_repeating_texture(settings, false);
+            })
+            .load(path),
+        None => white_tint_mask.clone(),
+    };
+    let construction_materials = ConstructionMaterial::ALL.map(|material| {
+        construction_render_materials.add(construction_material(
+            &asset_server,
+            material,
+            tint_mask(material),
+        ))
+    });
     // Faded copies, swapped in while a region is being edited so the area under
     // the cursor is the only thing that reads as solid.
     let ghost_materials = ConstructionMaterial::ALL.map(|material| {
-        let mut ghost = construction_material(&asset_server, material);
-        ghost.base_color = ghost.base_color.with_alpha(0.16);
-        ghost.alpha_mode = AlphaMode::Blend;
-        materials.add(ghost)
+        let mut ghost = construction_material(&asset_server, material, tint_mask(material));
+        ghost.base.base_color = ghost.base.base_color.with_alpha(0.16);
+        ghost.base.alpha_mode = AlphaMode::Blend;
+        construction_render_materials.add(ghost)
     });
     let bearing_material = bearing_surface_material(&asset_server);
     commands.insert_resource(BearingTextureMipsPending(vec![
@@ -2830,6 +2901,8 @@ fn setup(
         ..default()
     });
     let white_preview_material = materials.add(preview_material(Color::srgba(1.0, 1.0, 1.0, 0.34)));
+    let chroma_preview_material =
+        materials.add(preview_material(Color::srgba(1.0, 1.0, 1.0, 0.46)));
     let red_preview_material = materials.add(preview_material(Color::srgba(1.0, 0.06, 0.04, 0.46)));
     let amber_preview_material =
         materials.add(preview_material(Color::srgba(1.0, 0.60, 0.06, 0.46)));
@@ -2869,6 +2942,7 @@ fn setup(
         cylinder_preview_mesh,
         bearing_preview_mesh,
         white_preview_material: white_preview_material.clone(),
+        chroma_preview_material,
         green_preview_material,
         red_preview_material: red_preview_material.clone(),
         amber_preview_material,
@@ -3646,6 +3720,7 @@ fn handle_shortcuts(
     simulation: Res<AppSimulation>,
     mut hammer: ResMut<HammerInteraction>,
     mut material: ResMut<SelectedMaterial>,
+    mut chroma_brush: ResMut<ChromaBrush>,
     mut bearing_settings: ResMut<BearingToolSettings>,
     mut cylinder_settings: ResMut<CylinderToolSettings>,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -3670,7 +3745,17 @@ fn handle_shortcuts(
         }
     }
     if actions.just_pressed(GameAction::ClearPipette) {
-        if selection.tool.is_some() {
+        if selection.active_editor_tool() == Some(Tool::Chroma) {
+            match appearance_target(&graph.0, &state)
+                .and_then(|target| target_appearance(&graph.0, target))
+            {
+                Some(appearance) => {
+                    chroma_brush.appearance = appearance;
+                    state.feedback = Some("Sampled construction appearance".to_owned());
+                }
+                None => state.feedback = Some("Point at construction to sample it".to_owned()),
+            }
+        } else if selection.tool.is_some() {
             clear_held_tool(&mut graph.0, &mut state, &mut selection, &mut hammer);
         } else {
             let cursor = camera::viewport_center(Vec2::new(window.width(), window.height()));
@@ -4242,6 +4327,7 @@ fn update_hover(
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
     selected_material: Option<Res<SelectedMaterial>>,
+    chroma_brush: Res<ChromaBrush>,
     overlay: Res<ui::UiInput>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
@@ -4285,6 +4371,7 @@ fn update_hover(
                 selected_material
                     .as_deref()
                     .map_or(ConstructionMaterial::Steel, |value| value.0),
+                chroma_brush.appearance,
                 actions.pressed(GameAction::FinePlacement),
             );
         }
@@ -4452,7 +4539,8 @@ fn update_hover(
             | Tool::Seat
             | Tool::Input
             | Tool::DimensionLink
-            | Tool::Shape => raycast_surface(None),
+            | Tool::Shape
+            | Tool::Chroma => raycast_surface(None),
         }
     };
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
@@ -4485,6 +4573,7 @@ fn update_hover(
             selected_material
                 .as_deref()
                 .map_or(ConstructionMaterial::Steel, |value| value.0),
+            chroma_brush.appearance,
             actions.pressed(GameAction::FinePlacement),
         );
         return;
@@ -4499,6 +4588,7 @@ fn update_hover(
             selected_material
                 .as_deref()
                 .map_or(ConstructionMaterial::Steel, |value| value.0),
+            chroma_brush.appearance,
             actions.pressed(GameAction::FinePlacement),
         );
         return;
@@ -4513,6 +4603,7 @@ fn update_hover(
         selected_material
             .as_deref()
             .map_or(ConstructionMaterial::Steel, |value| value.0),
+        chroma_brush.appearance,
         actions.pressed(GameAction::FinePlacement),
     );
 }
@@ -4700,7 +4791,7 @@ fn refresh_pipe_drag(
 }
 
 fn rebuild_pipe_drag(graph: &ConstructionGraph, state: &mut EditorState) {
-    let (points, bend_radii, dimensions, material) = {
+    let (points, bend_radii, dimensions, material, appearance) = {
         let drag = state.pipe_drag.as_ref().expect("pipe drag remains active");
         let mut points = Vec::with_capacity(drag.corners.len() + 2);
         points.push(drag.start);
@@ -4711,12 +4802,17 @@ fn rebuild_pipe_drag(graph: &ConstructionGraph, state: &mut EditorState) {
             drag.bend_radii.clone(),
             drag.dimensions,
             drag.material,
+            drag.appearance,
         )
     };
-    let result = pipe_run_pieces(&points, &bend_radii, dimensions, material).and_then(|pieces| {
-        validate_pipe_run_in_bounds(graph, &pieces, state.placement_bounds)?;
-        Ok(pieces)
-    });
+    let result =
+        pipe_run_pieces(&points, &bend_radii, dimensions, material).and_then(|mut pieces| {
+            for piece in &mut pieces {
+                piece.spec = ordinary_part_with_appearance(piece.spec, appearance);
+            }
+            validate_pipe_run_in_bounds(graph, &pieces, state.placement_bounds)?;
+            Ok(pieces)
+        });
     let drag = state.pipe_drag.as_mut().expect("pipe drag remains active");
     match result {
         Ok(pieces) => {
@@ -4730,6 +4826,15 @@ fn rebuild_pipe_drag(graph: &ConstructionGraph, state: &mut EditorState) {
         }
     }
     state.pipe_preview_revision = state.pipe_preview_revision.wrapping_add(1);
+}
+
+fn ordinary_part_with_appearance(spec: PartSpec, appearance: MaterialAppearance) -> PartSpec {
+    match spec {
+        PartSpec::Cuboid(spec) => PartSpec::Cuboid(spec.with_appearance(appearance)),
+        PartSpec::Cylinder(spec) => PartSpec::Cylinder(spec.with_appearance(appearance)),
+        PartSpec::PipeBend(spec) => PartSpec::PipeBend(spec.with_appearance(appearance)),
+        authored => authored,
+    }
 }
 
 fn invalidate_pipe_drag(state: &mut EditorState, error: PlacementError) {
@@ -4946,6 +5051,7 @@ fn refresh_tool_preview_with_cylinder(
     tool: Tool,
     cylinder_dimensions: CylinderDimensions,
     material: ConstructionMaterial,
+    appearance: MaterialAppearance,
     fine_placement: bool,
 ) {
     state.preview = None;
@@ -4968,7 +5074,10 @@ fn refresh_tool_preview_with_cylinder(
                     .is_some()
                     .then(|| candidate_from_hit_with_step(graph, hit, fine_placement))
                     .map(|mut candidate| {
-                        candidate.spec = candidate.spec.with_material(material);
+                        candidate.spec = candidate
+                            .spec
+                            .with_material(material)
+                            .with_appearance(appearance);
                         candidate
                     })
             });
@@ -5005,7 +5114,10 @@ fn refresh_tool_preview_with_cylinder(
                 let candidate = surface_candidate.unwrap_or_else(|| {
                     let mut candidate =
                         bearing_attachment_candidate(graph, bearing.source, bearing.anchor);
-                    candidate.spec = candidate.spec.with_material(material);
+                    candidate.spec = candidate
+                        .spec
+                        .with_material(material)
+                        .with_appearance(appearance);
                     candidate
                 });
                 let error = stage_bearing_attachment_in_bounds(
@@ -5061,7 +5173,10 @@ fn refresh_tool_preview_with_cylinder(
                     .ok()
                 })
                 .map(|mut candidate| {
-                    candidate.spec = candidate.spec.with_material(material);
+                    candidate.spec = candidate
+                        .spec
+                        .with_material(material)
+                        .with_appearance(appearance);
                     candidate
                 });
             let direct_bearing = state.hovered_bearing.filter(|&index| {
@@ -5108,7 +5223,10 @@ fn refresh_tool_preview_with_cylinder(
                     )
                     .ok()
                     .map(|mut candidate| {
-                        candidate.spec = candidate.spec.with_material(material);
+                        candidate.spec = candidate
+                            .spec
+                            .with_material(material)
+                            .with_appearance(appearance);
                         candidate
                     })
                 })
@@ -5185,7 +5303,7 @@ fn refresh_tool_preview_with_cylinder(
             }),
         // Shaping edits the grid rather than placing anything, so like these
         // it has no placement ghost of its own.
-        (Tool::Weld | Tool::Hammer | Tool::Connector | Tool::Shape, _) => None,
+        (Tool::Weld | Tool::Hammer | Tool::Connector | Tool::Shape | Tool::Chroma, _) => None,
         (Tool::Bearing, _) => state.hovered.and_then(|hit| {
             if try_face_geometry_from_ref(hit.face, Some(graph)).is_none() {
                 Some(PlacementError::CurvedSurface)
@@ -5204,6 +5322,7 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
         tool,
         CylinderDimensions::default(),
         ConstructionMaterial::Steel,
+        MaterialAppearance::BAKED,
         false,
     );
 }
@@ -5781,7 +5900,10 @@ fn sync_region_focus(
     state: Res<EditorState>,
     selection: Res<SelectedTool>,
     visuals: Res<EditorVisuals>,
-    mut construction_visuals: Query<(&ConstructionVisual, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut construction_visuals: Query<(
+        &ConstructionVisual,
+        &mut MeshMaterial3d<ConstructionRenderMaterial>,
+    )>,
 ) {
     let editing =
         selection.active_editor_tool() == Some(Tool::Shape) && state.active_region.is_some();
@@ -6146,6 +6268,88 @@ fn region_world_bounds(region: &ShapeRegion) -> (Vec3, Vec3) {
     (low.as_vec3() * STEP_METERS, high.as_vec3() * STEP_METERS)
 }
 
+fn appearance_target(graph: &ConstructionGraph, state: &EditorState) -> Option<AppearanceTarget> {
+    let hit = state.hovered?;
+    let FaceOwner::Part(part) = hit.face.owner else {
+        return None;
+    };
+    graph.part(part)?.appearance()?;
+    Some(
+        graph
+            .region_of(part)
+            .map_or(AppearanceTarget::Part(part), AppearanceTarget::Region),
+    )
+}
+
+fn target_appearance(
+    graph: &ConstructionGraph,
+    target: AppearanceTarget,
+) -> Option<MaterialAppearance> {
+    match target {
+        AppearanceTarget::Part(part) => graph.part(part)?.appearance(),
+        AppearanceTarget::Region(region) => Some(graph.region(region)?.appearance()),
+    }
+}
+
+fn handle_chroma_actions(
+    actions: &ButtonInput<GameAction>,
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    brush: MaterialAppearance,
+) {
+    let started_remove = actions.just_pressed(GameAction::Secondary);
+    if actions.just_pressed(GameAction::Primary) || started_remove {
+        state.chroma_stroke = Some(ChromaStroke {
+            previous: EditorSnapshot::capture(graph, state),
+            targets: HashSet::new(),
+            remove: started_remove,
+            changed: false,
+        });
+    }
+
+    if (actions.pressed(GameAction::Primary) || actions.pressed(GameAction::Secondary))
+        && let Some(target) = appearance_target(graph, state)
+    {
+        let stroke = state
+            .chroma_stroke
+            .as_mut()
+            .expect("a held Chroma button begins a stroke");
+        if stroke.targets.insert(target) {
+            let wanted = if stroke.remove {
+                MaterialAppearance::BAKED
+            } else {
+                brush
+            };
+            if target_appearance(graph, target) != Some(wanted) {
+                match graph.apply(BuildCommand::SetAppearance {
+                    target,
+                    appearance: wanted,
+                }) {
+                    Ok(BuildOutcome::AppearanceUpdated) => {
+                        stroke.changed = true;
+                        state.construction_mesh_dirty = true;
+                    }
+                    Ok(_) => unreachable!("appearance edits report their outcome"),
+                    Err(error) => state.feedback = Some(error.to_string()),
+                }
+            }
+        }
+    }
+
+    if (actions.just_released(GameAction::Primary) || actions.just_released(GameAction::Secondary))
+        && let Some(stroke) = state.chroma_stroke.take()
+        && stroke.changed
+    {
+        history.commit(stroke.previous);
+        state.feedback = Some(if stroke.remove {
+            "Restored baked appearance".to_owned()
+        } else {
+            "Painted construction appearance".to_owned()
+        });
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 // Tool-specific input flows remain readable together.
 fn handle_build_actions(
@@ -6158,6 +6362,7 @@ fn handle_build_actions(
     bearing_settings: Res<BearingToolSettings>,
     mut cylinder_settings: ResMut<CylinderToolSettings>,
     selected_material: Option<Res<SelectedMaterial>>,
+    chroma_brush: Res<ChromaBrush>,
     overlay: Res<ui::UiInput>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
@@ -6190,6 +6395,16 @@ fn handle_build_actions(
         return;
     };
     if tool == Tool::Shape {
+        return;
+    }
+    if tool == Tool::Chroma {
+        handle_chroma_actions(
+            &actions,
+            &mut graph.0,
+            &mut state,
+            &mut history,
+            chroma_brush.appearance,
+        );
         return;
     }
     if actions.just_pressed(GameAction::Secondary) && state.block_drag.take().is_some() {
@@ -6504,6 +6719,7 @@ fn handle_build_actions(
                 ),
                 dimensions: candidate.spec.dimensions,
                 material: candidate.spec.material,
+                appearance: candidate.spec.appearance,
                 mode: PipeEditMode::Length,
                 choosing_direction: false,
                 press: PointerSample {
@@ -6882,6 +7098,7 @@ fn handle_build_actions(
             }
         }
         Tool::Connector => unreachable!("connector actions are handled before this match"),
+        Tool::Chroma => unreachable!("Chroma actions are handled before this match"),
     }
     refresh_tool_preview_with_cylinder(
         &graph.0,
@@ -6891,6 +7108,7 @@ fn handle_build_actions(
         selected_material
             .as_deref()
             .map_or(ConstructionMaterial::Steel, |value| value.0),
+        chroma_brush.appearance,
         actions.pressed(GameAction::FinePlacement),
     );
 }
@@ -8378,6 +8596,13 @@ fn update_joint_xray(
     };
 }
 
+#[derive(bevy::ecs::system::SystemParam)]
+struct ChromaPreviewParams<'w> {
+    selected_material: Res<'w, SelectedMaterial>,
+    brush: Res<'w, ChromaBrush>,
+    materials: ResMut<'w, Assets<StandardMaterial>>,
+}
+
 #[allow(
     clippy::type_complexity,
     clippy::too_many_arguments,
@@ -8388,6 +8613,7 @@ fn update_previews(
     state: Res<EditorState>,
     _simulation: Res<AppSimulation>,
     selected_tool: Res<SelectedTool>,
+    mut chroma: ChromaPreviewParams,
     bearing_settings: Res<BearingToolSettings>,
     cylinder_settings: Res<CylinderToolSettings>,
     visuals: Res<EditorVisuals>,
@@ -8513,12 +8739,25 @@ fn update_previews(
             state.preview_error.as_ref(),
         )
     });
+    let chroma_preview = matches!(
+        selected_tool.active_editor_tool(),
+        Some(Tool::Block | Tool::Cylinder)
+    ) && chroma.brush.appearance != MaterialAppearance::BAKED;
+    if chroma_preview {
+        let [r, g, b] =
+            chroma::representative_srgb(chroma.selected_material.0, chroma.brush.appearance);
+        if let Some(mut material) = chroma.materials.get_mut(&visuals.chroma_preview_material) {
+            material.base_color = Color::srgb_u8(r, g, b).with_alpha(0.46);
+        }
+    }
     let action_material = if state.preview_error.is_some() {
         &visuals.red_preview_material
     } else if state.preview_warning.is_some() {
         &visuals.amber_preview_material
     } else if bearing_attachment_highlighted {
         &visuals.green_preview_material
+    } else if chroma_preview {
+        &visuals.chroma_preview_material
     } else {
         &visuals.white_preview_material
     };
@@ -8547,7 +8786,7 @@ fn update_previews(
         selection.1.scale = Vec3::splat(1.12);
     }
     match (selected_tool.active_editor_tool(), graph.0.pending()) {
-        (None | Some(Tool::Shape), _) => {
+        (None | Some(Tool::Shape | Tool::Chroma), _) => {
             *action.2 = Visibility::Hidden;
         }
         (Some(Tool::Block), _) => {
@@ -9265,6 +9504,7 @@ fn combined_construction_mesh_filtered(
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
+    let mut colors = Vec::new();
     let mut indices = Vec::new();
     let pipe_texture_offsets = pipe_texture_offsets(graph);
     let welded_pipe_ends = welded_pipe_ends(graph);
@@ -9278,6 +9518,7 @@ fn combined_construction_mesh_filtered(
             continue;
         }
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
+        let first_vertex = positions.len();
         append_textured_part(
             *spec,
             spec.pose().translation(),
@@ -9291,6 +9532,10 @@ fn combined_construction_mesh_filtered(
             &mut tangents,
             &mut indices,
         );
+        colors.extend(std::iter::repeat_n(
+            chroma::encode_appearance(spec.appearance().expect("ordinary parts have appearances")),
+            positions.len() - first_vertex,
+        ));
     }
     for (id, region) in graph.regions() {
         if material.is_some_and(|wanted| wanted != region.material()) {
@@ -9300,6 +9545,7 @@ fn combined_construction_mesh_filtered(
             Some((preview_id, previewed)) if *preview_id == id => previewed,
             _ => region,
         };
+        let first_vertex = positions.len();
         append_region(
             shown,
             BuildTransform::IDENTITY,
@@ -9309,6 +9555,10 @@ fn combined_construction_mesh_filtered(
             &mut tangents,
             &mut indices,
         );
+        colors.extend(std::iter::repeat_n(
+            chroma::encode_appearance(shown.appearance()),
+            positions.len() - first_vertex,
+        ));
     }
 
     Mesh::new(
@@ -9319,6 +9569,7 @@ fn combined_construction_mesh_filtered(
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -9700,6 +9951,7 @@ fn combined_simulation_mesh_filtered(
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
+    let mut colors = Vec::new();
     let mut indices = Vec::new();
     let mut drawn_regions: Vec<mechanic_core::RegionId> = Vec::new();
     for &(part, compound_index) in parts {
@@ -9720,6 +9972,7 @@ fn combined_simulation_mesh_filtered(
             }
             drawn_regions.push(id);
             if let Some(region) = graph.region(id) {
+                let first_vertex = positions.len();
                 append_region(
                     region,
                     placement,
@@ -9729,11 +9982,16 @@ fn combined_simulation_mesh_filtered(
                     &mut tangents,
                     &mut indices,
                 );
+                colors.extend(std::iter::repeat_n(
+                    chroma::encode_appearance(region.appearance()),
+                    positions.len() - first_vertex,
+                ));
             }
             continue;
         }
         let local_center = spec.pose().translation() - initial.root_translation;
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
+        let first_vertex = positions.len();
         append_textured_part(
             spec,
             root_translation + root_rotation * local_center,
@@ -9747,6 +10005,10 @@ fn combined_simulation_mesh_filtered(
             &mut tangents,
             &mut indices,
         );
+        colors.extend(std::iter::repeat_n(
+            chroma::encode_appearance(spec.appearance().expect("ordinary parts have appearances")),
+            positions.len() - first_vertex,
+        ));
     }
 
     Mesh::new(
@@ -9757,6 +10019,7 @@ fn combined_simulation_mesh_filtered(
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
     .with_inserted_indices(Indices::U32(indices))
 }
 
@@ -12047,7 +12310,8 @@ mod rendering_tests {
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
         DimensionLinkId, DimensionLinkSpec, DriveLimits, DriveLinkSpec, DriveProgram, DriveState,
         DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec,
-        PartSpec, PipeBendDimensions, SeatSpec, ServoSpec,
+        MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, MaterialShift, PartSpec,
+        PipeBendDimensions, SeatSpec, ServoSpec,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -12063,8 +12327,8 @@ mod rendering_tests {
         combined_drive_xray_mesh, combined_material_construction_mesh,
         combined_simulation_bearing_mesh, combined_simulation_material_mesh,
         combined_simulation_mesh, configure_authored_texture, configure_bearing_texture,
-        configure_repeating_texture, drive_xray_is_visible, joint_xray_is_visible,
-        preview_material, renderable_mesh, simulation_material_is_present,
+        configure_repeating_texture, construction_tint_mask_path, drive_xray_is_visible,
+        joint_xray_is_visible, preview_material, renderable_mesh, simulation_material_is_present,
         single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
     use super::{
@@ -12249,7 +12513,11 @@ mod rendering_tests {
                         BuildPose::new(IVec3::new(x, 2, 0), GridRotation::default()),
                     )
                     .unwrap()
-                    .with_material(material),
+                    .with_material(material)
+                    .with_appearance(MaterialAppearance::new(
+                        MaterialColor::Dye(MaterialDye::new([42, 76, 199], 1.2).unwrap()),
+                        MaterialFinish::Painted,
+                    )),
                 ))
                 .unwrap();
             graph
@@ -12258,7 +12526,11 @@ mod rendering_tests {
                         CylinderDimensions::new(1.0, 0.0, 1.0).unwrap(),
                         BuildPose::new(IVec3::new(x, 2, 8), GridRotation::default()),
                     )
-                    .with_material(material),
+                    .with_material(material)
+                    .with_appearance(MaterialAppearance::new(
+                        MaterialColor::Shift(MaterialShift::new(45.0, 1.3, 0.9).unwrap()),
+                        MaterialFinish::Anodised,
+                    )),
                 ))
                 .unwrap();
         }
@@ -12288,6 +12560,15 @@ mod rendering_tests {
             );
             assert!(build.count_vertices() > 24);
             assert_eq!(simulated.count_vertices(), build.count_vertices());
+            assert_eq!(
+                build.attribute(Mesh::ATTRIBUTE_COLOR).unwrap().len(),
+                build.count_vertices(),
+            );
+            assert_eq!(
+                simulated.attribute(Mesh::ATTRIBUTE_COLOR),
+                build.attribute(Mesh::ATTRIBUTE_COLOR),
+                "editor and simulation encode identical appearance payloads",
+            );
             assert_eq!(
                 build.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().len(),
                 build.count_vertices(),
@@ -12339,6 +12620,22 @@ mod rendering_tests {
         let data_sampler = data_map.sampler.get_or_init_descriptor();
         assert_eq!(data_sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(data_sampler.address_mode_v, ImageAddressMode::Repeat);
+    }
+
+    #[test]
+    fn only_copper_and_dirt_route_material_tint_masks() {
+        for material in ConstructionMaterial::ALL {
+            let path = construction_tint_mask_path(material);
+            match material {
+                ConstructionMaterial::Copper => {
+                    assert_eq!(path, Some("materials/copper/copper_tint.png"));
+                }
+                ConstructionMaterial::Dirt => {
+                    assert_eq!(path, Some("materials/dirt/dirt_tint.png"));
+                }
+                _ => assert_eq!(path, None),
+            }
+        }
     }
 
     #[test]
@@ -13696,8 +13993,9 @@ mod interaction_tests {
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveLinkSpec, FaceKind, FaceOwner, FaceRef, GridRotation, PartId, PartSpec,
-        PendingOperation, RigidLinkSpec, ShapeRegion,
+        DriveLinkSpec, FaceKind, FaceOwner, FaceRef, GridRotation, MaterialAppearance,
+        MaterialColor, MaterialDye, MaterialFinish, PartId, PartSpec, PendingOperation,
+        RigidLinkSpec, ShapeRegion,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -13712,8 +14010,8 @@ mod interaction_tests {
         bearing_attachment_is_highlighted, block_sheet_bounds, candidate_from_hit, choose_region,
         closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
         delete_box_parts, disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude,
-        hammer_point_travel, handle_block_actions, handle_build_actions, handle_tool_change,
-        pipe_pointer_delta, pipe_turn_direction, raycast_construction,
+        hammer_point_travel, handle_block_actions, handle_build_actions, handle_chroma_actions,
+        handle_tool_change, pipe_pointer_delta, pipe_turn_direction, raycast_construction,
         raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
         refresh_block_drag, refresh_region_drag, refresh_tool_preview,
         requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
@@ -13743,6 +14041,111 @@ mod interaction_tests {
         assert!(state.world_drag_active());
         assert!(state.cancel_delete_gesture());
         assert!(!state.world_drag_active());
+    }
+
+    #[test]
+    fn chroma_drag_paints_each_crossed_part_as_one_undoable_stroke() {
+        let mut graph = ConstructionGraph::new();
+        let mut ids = Vec::new();
+        for x in [0, 4] {
+            let BuildOutcome::Spawned(id) = graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1, 1, 1],
+                        BuildPose::new(IVec3::new(x, 0, 0), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            ids.push(id);
+        }
+        let paint = MaterialAppearance::new(
+            MaterialColor::Dye(MaterialDye::new([42, 76, 199], 1.0).unwrap()),
+            MaterialFinish::Painted,
+        );
+        let hit = |part| SurfaceHit {
+            distance: 1.0,
+            point: Vec3::ZERO,
+            face: FaceRef::part(part, FaceKind::PositiveY),
+        };
+        let mut state = EditorState {
+            hovered: Some(hit(ids[0])),
+            ..Default::default()
+        };
+        let mut history = EditorHistory::default();
+        let mut mouse = ButtonInput::default();
+
+        mouse.press(GameAction::Primary);
+        handle_chroma_actions(&mouse, &mut graph, &mut state, &mut history, paint);
+        mouse.clear();
+        state.hovered = Some(hit(ids[1]));
+        handle_chroma_actions(&mouse, &mut graph, &mut state, &mut history, paint);
+        mouse.clear();
+        mouse.release(GameAction::Primary);
+        handle_chroma_actions(&mouse, &mut graph, &mut state, &mut history, paint);
+
+        assert_eq!(history.undo.len(), 1);
+        assert!(
+            ids.into_iter()
+                .all(|id| graph.part(id).unwrap().appearance() == Some(paint))
+        );
+        assert!(apply_history_action(
+            HistoryAction::Undo,
+            &mut graph,
+            &mut state,
+            &mut history,
+        ));
+        assert!(
+            graph
+                .parts()
+                .all(|(_, part)| part.appearance() == Some(MaterialAppearance::BAKED))
+        );
+    }
+
+    #[test]
+    fn chroma_remove_restores_baked_once_and_a_noop_stroke_adds_no_history() {
+        let paint = MaterialAppearance::new(
+            MaterialColor::Dye(MaterialDye::new([224, 86, 31], 1.0).unwrap()),
+            MaterialFinish::Anodised,
+        );
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default())
+                    .unwrap()
+                    .with_appearance(paint),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut state = EditorState {
+            hovered: Some(SurfaceHit {
+                distance: 1.0,
+                point: Vec3::ZERO,
+                face: FaceRef::part(part, FaceKind::PositiveY),
+            }),
+            ..Default::default()
+        };
+        let mut history = EditorHistory::default();
+        let mut mouse = ButtonInput::default();
+
+        for expected_history in [1, 1] {
+            mouse.press(GameAction::Secondary);
+            handle_chroma_actions(&mouse, &mut graph, &mut state, &mut history, paint);
+            mouse.clear();
+            mouse.release(GameAction::Secondary);
+            handle_chroma_actions(&mouse, &mut graph, &mut state, &mut history, paint);
+            mouse.clear();
+            assert_eq!(history.undo.len(), expected_history);
+            assert_eq!(
+                graph.part(part).unwrap().appearance(),
+                Some(MaterialAppearance::BAKED)
+            );
+        }
     }
 
     #[test]
@@ -14806,6 +15209,7 @@ mod interaction_tests {
             .insert_resource(EditorGraph(graph))
             .insert_resource(state)
             .insert_resource(EditorHistory::default())
+            .insert_resource(crate::chroma::ChromaBrush::default())
             .insert_resource(AppSimulation::default())
             .insert_resource(SelectedTool::from_editor_tool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
@@ -14966,6 +15370,7 @@ mod interaction_tests {
             .insert_resource(EditorGraph(graph))
             .insert_resource(state)
             .insert_resource(EditorHistory::default())
+            .insert_resource(crate::chroma::ChromaBrush::default())
             .insert_resource(AppSimulation::default())
             .insert_resource(SelectedTool::from_editor_tool(Tool::Block))
             .insert_resource(BearingToolSettings::default())
@@ -15596,6 +16001,7 @@ mod interaction_tests {
             pending_radius: 0.25,
             dimensions,
             material: ConstructionMaterial::Steel,
+            appearance: MaterialAppearance::BAKED,
             mode: PipeEditMode::Length,
             choosing_direction: false,
             press: PointerSample {

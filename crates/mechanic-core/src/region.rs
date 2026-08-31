@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use bevy_math::IVec3;
 use thiserror::Error;
 
-use crate::geometry::ConstructionMaterial;
 use crate::shape::{CellGrid, STEPS_PER_CELL, STEPS_PER_HALF_UNIT};
+use crate::{ConstructionMaterial, MaterialAppearance};
 
 /// A cage vertex, indexed by its plane along each axis.
 pub type CageIndex = [u16; 3];
@@ -49,11 +49,12 @@ pub enum RegionError {
 }
 
 /// A solid cuboid of blocks and the cage that shapes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShapeRegion {
     origin_half_units: IVec3,
     size_cells: IVec3,
     material: ConstructionMaterial,
+    appearance: MaterialAppearance,
     /// Cage plane positions in cells from the origin, ascending. The first is
     /// always 0 and the last always `size_cells[axis]`.
     planes: [Vec<i32>; 3],
@@ -80,6 +81,7 @@ impl ShapeRegion {
             origin_half_units,
             size_cells,
             material,
+            appearance: MaterialAppearance::BAKED,
             planes: core::array::from_fn(|axis| vec![0, size_cells[axis]]),
             offsets: BTreeMap::new(),
         })
@@ -98,6 +100,22 @@ impl ShapeRegion {
     /// Material every block in the region shares.
     pub const fn material(&self) -> ConstructionMaterial {
         self.material
+    }
+
+    /// Color and finish shared by every block in the region.
+    pub const fn appearance(&self) -> MaterialAppearance {
+        self.appearance
+    }
+
+    /// Uses an explicit construction appearance.
+    #[must_use]
+    pub const fn with_appearance(mut self, appearance: MaterialAppearance) -> Self {
+        self.appearance = appearance;
+        self
+    }
+
+    pub(crate) const fn set_appearance(&mut self, appearance: MaterialAppearance) {
+        self.appearance = appearance;
     }
 
     /// Whether the region has been shaped at all.

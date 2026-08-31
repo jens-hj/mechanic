@@ -2,7 +2,7 @@ use bevy_math::{EulerRot, IVec3, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::PartId;
+use crate::{MaterialAppearance, PartId};
 
 /// Stable identity of a Dimension Link within one saved world and its Garage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -20,6 +20,8 @@ pub enum ConstructionMaterial {
     CarbonFiber,
     /// Dense, high-friction concrete.
     Concrete,
+    /// Dense conductive copper.
+    Copper,
     /// Compactable earth fill.
     Dirt,
     /// General-purpose structural iron.
@@ -41,10 +43,11 @@ pub enum ConstructionMaterial {
 
 impl ConstructionMaterial {
     /// Every selectable material in alphabetical display order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Aluminium,
         Self::CarbonFiber,
         Self::Concrete,
+        Self::Copper,
         Self::Dirt,
         Self::Graphite,
         Self::Iron,
@@ -62,6 +65,7 @@ impl ConstructionMaterial {
             Self::Aluminium => "Aluminium",
             Self::CarbonFiber => "Carbon Fiber",
             Self::Concrete => "Concrete",
+            Self::Copper => "Copper",
             Self::Dirt => "Dirt",
             Self::Graphite => "Graphite",
             Self::Iron => "Iron",
@@ -80,6 +84,7 @@ impl ConstructionMaterial {
             Self::Aluminium => MaterialProperties::new(2_700.0, 0.61, 0.47, 0.25, 0.004, 69.0e9),
             Self::CarbonFiber => MaterialProperties::new(1_600.0, 0.40, 0.30, 0.20, 0.008, 70.0e9),
             Self::Concrete => MaterialProperties::new(2_400.0, 0.80, 0.65, 0.05, 0.020, 30.0e9),
+            Self::Copper => MaterialProperties::new(8_960.0, 0.53, 0.36, 0.20, 0.003, 117.0e9),
             Self::Dirt => MaterialProperties::new(1_600.0, 0.72, 0.55, 0.05, 0.030, 0.05e9),
             Self::Graphite => MaterialProperties::new(1_900.0, 0.25, 0.15, 0.10, 0.010, 12.0e9),
             Self::Iron => MaterialProperties::new(7_870.0, 0.70, 0.55, 0.15, 0.003, 170.0e9),
@@ -377,7 +382,7 @@ impl BuildPose {
 }
 
 /// Editable cuboid dimensions and build pose.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CuboidSpec {
     /// Validated x/y/z dimensions.
     pub dimensions: [GridDimension; 3],
@@ -385,6 +390,8 @@ pub struct CuboidSpec {
     pub pose: BuildPose,
     /// Material used for appearance, mass, and contact response.
     pub material: ConstructionMaterial,
+    /// Independent color and finish treatment.
+    pub appearance: MaterialAppearance,
 }
 
 /// Invalid load-bearing cylinder dimensions.
@@ -549,6 +556,8 @@ pub struct CylinderSpec {
     pub pose: BuildPose,
     /// Material used for appearance, mass, and contact response.
     pub material: ConstructionMaterial,
+    /// Independent color and finish treatment.
+    pub appearance: MaterialAppearance,
 }
 
 impl CylinderSpec {
@@ -558,6 +567,7 @@ impl CylinderSpec {
             dimensions,
             pose,
             material: ConstructionMaterial::Steel,
+            appearance: MaterialAppearance::BAKED,
         }
     }
 
@@ -565,6 +575,13 @@ impl CylinderSpec {
     #[must_use]
     pub const fn with_material(mut self, material: ConstructionMaterial) -> Self {
         self.material = material;
+        self
+    }
+
+    /// Uses an explicit construction appearance.
+    #[must_use]
+    pub const fn with_appearance(mut self, appearance: MaterialAppearance) -> Self {
+        self.appearance = appearance;
         self
     }
 }
@@ -708,6 +725,8 @@ pub struct PipeBendSpec {
     pub pose: BuildPose,
     /// Material used for appearance, mass, and contact response.
     pub material: ConstructionMaterial,
+    /// Independent color and finish treatment.
+    pub appearance: MaterialAppearance,
 }
 
 impl PipeBendSpec {
@@ -717,6 +736,7 @@ impl PipeBendSpec {
             dimensions,
             pose,
             material: ConstructionMaterial::Steel,
+            appearance: MaterialAppearance::BAKED,
         }
     }
 
@@ -724,6 +744,13 @@ impl PipeBendSpec {
     #[must_use]
     pub const fn with_material(mut self, material: ConstructionMaterial) -> Self {
         self.material = material;
+        self
+    }
+
+    /// Uses an explicit construction appearance.
+    #[must_use]
+    pub const fn with_appearance(mut self, appearance: MaterialAppearance) -> Self {
+        self.appearance = appearance;
         self
     }
 }
@@ -1000,6 +1027,38 @@ impl PartSpec {
         }
     }
 
+    /// Construction appearance, or `None` for authored machine parts.
+    pub const fn appearance(self) -> Option<MaterialAppearance> {
+        match self {
+            Self::Cuboid(spec) => Some(spec.appearance),
+            Self::Cylinder(spec) => Some(spec.appearance),
+            Self::PipeBend(spec) => Some(spec.appearance),
+            Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_)
+            | Self::DimensionLink(_) => None,
+        }
+    }
+
+    /// Returns an ordinary construction part with a replacement appearance.
+    pub(crate) const fn with_appearance(self, appearance: MaterialAppearance) -> Option<Self> {
+        match self {
+            Self::Cuboid(spec) => Some(Self::Cuboid(spec.with_appearance(appearance))),
+            Self::Cylinder(spec) => Some(Self::Cylinder(spec.with_appearance(appearance))),
+            Self::PipeBend(spec) => Some(Self::PipeBend(spec.with_appearance(appearance))),
+            Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_)
+            | Self::DimensionLink(_) => None,
+        }
+    }
+
     /// Returns this part with a replacement authored pose.
     #[must_use]
     pub const fn with_pose(self, pose: BuildPose) -> Self {
@@ -1218,6 +1277,7 @@ impl CuboidSpec {
             ],
             pose,
             material: ConstructionMaterial::Steel,
+            appearance: MaterialAppearance::BAKED,
         })
     }
 
@@ -1225,6 +1285,13 @@ impl CuboidSpec {
     #[must_use]
     pub const fn with_material(mut self, material: ConstructionMaterial) -> Self {
         self.material = material;
+        self
+    }
+
+    /// Uses an explicit construction appearance.
+    #[must_use]
+    pub const fn with_appearance(mut self, appearance: MaterialAppearance) -> Self {
+        self.appearance = appearance;
         self
     }
 
@@ -1499,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn v8_pose_preserves_fine_position_ticks_in_both_directions() {
+    fn pose_preserves_fine_position_ticks_in_both_directions() {
         let pose =
             BuildPose::from_position_ticks(IVec3::new(-13, 2, 19), GridRotation::new(1, 2, 3));
         assert_eq!(pose.translation_position_ticks(), IVec3::new(-13, 2, 19));

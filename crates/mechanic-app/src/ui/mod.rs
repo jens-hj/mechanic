@@ -12,6 +12,7 @@
 //! moment later. Nothing in a view touches a resource, and nothing in the world
 //! knows a view exists.
 
+mod chroma;
 mod components;
 mod control_block;
 mod creations;
@@ -49,8 +50,8 @@ use crate::hotbar::{
 use crate::pause_menu::PauseMenuState;
 use crate::settings::AppSettings;
 use crate::showcase::CreationPreset;
-use crate::{AppSimulation, EditorGraph, EditorState};
-use mechanic_core::ConstructionMaterial;
+use crate::{AppSimulation, EditorGraph, EditorState, chroma::ChromaBrush};
+use mechanic_core::{ConstructionMaterial, MaterialAppearance};
 use mechanic_world::TerrainMaterial;
 
 pub(crate) use control_block::{EditTarget, LocatedJoint};
@@ -59,6 +60,7 @@ pub(crate) use control_block::{EditTarget, LocatedJoint};
 use bevy_mosaic::ui::*;
 use mosaic_macros::{component, view};
 
+use chroma::{ChromaPanel, ChromaPanelProps, ChromaStatus, ChromaStatusProps};
 use control_block::{ControlPanel, ControlPanelProps};
 use creations::{CreationPicker, CreationPickerProps};
 use dimensions::{DimensionOverlay, DimensionOverlayProps};
@@ -164,6 +166,8 @@ pub(crate) struct Handles {
     controls: MosaicState<Controls>,
     /// Shared material used by both ordinary shape tools.
     material: MosaicState<ConstructionMaterial>,
+    /// Session-wide appearance brush edited by the Chroma panel.
+    chroma: MosaicState<MaterialAppearance>,
     /// Material used by terrain additions.
     terrain_material: MosaicState<TerrainMaterial>,
     /// Material tool whose press-and-drag menu is open.
@@ -205,6 +209,7 @@ impl Handles {
             hotbar: MosaicState::new(SelectedTool::default()),
             controls: MosaicState::new(Controls::default()),
             material: MosaicState::new(ConstructionMaterial::Steel),
+            chroma: MosaicState::new(MaterialAppearance::BAKED),
             terrain_material: MosaicState::new(TerrainMaterial::Soil),
             material_menu: MosaicState::new(None),
             material_hover: MosaicState::new(None),
@@ -248,6 +253,7 @@ pub(crate) struct AppUi {
 /// The last snapshot handed to each panel.
 #[derive(Default)]
 struct Pushed {
+    chroma: MaterialAppearance,
     help: help::Model,
     creations: creations::Model,
     worlds: worlds::Model,
@@ -341,6 +347,8 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let help_open = handles.help_open;
     let help_panel = handles.clone();
     let hotbar_panel = handles.clone();
+    let chroma_status = handles.clone();
+    let chroma_panel = handles.clone();
     let markers_panel = handles.clone();
     let dimensions_panel = handles.clone();
     let block_panel = handles.clone();
@@ -367,12 +375,24 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
             if $help_open && !worlds_model.with(|model| model.open) {
                 HelpPanel handles:(help_panel.clone())
             }
+            if !worlds_model.with(|model| model.open)
+                && !material_wheel_model.with(|model| model.chroma_config)
+                && handles.hotbar.with(|selected| {
+                    selected.tool == Some(MainTool::MatterManipulator)
+                        && selected.matter_mode == MatterMode::Chroma
+                }) {
+                ChromaStatus handles:(chroma_status.clone())
+            }
             if !worlds_model.with(|model| model.open) {
                 Hotbar handles:(hotbar_panel.clone())
             }
-            if material_wheel_model.with(|model| model.open)
+            if material_wheel_model.with(|model| model.open && !model.chroma_config)
                 && !worlds_model.with(|model| model.open) {
                 RadialSelector model:(material_wheel_model)
+            }
+            if material_wheel_model.with(|model| model.open && model.chroma_config)
+                && !worlds_model.with(|model| model.open) {
+                ChromaPanel handles:(chroma_panel.clone())
             }
             if block_open.with(control_block::PanelModel::is_open)
                 && !worlds_model.with(|model| model.open) {
@@ -449,19 +469,25 @@ pub(crate) struct ToolSelection<'w> {
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 // Bevy system parameters are value-typed wrappers and independent resources.
 pub(crate) fn drain(
-    ui: Option<NonSendMut<AppUi>>,
+    mut ui: Option<NonSendMut<AppUi>>,
     mut panel: ResMut<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
     mut pause: ResMut<PauseMenuState>,
     mut worlds: ResMut<crate::world::WorldListState>,
     mut selection: ToolSelection,
+    mut chroma: ResMut<ChromaBrush>,
     mut target: EditTarget,
     keyboard: Res<ButtonInput<KeyCode>>,
     actions: Res<ButtonInput<GameAction>>,
 ) {
-    let Some(ui) = ui else {
+    let Some(ref mut ui) = ui else {
         return;
     };
+    let edited_appearance = ui.handles.chroma.get_untracked();
+    if edited_appearance != ui.pushed.chroma {
+        chroma.appearance = edited_appearance;
+        ui.pushed.chroma = edited_appearance;
+    }
     control_block::capture_key(&ui.handles.block, &keyboard);
     // `?` belongs to the help panel unless something else is taking letters.
     if !menu.is_open() && !panel.blocks_keyboard() && actions.just_pressed(GameAction::ToggleHelp) {
@@ -501,6 +527,7 @@ pub(crate) fn push(
     menu: Res<CreationMenuState>,
     selection: Res<SelectedTool>,
     material: Res<SelectedMaterial>,
+    chroma: Res<ChromaBrush>,
     terrain_material: Res<SelectedTerrainMaterial>,
     graph: Res<EditorGraph>,
     pause: Res<PauseMenuState>,
@@ -515,6 +542,10 @@ pub(crate) fn push(
     ui.handles.hotbar.set(*selection);
     ui.handles.controls.set(settings.controls().clone());
     ui.handles.material.set(material.0);
+    if chroma.appearance != ui.pushed.chroma {
+        ui.handles.chroma.set(chroma.appearance);
+        ui.pushed.chroma = chroma.appearance;
+    }
     ui.handles.terrain_material.set(terrain_material.0);
     let block = control_block::capture(&panel, &graph, &gearboxes, settings.controls());
     if block != ui.pushed.block {
@@ -620,6 +651,7 @@ pub(crate) fn push_player(ui: Option<NonSendMut<AppUi>>, wheel: Res<MaterialWhee
     };
     let next = material_wheel::Model {
         open: wheel.open,
+        chroma_config: wheel.chroma_config,
         highlighted: wheel.highlighted,
     };
     if next != ui.pushed.material_wheel {
@@ -700,7 +732,9 @@ fn escape_is_consumed(mosaic_keyboard: bool, menu_open: bool, capturing: bool) -
 #[cfg(test)]
 mod tests {
     use bevy_mosaic::ui::{Color, FontFamily, Length};
-    use mechanic_core::ConstructionMaterial;
+    use mechanic_core::{
+        ConstructionMaterial, MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish,
+    };
     use mosaic_core::Vector2;
     use mosaic_core::theme::{color, install as install_theme, typed};
     use mosaic_widgets::Ui;
@@ -709,6 +743,7 @@ mod tests {
     use super::testing::{Overlay, VIEWPORT, away};
     use super::theme::{BODY_FAMILY, DISPLAY_FAMILY, accent, metrics, palette, typeface};
     use super::{creations, escape_is_consumed, load_fonts, theme};
+    use crate::hotbar::{SelectedTool, Tool};
 
     #[test]
     fn bundled_fonts_cover_the_authored_type_roles() {
@@ -765,6 +800,86 @@ mod tests {
     }
 
     #[test]
+    fn chroma_status_is_read_only_and_tab_configuration_expands_for_dye() {
+        let overlay = Overlay::mount();
+        let ordinary_count = overlay.element_count();
+
+        overlay
+            .handles
+            .hotbar
+            .set(SelectedTool::from_editor_tool(Tool::Chroma));
+        overlay.settle();
+        let status_count = overlay.element_count();
+        assert!(status_count > ordinary_count, "the Chroma status mounted");
+        let status = overlay
+            .shapes()
+            .into_iter()
+            .find(|shape| (shape.rect.size.width - 260.0).abs() < 0.5)
+            .expect("read-only Chroma status panel");
+        assert!(
+            !overlay.wants_pointer_at(status.rect.center()),
+            "the gameplay status must not claim the camera-owned pointer",
+        );
+
+        overlay.handles.material_wheel.set(material_wheel::Model {
+            open: true,
+            chroma_config: true,
+            highlighted: None,
+        });
+        overlay.settle();
+        let baked_count = overlay.element_count();
+        assert!(
+            baked_count > status_count,
+            "holding the selector mounts the interactive Chroma editor"
+        );
+
+        overlay.handles.chroma.set(MaterialAppearance::new(
+            MaterialColor::Dye(MaterialDye::new([224, 86, 31], 1.0).unwrap()),
+            MaterialFinish::Baked,
+        ));
+        overlay.settle();
+        assert!(
+            overlay.element_count() > baked_count,
+            "Dye mounts the picker, presets, hex field, and structure control",
+        );
+        let workbench = overlay
+            .shapes()
+            .into_iter()
+            .find(|shape| {
+                shape.rect.size.width > VIEWPORT.width * 0.85
+                    && shape.rect.size.width < VIEWPORT.width
+                    && shape.rect.size.height > VIEWPORT.height * 0.85
+                    && shape.rect.size.height < VIEWPORT.height
+            })
+            .expect("large inset Chroma workbench");
+        assert!(away(workbench.rect.center(), Vector2::new(800.0, 450.0)) < 1.0);
+        let expected_field_height = (VIEWPORT.height - 440.0).clamp(240.0, 760.0);
+        assert!(
+            overlay.shapes().into_iter().any(|shape| {
+                shape.rect.size.width > 300.0
+                    && (shape.rect.size.height - expected_field_height).abs() < 0.5
+            }),
+            "the Dye saturation/value field scales to its available area"
+        );
+        assert!(
+            overlay
+                .labels()
+                .iter()
+                .any(|label| label == "Saturation and value"),
+            "the large picker remains accessible",
+        );
+
+        overlay.handles.chroma.set(MaterialAppearance::BAKED);
+        overlay
+            .handles
+            .material_wheel
+            .set(material_wheel::Model::default());
+        overlay.handles.hotbar.set(SelectedTool::default());
+        overlay.settle();
+        assert_eq!(overlay.element_count(), ordinary_count);
+    }
+
+    #[test]
     fn typed_boundaries_preserve_panel_and_world_pointer_ownership() {
         let overlay = Overlay::mount();
         overlay.handles.help_open.set(true);
@@ -793,6 +908,7 @@ mod tests {
         let overlay = Overlay::mount();
         overlay.handles.material_wheel.set(material_wheel::Model {
             open: true,
+            chroma_config: false,
             highlighted: Some(crate::hotbar::WheelChoice::ConstructionMaterial(
                 ConstructionMaterial::Concrete,
             )),

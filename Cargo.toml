@@ -30,13 +30,13 @@ getrandom = "0.3"
 
 # Mosaic is pinned to the first upstream revision containing the external-device
 # renderer used by `bevy_mosaic`. Keep every crate on the same revision.
-mosaic-core = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "01d89b614db2cf832a5eb38f88063f93d146600e" }
-mosaic-layout = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "01d89b614db2cf832a5eb38f88063f93d146600e" }
-mosaic-macros = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "01d89b614db2cf832a5eb38f88063f93d146600e" }
-mosaic-render = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "01d89b614db2cf832a5eb38f88063f93d146600e" }
-mosaic-render-wgpu = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "01d89b614db2cf832a5eb38f88063f93d146600e" }
-mosaic-text = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "01d89b614db2cf832a5eb38f88063f93d146600e" }
-mosaic-widgets = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "01d89b614db2cf832a5eb38f88063f93d146600e" }
+mosaic-core = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-layout = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-macros = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-render = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-render-wgpu = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-text = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-widgets = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
