@@ -87,6 +87,11 @@ impl<T, I> Default for Arena<T, I> {
 }
 
 impl<T, I: Handle> Arena<T, I> {
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        self.slots
+            .reserve(additional.saturating_sub(self.free.len()));
+    }
+
     pub(crate) fn insert(&mut self, value: T) -> I {
         self.len += 1;
         if let Some(index) = self.free.pop() {

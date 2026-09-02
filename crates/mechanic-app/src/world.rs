@@ -206,6 +206,16 @@ struct TerrainFoundation {
     support: FoundationSupport,
 }
 
+struct PendingFoundationSync {
+    editor_revision: u64,
+    parts: BTreeMap<PartId, PartSpec>,
+    replaced_parts: BTreeSet<PartId>,
+    new_parts: Vec<PartId>,
+    next_part: usize,
+    foundations: Vec<TerrainFoundation>,
+    index: FoundationSpatialIndex,
+}
+
 /// Values contributed to the existing F3 overlay by the terrain pipeline.
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub(crate) struct WorldDiagnostics {
@@ -322,6 +332,7 @@ pub(crate) struct WorldRuntime {
     known_world_parts: BTreeMap<PartId, PartSpec>,
     foundations: Vec<TerrainFoundation>,
     foundation_index: FoundationSpatialIndex,
+    pending_foundation_sync: Option<PendingFoundationSync>,
     foundation_revision: u64,
     terrain_revision: u64,
     terrain_acknowledgements: TerrainAcknowledgements,
@@ -377,6 +388,10 @@ impl WorldRuntime {
 
     pub(crate) const fn foundation_revision(&self) -> u64 {
         self.foundation_revision
+    }
+
+    pub(crate) fn foundations_match_editor_revision(&self, editor_revision: u64) -> bool {
+        self.synced_editor_revision == editor_revision && self.pending_foundation_sync.is_none()
     }
 
     pub(crate) fn allocate_dimension_link_id(&mut self) -> DimensionLinkId {
@@ -576,6 +591,7 @@ impl FromWorld for WorldRuntime {
             known_world_parts: BTreeMap::new(),
             foundations: Vec::new(),
             foundation_index: FoundationSpatialIndex::default(),
+            pending_foundation_sync: None,
             foundation_revision: 0,
             terrain_revision: 0,
             terrain_acknowledgements: TerrainAcknowledgements::default(),
@@ -767,6 +783,7 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.known_world_parts.clear();
     runtime.foundations.clear();
     runtime.foundation_index = FoundationSpatialIndex::default();
+    runtime.pending_foundation_sync = None;
     runtime.foundation_revision = 0;
     runtime.terrain_revision = 0;
     runtime.terrain_acknowledgements = TerrainAcknowledgements::default();
@@ -2557,7 +2574,10 @@ fn foundation_edit_is_ready(
         && stroke_idle
 }
 
-#[allow(clippy::too_many_lines)] // Incremental ownership and anchor refresh form one cutover.
+const FOUNDATION_SYNC_FRAME_BUDGET: Duration = Duration::from_millis(2);
+const FOUNDATION_SYNC_MAX_PARTS_PER_FRAME: usize = 32;
+
+#[allow(clippy::too_many_lines)] // Revision staging and bounded support sampling form one cutover.
 pub(crate) fn sync_world_foundations(
     graph: Res<EditorGraph>,
     history: Res<EditorHistory>,
@@ -2569,7 +2589,11 @@ pub(crate) fn sync_world_foundations(
     if list.phase() != WorldListPhase::Playing {
         return;
     }
-    let editor_changed = runtime.synced_editor_revision != history.current_revision;
+    let frame_started = std::time::Instant::now();
+    diagnostics.foundation_candidate_count = 0;
+    diagnostics.foundation_sample_count = 0;
+    diagnostics.foundation_refresh_ms = 0.0;
+
     let terrain_changed = foundation_edit_is_ready(
         runtime.terrain_acknowledgements,
         &runtime.pending_foundation_edit,
@@ -2578,65 +2602,67 @@ pub(crate) fn sync_world_foundations(
             && runtime.pending_terrain_edits.is_empty()
             && runtime.last_brush_edit.is_none(),
     );
-    let needs_initial_sync =
-        runtime.known_world_parts.is_empty() && graph.0.parts().next().is_some();
-    if !editor_changed && !terrain_changed && !needs_initial_sync {
-        return;
+    if terrain_changed {
+        // Partially sampled construction belongs to the previous terrain cut.
+        // Discard it and restart from the newly published terrain below.
+        runtime.pending_foundation_sync = None;
+        refresh_foundations_after_terrain_edit(&mut runtime, &mut diagnostics, &mut editor);
     }
-    diagnostics.foundation_candidate_count = 0;
-    diagnostics.foundation_sample_count = 0;
-    diagnostics.foundation_refresh_ms = 0.0;
-    if editor_changed {
-        runtime.synced_editor_revision = history.current_revision;
+
+    let editor_changed = runtime.synced_editor_revision != history.current_revision;
+    let needs_initial_sync = runtime.known_world_parts.is_empty()
+        && graph.0.parts().next().is_some()
+        && runtime.pending_foundation_sync.is_none();
+    let pending_matches = runtime
+        .pending_foundation_sync
+        .as_ref()
+        .is_some_and(|pending| pending.editor_revision == history.current_revision);
+    if (editor_changed || needs_initial_sync) && !pending_matches {
+        let current_parts = graph
+            .0
+            .parts()
+            .map(|(part, spec)| (part, *spec))
+            .collect::<BTreeMap<_, _>>();
+        let delta =
+            ConstructionEditDelta::between_parts(&runtime.known_world_parts, &current_parts);
+        runtime.pending_foundation_sync = Some(PendingFoundationSync {
+            editor_revision: history.current_revision,
+            parts: current_parts,
+            replaced_parts: delta
+                .removed
+                .iter()
+                .chain(&delta.modified)
+                .copied()
+                .collect(),
+            new_parts: delta.added.iter().chain(&delta.modified).copied().collect(),
+            next_part: 0,
+            foundations: Vec::new(),
+            index: FoundationSpatialIndex::default(),
+        });
         let now = runtime.clock;
         runtime.autosave.mutate(now);
     }
-    let current_parts = graph
-        .0
-        .parts()
-        .map(|(part, spec)| (part, *spec))
-        .collect::<BTreeMap<_, _>>();
-    let construction_delta =
-        ConstructionEditDelta::between_parts(&runtime.known_world_parts, &current_parts);
-    let replaced_parts = construction_delta
-        .removed
-        .iter()
-        .chain(&construction_delta.modified)
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let removed_foundation = runtime
-        .foundations
-        .iter()
-        .any(|foundation| replaced_parts.contains(&foundation.part));
-    for &part in &replaced_parts {
-        runtime.foundation_index.remove(part);
-    }
-    runtime
-        .foundations
-        .retain(|foundation| !replaced_parts.contains(&foundation.part));
-    let new_parts = construction_delta
-        .added
-        .iter()
-        .chain(&construction_delta.modified)
-        .copied()
-        .collect::<Vec<_>>();
-    let foundation_candidates = terrain_changed.then(|| {
-        runtime
-            .foundation_index
-            .candidates(&runtime.pending_foundation_edit.changed_bricks)
-    });
-    let changed_bricks = runtime.pending_foundation_edit.changed_bricks.clone();
-    let mut foundations = core::mem::take(&mut runtime.foundations);
-    let mut foundation_index = core::mem::take(&mut runtime.foundation_index);
 
+    let Some(mut pending) = runtime.pending_foundation_sync.take() else {
+        diagnostics.foundation_refresh_ms = frame_started.elapsed().as_secs_f64() * 1_000.0;
+        return;
+    };
+    diagnostics.foundation_candidate_count =
+        u64::try_from(pending.new_parts.len()).unwrap_or(u64::MAX);
     let scene = ActiveTerrainScene {
         chunks: &runtime.active_terrain,
         ready_faces: &runtime.active_terrain_ready_faces,
         spatial_index: &runtime.active_terrain_index,
     };
-    let mut added = 0_u64;
-    for part in new_parts {
-        let Some(spec) = graph.0.part(part).copied() else {
+    let mut processed = 0_usize;
+    while pending.next_part < pending.new_parts.len()
+        && processed < FOUNDATION_SYNC_MAX_PARTS_PER_FRAME
+        && (processed == 0 || frame_started.elapsed() < FOUNDATION_SYNC_FRAME_BUDGET)
+    {
+        let part = pending.new_parts[pending.next_part];
+        pending.next_part += 1;
+        processed += 1;
+        let Some(&spec) = pending.parts.get(&part) else {
             continue;
         };
         let (minimum, maximum) = part_world_bounds(spec);
@@ -2662,44 +2688,82 @@ pub(crate) fn sync_world_foundations(
             f64::from(maximum.x - minimum.x),
             f64::from(maximum.z - minimum.z),
         );
+        diagnostics.foundation_sample_count = diagnostics
+            .foundation_sample_count
+            .saturating_add(u64::try_from(support.sample_count()).unwrap_or(u64::MAX));
         if support.has_valid_anchor() {
-            foundation_index.insert(part, &support);
-            foundations.push(TerrainFoundation { part, support });
-            added = added.saturating_add(1);
+            pending.index.insert(part, &support);
+            pending
+                .foundations
+                .push(TerrainFoundation { part, support });
         }
     }
+
+    if pending.next_part < pending.new_parts.len() {
+        runtime.pending_foundation_sync = Some(pending);
+        diagnostics.foundation_refresh_ms = frame_started.elapsed().as_secs_f64() * 1_000.0;
+        return;
+    }
+
+    let removed_foundation = runtime
+        .foundations
+        .iter()
+        .any(|foundation| pending.replaced_parts.contains(&foundation.part));
+    for &part in &pending.replaced_parts {
+        runtime.foundation_index.remove(part);
+    }
+    runtime
+        .foundations
+        .retain(|foundation| !pending.replaced_parts.contains(&foundation.part));
+    let added = !pending.foundations.is_empty();
+    runtime.foundation_index.append(pending.index);
+    runtime.foundations.append(&mut pending.foundations);
+    runtime.known_world_parts = pending.parts;
+    runtime.synced_editor_revision = pending.editor_revision;
+    if added || removed_foundation {
+        runtime.foundation_revision = runtime.foundation_revision.wrapping_add(1);
+    }
+    diagnostics.foundation_refresh_ms = frame_started.elapsed().as_secs_f64() * 1_000.0;
+}
+
+fn refresh_foundations_after_terrain_edit(
+    runtime: &mut WorldRuntime,
+    diagnostics: &mut WorldDiagnostics,
+    editor: &mut EditorState,
+) {
+    let candidates = runtime
+        .foundation_index
+        .candidates(&runtime.pending_foundation_edit.changed_bricks);
+    let changed_bricks = runtime.pending_foundation_edit.changed_bricks.clone();
+    diagnostics.foundation_candidate_count = u64::try_from(candidates.len()).unwrap_or(u64::MAX);
+    let scene = ActiveTerrainScene {
+        chunks: &runtime.active_terrain,
+        ready_faces: &runtime.active_terrain_ready_faces,
+        spatial_index: &runtime.active_terrain_index,
+    };
     let mut detached = 0_u64;
     let mut anchors_changed = 0_u64;
-    let refresh_started = std::time::Instant::now();
-    if let Some(candidates) = &foundation_candidates {
-        diagnostics.foundation_candidate_count =
-            u64::try_from(candidates.len()).unwrap_or(u64::MAX);
-        foundations.retain_mut(|foundation| {
-            if !candidates.contains(&foundation.part) {
-                return true;
-            }
-            let refresh = foundation.support.refresh_changed(&scene, &changed_bricks);
-            diagnostics.foundation_sample_count = diagnostics
-                .foundation_sample_count
-                .saturating_add(u64::try_from(refresh.sampled).unwrap_or(u64::MAX));
-            anchors_changed = anchors_changed
-                .saturating_add(u64::try_from(refresh.anchors_changed).unwrap_or(u64::MAX));
-            if refresh.detached {
-                detached = detached.saturating_add(1);
-                foundation_index.remove(foundation.part);
-                false
-            } else {
-                true
-            }
-        });
-        runtime.foundation_edit_acknowledgement = runtime.pending_foundation_edit.generation;
-        runtime.pending_foundation_edit = TerrainEditBatch::default();
-    }
-    diagnostics.foundation_refresh_ms = refresh_started.elapsed().as_secs_f64() * 1_000.0;
-    runtime.foundations = foundations;
-    runtime.foundation_index = foundation_index;
-    runtime.known_world_parts = current_parts;
-    if added > 0 || anchors_changed > 0 || removed_foundation {
+    runtime.foundations.retain_mut(|foundation| {
+        if !candidates.contains(&foundation.part) {
+            return true;
+        }
+        let refresh = foundation.support.refresh_changed(&scene, &changed_bricks);
+        diagnostics.foundation_sample_count = diagnostics
+            .foundation_sample_count
+            .saturating_add(u64::try_from(refresh.sampled).unwrap_or(u64::MAX));
+        anchors_changed = anchors_changed
+            .saturating_add(u64::try_from(refresh.anchors_changed).unwrap_or(u64::MAX));
+        if refresh.detached {
+            detached = detached.saturating_add(1);
+            runtime.foundation_index.remove(foundation.part);
+            false
+        } else {
+            true
+        }
+    });
+    runtime.foundation_edit_acknowledgement = runtime.pending_foundation_edit.generation;
+    runtime.pending_foundation_edit = TerrainEditBatch::default();
+    if anchors_changed > 0 {
         runtime.foundation_revision = runtime.foundation_revision.wrapping_add(1);
     }
     if detached > 0 {
@@ -2905,9 +2969,10 @@ mod tests {
         camera::Exposure,
         math::DVec3,
         mesh::VertexAttributeValues,
-        prelude::{App, Image, State},
+        prelude::{App, IVec3, Image, State, Update},
         render::render_resource::{Extent3d, TextureDimension, TextureFormat},
     };
+    use mechanic_core::{BuildPose, ConstructionGraph, CuboidSpec, GridRotation};
     use mechanic_world::{
         ActiveTerrainNode, BrickCoord, KinematicCapsule, TerrainEditBatch, TerrainFace,
         TerrainField, TerrainMeshChunk, TerrainMeshRequest, TerrainNodeId, TerrainOctree,
@@ -2917,13 +2982,14 @@ mod tests {
 
     use super::{
         AppSpace, TerrainAcknowledgements, TerrainEditOperation, TerrainStrokeSample,
-        WorldListPhase, WorldListState, WorldPrototypePlugin, component_surface_distance,
-        exposure_for_space, foundation_edit_is_ready, full_rgba8_mip_byte_count,
-        generate_rgba8_mip_chain, load_space_editors, nodes_touch_on_face, player_collision_nodes,
-        ready_obsolete_nodes, terrain_chunk_has_collision_near, terrain_chunk_mesh,
-        terrain_edit_commands, terrain_mesh_is_renderable,
+        WorldDiagnostics, WorldListPhase, WorldListState, WorldPrototypePlugin, WorldRuntime,
+        component_surface_distance, exposure_for_space, foundation_edit_is_ready,
+        full_rgba8_mip_byte_count, generate_rgba8_mip_chain, load_space_editors,
+        nodes_touch_on_face, player_collision_nodes, ready_obsolete_nodes, sync_world_foundations,
+        terrain_chunk_has_collision_near, terrain_chunk_mesh, terrain_edit_commands,
+        terrain_mesh_is_renderable,
     };
-    use crate::{garage, showcase};
+    use crate::{EditorGraph, EditorHistory, EditorState, garage, showcase};
 
     struct TempWorldStore(std::path::PathBuf);
 
@@ -3107,6 +3173,61 @@ mod tests {
             8,
             true
         ));
+    }
+
+    #[test]
+    fn large_construction_foundations_publish_over_bounded_frames() {
+        let mut graph = ConstructionGraph::new();
+        let mut edit = graph.begin_edit();
+        edit.reserve_parts_and_welds(4_096, 0);
+        edit.spawn_cuboids((0..64).flat_map(|x| {
+            (0..64).map(move |z| {
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(x, 0, z), GridRotation::default()),
+                )
+                .unwrap()
+            })
+        }));
+        graph = edit.finish();
+
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        app.init_resource::<WorldListState>();
+        app.init_resource::<EditorState>();
+        app.init_resource::<WorldDiagnostics>();
+        app.insert_resource(EditorGraph(graph));
+        let history = EditorHistory {
+            current_revision: 1,
+            next_revision: 1,
+            ..Default::default()
+        };
+        app.insert_resource(history);
+        app.world_mut().resource_mut::<WorldListState>().phase = WorldListPhase::Playing;
+        app.add_systems(Update, sync_world_foundations);
+
+        app.update();
+        let runtime = app.world().resource::<WorldRuntime>();
+        let pending = runtime
+            .pending_foundation_sync
+            .as_ref()
+            .expect("the first frame leaves bounded foundation work pending");
+        assert!((1..=super::FOUNDATION_SYNC_MAX_PARTS_PER_FRAME).contains(&pending.next_part));
+        assert!(!runtime.foundations_match_editor_revision(1));
+
+        for _ in 0..4_096 {
+            if app
+                .world()
+                .resource::<WorldRuntime>()
+                .foundations_match_editor_revision(1)
+            {
+                break;
+            }
+            app.update();
+        }
+        let runtime = app.world().resource::<WorldRuntime>();
+        assert!(runtime.foundations_match_editor_revision(1));
+        assert_eq!(runtime.known_world_parts.len(), 4_096);
     }
 
     #[test]

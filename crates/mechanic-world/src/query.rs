@@ -600,6 +600,14 @@ impl FoundationSpatialIndex {
         }
     }
 
+    /// Merges a disjoint staged index without recomputing support footprints.
+    pub fn append(&mut self, mut other: Self) {
+        for (brick, mut parts) in other.by_brick {
+            self.by_brick.entry(brick).or_default().append(&mut parts);
+        }
+        self.by_part.append(&mut other.by_part);
+    }
+
     /// Removes one foundation footprint.
     pub fn remove(&mut self, part: PartId) {
         let Some(bricks) = self.by_part.remove(&part) else {
@@ -714,6 +722,11 @@ impl FoundationSupport {
     pub fn valid_count(&self) -> usize {
         self.samples.iter().filter(|sample| sample.valid).count()
     }
+
+    /// Number of persistent terrain samples in this footprint.
+    pub fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
 }
 
 fn sample_overlaps_bricks(position: WorldPosition, changed_bricks: &BTreeSet<BrickCoord>) -> bool {
@@ -768,14 +781,14 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
     };
 
-    use bevy_math::{DVec2, DVec3};
+    use bevy_math::{DVec2, DVec3, Vec3};
     use mechanic_core::{
         BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec, GridRotation,
     };
 
     use super::{
         ActiveTerrainScene, FoundationSample, FoundationSpatialIndex, FoundationSupport,
-        KinematicCapsule, KinematicInput, TerrainDensity, TerrainSpatialIndex,
+        KinematicCapsule, KinematicInput, TerrainDensity, TerrainRayHit, TerrainSpatialIndex,
         WorldConstructionEditability, raycast_density,
     };
     use crate::{
@@ -888,7 +901,9 @@ mod tests {
         };
         let mut index = FoundationSpatialIndex::default();
         index.insert(near_part, &near_support);
-        index.insert(far_part, &far_support);
+        let mut staged = FoundationSpatialIndex::default();
+        staged.insert(far_part, &far_support);
+        index.append(staged);
 
         assert_eq!(
             index.candidates(&BTreeSet::from([near_position.cell().unwrap().brick()])),
@@ -990,6 +1005,27 @@ mod tests {
         assert_eq!(support.valid_count(), 25);
         assert!(!support.refresh(&Plane));
         assert!(support.has_valid_anchor());
+    }
+
+    #[test]
+    fn one_block_foundation_samples_twenty_five_terrain_points() {
+        let terrain = CountingPlane(Cell::new(0));
+        let support = FoundationSupport::rectangular(
+            &terrain,
+            TerrainRayHit {
+                position: WorldPosition(DVec3::ZERO),
+                normal: Vec3::Y,
+                distance: 0.0,
+                material_weights: [0.0; TerrainMaterial::COUNT],
+                chunk_generation: 0,
+                triangle: 0,
+            },
+            0.25,
+            0.25,
+        );
+
+        assert_eq!(support.sample_count(), 25);
+        assert_eq!(terrain.0.get(), 500);
     }
 
     #[test]

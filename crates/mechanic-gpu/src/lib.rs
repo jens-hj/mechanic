@@ -21,8 +21,8 @@ pub use collision::{
 };
 pub use device::{
     GpuBodyStateError, GpuCompletedTickReadback, GpuImpulseError, GpuKernelTimings, GpuPhysics,
-    GpuPhysicsConfig, GpuPhysicsError, GpuReadbackError, GpuTickReadback, GpuTickSubmission,
-    SnapshotBuffers,
+    GpuPhysicsConfig, GpuPhysicsError, GpuPhysicsPipelines, GpuReadbackError, GpuTickReadback,
+    GpuTickSubmission, SnapshotBuffers,
 };
 pub use render::{
     TerrainRenderAcknowledgement, TerrainRenderArena, TerrainRenderArenaLimits, TerrainRenderChunk,

@@ -164,6 +164,182 @@ pub(crate) struct PlacementCandidate {
     pub(crate) support: PlacementSupport,
 }
 
+/// Compact description of one solid drag-created block volume.
+///
+/// `span` counts blocks beyond the starting block and retains its sign, so the
+/// descriptor also preserves which block was initially attached to a surface
+/// or bearing. Individual authored specs are materialized only when the volume
+/// is committed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BlockVolume {
+    start: CuboidSpec,
+    span: IVec3,
+    counts: UVec3,
+    count: usize,
+    minimum: Vec3,
+    maximum: Vec3,
+}
+
+impl BlockVolume {
+    pub(crate) fn new(start: CuboidSpec, span: IVec3) -> Result<Self, PlacementError> {
+        let counts = UVec3::from_array(span.to_array().map(|steps| steps.unsigned_abs() + 1));
+        let count = (counts.x as usize)
+            .saturating_mul(counts.y as usize)
+            .saturating_mul(counts.z as usize);
+        if count > MAX_DRAG_BLOCKS {
+            return Err(PlacementError::TooManyBlocks {
+                count,
+                maximum: MAX_DRAG_BLOCKS,
+            });
+        }
+        let (minimum, maximum) = block_box_bounds(start, span);
+        Ok(Self {
+            start,
+            span,
+            counts,
+            count,
+            minimum,
+            maximum,
+        })
+    }
+
+    pub(crate) const fn start(self) -> CuboidSpec {
+        self.start
+    }
+
+    pub(crate) const fn dimensions(self) -> UVec3 {
+        self.counts
+    }
+
+    pub(crate) const fn count(self) -> usize {
+        self.count
+    }
+
+    pub(crate) const fn bounds(self) -> (Vec3, Vec3) {
+        (self.minimum, self.maximum)
+    }
+
+    pub(crate) fn specs(self) -> BlockVolumeSpecs {
+        BlockVolumeSpecs {
+            volume: self,
+            next: 0,
+        }
+    }
+
+    fn spec_at_logical(self, logical: UVec3) -> CuboidSpec {
+        let direction = self.span.signum();
+        let steps = IVec3::new(
+            i32::try_from(logical.x).expect("block volume axis fits i32") * direction.x,
+            i32::try_from(logical.y).expect("block volume axis fits i32") * direction.y,
+            i32::try_from(logical.z).expect("block volume axis fits i32") * direction.z,
+        );
+        self.spec_at_steps(steps)
+    }
+
+    fn spec_at_physical(self, physical: UVec3) -> CuboidSpec {
+        let logical = UVec3::new(
+            if self.span.x < 0 {
+                self.counts.x - 1 - physical.x
+            } else {
+                physical.x
+            },
+            if self.span.y < 0 {
+                self.counts.y - 1 - physical.y
+            } else {
+                physical.y
+            },
+            if self.span.z < 0 {
+                self.counts.z - 1 - physical.z
+            } else {
+                physical.z
+            },
+        );
+        self.spec_at_logical(logical)
+    }
+
+    fn spec_at_steps(self, steps: IVec3) -> CuboidSpec {
+        let dimension_units = self.start.dimensions[0].units();
+        let block_ticks = i32::from(dimension_units) * POSITION_TICKS_PER_GRID_UNIT;
+        let center = self.start.pose.translation_position_ticks() + steps * block_ticks;
+        CuboidSpec::new(
+            [dimension_units; 3],
+            BuildPose::from_position_ticks(center, GridRotation::default()),
+        )
+        .expect("dragged blocks retain the selected valid size")
+        .with_material(self.start.material)
+        .with_appearance(self.start.appearance)
+    }
+
+    fn linear_index(self, logical: UVec3) -> usize {
+        ((logical.x as usize * self.counts.y as usize) + logical.y as usize)
+            * self.counts.z as usize
+            + logical.z as usize
+    }
+
+    fn part_at_physical(self, parts: &[PartId], physical: UVec3) -> PartId {
+        let logical = UVec3::new(
+            if self.span.x < 0 {
+                self.counts.x - 1 - physical.x
+            } else {
+                physical.x
+            },
+            if self.span.y < 0 {
+                self.counts.y - 1 - physical.y
+            } else {
+                physical.y
+            },
+            if self.span.z < 0 {
+                self.counts.z - 1 - physical.z
+            } else {
+                physical.z
+            },
+        );
+        parts[self.linear_index(logical)]
+    }
+}
+
+pub(crate) struct BlockVolumeSpecs {
+    volume: BlockVolume,
+    next: usize,
+}
+
+impl Iterator for BlockVolumeSpecs {
+    type Item = CuboidSpec;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next >= self.volume.count {
+            return None;
+        }
+        let yz = self.volume.counts.y as usize * self.volume.counts.z as usize;
+        let x = self.next / yz;
+        let remainder = self.next % yz;
+        let y = remainder / self.volume.counts.z as usize;
+        let z = remainder % self.volume.counts.z as usize;
+        self.next += 1;
+        Some(self.volume.spec_at_logical(UVec3::new(
+            u32::try_from(x).expect("block volume axis fits u32"),
+            u32::try_from(y).expect("block volume axis fits u32"),
+            u32::try_from(z).expect("block volume axis fits u32"),
+        )))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.volume.count - self.next;
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for BlockVolumeSpecs {}
+
+/// One synchronously committed authored volume and its publication metadata.
+pub(crate) struct BlockVolumePlacement {
+    pub(crate) graph: ConstructionGraph,
+    pub(crate) new_parts: Vec<PartId>,
+    pub(crate) weld_count: usize,
+    pub(crate) bounds: (Vec3, Vec3),
+    pub(crate) publication_generation: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CylinderPlacementCandidate {
     pub(crate) spec: CylinderSpec,
@@ -195,6 +371,7 @@ pub(crate) const SMART_SNAP_CAPTURE_METERS: f32 = 0.025;
 #[derive(Clone, Copy, Debug)]
 struct SnapTarget {
     part: PartId,
+    spec: PartSpec,
     minimum: Vec3,
     maximum: Vec3,
 }
@@ -215,6 +392,7 @@ impl PlacementSnapIndex {
             let target_index = self.targets.len();
             self.targets.push(SnapTarget {
                 part,
+                spec: *spec,
                 minimum,
                 maximum,
             });
@@ -234,6 +412,16 @@ impl PlacementSnapIndex {
     }
 
     fn nearby(&self, minimum: Vec3, maximum: Vec3, radius: f32) -> Vec<SnapTarget> {
+        if self.targets.len() <= 16_384 {
+            return self
+                .targets
+                .iter()
+                .copied()
+                .filter(|target| {
+                    aabb_distance(minimum, maximum, target.minimum, target.maximum) <= radius
+                })
+                .collect();
+        }
         let low = ((minimum - Vec3::splat(radius)) / SNAP_BIN_METERS)
             .floor()
             .as_ivec3();
@@ -301,9 +489,22 @@ pub(crate) fn smart_snap_cuboid_candidate(
     gridded: PlacementCandidate,
     grid: PlacementGrid,
     range: f32,
+    valid: impl FnMut(PlacementCandidate) -> bool,
+) -> (PlacementCandidate, Vec<SmartGuide>) {
+    let supports = support_geometries_from_hit(graph, hit);
+    smart_snap_cuboid_candidate_with_supports(index, hit, gridded, grid, range, &supports, valid)
+}
+
+pub(crate) fn smart_snap_cuboid_candidate_with_supports(
+    index: &PlacementSnapIndex,
+    hit: SurfaceHit,
+    gridded: PlacementCandidate,
+    grid: PlacementGrid,
+    range: f32,
+    supports: &[FaceGeometry],
     mut valid: impl FnMut(PlacementCandidate) -> bool,
 ) -> (PlacementCandidate, Vec<SmartGuide>) {
-    let Some(support) = support_geometry_from_hit(graph, hit) else {
+    let Some(support) = support_at_hit(supports, hit.point) else {
         return (gridded, Vec::new());
     };
     let (normal_axis, _) = cardinal_axis(support.normal);
@@ -343,7 +544,9 @@ pub(crate) fn smart_snap_cuboid_candidate(
         let candidate = PlacementCandidate {
             spec,
             attached_face: gridded.attached_face,
-            anchor: overlap_center(support, candidate_face),
+            anchor: supports
+                .iter()
+                .find_map(|support| overlap_center(support, &candidate_face)),
             support: gridded.support,
         };
         if valid(candidate) {
@@ -366,7 +569,8 @@ pub(crate) fn smart_snap_cylinder_candidate(
     range: f32,
     mut valid: impl FnMut(CylinderPlacementCandidate) -> bool,
 ) -> (CylinderPlacementCandidate, Vec<SmartGuide>) {
-    let Some(support) = support_geometry_from_hit(graph, hit) else {
+    let supports = support_geometries_from_hit(graph, hit);
+    let Some(support) = support_at_hit(&supports, hit.point) else {
         return (gridded, Vec::new());
     };
     let (normal_axis, _) = cardinal_axis(support.normal);
@@ -406,7 +610,10 @@ pub(crate) fn smart_snap_cylinder_candidate(
         let candidate = CylinderPlacementCandidate {
             spec,
             attached_face: gridded.attached_face,
-            anchor: supporting_face_overlap(graph, support, candidate_face),
+            anchor: supports
+                .iter()
+                .find_map(|support| overlap_center(support, &candidate_face))
+                .or_else(|| supporting_face_overlap(graph, support, &candidate_face)),
             support: gridded.support,
         };
         if valid(candidate) {
@@ -836,8 +1043,17 @@ fn guide_combinations(choices: &[Vec<AxisGuide>; 2]) -> Vec<[Option<AxisGuide>; 
             .then_with(|| right.2.cmp(&left.2))
             .then_with(|| left.3.cmp(&right.3))
     });
+    // A multi-block region can contribute the same guide once per block. Keep
+    // the best-ranked guide for each resulting pose; rendering still receives
+    // the original choices and can show every coincident alignment line.
+    let mut positions = HashSet::new();
     combinations
         .into_iter()
+        .filter(|(guides, _, _, _)| {
+            positions.insert(
+                guides.map(|guide| guide.map_or(0, |guide| rounded_position_tick(guide.delta))),
+            )
+        })
         .map(|(guides, _, _, _)| guides)
         .collect()
 }
@@ -880,8 +1096,15 @@ fn guide_combinations_3(choices: &[Vec<AxisGuide>; 3]) -> Vec<[Option<AxisGuide>
             .then_with(|| right.2.cmp(&left.2))
             .then_with(|| left.3.cmp(&right.3))
     });
+    // Free placement has the same duplicate-guide multiplier on three axes.
+    let mut positions = HashSet::new();
     combinations
         .into_iter()
+        .filter(|(guides, _, _, _)| {
+            positions.insert(
+                guides.map(|guide| guide.map_or(0, |guide| rounded_position_tick(guide.delta))),
+            )
+        })
         .map(|(guides, _, _, _)| guides)
         .collect()
 }
@@ -1111,7 +1334,7 @@ pub(crate) struct PipeRunPiece {
     pub(crate) outlet: FaceKind,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FaceGeometry {
     pub(crate) center: Vec3,
     pub(crate) normal: Vec3,
@@ -1120,7 +1343,7 @@ pub(crate) struct FaceGeometry {
     profile: FaceProfile,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum FaceProfile {
     Rectangle {
         half_u: f32,
@@ -1134,6 +1357,9 @@ enum FaceProfile {
         inner_radius: f32,
         outer_radius: f32,
         half_angle: f32,
+    },
+    Polygon {
+        vertices: Vec<Vec2>,
     },
     Ground,
 }
@@ -1247,9 +1473,13 @@ pub(crate) fn raycast_construction_for_annulus_with_ground(
     raycast_construction_with_ground(graph, origin, direction, ground)
         .into_iter()
         .chain(graph.parts().filter_map(|(part, spec)| match spec {
-            PartSpec::Cylinder(spec) => {
-                raycast_cylinder_bore_obstruction(origin, direction, part, *spec, placement_profile)
-            }
+            PartSpec::Cylinder(spec) => raycast_cylinder_bore_obstruction(
+                origin,
+                direction,
+                part,
+                *spec,
+                &placement_profile,
+            ),
             PartSpec::PipeBend(_)
             | PartSpec::Cuboid(_)
             | PartSpec::Controller(_)
@@ -1268,7 +1498,7 @@ fn raycast_cylinder_bore_obstruction(
     direction: Vec3,
     part: PartId,
     spec: CylinderSpec,
-    placement_profile: FaceProfile,
+    placement_profile: &FaceProfile,
 ) -> Option<SurfaceHit> {
     let rotation = spec.pose.rotation.quaternion();
     let inverse = rotation.inverse();
@@ -1298,7 +1528,7 @@ fn raycast_cylinder_bore_obstruction(
         }
         let support = cylinder_face_geometry(spec, face_kind)
             .expect("cylinder end faces always expose flat geometry");
-        if point_in_profile(local_point.x, local_point.z, support.profile) {
+        if point_in_profile(local_point.x, local_point.z, &support.profile) {
             return None;
         }
         let placement = FaceGeometry {
@@ -1306,9 +1536,9 @@ fn raycast_cylinder_bore_obstruction(
             normal: -support.normal,
             tangent_u: support.tangent_u,
             tangent_v: support.tangent_v,
-            profile: placement_profile,
+            profile: placement_profile.clone(),
         };
-        profiles_overlap(support, placement).then_some(SurfaceHit {
+        profiles_overlap(&support, &placement).then_some(SurfaceHit {
             distance,
             point: placement.center,
             face: FaceRef::part(part, face_kind),
@@ -1332,14 +1562,26 @@ pub(crate) fn candidate_from_hit_with_grid(
     grid: PlacementGrid,
     bounds: PlacementBounds,
 ) -> PlacementCandidate {
-    oriented_cuboid_candidate_from_hit_with_grid(
+    candidate_from_hit_with_grid_and_supports(graph, hit, grid, bounds).0
+}
+
+pub(crate) fn candidate_from_hit_with_grid_and_supports(
+    graph: &ConstructionGraph,
+    hit: SurfaceHit,
+    grid: PlacementGrid,
+    bounds: PlacementBounds,
+) -> (PlacementCandidate, Vec<FaceGeometry>) {
+    let supports = support_geometries_from_hit(graph, hit);
+    let candidate = oriented_cuboid_candidate_from_supports(
         graph,
         hit,
         [BLOCK_SIZE_UNITS; 3],
         GridRotation::default(),
         grid,
         bounds,
-    )
+        &supports,
+    );
+    (candidate, supports)
 }
 
 /// Places a fixed-size authored cuboid flush with the face under the pointer.
@@ -1385,8 +1627,23 @@ pub(crate) fn oriented_cuboid_candidate_from_hit_with_grid(
     grid: PlacementGrid,
     bounds: PlacementBounds,
 ) -> PlacementCandidate {
+    let supports = support_geometries_from_hit(graph, hit);
+    oriented_cuboid_candidate_from_supports(
+        graph, hit, dimensions, rotation, grid, bounds, &supports,
+    )
+}
+
+fn oriented_cuboid_candidate_from_supports(
+    _graph: &ConstructionGraph,
+    hit: SurfaceHit,
+    dimensions: [u8; 3],
+    rotation: GridRotation,
+    grid: PlacementGrid,
+    bounds: PlacementBounds,
+    supports: &[FaceGeometry],
+) -> PlacementCandidate {
     let world_dimensions = oriented_grid_dimensions(dimensions, rotation);
-    let support = support_geometry_from_hit(graph, hit)
+    let support = support_at_hit(supports, hit.point)
         .expect("cuboid placement requires a flat support surface");
     let support_center_ticks = snap_world_to_position_ticks(support.center);
     let mut center_ticks = snap_global_center_ticks(
@@ -1406,7 +1663,9 @@ pub(crate) fn oriented_cuboid_candidate_from_hit_with_grid(
     .expect("the fixed block size is a valid core dimension");
     let attached_face = face_for_normal(rotation.quaternion().inverse() * -support.normal);
     let candidate_face = face_geometry(spec, attached_face);
-    let anchor = overlap_center(support, candidate_face);
+    let anchor = supports
+        .iter()
+        .find_map(|support| overlap_center(support, &candidate_face));
     PlacementCandidate {
         spec,
         attached_face,
@@ -1506,7 +1765,8 @@ pub(crate) fn cylinder_candidate_from_hit_with_grid(
     grid: PlacementGrid,
     bounds: PlacementBounds,
 ) -> Result<CylinderPlacementCandidate, PlacementError> {
-    let support = support_geometry_from_hit(graph, hit).ok_or(PlacementError::CurvedSurface)?;
+    let supports = support_geometries_from_hit(graph, hit);
+    let support = support_at_hit(&supports, hit.point).ok_or(PlacementError::CurvedSurface)?;
     let support_center_ticks = snap_world_to_position_ticks(support.center);
     let axial_axis = cardinal_axis(support.normal).0;
     let mut approximate_dimensions = [1; 3];
@@ -1531,36 +1791,54 @@ pub(crate) fn cylinder_candidate_from_hit_with_grid(
     Ok(CylinderPlacementCandidate {
         spec,
         attached_face,
-        anchor: supporting_face_overlap(graph, support, candidate_face),
+        anchor: supports
+            .iter()
+            .find_map(|support| overlap_center(support, &candidate_face))
+            .or_else(|| supporting_face_overlap(graph, support, &candidate_face)),
         support: PlacementSupport::Surface(hit.face.owner),
     })
 }
 
-fn support_geometry_from_hit(graph: &ConstructionGraph, hit: SurfaceHit) -> Option<FaceGeometry> {
+fn support_geometries_from_hit(graph: &ConstructionGraph, hit: SurfaceHit) -> Vec<FaceGeometry> {
     if matches!(hit.face.owner, FaceOwner::Ground) {
         let mut center = hit.point;
         center.y = (center.y / POSITION_TICK_METERS).floor() * POSITION_TICK_METERS;
-        return Some(FaceGeometry {
+        return vec![FaceGeometry {
             center,
             normal: Vec3::Y,
             tangent_u: Vec3::X,
             tangent_v: Vec3::Z,
             profile: FaceProfile::Ground,
-        });
+        }];
     }
-    try_face_geometry_from_ref(hit.face, Some(graph))
+    try_face_geometries_from_ref(hit.face, Some(graph))
+}
+
+fn support_at_hit(supports: &[FaceGeometry], point: Vec3) -> Option<&FaceGeometry> {
+    supports
+        .iter()
+        .find(|support| {
+            let offset = point - support.center;
+            offset.dot(support.normal).abs() <= CONTACT_EPSILON
+                && point_in_profile(
+                    offset.dot(support.tangent_u),
+                    offset.dot(support.tangent_v),
+                    &support.profile,
+                )
+        })
+        .or_else(|| supports.first())
 }
 
 fn supporting_face_overlap(
     graph: &ConstructionGraph,
-    selected: FaceGeometry,
-    candidate: FaceGeometry,
+    selected: &FaceGeometry,
+    candidate: &FaceGeometry,
 ) -> Option<Vec3> {
     overlap_center(selected, candidate).or_else(|| {
         graph.parts().find_map(|(_, spec)| {
             ALL_FACES.into_iter().find_map(|face| {
                 part_face_geometry(*spec, face)
-                    .and_then(|support| overlap_center(support, candidate))
+                    .and_then(|support| overlap_center(&support, candidate))
             })
         })
     })
@@ -1783,6 +2061,7 @@ pub(crate) fn stage_block_batch_from_source_in_bounds(
     stage_connected_block_batch(graph, start, specs, None, Some(source), bounds)
 }
 
+#[cfg(test)]
 pub(crate) fn stage_block_batch_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
@@ -1931,10 +2210,12 @@ fn stage_connected_cylinder(
         {
             connections.push(BuildCommand::Weld(WeldSpec { first, second }));
         }
+        let mut tested_owners = HashSet::new();
         for other in existing_parts {
             if weld_scope
                 .as_ref()
                 .is_some_and(|members| !members.contains(&other))
+                || !tested_owners.insert(connection_geometry_owner(&staged, other))
             {
                 continue;
             }
@@ -2236,10 +2517,12 @@ pub(crate) fn stage_pipe_run_in_bounds(
                 {
                     connections.push(BuildCommand::Weld(WeldSpec { first, second }));
                 }
+                let mut tested_owners = HashSet::new();
                 for &other in &existing_parts {
                     if weld_scope
                         .as_ref()
                         .is_some_and(|members| !members.contains(&other))
+                        || !tested_owners.insert(connection_geometry_owner(&staged, other))
                     {
                         continue;
                     }
@@ -2314,6 +2597,306 @@ fn stage_connected_block_batch(
         FixedPartSpawn::Cuboid,
         bounds,
     )
+}
+
+/// Validates and commits a regular block volume without constructing any
+/// all-pairs candidate sets.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stage_block_volume_in_bounds(
+    graph: &ConstructionGraph,
+    index: &PlacementSnapIndex,
+    start: PlacementCandidate,
+    volume: BlockVolume,
+    bearing: Option<(FaceRef, Vec3, BearingDimensions, &[PartId])>,
+    auto_weld_source: Option<FaceOwner>,
+    bounds: PlacementBounds,
+    publication_generation: u64,
+) -> Result<BlockVolumePlacement, PlacementError> {
+    validate_block_volume_in_bounds(graph, index, start, volume, bounds)?;
+
+    let weld_scope =
+        auto_weld_source.and_then(|source| bearing_connected_weld_scope(graph, source));
+    let mut staged = graph.begin_edit();
+    staged.reserve_parts_and_welds(volume.count(), volume.count().saturating_mul(6));
+    let new_parts = staged.spawn_cuboids(volume.specs());
+
+    let mut connections = Vec::with_capacity(volume.count().saturating_mul(3));
+    if let Some((source, anchor, dimensions, rigid_targets)) = bearing {
+        let first = new_parts[0];
+        let axis = face_geometry_from_ref(source, Some(graph)).normal;
+        connections.push(BuildCommand::AddBearing(
+            BearingSpec::new(
+                source,
+                FaceRef::part(first, start.attached_face),
+                anchor,
+                axis,
+            )
+            .with_dimensions(dimensions),
+        ));
+        connections.extend(rigid_targets.iter().copied().map(|target| {
+            BuildCommand::RigidLink(RigidLinkSpec {
+                first: target,
+                second: first,
+            })
+        }));
+    }
+
+    append_internal_volume_welds(volume, &new_parts, &mut connections);
+    if bearing.is_none() {
+        if weld_scope.is_none() && bounds == PlacementBounds::Garage {
+            append_ground_volume_welds(volume, &new_parts, &mut connections);
+        }
+        append_existing_volume_welds(
+            graph,
+            &staged,
+            index,
+            volume,
+            &new_parts,
+            weld_scope.as_ref(),
+            &mut connections,
+        );
+    }
+    let weld_count = connections
+        .iter()
+        .filter(|command| matches!(command, BuildCommand::Weld(_)))
+        .count();
+    staged
+        .apply_batch_discarding_outcomes(connections)
+        .map_err(|error| PlacementError::Graph(error.to_string()))?;
+    Ok(BlockVolumePlacement {
+        graph: staged.finish(),
+        new_parts,
+        weld_count,
+        bounds: volume.bounds(),
+        publication_generation,
+    })
+}
+
+fn append_internal_volume_welds(
+    volume: BlockVolume,
+    parts: &[PartId],
+    connections: &mut Vec<BuildCommand>,
+) {
+    let counts = volume.dimensions();
+    for x in 0..counts.x {
+        for y in 0..counts.y {
+            for z in 0..counts.z {
+                let cell = UVec3::new(x, y, z);
+                let first = volume.part_at_physical(parts, cell);
+                for (axis, face) in [
+                    (0, FaceKind::PositiveX),
+                    (1, FaceKind::PositiveY),
+                    (2, FaceKind::PositiveZ),
+                ] {
+                    let mut neighbour = cell;
+                    neighbour[axis] += 1;
+                    if neighbour[axis] >= counts[axis] {
+                        continue;
+                    }
+                    let second = volume.part_at_physical(parts, neighbour);
+                    let opposite = match face {
+                        FaceKind::PositiveX => FaceKind::NegativeX,
+                        FaceKind::PositiveY => FaceKind::NegativeY,
+                        FaceKind::PositiveZ => FaceKind::NegativeZ,
+                        _ => unreachable!(),
+                    };
+                    connections.push(BuildCommand::Weld(WeldSpec {
+                        first: FaceRef::part(first, face),
+                        second: FaceRef::part(second, opposite),
+                    }));
+                }
+            }
+        }
+    }
+}
+
+fn append_ground_volume_welds(
+    volume: BlockVolume,
+    parts: &[PartId],
+    connections: &mut Vec<BuildCommand>,
+) {
+    let (minimum, _) = volume.bounds();
+    if minimum.y.abs() > CONTACT_EPSILON {
+        return;
+    }
+    let counts = volume.dimensions();
+    for x in 0..counts.x {
+        for z in 0..counts.z {
+            connections.push(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(
+                    volume.part_at_physical(parts, UVec3::new(x, 0, z)),
+                    FaceKind::NegativeY,
+                ),
+                second: FaceRef::ground(),
+            }));
+        }
+    }
+}
+
+fn append_existing_volume_welds(
+    graph: &ConstructionGraph,
+    staged: &ConstructionGraph,
+    index: &PlacementSnapIndex,
+    volume: BlockVolume,
+    parts: &[PartId],
+    weld_scope: Option<&HashSet<PartId>>,
+    connections: &mut Vec<BuildCommand>,
+) {
+    let (minimum, maximum) = volume.bounds();
+    let mut tested_owners = HashSet::new();
+    let simple_graph = graph.regions().next().is_none() && graph.shape_features().next().is_none();
+    for target in index.nearby(minimum, maximum, CONTACT_EPSILON * 2.0) {
+        if weld_scope.is_some_and(|members| !members.contains(&target.part)) {
+            continue;
+        }
+        if simple_graph
+            && let PartSpec::Cuboid(existing) = target.spec
+            && let Some(cell) = direct_adjacent_unit_cell(volume, existing)
+        {
+            let part = volume.part_at_physical(parts, cell);
+            if let Some((first, second)) =
+                direct_block_face_pair(graph, part, volume.spec_at_physical(cell), target.part)
+            {
+                connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+            }
+            continue;
+        }
+        let owner = connection_geometry_owner(graph, target.part);
+        let (low, high) = volume_candidate_range(volume, target.minimum, target.maximum, true);
+        for x in low.x..=high.x {
+            for y in low.y..=high.y {
+                for z in low.z..=high.z {
+                    let cell = UVec3::new(x, y, z);
+                    let part = volume.part_at_physical(parts, cell);
+                    let (candidate_minimum, candidate_maximum) =
+                        cuboid_world_bounds(volume.spec_at_physical(cell));
+                    if !bounds_share_face(
+                        candidate_minimum,
+                        candidate_maximum,
+                        target.minimum,
+                        target.maximum,
+                    ) || !tested_owners.insert((part, owner))
+                    {
+                        continue;
+                    }
+                    let direct = direct_block_face_pair(
+                        graph,
+                        part,
+                        volume.spec_at_physical(cell),
+                        target.part,
+                    );
+                    if let Some((first, second)) = direct.or_else(|| {
+                        touching_face_pair(
+                            staged,
+                            FaceOwner::Part(part),
+                            FaceOwner::Part(target.part),
+                        )
+                    }) {
+                        connections.push(BuildCommand::Weld(WeldSpec { first, second }));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn direct_adjacent_unit_cell(volume: BlockVolume, existing: CuboidSpec) -> Option<UVec3> {
+    if existing.pose.rotation != GridRotation::default()
+        || !existing
+            .dimensions
+            .iter()
+            .all(|dimension| dimension.units() == volume.start().dimensions[0].units())
+    {
+        return None;
+    }
+    let block_ticks =
+        i32::from(volume.start().dimensions[0].units()) * POSITION_TICKS_PER_GRID_UNIT;
+    let first_center = volume.start().pose.translation_position_ticks()
+        + volume.span.min(IVec3::ZERO) * block_ticks;
+    let existing_center = existing.pose.translation_position_ticks();
+    let counts = volume.dimensions();
+    let mut cell = IVec3::ZERO;
+    let mut adjacent_axes = 0;
+    for axis in 0..3 {
+        let delta = existing_center[axis] - first_center[axis];
+        if delta == -block_ticks {
+            cell[axis] = 0;
+            adjacent_axes += 1;
+        } else if delta == i32::try_from(counts[axis]).expect("volume count fits i32") * block_ticks
+        {
+            cell[axis] = i32::try_from(counts[axis]).expect("volume count fits i32") - 1;
+            adjacent_axes += 1;
+        } else if delta >= 0
+            && delta % block_ticks == 0
+            && delta / block_ticks < i32::try_from(counts[axis]).expect("volume count fits i32")
+        {
+            cell[axis] = delta / block_ticks;
+        } else {
+            return None;
+        }
+    }
+    (adjacent_axes == 1).then_some(cell.as_uvec3())
+}
+
+fn direct_block_face_pair(
+    graph: &ConstructionGraph,
+    new_part: PartId,
+    new_spec: CuboidSpec,
+    existing_part: PartId,
+) -> Option<(FaceRef, FaceRef)> {
+    if graph.region_of(existing_part).is_some()
+        || graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(existing_part))
+    {
+        return None;
+    }
+    let PartSpec::Cuboid(existing) = graph.part(existing_part).copied()? else {
+        return None;
+    };
+    if existing.pose.rotation != GridRotation::default() {
+        return None;
+    }
+    let (new_minimum, new_maximum) = cuboid_world_bounds(new_spec);
+    let (old_minimum, old_maximum) = cuboid_world_bounds(existing);
+    for (axis, positive, negative) in [
+        (0, FaceKind::PositiveX, FaceKind::NegativeX),
+        (1, FaceKind::PositiveY, FaceKind::NegativeY),
+        (2, FaceKind::PositiveZ, FaceKind::NegativeZ),
+    ] {
+        if (new_maximum[axis] - old_minimum[axis]).abs() <= CONTACT_EPSILON {
+            return Some((
+                FaceRef::part(new_part, positive),
+                FaceRef::part(existing_part, negative),
+            ));
+        }
+        if (old_maximum[axis] - new_minimum[axis]).abs() <= CONTACT_EPSILON {
+            return Some((
+                FaceRef::part(new_part, negative),
+                FaceRef::part(existing_part, positive),
+            ));
+        }
+    }
+    None
+}
+
+fn bounds_share_face(
+    first_minimum: Vec3,
+    first_maximum: Vec3,
+    second_minimum: Vec3,
+    second_maximum: Vec3,
+) -> bool {
+    (0..3).any(|normal| {
+        let touching = (first_maximum[normal] - second_minimum[normal]).abs() <= CONTACT_EPSILON
+            || (second_maximum[normal] - first_minimum[normal]).abs() <= CONTACT_EPSILON;
+        if !touching {
+            return false;
+        }
+        let tangents = [(normal + 1) % 3, (normal + 2) % 3];
+        tangents.into_iter().all(|axis| {
+            first_maximum[axis].min(second_maximum[axis])
+                - first_minimum[axis].max(second_minimum[axis])
+                > CONTACT_EPSILON
+        })
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -2408,11 +2991,13 @@ fn stage_connected_part_batch(
         {
             connections.push(BuildCommand::Weld(WeldSpec { first, second }));
         }
+        let mut tested_owners = HashSet::new();
         for &other in &existing_parts {
             if bearing.is_some()
                 || weld_scope
                     .as_ref()
                     .is_some_and(|members| !members.contains(&other))
+                || !tested_owners.insert(connection_geometry_owner(&staged, other))
             {
                 continue;
             }
@@ -2434,6 +3019,18 @@ fn stage_connected_part_batch(
         .apply_batch(connections)
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
     Ok(staged.finish())
+}
+
+fn connection_geometry_owner(graph: &ConstructionGraph, part: PartId) -> mechanic_core::SolidOwner {
+    let owner = graph.region_of(part).map_or(
+        mechanic_core::SolidOwner::Part(part),
+        mechanic_core::SolidOwner::Region,
+    );
+    if graph.owner_has_shape_features(owner) {
+        owner
+    } else {
+        mechanic_core::SolidOwner::Part(part)
+    }
 }
 
 fn bearing_connected_weld_scope(
@@ -2470,6 +3067,73 @@ pub(crate) fn validate_block_batch_in_bounds(
         validate_spec_in_bounds(graph, *spec, bounds)?;
     }
     Ok(())
+}
+
+/// Exact volume validation using the same spatial index as smart snapping.
+pub(crate) fn validate_block_volume_in_bounds(
+    graph: &ConstructionGraph,
+    index: &PlacementSnapIndex,
+    start: PlacementCandidate,
+    volume: BlockVolume,
+    bounds: PlacementBounds,
+) -> Result<(), PlacementError> {
+    if start.spec != volume.start() {
+        return Err(PlacementError::Graph(
+            "block volume does not begin at its placement candidate".to_owned(),
+        ));
+    }
+    if start.support != PlacementSupport::Free && start.anchor.is_none() {
+        return Err(PlacementError::NoFaceOverlap);
+    }
+    let (minimum, maximum) = volume.bounds();
+    validate_world_bounds(minimum, maximum, bounds)?;
+
+    for target in index.nearby(minimum, maximum, 0.0) {
+        if !bounds_overlap_interior(minimum, maximum, target.minimum, target.maximum) {
+            continue;
+        }
+        let Some(existing) = graph.part(target.part).copied() else {
+            continue;
+        };
+        let (low, high) = volume_candidate_range(volume, target.minimum, target.maximum, false);
+        for x in low.x..=high.x {
+            for y in low.y..=high.y {
+                for z in low.z..=high.z {
+                    let candidate = volume.spec_at_physical(UVec3::new(x, y, z));
+                    let (candidate_minimum, candidate_maximum) = cuboid_world_bounds(candidate);
+                    if bounds_overlap_interior(
+                        candidate_minimum,
+                        candidate_maximum,
+                        target.minimum,
+                        target.maximum,
+                    ) && parts_overlap(PartSpec::Cuboid(candidate), existing)
+                    {
+                        return Err(PlacementError::OverlapsPart(target.part));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn volume_candidate_range(
+    volume: BlockVolume,
+    target_minimum: Vec3,
+    target_maximum: Vec3,
+    include_touching: bool,
+) -> (UVec3, UVec3) {
+    let (minimum, _) = volume.bounds();
+    let block_size = f32::from(volume.start().dimensions[0].units()) * GRID_UNIT_METERS;
+    let padding = i32::from(include_touching);
+    let counts = volume.dimensions().as_ivec3();
+    let low = (((target_minimum - minimum) / block_size).floor().as_ivec3()
+        - IVec3::splat(padding))
+    .clamp(IVec3::ZERO, counts - IVec3::ONE);
+    let high = (((target_maximum - minimum) / block_size).ceil().as_ivec3()
+        + IVec3::splat(padding))
+    .clamp(IVec3::ZERO, counts - IVec3::ONE);
+    (low.as_uvec3(), high.as_uvec3())
 }
 
 /// One plane of [`block_box_specs`], addressed by the endpoint the pointer is
@@ -2526,44 +3190,12 @@ pub(crate) fn block_box_specs(
     start: CuboidSpec,
     span: IVec3,
 ) -> Result<Vec<CuboidSpec>, PlacementError> {
-    let start_units = start.pose.translation_position_ticks();
-    let dimension_units = start.dimensions[0].units();
-    let block_units = i32::from(dimension_units) * POSITION_TICKS_PER_GRID_UNIT;
-    let counts = span
-        .to_array()
-        .map(|steps| steps.unsigned_abs() as usize + 1);
-    let count = counts[0]
-        .saturating_mul(counts[1])
-        .saturating_mul(counts[2]);
-    if count > MAX_DRAG_BLOCKS {
-        return Err(PlacementError::TooManyBlocks {
-            count,
-            maximum: MAX_DRAG_BLOCKS,
-        });
-    }
-
-    let mut specs = Vec::with_capacity(count);
-    for x in inclusive_steps(span.x) {
-        for y in inclusive_steps(span.y) {
-            for z in inclusive_steps(span.z) {
-                let center = start_units + IVec3::new(x, y, z) * block_units;
-                specs.push(
-                    CuboidSpec::new(
-                        [dimension_units; 3],
-                        BuildPose::from_position_ticks(center, GridRotation::default()),
-                    )
-                    .expect("dragged blocks retain the selected valid size")
-                    .with_material(start.material),
-                );
-            }
-        }
-    }
-    Ok(specs)
+    Ok(BlockVolume::new(start, span)?.specs().collect())
 }
 
 /// The world-space bounds of the box a drag spans, without building its blocks.
 pub(crate) fn block_box_bounds(start: CuboidSpec, span: IVec3) -> (Vec3, Vec3) {
-    let block = f32::from(start.dimensions[0].units()) * HALF_GRID_UNIT_METERS;
+    let block = f32::from(start.dimensions[0].units()) * GRID_UNIT_METERS;
     let centre = start.pose.translation();
     let reach = span.as_vec3() * block;
     let low = centre + reach.min(Vec3::ZERO) - Vec3::splat(block * 0.5);
@@ -2657,12 +3289,6 @@ fn quantise_with_phase(value: i32, step: i32, phase: i32) -> i32 {
         } else {
             quotient * step
         }
-}
-
-fn inclusive_steps(end: i32) -> impl Iterator<Item = i32> {
-    let direction = end.signum();
-    (0..=end.unsigned_abs())
-        .map(move |step| i32::try_from(step).expect("drag step count fits in i32") * direction)
 }
 
 #[cfg(test)]
@@ -2840,7 +3466,7 @@ pub(crate) fn bearing_anchor_from_hit_with_grid(
         | FaceProfile::AnnularSector { outer_radius, .. } => {
             u.mul_add(u, v * v) <= (outer_radius + CONTACT_EPSILON).powi(2)
         }
-        _ => point_in_profile(u, v, face.profile),
+        _ => point_in_profile(u, v, &face.profile),
     };
     if !inside_face_extent {
         return Err(PlacementError::BearingOutsideFace);
@@ -2890,12 +3516,12 @@ pub(crate) fn bearing_support_face_excluding(
             let Some(face) = part_face_geometry(*spec, face_kind) else {
                 continue;
             };
-            if !faces_share_plane_and_normal(selected, face)
-                || !bearing_ring_overlaps_face(anchor, dimensions, face)
+            if !faces_share_plane_and_normal(&selected, &face)
+                || !bearing_ring_overlaps_face(anchor, dimensions, &face)
             {
                 continue;
             }
-            if bearing_ring_contains_face_center(anchor, dimensions, face) {
+            if bearing_ring_contains_face_center(anchor, dimensions, &face) {
                 return Some(face_ref);
             }
             fallback.get_or_insert(face_ref);
@@ -2921,7 +3547,7 @@ pub(crate) fn bearing_overlaps_candidate(
     {
         return false;
     }
-    bearing_ring_overlaps_face(anchor, dimensions, target_face)
+    bearing_ring_overlaps_face(anchor, dimensions, &target_face)
 }
 
 pub(crate) fn bearing_overlaps_cylinder_candidate(
@@ -2939,7 +3565,7 @@ pub(crate) fn bearing_overlaps_cylinder_candidate(
             .dot(source_face.normal)
             .abs()
             <= CONTACT_EPSILON
-        && bearing_ring_overlaps_face(anchor, dimensions, target_face)
+        && bearing_ring_overlaps_face(anchor, dimensions, &target_face)
 }
 
 #[cfg(test)]
@@ -2983,10 +3609,10 @@ pub(crate) fn stage_bearing_attachment_in_bounds(
 fn bearing_ring_overlaps_face(
     anchor: Vec3,
     dimensions: BearingDimensions,
-    face: FaceGeometry,
+    face: &FaceGeometry,
 ) -> bool {
     profiles_overlap(
-        FaceGeometry {
+        &FaceGeometry {
             center: anchor,
             normal: face.normal,
             tangent_u: face.tangent_u,
@@ -3003,7 +3629,7 @@ fn bearing_ring_overlaps_face(
 fn bearing_ring_contains_face_center(
     anchor: Vec3,
     dimensions: BearingDimensions,
-    face: FaceGeometry,
+    face: &FaceGeometry,
 ) -> bool {
     let offset = anchor - face.center;
     if offset.dot(face.normal).abs() > CONTACT_EPSILON {
@@ -3013,14 +3639,14 @@ fn bearing_ring_contains_face_center(
     point_in_profile(
         radial.dot(face.tangent_u),
         radial.dot(face.tangent_v),
-        FaceProfile::Annulus {
+        &FaceProfile::Annulus {
             inner_radius: dimensions.inner_diameter() * 0.5,
             outer_radius: dimensions.outer_diameter() * 0.5,
         },
     )
 }
 
-fn faces_share_plane_and_normal(first: FaceGeometry, second: FaceGeometry) -> bool {
+fn faces_share_plane_and_normal(first: &FaceGeometry, second: &FaceGeometry) -> bool {
     first.normal.dot(second.normal) > 1.0 - CONTACT_EPSILON
         && (first.center - second.center).dot(first.normal).abs() <= CONTACT_EPSILON
 }
@@ -3036,22 +3662,115 @@ pub(crate) fn try_face_geometry_from_ref(
     face: FaceRef,
     graph: Option<&ConstructionGraph>,
 ) -> Option<FaceGeometry> {
+    try_face_geometries_from_ref(face, graph).into_iter().next()
+}
+
+fn try_face_geometries_from_ref(
+    face: FaceRef,
+    graph: Option<&ConstructionGraph>,
+) -> Vec<FaceGeometry> {
     match face.owner {
-        FaceOwner::Ground => Some(FaceGeometry {
+        FaceOwner::Ground => vec![FaceGeometry {
             center: Vec3::ZERO,
             normal: Vec3::Y,
             tangent_u: Vec3::X,
             tangent_v: Vec3::Z,
             profile: FaceProfile::Ground,
-        }),
+        }],
         FaceOwner::Part(part) => {
+            let graph = graph.expect("live face references have a graph");
             let spec = graph
-                .and_then(|graph| graph.part(part))
+                .part(part)
                 .copied()
                 .expect("live face references have a part");
-            part_face_geometry(spec, face.face)
+            let owner = graph.region_of(part).map_or(
+                mechanic_core::SolidOwner::Part(part),
+                mechanic_core::SolidOwner::Region,
+            );
+            let patch = face.patch.or_else(|| {
+                graph
+                    .owner_has_shape_features(owner)
+                    .then(|| primitive_surface_patch(spec, face.face))
+            });
+            let Some(patch) = patch else {
+                return part_face_geometry(spec, face.face).into_iter().collect();
+            };
+            let Ok(solid) = graph.evaluated_solid(owner) else {
+                return Vec::new();
+            };
+            solid
+                .surfaces
+                .iter()
+                .filter(|surface| surface.key == patch)
+                .filter_map(|surface| evaluated_surface_geometry(&solid, surface))
+                .collect()
         }
     }
+}
+
+const fn primitive_surface_patch(spec: PartSpec, face: FaceKind) -> mechanic_core::SurfacePatchKey {
+    let local = match spec {
+        PartSpec::Cylinder(_) => match face {
+            FaceKind::NegativeY => 0,
+            FaceKind::PositiveY => 1,
+            _ => u32::MAX,
+        },
+        PartSpec::PipeBend(_) => match face {
+            FaceKind::NegativeX => 0,
+            FaceKind::PositiveY => 1,
+            _ => u32::MAX,
+        },
+        _ => match face {
+            FaceKind::NegativeX => 0,
+            FaceKind::PositiveX => 1,
+            FaceKind::NegativeY => 2,
+            FaceKind::PositiveY => 3,
+            FaceKind::NegativeZ => 4,
+            FaceKind::PositiveZ => 5,
+        },
+    };
+    mechanic_core::SurfacePatchKey {
+        source: mechanic_core::TopologySource::Base,
+        local,
+    }
+}
+
+fn evaluated_surface_geometry(
+    solid: &mechanic_core::EvaluatedSolid,
+    surface: &mechanic_core::SurfacePatch,
+) -> Option<FaceGeometry> {
+    let mut points = Vec::new();
+    let mut edge = surface.half_edge;
+    loop {
+        let half_edge = *solid.half_edges.get(edge as usize)?;
+        points.push(solid.vertices.get(half_edge.origin as usize)?.position);
+        edge = half_edge.next;
+        if edge == surface.half_edge {
+            break;
+        }
+    }
+    if points.len() < 3 {
+        return None;
+    }
+    let count = f32::from(u16::try_from(points.len()).ok()?);
+    let center = points.iter().copied().sum::<Vec3>() / count;
+    let normal = surface.normal.normalize_or_zero();
+    let tangent_u = normal.any_orthonormal_vector();
+    let tangent_v = normal.cross(tangent_u);
+    let vertices = points
+        .into_iter()
+        .map(|point| {
+            let offset = point - center;
+            Vec2::new(offset.dot(tangent_u), offset.dot(tangent_v))
+        })
+        .collect();
+    Some(FaceGeometry {
+        center,
+        normal,
+        tangent_u,
+        tangent_v,
+        profile: FaceProfile::Polygon { vertices },
+    })
 }
 
 pub(crate) fn face_geometry(spec: CuboidSpec, face: FaceKind) -> FaceGeometry {
@@ -3154,8 +3873,39 @@ pub(crate) fn face_is_flat(graph: &ConstructionGraph, face: FaceRef) -> bool {
     let FaceOwner::Part(part) = face.owner else {
         return true;
     };
+    if face
+        .patch
+        .is_some_and(|patch| matches!(patch.source, mechanic_core::TopologySource::Feature(_)))
+    {
+        return false;
+    }
     let Some(id) = graph.region_of(part) else {
-        return true;
+        if face.patch.is_none() {
+            return true;
+        }
+        let Some(spec) = graph.part(part).copied() else {
+            return false;
+        };
+        let normal = face_normal(face.face);
+        return match spec {
+            PartSpec::Cuboid(_) => true,
+            PartSpec::Cylinder(spec) => {
+                normal.dot(spec.pose.rotation.quaternion() * Vec3::Y).abs() >= 1.0 - CONTACT_EPSILON
+            }
+            PartSpec::PipeBend(spec) => {
+                let rotation = spec.pose.rotation.quaternion();
+                [rotation * Vec3::NEG_X, rotation * Vec3::Y]
+                    .into_iter()
+                    .any(|end| normal.dot(end) >= 1.0 - CONTACT_EPSILON)
+            }
+            PartSpec::Controller(_)
+            | PartSpec::Engine(_)
+            | PartSpec::Transmission(_)
+            | PartSpec::Servo(_)
+            | PartSpec::Seat(_)
+            | PartSpec::Input(_)
+            | PartSpec::DimensionLink(_) => false,
+        };
     };
     let Some(region) = graph.region(id) else {
         return true;
@@ -3213,6 +3963,20 @@ fn validate_part_in_bounds(
     bounds: PlacementBounds,
 ) -> Result<(), PlacementError> {
     let (minimum, maximum) = part_world_bounds(spec);
+    validate_world_bounds(minimum, maximum, bounds)?;
+    for (part, existing) in graph.parts() {
+        if parts_overlap(spec, *existing) {
+            return Err(PlacementError::OverlapsPart(part));
+        }
+    }
+    Ok(())
+}
+
+fn validate_world_bounds(
+    minimum: Vec3,
+    maximum: Vec3,
+    bounds: PlacementBounds,
+) -> Result<(), PlacementError> {
     let outside = match bounds {
         PlacementBounds::Garage => {
             minimum.x < -GROUND_HALF_SIZE - CONTACT_EPSILON
@@ -3239,11 +4003,6 @@ fn validate_part_in_bounds(
     if outside {
         return Err(PlacementError::OutsidePlatform);
     }
-    for (part, existing) in graph.parts() {
-        if parts_overlap(spec, *existing) {
-            return Err(PlacementError::OverlapsPart(part));
-        }
-    }
     Ok(())
 }
 
@@ -3259,8 +4018,8 @@ fn touching_face_pair(
                 .into_iter()
                 .find_map(|second_face| {
                     overlap_center(
-                        face_geometry_from_ref(first_face, Some(graph)),
-                        face_geometry_from_ref(second_face, Some(graph)),
+                        &face_geometry_from_ref(first_face, Some(graph)),
+                        &face_geometry_from_ref(second_face, Some(graph)),
                     )
                     .map(|_| (first_face, second_face))
                 })
@@ -3395,15 +4154,37 @@ fn raycast_evaluated_solid(
     solid: &mechanic_core::EvaluatedSolid,
 ) -> Option<SurfaceHit> {
     solid
-        .cells
+        .surfaces
         .iter()
-        .filter_map(|cell| {
-            raycast_convex_piece(origin, direction, &cell.piece).map(|(distance, point, normal)| {
-                SurfaceHit {
-                    distance,
-                    point,
-                    face: FaceRef::part(part, face_for_normal(normal)),
-                }
+        .filter_map(|surface| {
+            let (distance, point) = raycast_evaluated_surface(origin, direction, solid, surface)?;
+            let placement_surface = if surface.smoothing_group == 0 {
+                surface
+            } else {
+                // A rounded facet is not itself a mounting plane. Route the hit
+                // to the nearest retained planar base patch so a block can still
+                // bridge the recess wherever its face has real flat contact.
+                solid
+                    .surfaces
+                    .iter()
+                    .filter(|candidate| candidate.smoothing_group == 0)
+                    .filter(|candidate| {
+                        matches!(candidate.key.source, mechanic_core::TopologySource::Base)
+                    })
+                    .max_by(|left, right| {
+                        left.normal
+                            .dot(surface.normal)
+                            .total_cmp(&right.normal.dot(surface.normal))
+                    })?
+            };
+            Some(SurfaceHit {
+                distance,
+                point,
+                face: FaceRef::patch(
+                    part,
+                    face_for_normal(placement_surface.normal),
+                    placement_surface.key,
+                ),
             })
         })
         .min_by(|left, right| {
@@ -3411,6 +4192,40 @@ fn raycast_evaluated_solid(
                 .partial_cmp(&right.distance)
                 .unwrap_or(Ordering::Equal)
         })
+}
+
+fn raycast_evaluated_surface(
+    origin: Vec3,
+    direction: Vec3,
+    solid: &mechanic_core::EvaluatedSolid,
+    surface: &mechanic_core::SurfacePatch,
+) -> Option<(f32, Vec3)> {
+    let first_edge = solid.half_edges.get(surface.half_edge as usize)?;
+    let plane_point = solid.vertices.get(first_edge.origin as usize)?.position;
+    let denominator = direction.dot(surface.normal);
+    if denominator.abs() <= f32::EPSILON {
+        return None;
+    }
+    let distance = (plane_point - origin).dot(surface.normal) / denominator;
+    if distance < 0.0 || !distance.is_finite() {
+        return None;
+    }
+    let point = origin + direction * distance;
+    let mut edge = surface.half_edge;
+    loop {
+        let half_edge = solid.half_edges.get(edge as usize)?;
+        let next = solid.half_edges.get(half_edge.next as usize)?;
+        let start = solid.vertices.get(half_edge.origin as usize)?.position;
+        let end = solid.vertices.get(next.origin as usize)?.position;
+        if surface.normal.dot((end - start).cross(point - start)) < -CONTACT_EPSILON {
+            return None;
+        }
+        edge = half_edge.next;
+        if edge == surface.half_edge {
+            break;
+        }
+    }
+    Some((distance, point))
 }
 
 /// Slab-clips a ray against a convex piece, returning where it enters.
@@ -3703,7 +4518,7 @@ pub(crate) fn raycast_oriented_cuboid(
     })
 }
 
-fn overlap_center(first: FaceGeometry, second: FaceGeometry) -> Option<Vec3> {
+fn overlap_center(first: &FaceGeometry, second: &FaceGeometry) -> Option<Vec3> {
     if first.normal.dot(second.normal) > -1.0 + CONTACT_EPSILON
         || (first.center - second.center).dot(first.normal).abs() > CONTACT_EPSILON
     {
@@ -3712,18 +4527,18 @@ fn overlap_center(first: FaceGeometry, second: FaceGeometry) -> Option<Vec3> {
     profiles_overlap(first, second).then_some((first.center + second.center) * 0.5)
 }
 
-fn point_in_profile(u: f32, v: f32, profile: FaceProfile) -> bool {
+fn point_in_profile(u: f32, v: f32, profile: &FaceProfile) -> bool {
     match profile {
         FaceProfile::Rectangle { half_u, half_v } => {
-            u.abs() <= half_u + CONTACT_EPSILON && v.abs() <= half_v + CONTACT_EPSILON
+            u.abs() <= *half_u + CONTACT_EPSILON && v.abs() <= *half_v + CONTACT_EPSILON
         }
         FaceProfile::Annulus {
             inner_radius,
             outer_radius,
         } => {
             let squared = u.mul_add(u, v * v);
-            squared >= (inner_radius - CONTACT_EPSILON).max(0.0).powi(2)
-                && squared <= (outer_radius + CONTACT_EPSILON).powi(2)
+            squared >= (*inner_radius - CONTACT_EPSILON).max(0.0).powi(2)
+                && squared <= (*outer_radius + CONTACT_EPSILON).powi(2)
         }
         FaceProfile::AnnularSector {
             inner_radius,
@@ -3731,20 +4546,21 @@ fn point_in_profile(u: f32, v: f32, profile: FaceProfile) -> bool {
             half_angle,
         } => {
             let squared = u.mul_add(u, v * v);
-            squared >= (inner_radius - CONTACT_EPSILON).max(0.0).powi(2)
-                && squared <= (outer_radius + CONTACT_EPSILON).powi(2)
-                && v.atan2(u).abs() <= half_angle + CONTACT_EPSILON
+            squared >= (*inner_radius - CONTACT_EPSILON).max(0.0).powi(2)
+                && squared <= (*outer_radius + CONTACT_EPSILON).powi(2)
+                && v.atan2(u).abs() <= *half_angle + CONTACT_EPSILON
         }
+        FaceProfile::Polygon { vertices } => point_in_convex_polygon(Vec2::new(u, v), vertices),
         FaceProfile::Ground => true,
     }
 }
 
-fn profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
-    match (first.profile, second.profile) {
+fn profiles_overlap(first: &FaceGeometry, second: &FaceGeometry) -> bool {
+    match (&first.profile, &second.profile) {
         (FaceProfile::Ground, _) | (_, FaceProfile::Ground) => true,
         (FaceProfile::Rectangle { half_u, half_v }, FaceProfile::Rectangle { .. }) => {
-            positive_rect_overlap(first, second, first.tangent_u, half_u)
-                && positive_rect_overlap(first, second, first.tangent_v, half_v)
+            positive_rect_overlap(first, second, first.tangent_u, *half_u)
+                && positive_rect_overlap(first, second, first.tangent_v, *half_v)
         }
         (FaceProfile::Annulus { .. }, FaceProfile::Rectangle { .. }) => {
             annulus_rectangle_overlap(first, second)
@@ -3756,31 +4572,32 @@ fn profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
             let FaceProfile::Annulus {
                 inner_radius: inner_a,
                 outer_radius: outer_a,
-            } = first.profile
+            } = &first.profile
             else {
                 unreachable!()
             };
             let FaceProfile::Annulus {
                 inner_radius: inner_b,
                 outer_radius: outer_b,
-            } = second.profile
+            } = &second.profile
             else {
                 unreachable!()
             };
             let offset = second.center - first.center;
             let distance =
                 Vec2::new(offset.dot(first.tangent_u), offset.dot(first.tangent_v)).length();
-            distance < outer_a + outer_b - CONTACT_EPSILON
-                && distance + outer_a > inner_b + CONTACT_EPSILON
-                && distance + outer_b > inner_a + CONTACT_EPSILON
+            distance < *outer_a + *outer_b - CONTACT_EPSILON
+                && distance + *outer_a > *inner_b + CONTACT_EPSILON
+                && distance + *outer_b > *inner_a + CONTACT_EPSILON
         }
-        (FaceProfile::AnnularSector { .. }, _) | (_, FaceProfile::AnnularSector { .. }) => {
+        (FaceProfile::AnnularSector { .. } | FaceProfile::Polygon { .. }, _)
+        | (_, FaceProfile::AnnularSector { .. } | FaceProfile::Polygon { .. }) => {
             sector_profiles_overlap(first, second)
         }
     }
 }
 
-fn sector_profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
+fn sector_profiles_overlap(first: &FaceGeometry, second: &FaceGeometry) -> bool {
     let first_cells = profile_cells(first, first.center, first.tangent_u, first.tangent_v);
     let second_cells = profile_cells(second, first.center, first.tangent_u, first.tangent_v);
     first_cells.iter().any(|first| {
@@ -3790,17 +4607,22 @@ fn sector_profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
     })
 }
 
-fn profile_cells(face: FaceGeometry, origin: Vec3, plane_u: Vec3, plane_v: Vec3) -> Vec<Vec<Vec2>> {
+fn profile_cells(
+    face: &FaceGeometry,
+    origin: Vec3,
+    plane_u: Vec3,
+    plane_v: Vec3,
+) -> Vec<Vec<Vec2>> {
     let project = |point: Vec3| {
         let offset = point - origin;
         Vec2::new(offset.dot(plane_u), offset.dot(plane_v))
     };
-    match face.profile {
+    match &face.profile {
         FaceProfile::Rectangle { half_u, half_v } => vec![vec![
-            project(face.center - face.tangent_u * half_u - face.tangent_v * half_v),
-            project(face.center + face.tangent_u * half_u - face.tangent_v * half_v),
-            project(face.center + face.tangent_u * half_u + face.tangent_v * half_v),
-            project(face.center - face.tangent_u * half_u + face.tangent_v * half_v),
+            project(face.center - face.tangent_u * *half_u - face.tangent_v * *half_v),
+            project(face.center + face.tangent_u * *half_u - face.tangent_v * *half_v),
+            project(face.center + face.tangent_u * *half_u + face.tangent_v * *half_v),
+            project(face.center - face.tangent_u * *half_u + face.tangent_v * *half_v),
         ]],
         FaceProfile::Annulus {
             inner_radius,
@@ -3810,8 +4632,8 @@ fn profile_cells(face: FaceGeometry, origin: Vec3, plane_u: Vec3, plane_v: Vec3)
             origin,
             plane_u,
             plane_v,
-            inner_radius,
-            outer_radius,
+            *inner_radius,
+            *outer_radius,
             std::f32::consts::PI,
         ),
         FaceProfile::AnnularSector {
@@ -3823,17 +4645,25 @@ fn profile_cells(face: FaceGeometry, origin: Vec3, plane_u: Vec3, plane_v: Vec3)
             origin,
             plane_u,
             plane_v,
-            inner_radius,
-            outer_radius,
-            half_angle,
+            *inner_radius,
+            *outer_radius,
+            *half_angle,
         ),
+        FaceProfile::Polygon { vertices } => vec![
+            vertices
+                .iter()
+                .map(|vertex| {
+                    project(face.center + face.tangent_u * vertex.x + face.tangent_v * vertex.y)
+                })
+                .collect(),
+        ],
         FaceProfile::Ground => Vec::new(),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn annular_profile_cells(
-    face: FaceGeometry,
+    face: &FaceGeometry,
     origin: Vec3,
     plane_u: Vec3,
     plane_v: Vec3,
@@ -3871,6 +4701,26 @@ fn annular_profile_cells(
         .collect()
 }
 
+fn point_in_convex_polygon(point: Vec2, vertices: &[Vec2]) -> bool {
+    if vertices.len() < 3 {
+        return false;
+    }
+    let mut sign = 0.0_f32;
+    for index in 0..vertices.len() {
+        let edge = vertices[(index + 1) % vertices.len()] - vertices[index];
+        let cross = edge.perp_dot(point - vertices[index]);
+        if cross.abs() <= CONTACT_EPSILON {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if sign * cross < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
 fn convex_polygons_overlap(first: &[Vec2], second: &[Vec2]) -> bool {
     first
         .iter()
@@ -3895,41 +4745,41 @@ fn convex_polygons_overlap(first: &[Vec2], second: &[Vec2]) -> bool {
 }
 
 fn positive_rect_overlap(
-    first: FaceGeometry,
-    second: FaceGeometry,
+    first: &FaceGeometry,
+    second: &FaceGeometry,
     axis: Vec3,
     first_half: f32,
 ) -> bool {
-    let FaceProfile::Rectangle { half_u, half_v } = second.profile else {
+    let FaceProfile::Rectangle { half_u, half_v } = &second.profile else {
         unreachable!()
     };
     let second_half =
-        second.tangent_u.dot(axis).abs() * half_u + second.tangent_v.dot(axis).abs() * half_v;
+        second.tangent_u.dot(axis).abs() * *half_u + second.tangent_v.dot(axis).abs() * *half_v;
     first_half + second_half - (second.center - first.center).dot(axis).abs() > CONTACT_EPSILON
 }
 
-fn annulus_rectangle_overlap(annulus: FaceGeometry, rectangle: FaceGeometry) -> bool {
+fn annulus_rectangle_overlap(annulus: &FaceGeometry, rectangle: &FaceGeometry) -> bool {
     let FaceProfile::Annulus {
         inner_radius,
         outer_radius,
-    } = annulus.profile
+    } = &annulus.profile
     else {
         unreachable!()
     };
-    let FaceProfile::Rectangle { half_u, half_v } = rectangle.profile else {
+    let FaceProfile::Rectangle { half_u, half_v } = &rectangle.profile else {
         unreachable!()
     };
     let offset = annulus.center - rectangle.center;
     let center_u = offset.dot(rectangle.tangent_u).abs();
     let center_v = offset.dot(rectangle.tangent_v).abs();
-    let nearest_u = (center_u - half_u).max(0.0);
-    let nearest_v = (center_v - half_v).max(0.0);
+    let nearest_u = (center_u - *half_u).max(0.0);
+    let nearest_v = (center_v - *half_v).max(0.0);
     let nearest_squared = nearest_u.mul_add(nearest_u, nearest_v * nearest_v);
-    let farthest_u = center_u + half_u;
-    let farthest_v = center_v + half_v;
+    let farthest_u = center_u + *half_u;
+    let farthest_v = center_v + *half_v;
     let farthest_squared = farthest_u.mul_add(farthest_u, farthest_v * farthest_v);
-    nearest_squared < (outer_radius - CONTACT_EPSILON).max(0.0).powi(2)
-        && farthest_squared > (inner_radius + CONTACT_EPSILON).powi(2)
+    nearest_squared < (*outer_radius - CONTACT_EPSILON).max(0.0).powi(2)
+        && farthest_squared > (*inner_radius + CONTACT_EPSILON).powi(2)
 }
 
 fn rotation_y_to_normal(normal: Vec3) -> GridRotation {
@@ -4244,6 +5094,8 @@ fn snap_cardinal(vector: Vec3) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use bevy::{
         math::DVec2,
         prelude::{IVec3, Vec3},
@@ -4251,26 +5103,28 @@ mod tests {
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, DimensionLinkId,
-        EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
-        POSITION_TICKS_PER_GRID_UNIT, PartId, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
+        EdgeChainRef, EdgeTreatment, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
+        GridRotation, POSITION_TICKS_PER_GRID_UNIT, PartId, PartSpec, PendingOperation,
+        RigidLinkSpec, ShapeFeature, SolidOwner, WeldSpec,
     };
 
     use super::{
-        AxisGuide, BLOCK_SIZE_METERS, GuideKind, PipeRunAttachment, PipeRunPiece, PlacementBounds,
-        PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane, PlacementSnapIndex,
-        PlacementSupport, SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate,
-        bearing_overlaps_candidate, bearing_ring_overlaps_face, bearing_support_face, begin_weld,
-        block_box_specs, block_sheet_specs, block_span_from_rays, candidate_from_hit,
-        cuboid_candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref,
-        face_is_flat, free_cuboid_candidate, free_cylinder_candidate, locked_bearings,
-        newly_locked_bearings, oriented_cuboid_candidate_from_hit,
-        oriented_cuboid_candidate_from_hit_with_grid, pipe_run_pieces, raycast_construction,
-        raycast_construction_for_annulus, raycast_construction_with_ground,
-        raycast_placement_plane_point, raycast_sources, render_free_smart_guides, rigid_body_parts,
-        smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_free_cuboid_candidate,
-        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
-        stage_block_batch_from_source, stage_block_batch_from_source_in_bounds,
-        stage_block_batch_in_bounds, stage_controller_in_bounds, stage_cuboid,
+        AxisGuide, BLOCK_SIZE_METERS, BlockVolume, GuideKind, PipeRunAttachment, PipeRunPiece,
+        PlacementBounds, PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane,
+        PlacementSnapIndex, PlacementSupport, SurfaceHit, bearing_anchor_from_hit,
+        bearing_attachment_candidate, bearing_overlaps_candidate, bearing_ring_overlaps_face,
+        bearing_support_face, begin_weld, block_box_bounds, block_box_specs, block_sheet_specs,
+        block_span_from_rays, candidate_from_hit, cuboid_candidate_from_hit,
+        cylinder_candidate_from_hit, face_geometry_from_ref, face_is_flat, free_cuboid_candidate,
+        free_cylinder_candidate, locked_bearings, newly_locked_bearings,
+        oriented_cuboid_candidate_from_hit, oriented_cuboid_candidate_from_hit_with_grid,
+        pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
+        raycast_construction_with_ground, raycast_placement_plane_point, raycast_sources,
+        render_free_smart_guides, rigid_body_parts, smart_snap_block_span,
+        smart_snap_cuboid_candidate, smart_snap_free_cuboid_candidate, stage_bearing_attachment,
+        stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source,
+        stage_block_batch_from_source_in_bounds, stage_block_batch_in_bounds,
+        stage_block_volume_in_bounds, stage_controller_in_bounds, stage_cuboid,
         stage_cylinder_from_source, stage_dimension_link_in_bounds, stage_engine_from_source,
         stage_engine_in_bounds, stage_input_in_bounds, stage_pipe_run, stage_pipe_run_in_bounds,
         stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission, stage_weld_objects,
@@ -4284,6 +5138,19 @@ mod tests {
             panic!("cube must spawn");
         };
         part
+    }
+
+    fn ground_volume_candidate(start_ticks: IVec3) -> PlacementCandidate {
+        PlacementCandidate {
+            spec: CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_position_ticks(start_ticks, GridRotation::default()),
+            )
+            .unwrap(),
+            attached_face: FaceKind::NegativeY,
+            anchor: Some(start_ticks.as_vec3() * mechanic_core::POSITION_TICK_METERS),
+            support: PlacementSupport::Surface(FaceOwner::Ground),
+        }
     }
 
     fn spawn_cylinder(
@@ -4419,6 +5286,63 @@ mod tests {
         );
         assert!(rejected_guides.is_empty());
         assert_eq!(fallback.spec.pose, gridded.spec.pose);
+    }
+
+    #[test]
+    fn dense_aligned_parts_do_not_multiply_smart_snap_validation() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply_batch((-3..=3).flat_map(|x| {
+                (-3..=3).map(move |z| {
+                    BuildCommand::Spawn(
+                        CuboidSpec::new(
+                            [1; 3],
+                            BuildPose::from_position_ticks(
+                                IVec3::new(x * 100, 50, z * 100),
+                                GridRotation::default(),
+                            ),
+                        )
+                        .unwrap(),
+                    )
+                })
+            }))
+            .unwrap();
+        let hit = SurfaceHit {
+            distance: 1.0,
+            point: Vec3::new(0.0, 0.0, 0.0),
+            face: FaceRef::ground(),
+        };
+        let gridded = oriented_cuboid_candidate_from_hit_with_grid(
+            &graph,
+            hit,
+            [1; 3],
+            GridRotation::default(),
+            PlacementGrid::Centimetres25,
+            PlacementBounds::Garage,
+        );
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&graph);
+        let mut validation_count = 0;
+
+        let (fallback, guides) = smart_snap_cuboid_candidate(
+            &graph,
+            &index,
+            hit,
+            gridded,
+            PlacementGrid::Centimetres25,
+            1.0,
+            |_| {
+                validation_count += 1;
+                false
+            },
+        );
+
+        assert_eq!(fallback.spec.pose, gridded.spec.pose);
+        assert!(guides.is_empty());
+        assert!(
+            validation_count <= 25,
+            "equivalent guides caused {validation_count} duplicate validations"
+        );
     }
 
     #[test]
@@ -5698,6 +6622,146 @@ mod tests {
     }
 
     #[test]
+    fn fast_volume_path_keeps_4096_blocks_individual_with_exact_welds() {
+        let graph = ConstructionGraph::new();
+        let start = ground_volume_candidate(IVec3::new(-3_150, 50, -3_150));
+        let volume = BlockVolume::new(start.spec, IVec3::new(63, 0, 63)).unwrap();
+        let index = PlacementSnapIndex::default();
+
+        let started = Instant::now();
+        let placed = stage_block_volume_in_bounds(
+            &graph,
+            &index,
+            start,
+            volume,
+            None,
+            Some(FaceOwner::Ground),
+            PlacementBounds::Garage,
+            17,
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(placed.new_parts.len(), 4_096);
+        assert_eq!(placed.graph.part_count(), 4_096);
+        assert_eq!(placed.weld_count, 4_032 + 4_032 + 4_096);
+        assert_eq!(placed.graph.weld_count(), placed.weld_count);
+        assert_eq!(placed.publication_generation, 17);
+        assert_eq!(
+            placed.graph.part(placed.new_parts[0]),
+            Some(&start.spec.into())
+        );
+        assert!(
+            elapsed.as_secs_f64() < 1.0 / 60.0,
+            "bulk staging regressed to {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn fast_volume_path_places_a_16_cubed_solid() {
+        let graph = ConstructionGraph::new();
+        let start = ground_volume_candidate(IVec3::new(-750, 50, -750));
+        let placed = stage_block_volume_in_bounds(
+            &graph,
+            &PlacementSnapIndex::default(),
+            start,
+            BlockVolume::new(start.spec, IVec3::splat(15)).unwrap(),
+            None,
+            Some(FaceOwner::Ground),
+            PlacementBounds::Garage,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(placed.graph.part_count(), 4_096);
+        assert_eq!(placed.weld_count, 3 * 15 * 16 * 16 + 16 * 16);
+    }
+
+    #[test]
+    fn fast_volume_path_welds_only_the_adjacent_boundary() {
+        let empty = ConstructionGraph::new();
+        let bottom_start = ground_volume_candidate(IVec3::new(-3_150, 50, -3_150));
+        let sheet = BlockVolume::new(bottom_start.spec, IVec3::new(63, 0, 63)).unwrap();
+        let placed = stage_block_volume_in_bounds(
+            &empty,
+            &PlacementSnapIndex::default(),
+            bottom_start,
+            sheet,
+            None,
+            Some(FaceOwner::Ground),
+            PlacementBounds::Garage,
+            1,
+        )
+        .unwrap();
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&placed.graph);
+        let top_start = PlacementCandidate {
+            spec: CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_position_ticks(
+                    IVec3::new(-3_150, 150, -3_150),
+                    GridRotation::default(),
+                ),
+            )
+            .unwrap(),
+            attached_face: FaceKind::NegativeY,
+            anchor: None,
+            support: PlacementSupport::Free,
+        };
+
+        let started = Instant::now();
+        let top = stage_block_volume_in_bounds(
+            &placed.graph,
+            &index,
+            top_start,
+            BlockVolume::new(top_start.spec, IVec3::new(63, 0, 63)).unwrap(),
+            None,
+            None,
+            PlacementBounds::Garage,
+            2,
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(top.new_parts.len(), 4_096);
+        assert_eq!(top.weld_count, 4_032 + 4_032 + 4_096);
+        assert_eq!(
+            top.graph.weld_count(),
+            placed.graph.weld_count() + top.weld_count
+        );
+        assert!(
+            elapsed.as_secs_f64() < 1.0 / 60.0,
+            "adjacent bulk staging regressed to {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn negative_volume_span_preserves_start_material_and_appearance() {
+        let appearance = mechanic_core::MaterialAppearance::new(
+            mechanic_core::MaterialColor::Dye(
+                mechanic_core::MaterialDye::new([12, 34, 56], 1.0).unwrap(),
+            ),
+            mechanic_core::MaterialFinish::Painted,
+        );
+        let start = CuboidSpec::new(
+            [1; 3],
+            BuildPose::from_position_ticks(IVec3::new(200, 250, 300), GridRotation::default()),
+        )
+        .unwrap()
+        .with_material(ConstructionMaterial::Copper)
+        .with_appearance(appearance);
+        let volume = BlockVolume::new(start, IVec3::new(-3, -3, -3)).unwrap();
+        let specs = volume.specs().collect::<Vec<_>>();
+
+        assert_eq!(specs.len(), 64);
+        assert_eq!(specs[0], start);
+        assert!(specs.iter().all(|spec| {
+            spec.material == ConstructionMaterial::Copper && spec.appearance == appearance
+        }));
+        assert_eq!(volume.bounds().0, Vec3::new(-0.375, -0.25, -0.125));
+    }
+
+    #[test]
     fn a_box_drag_places_a_solid_cuboid() {
         let start = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
         let specs = block_box_specs(start, IVec3::new(2, 1, 3)).unwrap();
@@ -5728,6 +6792,19 @@ mod tests {
         let specs = block_box_specs(start, IVec3::ZERO).unwrap();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].pose.translation_half_units(), IVec3::ZERO);
+    }
+
+    #[test]
+    fn box_drag_bounds_cover_the_full_selected_blocks() {
+        let start = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
+
+        assert_eq!(
+            block_box_bounds(start, IVec3::new(2, 0, -1)),
+            (
+                Vec3::new(-0.125, -0.125, -0.375),
+                Vec3::new(0.625, 0.125, 0.125),
+            )
+        );
     }
 
     #[test]
@@ -6225,7 +7302,7 @@ mod tests {
         assert!(bearing_ring_overlaps_face(
             Vec3::new(0.0, 0.25, 0.0),
             dimensions,
-            face_geometry_from_ref(support, Some(&graph)),
+            &face_geometry_from_ref(support, Some(&graph)),
         ));
     }
 
@@ -6562,6 +7639,206 @@ mod tests {
             1,
             "all region members share one raycast source"
         );
+    }
+
+    #[test]
+    fn featured_region_flat_patch_accepts_placement_across_member_blocks() {
+        let mut graph = ConstructionGraph::new();
+        let spawn_at = |graph: &mut ConstructionGraph, center| {
+            let spec = CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_half_grid(center, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        };
+        let first = spawn_at(&mut graph, IVec3::new(1, 1, 1));
+        let second = spawn_at(&mut graph, IVec3::new(3, 1, 1));
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(first, FaceKind::PositiveX),
+                second: FaceRef::part(second, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let region = mechanic_core::ShapeRegion::new(
+            IVec3::ZERO,
+            IVec3::new(2, 1, 1),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let BuildOutcome::RegionAdded(region) =
+            graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Region(region);
+        let edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef { owner, edge }],
+                EdgeTreatment::Fillet,
+                20,
+            )))
+            .unwrap();
+
+        let hit = raycast_construction(&graph, Vec3::new(0.375, 2.0, 0.125), Vec3::NEG_Y)
+            .expect("the retained top patch is under the ray");
+        let candidate = candidate_from_hit(&graph, hit);
+
+        assert!(
+            hit.face.patch.is_some(),
+            "evaluated hits retain patch identity"
+        );
+        assert!(
+            candidate.anchor.is_some(),
+            "the patch must not collapse to the representative member's 25 cm face"
+        );
+        validate_block_batch_in_bounds(
+            &graph,
+            candidate,
+            &[candidate.spec],
+            PlacementBounds::Garage,
+        )
+        .expect("a block may be placed on the second member's flat patch");
+        let staged = stage_block_batch_in_bounds(
+            &graph,
+            candidate,
+            &[candidate.spec],
+            PlacementBounds::Garage,
+        )
+        .expect("placement commits on the evaluated patch");
+        assert_eq!(staged.part_count(), 3);
+        assert_eq!(staged.weld_count(), 2);
+    }
+
+    #[test]
+    fn fillet_hit_places_against_the_nearest_retained_flat_patch() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::new(IVec3::new(1, 1, 1), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let base = graph.evaluated_solid(owner).unwrap();
+        let logical = &base.logical_edges[0];
+        let half_edge = base.half_edges[logical.half_edges[0] as usize];
+        let twin = base.half_edges[half_edge.twin as usize];
+        let start = base.vertices[half_edge.origin as usize].position;
+        let end = base.vertices[base.half_edges[half_edge.next as usize].origin as usize].position;
+        let outward = (base.surfaces[half_edge.face as usize].normal
+            + base.surfaces[twin.face as usize].normal)
+            .normalize();
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef {
+                    owner,
+                    edge: logical.key,
+                }],
+                EdgeTreatment::Fillet,
+                20,
+            )))
+            .unwrap();
+
+        let edge_midpoint = (start + end) * 0.5;
+        let hit = raycast_construction(&graph, edge_midpoint + outward * 2.0, -outward)
+            .expect("the ray crosses the rounded edge");
+        let candidate = candidate_from_hit(&graph, hit);
+
+        assert!(
+            matches!(
+                hit.face.patch.map(|patch| patch.source),
+                Some(mechanic_core::TopologySource::Base)
+            ),
+            "a rounded facet routes placement to an adjacent base plane"
+        );
+        assert!(candidate.anchor.is_some());
+    }
+
+    #[test]
+    fn block_sheet_only_needs_one_block_on_a_promoted_filleted_region() {
+        let mut graph = ConstructionGraph::new();
+        let mut members = Vec::new();
+        for y in 0..4 {
+            for x in 0..4 {
+                let spec = CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::from_half_grid(
+                        IVec3::new(1 + x * 2, 1 + y * 2, 1),
+                        GridRotation::default(),
+                    ),
+                )
+                .unwrap();
+                let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+                else {
+                    unreachable!()
+                };
+                if let Some(&previous) = members.last() {
+                    graph
+                        .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                            first: previous,
+                            second: part,
+                        }))
+                        .unwrap();
+                }
+                members.push(part);
+            }
+        }
+        let region = mechanic_core::ShapeRegion::new(
+            IVec3::ZERO,
+            IVec3::new(4, 4, 1),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let BuildOutcome::RegionAdded(region) =
+            graph.apply(BuildCommand::AddRegion(region)).unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Region(region);
+        let base = graph.evaluated_solid(owner).unwrap();
+        let edge = base
+            .logical_edges
+            .iter()
+            .find(|logical| {
+                let half_edge = base.half_edges[logical.half_edges[0] as usize];
+                let twin = base.half_edges[half_edge.twin as usize];
+                let normals = [
+                    base.surfaces[half_edge.face as usize].normal,
+                    base.surfaces[twin.face as usize].normal,
+                ];
+                normals.contains(&Vec3::X) && normals.contains(&Vec3::Y)
+            })
+            .expect("the cuboid has a positive-x/positive-y edge")
+            .key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef { owner, edge }],
+                EdgeTreatment::Fillet,
+                120,
+            )))
+            .unwrap();
+
+        let hit = raycast_construction(&graph, Vec3::new(0.625, 2.0, 0.125), Vec3::NEG_Y)
+            .expect("the retained top patch is under the ray");
+        let start = candidate_from_hit(&graph, hit);
+        let specs = block_box_specs(start.spec, IVec3::X).unwrap();
+
+        assert!(start.anchor.is_some());
+        let staged = stage_block_batch_in_bounds(&graph, start, &specs, PlacementBounds::Garage)
+            .expect("one supported block keeps the connected sheet placeable");
+        assert_eq!(staged.part_count(), 18);
     }
 
     #[test]

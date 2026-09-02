@@ -52,29 +52,31 @@ use bevy::{
         renderer::{RenderDevice, RenderQueue},
         slab_allocator::SlabAllocatorSettings,
     },
+    tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use builder::{
-    BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, PipeRunAttachment, PipeRunPiece,
-    PlacementBounds, PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane,
-    PlacementSnapIndex, PlacementSupport, SmartGuide, SurfaceHit,
+    BEARING_DEPTH, BLOCK_SIZE_METERS, BlockVolume, CylinderPlacementCandidate, PipeRunAttachment,
+    PipeRunPiece, PlacementBounds, PlacementCandidate, PlacementError, PlacementGrid,
+    PlacementPlane, PlacementSnapIndex, PlacementSupport, SmartGuide, SurfaceHit,
     bearing_anchor_from_hit_with_grid, bearing_attachment_candidate, bearing_overlaps_candidate,
     bearing_overlaps_cylinder_candidate, bearing_support_face, bearing_support_face_excluding,
     begin_weld, block_box_bounds, block_box_specs, block_span_from_rays,
-    candidate_from_hit_with_grid, cylinder_candidate_from_hit_with_grid, face_geometry_from_ref,
-    free_cuboid_candidate, free_cylinder_candidate, oriented_cuboid_candidate_from_hit_with_grid,
-    part_world_bounds, pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
+    candidate_from_hit_with_grid_and_supports, cylinder_candidate_from_hit_with_grid,
+    face_geometry_from_ref, free_cuboid_candidate, free_cylinder_candidate,
+    oriented_cuboid_candidate_from_hit_with_grid, part_world_bounds, pipe_run_pieces,
+    raycast_construction, raycast_construction_for_annulus,
     raycast_construction_for_annulus_with_ground, raycast_construction_with_ground,
     raycast_oriented_cuboid, raycast_placement_plane_point, rigid_body_parts, smart_snap_anchor,
-    smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_cylinder_candidate,
-    smart_snap_free_cuboid_candidate, smart_snap_free_cylinder_candidate,
-    stage_bearing_attachment_in_bounds, stage_bearing_block_batch_in_bounds,
-    stage_bearing_cylinder_in_bounds, stage_block_batch_in_bounds, stage_controller_in_bounds,
+    smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_cuboid_candidate_with_supports,
+    smart_snap_cylinder_candidate, smart_snap_free_cuboid_candidate,
+    smart_snap_free_cylinder_candidate, stage_bearing_attachment_in_bounds,
+    stage_bearing_cylinder_in_bounds, stage_block_volume_in_bounds, stage_controller_in_bounds,
     stage_dimension_link_in_bounds, stage_engine_in_bounds, stage_input_in_bounds,
     stage_pipe_run_in_bounds, stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission,
     stage_weld_objects, transmission_candidate_from_hit_in_bounds, try_face_geometry_from_ref,
-    validate_block_batch_in_bounds, validate_cylinder_candidate_in_bounds,
-    validate_pipe_run_in_bounds,
+    validate_block_batch_in_bounds, validate_block_volume_in_bounds,
+    validate_cylinder_candidate_in_bounds, validate_pipe_run_in_bounds,
 };
 #[cfg(test)]
 use builder::{candidate_from_hit, stage_bearing_attachment};
@@ -104,8 +106,8 @@ use mechanic_core::{
     face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
-    FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuTickReadback,
-    GpuTransform, GpuVelocity,
+    FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines,
+    GpuTickReadback, GpuTransform, GpuVelocity,
 };
 use pause_menu::{PauseMenuState, PauseRequest};
 use performance::PerformanceMetrics;
@@ -321,6 +323,8 @@ mod debug_frame_freeze_tests {
 struct AppSimulation {
     gpu: Option<GpuPhysics>,
     creation: Option<CompiledCreation>,
+    /// Exact graph snapshot represented by `creation` and the live GPU scene.
+    published_graph: ConstructionGraph,
     scheduler: FixedStepScheduler,
     next_tick: u64,
     tick_backlog: u64,
@@ -335,6 +339,37 @@ struct AppSimulation {
     last_tick_readback: Option<GpuTickReadback>,
     failure: Option<String>,
     world_revision: Option<(u64, u64)>,
+}
+
+type WorldPhysicsRevision = (u64, u64);
+
+struct PreparedWorldPhysics {
+    graph: ConstructionGraph,
+    creation: CompiledCreation,
+    gpu: Option<GpuPhysics>,
+}
+
+struct WorldPhysicsTask {
+    revision: WorldPhysicsRevision,
+    task: Task<Result<PreparedWorldPhysics, String>>,
+}
+
+/// Owns compilation and upload work that must never block the editor frame.
+#[derive(Resource)]
+struct WorldPhysicsPublication {
+    pipelines: Arc<GpuPhysicsPipelines>,
+    pending: Option<WorldPhysicsTask>,
+    failed_revision: Option<WorldPhysicsRevision>,
+}
+
+impl Default for WorldPhysicsPublication {
+    fn default() -> Self {
+        Self {
+            pipelines: Arc::new(GpuPhysicsPipelines::new()),
+            pending: None,
+            failed_revision: None,
+        }
+    }
 }
 
 #[derive(Resource, Default)]
@@ -383,7 +418,7 @@ struct BlockDrag {
     /// Blocks beyond the start block along each axis, signed.
     span: IVec3,
     last_span: Option<IVec3>,
-    specs: Vec<CuboidSpec>,
+    volume: BlockVolume,
     error: Option<PlacementError>,
 }
 
@@ -1004,8 +1039,11 @@ fn maintain_space_simulation(
     mut hammer: ResMut<HammerInteraction>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    mut publication: ResMut<WorldPhysicsPublication>,
 ) {
     if *space.get() == world::AppSpace::Garage {
+        publication.pending = None;
+        publication.failed_revision = None;
         if simulation.gpu.is_some() {
             simulation.gpu = None;
             simulation.world_revision = None;
@@ -1015,39 +1053,136 @@ fn maintain_space_simulation(
         return;
     }
     if worlds.is_open() {
+        publication.pending = None;
+        publication.failed_revision = None;
         simulation.gpu = None;
         simulation.world_revision = None;
         return;
     }
 
     let revision = (history.current_revision, runtime.foundation_revision());
+    let completed = publication
+        .pending
+        .as_mut()
+        .and_then(|pending| check_ready(&mut pending.task));
+    if let Some(completed) = completed {
+        let completed_revision = publication
+            .pending
+            .take()
+            .expect("completed physics task is still owned")
+            .revision;
+        if world_physics_result_is_current(completed_revision, revision) {
+            match completed.and_then(|prepared| {
+                replacement_simulation(prepared, &simulation, revision, &render_queue)
+            }) {
+                Ok(replacement) => {
+                    *simulation = replacement;
+                    publication.failed_revision = None;
+                    *hammer = HammerInteraction::default();
+                }
+                Err(error) => {
+                    publication.failed_revision = Some(revision);
+                    state.feedback = Some(format!("Cannot update live world physics: {error}"));
+                }
+            }
+        }
+    }
+
     if simulation.world_revision == Some(revision) {
         return;
     }
+    if !runtime.foundations_match_editor_revision(history.current_revision) {
+        return;
+    }
     if graph.0.part_count() == 0 {
+        publication.pending = None;
+        publication.failed_revision = None;
         *simulation = AppSimulation {
             world_revision: Some(revision),
             ..default()
         };
         return;
     }
+    if publication.pending.is_some() || publication.failed_revision == Some(revision) {
+        return;
+    }
+
+    let graph = graph.0.clone();
     let anchored = runtime.anchored_parts().collect::<Vec<_>>();
-    let creation = match graph.0.compile_with_static_parts(anchored) {
-        Ok(creation) => creation,
-        Err(error) => {
-            *simulation = AppSimulation {
-                world_revision: Some(revision),
-                ..default()
-            };
-            state.feedback = Some(format!("Cannot update live world physics: {error}"));
-            return;
-        }
+    let physics_config = GpuPhysicsConfig {
+        ground_plane_enabled: false,
+        mechanism_self_collisions: !showcase::uses_reduced_collision_mode(&graph),
+        ..GpuPhysicsConfig::default()
     };
-    let (transforms, velocities) = rebuilt_body_states(&creation, &simulation);
-    let next_tick = simulation.next_tick.max(1);
-    if !creation_requires_live_physics(&creation) {
-        *simulation = AppSimulation {
+    let device = render_device.clone();
+    let queue = render_queue.clone();
+    let pipelines = Arc::clone(&publication.pipelines);
+    publication.failed_revision = None;
+    publication.pending = Some(WorldPhysicsTask {
+        revision,
+        task: AsyncComputeTaskPool::get().spawn(async move {
+            prepare_world_physics(graph, anchored, physics_config, device, queue, pipelines)
+        }),
+    });
+}
+
+const fn world_physics_result_is_current(
+    completed: WorldPhysicsRevision,
+    desired: WorldPhysicsRevision,
+) -> bool {
+    completed.0 == desired.0 && completed.1 == desired.1
+}
+
+fn prepare_world_physics(
+    graph: ConstructionGraph,
+    anchored: Vec<PartId>,
+    physics_config: GpuPhysicsConfig,
+    render_device: RenderDevice,
+    render_queue: RenderQueue,
+    pipelines: Arc<GpuPhysicsPipelines>,
+) -> Result<PreparedWorldPhysics, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let creation = graph
+            .compile_with_static_parts(anchored)
+            .map_err(|error| error.to_string())?;
+        let gpu = creation_requires_live_physics(&creation)
+            .then(|| {
+                GpuPhysics::new_with_pipelines(
+                    render_device.wgpu_device(),
+                    &render_queue,
+                    &creation,
+                    physics_config,
+                    &pipelines,
+                )
+                .map_err(|error| error.to_string())
+            })
+            .transpose()?;
+        Ok(PreparedWorldPhysics {
+            graph,
+            creation,
+            gpu,
+        })
+    }))
+    .map_err(|_| "physics compilation worker panicked".to_owned())?
+}
+
+fn replacement_simulation(
+    prepared: PreparedWorldPhysics,
+    previous: &AppSimulation,
+    revision: WorldPhysicsRevision,
+    render_queue: &RenderQueue,
+) -> Result<AppSimulation, String> {
+    let PreparedWorldPhysics {
+        graph,
+        creation,
+        gpu,
+    } = prepared;
+    let (transforms, velocities) = rebuilt_body_states(&creation, previous);
+    let next_tick = previous.next_tick.max(1);
+    let Some(gpu) = gpu else {
+        return Ok(AppSimulation {
             creation: Some(creation),
+            published_graph: graph,
             next_tick,
             previous_transforms: transforms.clone(),
             transforms,
@@ -1055,37 +1190,15 @@ fn maintain_space_simulation(
             snapshot_tick: next_tick,
             world_revision: Some(revision),
             ..default()
-        };
-        return;
-    }
-    let physics_config = GpuPhysicsConfig {
-        ground_plane_enabled: false,
-        mechanism_self_collisions: !showcase::uses_reduced_collision_mode(&graph.0),
-        ..GpuPhysicsConfig::default()
-    };
-    let gpu = match GpuPhysics::new_with_config(
-        render_device.wgpu_device(),
-        &render_queue,
-        &creation,
-        physics_config,
-    ) {
-        Ok(gpu) => gpu,
-        Err(error) => {
-            *simulation = AppSimulation {
-                world_revision: Some(revision),
-                ..default()
-            };
-            state.feedback = Some(format!("Cannot update live world physics: {error}"));
-            return;
-        }
+        });
     };
     gpu.enable_async_readback();
-    if let Err(error) = gpu.write_body_states(&render_queue, &transforms, &velocities) {
-        state.feedback = Some(format!("Cannot preserve live world body state: {error}"));
-    }
-    *simulation = AppSimulation {
+    gpu.write_body_states(render_queue, &transforms, &velocities)
+        .map_err(|error| format!("cannot preserve live body state: {error}"))?;
+    Ok(AppSimulation {
         gpu: Some(gpu),
         creation: Some(creation),
+        published_graph: graph,
         scheduler: FixedStepScheduler::new(),
         next_tick,
         tick_backlog: 0,
@@ -1100,7 +1213,102 @@ fn maintain_space_simulation(
         last_tick_readback: None,
         failure: None,
         world_revision: Some(revision),
+    })
+}
+
+#[cfg(test)]
+mod world_physics_publication_tests {
+    use bevy::prelude::IVec3;
+    use mechanic_core::{BuildCommand, BuildOutcome, BuildPose, CuboidSpec, GridRotation};
+
+    use super::{
+        AppSimulation, ConstructionGraph, editor_part_is_static_or_pending,
+        world_physics_result_is_current,
     };
+
+    #[test]
+    fn only_the_latest_graph_and_foundation_revision_can_publish_physics() {
+        let desired = (42, 7);
+
+        assert!(world_physics_result_is_current(desired, desired));
+        assert!(!world_physics_result_is_current((41, 7), desired));
+        assert!(!world_physics_result_is_current((42, 6), desired));
+    }
+
+    #[test]
+    fn pending_editor_parts_remain_buildable_before_physics_publication() {
+        let mut published = ConstructionGraph::new();
+        let BuildOutcome::Spawned(published_part) = published
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut graph = published.clone();
+        let BuildOutcome::Spawned(pending_part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::new(IVec3::X, GridRotation::default())).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let simulation = AppSimulation {
+            creation: Some(published.compile().unwrap()),
+            published_graph: published,
+            ..Default::default()
+        };
+
+        assert!(!editor_part_is_static_or_pending(
+            &graph,
+            &simulation,
+            published_part
+        ));
+        assert!(editor_part_is_static_or_pending(
+            &graph,
+            &simulation,
+            pending_part
+        ));
+    }
+
+    #[test]
+    fn published_static_parts_remain_buildable_and_moving_parts_do_not() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(static_part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(moving_part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::new(IVec3::X, GridRotation::default())).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let simulation = AppSimulation {
+            creation: Some(graph.compile_with_static_parts([static_part]).unwrap()),
+            published_graph: graph.clone(),
+            ..Default::default()
+        };
+
+        assert!(editor_part_is_static_or_pending(
+            &graph,
+            &simulation,
+            static_part
+        ));
+        assert!(!editor_part_is_static_or_pending(
+            &graph,
+            &simulation,
+            moving_part
+        ));
+    }
 }
 
 fn creation_requires_live_physics(creation: &CompiledCreation) -> bool {
@@ -1132,6 +1340,13 @@ fn rebuilt_body_states(
     let Some(previous_creation) = previous.creation.as_ref() else {
         return (transforms, velocities);
     };
+    let previous_bodies = previous_creation
+        .compounds
+        .iter()
+        .enumerate()
+        .filter(|(_, compound)| !compound.is_static)
+        .map(|(index, compound)| (compound.source_parts.as_slice(), index))
+        .collect::<HashMap<_, _>>();
     let tick_delta = previous
         .snapshot_tick
         .saturating_sub(previous.previous_snapshot_tick);
@@ -1141,11 +1356,7 @@ fn rebuilt_body_states(
         if compound.is_static {
             continue;
         }
-        let Some(old_index) = previous_creation
-            .compounds
-            .iter()
-            .position(|old| !old.is_static && old.source_parts == compound.source_parts)
-        else {
+        let Some(&old_index) = previous_bodies.get(compound.source_parts.as_slice()) else {
             continue;
         };
         let Some(&current) = previous.transforms.get(old_index) else {
@@ -1316,7 +1527,8 @@ fn handle_control_panel_shortcut(
         state.feedback = Some("Point at a control block, or select one, then press E".to_owned());
         return;
     };
-    if *space.get() == world::AppSpace::World && !simulation_part_is_static(&simulation, controller)
+    if *space.get() == world::AppSpace::World
+        && !editor_part_is_static_or_pending(&graph.0, &simulation, controller)
     {
         state.feedback = Some("Moving constructions cannot be programmed".to_owned());
         return;
@@ -1330,7 +1542,6 @@ fn handle_seat_interaction(
     actions: Res<ButtonInput<GameAction>>,
     overlay: Res<ui::UiInput>,
     wheel: Res<MaterialWheelState>,
-    graph: Res<EditorGraph>,
     simulation: Res<AppSimulation>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut camera: Single<
@@ -1359,7 +1570,7 @@ fn handle_seat_interaction(
         && !wheel.open
     {
         if let Some(seat) = player.seat {
-            let beside = seat_world_pose(&graph.0, &simulation, seat)
+            let beside = seat_world_pose(&simulation.published_graph, &simulation, seat)
                 .map_or(camera.2.translation, |(centre, rotation)| {
                     centre + rotation * (Vec3::X * 0.9)
                 });
@@ -1374,7 +1585,7 @@ fn handle_seat_interaction(
             .ok()
             .and_then(|ray| {
                 raycast_simulation(
-                    &graph.0,
+                    &simulation.published_graph,
                     simulation
                         .creation
                         .as_ref()
@@ -1385,7 +1596,10 @@ fn handle_seat_interaction(
                 )
             });
         if let Some(hit) = hit
-            && camera::seat_entry_allowed(hit.distance, graph.0.is_seat(hit.part))
+            && camera::seat_entry_allowed(
+                hit.distance,
+                simulation.published_graph.is_seat(hit.part),
+            )
         {
             player.seat = Some(hit.part);
             camera.1.yaw = 0.0;
@@ -1403,7 +1617,9 @@ fn handle_seat_interaction(
     let Some(seat) = player.seat else {
         return;
     };
-    let Some((seat_center, seat_rotation)) = seat_world_pose(&graph.0, &simulation, seat) else {
+    let Some((seat_center, seat_rotation)) =
+        seat_world_pose(&simulation.published_graph, &simulation, seat)
+    else {
         player.seat = None;
         return;
     };
@@ -1446,7 +1662,6 @@ pub(crate) fn seat_world_pose(
 #[allow(clippy::too_many_arguments)] // Bevy systems receive each independent resource explicitly.
 fn run_drive_sequencer(
     keyboard: Res<ButtonInput<KeyCode>>,
-    graph: Res<EditorGraph>,
     overlay: Res<ui::UiInput>,
     simulation: Res<AppSimulation>,
     mut sequencer: ResMut<DriveSequencer>,
@@ -1465,20 +1680,25 @@ fn run_drive_sequencer(
         let Some(creation) = simulation.creation.as_ref() else {
             return;
         };
-        sequencer.start(creation, &graph.0);
-        gearboxes.start(&graph.0, &sequencer);
+        sequencer.start(creation, &simulation.published_graph);
+        gearboxes.start(&simulation.published_graph, &sequencer);
         state.drive_rows_dirty = true;
     }
     let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
     let keyboard_controller = player
         .seat
-        .filter(|seat| graph.0.seat_input(*seat).is_some())
-        .and_then(|seat| graph.0.seat_controller(seat));
-    let sequencer_changed =
-        sequencer.step(&graph.0, &keys, keyboard_controller, simulation.next_tick);
-    let measured_speeds = measured_engine_speeds(&graph.0, &simulation, &sequencer);
+        .filter(|seat| simulation.published_graph.seat_input(*seat).is_some())
+        .and_then(|seat| simulation.published_graph.seat_controller(seat));
+    let sequencer_changed = sequencer.step(
+        &simulation.published_graph,
+        &keys,
+        keyboard_controller,
+        simulation.next_tick,
+    );
+    let measured_speeds =
+        measured_engine_speeds(&simulation.published_graph, &simulation, &sequencer);
     let gearbox_changed = gearboxes.step(
-        &graph.0,
+        &simulation.published_graph,
         &sequencer,
         &keyboard,
         (!overlay.blocks_keyboard())
@@ -1855,10 +2075,11 @@ fn advance_simulation(
         (Without<ConstructionVisual>, Without<BearingVisual>),
     >,
 ) {
-    let (graph, world_runtime) = graph_and_world;
+    let (_, world_runtime) = graph_and_world;
     if !simulation.is_running() {
         return;
     }
+    let published_graph = simulation.published_graph.clone();
 
     // Poll before scheduling more work. This is deliberately non-blocking:
     // completed tick telemetry and transforms arrive whenever the shared GPU
@@ -1908,7 +2129,7 @@ fn advance_simulation(
         if let (Some(gpu), Some(creation)) = (simulation.gpu.as_ref(), simulation.creation.as_ref())
             && let Err(error) = gpu.write_mechanism_drives(
                 &render_queue,
-                &geared_gpu_drive_rows(creation, &graph.0, &sequencer, &gearboxes),
+                &geared_gpu_drive_rows(creation, &published_graph, &sequencer, &gearboxes),
             )
         {
             stop_failed_simulation(&mut simulation, &mut state, error.to_string());
@@ -1963,7 +2184,7 @@ fn advance_simulation(
             .expect("running simulation has compiled creation");
         for material in ConstructionMaterial::ALL {
             let visible = simulation_material_is_present(
-                &graph.0,
+                &published_graph,
                 creation,
                 SimulationMeshKind::Static,
                 material,
@@ -1973,7 +2194,7 @@ fn advance_simulation(
                     meshes.get_mut(&visuals.construction_meshes[material_index(material)])
             {
                 *asset = renderable_mesh(combined_simulation_material_mesh(
-                    &graph.0,
+                    &published_graph,
                     creation,
                     &simulation.transforms,
                     SimulationMeshKind::Static,
@@ -2002,7 +2223,7 @@ fn advance_simulation(
         .expect("running simulation has compiled creation");
     for material in ConstructionMaterial::ALL {
         let visible = simulation_material_is_present(
-            &graph.0,
+            &published_graph,
             creation,
             SimulationMeshKind::Dynamic,
             material,
@@ -2012,7 +2233,7 @@ fn advance_simulation(
                 meshes.get_mut(&visuals.simulation_meshes[material_index(material)])
         {
             *asset = renderable_mesh(combined_simulation_material_mesh(
-                &graph.0,
+                &published_graph,
                 creation,
                 &simulation.transforms,
                 SimulationMeshKind::Dynamic,
@@ -2032,16 +2253,15 @@ fn advance_simulation(
     // Every mesh below is written only while its own visual is on screen. A
     // hidden mesh has no slab allocation, so writing to one both wastes the
     // rebuild and makes the renderer log a use-after-free every frame.
-    let bearings_visible = graph.0.bearing_count() > 0 || !state.placed_bearings.is_empty();
+    let bearings_visible = published_graph.bearing_count() > 0 || !state.placed_bearings.is_empty();
     let active_dimension_link = world_runtime.active_dimension_link();
     for appearance in AuthoredPart::ALL {
-        let visible = graph
-            .0
-            .parts()
-            .any(|(part, spec)| appearance.matches(&graph.0, part, *spec, active_dimension_link));
+        let visible = published_graph.parts().any(|(part, spec)| {
+            appearance.matches(&published_graph, part, *spec, active_dimension_link)
+        });
         if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
             *mesh = combined_simulation_authored_mesh(
-                &graph.0,
+                &published_graph,
                 creation,
                 &simulation.transforms,
                 appearance,
@@ -2060,7 +2280,7 @@ fn advance_simulation(
     }
     if bearings_visible && let Some(mut mesh) = meshes.get_mut(&visuals.bearing_mesh) {
         *mesh = combined_simulation_bearing_mesh(
-            &graph.0,
+            &published_graph,
             creation,
             &simulation.transforms,
             &state.placed_bearings,
@@ -2070,11 +2290,13 @@ fn advance_simulation(
     // from the same published snapshot -- but only while it is on screen. A
     // hidden mesh has no slab allocation, so writing to it every frame both
     // wastes the rebuild and makes the renderer log a use-after-free.
-    if drive_xray_is_visible(selection.active_editor_tool(), control_link_count(&graph.0))
-        && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
+    if drive_xray_is_visible(
+        selection.active_editor_tool(),
+        control_link_count(&published_graph),
+    ) && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
     {
         *mesh = combined_simulation_drive_xray_mesh(
-            &graph.0,
+            &published_graph,
             creation,
             &simulation.transforms,
             &state.placed_bearings,
@@ -2127,10 +2349,11 @@ impl AppSimulation {
         graph: &ConstructionGraph,
         part: PartId,
     ) -> Option<(Vec3, Quat)> {
-        let spec = *graph.part(part)?;
         let Some(creation) = self.creation.as_ref() else {
+            let spec = *graph.part(part)?;
             return Some((spec.pose().translation(), spec.pose().rotation.quaternion()));
         };
+        let spec = *self.published_graph.part(part)?;
         let body = creation
             .part_to_compound
             .iter()
@@ -2189,6 +2412,8 @@ struct EditorState {
     authored_orientation: u8,
     feedback: Option<String>,
     construction_mesh_dirty: bool,
+    /// Monotonic identity of the latest synchronously accepted block volume.
+    construction_publication_generation: u64,
     /// Last immutable graph revision atomically published to construction meshes.
     rendered_graph: ConstructionGraph,
     delete_target: Option<DeleteTarget>,
@@ -2865,6 +3090,7 @@ fn main() {
         .init_resource::<PerformanceMetrics>()
         .init_resource::<AppSettings>()
         .init_resource::<AppSimulation>()
+        .init_resource::<WorldPhysicsPublication>()
         .init_resource::<HammerInteraction>()
         .init_resource::<BearingToolSettings>()
         .init_resource::<ControlPanelState>()
@@ -4097,6 +4323,7 @@ fn pipette_at_ray(
 ) -> Option<PipetteSetup> {
     if simulation.creation.is_some() {
         let creation = simulation.creation.as_ref()?;
+        let graph = &simulation.published_graph;
         let part = raycast_simulation(graph, creation, &simulation.transforms, origin, direction);
         let bearing = raycast_simulation_bearings(
             graph,
@@ -4665,7 +4892,7 @@ fn update_hover(
                 .as_ref()
                 .and_then(|creation| {
                     raycast_simulation(
-                        &graph.0,
+                        &simulation.published_graph,
                         creation,
                         &simulation.transforms,
                         ray.origin,
@@ -4684,7 +4911,9 @@ fn update_hover(
         raycast_construction_with_ground(&graph.0, ray.origin, ray_direction, terrain_ground)
             .filter(|hit| match hit.face.owner {
                 FaceOwner::Ground => true,
-                FaceOwner::Part(part) => simulation_part_is_static(&simulation, part),
+                FaceOwner::Part(part) => {
+                    editor_part_is_static_or_pending(&graph.0, &simulation, part)
+                }
             });
     state.world_edit_blocker = moving_hit
         .is_some_and(|moving| nearest_editable.is_none_or(|hit| moving.distance <= hit.distance))
@@ -4728,7 +4957,7 @@ fn update_hover(
         let hit = hit.filter(|hit| match hit.face.owner {
             FaceOwner::Ground => true,
             FaceOwner::Part(part) if !placement_bounds.is_world() => graph.0.part(part).is_some(),
-            FaceOwner::Part(part) => simulation_part_is_static(&simulation, part),
+            FaceOwner::Part(part) => editor_part_is_static_or_pending(&graph.0, &simulation, part),
         });
         if moving_hit
             .is_some_and(|moving| hit.is_none_or(|editable| moving.distance <= editable.distance))
@@ -4889,6 +5118,7 @@ fn update_hover(
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn refresh_block_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
@@ -4940,8 +5170,15 @@ fn refresh_block_drag(
                     pointer,
                     state.smart_snap.range,
                     |guided_span| {
-                        block_box_specs(start.spec, guided_span).is_ok_and(|specs| {
-                            validate_block_batch_in_bounds(graph, start, &specs, bounds).is_ok()
+                        BlockVolume::new(start.spec, guided_span).is_ok_and(|volume| {
+                            validate_block_volume_in_bounds(
+                                graph,
+                                &state.snap_index,
+                                start,
+                                volume,
+                                bounds,
+                            )
+                            .is_ok()
                         })
                     },
                 )
@@ -4963,9 +5200,15 @@ fn refresh_block_drag(
     if last_span == Some(span) && state.smart_guides == combined_guides {
         return;
     }
-    let result = block_box_specs(start.spec, span).and_then(|specs| {
-        validate_block_batch_in_bounds(graph, start, &specs, state.placement_bounds)?;
-        Ok(specs)
+    let result = BlockVolume::new(start.spec, span).and_then(|volume| {
+        validate_block_volume_in_bounds(
+            graph,
+            &state.snap_index,
+            start,
+            volume,
+            state.placement_bounds,
+        )?;
+        Ok(volume)
     });
     let drag = state
         .block_drag
@@ -4975,8 +5218,8 @@ fn refresh_block_drag(
     drag.last_span = Some(span);
     state.smart_guides = combined_guides;
     match result {
-        Ok(specs) => {
-            drag.specs = specs;
+        Ok(volume) => {
+            drag.volume = volume;
             drag.error = None;
             state.preview_error = None;
         }
@@ -5392,31 +5635,32 @@ fn refresh_tool_preview_with_cylinder(
     state.preview_error = match (tool, graph.pending()) {
         (Tool::Block, _) => {
             let surface_candidate = state.hovered.and_then(|hit| {
-                try_face_geometry_from_ref(hit.face, Some(graph))
-                    .is_some()
-                    .then(|| {
-                        candidate_from_hit_with_grid(
-                            graph,
-                            hit,
-                            placement_grid,
-                            state.placement_bounds,
-                        )
-                    })
-                    .map(|mut candidate| {
-                        candidate.spec = candidate
-                            .spec
-                            .with_material(material)
-                            .with_appearance(appearance);
-                        let smart_snap = state.smart_snap;
-                        if smart_snap.enabled {
-                            let bounds = state.placement_bounds;
-                            let (snapped_candidate, active_guides) = smart_snap_cuboid_candidate(
-                                graph,
+                (hit.face.patch.is_some()
+                    || try_face_geometry_from_ref(hit.face, Some(graph)).is_some())
+                .then(|| {
+                    candidate_from_hit_with_grid_and_supports(
+                        graph,
+                        hit,
+                        placement_grid,
+                        state.placement_bounds,
+                    )
+                })
+                .map(|(mut candidate, supports)| {
+                    candidate.spec = candidate
+                        .spec
+                        .with_material(material)
+                        .with_appearance(appearance);
+                    let smart_snap = state.smart_snap;
+                    if smart_snap.enabled {
+                        let bounds = state.placement_bounds;
+                        let (snapped_candidate, active_guides) =
+                            smart_snap_cuboid_candidate_with_supports(
                                 &state.snap_index,
                                 hit,
                                 candidate,
                                 placement_grid,
                                 smart_snap.range,
+                                &supports,
                                 |guided| {
                                     validate_block_batch_in_bounds(
                                         graph,
@@ -5427,11 +5671,11 @@ fn refresh_tool_preview_with_cylinder(
                                     .is_ok()
                                 },
                             );
-                            state.smart_guides = active_guides;
-                            candidate = snapped_candidate;
-                        }
-                        candidate
-                    })
+                        state.smart_guides = active_guides;
+                        candidate = snapped_candidate;
+                    }
+                    candidate
+                })
             });
             let free_candidate = state.free_placement_point.and_then(|point| {
                 let (_, direction) = state.pointer_ray?;
@@ -7289,7 +7533,7 @@ fn active_drag_plane(
         return Some((low, high, drag.plane));
     }
     let drag = state.block_drag.as_ref()?;
-    let (low, high) = block_sheet_bounds(&drag.specs)?;
+    let (low, high) = drag.volume.bounds();
     Some((low, high, drag.plane))
 }
 
@@ -7376,8 +7620,9 @@ fn sync_placement_overlays(
     let target = state
         .block_drag
         .as_ref()
-        .and_then(|drag| {
-            block_sheet_bounds(&drag.specs).map(|(low, high)| (low, high, Some(drag.plane)))
+        .map(|drag| {
+            let (low, high) = drag.volume.bounds();
+            (low, high, Some(drag.plane))
         })
         .or_else(|| {
             state
@@ -8840,6 +9085,16 @@ fn simulation_part_is_static(simulation: &AppSimulation, part: PartId) -> bool {
         .is_some_and(|compound| creation.compounds[compound as usize].is_static)
 }
 
+fn editor_part_is_static_or_pending(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    part: PartId,
+) -> bool {
+    graph.part(part).is_some()
+        && (simulation.published_graph.part(part).is_none()
+            || simulation_part_is_static(simulation, part))
+}
+
 fn bearing_location_occupied(
     graph: &ConstructionGraph,
     placed_bearings: &[PlacedBearing],
@@ -9468,7 +9723,8 @@ fn handle_block_actions(
             anchor_span: IVec3::ZERO,
             span: IVec3::ZERO,
             last_span: None,
-            specs: vec![candidate.spec],
+            volume: BlockVolume::new(candidate.spec, IVec3::ZERO)
+                .expect("one block is a valid volume"),
             error: None,
         });
         state.block_preview_revision = state.block_preview_revision.wrapping_add(1);
@@ -9496,12 +9752,30 @@ fn handle_block_actions(
         state.feedback = Some(error.to_string());
         return;
     }
-    let count = drag.specs.len();
+    let count = drag.volume.count();
     let previous = EditorSnapshot::capture(graph, state);
+    let publication_generation = state.construction_publication_generation.wrapping_add(1);
     let staged = match drag.attachment {
-        BlockAttachment::AutoWeld { .. } | BlockAttachment::Free => {
-            stage_block_batch_in_bounds(graph, drag.start, &drag.specs, state.placement_bounds)
-        }
+        BlockAttachment::AutoWeld { source } => stage_block_volume_in_bounds(
+            graph,
+            &state.snap_index,
+            drag.start,
+            drag.volume,
+            None,
+            Some(source),
+            state.placement_bounds,
+            publication_generation,
+        ),
+        BlockAttachment::Free => stage_block_volume_in_bounds(
+            graph,
+            &state.snap_index,
+            drag.start,
+            drag.volume,
+            None,
+            None,
+            state.placement_bounds,
+            publication_generation,
+        ),
         BlockAttachment::Bearing {
             source,
             anchor,
@@ -9514,22 +9788,25 @@ fn handle_block_actions(
                 dimensions,
             };
             let rigid_targets = bearing_socket_targets(graph, socket);
-            stage_bearing_block_batch_in_bounds(
+            stage_block_volume_in_bounds(
                 graph,
+                &state.snap_index,
                 drag.start,
-                &drag.specs,
-                source,
-                anchor,
-                dimensions,
-                &rigid_targets,
+                drag.volume,
+                Some((source, anchor, dimensions, &rigid_targets)),
+                None,
                 state.placement_bounds,
+                publication_generation,
             )
         }
     };
     match staged {
         Ok(staged) => {
-            let weld_count = staged.weld_count().saturating_sub(graph.weld_count());
-            *graph = staged;
+            let weld_count = staged.weld_count;
+            debug_assert_eq!(staged.new_parts.len(), count);
+            debug_assert_eq!(staged.bounds, drag.volume.bounds());
+            state.construction_publication_generation = staged.publication_generation;
+            *graph = staged.graph;
             history.commit(previous);
             state.feedback = Some(format!(
                 "Placed {count} block(s); added {weld_count} weld(s){}",
@@ -9553,7 +9830,6 @@ fn handle_hammer_actions(
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     simulation: Res<AppSimulation>,
-    graph: Res<EditorGraph>,
     mut hammer: ResMut<HammerInteraction>,
     mut state: ResMut<EditorState>,
     selection: Res<SelectedTool>,
@@ -9595,7 +9871,7 @@ fn handle_hammer_actions(
                 .as_ref()
                 .expect("running simulation has compiled creation");
             raycast_simulation(
-                &graph.0,
+                &simulation.published_graph,
                 creation,
                 &simulation.transforms,
                 ray.origin,
@@ -10540,7 +10816,7 @@ fn update_previews(
             if let Some(drag) = state.block_drag.as_ref() {
                 if rendered_revisions.block != state.block_preview_revision {
                     if let Some(mut mesh) = meshes.get_mut(&visuals.block_drag_preview_mesh) {
-                        *mesh = block_sheet_preview_mesh(&drag.specs);
+                        *mesh = block_volume_preview_mesh(drag.volume);
                     }
                     rendered_revisions.block = state.block_preview_revision;
                 }
@@ -11250,6 +11526,7 @@ fn combined_material_construction_mesh(
 
 /// Builds the construction mesh, substituting `preview` for the region it names
 /// so a cage drag can be seen before it is committed.
+#[allow(clippy::too_many_lines)]
 fn combined_construction_mesh_filtered(
     graph: &ConstructionGraph,
     preview: Option<&(RegionId, ShapeRegion)>,
@@ -11263,6 +11540,8 @@ fn combined_construction_mesh_filtered(
     let mut indices = Vec::new();
     let pipe_texture_offsets = pipe_texture_offsets(graph);
     let welded_pipe_ends = welded_pipe_ends(graph);
+    let rigid_groups = rigid_render_groups(graph);
+    let mut mergeable_blocks = Vec::new();
     // A part inside a region hands its surface to that region, so drawing both
     // would render the same material twice.
     for (part, spec) in graph.parts().filter(|(_, spec)| {
@@ -11270,6 +11549,17 @@ fn combined_construction_mesh_filtered(
             .is_some_and(|part_material| material.is_none_or(|wanted| wanted == part_material))
     }) {
         if graph.region_of(part).is_some() {
+            continue;
+        }
+        if let PartSpec::Cuboid(cuboid) = *spec
+            && cuboid
+                .dimensions
+                .iter()
+                .all(|dimension| dimension.units() == 1)
+            && cuboid.pose.rotation == GridRotation::default()
+            && !graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part))
+        {
+            mergeable_blocks.push((rigid_groups[part.index() as usize], cuboid));
             continue;
         }
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
@@ -11307,6 +11597,15 @@ fn combined_construction_mesh_filtered(
             positions.len() - first_vertex,
         ));
     }
+    append_merged_block_cuboids(
+        &mergeable_blocks,
+        &mut positions,
+        &mut normals,
+        &mut uvs,
+        &mut tangents,
+        &mut colors,
+        &mut indices,
+    );
     for (id, region) in graph.regions() {
         if material.is_some_and(|wanted| wanted != region.material()) {
             continue;
@@ -11358,6 +11657,176 @@ fn combined_construction_mesh_filtered(
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+fn rigid_render_groups(graph: &ConstructionGraph) -> Vec<usize> {
+    let parts = graph.parts().map(|(part, _)| part).collect::<Vec<_>>();
+    let mut dense =
+        vec![usize::MAX; parts.iter().map(|part| part.index()).max().unwrap_or(0) as usize + 1];
+    for (index, part) in parts.iter().enumerate() {
+        dense[part.index() as usize] = index;
+    }
+    let mut parents = (0..parts.len()).collect::<Vec<_>>();
+    for (_, weld) in graph.welds() {
+        if let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+            (weld.first.owner, weld.second.owner)
+        {
+            union_render_groups(
+                &mut parents,
+                dense[first.index() as usize],
+                dense[second.index() as usize],
+            );
+        }
+    }
+    for (_, link) in graph.rigid_links() {
+        union_render_groups(
+            &mut parents,
+            dense[link.first.index() as usize],
+            dense[link.second.index() as usize],
+        );
+    }
+    let mut groups = vec![usize::MAX; dense.len()];
+    for (index, part) in parts.into_iter().enumerate() {
+        groups[part.index() as usize] = find_render_group(&mut parents, index);
+    }
+    groups
+}
+
+fn find_render_group(parents: &mut [usize], mut index: usize) -> usize {
+    while parents[index] != index {
+        parents[index] = parents[parents[index]];
+        index = parents[index];
+    }
+    index
+}
+
+fn union_render_groups(parents: &mut [usize], first: usize, second: usize) {
+    let first = find_render_group(parents, first);
+    let second = find_render_group(parents, second);
+    if first != second {
+        parents[second] = first;
+    }
+}
+
+#[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
+fn append_merged_block_cuboids(
+    blocks: &[(usize, CuboidSpec)],
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+    colors: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+) {
+    let mut groups: Vec<(usize, MaterialAppearance, HashMap<[i32; 3], CuboidSpec>)> = Vec::new();
+    for &(rigid_group, spec) in blocks {
+        let group = groups.iter_mut().find(|(other_group, appearance, _)| {
+            *other_group == rigid_group && *appearance == spec.appearance
+        });
+        let cells = if let Some((_, _, cells)) = group {
+            cells
+        } else {
+            groups.push((rigid_group, spec.appearance, HashMap::new()));
+            &mut groups.last_mut().expect("block group was appended").2
+        };
+        cells.insert(spec.pose.translation_position_ticks().to_array(), spec);
+    }
+
+    for (_, appearance, mut cells) in groups {
+        let mut starts = cells.keys().copied().collect::<Vec<_>>();
+        starts.sort_unstable();
+        for start in starts {
+            if !cells.contains_key(&start) {
+                continue;
+            }
+            let mut counts = [1_i32; 3];
+            while cells.contains_key(&[
+                start[0] + counts[0] * POSITION_TICKS_PER_GRID_UNIT,
+                start[1],
+                start[2],
+            ]) {
+                counts[0] += 1;
+            }
+            'grow_y: loop {
+                for x in 0..counts[0] {
+                    if !cells.contains_key(&[
+                        start[0] + x * POSITION_TICKS_PER_GRID_UNIT,
+                        start[1] + counts[1] * POSITION_TICKS_PER_GRID_UNIT,
+                        start[2],
+                    ]) {
+                        break 'grow_y;
+                    }
+                }
+                counts[1] += 1;
+            }
+            'grow_z: loop {
+                for x in 0..counts[0] {
+                    for y in 0..counts[1] {
+                        if !cells.contains_key(&[
+                            start[0] + x * POSITION_TICKS_PER_GRID_UNIT,
+                            start[1] + y * POSITION_TICKS_PER_GRID_UNIT,
+                            start[2] + counts[2] * POSITION_TICKS_PER_GRID_UNIT,
+                        ]) {
+                            break 'grow_z;
+                        }
+                    }
+                }
+                counts[2] += 1;
+            }
+            for x in 0..counts[0] {
+                for y in 0..counts[1] {
+                    for z in 0..counts[2] {
+                        cells.remove(&[
+                            start[0] + x * POSITION_TICKS_PER_GRID_UNIT,
+                            start[1] + y * POSITION_TICKS_PER_GRID_UNIT,
+                            start[2] + z * POSITION_TICKS_PER_GRID_UNIT,
+                        ]);
+                    }
+                }
+            }
+
+            let first_vertex = positions.len();
+            let block_counts = Vec3::new(counts[0] as f32, counts[1] as f32, counts[2] as f32);
+            let center = IVec3::from_array(start).as_vec3() * mechanic_core::POSITION_TICK_METERS
+                + (block_counts - Vec3::ONE) * (BLOCK_SIZE_METERS * 0.5);
+            append_transformed_cuboid(
+                center,
+                Quat::IDENTITY,
+                block_counts * BLOCK_SIZE_METERS,
+                positions,
+                normals,
+                indices,
+            );
+            append_cuboid_texture_coordinates(first_vertex, positions, normals, uvs, tangents);
+            colors.extend(std::iter::repeat_n(
+                chroma::encode_appearance(appearance),
+                positions.len() - first_vertex,
+            ));
+        }
+    }
+}
+
+fn append_cuboid_texture_coordinates(
+    first: usize,
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+) {
+    for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
+        let position = Vec3::from_array(position);
+        let normal = Vec3::from_array(normal);
+        let absolute = normal.abs();
+        let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
+            ([position.x, position.z], Vec3::X)
+        } else if absolute.x >= absolute.z {
+            ([position.z, position.y], Vec3::Z)
+        } else {
+            ([position.x, position.y], Vec3::X)
+        };
+        uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+        tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
+    }
 }
 
 const fn ordinary_material(spec: PartSpec) -> Option<ConstructionMaterial> {
@@ -11623,6 +12092,7 @@ fn combined_parts_mesh_scaled(specs: &[PartSpec], scale_factor: f32) -> Mesh {
 }
 
 /// Exact world bounds of a block sheet, including the outer half-block skin.
+#[cfg(test)]
 pub(crate) fn block_sheet_bounds(specs: &[CuboidSpec]) -> Option<(Vec3, Vec3)> {
     let mut minimum = Vec3::splat(f32::INFINITY);
     let mut maximum = Vec3::splat(f32::NEG_INFINITY);
@@ -11639,8 +12109,18 @@ pub(crate) fn block_sheet_bounds(specs: &[CuboidSpec]) -> Option<(Vec3, Vec3)> {
 ///
 /// Built directly from bounds because a valid 4,096-block sheet can be wider
 /// than the construction API's per-cuboid dimension limit.
+#[cfg(test)]
 fn block_sheet_preview_mesh(specs: &[CuboidSpec]) -> Mesh {
     let (minimum, maximum) = block_sheet_bounds(specs).expect("a block drag contains a block");
+    block_bounds_preview_mesh(minimum, maximum)
+}
+
+fn block_volume_preview_mesh(volume: BlockVolume) -> Mesh {
+    let (minimum, maximum) = volume.bounds();
+    block_bounds_preview_mesh(minimum, maximum)
+}
+
+fn block_bounds_preview_mesh(minimum: Vec3, maximum: Vec3) -> Mesh {
     let visual_minimum = minimum + Vec3::splat(BLOCK_SHEET_PREVIEW_INSET_METERS);
     let visual_maximum = maximum - Vec3::splat(BLOCK_SHEET_PREVIEW_INSET_METERS);
     let mut positions = Vec::with_capacity(CUBE_POSITIONS.len());
@@ -13998,20 +14478,7 @@ fn append_textured_part(
 
     match spec {
         PartSpec::Cuboid(_) => {
-            for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
-                let position = Vec3::from_array(position);
-                let normal = Vec3::from_array(normal);
-                let absolute = normal.abs();
-                let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
-                    ([position.x, position.z], Vec3::X)
-                } else if absolute.x >= absolute.z {
-                    ([position.z, position.y], Vec3::Z)
-                } else {
-                    ([position.x, position.y], Vec3::X)
-                };
-                uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
-                tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
-            }
+            append_cuboid_texture_coordinates(first, positions, normals, uvs, tangents);
         }
         PartSpec::Cylinder(_) => {
             append_cylinder_texture_coordinates(
@@ -14198,6 +14665,8 @@ fn append_authored_cuboid(
 
 #[cfg(test)]
 mod rendering_tests {
+    use std::time::Instant;
+
     use bevy::{
         image::{ImageAddressMode, ImageFilterMode, ImageLoaderSettings},
         mesh::VertexAttributeValues,
@@ -14221,10 +14690,10 @@ mod rendering_tests {
         AuthoredPart, BEARING_DEPTH, BEARING_RENDER_RADIAL_SKIN, BLOCK_SHEET_PREVIEW_INSET_METERS,
         MATERIAL_TEXTURE_METERS_PER_REPEAT, MATERIAL_TEXTURE_PIXELS_PER_BLOCK,
         MATERIAL_TEXTURE_PIXELS_PER_SIDE, PlacedBearing, SimulationMeshKind,
-        append_bearing_cylinder, append_cylinder_shape, append_pipe_bend_shape,
-        append_pipe_bend_texture_coordinates, authored_preview_material, authored_uvs,
-        bearing_pbr_material, bearing_preview_dimensions_changed, bearing_profile_plan,
-        bearing_u_repeat, block_sheet_bounds, block_sheet_preview_mesh,
+        append_bearing_cylinder, append_cylinder_shape, append_merged_block_cuboids,
+        append_pipe_bend_shape, append_pipe_bend_texture_coordinates, authored_preview_material,
+        authored_uvs, bearing_pbr_material, bearing_preview_dimensions_changed,
+        bearing_profile_plan, bearing_u_repeat, block_sheet_bounds, block_sheet_preview_mesh,
         combined_authored_construction_mesh, combined_bearing_mesh, combined_controller_mesh,
         combined_drive_xray_mesh, combined_material_construction_mesh,
         combined_simulation_bearing_mesh, combined_simulation_material_mesh,
@@ -14233,13 +14702,107 @@ mod rendering_tests {
         joint_xray_is_visible, preview_material, renderable_mesh, simulation_material_is_present,
         single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
+
+    #[test]
+    fn a_4096_block_sheet_renders_as_one_globally_mapped_cuboid() {
+        let blocks = (0..64)
+            .flat_map(|x| {
+                (0..64).map(move |z| {
+                    (
+                        0,
+                        CuboidSpec::new(
+                            [1; 3],
+                            BuildPose::from_position_ticks(
+                                IVec3::new(x * 100, 50, z * 100),
+                                GridRotation::default(),
+                            ),
+                        )
+                        .unwrap(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut positions = Vec::new();
+        let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        let mut tangents = Vec::new();
+        let mut colors = Vec::new();
+        let mut indices = Vec::new();
+
+        append_merged_block_cuboids(
+            &blocks,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+            &mut tangents,
+            &mut colors,
+            &mut indices,
+        );
+
+        assert_eq!(positions.len(), 24);
+        assert_eq!(indices.len(), 36);
+        assert_eq!(uvs.len(), 24);
+        assert_eq!(tangents.len(), 24);
+        assert_eq!(colors.len(), 24);
+        let (minimum_u, maximum_u) = uvs.iter().flat_map(|uv| uv.iter()).copied().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+        );
+        assert!((maximum_u - minimum_u - 16.0 / MATERIAL_TEXTURE_METERS_PER_REPEAT).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn a_4096_block_sheet_mesh_publication_stays_within_one_frame() {
+        let previous = ConstructionGraph::new();
+        let start = PlacementCandidate {
+            spec: CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_position_ticks(
+                    IVec3::new(-3_150, 50, -3_150),
+                    GridRotation::default(),
+                ),
+            )
+            .unwrap(),
+            attached_face: FaceKind::NegativeY,
+            anchor: Some(Vec3::ZERO),
+            support: PlacementSupport::Surface(FaceOwner::Ground),
+        };
+        let placed = stage_block_volume_in_bounds(
+            &previous,
+            &PlacementSnapIndex::default(),
+            start,
+            BlockVolume::new(start.spec, IVec3::new(63, 0, 63)).unwrap(),
+            None,
+            Some(FaceOwner::Ground),
+            PlacementBounds::Garage,
+            1,
+        )
+        .unwrap();
+
+        let started = Instant::now();
+        let delta = mechanic_core::ConstructionEditDelta::between(&previous, &placed.graph);
+        let mesh =
+            combined_material_construction_mesh(&placed.graph, None, ConstructionMaterial::Steel);
+        let elapsed = started.elapsed();
+
+        assert_eq!(delta.added.len(), 4_096);
+        assert_eq!(mesh.count_vertices(), 24);
+        assert!(
+            elapsed.as_secs_f64() <= 0.005,
+            "mesh publication took {elapsed:?}"
+        );
+    }
+
     use super::{
         EnvironmentMapGenerationReady, OverlayGeometry, append_axis_arrows, append_drag_plane,
         append_feature_pull_arrow, append_plane_arrows, region_focus_is_active,
         region_world_bounds, retain_generated_environment_map, sky_cubemap,
     };
     use crate::PlacementPlane;
-    use crate::builder::block_sheet_specs;
+    use crate::builder::{
+        BlockVolume, PlacementBounds, PlacementCandidate, PlacementSnapIndex, PlacementSupport,
+        block_sheet_specs, stage_block_volume_in_bounds,
+    };
     use crate::hotbar::Tool;
     use crate::sequencer::DriveSequencer;
 
@@ -16060,7 +16623,7 @@ mod interaction_tests {
 
     use super::{
         AUTHORED_ORIENTATION_COUNT, AUTHORED_ORIENTATIONS, AppSimulation, BearingDimensionTarget,
-        BearingToolSettings, BlockAttachment, BlockDrag, CylinderDimensionTarget,
+        BearingToolSettings, BlockAttachment, BlockDrag, BlockVolume, CylinderDimensionTarget,
         CylinderToolSettings, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
         HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, MaterialWheelState, PipeDrag,
         PipeEditMode, PlacedBearing, PlacementPlane, PlayerState, PointerSample, SelectedTool,
@@ -16950,7 +17513,7 @@ mod interaction_tests {
                 anchor_span: IVec3::ZERO,
                 span: IVec3::new(2, 0, 1),
                 last_span: Some(IVec3::new(2, 0, 1)),
-                specs: specs.clone(),
+                volume: BlockVolume::new(candidate.spec, IVec3::new(2, 0, 1)).unwrap(),
                 error: None,
             }),
             ..Default::default()
@@ -17079,7 +17642,7 @@ mod interaction_tests {
             press.ray_origin,
             press.ray_direction,
         );
-        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
+        assert_eq!(state.block_drag.as_ref().unwrap().volume.count(), 1);
 
         mouse.clear();
         mouse.release(GameAction::Primary);
@@ -17117,7 +17680,7 @@ mod interaction_tests {
                 anchor_span: IVec3::ZERO,
                 span: IVec3::ZERO,
                 last_span: None,
-                specs: vec![candidate.spec],
+                volume: BlockVolume::new(candidate.spec, IVec3::ZERO).unwrap(),
                 error: None,
             }),
             smart_guides: vec![start_guide],
@@ -17131,7 +17694,7 @@ mod interaction_tests {
             press.ray_origin,
             Quat::from_rotation_z(0.003) * Vec3::NEG_Y,
         );
-        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
+        assert_eq!(state.block_drag.as_ref().unwrap().volume.count(), 1);
 
         for (target, expected) in [
             (Vec3::new(0.50, 2.0, 0.25), 6),
@@ -17146,7 +17709,7 @@ mod interaction_tests {
                 press.ray_origin,
                 (Vec3::new(target.x, 0.0, target.z) - press.ray_origin).normalize(),
             );
-            assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), expected);
+            assert_eq!(state.block_drag.as_ref().unwrap().volume.count(), expected);
             assert!(state.smart_guides.contains(&start_guide));
         }
     }
@@ -17177,7 +17740,7 @@ mod interaction_tests {
                 anchor_span: IVec3::ZERO,
                 span: IVec3::ZERO,
                 last_span: None,
-                specs: vec![candidate.spec],
+                volume: BlockVolume::new(candidate.spec, IVec3::ZERO).unwrap(),
                 error: None,
             }),
             ..Default::default()
@@ -17193,7 +17756,7 @@ mod interaction_tests {
             press.ray_origin,
             press.ray_direction,
         );
-        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 1);
+        assert_eq!(state.block_drag.as_ref().unwrap().volume.count(), 1);
 
         refresh_block_drag(
             &graph,
@@ -17202,7 +17765,7 @@ mod interaction_tests {
             press.ray_origin,
             (Vec3::new(0.5, 0.0, 0.0) - press.ray_origin).normalize(),
         );
-        assert_eq!(state.block_drag.as_ref().unwrap().specs.len(), 3);
+        assert_eq!(state.block_drag.as_ref().unwrap().volume.count(), 3);
     }
 
     #[test]
@@ -17214,8 +17777,6 @@ mod interaction_tests {
             face: FaceRef::ground(),
         };
         let candidate = candidate_from_hit(&graph, hit);
-        let endpoint = candidate.spec.pose.translation_half_units() + IVec3::new(4, 0, 2);
-        let specs = block_sheet_specs(candidate.spec, endpoint, PlacementPlane::Xz).unwrap();
         let mut state = EditorState {
             block_drag: Some(BlockDrag {
                 start: candidate,
@@ -17228,7 +17789,7 @@ mod interaction_tests {
                 anchor_span: IVec3::ZERO,
                 span: IVec3::new(2, 0, 1),
                 last_span: Some(IVec3::new(2, 0, 1)),
-                specs,
+                volume: BlockVolume::new(candidate.spec, IVec3::new(2, 0, 1)).unwrap(),
                 error: None,
             }),
             ..Default::default()
@@ -18087,6 +18648,7 @@ mod interaction_tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
             }],
             creation: Some(creation),
+            published_graph: graph.clone(),
             ..Default::default()
         };
         assert_eq!(
@@ -18288,10 +18850,10 @@ mod history_tests {
     };
 
     use super::{
-        BlockAttachment, BlockDrag, DeleteDrag, DeleteTarget, EditorHistory, EditorSnapshot,
-        EditorState, HISTORY_CAPACITY, HistoryAction, PlacedBearing, PlacementPlane, PointerSample,
-        SurfaceHit, apply_history_action, bearing_attachment_candidate, requested_history_action,
-        stage_bearing_attachment,
+        BlockAttachment, BlockDrag, BlockVolume, DeleteDrag, DeleteTarget, EditorHistory,
+        EditorSnapshot, EditorState, HISTORY_CAPACITY, HistoryAction, PlacedBearing,
+        PlacementPlane, PointerSample, SurfaceHit, apply_history_action,
+        bearing_attachment_candidate, requested_history_action, stage_bearing_attachment,
     };
     use crate::controls::GameAction;
 
@@ -18387,7 +18949,7 @@ mod history_tests {
             anchor_span: IVec3::ZERO,
             span: IVec3::ZERO,
             last_span: None,
-            specs: vec![candidate.spec],
+            volume: BlockVolume::new(candidate.spec, IVec3::ZERO).unwrap(),
             error: None,
         });
         state.delete_drag = Some(DeleteDrag {

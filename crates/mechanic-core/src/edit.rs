@@ -126,38 +126,44 @@ impl ConstructionEditDelta {
                 ),
         );
 
-        let previous_welds = previous.welds().collect::<BTreeMap<_, _>>();
-        let current_welds = current.welds().collect::<BTreeMap<_, _>>();
-        for face in previous_welds
-            .iter()
-            .filter(|(id, weld)| current_welds.get(id).copied() != Some(*weld))
-            .flat_map(|(_, weld)| [weld.first.owner, weld.second.owner])
-            .chain(
-                current_welds
-                    .iter()
-                    .filter(|(id, _)| !previous_welds.contains_key(id))
-                    .flat_map(|(_, weld)| [weld.first.owner, weld.second.owner]),
-            )
-        {
-            if let FaceOwner::Part(part) = face {
-                delta.topology_dependent.insert(part);
+        let has_pipes = previous_parts
+            .values()
+            .chain(current_parts.values())
+            .any(is_pipe);
+        if has_pipes {
+            let previous_welds = previous.welds().collect::<BTreeMap<_, _>>();
+            let current_welds = current.welds().collect::<BTreeMap<_, _>>();
+            for face in previous_welds
+                .iter()
+                .filter(|(id, weld)| current_welds.get(id).copied() != Some(*weld))
+                .flat_map(|(_, weld)| [weld.first.owner, weld.second.owner])
+                .chain(
+                    current_welds
+                        .iter()
+                        .filter(|(id, _)| !previous_welds.contains_key(id))
+                        .flat_map(|(_, weld)| [weld.first.owner, weld.second.owner]),
+                )
+            {
+                if let FaceOwner::Part(part) = face {
+                    delta.topology_dependent.insert(part);
+                }
             }
-        }
 
-        // A weld can change cap visibility and texture phase throughout one
-        // connected pipe run. Rebuilding every pipe page remains bounded and
-        // prevents a local delta from leaving distant dependent UVs stale.
-        if delta.topology_dependent.iter().any(|&part| {
-            previous_parts
-                .get(&part)
-                .or_else(|| current_parts.get(&part))
-                .is_some_and(is_pipe)
-        }) {
-            delta.topology_dependent.extend(
-                current_parts
-                    .iter()
-                    .filter_map(|(&part, spec)| is_pipe(spec).then_some(part)),
-            );
+            // A weld can change cap visibility and texture phase throughout one
+            // connected pipe run. Rebuilding every pipe page remains bounded and
+            // prevents a local delta from leaving distant dependent UVs stale.
+            if delta.topology_dependent.iter().any(|&part| {
+                previous_parts
+                    .get(&part)
+                    .or_else(|| current_parts.get(&part))
+                    .is_some_and(is_pipe)
+            }) {
+                delta.topology_dependent.extend(
+                    current_parts
+                        .iter()
+                        .filter_map(|(&part, spec)| is_pipe(spec).then_some(part)),
+                );
+            }
         }
         delta
     }

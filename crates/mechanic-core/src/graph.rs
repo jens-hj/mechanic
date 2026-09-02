@@ -773,6 +773,20 @@ pub struct GraphPartition {
 }
 
 impl ConstructionGraphEdit {
+    /// Reserves storage for a known bulk edit without changing graph contents.
+    pub fn reserve_parts_and_welds(&mut self, parts: usize, welds: usize) {
+        self.graph.parts.reserve(parts);
+        self.graph.welds.reserve(welds);
+    }
+
+    /// Inserts an already placement-validated cuboid batch and returns stable IDs.
+    pub fn spawn_cuboids(&mut self, specs: impl IntoIterator<Item = CuboidSpec>) -> Vec<PartId> {
+        specs
+            .into_iter()
+            .map(|spec| self.graph.parts.insert(spec.into()))
+            .collect()
+    }
+
     /// Applies one validated command without cloning the staged graph again.
     ///
     /// # Errors
@@ -795,6 +809,21 @@ impl ConstructionGraphEdit {
             .into_iter()
             .map(|command| self.graph.apply_validated(command))
             .collect()
+    }
+
+    /// Applies validated commands while discarding outcomes the caller does not need.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`GraphError`]. The caller must discard this edit on failure.
+    pub fn apply_batch_discarding_outcomes(
+        &mut self,
+        commands: impl IntoIterator<Item = BuildCommand>,
+    ) -> Result<(), GraphError> {
+        for command in commands {
+            self.graph.apply_validated(command)?;
+        }
+        Ok(())
     }
 
     /// Commits the staged revision to its caller.
@@ -2355,12 +2384,91 @@ impl ConstructionGraph {
         if spec.first == spec.second {
             return Err(GraphError::SameFace);
         }
+        if self.regions.is_empty()
+            && self.shape_features.is_empty()
+            && let Some(result) = self.validate_simple_grid_weld(spec)
+        {
+            return result;
+        }
         let first = self.face_geometry(spec.first)?;
         let second = self.face_geometry(spec.second)?;
         if faces_touch(&first, &second) {
             Ok(())
         } else {
             Err(GraphError::FacesDoNotTouch)
+        }
+    }
+
+    fn validate_simple_grid_weld(&self, spec: WeldSpec) -> Option<Result<(), GraphError>> {
+        let simple_cuboid = |face: FaceRef| -> Result<Option<CuboidSpec>, GraphError> {
+            let FaceOwner::Part(part) = face.owner else {
+                return Ok(None);
+            };
+            let part = self
+                .parts
+                .get(part)
+                .copied()
+                .ok_or(GraphError::MissingPart(part))?;
+            let PartSpec::Cuboid(cuboid) = part else {
+                return Ok(None);
+            };
+            Ok(
+                (face.patch.is_none() && cuboid.pose.rotation == crate::GridRotation::default())
+                    .then_some(cuboid),
+            )
+        };
+
+        match (spec.first.owner, spec.second.owner) {
+            (FaceOwner::Part(_), FaceOwner::Part(_)) => {
+                let first = match simple_cuboid(spec.first) {
+                    Ok(Some(cuboid)) => cuboid,
+                    Ok(None) => return None,
+                    Err(error) => return Some(Err(error)),
+                };
+                let second = match simple_cuboid(spec.second) {
+                    Ok(Some(cuboid)) => cuboid,
+                    Ok(None) => return None,
+                    Err(error) => return Some(Err(error)),
+                };
+                Some(
+                    if simple_grid_faces_touch(first, spec.first.face, second, spec.second.face) {
+                        Ok(())
+                    } else {
+                        Err(GraphError::FacesDoNotTouch)
+                    },
+                )
+            }
+            (FaceOwner::Part(_), FaceOwner::Ground) => {
+                if spec.second != FaceRef::ground() {
+                    return None;
+                }
+                let cuboid = match simple_cuboid(spec.first) {
+                    Ok(Some(cuboid)) => cuboid,
+                    Ok(None) => return None,
+                    Err(error) => return Some(Err(error)),
+                };
+                Some(if simple_grid_face_on_ground(cuboid, spec.first.face) {
+                    Ok(())
+                } else {
+                    Err(GraphError::FacesDoNotTouch)
+                })
+            }
+            (FaceOwner::Ground, FaceOwner::Part(_)) => {
+                if spec.first != FaceRef::ground() {
+                    return None;
+                }
+                let cuboid = match simple_cuboid(spec.second) {
+                    Ok(Some(cuboid)) => cuboid,
+                    Ok(None) => return None,
+                    Err(error) => return Some(Err(error)),
+                };
+                Some(if simple_grid_face_on_ground(cuboid, spec.second.face) {
+                    Ok(())
+                } else {
+                    Err(GraphError::FacesDoNotTouch)
+                })
+            }
+            (FaceOwner::Ground, FaceOwner::Ground) => None,
         }
     }
 
@@ -2686,6 +2794,54 @@ const fn primitive_surface_patch(spec: PartSpec, face: FaceKind) -> crate::Surfa
 
 fn weld_references(weld: WeldSpec, part: PartId) -> bool {
     face_references(weld.first, part) || face_references(weld.second, part)
+}
+
+fn simple_grid_faces_touch(
+    first: CuboidSpec,
+    first_face: FaceKind,
+    second: CuboidSpec,
+    second_face: FaceKind,
+) -> bool {
+    let (axis, first_sign) = simple_face_axis(first_face);
+    let (second_axis, second_sign) = simple_face_axis(second_face);
+    if axis != second_axis || first_sign == second_sign {
+        return false;
+    }
+    let first_center = first.pose.translation_position_ticks();
+    let second_center = second.pose.translation_position_ticks();
+    let first_half =
+        i32::from(first.dimensions[axis].units()) * crate::POSITION_TICKS_PER_HALF_GRID_UNIT;
+    let second_half =
+        i32::from(second.dimensions[axis].units()) * crate::POSITION_TICKS_PER_HALF_GRID_UNIT;
+    if first_center[axis] + first_sign * first_half
+        != second_center[axis] + second_sign * second_half
+    {
+        return false;
+    }
+    (0..3).filter(|&tangent| tangent != axis).all(|tangent| {
+        let distance = (first_center[tangent] - second_center[tangent]).abs();
+        let combined_half = (i32::from(first.dimensions[tangent].units())
+            + i32::from(second.dimensions[tangent].units()))
+            * crate::POSITION_TICKS_PER_HALF_GRID_UNIT;
+        distance < combined_half
+    })
+}
+
+fn simple_grid_face_on_ground(cuboid: CuboidSpec, face: FaceKind) -> bool {
+    face == FaceKind::NegativeY
+        && cuboid.pose.translation_position_ticks().y
+            == i32::from(cuboid.dimensions[1].units()) * crate::POSITION_TICKS_PER_HALF_GRID_UNIT
+}
+
+const fn simple_face_axis(face: FaceKind) -> (usize, i32) {
+    match face {
+        FaceKind::PositiveX => (0, 1),
+        FaceKind::NegativeX => (0, -1),
+        FaceKind::PositiveY => (1, 1),
+        FaceKind::NegativeY => (1, -1),
+        FaceKind::PositiveZ => (2, 1),
+        FaceKind::NegativeZ => (2, -1),
+    }
 }
 
 fn rigid_link_references(link: RigidLinkSpec, part: PartId) -> bool {

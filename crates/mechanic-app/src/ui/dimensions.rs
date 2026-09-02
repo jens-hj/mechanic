@@ -13,7 +13,7 @@ use super::components::{OverlayBadge, OverlayBadgeProps, PanelSurface, PanelSurf
 use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
-use crate::{AppSimulation, EditorState, block_sheet_bounds};
+use crate::{AppSimulation, EditorState};
 
 const LABEL_W: f32 = 132.0;
 const LABEL_H: f32 = 28.0;
@@ -117,7 +117,7 @@ pub(crate) fn capture(
     let Some(drag) = state.block_drag.as_ref() else {
         return Model::default();
     };
-    if drag.specs.len() <= 1
+    if drag.volume.count() <= 1
         || matches!(
             drag.error,
             Some(crate::PlacementError::DragPlaneUnavailable)
@@ -125,9 +125,14 @@ pub(crate) fn capture(
     {
         return Model::default();
     }
-    capture_sheet(&drag.specs, drag.plane, |point| {
-        camera.world_to_viewport(transform, point).ok()
-    })
+    let (minimum, maximum) = drag.volume.bounds();
+    capture_box(
+        minimum,
+        maximum,
+        drag.volume.dimensions().as_ivec3(),
+        drag.plane,
+        |point| camera.world_to_viewport(transform, point).ok(),
+    )
 }
 
 /// Labels all three edges of a box and summarises it, so a dragged area reports
@@ -208,12 +213,13 @@ fn capture_box(
     }
 }
 
+#[cfg(test)]
 fn capture_sheet(
     specs: &[mechanic_core::CuboidSpec],
     plane: crate::PlacementPlane,
     mut project: impl FnMut(Vec3) -> Option<Vec2>,
 ) -> Model {
-    let Some((minimum, maximum)) = block_sheet_bounds(specs) else {
+    let Some((minimum, maximum)) = crate::block_sheet_bounds(specs) else {
         return Model::default();
     };
     let axes = plane.tangent_axes();
@@ -305,6 +311,7 @@ fn capture_sheet(
     }
 }
 
+#[cfg(test)]
 fn projected_edge_labels(
     midpoints: [Vec3; 4],
     corners: [Vec3; 4],

@@ -241,12 +241,12 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 if matches!(drag.attachment, BlockAttachment::Bearing { .. }) {
                     format!(
                         "Green bearing attachment active — release to connect {} block(s)",
-                        drag.specs.len()
+                        drag.volume.count()
                     )
                 } else {
                     format!(
                         "Release to place {} blocks on the {} plane",
-                        drag.specs.len(),
+                        drag.volume.count(),
                         drag.plane.label()
                     )
                 }

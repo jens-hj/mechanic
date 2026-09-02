@@ -52,6 +52,23 @@ impl Default for GpuPhysicsConfig {
     }
 }
 
+/// Device-local shader and compute-pipeline cache shared by replaceable scenes.
+///
+/// Scene buffers and bind groups remain owned by [`GpuPhysics`]; rebuilding a
+/// topology with this cache only uploads those scene-specific resources.
+#[derive(Debug, Default)]
+pub struct GpuPhysicsPipelines {
+    shaders: Mutex<BTreeMap<&'static str, wgpu::ShaderModule>>,
+    pipelines: Mutex<BTreeMap<(&'static str, &'static str), wgpu::ComputePipeline>>,
+}
+
+impl GpuPhysicsPipelines {
+    /// Creates an empty cache that compiles each embedded kernel lazily once.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 const fn uses_fused_velocity_schedule(bearing_count: u32, body_count: u32) -> bool {
     bearing_count <= FUSED_VELOCITY_BEARING_LIMIT && body_count <= 256
 }
@@ -496,6 +513,32 @@ impl GpuPhysics {
         creation: &CompiledCreation,
         pipeline_config: GpuPhysicsConfig,
     ) -> Result<Self, GpuPhysicsError> {
+        Self::new_with_pipelines(
+            device,
+            queue,
+            creation,
+            pipeline_config,
+            &GpuPhysicsPipelines::new(),
+        )
+    }
+
+    /// Uploads a compiled scene while reusing previously compiled GPU kernels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuPhysicsError`] when a fixed scene capacity is exceeded.
+    ///
+    /// # Panics
+    ///
+    /// wgpu may panic if `device` is invalid or rejects an embedded WGSL module.
+    #[allow(clippy::too_many_lines)]
+    pub fn new_with_pipelines(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        creation: &CompiledCreation,
+        pipeline_config: GpuPhysicsConfig,
+        pipelines: &GpuPhysicsPipelines,
+    ) -> Result<Self, GpuPhysicsError> {
         if creation.compounds.len() > MAX_BODIES {
             return Err(GpuPhysicsError::BodyCapacity {
                 required: creation.compounds.len(),
@@ -735,6 +778,7 @@ impl GpuPhysics {
 
         let mechanism = create_mechanism_resources(
             device,
+            pipelines,
             creation,
             &config,
             &positions_buffer,
@@ -747,25 +791,26 @@ impl GpuPhysics {
             &angular_velocities,
         );
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("mechanic physics kernels"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("kernels/physics.wgsl"))),
-        });
-        let integration_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("mechanic integrate and snapshot"),
-                layout: None,
-                module: &shader,
-                entry_point: Some("integrate"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
-            });
+        let shader = shader_module(
+            pipelines,
+            device,
+            "mechanic physics kernels",
+            include_str!("kernels/physics.wgsl"),
+        );
+        let integration_pipeline = compute_pipeline(
+            pipelines,
+            device,
+            "mechanic integrate and snapshot",
+            &shader,
+            "integrate",
+        );
         let external_impulse = create_uniform_buffer(
             device,
             "mechanic external impulse",
             &GpuExternalImpulse::zeroed(),
         );
         let external_impulse_pipeline = compute_pipeline(
+            pipelines,
             device,
             "mechanic apply external impulse",
             &shader,
@@ -786,11 +831,13 @@ impl GpuPhysics {
         );
         let layout = integration_pipeline.get_bind_group_layout(0);
         let snapshot_shader = shader_module(
+            pipelines,
             device,
             "mechanic snapshot kernel",
             include_str!("kernels/snapshot.wgsl"),
         );
         let snapshot_pipeline = compute_pipeline(
+            pipelines,
             device,
             "mechanic publish snapshot",
             &snapshot_shader,
@@ -872,6 +919,7 @@ impl GpuPhysics {
 
         let collision = create_collision_resources(
             device,
+            pipelines,
             creation.colliders.len(),
             usize::try_from(pair_capacity).unwrap_or(MAX_CONTACT_PAIRS),
             &config,
@@ -889,6 +937,7 @@ impl GpuPhysics {
             pipeline_config.mechanism_self_collisions,
         );
         let bearing_shader = shader_module(
+            pipelines,
             device,
             "mechanic bearing kernels",
             include_str!("kernels/bearings.wgsl"),
@@ -899,6 +948,7 @@ impl GpuPhysics {
             "validate_bearings"
         };
         let bearing_pipeline = compute_pipeline(
+            pipelines,
             device,
             "mechanic validate bearings",
             &bearing_shader,
@@ -2184,6 +2234,7 @@ impl GpuPhysics {
 )]
 fn create_mechanism_resources(
     device: &wgpu::Device,
+    pipelines: &GpuPhysicsPipelines,
     creation: &CompiledCreation,
     config: &wgpu::Buffer,
     positions: &wgpu::Buffer,
@@ -2398,11 +2449,13 @@ fn create_mechanism_resources(
     );
 
     let shader = shader_module(
+        pipelines,
         device,
         "mechanic mechanism kernels",
         include_str!("kernels/mechanism.wgsl"),
     );
     let prepare_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic prepare mechanism links",
         &shader,
@@ -2421,6 +2474,7 @@ fn create_mechanism_resources(
         ],
     );
     let jump_a_to_b_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic mechanism jump A to B",
         &shader,
@@ -2433,6 +2487,7 @@ fn create_mechanism_resources(
         &[entry(0, config), entry(6, &links_a), entry(7, &links_b)],
     );
     let jump_b_to_a_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic mechanism jump B to A",
         &shader,
@@ -2444,8 +2499,13 @@ fn create_mechanism_resources(
         &jump_b_to_a_pipeline,
         &[entry(0, config), entry(6, &links_a), entry(7, &links_b)],
     );
-    let publish_a_pipeline =
-        compute_pipeline(device, "mechanic publish mechanism A", &shader, "publish_a");
+    let publish_a_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic publish mechanism A",
+        &shader,
+        "publish_a",
+    );
     let publish_a_bind_group = bind_group(
         device,
         "mechanic publish mechanism A bindings",
@@ -2457,8 +2517,13 @@ fn create_mechanism_resources(
             entry(6, &links_a),
         ],
     );
-    let publish_b_pipeline =
-        compute_pipeline(device, "mechanic publish mechanism B", &shader, "publish_b");
+    let publish_b_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic publish mechanism B",
+        &shader,
+        "publish_b",
+    );
     let publish_b_bind_group = bind_group(
         device,
         "mechanic publish mechanism B bindings",
@@ -2472,11 +2537,13 @@ fn create_mechanism_resources(
     );
 
     let articulated_shader = shader_module(
+        pipelines,
         device,
         "mechanic articulated dynamics kernels",
         include_str!("kernels/articulated.wgsl"),
     );
     let project_velocity_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic project bearing velocities",
         &articulated_shader,
@@ -2497,6 +2564,7 @@ fn create_mechanism_resources(
         ],
     );
     let project_small_velocity_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic fused small bearing velocity projection",
         &articulated_shader,
@@ -2517,6 +2585,7 @@ fn create_mechanism_resources(
         ],
     );
     let project_velocity_serial_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic serial bearing velocity projection",
         &articulated_shader,
@@ -2536,6 +2605,7 @@ fn create_mechanism_resources(
         ],
     );
     let apply_velocity_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic apply bearing velocity deltas",
         &articulated_shader,
@@ -2553,6 +2623,7 @@ fn create_mechanism_resources(
         ],
     );
     let advance_coordinates_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic advance bearing coordinates",
         &articulated_shader,
@@ -2573,6 +2644,7 @@ fn create_mechanism_resources(
         ],
     );
     let capture_coordinates_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic capture bearing velocities",
         &articulated_shader,
@@ -2592,6 +2664,7 @@ fn create_mechanism_resources(
         ],
     );
     let reconstruct_velocities_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic reconstruct mechanism velocities",
         &articulated_shader,
@@ -2613,6 +2686,7 @@ fn create_mechanism_resources(
         ],
     );
     let validate_state_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic validate articulated state",
         &articulated_shader,
@@ -2650,11 +2724,13 @@ fn create_mechanism_resources(
         &links_b
     };
     let closure_shader = shader_module(
+        pipelines,
         device,
         "mechanic closure kernels",
         include_str!("kernels/closure.wgsl"),
     );
     let evaluate_closures_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic evaluate closures",
         &closure_shader,
@@ -2675,6 +2751,7 @@ fn create_mechanism_resources(
         ],
     );
     let finalize_closures_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic finalize closures",
         &closure_shader,
@@ -2691,6 +2768,7 @@ fn create_mechanism_resources(
         ],
     );
     let apply_closure_step_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic solve closure Newton PCG step",
         &closure_shader,
@@ -2774,6 +2852,7 @@ fn create_mechanism_resources(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn create_lbvh_resources(
     device: &wgpu::Device,
+    pipelines: &GpuPhysicsPipelines,
     collider_count: usize,
     config: &wgpu::Buffer,
     positions: &wgpu::Buffer,
@@ -2850,11 +2929,13 @@ fn create_lbvh_resources(
     );
 
     let shader = shader_module(
+        pipelines,
         device,
         "mechanic LBVH kernels",
         include_str!("kernels/lbvh.wgsl"),
     );
     let compute_morton_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic LBVH Morton codes",
         &shader,
@@ -2875,6 +2956,7 @@ fn create_lbvh_resources(
         ],
     );
     let sort_local_initial_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic LBVH local sort",
         &shader,
@@ -2887,6 +2969,7 @@ fn create_lbvh_resources(
         &[entry(18, &morton_entries)],
     );
     let sort_global_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic LBVH global merge",
         &shader,
@@ -2903,6 +2986,7 @@ fn create_lbvh_resources(
         ],
     );
     let sort_local_merge_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic LBVH local merge",
         &shader,
@@ -2914,8 +2998,13 @@ fn create_lbvh_resources(
         &sort_local_merge_pipeline,
         &[entry(18, &morton_entries), entry(23, &sort_params)],
     );
-    let build_topology_pipeline =
-        compute_pipeline(device, "mechanic LBVH topology", &shader, "build_topology");
+    let build_topology_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic LBVH topology",
+        &shader,
+        "build_topology",
+    );
     let build_topology_bind_group = bind_group(
         device,
         "mechanic LBVH topology bindings",
@@ -2928,6 +3017,7 @@ fn create_lbvh_resources(
         ],
     );
     let prepare_leaves_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic LBVH prepare leaves",
         &shader,
@@ -2944,8 +3034,13 @@ fn create_lbvh_resources(
             entry(19, &node_aabbs),
         ],
     );
-    let build_bounds_pipeline =
-        compute_pipeline(device, "mechanic LBVH bounds", &shader, "build_bounds");
+    let build_bounds_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic LBVH bounds",
+        &shader,
+        "build_bounds",
+    );
     let build_bounds_bind_group = bind_group(
         device,
         "mechanic LBVH bound bindings",
@@ -2959,8 +3054,13 @@ fn create_lbvh_resources(
             entry(22, &node_visits),
         ],
     );
-    let traverse_pipeline =
-        compute_pipeline(device, "mechanic LBVH traversal", &shader, "traverse");
+    let traverse_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic LBVH traversal",
+        &shader,
+        "traverse",
+    );
     let traverse_bind_group = bind_group(
         device,
         "mechanic LBVH traversal bindings",
@@ -2978,6 +3078,7 @@ fn create_lbvh_resources(
         ],
     );
     let finalize_pairs_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic finalize LBVH pairs",
         &shader,
@@ -3028,6 +3129,7 @@ fn create_lbvh_resources(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn create_collision_resources(
     device: &wgpu::Device,
+    pipelines: &GpuPhysicsPipelines,
     collider_count: usize,
     pair_capacity: usize,
     config: &wgpu::Buffer,
@@ -3119,6 +3221,7 @@ fn create_collision_resources(
     );
     let lbvh = create_lbvh_resources(
         device,
+        pipelines,
         collider_count,
         config,
         positions,
@@ -3132,11 +3235,13 @@ fn create_collision_resources(
     );
 
     let shader = shader_module(
+        pipelines,
         device,
         "mechanic collision kernels",
         include_str!("kernels/collision.wgsl"),
     );
     let update_world_masses_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic update world inverse inertias",
         &shader,
@@ -3158,8 +3263,13 @@ fn create_collision_resources(
     } else {
         "narrowphase_without_mechanism_self_collisions"
     };
-    let narrowphase_pipeline =
-        compute_pipeline(device, "mechanic OBB SAT", &shader, narrowphase_entry);
+    let narrowphase_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic OBB SAT",
+        &shader,
+        narrowphase_entry,
+    );
     let mut narrowphase_bindings = vec![
         entry(0, config),
         entry(1, positions),
@@ -3181,6 +3291,7 @@ fn create_collision_resources(
         &narrowphase_bindings,
     );
     let ground_contacts_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic ground contacts",
         &shader,
@@ -3202,6 +3313,7 @@ fn create_collision_resources(
         ],
     );
     let finalize_contacts_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic finalize contacts",
         &shader,
@@ -3218,6 +3330,7 @@ fn create_collision_resources(
         ],
     );
     let select_active_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic prepare persistent contacts",
         &shader,
@@ -3240,6 +3353,7 @@ fn create_collision_resources(
         ],
     );
     let finalize_active_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic finalize active contacts",
         &shader,
@@ -3257,6 +3371,7 @@ fn create_collision_resources(
         ],
     );
     let warm_start_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic warm start contacts",
         &shader,
@@ -3279,6 +3394,7 @@ fn create_collision_resources(
         ],
     );
     let solve_accumulate_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic accumulate contact impulses",
         &shader,
@@ -3301,6 +3417,7 @@ fn create_collision_resources(
         ],
     );
     let solve_small_mechanism_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic fused small mechanism contact projection",
         &shader,
@@ -3323,6 +3440,7 @@ fn create_collision_resources(
         ],
     );
     let solve_apply_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic apply contact impulses",
         &shader,
@@ -3340,6 +3458,7 @@ fn create_collision_resources(
         ],
     );
     let persist_contacts_pipeline = compute_pipeline(
+        pipelines,
         device,
         "mechanic persist contacts",
         &shader,
@@ -3406,27 +3525,52 @@ fn contact_pair_capacity(collider_count: usize) -> u32 {
     u32::try_from(capacity).unwrap_or(u32::MAX)
 }
 
-fn shader_module(device: &wgpu::Device, label: &str, source: &'static str) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+fn shader_module(
+    pipelines: &GpuPhysicsPipelines,
+    device: &wgpu::Device,
+    label: &'static str,
+    source: &'static str,
+) -> wgpu::ShaderModule {
+    if let Some(shader) = pipelines.shaders.lock().unwrap().get(label).cloned() {
+        return shader;
+    }
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(source)),
-    })
+    });
+    pipelines
+        .shaders
+        .lock()
+        .unwrap()
+        .insert(label, shader.clone());
+    shader
 }
 
 fn compute_pipeline(
+    pipelines: &GpuPhysicsPipelines,
     device: &wgpu::Device,
-    label: &str,
+    label: &'static str,
     shader: &wgpu::ShaderModule,
-    entry_point: &str,
+    entry_point: &'static str,
 ) -> wgpu::ComputePipeline {
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    let key = (label, entry_point);
+    if let Some(pipeline) = pipelines.pipelines.lock().unwrap().get(&key).cloned() {
+        return pipeline;
+    }
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(label),
         layout: None,
         module: shader,
         entry_point: Some(entry_point),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
-    })
+    });
+    pipelines
+        .pipelines
+        .lock()
+        .unwrap()
+        .insert(key, pipeline.clone());
+    pipeline
 }
 
 fn bind_group(
@@ -3753,8 +3897,9 @@ mod tests {
     use crate::GpuMechanismCoordinate;
 
     use super::{
-        FULL_CYLINDER_GROUND_FIRST, GpuPhysics, GpuPhysicsConfig, contact_pair_capacity,
-        full_cylinder_ground_data, uses_fused_contact_schedule, uses_fused_velocity_schedule,
+        FULL_CYLINDER_GROUND_FIRST, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines,
+        contact_pair_capacity, full_cylinder_ground_data, uses_fused_contact_schedule,
+        uses_fused_velocity_schedule,
     };
 
     #[test]
@@ -3779,6 +3924,46 @@ mod tests {
             contact_pair_capacity(crate::MAX_COLLIDERS),
             u32::try_from(crate::MAX_CONTACT_PAIRS).unwrap()
         );
+    }
+
+    #[test]
+    fn replacement_scene_reuses_every_compiled_shader_and_pipeline() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let pipelines = GpuPhysicsPipelines::new();
+        let first = GpuPhysics::new_with_pipelines(
+            &device,
+            &queue,
+            &creation,
+            GpuPhysicsConfig::default(),
+            &pipelines,
+        )
+        .unwrap();
+        let shader_count = pipelines.shaders.lock().unwrap().len();
+        let pipeline_count = pipelines.pipelines.lock().unwrap().len();
+        drop(first);
+
+        let _replacement = GpuPhysics::new_with_pipelines(
+            &device,
+            &queue,
+            &creation,
+            GpuPhysicsConfig::default(),
+            &pipelines,
+        )
+        .unwrap();
+
+        assert!(shader_count > 0);
+        assert!(pipeline_count > shader_count);
+        assert_eq!(pipelines.shaders.lock().unwrap().len(), shader_count);
+        assert_eq!(pipelines.pipelines.lock().unwrap().len(), pipeline_count);
     }
 
     #[test]
