@@ -13,7 +13,7 @@ pub(crate) fn WorldReticle() -> Element {
     view! {
         stack align:center justify:center nohit {
             canvas width:28px height:28px nohit {
-                circle at:(x:14px y:14px) radius:4px stroke:(width:2px color:ink.fg)
+                circle at:(x:14px y:14px) radius:4px exponent:1 stroke:(width:2px color:ink.fg)
                 line from:(x:14px y:1px) to:(x:14px y:8px)
                     stroke:(width:2px cap:square color:ink.fg)
                 line from:(x:14px y:20px) to:(x:14px y:27px)

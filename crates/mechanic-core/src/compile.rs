@@ -449,7 +449,15 @@ fn compile_graph(
     let mut compounds = Vec::with_capacity(grouped.len());
     let collider_capacity = part_rows
         .iter()
-        .map(|(_, spec)| match spec {
+        .map(|(part, spec)| {
+            if graph.owner_has_shape_features(crate::SolidOwner::Part(*part)) {
+                return graph
+                    .evaluated_solid(crate::SolidOwner::Part(*part))
+                    .expect("committed feature geometry replays")
+                    .cells
+                    .len();
+            }
+            match spec {
             PartSpec::Controller(_)
             | PartSpec::Engine(_)
             | PartSpec::Transmission(_)
@@ -460,13 +468,24 @@ fn compile_graph(
             | PartSpec::Cuboid(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
             PartSpec::PipeBend(_) => PIPE_BEND_COLLIDER_COUNT,
+            }
         })
         .sum::<usize>()
         // A region emits one row per fused convex piece, so the count is only
         // known by running its decomposition; its blocks emit nothing.
         + graph
             .regions()
-            .map(|(_, region)| region_pieces(region).len())
+            .map(|(id, region)| {
+                if graph.owner_has_shape_features(crate::SolidOwner::Region(id)) {
+                    graph
+                        .evaluated_solid(crate::SolidOwner::Region(id))
+                        .expect("committed region feature geometry replays")
+                        .cells
+                        .len()
+                } else {
+                    region_pieces(region).len()
+                }
+            })
             .sum::<usize>();
     if collider_capacity > MAX_COMPILED_COLLIDERS {
         return Err(TopologyError::ColliderBudgetExceeded {
@@ -506,7 +525,7 @@ fn compile_graph(
         }
         let region_shapes = member_regions
             .iter()
-            .filter_map(|&id| graph.region(id))
+            .filter_map(|&id| graph.region(id).map(|region| (id, region)))
             .collect::<Vec<_>>();
 
         let mass_properties = calculate_mass_properties(
@@ -516,6 +535,7 @@ fn compile_graph(
             is_static,
             &covered,
             &region_shapes,
+            graph,
         )?;
         let collider_start = u32::try_from(colliders.len()).expect("collider count fits u32");
         for &row in member_rows {
@@ -524,27 +544,56 @@ fn compile_graph(
             if covered.contains(&part) {
                 continue;
             }
-            append_part_colliders(
-                &mut colliders,
-                part,
-                compound_index,
-                *spec,
-                mass_properties.center_of_mass,
-            );
+            if graph.owner_has_shape_features(crate::SolidOwner::Part(part)) {
+                let solid = graph
+                    .evaluated_solid(crate::SolidOwner::Part(part))
+                    .expect("committed feature geometry replays");
+                append_evaluated_colliders(
+                    &mut colliders,
+                    &solid,
+                    part,
+                    compound_index,
+                    mass_properties.center_of_mass,
+                    contact_properties(*spec),
+                );
+            } else {
+                append_part_colliders(
+                    &mut colliders,
+                    part,
+                    compound_index,
+                    *spec,
+                    mass_properties.center_of_mass,
+                );
+            }
         }
-        for (&id, region) in member_regions.iter().zip(&region_shapes) {
-            append_region_colliders(
-                &mut colliders,
-                id,
-                region,
-                compound_index,
-                mass_properties.center_of_mass,
-                member_rows
-                    .iter()
-                    .map(|&row| part_rows[row].0)
-                    .find(|part| region_of_part.get(part) == Some(&id))
-                    .expect("a region in this compound has a member part"),
-            );
+        for &(id, region) in &region_shapes {
+            let source_part = member_rows
+                .iter()
+                .map(|&row| part_rows[row].0)
+                .find(|part| region_of_part.get(part) == Some(&id))
+                .expect("a region in this compound has a member part");
+            if graph.owner_has_shape_features(crate::SolidOwner::Region(id)) {
+                let solid = graph
+                    .evaluated_solid(crate::SolidOwner::Region(id))
+                    .expect("committed region feature geometry replays");
+                append_evaluated_colliders(
+                    &mut colliders,
+                    &solid,
+                    source_part,
+                    compound_index,
+                    mass_properties.center_of_mass,
+                    region.material().properties(),
+                );
+            } else {
+                append_region_colliders(
+                    &mut colliders,
+                    id,
+                    region,
+                    compound_index,
+                    mass_properties.center_of_mass,
+                    source_part,
+                );
+            }
         }
         compact_grid_aligned_cuboids(
             &mut colliders,
@@ -1249,15 +1298,39 @@ fn calculate_mass_properties<'a>(
     parts: impl Iterator<Item = (PartId, PartSpec)> + Clone + 'a,
     is_static: bool,
     covered: &BTreeSet<PartId>,
-    regions: &[&ShapeRegion],
+    regions: &[(RegionId, &ShapeRegion)],
+    graph: &ConstructionGraph,
 ) -> Result<MassProperties, TopologyError> {
     let identifying_part = parts.clone().next().expect("weld groups are non-empty").0;
     // A part inside a region has no mass of its own: the region owns its
     // geometry, so counting both would weigh the build twice.
     let contributions = parts
         .filter(|(id, _)| !covered.contains(id))
-        .map(|(_, spec)| part_world_mass(spec))
-        .chain(regions.iter().map(|region| region_world_mass(region)))
+        .map(|(id, spec)| {
+            if graph.owner_has_shape_features(crate::SolidOwner::Part(id)) {
+                let solid = graph
+                    .evaluated_solid(crate::SolidOwner::Part(id))
+                    .expect("committed feature geometry replays");
+                evaluated_world_mass(
+                    &solid,
+                    spec.appearance().map_or(CUBOID_DENSITY_KG_M3, |_| {
+                        contact_properties(spec).density_kg_m3
+                    }),
+                )
+            } else {
+                part_world_mass(spec)
+            }
+        })
+        .chain(regions.iter().map(|(id, region)| {
+            if graph.owner_has_shape_features(crate::SolidOwner::Region(*id)) {
+                let solid = graph
+                    .evaluated_solid(crate::SolidOwner::Region(*id))
+                    .expect("committed region feature geometry replays");
+                evaluated_world_mass(&solid, region.material().properties().density_kg_m3)
+            } else {
+                region_world_mass(region)
+            }
+        }))
         .collect::<Vec<_>>();
 
     let total_mass = contributions.iter().map(|body| body.mass).sum::<f32>();
@@ -1487,6 +1560,28 @@ fn region_world_mass(region: &ShapeRegion) -> WorldMassProperties {
     } else {
         Vec3::ZERO
     };
+    let about_center = second_moment - outer_product(center, center) * volume;
+    WorldMassProperties {
+        mass,
+        center,
+        inertia: (Mat3::IDENTITY * trace(about_center) - about_center) * density,
+    }
+}
+
+fn evaluated_world_mass(solid: &crate::EvaluatedSolid, density: f32) -> WorldMassProperties {
+    let mut volume = 0.0_f32;
+    let mut first_moment = Vec3::ZERO;
+    let mut second_moment = Mat3::ZERO;
+    for cell in &solid.cells {
+        accumulate_convex_moments(
+            &cell.piece,
+            &mut volume,
+            &mut first_moment,
+            &mut second_moment,
+        );
+    }
+    let mass = density * volume;
+    let center = first_moment / volume;
     let about_center = second_moment - outer_product(center, center) * volume;
     WorldMassProperties {
         mass,
@@ -1908,6 +2003,23 @@ fn append_region_colliders(
     }
 }
 
+fn append_evaluated_colliders(
+    colliders: &mut Vec<LocalCollider>,
+    solid: &crate::EvaluatedSolid,
+    source_part: PartId,
+    compound_index: u32,
+    center_of_mass: Vec3,
+    material_properties: MaterialProperties,
+) {
+    colliders.extend(solid.cells.iter().map(|cell| LocalCollider {
+        source_part,
+        compound_index,
+        local_center: cell.piece.centroid - center_of_mass,
+        material_properties,
+        shape: ColliderShape::Convex(compile_convex(&cell.piece, center_of_mass)),
+    }));
+}
+
 /// Rebases one decomposed piece onto the compound centre of mass.
 fn compile_convex(piece: &ConvexPiece, center_of_mass: Vec3) -> CompiledConvex {
     CompiledConvex {
@@ -1986,9 +2098,10 @@ mod tests {
         ActuatorAssignment, BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome,
         BuildPose, ColliderShape, ConstructionGraph, ConstructionMaterial, ControllerSpec,
         CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
-        DriveMode, DriveProgram, DriveState, DriveTarget, EngineKind, EngineSpec, FaceKind,
-        FaceRef, GearSelection, GridRotation, PIPE_BEND_COLLIDER_COUNT, PartId, PipeBendDimensions,
-        PipeBendSpec, RigidLinkSpec, TopologyError, WeldSpec,
+        DriveMode, DriveProgram, DriveState, DriveTarget, EdgeChainRef, EdgeTreatment, EngineKind,
+        EngineSpec, FaceKind, FaceRef, GearSelection, GridRotation, PIPE_BEND_COLLIDER_COUNT,
+        PartId, PipeBendDimensions, PipeBendSpec, RigidLinkSpec, ShapeFeature, SolidOwner,
+        TopologyError, WeldSpec,
     };
     use bevy_math::{Mat3, Quat};
 
@@ -2354,6 +2467,31 @@ mod tests {
                 .iter()
                 .all(|collider| collider.shape.is_cuboid()),
             "an unshaped creation must produce only boxes"
+        );
+    }
+
+    #[test]
+    fn featured_cuboid_compiles_evaluated_mass_and_convex_collision() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawn(&mut graph, IVec3::ZERO);
+        let owner = SolidOwner::Part(part);
+        let edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef { owner, edge }],
+                EdgeTreatment::Chamfer,
+                20,
+            )))
+            .unwrap();
+
+        let compiled = graph.compile().unwrap();
+        let uncut_mass = ConstructionMaterial::Steel.properties().density_kg_m3;
+        assert!(compiled.compounds[0].mass_properties.mass < uncut_mass);
+        assert!(
+            compiled
+                .colliders
+                .iter()
+                .all(|collider| matches!(collider.shape, ColliderShape::Convex(_)))
         );
     }
 

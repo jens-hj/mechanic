@@ -370,6 +370,7 @@ pub(crate) fn update_material_wheel(
     mut material: ResMut<SelectedMaterial>,
     mut terrain_material: ResMut<SelectedTerrainMaterial>,
     mut selection: ResMut<SelectedTool>,
+    mut shape_mode: ResMut<crate::shape_tool::ShapeEditMode>,
 ) {
     if wheel.open {
         let chroma_active = selection.tool == Some(MainTool::MatterManipulator)
@@ -398,6 +399,7 @@ pub(crate) fn update_material_wheel(
                     WheelChoice::ConstructionMaterial(next) => material.0 = next,
                     WheelChoice::Item(next) => selection.select_item(next),
                     WheelChoice::TerrainMaterial(next) => terrain_material.0 = next,
+                    WheelChoice::ShapeMode(next) => *shape_mode = next,
                 }
             }
             wheel.close();
@@ -417,10 +419,17 @@ pub(crate) fn update_material_wheel(
             Some(Some(WheelChoice::TerrainMaterial(terrain_material.0)))
         }
         (Some(MainTool::MatterManipulator), MatterMode::Chroma) => Some(None),
+        (Some(MainTool::MatterManipulator), MatterMode::Manipulate) => {
+            Some(Some(WheelChoice::ShapeMode(*shape_mode)))
+        }
         _ => None,
     };
     if actions.just_pressed(GameAction::MaterialWheel)
-        && material_wheel_may_open(false, interactive_panel, state.world_drag_active())
+        && material_wheel_may_open(
+            false,
+            interactive_panel,
+            state.contextual_selector_blocked(),
+        )
         && let Some(current) = current
     {
         if let Some(choice) = current {
@@ -470,15 +479,14 @@ pub(crate) fn update_player_camera(
         view.pitch = (view.pitch - motion.delta.y * MOUSE_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
         let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
             && selection.matter_mode == MatterMode::Terrain;
-        let zoom = if editor.pipe_bend_active()
-            || terrain_mode
-            || editor.smart_snap.range_adjusted_this_frame
-        {
-            0.0
-        } else {
-            f32::from(actions.just_pressed(GameAction::ZoomIn))
-                - f32::from(actions.just_pressed(GameAction::ZoomOut))
-        };
+        let zoom = contextual_zoom_delta(
+            actions.just_pressed(GameAction::ZoomIn),
+            actions.just_pressed(GameAction::ZoomOut),
+            editor.pipe_bend_active()
+                || terrain_mode
+                || editor.smart_snap.range_adjusted_this_frame
+                || editor.free_placement.range_adjusted_this_frame,
+        );
         view.add_scroll(player.seat.is_some(), zoom);
     }
     view.damp_pullback(player.seat.is_some(), time.delta_secs());
@@ -501,6 +509,14 @@ pub(crate) fn update_player_camera(
     }
 }
 
+fn contextual_zoom_delta(zoom_in: bool, zoom_out: bool, wheel_consumed: bool) -> f32 {
+    if wheel_consumed {
+        0.0
+    } else {
+        f32::from(zoom_in) - f32::from(zoom_out)
+    }
+}
+
 fn player_controls_blocked(open_panels: [bool; 4]) -> bool {
     open_panels.into_iter().any(core::convert::identity)
 }
@@ -510,6 +526,13 @@ fn player_controls_blocked(open_panels: [bool; 4]) -> bool {
 mod tests {
     use super::*;
     use bevy::input::mouse::MouseScrollUnit;
+
+    #[test]
+    fn contextual_wheel_adjustments_suppress_zoom_only_when_consumed() {
+        assert_eq!(contextual_zoom_delta(true, false, false), 1.0);
+        assert_eq!(contextual_zoom_delta(false, true, false), -1.0);
+        assert_eq!(contextual_zoom_delta(true, false, true), 0.0);
+    }
 
     #[test]
     fn pullback_is_clamped_and_zoom_memories_are_independent() {
@@ -655,6 +678,22 @@ mod tests {
             assert_eq!(
                 choice_at_selector(direction, Some(WheelChoice::Item(PlaceableItem::Bearing))),
                 Some(WheelChoice::Item(item)),
+            );
+        }
+        for (index, mode) in crate::shape_tool::ShapeEditMode::ALL
+            .into_iter()
+            .enumerate()
+        {
+            let angle = TAU * index as f32 / crate::shape_tool::ShapeEditMode::ALL.len() as f32;
+            let direction = Vec2::new(angle.sin(), -angle.cos()) * 80.0;
+            assert_eq!(
+                choice_at_selector(
+                    direction,
+                    Some(WheelChoice::ShapeMode(
+                        crate::shape_tool::ShapeEditMode::Vertex,
+                    )),
+                ),
+                Some(WheelChoice::ShapeMode(mode)),
             );
         }
         let materials = TerrainMaterial::ALL;

@@ -85,6 +85,31 @@ impl ConstructionEditDelta {
         let current_parts = current.parts().map(|(id, spec)| (id, *spec)).collect();
         let mut delta = Self::between_parts(&previous_parts, &current_parts);
 
+        let previous_features = previous
+            .shape_features()
+            .map(|(id, feature)| (id, feature.clone()))
+            .collect::<Vec<_>>();
+        let current_features = current
+            .shape_features()
+            .map(|(id, feature)| (id, feature.clone()))
+            .collect::<Vec<_>>();
+        if previous_features != current_features {
+            for owner in previous_features
+                .iter()
+                .chain(&current_features)
+                .flat_map(|(_, feature)| feature.targets.iter().map(|target| target.owner))
+            {
+                match owner {
+                    crate::SolidOwner::Part(part) => {
+                        delta.modified.insert(part);
+                    }
+                    crate::SolidOwner::Region(region) => {
+                        delta.region_owned_geometry.insert(region);
+                    }
+                }
+            }
+        }
+
         let previous_regions = previous.regions().collect::<BTreeMap<_, _>>();
         let current_regions = current.regions().collect::<BTreeMap<_, _>>();
         delta.region_owned_geometry.extend(

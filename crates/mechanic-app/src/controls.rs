@@ -27,6 +27,8 @@ pub(crate) enum GameAction {
     ToggleObjectSnap,
     ObjectSnapRangeIncrease,
     ObjectSnapRangeDecrease,
+    FreePlacementRangeIncrease,
+    FreePlacementRangeDecrease,
     ToggleSimulation,
     RestartSimulation,
     MaterialWheel,
@@ -73,7 +75,7 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 57] = [
+    pub(crate) const ALL: [Self; 59] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -90,6 +92,8 @@ impl GameAction {
         Self::ToggleObjectSnap,
         Self::ObjectSnapRangeIncrease,
         Self::ObjectSnapRangeDecrease,
+        Self::FreePlacementRangeIncrease,
+        Self::FreePlacementRangeDecrease,
         Self::MaterialWheel,
         Self::ZoomIn,
         Self::ZoomOut,
@@ -193,6 +197,8 @@ impl GameAction {
             Self::ToggleObjectSnap => "Toggle Object Snap",
             Self::ObjectSnapRangeIncrease => "Object Snap Range +",
             Self::ObjectSnapRangeDecrease => "Object Snap Range -",
+            Self::FreePlacementRangeIncrease => "Free Placement Range +",
+            Self::FreePlacementRangeDecrease => "Free Placement Range -",
             Self::ToggleSimulation => "Toggle Simulation",
             Self::RestartSimulation => "Restart Simulation",
             Self::MaterialWheel => "Matter Selector",
@@ -259,6 +265,8 @@ impl GameAction {
             | Self::ToggleObjectSnap
             | Self::ObjectSnapRangeIncrease
             | Self::ObjectSnapRangeDecrease
+            | Self::FreePlacementRangeIncrease
+            | Self::FreePlacementRangeDecrease
             | Self::ToggleSimulation
             | Self::RestartSimulation
             | Self::MaterialWheel
@@ -319,6 +327,10 @@ impl GameAction {
                 | (Self::FinePlacement | Self::SelectionModifier, Self::Sprint)
                 | (Self::Descend, Self::PrecisionPlacement)
                 | (Self::PrecisionPlacement, Self::Descend)
+                | (Self::ZoomIn, Self::FreePlacementRangeIncrease)
+                | (Self::FreePlacementRangeIncrease, Self::ZoomIn)
+                | (Self::ZoomOut, Self::FreePlacementRangeDecrease)
+                | (Self::FreePlacementRangeDecrease, Self::ZoomOut)
         )
     }
 }
@@ -554,6 +566,16 @@ impl Default for Controls {
             Some(InputChord::wheel(WheelDirection::Down).with_alt()),
             None,
         );
+        set(
+            A::FreePlacementRangeIncrease,
+            Some(InputChord::wheel(WheelDirection::Up).with_shift()),
+            None,
+        );
+        set(
+            A::FreePlacementRangeDecrease,
+            Some(InputChord::wheel(WheelDirection::Down).with_shift()),
+            None,
+        );
         set(A::ToggleSimulation, None, None);
         set(A::RestartSimulation, None, None);
         set(A::MaterialWheel, Some(InputChord::key(K::Tab)), None);
@@ -605,26 +627,10 @@ impl Default for Controls {
         set(A::ShapeMirrorX, Some(InputChord::key(K::KeyX)), None);
         set(A::ShapeMirrorZ, Some(InputChord::key(K::KeyZ)), None);
         set(A::ShapeSnap, Some(InputChord::key(K::KeyG)), None);
-        set(
-            A::NudgeLeft,
-            Some(InputChord::key(K::ArrowLeft)),
-            Some(InputChord::key(K::KeyA)),
-        );
-        set(
-            A::NudgeRight,
-            Some(InputChord::key(K::ArrowRight)),
-            Some(InputChord::key(K::KeyD)),
-        );
-        set(
-            A::NudgeUp,
-            Some(InputChord::key(K::ArrowUp)),
-            Some(InputChord::key(K::KeyW)),
-        );
-        set(
-            A::NudgeDown,
-            Some(InputChord::key(K::ArrowDown)),
-            Some(InputChord::key(K::KeyS)),
-        );
+        set(A::NudgeLeft, Some(InputChord::key(K::ArrowLeft)), None);
+        set(A::NudgeRight, Some(InputChord::key(K::ArrowRight)), None);
+        set(A::NudgeUp, Some(InputChord::key(K::ArrowUp)), None);
+        set(A::NudgeDown, Some(InputChord::key(K::ArrowDown)), None);
         set(
             A::SelectionModifier,
             Some(InputChord::key(K::ShiftLeft)),
@@ -881,6 +887,23 @@ impl<'a> ActionInput<'a> {
     }
     fn matches(&self, action: GameAction, kind: MatchKind) -> bool {
         self.controls[action].0.into_iter().flatten().any(|chord| {
+            let movement_owns_chord = matches!(
+                action,
+                GameAction::NudgeLeft
+                    | GameAction::NudgeRight
+                    | GameAction::NudgeUp
+                    | GameAction::NudgeDown
+            ) && [
+                GameAction::MoveForward,
+                GameAction::MoveBackward,
+                GameAction::MoveLeft,
+                GameAction::MoveRight,
+            ]
+            .into_iter()
+            .any(|movement| self.controls[movement].0.contains(&Some(chord)));
+            if movement_owns_chord {
+                return false;
+            }
             let current = Modifiers::from_keyboard(self.keyboard);
             if !chord.modifiers.is_subset_of(current) {
                 return false;
@@ -979,6 +1002,53 @@ mod tests {
         assert_eq!(controls[GameAction::Save].0.iter().flatten().count(), 2);
         assert!(!controls.conflicts(GameAction::Sprint));
         assert!(!controls.conflicts(GameAction::Jump));
+        for action in [
+            GameAction::NudgeLeft,
+            GameAction::NudgeRight,
+            GameAction::NudgeUp,
+            GameAction::NudgeDown,
+        ] {
+            assert_eq!(controls.binding(action).0[1], None);
+        }
+        assert_eq!(
+            controls.label(GameAction::FreePlacementRangeIncrease),
+            "Shift+Wheel Up"
+        );
+        assert_eq!(
+            controls.label(GameAction::FreePlacementRangeDecrease),
+            "Shift+Wheel Down"
+        );
+    }
+
+    #[test]
+    fn shift_wheel_exposes_contextual_free_range_and_zoom_actions() {
+        let controls = Controls::default();
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::ShiftLeft);
+        let mouse = ButtonInput::default();
+        let input = ActionInput {
+            controls: &controls,
+            keyboard: &keyboard,
+            mouse: &mouse,
+            scroll: Vec2::Y,
+        };
+
+        assert!(input.just_pressed(GameAction::FreePlacementRangeIncrease));
+        assert!(input.just_pressed(GameAction::ZoomIn));
+        assert!(!input.just_pressed(GameAction::ObjectSnapRangeIncrease));
+    }
+
+    #[test]
+    fn movement_bindings_never_also_nudge_shapes() {
+        let mut controls = Controls::default();
+        controls.set(GameAction::NudgeUp, 1, Some(InputChord::key(KeyCode::KeyW)));
+        let mut keyboard = ButtonInput::default();
+        keyboard.press(KeyCode::KeyW);
+        let mouse = ButtonInput::default();
+        let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
+
+        assert!(input.just_pressed(GameAction::MoveForward));
+        assert!(!input.just_pressed(GameAction::NudgeUp));
     }
 
     #[test]

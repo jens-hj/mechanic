@@ -124,6 +124,17 @@ cargo run -p mechanic-app
   That scroll does not zoom the camera. The HUD reports the active grid,
   object-snap state, and range. Block and pipe drags lock the grid selected at
   their first point, then continue in 25 cm construction steps.
+- In the Garage, aim into empty space with Block, Pipe/Cylinder, Control Block,
+  either Engine, Servo, Seat, Input, or Dimension Link to place an isolated
+  preview on the global lattice. Shift+wheel changes the free-placement range
+  by 25 cm from 25 cm to 30 m (5 m by default); Alt+wheel still adjusts object
+  snapping first. Free blocks drag on the cardinal plane facing the view, free
+  cylinders use the facing cardinal axis, and authored parts keep their chosen
+  orientation. Invalid overlaps and candidates outside the 20 × 5 × 20 m build
+  volume remain visible in red but cannot be placed. Isolated parts float, and
+  parts that touch existing construction weld automatically. Free placement is
+  unavailable in the World; bearings and transmissions still require their
+  normal attachment targets.
 - With Shape selected, first choose an **editable area**: drag across blocks the
   same way the Block tool places them — `Q` mid-drag rotates the plane and keeps
   the extent already dragged, so one gesture claims a whole cuboid. The outline
@@ -141,8 +152,9 @@ cargo run -p mechanic-app
   to a fraction of a block rather than running free, so two corners line up
   because they landed on the same sub-grid rather than because they were matched
   by eye. `G` cycles the step
-  through one block, a half, a quarter (the default, 62.5 mm), and fine 12.5 mm
-  detail. **No corner may leave the region's original bounding box**, so a corner
+  through one block, a half, a quarter (the default, 62.5 mm), 5 cm, and fine
+  12.5 mm detail. Chamfer and Fillet mode start at the 5 cm increment.
+  **No corner may leave the region's original bounding box**, so a corner
   can only ever be drawn inward and one region can never grow into its
   neighbours. Driving a corner the whole way onto its neighbour collapses that
   edge — two collapsed corners turn a box into a wedge, four into a pyramid —
@@ -150,7 +162,7 @@ cargo run -p mechanic-app
   Click a corner to select it, or shift-click to build a set. A selected corner
   turns the overlay's cyan and grows, so a selection reads at a glance. Drag from
   empty space to sweep out a selection rectangle, drawn in the same cyan. The
-  arrow keys and `WASD` then nudge the whole selection one step at a time: the
+  arrow keys then nudge the whole selection one step at a time: the
   keys read as screen directions and resolve to whichever grid axis lies nearest,
   so a nudge goes where it looks like it should while still landing on the grid.
   Orbiting the camera is how the third axis is reached.

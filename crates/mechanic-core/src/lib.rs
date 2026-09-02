@@ -11,6 +11,7 @@ mod graph;
 mod id;
 mod region;
 mod shape;
+mod solid;
 
 pub use compile::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
@@ -21,8 +22,9 @@ pub use compile::{
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, CreationDocument,
     CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc, DriveStateDoc,
-    DriveTriggerDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc, InputSeatLinkDoc, LoadedCreation,
-    PartDoc, PoseDoc, RegionDoc, RigidLinkDoc, SeatControllerLinkDoc, WeldDoc,
+    DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc, InputSeatLinkDoc,
+    LoadedCreation, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc, SeatControllerLinkDoc,
+    ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc, WeldDoc,
 };
 pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
@@ -60,7 +62,7 @@ pub use graph::{
 };
 pub use id::{
     BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
-    WeldId,
+    ShapeFeatureId, WeldId,
 };
 pub use region::{CageIndex, RegionError, ShapeRegion};
 pub use shape::{
@@ -68,6 +70,11 @@ pub use shape::{
     MAX_PIECE_VERTICES, PartPiece, STEP_METERS, STEPS_PER_CELL, STEPS_PER_HALF_UNIT, decompose,
     decompose_part, face_neighbour_offset, has_inverted_cell, part_cells, steps_to_meters,
     undisplaced_steps,
+};
+pub use solid::{
+    BoundaryHalfEdge, BoundaryVertex, ConvexVolumeCell, EdgeChainRef, EdgeTreatment,
+    EvaluatedSolid, LogicalEdge, ShapeFeature, SolidError, SolidOwner, SurfacePatch,
+    SurfacePatchKey, TopologyKey, TopologySource, evaluate_part_solid, evaluate_region_solid,
 };
 
 /// Legacy authored-machine density, in kg/m³.

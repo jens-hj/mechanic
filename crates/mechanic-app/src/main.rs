@@ -57,23 +57,22 @@ use bevy::{
 use builder::{
     BEARING_DEPTH, BLOCK_SIZE_METERS, CylinderPlacementCandidate, PipeRunAttachment, PipeRunPiece,
     PlacementBounds, PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane,
-    PlacementSnapIndex, SmartGuide, SurfaceHit, bearing_anchor_from_hit_with_grid,
-    bearing_attachment_candidate, bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate,
-    bearing_support_face, bearing_support_face_excluding, begin_weld, block_box_bounds,
-    block_box_specs, block_span_from_rays, candidate_from_hit_with_grid,
-    cylinder_candidate_from_hit_with_grid, face_geometry_from_ref,
-    oriented_cuboid_candidate_from_hit_with_grid, part_world_bounds, pipe_run_pieces,
-    raycast_construction, raycast_construction_for_annulus,
-    raycast_construction_for_annulus_with_ground, raycast_construction_for_annulus_with_scaffold,
-    raycast_construction_with_ground, raycast_construction_with_scaffold, raycast_oriented_cuboid,
-    raycast_placement_plane_point, rigid_body_parts, smart_snap_anchor, smart_snap_block_span,
-    smart_snap_cuboid_candidate, smart_snap_cylinder_candidate, stage_bearing_attachment_in_bounds,
-    stage_bearing_block_batch_in_bounds, stage_bearing_cylinder_in_bounds,
-    stage_block_batch_from_source_in_bounds, stage_controller_from_source_in_bounds,
-    stage_dimension_link_from_source_in_bounds, stage_engine_from_source_in_bounds,
-    stage_input_from_source_in_bounds, stage_pipe_run_in_bounds, stage_seat_from_source_in_bounds,
-    stage_servo_from_source_in_bounds, stage_transmission, stage_weld_objects,
-    transmission_candidate_from_hit_in_bounds, try_face_geometry_from_ref,
+    PlacementSnapIndex, PlacementSupport, SmartGuide, SurfaceHit,
+    bearing_anchor_from_hit_with_grid, bearing_attachment_candidate, bearing_overlaps_candidate,
+    bearing_overlaps_cylinder_candidate, bearing_support_face, bearing_support_face_excluding,
+    begin_weld, block_box_bounds, block_box_specs, block_span_from_rays,
+    candidate_from_hit_with_grid, cylinder_candidate_from_hit_with_grid, face_geometry_from_ref,
+    free_cuboid_candidate, free_cylinder_candidate, oriented_cuboid_candidate_from_hit_with_grid,
+    part_world_bounds, pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
+    raycast_construction_for_annulus_with_ground, raycast_construction_with_ground,
+    raycast_oriented_cuboid, raycast_placement_plane_point, rigid_body_parts, smart_snap_anchor,
+    smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_cylinder_candidate,
+    smart_snap_free_cuboid_candidate, smart_snap_free_cylinder_candidate,
+    stage_bearing_attachment_in_bounds, stage_bearing_block_batch_in_bounds,
+    stage_bearing_cylinder_in_bounds, stage_block_batch_in_bounds, stage_controller_in_bounds,
+    stage_dimension_link_in_bounds, stage_engine_in_bounds, stage_input_in_bounds,
+    stage_pipe_run_in_bounds, stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission,
+    stage_weld_objects, transmission_candidate_from_hit_in_bounds, try_face_geometry_from_ref,
     validate_block_batch_in_bounds, validate_cylinder_candidate_in_bounds,
     validate_pipe_run_in_bounds,
 };
@@ -422,6 +421,7 @@ enum BlockAttachment {
     AutoWeld {
         source: FaceOwner,
     },
+    Free,
     Bearing {
         source: mechanic_core::FaceRef,
         anchor: Vec3,
@@ -471,6 +471,31 @@ struct SmartSnapSettings {
     pub(crate) range_adjusted_this_frame: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FreePlacementSettings {
+    range: f32,
+    range_adjusted_this_frame: bool,
+}
+
+impl Default for FreePlacementSettings {
+    fn default() -> Self {
+        Self {
+            range: 5.0,
+            range_adjusted_this_frame: false,
+        }
+    }
+}
+
+impl FreePlacementSettings {
+    fn update(&mut self, range_steps: f32, applicable: bool, object_snap_adjusted: bool) {
+        self.range_adjusted_this_frame = false;
+        if applicable && !object_snap_adjusted && range_steps != 0.0 {
+            self.range = (self.range + range_steps * 0.25).clamp(0.25, 30.0);
+            self.range_adjusted_this_frame = true;
+        }
+    }
+}
+
 impl Default for SmartSnapSettings {
     fn default() -> Self {
         Self {
@@ -516,6 +541,27 @@ fn update_smart_snap_settings(
     );
 }
 
+fn update_free_placement_settings(
+    actions: Res<ButtonInput<GameAction>>,
+    selection: Res<SelectedTool>,
+    space: Res<State<world::AppSpace>>,
+    mut state: ResMut<EditorState>,
+) {
+    let adjustment = f32::from(actions.just_pressed(GameAction::FreePlacementRangeIncrease))
+        - f32::from(actions.just_pressed(GameAction::FreePlacementRangeDecrease));
+    let applicable = *space.get() == world::AppSpace::Garage
+        && selection
+            .active_editor_tool()
+            .is_some_and(tool_supports_free_placement)
+        && state.block_drag.is_none()
+        && state.pipe_drag.is_none();
+    let object_snap_adjusted = actions.just_pressed(GameAction::ObjectSnapRangeIncrease)
+        || actions.just_pressed(GameAction::ObjectSnapRangeDecrease);
+    state
+        .free_placement
+        .update(adjustment, applicable, object_snap_adjusted);
+}
+
 fn rebuild_placement_snap_index(graph: Res<EditorGraph>, mut state: ResMut<EditorState>) {
     if graph.is_changed() {
         state.snap_index.rebuild(&graph.0);
@@ -527,6 +573,35 @@ fn active_placement_grid(actions: &ButtonInput<GameAction>) -> PlacementGrid {
         actions.pressed(GameAction::FinePlacement),
         actions.pressed(GameAction::PrecisionPlacement),
     )
+}
+
+const fn tool_supports_free_placement(tool: Tool) -> bool {
+    matches!(
+        tool,
+        Tool::Block
+            | Tool::Cylinder
+            | Tool::Controller
+            | Tool::GasEngine
+            | Tool::ElectricEngine
+            | Tool::Servo
+            | Tool::Seat
+            | Tool::Input
+            | Tool::DimensionLink
+    )
+}
+
+fn free_placement_point_on_miss(
+    tool: Tool,
+    bounds: PlacementBounds,
+    origin: Vec3,
+    direction: Vec3,
+    range: f32,
+    secondary_pressed: bool,
+) -> Option<Vec3> {
+    (bounds == PlacementBounds::GarageBuild
+        && tool_supports_free_placement(tool)
+        && !secondary_pressed)
+        .then_some(origin + direction * range)
 }
 
 impl Default for CylinderToolSettings {
@@ -2098,6 +2173,8 @@ struct EditorState {
     attachment_bearing: Option<usize>,
     preview: Option<PlacementCandidate>,
     cylinder_preview: Option<CylinderPlacementCandidate>,
+    /// Empty-space point offered when an eligible Garage tool misses construction.
+    free_placement_point: Option<Vec3>,
     bearing_preview_anchor: Option<Vec3>,
     preview_error: Option<PlacementError>,
     /// A staged action that is allowed but costs something the player should
@@ -2106,6 +2183,7 @@ struct EditorState {
     placement_grid: PlacementGrid,
     smart_guides: Vec<SmartGuide>,
     smart_snap: SmartSnapSettings,
+    free_placement: FreePlacementSettings,
     snap_index: PlacementSnapIndex,
     /// One of the 24 grid-aligned orientations used by authored parts.
     authored_orientation: u8,
@@ -2146,6 +2224,18 @@ struct EditorState {
     paint_selecting: bool,
     /// The new cage vertex the pointer is currently being offered.
     edge_offer: Option<shape_tool::EdgeInsertion>,
+    /// Construction solid currently focused by Chamfer or Fillet mode.
+    feature_focus: Option<mechanic_core::SolidOwner>,
+    /// Logical feature edge under the pointer.
+    hovered_feature_edge: Option<shape_tool::FeatureEdgeHit>,
+    /// Separate logical chains sharing the next feature amount.
+    selected_feature_edges: Vec<mechanic_core::EdgeChainRef>,
+    /// Chamfer/fillet amount drag in progress.
+    feature_drag: Option<shape_tool::FeatureDrag>,
+    /// Earlier feature selected through its virtual source overlay.
+    selected_shape_feature: Option<mechanic_core::ShapeFeatureId>,
+    /// Earlier feature whose dashed source chain is under the pointer.
+    hovered_source_feature: Option<mechanic_core::ShapeFeatureId>,
     /// Active paint/remove drag, committed to history as one edit on release.
     chroma_stroke: Option<ChromaStroke>,
 }
@@ -2156,16 +2246,25 @@ enum WorldEditBlocker {
 }
 
 impl EditorState {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn world_drag_active(&self) -> bool {
+        self.contextual_selector_blocked() || self.active_region.is_some()
+    }
+
+    /// Whether a transient gesture owns the pointer strongly enough to block
+    /// the contextual hold-Tab selector. A Shape focus by itself is retained
+    /// across mode changes and therefore does not block the selector.
+    pub(crate) fn contextual_selector_blocked(&self) -> bool {
         self.block_drag.is_some()
             || self.pipe_drag.is_some()
             || self.delete_drag.is_some()
             || self.delete_target.is_some()
             || self.region_drag.is_some()
-            || self.active_region.is_some()
             || self.vertex_drag.is_some()
+            || self.feature_drag.is_some()
             || self.wire_drag.is_some()
             || self.paint_selecting
+            || self.chroma_stroke.is_some()
     }
 
     pub(crate) fn pipe_bend_active(&self) -> bool {
@@ -2774,6 +2873,7 @@ fn main() {
         .init_resource::<CylinderToolSettings>()
         .init_resource::<shape_tool::ShapeMirror>()
         .init_resource::<shape_tool::ShapeSnap>()
+        .init_resource::<shape_tool::ShapeEditMode>()
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
         .init_resource::<ChromaBrush>()
@@ -2804,6 +2904,7 @@ fn main() {
                             begin_pause_frame,
                             controls::update_action_state,
                             update_smart_snap_settings,
+                            update_free_placement_settings,
                             capture_control_binding,
                             handle_creation_menu_shortcut,
                             handle_dimension_link_interaction,
@@ -4601,12 +4702,13 @@ fn update_hover(
                 )
             }
             Some((inner, outer)) if placement_bounds == PlacementBounds::GarageBuild => {
-                raycast_construction_for_annulus_with_scaffold(
+                raycast_construction_for_annulus_with_ground(
                     &graph.0,
                     ray.origin,
                     ray_direction,
                     inner,
                     outer,
+                    None,
                 )
             }
             Some((inner, outer)) => {
@@ -4619,7 +4721,7 @@ fn update_hover(
                 terrain_ground,
             ),
             None if placement_bounds == PlacementBounds::GarageBuild => {
-                raycast_construction_with_scaffold(&graph.0, ray.origin, ray_direction)
+                raycast_construction_with_ground(&graph.0, ray.origin, ray_direction, None)
             }
             None => raycast_construction(&graph.0, ray.origin, ray_direction),
         };
@@ -4731,6 +4833,7 @@ fn update_hover(
     if let Some((bearing, distance)) = bearing_hit
         && (wiring || construction_hit.is_none_or(|hit| distance <= hit.distance))
     {
+        state.free_placement_point = None;
         state.hovered = construction_hit;
         state.hovered_bearing = Some(bearing);
         refresh_tool_preview_with_cylinder(
@@ -4747,7 +4850,16 @@ fn update_hover(
         return;
     }
     let Some(hit) = construction_hit else {
+        let free_point = free_placement_point_on_miss(
+            tool,
+            placement_bounds,
+            ray.origin,
+            ray_direction,
+            state.free_placement.range,
+            actions.pressed(GameAction::Secondary),
+        );
         clear_hover(&mut state);
+        state.free_placement_point = free_point;
         refresh_tool_preview_with_cylinder(
             &graph.0,
             &mut state,
@@ -4761,6 +4873,7 @@ fn update_hover(
         );
         return;
     };
+    state.free_placement_point = None;
     state.hovered_bearing = None;
     state.hovered = Some(hit);
     refresh_tool_preview_with_cylinder(
@@ -5243,6 +5356,7 @@ fn clear_hover(state: &mut EditorState) {
     state.attachment_bearing = None;
     state.preview = None;
     state.cylinder_preview = None;
+    state.free_placement_point = None;
     state.bearing_preview_anchor = None;
     state.preview_error = None;
     state.preview_warning = None;
@@ -5319,9 +5433,42 @@ fn refresh_tool_preview_with_cylinder(
                         candidate
                     })
             });
+            let free_candidate = state.free_placement_point.and_then(|point| {
+                let (_, direction) = state.pointer_ray?;
+                let mut candidate = free_cuboid_candidate(
+                    point,
+                    direction,
+                    [1; 3],
+                    GridRotation::default(),
+                    placement_grid,
+                    state.placement_bounds,
+                );
+                candidate.spec = candidate
+                    .spec
+                    .with_material(material)
+                    .with_appearance(appearance);
+                let smart_snap = state.smart_snap;
+                if smart_snap.enabled {
+                    let bounds = state.placement_bounds;
+                    let (snapped_candidate, active_guides) = smart_snap_free_cuboid_candidate(
+                        &state.snap_index,
+                        candidate,
+                        placement_grid,
+                        smart_snap.range,
+                        |guided| {
+                            validate_block_batch_in_bounds(graph, guided, &[guided.spec], bounds)
+                                .is_ok()
+                        },
+                    );
+                    state.smart_guides = active_guides;
+                    candidate = snapped_candidate;
+                }
+                Some(candidate)
+            });
+            let placement_candidate = surface_candidate.or(free_candidate);
             let direct_bearing = state.hovered_bearing.filter(|&index| {
                 state.placed_bearings.get(index).is_some_and(|bearing| {
-                    surface_candidate.is_none_or(|candidate| {
+                    placement_candidate.is_none_or(|candidate| {
                         bearing_overlaps_candidate(
                             graph,
                             bearing.source,
@@ -5333,7 +5480,7 @@ fn refresh_tool_preview_with_cylinder(
                 })
             });
             let bearing_index = direct_bearing.or_else(|| {
-                surface_candidate.and_then(|candidate| {
+                placement_candidate.and_then(|candidate| {
                     state.placed_bearings.iter().position(|bearing| {
                         bearing_overlaps_candidate(
                             graph,
@@ -5349,7 +5496,7 @@ fn refresh_tool_preview_with_cylinder(
             if let Some(bearing) =
                 bearing_index.and_then(|index| state.placed_bearings.get(index).copied())
             {
-                let candidate = surface_candidate.unwrap_or_else(|| {
+                let mut candidate = placement_candidate.unwrap_or_else(|| {
                     let mut candidate =
                         bearing_attachment_candidate(graph, bearing.source, bearing.anchor);
                     candidate.spec = candidate
@@ -5358,6 +5505,7 @@ fn refresh_tool_preview_with_cylinder(
                         .with_appearance(appearance);
                     candidate
                 });
+                candidate.support = PlacementSupport::Bearing;
                 let error = stage_bearing_attachment_in_bounds(
                     graph,
                     candidate,
@@ -5370,7 +5518,7 @@ fn refresh_tool_preview_with_cylinder(
                 state.preview = Some(candidate);
                 error
             } else {
-                surface_candidate.and_then(|candidate| {
+                placement_candidate.and_then(|candidate| {
                     let error = validate_block_batch_in_bounds(
                         graph,
                         candidate,
@@ -5431,9 +5579,40 @@ fn refresh_tool_preview_with_cylinder(
                 }
                 Some(candidate)
             });
+            let free_candidate = state.free_placement_point.and_then(|point| {
+                let (_, direction) = state.pointer_ray?;
+                let mut candidate = free_cylinder_candidate(
+                    point,
+                    direction,
+                    cylinder_dimensions,
+                    placement_grid,
+                    state.placement_bounds,
+                );
+                candidate.spec = candidate
+                    .spec
+                    .with_material(material)
+                    .with_appearance(appearance);
+                let smart_snap = state.smart_snap;
+                if smart_snap.enabled {
+                    let bounds = state.placement_bounds;
+                    let (snapped_candidate, active_guides) = smart_snap_free_cylinder_candidate(
+                        &state.snap_index,
+                        candidate,
+                        placement_grid,
+                        smart_snap.range,
+                        |guided| {
+                            validate_cylinder_candidate_in_bounds(graph, guided, bounds).is_ok()
+                        },
+                    );
+                    state.smart_guides = active_guides;
+                    candidate = snapped_candidate;
+                }
+                Some(candidate)
+            });
+            let placement_candidate = surface_candidate.or(free_candidate);
             let direct_bearing = state.hovered_bearing.filter(|&index| {
                 state.placed_bearings.get(index).is_some_and(|bearing| {
-                    surface_candidate.is_none_or(|candidate| {
+                    placement_candidate.is_none_or(|candidate| {
                         bearing_overlaps_cylinder_candidate(
                             graph,
                             bearing.source,
@@ -5445,7 +5624,7 @@ fn refresh_tool_preview_with_cylinder(
                 })
             });
             let bearing_index = direct_bearing.or_else(|| {
-                surface_candidate.and_then(|candidate| {
+                placement_candidate.and_then(|candidate| {
                     state.placed_bearings.iter().position(|bearing| {
                         bearing_overlaps_cylinder_candidate(
                             graph,
@@ -5461,30 +5640,35 @@ fn refresh_tool_preview_with_cylinder(
             let candidate = if let Some(bearing) =
                 bearing_index.and_then(|index| state.placed_bearings.get(index).copied())
             {
-                surface_candidate.or_else(|| {
-                    let hit = SurfaceHit {
-                        distance: 0.0,
-                        point: bearing.anchor,
-                        face: bearing.source,
-                    };
-                    cylinder_candidate_from_hit_with_grid(
-                        graph,
-                        hit,
-                        cylinder_dimensions,
-                        placement_grid,
-                        state.placement_bounds,
-                    )
-                    .ok()
+                placement_candidate
+                    .or_else(|| {
+                        let hit = SurfaceHit {
+                            distance: 0.0,
+                            point: bearing.anchor,
+                            face: bearing.source,
+                        };
+                        cylinder_candidate_from_hit_with_grid(
+                            graph,
+                            hit,
+                            cylinder_dimensions,
+                            placement_grid,
+                            state.placement_bounds,
+                        )
+                        .ok()
+                        .map(|mut candidate| {
+                            candidate.spec = candidate
+                                .spec
+                                .with_material(material)
+                                .with_appearance(appearance);
+                            candidate
+                        })
+                    })
                     .map(|mut candidate| {
-                        candidate.spec = candidate
-                            .spec
-                            .with_material(material)
-                            .with_appearance(appearance);
+                        candidate.support = PlacementSupport::Bearing;
                         candidate
                     })
-                })
             } else {
-                surface_candidate
+                placement_candidate
             };
             candidate.and_then(|candidate| {
                 let error =
@@ -5524,41 +5708,88 @@ fn refresh_tool_preview_with_cylinder(
             | Tool::Input
             | Tool::DimensionLink),
             _,
-        ) => state
-            .hovered
-            .filter(|hit| try_face_geometry_from_ref(hit.face, Some(graph)).is_some())
-            .and_then(|hit| {
-                let dimensions = match tool {
-                    Tool::Controller => ControllerSpec::GRID_UNITS,
-                    Tool::GasEngine => EngineKind::Gas.grid_units(),
-                    Tool::ElectricEngine => EngineKind::Electric.grid_units(),
-                    Tool::Servo => ServoSpec::GRID_UNITS,
-                    Tool::Seat => SeatSpec::GRID_UNITS,
-                    Tool::Input => InputSpec::GRID_UNITS,
-                    Tool::DimensionLink => DimensionLinkSpec::GRID_UNITS,
-                    _ => unreachable!(),
-                };
-                let mut candidate = oriented_cuboid_candidate_from_hit_with_grid(
-                    graph,
-                    hit,
-                    dimensions,
-                    authored_orientation(state.authored_orientation),
-                    placement_grid,
-                    state.placement_bounds,
-                );
+        ) => {
+            let dimensions = match tool {
+                Tool::Controller => ControllerSpec::GRID_UNITS,
+                Tool::GasEngine => EngineKind::Gas.grid_units(),
+                Tool::ElectricEngine => EngineKind::Electric.grid_units(),
+                Tool::Servo => ServoSpec::GRID_UNITS,
+                Tool::Seat => SeatSpec::GRID_UNITS,
+                Tool::Input => InputSpec::GRID_UNITS,
+                Tool::DimensionLink => DimensionLinkSpec::GRID_UNITS,
+                _ => unreachable!(),
+            };
+            let rotation = authored_orientation(state.authored_orientation);
+            let surface = state
+                .hovered
+                .filter(|hit| try_face_geometry_from_ref(hit.face, Some(graph)).is_some())
+                .map(|hit| {
+                    (
+                        oriented_cuboid_candidate_from_hit_with_grid(
+                            graph,
+                            hit,
+                            dimensions,
+                            rotation,
+                            placement_grid,
+                            state.placement_bounds,
+                        ),
+                        Some(hit),
+                    )
+                });
+            let free = state.free_placement_point.and_then(|point| {
+                let (_, direction) = state.pointer_ray?;
+                Some((
+                    free_cuboid_candidate(
+                        point,
+                        direction,
+                        dimensions,
+                        rotation,
+                        placement_grid,
+                        state.placement_bounds,
+                    ),
+                    None,
+                ))
+            });
+            surface.or(free).and_then(|(mut candidate, hit)| {
                 let smart_snap = state.smart_snap;
                 if smart_snap.enabled {
                     let bounds = state.placement_bounds;
-                    let (snapped_candidate, active_guides) = smart_snap_cuboid_candidate(
-                        graph,
-                        &state.snap_index,
-                        hit,
-                        candidate,
-                        placement_grid,
-                        smart_snap.range,
-                        |guided| {
-                            validate_block_batch_in_bounds(graph, guided, &[guided.spec], bounds)
-                                .is_ok()
+                    let (snapped_candidate, active_guides) = hit.map_or_else(
+                        || {
+                            smart_snap_free_cuboid_candidate(
+                                &state.snap_index,
+                                candidate,
+                                placement_grid,
+                                smart_snap.range,
+                                |guided| {
+                                    validate_block_batch_in_bounds(
+                                        graph,
+                                        guided,
+                                        &[guided.spec],
+                                        bounds,
+                                    )
+                                    .is_ok()
+                                },
+                            )
+                        },
+                        |hit| {
+                            smart_snap_cuboid_candidate(
+                                graph,
+                                &state.snap_index,
+                                hit,
+                                candidate,
+                                placement_grid,
+                                smart_snap.range,
+                                |guided| {
+                                    validate_block_batch_in_bounds(
+                                        graph,
+                                        guided,
+                                        &[guided.spec],
+                                        bounds,
+                                    )
+                                    .is_ok()
+                                },
+                            )
                         },
                     );
                     state.smart_guides = active_guides;
@@ -5573,7 +5804,8 @@ fn refresh_tool_preview_with_cylinder(
                 .err();
                 state.preview = Some(candidate);
                 error
-            }),
+            })
+        }
         // Shaping edits the grid rather than placing anything, so like these
         // it has no placement ghost of its own.
         (Tool::Weld | Tool::Hammer | Tool::Connector | Tool::Shape | Tool::Chroma, _) => None,
@@ -5646,11 +5878,13 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_shape_actions(
     actions: Res<ButtonInput<GameAction>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
     mut mirror: ResMut<shape_tool::ShapeMirror>,
     mut snap: ResMut<shape_tool::ShapeSnap>,
+    mode: Res<shape_tool::ShapeEditMode>,
     _simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     overlay: Res<ui::UiInput>,
@@ -5663,7 +5897,24 @@ fn handle_shape_actions(
             state.construction_mesh_dirty = true;
         }
         leave_region(&mut state);
+        leave_feature_shape(&mut state);
         return;
+    }
+    if mode.is_changed() {
+        if state.vertex_drag.take().is_some() || state.feature_drag.take().is_some() {
+            state.construction_mesh_dirty = true;
+        }
+        state.hovered_vertex = None;
+        state.edge_offer = None;
+        state.paint_selecting = false;
+        state.selected_vertices.clear();
+        state.hovered_feature_edge = None;
+        state.selected_feature_edges.clear();
+        state.selected_shape_feature = None;
+        if *mode != shape_tool::ShapeEditMode::Vertex {
+            *snap = shape_tool::ShapeSnap::feature_default();
+        }
+        state.feedback = Some(format!("Shape mode: {} — {}", mode.label(), snap.label()));
     }
     // Regions can vanish under the tool when their blocks are deleted.
     if state
@@ -5671,6 +5922,31 @@ fn handle_shape_actions(
         .is_some_and(|id| graph.0.region(id).is_none())
     {
         leave_region(&mut state);
+    }
+    if *mode != shape_tool::ShapeEditMode::Vertex {
+        handle_feature_shape_actions(
+            &actions,
+            &keys,
+            &mut graph.0,
+            &mut state,
+            &mut history,
+            *snap,
+            *mode,
+            *overlay,
+            &player,
+            &wheel,
+        );
+        return;
+    }
+    if state
+        .feature_focus
+        .is_some_and(|owner| matches!(owner, mechanic_core::SolidOwner::Part(_)))
+        && state.active_region.is_none()
+    {
+        state.feedback = Some(
+            "Vertex editing is unavailable for this solid; choose Chamfer or Fillet".to_owned(),
+        );
+        return;
     }
     if handle_shape_keyboard(
         &actions,
@@ -5821,6 +6097,500 @@ fn leave_region(state: &mut EditorState) {
     state.edge_offer = None;
     state.region_drag = None;
     state.selected_vertices.clear();
+}
+
+fn leave_feature_shape(state: &mut EditorState) {
+    state.feature_focus = None;
+    state.hovered_feature_edge = None;
+    state.selected_feature_edges.clear();
+    state.feature_drag = None;
+    state.selected_shape_feature = None;
+    state.hovered_source_feature = None;
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn handle_feature_shape_actions(
+    actions: &ButtonInput<GameAction>,
+    keys: &ButtonInput<KeyCode>,
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut EditorHistory,
+    snap: shape_tool::ShapeSnap,
+    mode: shape_tool::ShapeEditMode,
+    overlay: ui::UiInput,
+    player: &PlayerState,
+    wheel: &MaterialWheelState,
+) {
+    if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
+        return;
+    }
+    let Some((ray_origin, ray_direction)) = state.pointer_ray else {
+        return;
+    };
+
+    if let Some(feature) = state.selected_shape_feature {
+        if keys.just_pressed(KeyCode::Delete) || keys.just_pressed(KeyCode::Backspace) {
+            let snapshot = EditorSnapshot::capture(graph, state);
+            match graph.apply(BuildCommand::RemoveShapeFeature(feature)) {
+                Ok(_) => {
+                    history.commit(snapshot);
+                    state.selected_shape_feature = None;
+                    state.selected_feature_edges.clear();
+                    state.construction_mesh_dirty = true;
+                    state.feedback = Some("Removed feature".to_owned());
+                }
+                Err(error) => {
+                    state.feedback = Some(format!("Cannot remove feature: {error}"));
+                }
+            }
+            return;
+        }
+        let direction = if actions.just_pressed(GameAction::NudgeRight)
+            || actions.just_pressed(GameAction::NudgeUp)
+        {
+            1_i64
+        } else if actions.just_pressed(GameAction::NudgeLeft)
+            || actions.just_pressed(GameAction::NudgeDown)
+        {
+            -1_i64
+        } else {
+            0
+        };
+        if direction != 0
+            && let Some(existing) = graph.shape_feature(feature).cloned()
+        {
+            let amount = (i64::from(existing.amount_ticks) + direction * i64::from(snap.steps))
+                .max(i64::from(snap.steps));
+            let amount = u32::try_from(amount).unwrap_or(u32::MAX);
+            let snapshot = EditorSnapshot::capture(graph, state);
+            match graph.apply(BuildCommand::SetShapeFeatureAmount {
+                feature,
+                amount_ticks: amount,
+            }) {
+                Ok(_) => {
+                    history.commit(snapshot);
+                    state.construction_mesh_dirty = true;
+                    state.feedback = Some(feature_amount_label(existing.treatment, amount));
+                }
+                Err(error) => state.feedback = Some(format!("Cannot adjust feature: {error}")),
+            }
+            return;
+        }
+    }
+
+    if actions.just_pressed(GameAction::Secondary) {
+        if state.feature_drag.take().is_some() {
+            state.construction_mesh_dirty = true;
+            state.feedback = Some("Feature drag cancelled".to_owned());
+        } else if !state.selected_feature_edges.is_empty()
+            || state.selected_shape_feature.take().is_some()
+        {
+            state.selected_feature_edges.clear();
+            state.feedback = Some("Edge selection cleared".to_owned());
+        } else if state.feature_focus.take().is_some() {
+            state.feedback = Some("Left the solid".to_owned());
+        }
+        return;
+    }
+
+    if let Some(drag) = state.feature_drag.as_mut() {
+        let proposed = drag.proposed_amount(snap, ray_origin, ray_direction);
+        let clamped = if proposed == drag.amount_ticks {
+            drag.amount_ticks
+        } else {
+            clamp_feature_amount(graph, drag, proposed, snap.steps.cast_unsigned())
+        };
+        if clamped != proposed {
+            drag.discard_rejected_excess(clamped);
+        }
+        if clamped != drag.amount_ticks {
+            drag.amount_ticks = clamped;
+            state.construction_mesh_dirty = true;
+            state.feedback = Some(feature_amount_label(drag.treatment, clamped));
+        }
+        if actions.just_released(GameAction::Primary) {
+            let drag = state.feature_drag.take().expect("feature drag is active");
+            if drag.amount_ticks == 0 {
+                state.feedback = Some("Edges selected — drag inward to add a feature".to_owned());
+                return;
+            }
+            let snapshot = EditorSnapshot::capture(graph, state);
+            let command = if let Some(feature) = drag.feature {
+                BuildCommand::SetShapeFeatureAmount {
+                    feature,
+                    amount_ticks: drag.amount_ticks,
+                }
+            } else {
+                BuildCommand::AddShapeFeature(mechanic_core::ShapeFeature::new(
+                    drag.targets.clone(),
+                    drag.treatment,
+                    drag.amount_ticks,
+                ))
+            };
+            match graph.apply(command) {
+                Ok(BuildOutcome::ShapeFeatureAdded(feature)) => {
+                    history.commit(snapshot);
+                    state.feature_focus = graph
+                        .shape_feature(feature)
+                        .and_then(|feature| feature.targets.first())
+                        .map(|target| target.owner);
+                    state.selected_shape_feature = None;
+                    state.selected_feature_edges.clear();
+                    state.construction_mesh_dirty = true;
+                    state.feedback = Some(format!(
+                        "Added {}",
+                        feature_amount_label(drag.treatment, drag.amount_ticks)
+                    ));
+                }
+                Ok(BuildOutcome::ShapeFeatureUpdated) => {
+                    history.commit(snapshot);
+                    state.selected_shape_feature = None;
+                    state.selected_feature_edges.clear();
+                    state.construction_mesh_dirty = true;
+                    state.feedback = Some(format!(
+                        "Updated {}",
+                        feature_amount_label(drag.treatment, drag.amount_ticks)
+                    ));
+                }
+                Ok(_) => unreachable!("feature edits report a feature outcome"),
+                Err(error) => state.feedback = Some(format!("Cannot apply feature: {error}")),
+            }
+        }
+        return;
+    }
+
+    let pointed_owner = state.hovered.and_then(|hit| match hit.face.owner {
+        FaceOwner::Part(part) => Some(graph.region_of(part).map_or(
+            mechanic_core::SolidOwner::Part(part),
+            mechanic_core::SolidOwner::Region,
+        )),
+        FaceOwner::Ground => None,
+    });
+    let owner = pointed_owner.or(state.feature_focus);
+    state.hovered_source_feature = None;
+    let treatment = match mode {
+        shape_tool::ShapeEditMode::Chamfer => mechanic_core::EdgeTreatment::Chamfer,
+        shape_tool::ShapeEditMode::Fillet => mechanic_core::EdgeTreatment::Fillet,
+        shape_tool::ShapeEditMode::Vertex => unreachable!(),
+    };
+    let virtual_hit = owner.and_then(|owner| {
+        graph
+            .shape_features()
+            .filter(|(_, feature)| feature.treatment == treatment)
+            .filter_map(|(feature_id, feature)| {
+                let solid = graph.evaluated_solid_before(owner, feature_id).ok()?;
+                feature
+                    .targets
+                    .iter()
+                    .copied()
+                    .filter(|target| target.owner == owner)
+                    .filter_map(|target| {
+                        shape_tool::hovered_source_edge(&solid, target, ray_origin, ray_direction)
+                    })
+                    .min_by(|left, right| left.distance.total_cmp(&right.distance))
+                    .map(|hit| (feature_id, hit))
+            })
+            .min_by(|left, right| left.1.distance.total_cmp(&right.1.distance))
+    });
+    if let Some((feature, hit)) = virtual_hit {
+        state.hovered_source_feature = Some(feature);
+        state.hovered_feature_edge = Some(hit);
+    } else {
+        state.hovered_feature_edge = owner.and_then(|owner| {
+            let solid = graph.evaluated_solid(owner).ok()?;
+            shape_tool::hovered_feature_edge(&solid, owner, ray_origin, ray_direction)
+        });
+    }
+
+    if !actions.just_pressed(GameAction::Primary) {
+        return;
+    }
+    let Some(hit) = state.hovered_feature_edge else {
+        if pointed_owner.is_some() {
+            state.selected_feature_edges.clear();
+            state.feature_focus = pointed_owner;
+            state.feedback = Some("Aim at a highlighted logical edge".to_owned());
+        } else {
+            state.feedback = Some("Aim at a construction solid".to_owned());
+        }
+        return;
+    };
+
+    if let Some(feature_id) = state.hovered_source_feature {
+        let Some(feature) = graph.shape_feature(feature_id).cloned() else {
+            return;
+        };
+        state.selected_shape_feature = Some(feature_id);
+        state.selected_feature_edges.clone_from(&feature.targets);
+        state.feature_focus = Some(hit.target.owner);
+        state.feature_drag = Some(shape_tool::FeatureDrag::begin(
+            hit,
+            feature.targets,
+            feature.treatment,
+            Some(feature_id),
+            feature.amount_ticks,
+            ray_origin,
+            ray_direction,
+        ));
+        state.feedback = Some(format!(
+            "Adjusting {} — drag or use arrows; Delete removes",
+            feature_amount_label(feature.treatment, feature.amount_ticks)
+        ));
+        return;
+    }
+
+    if shift_held(actions) {
+        if !state.selected_feature_edges.is_empty()
+            && !shape_owners_connected(
+                graph,
+                state.selected_feature_edges[0].owner,
+                hit.target.owner,
+            )
+        {
+            state.selected_feature_edges.clear();
+        }
+        let chain = tangent_feature_chain(graph, hit.target);
+        if chain
+            .iter()
+            .all(|target| state.selected_feature_edges.contains(target))
+        {
+            state
+                .selected_feature_edges
+                .retain(|target| !chain.contains(target));
+            state.feedback = Some(format!(
+                "Selected {} edge chain(s)",
+                state.selected_feature_edges.len()
+            ));
+            return;
+        }
+        for target in chain {
+            if !state.selected_feature_edges.contains(&target) {
+                state.selected_feature_edges.push(target);
+            }
+        }
+    } else if !state.selected_feature_edges.contains(&hit.target) {
+        state.selected_feature_edges = tangent_feature_chain(graph, hit.target);
+    }
+    state.feature_focus = Some(hit.target.owner);
+    state.selected_shape_feature = None;
+    state.feature_drag = Some(shape_tool::FeatureDrag::begin(
+        hit,
+        state.selected_feature_edges.clone(),
+        treatment,
+        None,
+        0,
+        ray_origin,
+        ray_direction,
+    ));
+    state.feedback = Some(format!(
+        "Selected {} edge chain(s) — drag inward",
+        state.selected_feature_edges.len()
+    ));
+}
+
+fn clamp_feature_amount(
+    graph: &ConstructionGraph,
+    drag: &shape_tool::FeatureDrag,
+    proposed: u32,
+    increment: u32,
+) -> u32 {
+    let mut amount = proposed;
+    while amount > 0 {
+        let mut preview = graph.clone();
+        let command = if let Some(feature) = drag.feature {
+            BuildCommand::SetShapeFeatureAmount {
+                feature,
+                amount_ticks: amount,
+            }
+        } else {
+            BuildCommand::AddShapeFeature(mechanic_core::ShapeFeature::new(
+                drag.targets.clone(),
+                drag.treatment,
+                amount,
+            ))
+        };
+        if preview.apply(command).is_ok() {
+            return amount;
+        }
+        amount = amount.saturating_sub(increment.max(1));
+    }
+    0
+}
+
+fn feature_amount_label(treatment: mechanic_core::EdgeTreatment, amount_ticks: u32) -> String {
+    let metres = f64::from(amount_ticks) * f64::from(POSITION_TICK_METERS);
+    let name = match treatment {
+        mechanic_core::EdgeTreatment::Chamfer => "setback",
+        mechanic_core::EdgeTreatment::Fillet => "radius",
+    };
+    if metres < 0.1 {
+        format!("{name}: {:.1} mm", metres * 1000.0)
+    } else {
+        format!("{name}: {metres:.3} m")
+    }
+}
+
+fn shape_owners_connected(
+    graph: &ConstructionGraph,
+    first: mechanic_core::SolidOwner,
+    second: mechanic_core::SolidOwner,
+) -> bool {
+    weld_connected_shape_owners(graph, first).contains(&second)
+}
+
+/// Finds the complete weld component with one indexed traversal.
+///
+/// Edge selection used to repeat a full weld scan for every construction
+/// owner. Dense creations made that cubic in practice: selecting one edge in
+/// the 504-part fillet test creation performed hundreds of millions of weld
+/// checks before tangent matching even began.
+fn weld_connected_shape_owners(
+    graph: &ConstructionGraph,
+    initial: mechanic_core::SolidOwner,
+) -> HashSet<mechanic_core::SolidOwner> {
+    let starts = match initial {
+        mechanic_core::SolidOwner::Part(part) => vec![part],
+        mechanic_core::SolidOwner::Region(region) => graph
+            .parts()
+            .filter_map(|(part, _)| (graph.region_of(part) == Some(region)).then_some(part))
+            .collect(),
+    };
+    if starts.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut neighbours = HashMap::<PartId, Vec<PartId>>::new();
+    for (_, weld) in graph.welds() {
+        let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+            (weld.first.owner, weld.second.owner)
+        else {
+            continue;
+        };
+        neighbours.entry(first).or_default().push(second);
+        neighbours.entry(second).or_default().push(first);
+    }
+
+    let mut reached = starts.iter().copied().collect::<HashSet<_>>();
+    let mut pending = starts;
+    while let Some(part) = pending.pop() {
+        if let Some(adjacent) = neighbours.get(&part) {
+            for &next in adjacent {
+                if reached.insert(next) {
+                    pending.push(next);
+                }
+            }
+        }
+    }
+    reached
+        .into_iter()
+        .map(|part| {
+            graph.region_of(part).map_or(
+                mechanic_core::SolidOwner::Part(part),
+                mechanic_core::SolidOwner::Region,
+            )
+        })
+        .collect()
+}
+
+fn tangent_feature_chain(
+    graph: &ConstructionGraph,
+    initial: mechanic_core::EdgeChainRef,
+) -> Vec<mechanic_core::EdgeChainRef> {
+    let mut candidates = Vec::<(mechanic_core::EdgeChainRef, Vec<(Vec3, Vec3)>)>::new();
+    let connected = weld_connected_shape_owners(graph, initial.owner);
+    let mut owners = graph
+        .parts()
+        .filter_map(|(part, spec)| {
+            ordinary_material(*spec)?;
+            let owner = graph.region_of(part).map_or(
+                mechanic_core::SolidOwner::Part(part),
+                mechanic_core::SolidOwner::Region,
+            );
+            connected.contains(&owner).then_some(owner)
+        })
+        .collect::<Vec<_>>();
+    owners.sort_unstable();
+    owners.dedup();
+    for owner in owners {
+        let Ok(solid) = graph.evaluated_solid(owner) else {
+            continue;
+        };
+        for logical in &solid.logical_edges {
+            if !logical.convex {
+                continue;
+            }
+            let target = mechanic_core::EdgeChainRef {
+                owner,
+                edge: logical.key,
+            };
+            let endpoints = logical_chain_endpoints(&solid, logical);
+            candidates.push((target, endpoints));
+        }
+    }
+    let mut selected = vec![initial];
+    loop {
+        let mut additions = Vec::new();
+        for selected_target in selected.clone() {
+            let Some((_, endpoints)) = candidates
+                .iter()
+                .find(|(target, _)| *target == selected_target)
+            else {
+                continue;
+            };
+            for &(point, tangent) in endpoints {
+                let matches = candidates
+                    .iter()
+                    .filter(|(target, _)| !selected.contains(target))
+                    .filter(|(_, candidate_endpoints)| {
+                        candidate_endpoints
+                            .iter()
+                            .any(|(candidate, candidate_tangent)| {
+                                point.distance(*candidate) <= mechanic_core::ANCHOR_TOLERANCE_METERS
+                                    && tangent.dot(*candidate_tangent).abs() >= 1.0 - 1.0e-4
+                            })
+                    })
+                    .map(|(target, _)| *target)
+                    .collect::<Vec<_>>();
+                if matches.len() == 1 && !additions.contains(&matches[0]) {
+                    additions.push(matches[0]);
+                }
+            }
+        }
+        if additions.is_empty() {
+            break;
+        }
+        selected.extend(additions);
+    }
+    selected
+}
+
+fn logical_chain_endpoints(
+    solid: &mechanic_core::EvaluatedSolid,
+    logical: &mechanic_core::LogicalEdge,
+) -> Vec<(Vec3, Vec3)> {
+    let mut occurrences = Vec::<(Vec3, Vec3)>::new();
+    for &edge_index in &logical.half_edges {
+        let edge = solid.half_edges[edge_index as usize];
+        let next = solid.half_edges[edge.next as usize];
+        let start = solid.vertices[edge.origin as usize].position;
+        let end = solid.vertices[next.origin as usize].position;
+        let tangent = (end - start).normalize_or_zero();
+        occurrences.push((start, tangent));
+        occurrences.push((end, tangent));
+    }
+    occurrences
+        .iter()
+        .copied()
+        .filter(|(point, _)| {
+            occurrences
+                .iter()
+                .filter(|(candidate, _)| {
+                    point.distance(*candidate) <= mechanic_core::ANCHOR_TOLERANCE_METERS
+                })
+                .count()
+                == 1
+        })
+        .collect()
 }
 
 /// The area a drag covers: the block it started on, grown by `span` cells.
@@ -6060,7 +6830,7 @@ fn handle_shape_keyboard(
     true
 }
 
-/// Which way the arrow or WASD keys are asking the selection to move.
+/// Which way the arrow keys are asking the selection to move.
 ///
 /// The keys read as screen directions and resolve to whichever world axis lies
 /// nearest, so a nudge goes where it looks like it should while still landing
@@ -6157,7 +6927,7 @@ fn select_clicked_vertex(state: &mut EditorState, index: CageIndex, extend: bool
     }
     state.feedback = Some(match state.selected_vertices.len() {
         0 => "Selection cleared".to_owned(),
-        1 => "Corner selected — arrows or WASD nudge it".to_owned(),
+        1 => "Corner selected — arrows nudge it".to_owned(),
         count => format!("Selected {count} corners"),
     });
 }
@@ -6208,6 +6978,7 @@ fn commit_vertex_drag(
 /// puts every material back.
 fn sync_region_focus(
     state: Res<EditorState>,
+    mode: Res<shape_tool::ShapeEditMode>,
     selection: Res<SelectedTool>,
     visuals: Res<EditorVisuals>,
     mut construction_visuals: Query<(
@@ -6215,8 +6986,11 @@ fn sync_region_focus(
         &mut MeshMaterial3d<ConstructionRenderMaterial>,
     )>,
 ) {
-    let editing =
-        selection.active_editor_tool() == Some(Tool::Shape) && state.active_region.is_some();
+    let editing = region_focus_is_active(
+        selection.active_editor_tool(),
+        *mode,
+        state.active_region.is_some(),
+    );
     for (visual, mut material) in &mut construction_visuals {
         let index = material_index(visual.0);
         let wanted = if editing {
@@ -6230,16 +7004,28 @@ fn sync_region_focus(
     }
 }
 
+fn region_focus_is_active(
+    tool: Option<Tool>,
+    mode: shape_tool::ShapeEditMode,
+    has_active_region: bool,
+) -> bool {
+    tool == Some(Tool::Shape)
+        && matches!(mode, shape_tool::ShapeEditMode::Vertex)
+        && has_active_region
+}
+
 /// Draws the active region's cage: its vertices, the edges between them, and
 /// the new vertex the pointer is being offered.
 ///
 /// Only vertices near the pointer appear, so choosing the tool does not bury the
 /// build in handles.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn sync_shape_nodes(
     graph: Res<EditorGraph>,
     state: Res<EditorState>,
     mirror: Res<shape_tool::ShapeMirror>,
+    mode: Res<shape_tool::ShapeEditMode>,
     selection: Res<SelectedTool>,
     _simulation: Res<AppSimulation>,
     visuals: Res<EditorVisuals>,
@@ -6253,6 +7039,83 @@ fn sync_shape_nodes(
     // by size, which size alone was not carrying.
     let mut plain = OverlayGeometry::default();
     let mut chosen = OverlayGeometry::default();
+
+    if !hide && *mode != shape_tool::ShapeEditMode::Vertex {
+        let owner = state
+            .hovered_feature_edge
+            .map(|hit| hit.target.owner)
+            .or(state.feature_focus);
+        if let Some(owner) = owner
+            && let Ok(solid) = graph.0.evaluated_solid(owner)
+        {
+            for logical in &solid.logical_edges {
+                if !logical.convex {
+                    continue;
+                }
+                let target = mechanic_core::EdgeChainRef {
+                    owner,
+                    edge: logical.key,
+                };
+                let selected = state.selected_feature_edges.contains(&target);
+                let hovered = state
+                    .hovered_feature_edge
+                    .is_some_and(|hit| hit.target == target);
+                let geometry = if selected { &mut chosen } else { &mut plain };
+                let thickness = if hovered {
+                    0.022
+                } else if selected {
+                    0.017
+                } else {
+                    0.010
+                };
+                for &edge_index in &logical.half_edges {
+                    let edge = solid.half_edges[edge_index as usize];
+                    let next = solid.half_edges[edge.next as usize];
+                    let start = solid.vertices[edge.origin as usize].position;
+                    let end = solid.vertices[next.origin as usize].position;
+                    append_overlay_bar(start, end, thickness, geometry);
+                }
+            }
+            let treatment = match *mode {
+                shape_tool::ShapeEditMode::Chamfer => mechanic_core::EdgeTreatment::Chamfer,
+                shape_tool::ShapeEditMode::Fillet => mechanic_core::EdgeTreatment::Fillet,
+                shape_tool::ShapeEditMode::Vertex => unreachable!(),
+            };
+            for (feature_id, feature) in graph
+                .0
+                .shape_features()
+                .filter(|(_, feature)| feature.treatment == treatment)
+            {
+                let Ok(source) = graph.0.evaluated_solid_before(owner, feature_id) else {
+                    continue;
+                };
+                let selected = state.selected_shape_feature == Some(feature_id);
+                let geometry = if selected { &mut chosen } else { &mut plain };
+                for target in feature
+                    .targets
+                    .iter()
+                    .filter(|target| target.owner == owner)
+                {
+                    let Some(logical) = source.logical_edge(target.edge) else {
+                        continue;
+                    };
+                    for &edge_index in &logical.half_edges {
+                        let edge = source.half_edges[edge_index as usize];
+                        let next = source.half_edges[edge.next as usize];
+                        append_dashed_overlay_bar(
+                            source.vertices[edge.origin as usize].position,
+                            source.vertices[next.origin as usize].position,
+                            if selected { 0.014 } else { 0.008 },
+                            geometry,
+                        );
+                    }
+                }
+            }
+        }
+        **markers = write_overlay(&mut meshes, &visuals.shape_node_mesh, plain);
+        **selected_markers = write_overlay(&mut meshes, &visuals.shape_selected_mesh, chosen);
+        return;
+    }
 
     // The area being dragged out, cyan while it is claimable and plain while a
     // rule refuses it, so the outline itself carries the verdict.
@@ -6331,7 +7194,9 @@ fn sync_drag_plane(
 ) {
     let mut sheet = OverlayGeometry::default();
     let mut arrows = OverlayGeometry::default();
-    if let Some(drag) = state.pipe_drag.as_ref() {
+    if let Some(hit) = state.hovered_feature_edge {
+        append_feature_pull_arrow(hit.point, hit.bisector, &mut arrows);
+    } else if let Some(drag) = state.pipe_drag.as_ref() {
         let direction = *drag
             .directions
             .last()
@@ -6361,6 +7226,53 @@ fn sync_drag_plane(
     }
     **plane_marker = write_overlay(&mut meshes, &visuals.shape_plane_mesh, sheet);
     **arrow_marker = write_overlay(&mut meshes, &visuals.shape_arrow_mesh, arrows);
+}
+
+/// Draws the increasing-amount direction for an edge treatment. Most of the
+/// shaft stays outside the solid while the head lands at the edge, so the
+/// inward 45-degree direction remains visible instead of disappearing behind
+/// the preview mesh.
+fn append_feature_pull_arrow(at: Vec3, direction: Vec3, geometry: &mut OverlayGeometry) {
+    const OUTSIDE_REACH: f32 = 0.16;
+    const TIP_INSET: f32 = 0.015;
+    const SHAFT_HALF_WIDTH: f32 = 0.008;
+    const HEAD_HALF_WIDTH: f32 = 0.026;
+    const HEAD_LENGTH: f32 = 0.06;
+
+    let Some(along) = direction.try_normalize() else {
+        return;
+    };
+    let first_across = along.any_orthonormal_vector();
+    let second_across = along.cross(first_across).normalize_or_zero();
+    let base = at - along * OUTSIDE_REACH;
+    let tip = at + along * TIP_INSET;
+    let neck = tip - along * HEAD_LENGTH;
+    for across in [first_across, second_across] {
+        let normal = along.cross(across);
+        append_mesh_quad(
+            [
+                base - across * SHAFT_HALF_WIDTH,
+                base + across * SHAFT_HALF_WIDTH,
+                neck + across * SHAFT_HALF_WIDTH,
+                neck - across * SHAFT_HALF_WIDTH,
+            ],
+            normal,
+            &mut geometry.positions,
+            &mut geometry.normals,
+            &mut geometry.indices,
+        );
+        append_mesh_triangle(
+            [
+                neck - across * HEAD_HALF_WIDTH,
+                neck + across * HEAD_HALF_WIDTH,
+                tip,
+            ],
+            normal,
+            &mut geometry.positions,
+            &mut geometry.normals,
+            &mut geometry.indices,
+        );
+    }
 }
 
 /// The bounds and plane of whichever drag is open, if one is.
@@ -6910,6 +7822,28 @@ fn append_overlay_bar(from: Vec3, to: Vec3, thickness: f32, geometry: &mut Overl
         &mut geometry.normals,
         &mut geometry.indices,
     );
+}
+
+fn append_dashed_overlay_bar(from: Vec3, to: Vec3, thickness: f32, geometry: &mut OverlayGeometry) {
+    let delta = to - from;
+    let length = delta.length();
+    if length <= f32::EPSILON {
+        return;
+    }
+    let direction = delta / length;
+    let dash = (thickness * 4.0).max(0.018);
+    let gap = dash * 0.7;
+    let mut start = 0.0;
+    while start < length {
+        let end = (start + dash).min(length);
+        append_overlay_bar(
+            from + direction * start,
+            from + direction * end,
+            thickness,
+            geometry,
+        );
+        start += dash + gap;
+    }
 }
 
 /// Draws a region's bounding box as twelve thin bars, so a dragged area reads
@@ -7484,9 +8418,6 @@ fn handle_build_actions(
                     dimensions: bearing.dimensions,
                 }
             } else {
-                let Some(hit) = state.hovered else {
-                    return;
-                };
                 if let Err(error) = validate_cylinder_candidate_in_bounds(
                     &graph.0,
                     candidate,
@@ -7495,8 +8426,13 @@ fn handle_build_actions(
                     state.feedback = Some(error.to_string());
                     return;
                 }
-                BlockAttachment::AutoWeld {
-                    source: hit.face.owner,
+                match candidate.support {
+                    PlacementSupport::Surface(source) => BlockAttachment::AutoWeld { source },
+                    PlacementSupport::Free => BlockAttachment::Free,
+                    PlacementSupport::Bearing => {
+                        state.feedback = Some("Bearing is no longer available".to_owned());
+                        return;
+                    }
                 }
             };
             let Some((ray_origin, ray_direction)) = state.pointer_ray else {
@@ -7576,6 +8512,12 @@ fn handle_build_actions(
                     &graph.0,
                     &drag.pieces,
                     PipeRunAttachment::AutoWeld { source },
+                    state.placement_bounds,
+                ),
+                BlockAttachment::Free => stage_pipe_run_in_bounds(
+                    &graph.0,
+                    &drag.pieces,
+                    PipeRunAttachment::Free,
                     state.placement_bounds,
                 ),
                 BlockAttachment::Bearing {
@@ -7738,20 +8680,12 @@ fn handle_build_actions(
                 return;
             }
             let Some(candidate) = state.preview else {
-                state.feedback = Some("Point at the platform or a face".to_owned());
-                return;
-            };
-            let Some(hit) = state.hovered else {
+                state.feedback = Some("Point at a face or into free Garage space".to_owned());
                 return;
             };
             let previous = EditorSnapshot::capture(&graph.0, &state);
             let existing = graph.0.parts().map(|(part, _)| part).collect::<Vec<_>>();
-            match stage_controller_from_source_in_bounds(
-                &graph.0,
-                candidate,
-                hit.face.owner,
-                state.placement_bounds,
-            ) {
+            match stage_controller_in_bounds(&graph.0, candidate, state.placement_bounds) {
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
@@ -7774,10 +8708,7 @@ fn handle_build_actions(
         }
         tool @ (Tool::GasEngine | Tool::ElectricEngine) => {
             let Some(candidate) = state.preview else {
-                state.feedback = Some("Point at the platform or a face".to_owned());
-                return;
-            };
-            let Some(hit) = state.hovered else {
+                state.feedback = Some("Point at a face or into free Garage space".to_owned());
                 return;
             };
             let kind = if tool == Tool::GasEngine {
@@ -7786,13 +8717,7 @@ fn handle_build_actions(
                 EngineKind::Electric
             };
             let previous = EditorSnapshot::capture(&graph.0, &state);
-            match stage_engine_from_source_in_bounds(
-                &graph.0,
-                candidate,
-                hit.face.owner,
-                kind,
-                state.placement_bounds,
-            ) {
+            match stage_engine_in_bounds(&graph.0, candidate, kind, state.placement_bounds) {
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
@@ -7845,32 +8770,14 @@ fn handle_build_actions(
         }
         Tool::Servo | Tool::Seat | Tool::Input => {
             let Some(candidate) = state.preview else {
-                state.feedback = Some("Point at the platform or a face".to_owned());
-                return;
-            };
-            let Some(hit) = state.hovered else {
+                state.feedback = Some("Point at a face or into free Garage space".to_owned());
                 return;
             };
             let previous = EditorSnapshot::capture(&graph.0, &state);
             let staged = match tool {
-                Tool::Servo => stage_servo_from_source_in_bounds(
-                    &graph.0,
-                    candidate,
-                    hit.face.owner,
-                    state.placement_bounds,
-                ),
-                Tool::Seat => stage_seat_from_source_in_bounds(
-                    &graph.0,
-                    candidate,
-                    hit.face.owner,
-                    state.placement_bounds,
-                ),
-                Tool::Input => stage_input_from_source_in_bounds(
-                    &graph.0,
-                    candidate,
-                    hit.face.owner,
-                    state.placement_bounds,
-                ),
+                Tool::Servo => stage_servo_in_bounds(&graph.0, candidate, state.placement_bounds),
+                Tool::Seat => stage_seat_in_bounds(&graph.0, candidate, state.placement_bounds),
+                Tool::Input => stage_input_in_bounds(&graph.0, candidate, state.placement_bounds),
                 _ => unreachable!(),
             };
             match staged {
@@ -7886,10 +8793,7 @@ fn handle_build_actions(
         }
         Tool::DimensionLink => {
             let Some(candidate) = state.preview else {
-                state.feedback = Some("Point at the scaffold or a face".to_owned());
-                return;
-            };
-            let Some(hit) = state.hovered else {
+                state.feedback = Some("Point at a face or into free Garage space".to_owned());
                 return;
             };
             let Some(world_runtime) = world_runtime.as_deref_mut() else {
@@ -7898,13 +8802,7 @@ fn handle_build_actions(
             };
             let id = world_runtime.allocate_dimension_link_id();
             let previous = EditorSnapshot::capture(&graph.0, &state);
-            match stage_dimension_link_from_source_in_bounds(
-                &graph.0,
-                candidate,
-                hit.face.owner,
-                id,
-                state.placement_bounds,
-            ) {
+            match stage_dimension_link_in_bounds(&graph.0, candidate, id, state.placement_bounds) {
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
@@ -8526,13 +9424,27 @@ fn handle_block_actions(
                 state.feedback = Some(error.to_string());
                 return;
             }
-            let hit = state.hovered.expect("block preview originates from a hit");
-            (
-                BlockAttachment::AutoWeld {
-                    source: hit.face.owner,
-                },
-                face_geometry_from_ref(hit.face, Some(graph)).normal,
-            )
+            match candidate.support {
+                PlacementSupport::Surface(source) => {
+                    let hit = state
+                        .hovered
+                        .expect("surface preview originates from a hit");
+                    (
+                        BlockAttachment::AutoWeld { source },
+                        face_geometry_from_ref(hit.face, Some(graph)).normal,
+                    )
+                }
+                PlacementSupport::Free => {
+                    let (_, direction) = state
+                        .pointer_ray
+                        .expect("free preview originates from a pointer ray");
+                    (BlockAttachment::Free, -direction)
+                }
+                PlacementSupport::Bearing => {
+                    state.feedback = Some("Bearing is no longer available".to_owned());
+                    return;
+                }
+            }
         };
         let plane = PlacementPlane::from_normal(normal);
         let Some((ray_origin, ray_direction)) = state.pointer_ray else {
@@ -8587,13 +9499,9 @@ fn handle_block_actions(
     let count = drag.specs.len();
     let previous = EditorSnapshot::capture(graph, state);
     let staged = match drag.attachment {
-        BlockAttachment::AutoWeld { source } => stage_block_batch_from_source_in_bounds(
-            graph,
-            drag.start,
-            &drag.specs,
-            source,
-            state.placement_bounds,
-        ),
+        BlockAttachment::AutoWeld { .. } | BlockAttachment::Free => {
+            stage_block_batch_in_bounds(graph, drag.start, &drag.specs, state.placement_bounds)
+        }
         BlockAttachment::Bearing {
             source,
             anchor,
@@ -9230,13 +10138,33 @@ fn sync_visual_meshes(
             dirty_materials.insert(material);
         }
     }
+    let feature_preview_graph = state.feature_drag.as_ref().and_then(|drag| {
+        if drag.amount_ticks == 0 {
+            return None;
+        }
+        let mut preview = graph.0.clone();
+        let command = if let Some(feature) = drag.feature {
+            BuildCommand::SetShapeFeatureAmount {
+                feature,
+                amount_ticks: drag.amount_ticks,
+            }
+        } else {
+            BuildCommand::AddShapeFeature(mechanic_core::ShapeFeature::new(
+                drag.targets.clone(),
+                drag.treatment,
+                drag.amount_ticks,
+            ))
+        };
+        preview.apply(command).ok().map(|_| preview)
+    });
+    let mesh_graph = feature_preview_graph.as_ref().unwrap_or(&graph.0);
     let preview = preview_region(&graph.0, &state, *mirror);
     let active_dimension_link = world_runtime.active_dimension_link();
     for material in ConstructionMaterial::ALL {
         if !rebuild_all && !dirty_materials.contains(&material) {
             continue;
         }
-        let mesh = combined_material_construction_mesh(&graph.0, preview.as_ref(), material);
+        let mesh = combined_material_construction_mesh(mesh_graph, preview.as_ref(), material);
         let visible = mesh.count_vertices() > 0;
         if let Some(mut asset) =
             meshes.get_mut(&visuals.construction_meshes[material_index(material)])
@@ -10346,19 +11274,34 @@ fn combined_construction_mesh_filtered(
         }
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
         let first_vertex = positions.len();
-        append_textured_part(
-            *spec,
-            spec.pose().translation(),
-            spec.pose().rotation.quaternion(),
-            BuildTransform::IDENTITY,
-            texture_offset,
-            pipe_end_faces(part, &welded_pipe_ends),
-            &mut positions,
-            &mut normals,
-            &mut uvs,
-            &mut tangents,
-            &mut indices,
-        );
+        if graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part)) {
+            let solid = graph
+                .evaluated_solid(mechanic_core::SolidOwner::Part(part))
+                .expect("committed feature geometry replays");
+            append_evaluated_solid(
+                &solid,
+                BuildTransform::IDENTITY,
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut tangents,
+                &mut indices,
+            );
+        } else {
+            append_textured_part(
+                *spec,
+                spec.pose().translation(),
+                spec.pose().rotation.quaternion(),
+                BuildTransform::IDENTITY,
+                texture_offset,
+                pipe_end_faces(part, &welded_pipe_ends),
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut tangents,
+                &mut indices,
+            );
+        }
         colors.extend(std::iter::repeat_n(
             chroma::encode_appearance(spec.appearance().expect("ordinary parts have appearances")),
             positions.len() - first_vertex,
@@ -10373,15 +11316,32 @@ fn combined_construction_mesh_filtered(
             _ => region,
         };
         let first_vertex = positions.len();
-        append_region(
-            shown,
-            BuildTransform::IDENTITY,
-            &mut positions,
-            &mut normals,
-            &mut uvs,
-            &mut tangents,
-            &mut indices,
-        );
+        if preview.is_none()
+            && graph.owner_has_shape_features(mechanic_core::SolidOwner::Region(id))
+        {
+            let solid = graph
+                .evaluated_solid(mechanic_core::SolidOwner::Region(id))
+                .expect("committed region feature geometry replays");
+            append_evaluated_solid(
+                &solid,
+                BuildTransform::IDENTITY,
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut tangents,
+                &mut indices,
+            );
+        } else {
+            append_region(
+                shown,
+                BuildTransform::IDENTITY,
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut tangents,
+                &mut indices,
+            );
+        }
         colors.extend(std::iter::repeat_n(
             chroma::encode_appearance(shown.appearance()),
             positions.len() - first_vertex,
@@ -10750,6 +11710,7 @@ fn simulation_material_is_present(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn combined_simulation_mesh_filtered(
     graph: &ConstructionGraph,
     creation: &CompiledCreation,
@@ -10800,15 +11761,30 @@ fn combined_simulation_mesh_filtered(
             drawn_regions.push(id);
             if let Some(region) = graph.region(id) {
                 let first_vertex = positions.len();
-                append_region(
-                    region,
-                    placement,
-                    &mut positions,
-                    &mut normals,
-                    &mut uvs,
-                    &mut tangents,
-                    &mut indices,
-                );
+                if graph.owner_has_shape_features(mechanic_core::SolidOwner::Region(id)) {
+                    let solid = graph
+                        .evaluated_solid(mechanic_core::SolidOwner::Region(id))
+                        .expect("compiled region feature geometry replays");
+                    append_evaluated_solid(
+                        &solid,
+                        placement,
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut tangents,
+                        &mut indices,
+                    );
+                } else {
+                    append_region(
+                        region,
+                        placement,
+                        &mut positions,
+                        &mut normals,
+                        &mut uvs,
+                        &mut tangents,
+                        &mut indices,
+                    );
+                }
                 colors.extend(std::iter::repeat_n(
                     chroma::encode_appearance(region.appearance()),
                     positions.len() - first_vertex,
@@ -10819,19 +11795,34 @@ fn combined_simulation_mesh_filtered(
         let local_center = spec.pose().translation() - initial.root_translation;
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
         let first_vertex = positions.len();
-        append_textured_part(
-            spec,
-            root_translation + root_rotation * local_center,
-            root_rotation * spec.pose().rotation.quaternion(),
-            placement,
-            texture_offset,
-            pipe_end_faces(part, &welded_pipe_ends),
-            &mut positions,
-            &mut normals,
-            &mut uvs,
-            &mut tangents,
-            &mut indices,
-        );
+        if graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part)) {
+            let solid = graph
+                .evaluated_solid(mechanic_core::SolidOwner::Part(part))
+                .expect("compiled feature geometry replays");
+            append_evaluated_solid(
+                &solid,
+                placement,
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut tangents,
+                &mut indices,
+            );
+        } else {
+            append_textured_part(
+                spec,
+                root_translation + root_rotation * local_center,
+                root_rotation * spec.pose().rotation.quaternion(),
+                placement,
+                texture_offset,
+                pipe_end_faces(part, &welded_pipe_ends),
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut tangents,
+                &mut indices,
+            );
+        }
         colors.extend(std::iter::repeat_n(
             chroma::encode_appearance(spec.appearance().expect("ordinary parts have appearances")),
             positions.len() - first_vertex,
@@ -12740,6 +13731,89 @@ fn append_region(
     }
 }
 
+/// Emits an evaluated feature boundary. Tessellation seams are retained only
+/// as triangle edges; surface provenance controls hard versus smooth normals,
+/// while the ordinary triplanar projection preserves material scale.
+#[allow(clippy::too_many_arguments)]
+fn append_evaluated_solid(
+    solid: &mechanic_core::EvaluatedSolid,
+    placement: BuildTransform,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+    indices: &mut Vec<u32>,
+) {
+    let projection_normals = solid
+        .surfaces
+        .iter()
+        .fold(HashMap::new(), |mut normals, surface| {
+            normals.entry(surface.key).or_insert(surface.normal);
+            normals
+        });
+    for surface in &solid.surfaces {
+        let mut loop_edges = Vec::new();
+        let mut edge = surface.half_edge;
+        loop {
+            loop_edges.push(edge);
+            edge = solid.half_edges[edge as usize].next;
+            if edge == surface.half_edge {
+                break;
+            }
+        }
+        if loop_edges.len() < 3 {
+            continue;
+        }
+        let base = u32::try_from(positions.len()).expect("construction mesh fits 32-bit indices");
+        for &half_edge in &loop_edges {
+            let vertex_index = solid.half_edges[half_edge as usize].origin;
+            let position = solid.vertices[vertex_index as usize].position;
+            let normal = if surface.smoothing_group == 0 {
+                surface.normal
+            } else {
+                solid
+                    .surfaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, candidate)| candidate.smoothing_group == surface.smoothing_group)
+                    .filter(|(candidate_index, _)| {
+                        solid.half_edges.iter().any(|edge| {
+                            edge.face as usize == *candidate_index && edge.origin == vertex_index
+                        })
+                    })
+                    .map(|(_, candidate)| candidate.normal)
+                    .sum::<Vec3>()
+                    .normalize_or_zero()
+            };
+            let world_position = placement.point(position);
+            let world_normal = placement.direction(normal).normalize_or_zero();
+            // A rounded patch keeps the projection of its originating face.
+            // Choosing from the smoothed vertex normal would change dominant
+            // axes halfway through a 90-degree fillet and rotate the material.
+            let projection_normal = projection_normals
+                .get(&surface.uv_provenance)
+                .copied()
+                .unwrap_or(surface.normal);
+            let absolute = placement.direction(projection_normal).abs();
+            let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
+                ([world_position.x, world_position.z], Vec3::X)
+            } else if absolute.x >= absolute.z {
+                ([world_position.z, world_position.y], Vec3::Z)
+            } else {
+                ([world_position.x, world_position.y], Vec3::X)
+            };
+            positions.push(world_position.to_array());
+            normals.push(world_normal.to_array());
+            uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+            tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
+        }
+        for step in 1..loop_edges.len() - 1 {
+            let step = u32::try_from(step).expect("surface polygons fit u32");
+            indices.extend([base, base + step, base + step + 1]);
+        }
+    }
+}
+
 /// Emits just the positions, normals, and indices of a region's surface.
 fn append_region_surface(
     region: &ShapeRegion,
@@ -13136,9 +14210,10 @@ mod rendering_tests {
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
         DimensionLinkId, DimensionLinkSpec, DriveLimits, DriveLinkSpec, DriveProgram, DriveState,
-        DriveTarget, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation, InputSpec,
-        MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, MaterialShift, PartSpec,
-        PipeBendDimensions, SeatSpec, ServoSpec,
+        DriveTarget, EdgeChainRef, EdgeTreatment, EngineKind, EngineSpec, FaceKind, FaceOwner,
+        FaceRef, GridRotation, InputSpec, MaterialAppearance, MaterialColor, MaterialDye,
+        MaterialFinish, MaterialShift, PartSpec, PipeBendDimensions, SeatSpec, ServoSpec,
+        ShapeFeature, SolidOwner,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -13160,7 +14235,8 @@ mod rendering_tests {
     };
     use super::{
         EnvironmentMapGenerationReady, OverlayGeometry, append_axis_arrows, append_drag_plane,
-        append_plane_arrows, region_world_bounds, retain_generated_environment_map, sky_cubemap,
+        append_feature_pull_arrow, append_plane_arrows, region_focus_is_active,
+        region_world_bounds, retain_generated_environment_map, sky_cubemap,
     };
     use crate::PlacementPlane;
     use crate::builder::block_sheet_specs;
@@ -13174,6 +14250,35 @@ mod rendering_tests {
             panic!("mesh must have float3 positions")
         };
         values.iter().copied().map(Vec3::from_array).collect()
+    }
+
+    #[test]
+    fn only_vertex_mode_uses_region_focus_ghosting() {
+        assert!(region_focus_is_active(
+            Some(Tool::Shape),
+            crate::shape_tool::ShapeEditMode::Vertex,
+            true,
+        ));
+        assert!(!region_focus_is_active(
+            Some(Tool::Shape),
+            crate::shape_tool::ShapeEditMode::Chamfer,
+            true,
+        ));
+        assert!(!region_focus_is_active(
+            Some(Tool::Shape),
+            crate::shape_tool::ShapeEditMode::Fillet,
+            true,
+        ));
+        assert!(!region_focus_is_active(
+            Some(Tool::Chroma),
+            crate::shape_tool::ShapeEditMode::Vertex,
+            true,
+        ));
+        assert!(!region_focus_is_active(
+            Some(Tool::Shape),
+            crate::shape_tool::ShapeEditMode::Vertex,
+            false,
+        ));
     }
 
     #[test]
@@ -13296,6 +14401,24 @@ mod rendering_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_feature_guide_points_inward_along_the_cross_section_bisector() {
+        let at = Vec3::new(0.25, 0.5, 0.75);
+        let direction = Vec3::new(-1.0, -1.0, 0.0).normalize();
+        let mut geometry = OverlayGeometry::default();
+        append_feature_pull_arrow(at, direction, &mut geometry);
+        let (minimum, maximum) = geometry.positions.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(minimum, maximum), position| {
+                let along = (Vec3::from_array(*position) - at).dot(direction);
+                (minimum.min(along), maximum.max(along))
+            },
+        );
+
+        assert!(minimum < -0.15, "the shaft stays visible outside the edge");
+        assert!(maximum > 0.014, "the head points inward through the edge");
     }
 
     #[test]
@@ -14091,6 +15214,115 @@ mod rendering_tests {
     }
 
     #[test]
+    fn simulation_renders_the_same_feature_boundary_as_construction() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([4; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef { owner, edge }],
+                EdgeTreatment::Fillet,
+                20,
+            )))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let transforms = [GpuTransform {
+            position: [2.0, 0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        }];
+
+        let construction = super::combined_construction_mesh(&graph);
+        let simulation =
+            combined_simulation_mesh(&graph, &creation, &transforms, SimulationMeshKind::Dynamic);
+        assert_eq!(simulation.count_vertices(), construction.count_vertices());
+        let construction_min_x = positions(&construction)
+            .into_iter()
+            .map(|position| position.x)
+            .fold(f32::INFINITY, f32::min);
+        let simulation_min_x = positions(&simulation)
+            .into_iter()
+            .map(|position| position.x)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            (simulation_min_x - construction_min_x - 2.0).abs() < 1.0e-3,
+            "construction {construction_min_x}, simulation {simulation_min_x}"
+        );
+    }
+
+    #[test]
+    fn fillet_keeps_one_texture_projection_through_its_profile() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([4; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let solid = graph.evaluated_solid(owner).unwrap();
+        let edge = solid
+            .logical_edges
+            .iter()
+            .find(|logical| {
+                let half_edge = solid.half_edges[logical.half_edges[0] as usize];
+                let twin = solid.half_edges[half_edge.twin as usize];
+                let patches = [
+                    solid.surfaces[half_edge.face as usize].key.local,
+                    solid.surfaces[twin.face as usize].key.local,
+                ];
+                patches.contains(&1) && patches.contains(&3)
+            })
+            .expect("the positive-X/positive-Y edge exists")
+            .key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef { owner, edge }],
+                EdgeTreatment::Fillet,
+                20,
+            )))
+            .unwrap();
+
+        let mesh = super::combined_construction_mesh(&graph);
+        let Some(VertexAttributeValues::Float32x3(normals)) =
+            mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+        else {
+            panic!("mesh must have float3 normals")
+        };
+        let Some(VertexAttributeValues::Float32x4(tangents)) =
+            mesh.attribute(Mesh::ATTRIBUTE_TANGENT)
+        else {
+            panic!("mesh must have float4 tangents")
+        };
+        let fillet_tangents = normals
+            .iter()
+            .zip(tangents)
+            .filter_map(|(normal, tangent)| {
+                let normal = Vec3::from_array(*normal).abs();
+                (normal.x > 0.01 && normal.y > 0.01)
+                    .then_some(Vec3::from_array(tangent[..3].try_into().unwrap()).abs())
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!fillet_tangents.is_empty());
+        assert!(
+            fillet_tangents
+                .iter()
+                .all(|tangent| tangent.abs_diff_eq(fillet_tangents[0], 1.0e-6)),
+            "fillet changed texture projection through its profile: {fillet_tangents:?}"
+        );
+    }
+
+    #[test]
     fn simulation_publication_only_touches_materials_in_each_motion_family() {
         let mut graph = ConstructionGraph::new();
         let BuildOutcome::Spawned(anchored) = graph
@@ -14820,9 +16052,9 @@ mod interaction_tests {
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveLinkSpec, FaceKind, FaceOwner, FaceRef, GridRotation, MaterialAppearance,
-        MaterialColor, MaterialDye, MaterialFinish, PartId, PartSpec, PendingOperation,
-        RigidLinkSpec, STEP_METERS, ShapeRegion,
+        DriveLinkSpec, EdgeChainRef, EdgeTreatment, FaceKind, FaceOwner, FaceRef, GridRotation,
+        MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, PartId, PartSpec,
+        PendingOperation, RigidLinkSpec, STEP_METERS, ShapeRegion, SolidOwner, WeldSpec,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -14838,12 +16070,12 @@ mod interaction_tests {
         closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
         delete_box_parts, disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude,
         hammer_point_travel, handle_block_actions, handle_build_actions, handle_chroma_actions,
-        handle_tool_change, pipe_pointer_delta, pipe_turn_direction, raycast_construction,
-        raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
-        refresh_block_drag, refresh_region_drag, refresh_tool_preview,
+        handle_feature_shape_actions, handle_tool_change, pipe_pointer_delta, pipe_turn_direction,
+        raycast_construction, raycast_placed_bearing_discs, raycast_placed_bearings,
+        raycast_simulation, refresh_block_drag, refresh_region_drag, refresh_tool_preview,
         requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
-        rigid_body_parts, stage_part_deletion_preserving_bearings, tool_status_line,
-        wire_drag_step,
+        rigid_body_parts, stage_part_deletion_preserving_bearings, tangent_feature_chain,
+        tool_status_line, weld_connected_shape_owners, wire_drag_step,
     };
     use super::{RegionDrag, commit_region_drag, region_area};
     use crate::builder::{SmartGuide, block_sheet_specs};
@@ -14868,6 +16100,138 @@ mod interaction_tests {
         assert!(state.world_drag_active());
         assert!(state.cancel_delete_gesture());
         assert!(!state.world_drag_active());
+    }
+
+    #[test]
+    fn committing_a_feature_clears_its_edge_selection() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let target = EdgeChainRef {
+            owner,
+            edge: graph.evaluated_solid(owner).unwrap().logical_edges[0].key,
+        };
+        let hit = crate::shape_tool::FeatureEdgeHit {
+            target,
+            point: Vec3::ZERO,
+            tangent: Vec3::Z,
+            bisector: Vec3::X,
+            distance: 0.0,
+        };
+        let ray_origin = Vec3::Y;
+        let ray_direction = Vec3::NEG_Y;
+        let mut state = EditorState {
+            pointer_ray: Some((ray_origin, ray_direction)),
+            feature_focus: Some(owner),
+            selected_feature_edges: vec![target],
+            feature_drag: Some(crate::shape_tool::FeatureDrag::begin(
+                hit,
+                vec![target],
+                EdgeTreatment::Fillet,
+                None,
+                20,
+                ray_origin,
+                ray_direction,
+            )),
+            ..Default::default()
+        };
+        let mut actions = ButtonInput::default();
+        actions.press(GameAction::Primary);
+        actions.clear();
+        actions.release(GameAction::Primary);
+        let keys = ButtonInput::<KeyCode>::default();
+        let mut history = EditorHistory::default();
+        let player = PlayerState {
+            input_captured: true,
+            ..Default::default()
+        };
+
+        handle_feature_shape_actions(
+            &actions,
+            &keys,
+            &mut graph,
+            &mut state,
+            &mut history,
+            crate::shape_tool::ShapeSnap::feature_default(),
+            crate::shape_tool::ShapeEditMode::Fillet,
+            crate::ui::UiInput::default(),
+            &player,
+            &MaterialWheelState::default(),
+        );
+
+        assert_eq!(graph.shape_features().count(), 1);
+        assert!(state.selected_feature_edges.is_empty());
+        assert_eq!(state.selected_shape_feature, None);
+        assert_eq!(history.undo.len(), 1);
+    }
+
+    #[test]
+    fn tangent_edge_selection_traverses_one_weld_component() {
+        let mut graph = ConstructionGraph::new();
+        let mut parts = Vec::new();
+        for x in 0..4 {
+            let BuildOutcome::Spawned(part) = graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1; 3],
+                        BuildPose::new(IVec3::new(x, 0, 0), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            parts.push(part);
+        }
+        for pair in parts[..3].windows(2) {
+            graph
+                .apply(BuildCommand::Weld(WeldSpec {
+                    first: FaceRef::part(pair[0], FaceKind::PositiveX),
+                    second: FaceRef::part(pair[1], FaceKind::NegativeX),
+                }))
+                .unwrap();
+        }
+
+        let target_for = |part| {
+            let owner = SolidOwner::Part(part);
+            let solid = graph.evaluated_solid(owner).unwrap();
+            let edge = solid
+                .logical_edges
+                .iter()
+                .find(|logical| {
+                    let half_edge = solid.half_edges[logical.half_edges[0] as usize];
+                    let twin = solid.half_edges[half_edge.twin as usize];
+                    let patches = [
+                        solid.surfaces[half_edge.face as usize].key.local,
+                        solid.surfaces[twin.face as usize].key.local,
+                    ];
+                    patches.contains(&3) && patches.contains(&4)
+                })
+                .expect("the positive-Y/negative-Z edge exists")
+                .key;
+            EdgeChainRef { owner, edge }
+        };
+        let initial = target_for(parts[0]);
+
+        let connected = weld_connected_shape_owners(&graph, initial.owner);
+        assert_eq!(connected.len(), 3);
+        assert!(!connected.contains(&SolidOwner::Part(parts[3])));
+        assert_eq!(
+            tangent_feature_chain(&graph, initial),
+            parts[..3]
+                .iter()
+                .copied()
+                .map(target_for)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -17521,6 +18885,8 @@ mod joint_number_tests {
 
 #[cfg(test)]
 mod placement_snap_tests {
+    use bevy::math::DVec2;
+
     use super::*;
 
     #[test]
@@ -17559,6 +18925,79 @@ mod placement_snap_tests {
         assert!((settings.range - 5.0).abs() <= f32::EPSILON);
         settings.update(false, -100.0, false);
         assert!((settings.range - 0.25).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn free_range_adjustment_is_contextual_clamped_and_yields_to_object_snap() {
+        let mut settings = FreePlacementSettings::default();
+        settings.update(1.0, false, false);
+        assert!((settings.range - 5.0).abs() <= f32::EPSILON);
+        assert!(!settings.range_adjusted_this_frame);
+
+        settings.update(1.0, true, false);
+        assert!((settings.range - 5.25).abs() <= f32::EPSILON);
+        assert!(settings.range_adjusted_this_frame);
+
+        settings.update(1.0, true, true);
+        assert!((settings.range - 5.25).abs() <= f32::EPSILON);
+        assert!(!settings.range_adjusted_this_frame);
+
+        settings.update(1000.0, true, false);
+        assert!((settings.range - 30.0).abs() <= f32::EPSILON);
+        settings.update(-1000.0, true, false);
+        assert!((settings.range - 0.25).abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn free_fallback_is_garage_only_and_requires_an_eligible_tool() {
+        let origin = Vec3::new(1.0, 6.0, 2.0);
+        let direction = Vec3::NEG_Z;
+        assert_eq!(
+            free_placement_point_on_miss(
+                Tool::Block,
+                PlacementBounds::GarageBuild,
+                origin,
+                direction,
+                5.0,
+                false,
+            ),
+            Some(Vec3::new(1.0, 6.0, -3.0))
+        );
+        assert!(
+            free_placement_point_on_miss(
+                Tool::Bearing,
+                PlacementBounds::GarageBuild,
+                origin,
+                direction,
+                5.0,
+                false,
+            )
+            .is_none()
+        );
+        assert!(
+            free_placement_point_on_miss(
+                Tool::Block,
+                PlacementBounds::World {
+                    origin: DVec2::ZERO,
+                },
+                origin,
+                direction,
+                5.0,
+                false,
+            )
+            .is_none()
+        );
+        assert!(
+            free_placement_point_on_miss(
+                Tool::Block,
+                PlacementBounds::GarageBuild,
+                origin,
+                direction,
+                5.0,
+                true,
+            )
+            .is_none()
+        );
     }
 
     #[test]

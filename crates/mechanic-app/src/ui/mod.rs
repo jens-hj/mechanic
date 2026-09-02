@@ -162,6 +162,8 @@ pub(crate) struct Handles {
     help_open: MosaicState<bool>,
     /// Which tool is in hand.
     hotbar: MosaicState<SelectedTool>,
+    /// Shape mode, snap, and live feature amount shown in the hotbar heading.
+    shape_status: MosaicState<String>,
     /// Current shortcuts, used by hotbar labels and other guidance.
     controls: MosaicState<Controls>,
     /// Shared material used by both ordinary shape tools.
@@ -200,13 +202,14 @@ pub(crate) struct Handles {
 
 impl Handles {
     /// Builds a fresh, unmounted set of handles.
-    fn new() -> Self {
+    fn new(initial_worlds: worlds::Model) -> Self {
         let intents = Rc::new(RefCell::new(Vec::new()));
         Handles {
             viewport: MosaicState::new(MosaicSize::ZERO),
             help: MosaicState::new(help::Model::default()),
             help_open: MosaicState::new(false),
             hotbar: MosaicState::new(SelectedTool::default()),
+            shape_status: MosaicState::new("Vertex".to_owned()),
             controls: MosaicState::new(Controls::default()),
             material: MosaicState::new(ConstructionMaterial::Steel),
             chroma: MosaicState::new(MaterialAppearance::BAKED),
@@ -216,7 +219,7 @@ impl Handles {
             material_wheel: MosaicState::new(material_wheel::Model::default()),
             hovered: MosaicState::new(None),
             creations: MosaicState::new(creations::Model::default()),
-            worlds: MosaicState::new(worlds::Model::default()),
+            worlds: MosaicState::new(initial_worlds),
             markers: MosaicState::new(Vec::new()),
             dimensions: MosaicState::new(dimensions::Model::default()),
             pause: MosaicState::new(pause::Model::default()),
@@ -263,6 +266,7 @@ struct Pushed {
     material_wheel: material_wheel::Model,
     performance: performance::Model,
     block: control_block::PanelModel,
+    shape_status: String,
 }
 
 /// What the world is allowed to do with this frame's input.
@@ -310,7 +314,12 @@ pub(crate) fn mount(world: &mut World) {
     load_fonts(&ui);
     theme::install();
 
-    let handles = Handles::new();
+    // The world gate is the first thing a fresh session shows. Seed its
+    // retained state before mounting instead of waiting for the first Update
+    // push; otherwise Mosaic faithfully paints the default (closed) overlay
+    // for one frame and briefly exposes the Garage underneath.
+    let initial_worlds = worlds::capture(world.resource::<crate::world::WorldListState>());
+    let handles = Handles::new(initial_worlds.clone());
     let tree = {
         let _ambient = ui.enter();
         OverlayShell(
@@ -325,7 +334,10 @@ pub(crate) fn mount(world: &mut World) {
 
     world.insert_non_send(AppUi {
         handles,
-        pushed: Pushed::default(),
+        pushed: Pushed {
+            worlds: initial_worlds,
+            ..Pushed::default()
+        },
     });
     world.init_resource::<LocatedJoint>();
     world.init_resource::<UiInput>();
@@ -360,7 +372,7 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let performance_model = handles.performance;
     let performance_viewport = handles.viewport;
     view! {
-        stack #mechanic.overlay width:fill height:fill align:start justify:start {
+        stack #mechanic.overlay width:fill height:fill align:start justify:start exponent:1 {
             if !worlds_model.with(|model| model.open) {
                 MarkerOverlay handles:(markers_panel.clone())
             }
@@ -526,6 +538,9 @@ pub(crate) fn push(
     panel: Res<ControlPanelState>,
     menu: Res<CreationMenuState>,
     selection: Res<SelectedTool>,
+    shape_mode: Res<crate::shape_tool::ShapeEditMode>,
+    shape_snap: Res<crate::shape_tool::ShapeSnap>,
+    editor: Res<EditorState>,
     material: Res<SelectedMaterial>,
     chroma: Res<ChromaBrush>,
     terrain_material: Res<SelectedTerrainMaterial>,
@@ -540,6 +555,26 @@ pub(crate) fn push(
         return;
     };
     ui.handles.hotbar.set(*selection);
+    let live_feature = editor
+        .feature_drag
+        .as_ref()
+        .map(|drag| (drag.treatment, drag.amount_ticks))
+        .filter(|(_, amount)| *amount > 0);
+    let shape_status = live_feature.map_or_else(
+        || format!("{} · {}", shape_mode.label(), shape_snap.label()),
+        |(treatment, amount)| {
+            format!(
+                "{} · {} · {}",
+                shape_mode.label(),
+                crate::feature_amount_label(treatment, amount),
+                shape_snap.label()
+            )
+        },
+    );
+    if shape_status != ui.pushed.shape_status {
+        ui.handles.shape_status.set(shape_status.clone());
+        ui.pushed.shape_status = shape_status;
+    }
     ui.handles.controls.set(settings.controls().clone());
     ui.handles.material.set(material.0);
     if chroma.appearance != ui.pushed.chroma {
@@ -742,7 +777,7 @@ mod tests {
     use super::material_wheel;
     use super::testing::{Overlay, VIEWPORT, away};
     use super::theme::{BODY_FAMILY, DISPLAY_FAMILY, accent, metrics, palette, typeface};
-    use super::{creations, escape_is_consumed, load_fonts, theme};
+    use super::{creations, escape_is_consumed, load_fonts, theme, worlds};
     use crate::hotbar::{SelectedTool, Tool};
 
     #[test]
@@ -763,6 +798,16 @@ mod tests {
             typed(typeface.body, FontFamily::default),
             FontFamily::Named(BODY_FAMILY.into()),
         );
+    }
+
+    #[test]
+    fn handles_mount_with_the_world_gate_already_visible() {
+        let mut initial_worlds = worlds::Model::default();
+        initial_worlds.open = true;
+
+        let handles = super::Handles::new(initial_worlds);
+
+        assert!(handles.worlds.get_untracked().open);
     }
 
     /// The bug this guards against: a `stack` child fills its parent unless it
@@ -1074,12 +1119,73 @@ mod tests {
 
         let centre = Vector2::new(VIEWPORT.width / 2.0, VIEWPORT.height / 2.0);
         assert!(overlay.wants_pointer_at(centre));
+        let labels = overlay.labels();
+        assert!(labels.iter().any(|label| label == "MECHANIC // WORLD GATE"));
+        assert!(labels.iter().any(|label| label == "Generate world"));
         assert!(
             !overlay
                 .ink()
                 .into_iter()
                 .any(|rect| away(rect.center(), centre) < 1.0 && rect.size.width < 40.0),
             "the in-game reticle is not mounted behind the world picker",
+        );
+    }
+
+    #[test]
+    fn overlay_uses_diagonal_ui_corners_and_a_round_pipe_profile() {
+        let overlay = Overlay::mount();
+        overlay.handles.help_open.set(true);
+        overlay.handles.worlds.set(worlds::Model::default());
+        overlay.settle();
+
+        let rounded = overlay
+            .shapes()
+            .into_iter()
+            .filter(|shape| {
+                shape.radii.tl > 0.0
+                    || shape.radii.tr > 0.0
+                    || shape.radii.br > 0.0
+                    || shape.radii.bl > 0.0
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !rounded.is_empty(),
+            "the overlay has rounded surfaces to inspect"
+        );
+        let pipe_profiles = rounded
+            .iter()
+            .filter(|shape| {
+                let size = shape.rect.size;
+                ((size.width - 26.0).abs() < f32::EPSILON
+                    && (size.height - 30.0).abs() < f32::EPSILON
+                    && (shape.radii.tl - 13.0).abs() < f32::EPSILON)
+                    || ((size.width - 10.0).abs() < f32::EPSILON
+                        && (size.height - 16.0).abs() < f32::EPSILON
+                        && (shape.radii.tl - 5.0).abs() < f32::EPSILON)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pipe_profiles.len(), 2, "the pipe icon has two profiles");
+        assert!(pipe_profiles.iter().all(|shape| {
+            (shape.exponents.tl - 2.0).abs() < f32::EPSILON
+                && (shape.exponents.tr - 2.0).abs() < f32::EPSILON
+                && (shape.exponents.br - 2.0).abs() < f32::EPSILON
+                && (shape.exponents.bl - 2.0).abs() < f32::EPSILON
+        }));
+
+        let non_diagonal_ui = rounded
+            .iter()
+            .filter(|shape| !pipe_profiles.contains(shape))
+            .filter(|shape| {
+                (shape.exponents.tl - 1.0).abs() > f32::EPSILON
+                    || (shape.exponents.tr - 1.0).abs() > f32::EPSILON
+                    || (shape.exponents.br - 1.0).abs() > f32::EPSILON
+                    || (shape.exponents.bl - 1.0).abs() > f32::EPSILON
+            })
+            .map(|shape| (shape.rect, shape.radii, shape.exponents))
+            .collect::<Vec<_>>();
+        assert!(
+            non_diagonal_ui.is_empty(),
+            "UI shapes without diagonal corners: {non_diagonal_ui:?}"
         );
     }
 

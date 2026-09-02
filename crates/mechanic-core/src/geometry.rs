@@ -1,4 +1,4 @@
-use bevy_math::{EulerRot, IVec3, Quat, Vec3};
+use bevy_math::{EulerRot, IVec3, Quat, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -1387,6 +1387,9 @@ pub struct FaceRef {
     pub owner: FaceOwner,
     /// Oriented face on that owner.
     pub face: FaceKind,
+    /// Stable evaluated planar patch. `None` names the primitive face and lets
+    /// feature evaluation resolve its trimmed remainder.
+    pub patch: Option<crate::SurfacePatchKey>,
 }
 
 impl FaceRef {
@@ -1395,6 +1398,16 @@ impl FaceRef {
         Self {
             owner: FaceOwner::Part(part),
             face,
+            patch: None,
+        }
+    }
+
+    /// Creates a reference to one evaluated planar surface patch.
+    pub const fn patch(part: PartId, face: FaceKind, patch: crate::SurfacePatchKey) -> Self {
+        Self {
+            owner: FaceOwner::Part(part),
+            face,
+            patch: Some(patch),
         }
     }
 
@@ -1403,11 +1416,12 @@ impl FaceRef {
         Self {
             owner: FaceOwner::Ground,
             face: FaceKind::PositiveY,
+            patch: None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FaceGeometry {
     pub(crate) center: Vec3,
     pub(crate) normal: Vec3,
@@ -1416,7 +1430,7 @@ pub(crate) struct FaceGeometry {
     pub(crate) profile: FaceProfile,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum FaceProfile {
     Rectangle {
         half_u: f32,
@@ -1430,6 +1444,9 @@ pub(crate) enum FaceProfile {
         inner_radius: f32,
         outer_radius: f32,
         half_angle: f32,
+    },
+    Polygon {
+        vertices: Vec<Vec2>,
     },
     Ground,
 }

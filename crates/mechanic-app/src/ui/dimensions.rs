@@ -377,7 +377,7 @@ fn edge(dimensions: State<Model>, index: usize) -> Element {
     let text = move || found().map_or_else(String::new, |label| label.text);
     view! {
         stack width:0px height:0px nohit translate:(x:{ at().0 } y:{ at().1 }) {
-            OverlayBadge width:(Length::px(LABEL_W)) height:(Length::px(LABEL_H)) radius:14px {
+            OverlayBadge width:(Length::px(LABEL_W)) height:(Length::px(LABEL_H)) radius:14px exponent:1 {
                 text font-size:text-size.body font-weight:{ resolved_weight(text_weight.bold) }
                     text-wrap:none font-color:ink.fg { text() }
             }
@@ -416,7 +416,7 @@ fn summary(dimensions: State<Model>, viewport: State<Size>) -> Element {
         stack width:0px height:0px nohit translate:(x:{ at() } y:{ Length::px(SUMMARY_MARGIN) }) {
             PanelSurface elevated:false width:(Length::px(SUMMARY_W)) height:(Length::px(SUMMARY_H))
                 align:end justify:center gap:2px pad:(left:14px right:14px top:8px bottom:8px)
-                radius:(radius.chip) {
+                radius:(radius.chip) exponent:1 {
                 text font-size:text-size.hero font-weight:{ resolved_weight(text_weight.bold) }
                     text-wrap:none font-color:accent.key { counts() }
                 text font-size:text-size.body font-weight:{ resolved_weight(text_weight.bold) }

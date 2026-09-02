@@ -161,6 +161,7 @@ pub(crate) struct PlacementCandidate {
     pub(crate) spec: CuboidSpec,
     pub(crate) attached_face: FaceKind,
     pub(crate) anchor: Option<Vec3>,
+    pub(crate) support: PlacementSupport,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -168,6 +169,24 @@ pub(crate) struct CylinderPlacementCandidate {
     pub(crate) spec: CylinderSpec,
     pub(crate) attached_face: FaceKind,
     pub(crate) anchor: Option<Vec3>,
+    pub(crate) support: PlacementSupport,
+}
+
+/// What makes a placement candidate available at its current position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlacementSupport {
+    Surface(FaceOwner),
+    Bearing,
+    Free,
+}
+
+impl PlacementSupport {
+    const fn auto_weld_source(self) -> Option<FaceOwner> {
+        match self {
+            Self::Surface(source) => Some(source),
+            Self::Bearing | Self::Free => None,
+        }
+    }
 }
 
 const SNAP_BIN_METERS: f32 = 1.0;
@@ -325,6 +344,7 @@ pub(crate) fn smart_snap_cuboid_candidate(
             spec,
             attached_face: gridded.attached_face,
             anchor: overlap_center(support, candidate_face),
+            support: gridded.support,
         };
         if valid(candidate) {
             let center = candidate.spec.pose.translation();
@@ -387,12 +407,102 @@ pub(crate) fn smart_snap_cylinder_candidate(
             spec,
             attached_face: gridded.attached_face,
             anchor: supporting_face_overlap(graph, support, candidate_face),
+            support: gridded.support,
         };
         if valid(candidate) {
             let center = candidate.spec.pose.translation();
             let rendered =
                 render_smart_guides(axis_guides, &choices, tangent_axes, normal_axis, center);
             return (candidate, rendered);
+        }
+    }
+    (gridded, Vec::new())
+}
+
+/// Three-axis object snapping for candidates that are not constrained to a face.
+pub(crate) fn smart_snap_free_cuboid_candidate(
+    index: &PlacementSnapIndex,
+    gridded: PlacementCandidate,
+    grid: PlacementGrid,
+    range: f32,
+    mut valid: impl FnMut(PlacementCandidate) -> bool,
+) -> (PlacementCandidate, Vec<SmartGuide>) {
+    let (minimum, maximum) = cuboid_world_bounds(gridded.spec);
+    let cell_margin = smart_snap_cell_margin(grid);
+    let targets = index.nearby(minimum, maximum, range + cell_margin);
+    let choices = [0, 1, 2].map(|axis| {
+        axis_guides(
+            axis,
+            minimum,
+            maximum,
+            &targets,
+            SMART_SNAP_CAPTURE_METERS + cell_margin,
+        )
+    });
+    for selected in guide_combinations_3(&choices) {
+        let mut ticks = gridded.spec.pose.translation_position_ticks();
+        for (axis, guide) in selected.iter().enumerate() {
+            if let Some(guide) = guide {
+                ticks[axis] += rounded_position_tick(guide.delta);
+            }
+        }
+        let spec = CuboidSpec::new(
+            gridded.spec.dimensions.map(GridDimension::units),
+            BuildPose::from_position_ticks(ticks, gridded.spec.pose.rotation),
+        )
+        .expect("an aligned free candidate remains dimensionally valid")
+        .with_material(gridded.spec.material)
+        .with_appearance(gridded.spec.appearance);
+        let candidate = PlacementCandidate { spec, ..gridded };
+        if valid(candidate) {
+            return (
+                candidate,
+                render_free_smart_guides(selected, &choices, spec.pose.translation()),
+            );
+        }
+    }
+    (gridded, Vec::new())
+}
+
+/// Cylinder counterpart of [`smart_snap_free_cuboid_candidate`].
+pub(crate) fn smart_snap_free_cylinder_candidate(
+    index: &PlacementSnapIndex,
+    gridded: CylinderPlacementCandidate,
+    grid: PlacementGrid,
+    range: f32,
+    mut valid: impl FnMut(CylinderPlacementCandidate) -> bool,
+) -> (CylinderPlacementCandidate, Vec<SmartGuide>) {
+    let (minimum, maximum) = part_world_bounds(PartSpec::Cylinder(gridded.spec));
+    let cell_margin = smart_snap_cell_margin(grid);
+    let targets = index.nearby(minimum, maximum, range + cell_margin);
+    let choices = [0, 1, 2].map(|axis| {
+        axis_guides(
+            axis,
+            minimum,
+            maximum,
+            &targets,
+            SMART_SNAP_CAPTURE_METERS + cell_margin,
+        )
+    });
+    for selected in guide_combinations_3(&choices) {
+        let mut ticks = gridded.spec.pose.translation_position_ticks();
+        for (axis, guide) in selected.iter().enumerate() {
+            if let Some(guide) = guide {
+                ticks[axis] += rounded_position_tick(guide.delta);
+            }
+        }
+        let spec = CylinderSpec::new(
+            gridded.spec.dimensions,
+            BuildPose::from_position_ticks(ticks, gridded.spec.pose.rotation),
+        )
+        .with_material(gridded.spec.material)
+        .with_appearance(gridded.spec.appearance);
+        let candidate = CylinderPlacementCandidate { spec, ..gridded };
+        if valid(candidate) {
+            return (
+                candidate,
+                render_free_smart_guides(selected, &choices, spec.pose.translation()),
+            );
         }
     }
     (gridded, Vec::new())
@@ -732,6 +842,90 @@ fn guide_combinations(choices: &[Vec<AxisGuide>; 2]) -> Vec<[Option<AxisGuide>; 
         .collect()
 }
 
+fn guide_combinations_3(choices: &[Vec<AxisGuide>; 3]) -> Vec<[Option<AxisGuide>; 3]> {
+    let mut combinations = Vec::new();
+    for x in choices[0].iter().copied().map(Some).chain([None]) {
+        for y in choices[1].iter().copied().map(Some).chain([None]) {
+            for z in choices[2].iter().copied().map(Some).chain([None]) {
+                if x.is_none() && y.is_none() && z.is_none() {
+                    continue;
+                }
+                let guides = [x, y, z];
+                let displacement = guides
+                    .iter()
+                    .flatten()
+                    .map(|guide| guide.delta * guide.delta)
+                    .sum::<f32>()
+                    .sqrt();
+                let center_count = guides
+                    .iter()
+                    .flatten()
+                    .filter(|guide| guide.kind == GuideKind::Center)
+                    .count();
+                let identities = guides.map(|guide| {
+                    guide.map_or((u32::MAX, u32::MAX), |guide| {
+                        (guide.part.index(), guide.part.generation())
+                    })
+                });
+                combinations.push((guides, displacement, center_count, identities));
+            }
+        }
+    }
+    combinations.sort_by(|left, right| {
+        let left_count = left.0.iter().flatten().count();
+        let right_count = right.0.iter().flatten().count();
+        right_count
+            .cmp(&left_count)
+            .then_with(|| left.1.total_cmp(&right.1))
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    combinations
+        .into_iter()
+        .map(|(guides, _, _, _)| guides)
+        .collect()
+}
+
+fn render_free_smart_guides(
+    selected: [Option<AxisGuide>; 3],
+    choices: &[Vec<AxisGuide>; 3],
+    center: Vec3,
+) -> Vec<SmartGuide> {
+    let mut rendered = Vec::new();
+    for (axis, selected) in selected.iter().enumerate() {
+        let Some(selected) = selected else {
+            continue;
+        };
+        for guide in &choices[axis] {
+            if guide.kind != selected.kind
+                || (guide.delta - selected.delta).abs() > POSITION_TICK_METERS * 0.5
+                || (guide.coordinate - selected.coordinate).abs() > POSITION_TICK_METERS * 0.5
+            {
+                continue;
+            }
+            let mut from = center;
+            from[axis] = guide.coordinate;
+            let mut to = guide.target_center;
+            to[axis] = guide.coordinate;
+            let delta = (to - from).abs();
+            let varying_axes = [delta.x, delta.y, delta.z]
+                .into_iter()
+                .filter(|component| *component > POSITION_TICK_METERS * 0.5)
+                .count();
+            if varying_axes != 1 {
+                continue;
+            }
+            rendered.push(SmartGuide {
+                axis,
+                coordinate: guide.coordinate,
+                from,
+                to,
+            });
+        }
+    }
+    rendered
+}
+
 fn render_smart_guides(
     selected: [Option<AxisGuide>; 2],
     choices: &[Vec<AxisGuide>; 2],
@@ -901,6 +1095,7 @@ pub(crate) enum PipeRunAttachment<'a> {
     AutoWeld {
         source: FaceOwner,
     },
+    Free,
     Bearing {
         source: FaceRef,
         anchor: Vec3,
@@ -951,19 +1146,6 @@ pub(crate) fn raycast_construction(
     raycast_construction_with_ground(graph, origin, direction, raycast_ground(origin, direction))
 }
 
-pub(crate) fn raycast_construction_with_scaffold(
-    graph: &ConstructionGraph,
-    origin: Vec3,
-    direction: Vec3,
-) -> Option<SurfaceHit> {
-    raycast_construction_with_ground(
-        graph,
-        origin,
-        direction,
-        raycast_horizontal_surface(origin, direction, crate::garage::BUILD_MIN_Y),
-    )
-}
-
 pub(crate) fn raycast_construction_with_ground(
     graph: &ConstructionGraph,
     origin: Vec3,
@@ -974,16 +1156,25 @@ pub(crate) fn raycast_construction_with_ground(
         return None;
     }
     let direction = direction.normalize();
-    graph
-        .parts()
-        // A part inside a region hands its surface to that region, so it must
-        // not also be hit as a plain box.
-        .filter_map(|(part, spec)| {
-            if let Some(id) = graph.region_of(part) {
+    raycast_sources(graph)
+        .filter_map(|(part, spec, region)| {
+            if let Some(id) = region {
                 let region = graph.region(id)?;
+                if graph.owner_has_shape_features(mechanic_core::SolidOwner::Region(id)) {
+                    let solid = graph
+                        .evaluated_solid(mechanic_core::SolidOwner::Region(id))
+                        .ok()?;
+                    return raycast_evaluated_solid(origin, direction, part, &solid);
+                }
                 return raycast_region(origin, direction, part, region);
             }
-            raycast_part(origin, direction, part, *spec)
+            if graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part)) {
+                let solid = graph
+                    .evaluated_solid(mechanic_core::SolidOwner::Part(part))
+                    .ok()?;
+                return raycast_evaluated_solid(origin, direction, part, &solid);
+            }
+            raycast_part(origin, direction, part, spec)
         })
         .chain(ground)
         .filter(|hit| hit.distance >= 0.0 && hit.distance.is_finite())
@@ -992,6 +1183,24 @@ pub(crate) fn raycast_construction_with_ground(
                 .partial_cmp(&right.distance)
                 .unwrap_or(Ordering::Equal)
         })
+}
+
+/// One representative part for each region, plus every standalone part.
+///
+/// A region owns one shared surface even when hundreds of blocks fill it. The
+/// representative part only supplies the legacy [`FaceOwner::Part`] returned
+/// by picking; the region geometry itself must be tested exactly once.
+fn raycast_sources(
+    graph: &ConstructionGraph,
+) -> impl Iterator<Item = (PartId, PartSpec, Option<mechanic_core::RegionId>)> + '_ {
+    let mut seen_regions = HashSet::new();
+    graph.parts().filter_map(move |(part, spec)| {
+        let region = graph.region_of(part);
+        if region.is_some_and(|region| !seen_regions.insert(region)) {
+            return None;
+        }
+        Some((part, *spec, region))
+    })
 }
 
 pub(crate) fn raycast_construction_for_annulus(
@@ -1009,24 +1218,6 @@ pub(crate) fn raycast_construction_for_annulus(
         inner_diameter,
         outer_diameter,
         ground,
-    )
-}
-
-pub(crate) fn raycast_construction_for_annulus_with_scaffold(
-    graph: &ConstructionGraph,
-    origin: Vec3,
-    direction: Vec3,
-    inner_diameter: f32,
-    outer_diameter: f32,
-) -> Option<SurfaceHit> {
-    let scaffold = raycast_horizontal_surface(origin, direction, crate::garage::BUILD_MIN_Y);
-    raycast_construction_for_annulus_with_ground(
-        graph,
-        origin,
-        direction,
-        inner_diameter,
-        outer_diameter,
-        scaffold,
     )
 }
 
@@ -1220,6 +1411,7 @@ pub(crate) fn oriented_cuboid_candidate_from_hit_with_grid(
         spec,
         attached_face,
         anchor,
+        support: PlacementSupport::Surface(hit.face.owner),
     }
 }
 
@@ -1230,6 +1422,66 @@ fn oriented_grid_dimensions(dimensions: [u8; 3], rotation: GridRotation) -> [u8;
         world_dimensions[world_axis] = dimensions[local_axis];
     }
     world_dimensions
+}
+
+/// Builds a cuboid candidate around a point in empty Garage space.
+pub(crate) fn free_cuboid_candidate(
+    point: Vec3,
+    view_direction: Vec3,
+    dimensions: [u8; 3],
+    rotation: GridRotation,
+    grid: PlacementGrid,
+    bounds: PlacementBounds,
+) -> PlacementCandidate {
+    let world_dimensions = oriented_grid_dimensions(dimensions, rotation);
+    let center_ticks = snap_global_center_ticks(
+        snap_world_to_position_ticks(point),
+        world_dimensions,
+        grid,
+        bounds,
+    );
+    let spec = CuboidSpec::new(
+        dimensions,
+        BuildPose::from_position_ticks(center_ticks, rotation),
+    )
+    .expect("authored placement dimensions are valid");
+    let view_normal = cardinal_direction(-view_direction);
+    PlacementCandidate {
+        spec,
+        attached_face: face_for_normal(rotation.quaternion().inverse() * -view_normal),
+        anchor: None,
+        support: PlacementSupport::Free,
+    }
+}
+
+/// Builds a cylinder candidate around a point with its axis facing the view.
+pub(crate) fn free_cylinder_candidate(
+    point: Vec3,
+    view_direction: Vec3,
+    dimensions: CylinderDimensions,
+    grid: PlacementGrid,
+    bounds: PlacementBounds,
+) -> CylinderPlacementCandidate {
+    let axis = cardinal_direction(-view_direction);
+    let axial_axis = cardinal_axis(axis).0;
+    let mut approximate_dimensions = [1; 3];
+    approximate_dimensions[axial_axis] = dimensions.axial_length_units();
+    let center_ticks = snap_global_center_ticks(
+        snap_world_to_position_ticks(point),
+        approximate_dimensions,
+        grid,
+        bounds,
+    );
+    let spec = CylinderSpec::new(
+        dimensions,
+        BuildPose::from_position_ticks(center_ticks, rotation_y_to_normal(axis)),
+    );
+    CylinderPlacementCandidate {
+        spec,
+        attached_face: FaceKind::NegativeY,
+        anchor: None,
+        support: PlacementSupport::Free,
+    }
 }
 
 #[cfg(test)]
@@ -1280,6 +1532,7 @@ pub(crate) fn cylinder_candidate_from_hit_with_grid(
         spec,
         attached_face,
         anchor: supporting_face_overlap(graph, support, candidate_face),
+        support: PlacementSupport::Surface(hit.face.owner),
     })
 }
 
@@ -1330,10 +1583,9 @@ pub(crate) fn stage_block_batch(
     stage_connected_block_batch(graph, start, specs, None, None, PlacementBounds::Garage)
 }
 
-pub(crate) fn stage_controller_from_source_in_bounds(
+pub(crate) fn stage_controller_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
-    source: FaceOwner,
     bounds: PlacementBounds,
 ) -> Result<ConstructionGraph, PlacementError> {
     stage_connected_part_batch(
@@ -1341,7 +1593,7 @@ pub(crate) fn stage_controller_from_source_in_bounds(
         start,
         &[start.spec],
         None,
-        Some(source),
+        start.support.auto_weld_source(),
         FixedPartSpawn::Controller,
         bounds,
     )
@@ -1358,6 +1610,7 @@ pub(crate) fn stage_engine_from_source(
     stage_engine_from_source_in_bounds(graph, start, source, kind, PlacementBounds::Garage)
 }
 
+#[cfg(test)]
 pub(crate) fn stage_engine_from_source_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
@@ -1371,6 +1624,23 @@ pub(crate) fn stage_engine_from_source_in_bounds(
         &[start.spec],
         None,
         Some(source),
+        FixedPartSpawn::Engine(kind),
+        bounds,
+    )
+}
+
+pub(crate) fn stage_engine_in_bounds(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    kind: EngineKind,
+    bounds: PlacementBounds,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_part_batch(
+        graph,
+        start,
+        &[start.spec],
+        None,
+        start.support.auto_weld_source(),
         FixedPartSpawn::Engine(kind),
         bounds,
     )
@@ -1406,6 +1676,7 @@ pub(crate) fn transmission_candidate_from_hit_in_bounds(
             spec: spec.cuboid(),
             attached_face: FaceKind::NegativeZ,
             anchor: Some(hit.point),
+            support: PlacementSupport::Surface(hit.face.owner),
         },
     ))
 }
@@ -1426,10 +1697,9 @@ pub(crate) fn stage_transmission(
     Ok(staged.finish())
 }
 
-pub(crate) fn stage_servo_from_source_in_bounds(
+pub(crate) fn stage_servo_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
-    source: FaceOwner,
     bounds: PlacementBounds,
 ) -> Result<ConstructionGraph, PlacementError> {
     stage_connected_part_batch(
@@ -1437,16 +1707,15 @@ pub(crate) fn stage_servo_from_source_in_bounds(
         start,
         &[start.spec],
         None,
-        Some(source),
+        start.support.auto_weld_source(),
         FixedPartSpawn::Servo,
         bounds,
     )
 }
 
-pub(crate) fn stage_seat_from_source_in_bounds(
+pub(crate) fn stage_seat_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
-    source: FaceOwner,
     bounds: PlacementBounds,
 ) -> Result<ConstructionGraph, PlacementError> {
     stage_connected_part_batch(
@@ -1454,16 +1723,15 @@ pub(crate) fn stage_seat_from_source_in_bounds(
         start,
         &[start.spec],
         None,
-        Some(source),
+        start.support.auto_weld_source(),
         FixedPartSpawn::Seat,
         bounds,
     )
 }
 
-pub(crate) fn stage_input_from_source_in_bounds(
+pub(crate) fn stage_input_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
-    source: FaceOwner,
     bounds: PlacementBounds,
 ) -> Result<ConstructionGraph, PlacementError> {
     stage_connected_part_batch(
@@ -1471,16 +1739,15 @@ pub(crate) fn stage_input_from_source_in_bounds(
         start,
         &[start.spec],
         None,
-        Some(source),
+        start.support.auto_weld_source(),
         FixedPartSpawn::Input,
         bounds,
     )
 }
 
-pub(crate) fn stage_dimension_link_from_source_in_bounds(
+pub(crate) fn stage_dimension_link_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
-    source: FaceOwner,
     id: DimensionLinkId,
     bounds: PlacementBounds,
 ) -> Result<ConstructionGraph, PlacementError> {
@@ -1489,7 +1756,7 @@ pub(crate) fn stage_dimension_link_from_source_in_bounds(
         start,
         &[start.spec],
         None,
-        Some(source),
+        start.support.auto_weld_source(),
         FixedPartSpawn::DimensionLink(id),
         bounds,
     )
@@ -1505,6 +1772,7 @@ pub(crate) fn stage_block_batch_from_source(
     stage_block_batch_from_source_in_bounds(graph, start, specs, source, PlacementBounds::Garage)
 }
 
+#[cfg(test)]
 pub(crate) fn stage_block_batch_from_source_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
@@ -1513,6 +1781,22 @@ pub(crate) fn stage_block_batch_from_source_in_bounds(
     bounds: PlacementBounds,
 ) -> Result<ConstructionGraph, PlacementError> {
     stage_connected_block_batch(graph, start, specs, None, Some(source), bounds)
+}
+
+pub(crate) fn stage_block_batch_in_bounds(
+    graph: &ConstructionGraph,
+    start: PlacementCandidate,
+    specs: &[CuboidSpec],
+    bounds: PlacementBounds,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_block_batch(
+        graph,
+        start,
+        specs,
+        None,
+        start.support.auto_weld_source(),
+        bounds,
+    )
 }
 
 #[cfg(test)]
@@ -1563,7 +1847,7 @@ pub(crate) fn validate_cylinder_candidate_in_bounds(
     candidate: CylinderPlacementCandidate,
     bounds: PlacementBounds,
 ) -> Result<(), PlacementError> {
-    if candidate.anchor.is_none() {
+    if candidate.support != PlacementSupport::Free && candidate.anchor.is_none() {
         return Err(PlacementError::NoFaceOverlap);
     }
     validate_part_in_bounds(graph, PartSpec::Cylinder(candidate.spec), bounds)
@@ -1896,7 +2180,7 @@ pub(crate) fn stage_pipe_run_in_bounds(
     let existing_parts = graph.parts().map(|(part, _)| part).collect::<Vec<_>>();
     let weld_scope = match attachment {
         PipeRunAttachment::AutoWeld { source } => bearing_connected_weld_scope(graph, source),
-        PipeRunAttachment::Bearing { .. } => None,
+        PipeRunAttachment::Free | PipeRunAttachment::Bearing { .. } => None,
     };
     let mut staged = graph.begin_edit();
     let mut spawned = Vec::with_capacity(pieces.len());
@@ -1943,7 +2227,7 @@ pub(crate) fn stage_pipe_run_in_bounds(
                 })
             }));
         }
-        PipeRunAttachment::AutoWeld { .. } => {
+        PipeRunAttachment::AutoWeld { .. } | PipeRunAttachment::Free => {
             for &part in &spawned {
                 if weld_scope.is_none()
                     && bounds == PlacementBounds::Garage
@@ -2540,14 +2824,12 @@ pub(crate) fn bearing_anchor_from_hit_with_grid(
     let face =
         try_face_geometry_from_ref(hit.face, Some(graph)).ok_or(PlacementError::CurvedSurface)?;
     let (normal_axis, _) = cardinal_axis(face.normal);
-    let origin_ticks = placement_origin_ticks(bounds);
-    let mut anchor_ticks = snap_world_to_position_ticks(hit.point) + origin_ticks;
-    for axis in 0..3 {
-        if axis != normal_axis {
-            anchor_ticks[axis] = quantise_with_phase(anchor_ticks[axis], grid.step_ticks(), 0);
-        }
-    }
-    anchor_ticks -= origin_ticks;
+    let anchor_ticks = snap_global_center_ticks(
+        snap_world_to_position_ticks(hit.point),
+        [BLOCK_SIZE_UNITS; 3],
+        grid,
+        bounds,
+    );
     let mut anchor = anchor_ticks.as_vec3() * POSITION_TICK_METERS;
     anchor[normal_axis] = face.center[normal_axis];
     let offset = anchor - face.center;
@@ -2906,7 +3188,7 @@ fn validate_candidate_in_bounds(
     bounds: PlacementBounds,
 ) -> Result<(), PlacementError> {
     validate_spec_in_bounds(graph, candidate.spec, bounds)?;
-    if candidate.anchor.is_none() {
+    if candidate.support != PlacementSupport::Free && candidate.anchor.is_none() {
         return Err(PlacementError::NoFaceOverlap);
     }
     Ok(())
@@ -3104,6 +3386,31 @@ pub(crate) fn raycast_region(
         }
     }
     best
+}
+
+fn raycast_evaluated_solid(
+    origin: Vec3,
+    direction: Vec3,
+    part: PartId,
+    solid: &mechanic_core::EvaluatedSolid,
+) -> Option<SurfaceHit> {
+    solid
+        .cells
+        .iter()
+        .filter_map(|cell| {
+            raycast_convex_piece(origin, direction, &cell.piece).map(|(distance, point, normal)| {
+                SurfaceHit {
+                    distance,
+                    point,
+                    face: FaceRef::part(part, face_for_normal(normal)),
+                }
+            })
+        })
+        .min_by(|left, right| {
+            left.distance
+                .partial_cmp(&right.distance)
+                .unwrap_or(Ordering::Equal)
+        })
 }
 
 /// Slab-clips a ray against a convex piece, returning where it enters.
@@ -3912,6 +4219,13 @@ fn cardinal_axis(normal: Vec3) -> (usize, i32) {
     (axis, if normal[axis] >= 0.0 { 1 } else { -1 })
 }
 
+fn cardinal_direction(direction: Vec3) -> Vec3 {
+    let (axis, sign) = cardinal_axis(direction);
+    let mut cardinal = Vec3::ZERO;
+    cardinal[axis] = if sign > 0 { 1.0 } else { -1.0 };
+    cardinal
+}
+
 fn face_for_normal(normal: Vec3) -> FaceKind {
     let (axis, sign) = cardinal_axis(normal);
     match (axis, sign) {
@@ -3936,25 +4250,30 @@ mod tests {
     };
     use mechanic_core::{
         BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, EngineKind, EngineSpec,
-        FaceKind, FaceOwner, FaceRef, GridRotation, POSITION_TICKS_PER_GRID_UNIT, PartId, PartSpec,
-        PendingOperation, RigidLinkSpec, WeldSpec,
+        ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, DimensionLinkId,
+        EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
+        POSITION_TICKS_PER_GRID_UNIT, PartId, PartSpec, PendingOperation, RigidLinkSpec, WeldSpec,
     };
 
     use super::{
-        BLOCK_SIZE_METERS, PipeRunAttachment, PlacementBounds, PlacementCandidate, PlacementError,
-        PlacementGrid, PlacementPlane, PlacementSnapIndex, SurfaceHit, bearing_anchor_from_hit,
-        bearing_attachment_candidate, bearing_overlaps_candidate, bearing_ring_overlaps_face,
-        bearing_support_face, begin_weld, block_box_specs, block_sheet_specs, block_span_from_rays,
-        candidate_from_hit, cuboid_candidate_from_hit, cylinder_candidate_from_hit,
-        face_geometry_from_ref, face_is_flat, locked_bearings, newly_locked_bearings,
-        oriented_cuboid_candidate_from_hit, oriented_cuboid_candidate_from_hit_with_grid,
-        pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
-        raycast_construction_with_ground, raycast_placement_plane_point, rigid_body_parts,
-        smart_snap_block_span, smart_snap_cuboid_candidate, stage_bearing_attachment,
-        stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source,
-        stage_block_batch_from_source_in_bounds, stage_cuboid, stage_cylinder_from_source,
-        stage_engine_from_source, stage_pipe_run, stage_transmission, stage_weld_objects,
+        AxisGuide, BLOCK_SIZE_METERS, GuideKind, PipeRunAttachment, PipeRunPiece, PlacementBounds,
+        PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane, PlacementSnapIndex,
+        PlacementSupport, SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate,
+        bearing_overlaps_candidate, bearing_ring_overlaps_face, bearing_support_face, begin_weld,
+        block_box_specs, block_sheet_specs, block_span_from_rays, candidate_from_hit,
+        cuboid_candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref,
+        face_is_flat, free_cuboid_candidate, free_cylinder_candidate, locked_bearings,
+        newly_locked_bearings, oriented_cuboid_candidate_from_hit,
+        oriented_cuboid_candidate_from_hit_with_grid, pipe_run_pieces, raycast_construction,
+        raycast_construction_for_annulus, raycast_construction_with_ground,
+        raycast_placement_plane_point, raycast_sources, render_free_smart_guides, rigid_body_parts,
+        smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_free_cuboid_candidate,
+        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
+        stage_block_batch_from_source, stage_block_batch_from_source_in_bounds,
+        stage_block_batch_in_bounds, stage_controller_in_bounds, stage_cuboid,
+        stage_cylinder_from_source, stage_dimension_link_in_bounds, stage_engine_from_source,
+        stage_engine_in_bounds, stage_input_in_bounds, stage_pipe_run, stage_pipe_run_in_bounds,
+        stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission, stage_weld_objects,
         transmission_candidate_from_hit, validate_block_batch_in_bounds, validate_part,
     };
 
@@ -4100,6 +4419,93 @@ mod tests {
         );
         assert!(rejected_guides.is_empty());
         assert_eq!(fallback.spec.pose, gridded.spec.pose);
+    }
+
+    #[test]
+    fn free_smart_snap_can_align_all_three_axes() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::from_position_ticks(IVec3::new(6, 56, 406), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&graph);
+        let spec = CuboidSpec::new(
+            [1; 3],
+            BuildPose::from_position_ticks(IVec3::new(0, 50, 300), GridRotation::default()),
+        )
+        .unwrap();
+        let gridded = PlacementCandidate {
+            spec,
+            attached_face: FaceKind::NegativeY,
+            anchor: None,
+            support: PlacementSupport::Free,
+        };
+
+        let (snapped, guides) = smart_snap_free_cuboid_candidate(
+            &index,
+            gridded,
+            PlacementGrid::Centimetres25,
+            1.0,
+            |_| true,
+        );
+
+        assert_eq!(
+            snapped.spec.pose.translation_position_ticks(),
+            IVec3::new(6, 56, 306)
+        );
+        assert_eq!(guides.len(), 2);
+        assert!(guides.iter().all(|guide| {
+            let delta = (guide.to - guide.from).abs();
+            [delta.x, delta.y, delta.z]
+                .into_iter()
+                .filter(|component| *component > f32::EPSILON)
+                .count()
+                == 1
+        }));
+    }
+
+    #[test]
+    fn free_smart_snap_guides_never_connect_centers_diagonally() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawn_cube(&mut graph, IVec3::ZERO, 1);
+        let diagonal = AxisGuide {
+            delta: 0.01,
+            coordinate: 1.0,
+            kind: GuideKind::Center,
+            part,
+            target_center: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let choices = [vec![diagonal], Vec::new(), Vec::new()];
+
+        assert!(
+            render_free_smart_guides(
+                [Some(diagonal), None, None],
+                &choices,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .is_empty()
+        );
+
+        let cardinal = AxisGuide {
+            target_center: Vec3::new(1.0, 0.0, 3.0),
+            ..diagonal
+        };
+        let choices = [vec![cardinal], Vec::new(), Vec::new()];
+        let guides = render_free_smart_guides(
+            [Some(cardinal), None, None],
+            &choices,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+
+        assert_eq!(guides.len(), 1);
+        assert_eq!(guides[0].from, Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(guides[0].to, Vec3::new(1.0, 0.0, 3.0));
     }
 
     #[test]
@@ -4477,6 +4883,7 @@ mod tests {
             spec: cube,
             attached_face: FaceKind::NegativeY,
             anchor: Some(Vec3::ZERO),
+            support: PlacementSupport::Surface(FaceOwner::Ground),
         };
         assert!(stage_cuboid(&graph, candidate).is_ok());
     }
@@ -4501,6 +4908,7 @@ mod tests {
             spec: cube,
             attached_face: FaceKind::NegativeY,
             anchor: Some(Vec3::ZERO),
+            support: PlacementSupport::Surface(FaceOwner::Ground),
         };
 
         assert!(stage_cuboid(&graph, candidate).is_ok());
@@ -4956,25 +5364,242 @@ mod tests {
     }
 
     #[test]
-    fn garage_scaffold_support_does_not_create_a_structural_ground_weld() {
+    fn isolated_free_block_remains_unwelded() {
         let graph = ConstructionGraph::new();
-        let scaffold_hit = SurfaceHit {
-            distance: 4.0,
-            point: Vec3::new(0.0, crate::garage::BUILD_MIN_Y, 0.0),
-            face: FaceRef::ground(),
-        };
-        let candidate = candidate_from_hit(&graph, scaffold_hit);
-        let staged = stage_block_batch_from_source_in_bounds(
+        let candidate = free_cuboid_candidate(
+            Vec3::new(0.0, crate::garage::BUILD_MIN_Y + 1.0, 0.0),
+            Vec3::NEG_Z,
+            [1; 3],
+            GridRotation::default(),
+            PlacementGrid::Centimetres25,
+            PlacementBounds::GarageBuild,
+        );
+        let staged = stage_block_batch_in_bounds(
             &graph,
             candidate,
             &[candidate.spec],
-            FaceOwner::Ground,
             PlacementBounds::GarageBuild,
         )
         .unwrap();
 
         assert_eq!(staged.weld_count(), 0);
         assert!(!staged.compile().unwrap().compounds[0].is_static);
+    }
+
+    #[test]
+    fn free_candidates_snap_globally_and_face_the_view_cardinally() {
+        let cuboid = free_cuboid_candidate(
+            Vec3::new(0.18, 6.18, -0.18),
+            Vec3::new(0.9, 0.1, 0.2),
+            [1, 2, 3],
+            GridRotation::new(0, 1, 0),
+            PlacementGrid::Centimetres25,
+            PlacementBounds::GarageBuild,
+        );
+        let ticks = cuboid.spec.pose.translation_position_ticks();
+        let world_dimensions =
+            super::oriented_grid_dimensions([1, 2, 3], cuboid.spec.pose.rotation);
+        assert_eq!(
+            ticks,
+            super::snap_global_center_ticks(
+                super::snap_world_to_position_ticks(Vec3::new(0.18, 6.18, -0.18)),
+                world_dimensions,
+                PlacementGrid::Centimetres25,
+                PlacementBounds::GarageBuild,
+            )
+        );
+        assert_eq!(cuboid.spec.pose.rotation, GridRotation::new(0, 1, 0));
+        assert_eq!(cuboid.support, PlacementSupport::Free);
+
+        let cylinder = free_cylinder_candidate(
+            Vec3::new(0.18, 6.18, -0.18),
+            Vec3::new(0.9, 0.1, 0.2),
+            CylinderDimensions::default(),
+            PlacementGrid::Centimetres25,
+            PlacementBounds::GarageBuild,
+        );
+        let axis = cylinder.spec.pose.rotation.quaternion() * Vec3::Y;
+        assert!(axis.abs_diff_eq(Vec3::NEG_X, 1.0e-5), "axis was {axis:?}");
+        assert_eq!(cylinder.support, PlacementSupport::Free);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One table exercises every standalone spawn path.
+    fn every_standalone_tool_stages_an_isolated_free_part() {
+        let point = Vec3::new(0.0, 7.5, 0.0);
+        let direction = Vec3::NEG_Z;
+        let bounds = PlacementBounds::GarageBuild;
+        let grid = PlacementGrid::Centimetres25;
+        let rotation = GridRotation::default();
+        let cases = [
+            (
+                free_cuboid_candidate(
+                    point,
+                    direction,
+                    mechanic_core::ControllerSpec::GRID_UNITS,
+                    rotation,
+                    grid,
+                    bounds,
+                ),
+                0_u8,
+            ),
+            (
+                free_cuboid_candidate(
+                    point,
+                    direction,
+                    EngineKind::Gas.grid_units(),
+                    rotation,
+                    grid,
+                    bounds,
+                ),
+                1,
+            ),
+            (
+                free_cuboid_candidate(
+                    point,
+                    direction,
+                    EngineKind::Electric.grid_units(),
+                    rotation,
+                    grid,
+                    bounds,
+                ),
+                2,
+            ),
+            (
+                free_cuboid_candidate(
+                    point,
+                    direction,
+                    mechanic_core::ServoSpec::GRID_UNITS,
+                    rotation,
+                    grid,
+                    bounds,
+                ),
+                3,
+            ),
+            (
+                free_cuboid_candidate(
+                    point,
+                    direction,
+                    mechanic_core::SeatSpec::GRID_UNITS,
+                    rotation,
+                    grid,
+                    bounds,
+                ),
+                4,
+            ),
+            (
+                free_cuboid_candidate(
+                    point,
+                    direction,
+                    mechanic_core::InputSpec::GRID_UNITS,
+                    rotation,
+                    grid,
+                    bounds,
+                ),
+                5,
+            ),
+            (
+                free_cuboid_candidate(
+                    point,
+                    direction,
+                    mechanic_core::DimensionLinkSpec::GRID_UNITS,
+                    rotation,
+                    grid,
+                    bounds,
+                ),
+                6,
+            ),
+        ];
+        for (candidate, kind) in cases {
+            let graph = ConstructionGraph::new();
+            let staged = match kind {
+                0 => stage_controller_in_bounds(&graph, candidate, bounds),
+                1 => stage_engine_in_bounds(&graph, candidate, EngineKind::Gas, bounds),
+                2 => stage_engine_in_bounds(&graph, candidate, EngineKind::Electric, bounds),
+                3 => stage_servo_in_bounds(&graph, candidate, bounds),
+                4 => stage_seat_in_bounds(&graph, candidate, bounds),
+                5 => stage_input_in_bounds(&graph, candidate, bounds),
+                6 => stage_dimension_link_in_bounds(&graph, candidate, DimensionLinkId(1), bounds),
+                _ => unreachable!(),
+            }
+            .unwrap();
+            assert_eq!(staged.part_count(), 1);
+            assert_eq!(staged.weld_count(), 0);
+            assert!(!staged.compile().unwrap().compounds[0].is_static);
+        }
+
+        let graph = ConstructionGraph::new();
+        let candidate = free_cuboid_candidate(point, direction, [1; 3], rotation, grid, bounds);
+        let block =
+            stage_block_batch_in_bounds(&graph, candidate, &[candidate.spec], bounds).unwrap();
+        assert_eq!(block.weld_count(), 0);
+
+        let cylinder = free_cylinder_candidate(
+            point,
+            direction,
+            CylinderDimensions::default(),
+            grid,
+            bounds,
+        );
+        let pipe = [PipeRunPiece {
+            spec: PartSpec::Cylinder(cylinder.spec),
+            inlet: FaceKind::NegativeY,
+            outlet: FaceKind::PositiveY,
+        }];
+        let staged =
+            stage_pipe_run_in_bounds(&graph, &pipe, PipeRunAttachment::Free, bounds).unwrap();
+        assert_eq!(staged.part_count(), 1);
+        assert_eq!(staged.weld_count(), 0);
+    }
+
+    #[test]
+    fn free_parts_auto_weld_on_contact_and_reject_overlap_or_bounds_escape() {
+        let bounds = PlacementBounds::GarageBuild;
+        let first = free_cuboid_candidate(
+            Vec3::new(0.0, 6.0, 0.0),
+            Vec3::NEG_Z,
+            [1; 3],
+            GridRotation::default(),
+            PlacementGrid::Centimetres25,
+            bounds,
+        );
+        let graph =
+            stage_block_batch_in_bounds(&ConstructionGraph::new(), first, &[first.spec], bounds)
+                .unwrap();
+        assert!(matches!(
+            stage_block_batch_in_bounds(&graph, first, &[first.spec], bounds),
+            Err(PlacementError::OverlapsPart(_))
+        ));
+
+        let touching = free_cuboid_candidate(
+            first.spec.pose.translation() + Vec3::X * BLOCK_SIZE_METERS,
+            Vec3::NEG_Z,
+            [1; 3],
+            GridRotation::default(),
+            PlacementGrid::Centimetres25,
+            bounds,
+        );
+        let welded =
+            stage_block_batch_in_bounds(&graph, touching, &[touching.spec], bounds).unwrap();
+        assert_eq!(welded.weld_count(), 1);
+
+        let outside = free_cuboid_candidate(
+            Vec3::new(super::GROUND_HALF_SIZE, 6.0, 0.0),
+            Vec3::NEG_Z,
+            [1; 3],
+            GridRotation::default(),
+            PlacementGrid::Centimetres25,
+            bounds,
+        );
+        assert_eq!(
+            validate_block_batch_in_bounds(
+                &ConstructionGraph::new(),
+                outside,
+                &[outside.spec],
+                bounds,
+            ),
+            Err(PlacementError::OutsidePlatform)
+        );
     }
 
     #[test]
@@ -5412,7 +6037,7 @@ mod tests {
     }
 
     #[test]
-    fn bearing_anchor_preserves_a_side_faces_half_grid_height() {
+    fn bearing_anchor_uses_the_same_grid_phase_as_blocks_and_cylinders() {
         let graph = ConstructionGraph::new();
         let block = candidate_from_hit(
             &graph,
@@ -5432,9 +6057,40 @@ mod tests {
             face: source,
         };
 
-        let anchor = bearing_anchor_from_hit(&graph, hit).unwrap();
+        for grid in [
+            PlacementGrid::Centimetres25,
+            PlacementGrid::Centimetres5,
+            PlacementGrid::Centimetres1,
+        ] {
+            let anchor = super::bearing_anchor_from_hit_with_grid(
+                &graph,
+                hit,
+                grid,
+                PlacementBounds::Garage,
+            )
+            .unwrap();
+            let block = oriented_cuboid_candidate_from_hit_with_grid(
+                &graph,
+                hit,
+                [1; 3],
+                GridRotation::default(),
+                grid,
+                PlacementBounds::Garage,
+            );
+            let cylinder = super::cylinder_candidate_from_hit_with_grid(
+                &graph,
+                hit,
+                CylinderDimensions::new(0.5, 0.0, 0.25).unwrap(),
+                grid,
+                PlacementBounds::Garage,
+            )
+            .unwrap();
 
-        assert!(anchor.abs_diff_eq(Vec3::new(face.center.x, 0.25, 0.0), 1.0e-6));
+            for axis in [1, 2] {
+                assert!((anchor[axis] - block.spec.pose.translation()[axis]).abs() < 1.0e-6);
+                assert!((anchor[axis] - cylinder.spec.pose.translation()[axis]).abs() < 1.0e-6);
+            }
+        }
     }
 
     #[test]
@@ -5860,6 +6516,51 @@ mod tests {
         assert!(
             hit.point.y > 0.0,
             "the hit should still be on the wedge, not through it"
+        );
+    }
+
+    #[test]
+    fn raycast_tests_a_multi_block_region_once() {
+        fn spawn_at(graph: &mut ConstructionGraph, half_grid: IVec3) -> PartId {
+            let spec = CuboidSpec::new(
+                [1; 3],
+                BuildPose::from_half_grid(half_grid, GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        }
+
+        let mut graph = ConstructionGraph::new();
+        let first = spawn_at(&mut graph, IVec3::new(1, 1, 1));
+        let second = spawn_at(&mut graph, IVec3::new(3, 1, 1));
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(first, FaceKind::PositiveX),
+                second: FaceRef::part(second, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let region = mechanic_core::ShapeRegion::new(
+            IVec3::ZERO,
+            IVec3::new(2, 1, 1),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        graph.apply(BuildCommand::AddRegion(region)).unwrap();
+        spawn_at(&mut graph, IVec3::new(9, 1, 1));
+
+        let sources = raycast_sources(&graph).collect::<Vec<_>>();
+        assert_eq!(sources.len(), 2, "one region and one standalone part");
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|(_, _, region)| region.is_some())
+                .count(),
+            1,
+            "all region members share one raycast source"
         );
     }
 

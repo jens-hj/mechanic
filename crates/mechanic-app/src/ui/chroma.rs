@@ -80,7 +80,7 @@ pub(crate) fn ChromaStatus(handles: Handles) -> Element {
                 }
             } } {
             row width:fill height:min-content align:center gap:10px nohit {
-                el width:44px height:44px radius:7px
+                el width:44px height:44px radius:7px exponent:1
                     fill:{ rgb_color(representative_srgb(material.get(), appearance.get())) }
                     stroke:(width:1px color:chip.edge) nohit {}
                 col width:1fr height:min-content gap:3px nohit {
@@ -205,7 +205,7 @@ pub(crate) fn ChromaPanel(handles: Handles) -> Element {
                     pad:(horizontal:22px vertical:14px)
                     stroke:(width:1px color:shell-rule edges:bottom) {
                     row width:1fr height:min-content align:center gap:14px {
-                        el width:50px height:50px shrink:0 radius:10px
+                        el width:50px height:50px shrink:0 radius:10px exponent:1
                             fill:{ rgb_color(representative_srgb(swatch_material.get(), appearance.get())) }
                             stroke:(width:1px color:accent.key) {}
                         col width:1fr height:min-content gap:2px {
@@ -222,7 +222,7 @@ pub(crate) fn ChromaPanel(handles: Handles) -> Element {
                 }
 
                 row width:fill height:1fr gap:16px pad:20px {
-                    col width:1fr height:fill gap:14px pad:18px radius:12px
+                    col width:1fr height:fill gap:14px pad:18px radius:12px exponent:1
                         fill:lane.fill stroke:(width:1px color:lane.edge) {
                         col width:fill height:min-content gap:3px {
                             text #mechanic.section "COLOR TREATMENT"
@@ -237,7 +237,7 @@ pub(crate) fn ChromaPanel(handles: Handles) -> Element {
 
                         if matches!(appearance.get().color, MaterialColor::Baked) {
                             col width:fill height:1fr align:center justify:center gap:8px
-                                radius:10px fill:card.fill stroke:(width:1px color:card.edge) {
+                                radius:10px exponent:1 fill:card.fill stroke:(width:1px color:card.edge) {
                                 text #mechanic.value "SOURCE APPEARANCE"
                                 text #mechanic.caption
                                     "Uses the material's authored color and texture without recoloring."
@@ -297,16 +297,16 @@ pub(crate) fn ChromaPanel(handles: Handles) -> Element {
 
                     col width:320px height:fill shrink:0 gap:14px {
                         col width:fill height:1fr align:center justify:center gap:10px
-                            pad:16px radius:12px fill:card.fill
+                            pad:16px radius:12px exponent:1 fill:card.fill
                             stroke:(width:1px color:card.edge-on) {
                             text #mechanic.section "CURRENT BRUSH"
-                            el width:210px height:164px radius:12px
+                            el width:210px height:164px radius:12px exponent:1
                                 fill:{ rgb_color(representative_srgb(swatch_material.get(), appearance.get())) }
                                 stroke:(width:2px color:chip.edge-over) {}
                             text #mechanic.value text-wrap:none { color_summary(appearance.get()) }
                             text #mechanic.caption text-wrap:none { finish_label(appearance.get().finish) }
                         }
-                        col width:fill height:min-content gap:10px pad:16px radius:12px
+                        col width:fill height:min-content gap:10px pad:16px radius:12px exponent:1
                             fill:lane.fill stroke:(width:1px color:lane.edge) {
                             text #mechanic.section "FINISH"
                             text #mechanic.caption text-wrap:none
@@ -452,7 +452,7 @@ fn stacked_value_slider(
 
 fn preset(dye_color: State<Color>, rgb: [u8; 3]) -> Element {
     view! {
-        el width:fill height:fill radius:6px fill:{ rgb_color(rgb) }
+        el width:fill height:fill radius:6px exponent:1 fill:{ rgb_color(rgb) }
             stroke:(width:1px color:chip.edge)
             @click:{ dye_color.set(rgb_color(rgb)); } {}
     }

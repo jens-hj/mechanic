@@ -785,6 +785,7 @@ mod tests {
             seat_controller_links: Vec::new(),
             gearbox_configs: Vec::new(),
             regions: Vec::new(),
+            shape_features: Vec::new(),
             sockets: Vec::new(),
         }
     }

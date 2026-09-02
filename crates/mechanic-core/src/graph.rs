@@ -12,8 +12,8 @@ use crate::{
     DimensionLinkSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, DriveTarget, EngineKind,
     EngineSpec, FaceKind, FaceOwner, FaceRef, GearKeyChord, GearboxConfig, GearboxError,
     InputSeatLinkId, InputSpec, MaterialAppearance, PartId, PartSpec, PipeBendSpec, RegionError,
-    RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec, ServoSpec, ShapeRegion, ShiftMode,
-    TransmissionSpec, WeldId,
+    RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec, ServoSpec, ShapeFeature, ShapeFeatureId,
+    ShapeRegion, ShiftMode, SolidError, SolidOwner, TransmissionSpec, WeldId,
     geometry::{
         FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face, pipe_bend_face,
     },
@@ -447,6 +447,17 @@ pub enum BuildCommand {
         /// Position along that axis, in cells from the region origin.
         position: i32,
     },
+    /// Append one parametric chamfer or fillet in global replay order.
+    AddShapeFeature(ShapeFeature),
+    /// Replace one feature's positive equal setback or radius.
+    SetShapeFeatureAmount {
+        /// Feature being adjusted.
+        feature: ShapeFeatureId,
+        /// Replacement amount in exact position ticks.
+        amount_ticks: u32,
+    },
+    /// Remove one feature when all downstream features still replay.
+    RemoveShapeFeature(ShapeFeatureId),
     /// Record a non-mutating first endpoint for a two-step tool.
     BeginPending(PendingOperation),
     /// Cancel the current incomplete tool operation.
@@ -480,6 +491,10 @@ pub enum BuildOutcome {
     RegionAdded(RegionId),
     /// A region's cage changed.
     RegionUpdated,
+    /// A parametric shape feature was appended.
+    ShapeFeatureAdded(ShapeFeatureId),
+    /// A parametric shape feature changed or was removed.
+    ShapeFeatureUpdated,
     /// A part or region appearance changed.
     AppearanceUpdated,
     /// A pending operation was recorded.
@@ -615,6 +630,23 @@ pub enum GraphError {
     /// A region handle is stale or unknown.
     #[error("region {0:?} is not live")]
     MissingRegion(RegionId),
+    /// A shape-feature handle is stale or unknown.
+    #[error("shape feature {0:?} is not live")]
+    MissingShapeFeature(ShapeFeatureId),
+    /// A connection references a planar patch no longer present after replay.
+    #[error("surface patch {patch:?} is not present on {owner:?}")]
+    MissingSurfacePatch {
+        /// Solid expected to carry the patch.
+        owner: SolidOwner,
+        /// Stable missing patch.
+        patch: crate::SurfacePatchKey,
+    },
+    /// A feature target owner is absent or is authored machine geometry.
+    #[error("shape feature target {0:?} is not an editable construction solid")]
+    InvalidShapeFeatureOwner(SolidOwner),
+    /// Parametric solid evaluation rejected a feature or downstream replay.
+    #[error(transparent)]
+    InvalidSolid(#[from] SolidError),
     /// Appearance editing was requested for an authored machine part.
     #[error("part {0:?} has an authored appearance")]
     AuthoredAppearance(PartId),
@@ -639,6 +671,10 @@ pub enum GraphError {
     /// The chosen area holds part of a block but not all of it.
     #[error("a region must contain each of its blocks whole")]
     RegionSplitsPart,
+    /// A standalone featured part must have its features removed before a
+    /// Shape region can take ownership of it.
+    #[error("part {0:?} has Shape features; remove them before claiming a region")]
+    FeaturedPartInRegion(PartId),
     /// A cage move would turn one of the region's cells inside out.
     #[error("region {0:?} would have a cell turned inside out")]
     InvertedCell(RegionId),
@@ -664,6 +700,10 @@ pub struct ConstructionGraphData {
     /// Editable shape regions. A region owns the geometry of the blocks it
     /// covers, so those blocks stop emitting boxes of their own.
     pub(crate) regions: Arena<ShapeRegion, RegionId>,
+    /// Shape features in stable-handle storage.
+    pub(crate) shape_features: Arena<ShapeFeature, ShapeFeatureId>,
+    /// Explicit global replay order, independent of arena slot reuse.
+    pub(crate) shape_feature_order: Vec<ShapeFeatureId>,
     pending: Option<PendingOperation>,
 }
 
@@ -928,6 +968,96 @@ impl ConstructionGraph {
     /// Every live shape region.
     pub fn regions(&self) -> impl Iterator<Item = (RegionId, &ShapeRegion)> {
         self.regions.iter()
+    }
+
+    /// Parametric edge features in explicit replay order.
+    pub fn shape_features(&self) -> impl Iterator<Item = (ShapeFeatureId, &ShapeFeature)> {
+        self.shape_feature_order
+            .iter()
+            .filter_map(|&id| self.shape_features.get(id).map(|feature| (id, feature)))
+    }
+
+    /// Retrieves one live parametric edge feature.
+    pub fn shape_feature(&self, id: ShapeFeatureId) -> Option<&ShapeFeature> {
+        self.shape_features.get(id)
+    }
+
+    /// Evaluates one construction owner from its base plus ordered features.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first feature replay or base-generation failure.
+    pub fn evaluated_solid(&self, owner: SolidOwner) -> Result<crate::EvaluatedSolid, GraphError> {
+        self.evaluated_solid_until(owner, None)
+    }
+
+    /// Evaluates the source boundary seen by an existing feature, excluding
+    /// that feature and every downstream record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the feature is missing or the owner's base and
+    /// preceding features cannot be evaluated.
+    pub fn evaluated_solid_before(
+        &self,
+        owner: SolidOwner,
+        feature: ShapeFeatureId,
+    ) -> Result<crate::EvaluatedSolid, GraphError> {
+        if self.shape_features.get(feature).is_none() {
+            return Err(GraphError::MissingShapeFeature(feature));
+        }
+        self.evaluated_solid_until(owner, Some(feature))
+    }
+
+    fn evaluated_solid_until(
+        &self,
+        owner: SolidOwner,
+        stop_before: Option<ShapeFeatureId>,
+    ) -> Result<crate::EvaluatedSolid, GraphError> {
+        let features = self
+            .shape_features()
+            .take_while(|(id, _)| Some(*id) != stop_before)
+            .filter_map(|(id, feature)| {
+                let targets = feature
+                    .targets
+                    .iter()
+                    .copied()
+                    .filter(|target| target.owner == owner)
+                    .collect::<Vec<_>>();
+                (!targets.is_empty()).then_some({
+                    (
+                        id,
+                        ShapeFeature {
+                            targets,
+                            treatment: feature.treatment,
+                            amount_ticks: feature.amount_ticks,
+                        },
+                    )
+                })
+            });
+        match owner {
+            SolidOwner::Part(part) => {
+                let spec = self
+                    .parts
+                    .get(part)
+                    .copied()
+                    .ok_or(GraphError::MissingPart(part))?;
+                crate::evaluate_part_solid(spec, features).map_err(GraphError::from)
+            }
+            SolidOwner::Region(region) => {
+                let shape = self
+                    .regions
+                    .get(region)
+                    .ok_or(GraphError::MissingRegion(region))?;
+                crate::evaluate_region_solid(shape, features).map_err(GraphError::from)
+            }
+        }
+    }
+
+    /// Whether an owner has any committed parametric feature.
+    pub fn owner_has_shape_features(&self, owner: SolidOwner) -> bool {
+        self.shape_features()
+            .any(|(_, feature)| feature.targets.iter().any(|target| target.owner == owner))
     }
 
     /// One live shape region.
@@ -1427,26 +1557,89 @@ impl ConstructionGraph {
 
     pub(crate) fn face_geometry(&self, face: FaceRef) -> Result<FaceGeometry, GraphError> {
         match face.owner {
-            FaceOwner::Part(part) => match self.parts.get(part).copied() {
-                Some(PartSpec::Cuboid(spec)) => Ok(cuboid_face(spec, face.face)),
-                Some(PartSpec::Controller(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
-                Some(PartSpec::Engine(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
-                Some(PartSpec::Transmission(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
-                Some(PartSpec::Servo(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
-                Some(PartSpec::Seat(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
-                Some(PartSpec::Input(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
-                Some(PartSpec::DimensionLink(spec)) => Ok(cuboid_face(spec.cuboid(), face.face)),
-                Some(PartSpec::Cylinder(spec)) => {
-                    cylinder_face(spec, face.face).ok_or(GraphError::InvalidCylinderFace)
+            FaceOwner::Part(part) => {
+                let spec = self
+                    .parts
+                    .get(part)
+                    .copied()
+                    .ok_or(GraphError::MissingPart(part))?;
+                let owner = self
+                    .region_of(part)
+                    .map_or(SolidOwner::Part(part), SolidOwner::Region);
+                if face.patch.is_some() || self.owner_has_shape_features(owner) {
+                    let patch = face
+                        .patch
+                        .unwrap_or_else(|| primitive_surface_patch(spec, face.face));
+                    return self.evaluated_patch_geometry(owner, patch);
                 }
-                Some(PartSpec::PipeBend(spec)) => {
-                    pipe_bend_face(spec, face.face).ok_or(GraphError::InvalidPipeBendFace)
+                match spec {
+                    PartSpec::Cuboid(spec) => Ok(cuboid_face(spec, face.face)),
+                    PartSpec::Controller(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::Engine(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::Transmission(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::Servo(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::Seat(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::Input(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::DimensionLink(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::Cylinder(spec) => {
+                        cylinder_face(spec, face.face).ok_or(GraphError::InvalidCylinderFace)
+                    }
+                    PartSpec::PipeBend(spec) => {
+                        pipe_bend_face(spec, face.face).ok_or(GraphError::InvalidPipeBendFace)
+                    }
                 }
-                None => Err(GraphError::MissingPart(part)),
-            },
+            }
             FaceOwner::Ground if face.face == FaceKind::PositiveY => Ok(ground_face()),
             FaceOwner::Ground => Err(GraphError::InvalidGroundFace),
         }
+    }
+
+    fn evaluated_patch_geometry(
+        &self,
+        owner: SolidOwner,
+        patch: crate::SurfacePatchKey,
+    ) -> Result<FaceGeometry, GraphError> {
+        let solid = self.evaluated_solid(owner)?;
+        let surface = solid
+            .surfaces
+            .iter()
+            .find(|surface| surface.key == patch)
+            .ok_or(GraphError::MissingSurfacePatch { owner, patch })?;
+        let mut points = Vec::<Vec3>::new();
+        let mut edge = surface.half_edge;
+        loop {
+            let half_edge = solid.half_edges[edge as usize];
+            points.push(solid.vertices[half_edge.origin as usize].position);
+            edge = half_edge.next;
+            if edge == surface.half_edge {
+                break;
+            }
+        }
+        if points.len() < 3 {
+            return Err(GraphError::MissingSurfacePatch { owner, patch });
+        }
+        let point_count = f32::from(
+            u16::try_from(points.len())
+                .map_err(|_| GraphError::MissingSurfacePatch { owner, patch })?,
+        );
+        let center = points.iter().copied().sum::<Vec3>() / point_count;
+        let normal = surface.normal.normalize_or_zero();
+        let tangent_u = normal.any_orthonormal_vector();
+        let tangent_v = normal.cross(tangent_u);
+        let vertices = points
+            .iter()
+            .map(|point| {
+                let offset = *point - center;
+                Vec2::new(offset.dot(tangent_u), offset.dot(tangent_v))
+            })
+            .collect();
+        Ok(FaceGeometry {
+            center,
+            normal,
+            tangent_u,
+            tangent_v,
+            profile: FaceProfile::Polygon { vertices },
+        })
     }
 
     /// Whether a region's cage has turned any of its cells inside out.
@@ -1552,6 +1745,9 @@ impl ConstructionGraph {
         // A member hands its whole surface and mass to the region, so an area
         // that holds only some of a block's cells would lose the rest.
         for (&part, &cells) in &claimed {
+            if self.owner_has_shape_features(SolidOwner::Part(part)) {
+                return Err(GraphError::FeaturedPartInRegion(part));
+            }
             let whole = self
                 .parts
                 .get(part)
@@ -1600,6 +1796,35 @@ impl ConstructionGraph {
                     visit(link.second);
                 } else if link.second == part {
                     visit(link.first);
+                }
+            }
+        }
+        reached
+    }
+
+    /// Every part joined to `seed` through actual face welds. Shape features
+    /// must not propagate through non-geometric rigid links.
+    fn weld_group(&self, seed: PartId) -> BTreeSet<PartId> {
+        let mut reached = BTreeSet::from([seed]);
+        let mut frontier = vec![seed];
+        while let Some(part) = frontier.pop() {
+            for (_, weld) in self.welds.iter() {
+                let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+                    (weld.first.owner, weld.second.owner)
+                else {
+                    continue;
+                };
+                let other = if first == part {
+                    Some(second)
+                } else if second == part {
+                    Some(first)
+                } else {
+                    None
+                };
+                if let Some(other) = other
+                    && reached.insert(other)
+                {
+                    frontier.push(other);
                 }
             }
         }
@@ -1815,6 +2040,7 @@ impl ConstructionGraph {
                     .collect::<BTreeSet<_>>();
                 for region in regions {
                     self.regions.remove(region);
+                    self.remove_shape_owner(SolidOwner::Region(region));
                 }
                 self.gearbox_configs
                     .retain(|(controller, _), _| !removed_parts.contains(controller));
@@ -1824,6 +2050,7 @@ impl ConstructionGraph {
                 self.transmission_welds
                     .retain(|part, _| !removed_parts.contains(part));
                 for part in removed_parts {
+                    self.remove_shape_owner(SolidOwner::Part(part));
                     self.parts.remove(part);
                 }
                 self.pending = None;
@@ -1989,6 +2216,7 @@ impl ConstructionGraph {
                 self.regions
                     .remove(id)
                     .ok_or(GraphError::MissingRegion(id))?;
+                self.remove_shape_owner(SolidOwner::Region(id));
                 Ok(BuildOutcome::Removed)
             }
             BuildCommand::SetRegionVertices { region, vertices } => {
@@ -2003,6 +2231,8 @@ impl ConstructionGraph {
                 // inside out. The caller applied this to a staged clone, so
                 // rejecting here leaves the live graph untouched.
                 self.reject_inverted_region(region)?;
+                self.validate_shape_owner_replay(SolidOwner::Region(region))?;
+                self.validate_shape_owner_connections(SolidOwner::Region(region))?;
                 Ok(BuildOutcome::RegionUpdated)
             }
             BuildCommand::SubdivideRegion {
@@ -2016,7 +2246,80 @@ impl ConstructionGraph {
                     .ok_or(GraphError::MissingRegion(region))?;
                 shape.subdivide(axis, position)?;
                 self.reject_inverted_region(region)?;
+                self.validate_shape_owner_replay(SolidOwner::Region(region))?;
+                self.validate_shape_owner_connections(SolidOwner::Region(region))?;
                 Ok(BuildOutcome::RegionUpdated)
+            }
+            BuildCommand::AddShapeFeature(mut feature) => {
+                if let Some((region, edges)) = self.promoted_region_for_feature(&feature) {
+                    let region = self.regions.insert(region);
+                    feature.targets = edges
+                        .into_iter()
+                        .map(|edge| crate::EdgeChainRef {
+                            owner: SolidOwner::Region(region),
+                            edge,
+                        })
+                        .collect();
+                }
+                self.validate_shape_feature_targets(&feature)?;
+                let owners = feature
+                    .targets
+                    .iter()
+                    .map(|target| target.owner)
+                    .collect::<BTreeSet<_>>();
+                let id = self.shape_features.insert(feature);
+                self.shape_feature_order.push(id);
+                for owner in owners {
+                    self.validate_shape_owner_replay(owner)?;
+                    self.validate_shape_owner_connections(owner)?;
+                }
+                self.pending = None;
+                Ok(BuildOutcome::ShapeFeatureAdded(id))
+            }
+            BuildCommand::SetShapeFeatureAmount {
+                feature,
+                amount_ticks,
+            } => {
+                if amount_ticks == 0 {
+                    return Err(SolidError::ZeroAmount.into());
+                }
+                let owners = self
+                    .shape_features
+                    .get(feature)
+                    .ok_or(GraphError::MissingShapeFeature(feature))?
+                    .targets
+                    .iter()
+                    .map(|target| target.owner)
+                    .collect::<BTreeSet<_>>();
+                self.shape_features
+                    .get_mut(feature)
+                    .expect("the validated feature remains live")
+                    .amount_ticks = amount_ticks;
+                for owner in owners {
+                    self.validate_shape_owner_replay(owner)?;
+                    self.validate_shape_owner_connections(owner)?;
+                }
+                Ok(BuildOutcome::ShapeFeatureUpdated)
+            }
+            BuildCommand::RemoveShapeFeature(feature) => {
+                let owners = self
+                    .shape_features
+                    .get(feature)
+                    .ok_or(GraphError::MissingShapeFeature(feature))?
+                    .targets
+                    .iter()
+                    .map(|target| target.owner)
+                    .collect::<BTreeSet<_>>();
+                self.shape_features
+                    .remove(feature)
+                    .expect("the validated feature remains live");
+                self.shape_feature_order
+                    .retain(|candidate| *candidate != feature);
+                for owner in owners {
+                    self.validate_shape_owner_replay(owner)?;
+                    self.validate_shape_owner_connections(owner)?;
+                }
+                Ok(BuildOutcome::ShapeFeatureUpdated)
             }
             BuildCommand::BeginPending(pending) => {
                 match pending {
@@ -2025,7 +2328,7 @@ impl ConstructionGraph {
                     }
                     PendingOperation::Bearing { source, anchor } => {
                         let geometry = self.face_geometry(source)?;
-                        if !anchor.is_finite() || !point_on_face(anchor, geometry) {
+                        if !anchor.is_finite() || !point_on_face(anchor, &geometry) {
                             return Err(GraphError::BearingAnchorOutsideFaces);
                         }
                     }
@@ -2054,7 +2357,7 @@ impl ConstructionGraph {
         }
         let first = self.face_geometry(spec.first)?;
         let second = self.face_geometry(spec.second)?;
-        if faces_touch(first, second) {
+        if faces_touch(&first, &second) {
             Ok(())
         } else {
             Err(GraphError::FacesDoNotTouch)
@@ -2147,6 +2450,178 @@ impl ConstructionGraph {
         Ok(())
     }
 
+    fn validate_shape_feature_targets(&self, feature: &ShapeFeature) -> Result<(), GraphError> {
+        if feature.amount_ticks == 0 {
+            return Err(SolidError::ZeroAmount.into());
+        }
+        if feature.targets.is_empty() {
+            return Err(SolidError::ZeroVolume.into());
+        }
+        for target in &feature.targets {
+            match target.owner {
+                SolidOwner::Part(part) => match self.parts.get(part) {
+                    Some(PartSpec::Cuboid(_) | PartSpec::Cylinder(_) | PartSpec::PipeBend(_)) => {}
+                    Some(_) => return Err(GraphError::InvalidShapeFeatureOwner(target.owner)),
+                    None => return Err(GraphError::MissingPart(part)),
+                },
+                SolidOwner::Region(region) => {
+                    if self.regions.get(region).is_none() {
+                        return Err(GraphError::MissingRegion(region));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Fuses a rectangular welded block assembly before its first cross-part
+    /// edge feature. The region then owns one continuous volume, so a fillet or
+    /// chamfer can pass an internal 25 cm block boundary and trim the blocks
+    /// behind the originally selected edge.
+    fn promoted_region_for_feature(
+        &self,
+        feature: &ShapeFeature,
+    ) -> Option<(ShapeRegion, Vec<crate::TopologyKey>)> {
+        let target_parts = feature
+            .targets
+            .iter()
+            .map(|target| match target.owner {
+                SolidOwner::Part(part) => Some(part),
+                SolidOwner::Region(_) => None,
+            })
+            .collect::<Option<BTreeSet<_>>>()?;
+        let seed = *target_parts.first()?;
+        let seed_spec = self.parts.get(seed)?.as_cuboid()?;
+        let material = seed_spec.material;
+        let appearance = seed_spec.appearance;
+        let welded = self.weld_group(seed);
+        if !target_parts.iter().all(|part| welded.contains(part)) {
+            return None;
+        }
+
+        let mut minimum = IVec3::splat(i32::MAX);
+        let mut maximum = IVec3::splat(i32::MIN);
+        let mut members = 0_usize;
+        for part in welded {
+            if self.region_of(part).is_some() {
+                continue;
+            }
+            let Some(PartSpec::Cuboid(cuboid)) = self.parts.get(part).copied() else {
+                continue;
+            };
+            if cuboid.material != material || cuboid.appearance != appearance {
+                continue;
+            }
+            let cells = crate::part_cells(cuboid);
+            let origin = cells.corner_steps(IVec3::ZERO, 0);
+            minimum = minimum.min(origin);
+            maximum = maximum.max(origin + cells.counts() * crate::shape::STEPS_PER_CELL);
+            members += 1;
+        }
+        if members < 2
+            || members < target_parts.len()
+            || minimum.cmpeq(IVec3::splat(i32::MAX)).all()
+        {
+            return None;
+        }
+        let extent = maximum - minimum;
+        if extent.rem_euclid(IVec3::splat(crate::shape::STEPS_PER_CELL)) != IVec3::ZERO {
+            return None;
+        }
+        let region = ShapeRegion::from_origin_steps(
+            minimum,
+            extent / crate::shape::STEPS_PER_CELL,
+            material,
+        )
+        .ok()?
+        .with_appearance(appearance);
+        self.validate_region_area(&region).ok()?;
+
+        let solid = crate::evaluate_region_solid(&region, []).ok()?;
+        let edges = feature
+            .targets
+            .iter()
+            .map(|target| target.edge)
+            .collect::<BTreeSet<_>>();
+        if !edges.iter().all(|edge| {
+            solid
+                .logical_edge(*edge)
+                .is_some_and(|logical| logical.convex)
+        }) {
+            return None;
+        }
+        Some((region, edges.into_iter().collect()))
+    }
+
+    fn validate_shape_owner_replay(&self, owner: SolidOwner) -> Result<(), GraphError> {
+        self.evaluated_solid(owner).map(|_| ())
+    }
+
+    fn validate_shape_owner_connections(&self, owner: SolidOwner) -> Result<(), GraphError> {
+        for (_, weld) in self.welds.iter() {
+            if let SolidOwner::Region(region) = owner
+                && let (FaceOwner::Part(first), FaceOwner::Part(second)) =
+                    (weld.first.owner, weld.second.owner)
+                && self.region_of(first) == Some(region)
+                && self.region_of(second) == Some(region)
+            {
+                // These welds establish the rigid membership from which the
+                // region was claimed. Their faces are internal to the fused
+                // solid and are not placement patches that a feature must
+                // preserve.
+                continue;
+            }
+            if self.face_is_on_owner(weld.first, owner) || self.face_is_on_owner(weld.second, owner)
+            {
+                self.validate_weld(*weld)?;
+            }
+        }
+        for (_, bearing) in self.bearings.iter() {
+            if self.face_is_on_owner(bearing.source, owner)
+                || self.face_is_on_owner(bearing.target, owner)
+            {
+                self.validate_bearing(*bearing)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn face_is_on_owner(&self, face: FaceRef, owner: SolidOwner) -> bool {
+        let FaceOwner::Part(part) = face.owner else {
+            return false;
+        };
+        match owner {
+            SolidOwner::Part(candidate) => part == candidate,
+            SolidOwner::Region(region) => self.region_of(part) == Some(region),
+        }
+    }
+
+    fn remove_shape_owner(&mut self, owner: SolidOwner) {
+        let affected = self
+            .shape_feature_order
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.shape_features.get(*id).is_some_and(|feature| {
+                    feature.targets.iter().any(|target| target.owner == owner)
+                })
+            })
+            .collect::<Vec<_>>();
+        for id in affected {
+            let remove = if let Some(feature) = self.shape_features.get_mut(id) {
+                feature.targets.retain(|target| target.owner != owner);
+                feature.targets.is_empty()
+            } else {
+                false
+            };
+            if remove {
+                self.shape_features.remove(id);
+                self.shape_feature_order
+                    .retain(|candidate| *candidate != id);
+            }
+        }
+    }
+
     fn validate_bearing(&self, spec: BearingSpec) -> Result<(), GraphError> {
         if spec.source == spec.target {
             return Err(GraphError::SameFace);
@@ -2162,8 +2637,8 @@ impl ConstructionGraph {
             return Err(GraphError::BearingFacesNotOpposed);
         }
         if !spec.shared_anchor.is_finite()
-            || !bearing_ring_overlaps_face(spec.shared_anchor, spec.dimensions, source)
-            || !bearing_ring_overlaps_face(spec.shared_anchor, spec.dimensions, target)
+            || !bearing_ring_overlaps_face(spec.shared_anchor, spec.dimensions, &source)
+            || !bearing_ring_overlaps_face(spec.shared_anchor, spec.dimensions, &target)
         {
             return Err(GraphError::BearingAnchorOutsideFaces);
         }
@@ -2182,6 +2657,33 @@ fn face_references(face: FaceRef, part: PartId) -> bool {
     face.owner == FaceOwner::Part(part)
 }
 
+const fn primitive_surface_patch(spec: PartSpec, face: FaceKind) -> crate::SurfacePatchKey {
+    let local = match spec {
+        PartSpec::Cylinder(_) => match face {
+            FaceKind::NegativeY => 0,
+            FaceKind::PositiveY => 1,
+            _ => u32::MAX,
+        },
+        PartSpec::PipeBend(_) => match face {
+            FaceKind::NegativeX => 0,
+            FaceKind::PositiveY => 1,
+            _ => u32::MAX,
+        },
+        _ => match face {
+            FaceKind::NegativeX => 0,
+            FaceKind::PositiveX => 1,
+            FaceKind::NegativeY => 2,
+            FaceKind::PositiveY => 3,
+            FaceKind::NegativeZ => 4,
+            FaceKind::PositiveZ => 5,
+        },
+    };
+    crate::SurfacePatchKey {
+        source: crate::TopologySource::Base,
+        local,
+    }
+}
+
 fn weld_references(weld: WeldSpec, part: PartId) -> bool {
     face_references(weld.first, part) || face_references(weld.second, part)
 }
@@ -2194,7 +2696,7 @@ fn bearing_references(bearing: BearingSpec, part: PartId) -> bool {
     face_references(bearing.source, part) || face_references(bearing.target, part)
 }
 
-fn point_on_face(point: Vec3, face: FaceGeometry) -> bool {
+fn point_on_face(point: Vec3, face: &FaceGeometry) -> bool {
     let offset = point - face.center;
     if offset.dot(face.normal).abs() > ANCHOR_TOLERANCE_METERS {
         return false;
@@ -2202,14 +2704,14 @@ fn point_on_face(point: Vec3, face: FaceGeometry) -> bool {
     point_in_profile(
         offset.dot(face.tangent_u),
         offset.dot(face.tangent_v),
-        face.profile,
+        &face.profile,
     )
 }
 
 fn bearing_ring_overlaps_face(
     anchor: Vec3,
     dimensions: BearingDimensions,
-    face: FaceGeometry,
+    face: &FaceGeometry,
 ) -> bool {
     let offset = anchor - face.center;
     if offset.dot(face.normal).abs() > ANCHOR_TOLERANCE_METERS
@@ -2217,22 +2719,20 @@ fn bearing_ring_overlaps_face(
     {
         return false;
     }
-    profiles_overlap(
-        FaceGeometry {
-            center: anchor,
-            normal: face.normal,
-            tangent_u: face.tangent_u,
-            tangent_v: face.tangent_v,
-            profile: FaceProfile::Annulus {
-                inner_radius: dimensions.inner_diameter() * 0.5,
-                outer_radius: dimensions.outer_diameter() * 0.5,
-            },
+    let ring = FaceGeometry {
+        center: anchor,
+        normal: face.normal,
+        tangent_u: face.tangent_u,
+        tangent_v: face.tangent_v,
+        profile: FaceProfile::Annulus {
+            inner_radius: dimensions.inner_diameter() * 0.5,
+            outer_radius: dimensions.outer_diameter() * 0.5,
         },
-        face,
-    )
+    };
+    profiles_overlap(&ring, face)
 }
 
-fn faces_touch(first: FaceGeometry, second: FaceGeometry) -> bool {
+fn faces_touch(first: &FaceGeometry, second: &FaceGeometry) -> bool {
     if first.normal.dot(second.normal) > -1.0 + axis_cosine_tolerance() {
         return false;
     }
@@ -2240,14 +2740,15 @@ fn faces_touch(first: FaceGeometry, second: FaceGeometry) -> bool {
     if separation > ANCHOR_TOLERANCE_METERS {
         return false;
     }
-    if matches!(first.profile, FaceProfile::Ground) || matches!(second.profile, FaceProfile::Ground)
+    if matches!(&first.profile, FaceProfile::Ground)
+        || matches!(&second.profile, FaceProfile::Ground)
     {
         return true;
     }
     profiles_overlap(first, second)
 }
 
-fn point_in_profile(u: f32, v: f32, profile: FaceProfile) -> bool {
+fn point_in_profile(u: f32, v: f32, profile: &FaceProfile) -> bool {
     match profile {
         FaceProfile::Rectangle { half_u, half_v } => {
             u.abs() <= half_u + ANCHOR_TOLERANCE_METERS
@@ -2271,15 +2772,16 @@ fn point_in_profile(u: f32, v: f32, profile: FaceProfile) -> bool {
                 && radius_squared <= (outer_radius + ANCHOR_TOLERANCE_METERS).powi(2)
                 && v.atan2(u).abs() <= half_angle + ANCHOR_TOLERANCE_METERS
         }
+        FaceProfile::Polygon { vertices } => point_in_convex_polygon(Vec2::new(u, v), vertices),
         FaceProfile::Ground => true,
     }
 }
 
-fn profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
-    match (first.profile, second.profile) {
+fn profiles_overlap(first: &FaceGeometry, second: &FaceGeometry) -> bool {
+    match (&first.profile, &second.profile) {
         (FaceProfile::Rectangle { half_u, half_v }, FaceProfile::Rectangle { .. }) => {
-            positive_rect_overlap(first, second, first.tangent_u, half_u)
-                && positive_rect_overlap(first, second, first.tangent_v, half_v)
+            positive_rect_overlap(first, second, first.tangent_u, *half_u)
+                && positive_rect_overlap(first, second, first.tangent_v, *half_v)
         }
         (FaceProfile::Annulus { .. }, FaceProfile::Rectangle { .. }) => {
             annulus_rectangle_overlap(first, second)
@@ -2289,13 +2791,14 @@ fn profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
         }
         (FaceProfile::Annulus { .. }, FaceProfile::Annulus { .. }) => annuli_overlap(first, second),
         (FaceProfile::Ground, _) | (_, FaceProfile::Ground) => true,
-        (FaceProfile::AnnularSector { .. }, _) | (_, FaceProfile::AnnularSector { .. }) => {
+        (FaceProfile::AnnularSector { .. } | FaceProfile::Polygon { .. }, _)
+        | (_, FaceProfile::AnnularSector { .. } | FaceProfile::Polygon { .. }) => {
             sector_profiles_overlap(first, second)
         }
     }
 }
 
-fn sector_profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
+fn sector_profiles_overlap(first: &FaceGeometry, second: &FaceGeometry) -> bool {
     let first_cells = profile_cells(first, first.center, first.tangent_u, first.tangent_v);
     let second_cells = profile_cells(second, first.center, first.tangent_u, first.tangent_v);
     first_cells.iter().any(|first| {
@@ -2305,17 +2808,22 @@ fn sector_profiles_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
     })
 }
 
-fn profile_cells(face: FaceGeometry, origin: Vec3, plane_u: Vec3, plane_v: Vec3) -> Vec<Vec<Vec2>> {
+fn profile_cells(
+    face: &FaceGeometry,
+    origin: Vec3,
+    plane_u: Vec3,
+    plane_v: Vec3,
+) -> Vec<Vec<Vec2>> {
     let project = |point: Vec3| {
         let offset = point - origin;
         Vec2::new(offset.dot(plane_u), offset.dot(plane_v))
     };
-    match face.profile {
+    match &face.profile {
         FaceProfile::Rectangle { half_u, half_v } => vec![vec![
-            project(face.center - face.tangent_u * half_u - face.tangent_v * half_v),
-            project(face.center + face.tangent_u * half_u - face.tangent_v * half_v),
-            project(face.center + face.tangent_u * half_u + face.tangent_v * half_v),
-            project(face.center - face.tangent_u * half_u + face.tangent_v * half_v),
+            project(face.center - face.tangent_u * *half_u - face.tangent_v * *half_v),
+            project(face.center + face.tangent_u * *half_u - face.tangent_v * *half_v),
+            project(face.center + face.tangent_u * *half_u + face.tangent_v * *half_v),
+            project(face.center - face.tangent_u * *half_u + face.tangent_v * *half_v),
         ]],
         FaceProfile::Annulus {
             inner_radius,
@@ -2325,8 +2833,8 @@ fn profile_cells(face: FaceGeometry, origin: Vec3, plane_u: Vec3, plane_v: Vec3)
             origin,
             plane_u,
             plane_v,
-            inner_radius,
-            outer_radius,
+            *inner_radius,
+            *outer_radius,
             core::f32::consts::PI,
         ),
         FaceProfile::AnnularSector {
@@ -2338,17 +2846,46 @@ fn profile_cells(face: FaceGeometry, origin: Vec3, plane_u: Vec3, plane_v: Vec3)
             origin,
             plane_u,
             plane_v,
-            inner_radius,
-            outer_radius,
-            half_angle,
+            *inner_radius,
+            *outer_radius,
+            *half_angle,
         ),
+        FaceProfile::Polygon { vertices } => vec![
+            vertices
+                .iter()
+                .map(|vertex| {
+                    project(face.center + face.tangent_u * vertex.x + face.tangent_v * vertex.y)
+                })
+                .collect(),
+        ],
         FaceProfile::Ground => Vec::new(),
     }
 }
 
+fn point_in_convex_polygon(point: Vec2, vertices: &[Vec2]) -> bool {
+    if vertices.len() < 3 {
+        return false;
+    }
+    let mut sign = 0.0_f32;
+    for index in 0..vertices.len() {
+        let edge = vertices[(index + 1) % vertices.len()] - vertices[index];
+        let offset = point - vertices[index];
+        let cross = edge.perp_dot(offset);
+        if cross.abs() <= ANCHOR_TOLERANCE_METERS {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if sign * cross < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn annular_profile_cells(
-    face: FaceGeometry,
+    face: &FaceGeometry,
     origin: Vec3,
     plane_u: Vec3,
     plane_v: Vec3,
@@ -2411,56 +2948,56 @@ fn convex_polygons_overlap(first: &[Vec2], second: &[Vec2]) -> bool {
 }
 
 fn positive_rect_overlap(
-    first: FaceGeometry,
-    second: FaceGeometry,
+    first: &FaceGeometry,
+    second: &FaceGeometry,
     axis: Vec3,
     first_half: f32,
 ) -> bool {
-    let FaceProfile::Rectangle { half_u, half_v } = second.profile else {
+    let FaceProfile::Rectangle { half_u, half_v } = &second.profile else {
         unreachable!()
     };
     let second_half =
-        second.tangent_u.dot(axis).abs() * half_u + second.tangent_v.dot(axis).abs() * half_v;
+        second.tangent_u.dot(axis).abs() * *half_u + second.tangent_v.dot(axis).abs() * *half_v;
     let centre_distance = (second.center - first.center).dot(axis).abs();
     first_half + second_half - centre_distance > ANCHOR_TOLERANCE_METERS
 }
 
-fn annulus_rectangle_overlap(annulus: FaceGeometry, rectangle: FaceGeometry) -> bool {
+fn annulus_rectangle_overlap(annulus: &FaceGeometry, rectangle: &FaceGeometry) -> bool {
     let FaceProfile::Annulus {
         inner_radius,
         outer_radius,
-    } = annulus.profile
+    } = &annulus.profile
     else {
         unreachable!()
     };
-    let FaceProfile::Rectangle { half_u, half_v } = rectangle.profile else {
+    let FaceProfile::Rectangle { half_u, half_v } = &rectangle.profile else {
         unreachable!()
     };
     let offset = annulus.center - rectangle.center;
     let center_u = offset.dot(rectangle.tangent_u).abs();
     let center_v = offset.dot(rectangle.tangent_v).abs();
-    let nearest_u = (center_u - half_u).max(0.0);
-    let nearest_v = (center_v - half_v).max(0.0);
+    let nearest_u = (center_u - *half_u).max(0.0);
+    let nearest_v = (center_v - *half_v).max(0.0);
     let nearest_squared = nearest_u.mul_add(nearest_u, nearest_v * nearest_v);
-    let farthest_u = center_u + half_u;
-    let farthest_v = center_v + half_v;
+    let farthest_u = center_u + *half_u;
+    let farthest_v = center_v + *half_v;
     let farthest_squared = farthest_u.mul_add(farthest_u, farthest_v * farthest_v);
-    nearest_squared < (outer_radius - ANCHOR_TOLERANCE_METERS).max(0.0).powi(2)
-        && farthest_squared > (inner_radius + ANCHOR_TOLERANCE_METERS).powi(2)
+    nearest_squared < (*outer_radius - ANCHOR_TOLERANCE_METERS).max(0.0).powi(2)
+        && farthest_squared > (*inner_radius + ANCHOR_TOLERANCE_METERS).powi(2)
 }
 
-fn annuli_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
+fn annuli_overlap(first: &FaceGeometry, second: &FaceGeometry) -> bool {
     let FaceProfile::Annulus {
         inner_radius: inner_a,
         outer_radius: outer_a,
-    } = first.profile
+    } = &first.profile
     else {
         unreachable!()
     };
     let FaceProfile::Annulus {
         inner_radius: inner_b,
         outer_radius: outer_b,
-    } = second.profile
+    } = &second.profile
     else {
         unreachable!()
     };
@@ -2471,9 +3008,9 @@ fn annuli_overlap(first: FaceGeometry, second: FaceGeometry) -> bool {
         0.0,
     )
     .length();
-    distance < outer_a + outer_b - ANCHOR_TOLERANCE_METERS
-        && distance + outer_a > inner_b + ANCHOR_TOLERANCE_METERS
-        && distance + outer_b > inner_a + ANCHOR_TOLERANCE_METERS
+    distance < *outer_a + *outer_b - ANCHOR_TOLERANCE_METERS
+        && distance + *outer_a > *inner_b + ANCHOR_TOLERANCE_METERS
+        && distance + *outer_b > *inner_a + ANCHOR_TOLERANCE_METERS
 }
 
 fn axis_cosine_tolerance() -> f32 {
@@ -3744,5 +4281,213 @@ mod tests {
                 .ratios(),
             &[3.0, 1.0]
         );
+    }
+
+    #[test]
+    fn shape_features_add_adjust_remove_and_reject_invalid_amounts_atomically() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [2, 2, 2],
+                    BuildPose::new(IVec3::ZERO, GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = crate::SolidOwner::Part(part);
+        let edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+        let feature = crate::ShapeFeature::new(
+            [crate::EdgeChainRef { owner, edge }],
+            crate::EdgeTreatment::Chamfer,
+            10,
+        );
+        let BuildOutcome::ShapeFeatureAdded(id) =
+            graph.apply(BuildCommand::AddShapeFeature(feature)).unwrap()
+        else {
+            unreachable!()
+        };
+        let chamfered_volume = graph.evaluated_solid(owner).unwrap().volume();
+        assert!(chamfered_volume < 0.5_f64.powi(3));
+
+        graph
+            .apply(BuildCommand::SetShapeFeatureAmount {
+                feature: id,
+                amount_ticks: 20,
+            })
+            .unwrap();
+        assert!(graph.evaluated_solid(owner).unwrap().volume() < chamfered_volume);
+
+        let snapshot = graph.evaluated_solid(owner).unwrap();
+        assert!(matches!(
+            graph.apply(BuildCommand::SetShapeFeatureAmount {
+                feature: id,
+                amount_ticks: 0,
+            }),
+            Err(GraphError::InvalidSolid(crate::SolidError::ZeroAmount))
+        ));
+        assert_eq!(graph.evaluated_solid(owner).unwrap(), snapshot);
+
+        graph.apply(BuildCommand::RemoveShapeFeature(id)).unwrap();
+        assert!(!graph.owner_has_shape_features(owner));
+        assert!((graph.evaluated_solid(owner).unwrap().volume() - 0.5_f64.powi(3)).abs() < 1.0e-8);
+    }
+
+    #[test]
+    fn five_centimetre_fillet_revalidates_a_welded_tangent_chain() {
+        let mut graph = ConstructionGraph::new();
+        let first = spawn(
+            &mut graph,
+            CuboidSpec::new(
+                [1, 1, 1],
+                BuildPose::new(IVec3::ZERO, GridRotation::default()),
+            )
+            .unwrap(),
+        );
+        let second = spawn(
+            &mut graph,
+            CuboidSpec::new([1, 1, 1], BuildPose::new(IVec3::X, GridRotation::default())).unwrap(),
+        );
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(first, FaceKind::PositiveX),
+                second: FaceRef::part(second, FaceKind::NegativeX),
+            }))
+            .unwrap();
+
+        let target_for = |part| {
+            let owner = crate::SolidOwner::Part(part);
+            let solid = graph.evaluated_solid(owner).unwrap();
+            let edge = solid
+                .logical_edges
+                .iter()
+                .find(|logical| {
+                    let half_edge = solid.half_edges[logical.half_edges[0] as usize];
+                    let twin = solid.half_edges[half_edge.twin as usize];
+                    let patches = [
+                        solid.surfaces[half_edge.face as usize].key.local,
+                        solid.surfaces[twin.face as usize].key.local,
+                    ];
+                    patches.contains(&3) && patches.contains(&4)
+                })
+                .expect("the positive-Y/negative-Z edge exists")
+                .key;
+            crate::EdgeChainRef { owner, edge }
+        };
+        let targets = [target_for(first), target_for(second)];
+        let BuildOutcome::ShapeFeatureAdded(feature) = graph
+            .apply(BuildCommand::AddShapeFeature(crate::ShapeFeature::new(
+                targets,
+                crate::EdgeTreatment::Fillet,
+                20,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        assert_eq!(graph.shape_feature(feature).unwrap().amount_ticks, 20);
+        graph
+            .apply(BuildCommand::SetShapeFeatureAmount {
+                feature,
+                amount_ticks: 100,
+            })
+            .unwrap();
+        assert!(matches!(
+            graph.apply(BuildCommand::SetShapeFeatureAmount {
+                feature,
+                amount_ticks: 120,
+            }),
+            Err(GraphError::InvalidSolid(crate::SolidError::AmountTooLarge(id))) if id == feature
+        ));
+        assert_eq!(graph.shape_feature(feature).unwrap().amount_ticks, 100);
+    }
+
+    #[test]
+    fn welded_block_solid_accepts_treatments_past_one_block() {
+        let mut graph = ConstructionGraph::new();
+        let mut parts = std::collections::BTreeMap::new();
+        for z in 0..2 {
+            for y in 0..2 {
+                for x in 0..2 {
+                    let part = spawn(
+                        &mut graph,
+                        CuboidSpec::new(
+                            [1, 1, 1],
+                            BuildPose::new(IVec3::new(x, y, z), GridRotation::default()),
+                        )
+                        .unwrap(),
+                    );
+                    parts.insert([x, y, z], part);
+                }
+            }
+        }
+        for z in 0..2 {
+            for y in 0..2 {
+                for x in 0..2 {
+                    let cell = IVec3::new(x, y, z);
+                    for (axis, positive, negative) in [
+                        (0, FaceKind::PositiveX, FaceKind::NegativeX),
+                        (1, FaceKind::PositiveY, FaceKind::NegativeY),
+                        (2, FaceKind::PositiveZ, FaceKind::NegativeZ),
+                    ] {
+                        let mut neighbour = cell;
+                        neighbour[axis] += 1;
+                        if let Some(&next) = parts.get(&neighbour.to_array()) {
+                            graph
+                                .apply(BuildCommand::Weld(WeldSpec {
+                                    first: FaceRef::part(parts[&cell.to_array()], positive),
+                                    second: FaceRef::part(next, negative),
+                                }))
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
+        let targets = (0..2)
+            .map(|z| {
+                let part = parts[&[1, 1, z]];
+                let owner = crate::SolidOwner::Part(part);
+                let solid = graph.evaluated_solid(owner).unwrap();
+                let edge = solid
+                    .logical_edges
+                    .iter()
+                    .find(|logical| {
+                        let half_edge = solid.half_edges[logical.half_edges[0] as usize];
+                        let twin = solid.half_edges[half_edge.twin as usize];
+                        let patches = [
+                            solid.surfaces[half_edge.face as usize].key.local,
+                            solid.surfaces[twin.face as usize].key.local,
+                        ];
+                        patches.contains(&1) && patches.contains(&3)
+                    })
+                    .expect("the positive-X/positive-Y edge exists")
+                    .key;
+                crate::EdgeChainRef { owner, edge }
+            })
+            .collect::<Vec<_>>();
+
+        for treatment in [crate::EdgeTreatment::Fillet, crate::EdgeTreatment::Chamfer] {
+            let mut candidate = graph.clone();
+            let BuildOutcome::ShapeFeatureAdded(feature) = candidate
+                .apply(BuildCommand::AddShapeFeature(crate::ShapeFeature::new(
+                    targets.clone(),
+                    treatment,
+                    180,
+                )))
+                .unwrap_or_else(|error| panic!("45 cm {treatment:?} failed: {error}"))
+            else {
+                unreachable!()
+            };
+            let owner = candidate.shape_feature(feature).unwrap().targets[0].owner;
+            assert!(matches!(owner, crate::SolidOwner::Region(_)));
+            assert!(candidate.evaluated_solid(owner).unwrap().volume() < 0.125);
+            candidate.compile().unwrap();
+        }
     }
 }

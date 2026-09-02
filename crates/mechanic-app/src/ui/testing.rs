@@ -48,7 +48,7 @@ impl Overlay {
         load_fonts(&ui);
         theme::install();
 
-        let handles = Handles::new();
+        let handles = Handles::new(super::worlds::Model::default());
         handles.viewport.set(VIEWPORT);
         let tree = {
             let _ambient = ui.enter();

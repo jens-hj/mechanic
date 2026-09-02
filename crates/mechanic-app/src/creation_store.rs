@@ -272,6 +272,7 @@ mod tests {
                 })
                 .collect(),
             regions: Vec::new(),
+            shape_features: Vec::new(),
             welds: Vec::new(),
             rigid_links: Vec::new(),
             bearings: Vec::new(),

@@ -11,7 +11,34 @@
 //! eye.
 
 use bevy::prelude::*;
-use mechanic_core::{CageIndex, STEP_METERS, STEPS_PER_CELL, ShapeRegion};
+use mechanic_core::{
+    CageIndex, EdgeChainRef, EdgeTreatment, EvaluatedSolid, STEP_METERS, STEPS_PER_CELL,
+    ShapeFeatureId, ShapeRegion, SolidOwner,
+};
+
+/// Active Shape workflow selected from the hold-Tab context wheel.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum ShapeEditMode {
+    /// Select or move Shape-region cage vertices.
+    #[default]
+    Vertex,
+    /// Apply a symmetric equal-setback cut to logical edge chains.
+    Chamfer,
+    /// Apply a constant-radius polygonal round to logical edge chains.
+    Fillet,
+}
+
+impl ShapeEditMode {
+    pub(crate) const ALL: [Self; 3] = [Self::Vertex, Self::Chamfer, Self::Fillet];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Vertex => "Vertex",
+            Self::Chamfer => "Chamfer",
+            Self::Fillet => "Fillet",
+        }
+    }
+}
 
 /// How close the pointer ray must pass to a cage vertex to grab it, in metres.
 const VERTEX_PICK_RADIUS: f32 = 0.05;
@@ -21,6 +48,219 @@ pub(crate) const VERTEX_REVEAL_RADIUS: f32 = 1.2;
 
 /// How close the pointer must come to an edge to be offered a new vertex there.
 const EDGE_PICK_RADIUS: f32 = 0.06;
+
+/// A logical feature edge under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FeatureEdgeHit {
+    /// Stable complete-chain reference.
+    pub(crate) target: EdgeChainRef,
+    /// Closest point on the hovered tessellated segment.
+    pub(crate) point: Vec3,
+    /// Segment tangent used to orient the fallback drag plane.
+    pub(crate) tangent: Vec3,
+    /// Inward cross-section bisector along which amount increases.
+    pub(crate) bisector: Vec3,
+    /// Ray distance, for choosing between overlapping edges.
+    pub(crate) distance: f32,
+}
+
+/// One chamfer/fillet amount drag, committed only on release.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FeatureDrag {
+    /// Existing feature being adjusted, or `None` for a new feature.
+    pub(crate) feature: Option<ShapeFeatureId>,
+    /// Every selected logical chain receiving the shared amount.
+    pub(crate) targets: Vec<EdgeChainRef>,
+    /// Profile selected by the active Shape mode.
+    pub(crate) treatment: EdgeTreatment,
+    /// Amount at press time.
+    pub(crate) start_amount_ticks: u32,
+    /// Current quantized preview amount.
+    pub(crate) amount_ticks: u32,
+    anchor: Vec3,
+    drag_plane_normal: Vec3,
+    bisector: Vec3,
+    last_drag_value: f32,
+    raw_amount_ticks: f64,
+}
+
+impl FeatureDrag {
+    pub(crate) fn begin(
+        hit: FeatureEdgeHit,
+        targets: Vec<EdgeChainRef>,
+        treatment: EdgeTreatment,
+        feature: Option<ShapeFeatureId>,
+        start_amount_ticks: u32,
+        ray_origin: Vec3,
+        ray_direction: Vec3,
+    ) -> Self {
+        let drag_plane_normal = (ray_direction - hit.bisector * ray_direction.dot(hit.bisector))
+            .try_normalize()
+            .or_else(|| hit.tangent.cross(hit.bisector).try_normalize())
+            .unwrap_or(hit.tangent);
+        let projected = project_onto_plane(ray_origin, ray_direction, hit.point, drag_plane_normal)
+            .unwrap_or(hit.point);
+        Self {
+            feature,
+            targets,
+            treatment,
+            start_amount_ticks,
+            amount_ticks: start_amount_ticks,
+            anchor: hit.point,
+            drag_plane_normal,
+            bisector: hit.bisector,
+            last_drag_value: (projected - hit.point).dot(hit.bisector),
+            raw_amount_ticks: f64::from(start_amount_ticks),
+        }
+    }
+
+    /// Quantized positive amount proposed by the current pointer ray.
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn proposed_amount(
+        &mut self,
+        snap: ShapeSnap,
+        ray_origin: Vec3,
+        ray_direction: Vec3,
+    ) -> u32 {
+        let Some(projected) = project_onto_plane(
+            ray_origin,
+            ray_direction,
+            self.anchor,
+            self.drag_plane_normal,
+        ) else {
+            return self.amount_ticks;
+        };
+        let drag_value = (projected - self.anchor).dot(self.bisector);
+        let delta = f64::from((drag_value - self.last_drag_value) / STEP_METERS);
+        self.last_drag_value = drag_value;
+
+        // Keep ordinary coalesced pointer motion: fillet previews can take
+        // long enough that one frame legitimately spans several snap steps.
+        // Only rate-limit a ray that is nearly parallel to the pull direction,
+        // where its projected distance is ill-conditioned.
+        let alignment = f64::from(ray_direction.normalize_or_zero().dot(self.bisector).abs());
+        let projection_stability = 1.0 - alignment * alignment;
+        let delta = if projection_stability >= 0.25 {
+            delta
+        } else {
+            let maximum_delta = f64::from(snap.steps);
+            delta.clamp(-maximum_delta, maximum_delta)
+        };
+        self.raw_amount_ticks = (self.raw_amount_ticks + delta).max(0.0);
+        let raw = self.raw_amount_ticks.round() as i64;
+        let increment = i64::from(snap.steps);
+        let quantized = ((raw + increment / 2) / increment) * increment;
+        u32::try_from(quantized.max(0)).unwrap_or(u32::MAX)
+    }
+
+    /// Drops pointer distance that geometry validation could not accept.
+    ///
+    /// Without this, holding still beyond the valid limit retries the same
+    /// expensive failed preview every frame.
+    pub(crate) fn discard_rejected_excess(&mut self, accepted_amount_ticks: u32) {
+        self.raw_amount_ticks = f64::from(accepted_amount_ticks);
+    }
+}
+
+/// Finds the nearest selectable logical edge, never a tessellation seam.
+pub(crate) fn hovered_feature_edge(
+    solid: &EvaluatedSolid,
+    owner: SolidOwner,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<FeatureEdgeHit> {
+    hovered_feature_edge_matching(solid, owner, ray_origin, ray_direction, |_| true)
+}
+
+/// Hit-tests only one stored source chain, used by dashed virtual overlays.
+pub(crate) fn hovered_source_edge(
+    solid: &EvaluatedSolid,
+    target: EdgeChainRef,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<FeatureEdgeHit> {
+    hovered_feature_edge_matching(solid, target.owner, ray_origin, ray_direction, |key| {
+        key == target.edge
+    })
+}
+
+fn hovered_feature_edge_matching(
+    solid: &EvaluatedSolid,
+    owner: SolidOwner,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+    accepts: impl Fn(mechanic_core::TopologyKey) -> bool,
+) -> Option<FeatureEdgeHit> {
+    let mut best = None::<FeatureEdgeHit>;
+    for logical in &solid.logical_edges {
+        if !logical.convex || !accepts(logical.key) {
+            continue;
+        }
+        for &half_edge_index in &logical.half_edges {
+            let half_edge = solid.half_edges[half_edge_index as usize];
+            let next = solid.half_edges[half_edge.next as usize];
+            let a = solid.vertices[half_edge.origin as usize].position;
+            let b = solid.vertices[next.origin as usize].position;
+            let (point, along, distance) = closest_ray_segment(ray_origin, ray_direction, a, b);
+            if distance > EDGE_PICK_RADIUS {
+                continue;
+            }
+            let first_normal = solid.surfaces[half_edge.face as usize].normal;
+            let twin = solid.half_edges[half_edge.twin as usize];
+            let second_normal = solid.surfaces[twin.face as usize].normal;
+            let tangent = (b - a).normalize_or_zero();
+            let bisector = -(first_normal + second_normal).normalize_or_zero();
+            if tangent == Vec3::ZERO || bisector == Vec3::ZERO {
+                continue;
+            }
+            let candidate = FeatureEdgeHit {
+                target: EdgeChainRef {
+                    owner,
+                    edge: logical.key,
+                },
+                point,
+                tangent,
+                bisector,
+                distance,
+            };
+            if best.is_none_or(|current| {
+                along < (current.point - ray_origin).dot(ray_direction) - 1.0e-4
+                    || (along <= (current.point - ray_origin).dot(ray_direction) + 1.0e-4
+                        && distance < current.distance)
+            }) {
+                best = Some(candidate);
+            }
+        }
+    }
+    best
+}
+
+fn closest_ray_segment(
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+    a: Vec3,
+    b: Vec3,
+) -> (Vec3, f32, f32) {
+    let segment = b - a;
+    let offset = ray_origin - a;
+    let aa = ray_direction.length_squared();
+    let bb = ray_direction.dot(segment);
+    let cc = segment.length_squared();
+    let dd = ray_direction.dot(offset);
+    let ee = segment.dot(offset);
+    let denominator = aa * cc - bb * bb;
+    let mut ray_t = if denominator.abs() > f32::EPSILON {
+        (bb * ee - cc * dd) / denominator
+    } else {
+        -dd / aa
+    };
+    ray_t = ray_t.max(0.0);
+    let segment_t = ((bb * ray_t + ee) / cc).clamp(0.0, 1.0);
+    ray_t = ((bb * segment_t - dd) / aa).max(0.0);
+    let ray_point = ray_origin + ray_direction * ray_t;
+    let segment_point = a + segment * segment_t;
+    (segment_point, ray_t, ray_point.distance(segment_point))
+}
 
 /// How far one vertex move travels, in lattice steps.
 ///
@@ -46,12 +286,20 @@ impl Default for ShapeSnap {
 
 impl ShapeSnap {
     /// Increments offered, coarsest first.
-    const CHOICES: [i32; 4] = [
+    const CHOICES: [i32; 5] = [
         STEPS_PER_CELL,
         STEPS_PER_CELL / 2,
         STEPS_PER_CELL / 4,
+        STEPS_PER_CELL / 5,
         STEPS_PER_CELL / 20,
     ];
+
+    /// Five-centimetre increment used when entering Chamfer or Fillet mode.
+    pub(crate) const fn feature_default() -> Self {
+        Self {
+            steps: STEPS_PER_CELL / 5,
+        }
+    }
 
     /// Moves to the next increment, wrapping back to the coarsest.
     pub(crate) fn cycle(&mut self) {
@@ -67,6 +315,7 @@ impl ShapeSnap {
             steps if steps == STEPS_PER_CELL => "Snap: 1 block".to_owned(),
             steps if steps == STEPS_PER_CELL / 2 => "Snap: 1/2 block".to_owned(),
             steps if steps == STEPS_PER_CELL / 4 => "Snap: 1/4 block".to_owned(),
+            steps if steps == STEPS_PER_CELL / 5 => "Snap: 5 cm".to_owned(),
             _ => format!(
                 "Snap: fine ({:.1} mm)",
                 f64::from(self.steps) * f64::from(STEP_METERS) * 1000.0
@@ -577,12 +826,16 @@ pub(crate) fn vertex_marker_size(distance: f32) -> f32 {
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 mod tests {
     use super::{
-        ShapeMirror, ShapeSnap, begin_group_drag, clamp_into_region, drag_edits, drag_offset,
-        edge_insertion, hovered_vertex, mirrored_edits, most_visible_axis, nudge_edits,
-        screen_axis, vertex_position,
+        FeatureDrag, FeatureEdgeHit, ShapeMirror, ShapeSnap, begin_group_drag, clamp_into_region,
+        drag_edits, drag_offset, edge_insertion, hovered_feature_edge, hovered_source_edge,
+        hovered_vertex, mirrored_edits, most_visible_axis, nudge_edits, screen_axis,
+        vertex_position,
     };
     use bevy::prelude::*;
-    use mechanic_core::{ConstructionMaterial, STEP_METERS, STEPS_PER_CELL, ShapeRegion};
+    use mechanic_core::{
+        BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, ConstructionMaterial, CuboidSpec,
+        EdgeChainRef, EdgeTreatment, STEP_METERS, STEPS_PER_CELL, ShapeRegion, SolidOwner,
+    };
 
     fn region(size: IVec3) -> ShapeRegion {
         ShapeRegion::new(IVec3::ZERO, size, ConstructionMaterial::Steel).unwrap()
@@ -713,13 +966,159 @@ mod tests {
             steps: STEPS_PER_CELL,
         };
         let mut seen = vec![snap.steps];
-        for _ in 0..3 {
+        for _ in 0..4 {
             snap.cycle();
             seen.push(snap.steps);
         }
-        assert_eq!(seen, vec![100, 50, 25, 5]);
+        assert_eq!(seen, vec![100, 50, 25, 20, 5]);
         snap.cycle();
         assert_eq!(snap.steps, 100);
+        assert_eq!(ShapeSnap::feature_default().steps, 20);
+    }
+
+    #[test]
+    fn side_on_feature_drag_reaches_the_first_five_centimetre_increment() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let hit = FeatureEdgeHit {
+            target: EdgeChainRef {
+                owner,
+                edge: graph.evaluated_solid(owner).unwrap().logical_edges[0].key,
+            },
+            point: Vec3::ZERO,
+            tangent: Vec3::Z,
+            bisector: Vec3::X,
+            distance: 0.0,
+        };
+        let ray_origin = Vec3::Y;
+        let mut drag = FeatureDrag::begin(
+            hit,
+            vec![hit.target],
+            EdgeTreatment::Fillet,
+            None,
+            0,
+            ray_origin,
+            Vec3::NEG_Y,
+        );
+        let five_centimetres = Vec3::new(0.05, 0.0, 0.0);
+        let moved_ray = (five_centimetres - ray_origin).normalize();
+
+        assert_eq!(
+            drag.proposed_amount(ShapeSnap::feature_default(), ray_origin, moved_ray),
+            20
+        );
+    }
+
+    #[test]
+    fn side_on_feature_drag_keeps_a_coalesced_full_block_motion() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let hit = FeatureEdgeHit {
+            target: EdgeChainRef {
+                owner,
+                edge: graph.evaluated_solid(owner).unwrap().logical_edges[0].key,
+            },
+            point: Vec3::ZERO,
+            tangent: Vec3::Z,
+            bisector: Vec3::X,
+            distance: 0.0,
+        };
+        let ray_origin = Vec3::Y;
+        let mut drag = FeatureDrag::begin(
+            hit,
+            vec![hit.target],
+            EdgeTreatment::Fillet,
+            None,
+            0,
+            ray_origin,
+            Vec3::NEG_Y,
+        );
+        let full_block = Vec3::new(0.25, 0.0, 0.0);
+        let moved_ray = (full_block - ray_origin).normalize();
+
+        assert_eq!(
+            drag.proposed_amount(ShapeSnap::feature_default(), ray_origin, moved_ray),
+            100,
+            "a slow fillet preview must not discard coalesced pointer motion"
+        );
+
+        let beyond_block = Vec3::new(0.30, 0.0, 0.0);
+        let beyond_ray = (beyond_block - ray_origin).normalize();
+        assert_eq!(
+            drag.proposed_amount(ShapeSnap::feature_default(), ray_origin, beyond_ray),
+            120
+        );
+        drag.discard_rejected_excess(100);
+        assert_eq!(
+            drag.proposed_amount(ShapeSnap::feature_default(), ray_origin, beyond_ray),
+            100,
+            "holding at the geometry limit must not retry a rejected preview"
+        );
+    }
+
+    #[test]
+    fn grazing_feature_drag_cannot_skip_the_first_five_centimetre_increment() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let hit = FeatureEdgeHit {
+            target: EdgeChainRef {
+                owner,
+                edge: mechanic_core::TopologyKey {
+                    source: mechanic_core::TopologySource::Base,
+                    local: 0,
+                },
+            },
+            point: Vec3::ZERO,
+            tangent: Vec3::Z,
+            bisector: Vec3::X,
+            distance: 0.0,
+        };
+        let ray_origin = Vec3::Y;
+        let mut drag = FeatureDrag::begin(
+            hit,
+            vec![hit.target],
+            EdgeTreatment::Fillet,
+            None,
+            0,
+            ray_origin,
+            Vec3::NEG_Y,
+        );
+        let amplified_ray = (Vec3::X * 2.0 - ray_origin).normalize();
+
+        assert_eq!(
+            drag.proposed_amount(ShapeSnap::feature_default(), ray_origin, amplified_ray),
+            20,
+            "one unstable projection sample must not jump to a multi-block radius"
+        );
+        assert_eq!(
+            drag.proposed_amount(ShapeSnap::feature_default(), ray_origin, amplified_ray),
+            20,
+            "a stationary pointer must not continue increasing the radius"
+        );
     }
 
     #[test]
@@ -841,5 +1240,59 @@ mod tests {
         assert_eq!(screen_axis(Vec3::new(-0.9, 0.3, 0.1)), (0, -1));
         assert_eq!(screen_axis(Vec3::new(0.1, -0.8, 0.3)), (1, -1));
         assert_eq!(screen_axis(Vec3::new(0.2, 0.1, 0.95)), (2, 1));
+    }
+
+    #[test]
+    fn feature_hover_reports_logical_edges_not_internal_tessellation_seams() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1, 1, 1], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let solid = graph.evaluated_solid(owner).unwrap();
+        let logical = &solid.logical_edges[0];
+        let edge = solid.half_edges[logical.half_edges[0] as usize];
+        let next = solid.half_edges[edge.next as usize];
+        let start = solid.vertices[edge.origin as usize].position;
+        let end = solid.vertices[next.origin as usize].position;
+        let midpoint = (start + end) * 0.5;
+        let view = (end - start).normalize().any_orthonormal_vector();
+        let hit = hovered_feature_edge(&solid, owner, midpoint + view, -view)
+            .expect("aiming through a logical edge selects it");
+        assert_eq!(hit.target.owner, owner);
+        assert!(solid.logical_edge(hit.target.edge).is_some());
+    }
+
+    #[test]
+    fn concave_logical_edges_are_not_feature_targets() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let mut solid = graph.evaluated_solid(owner).unwrap();
+        let logical = &mut solid.logical_edges[0];
+        logical.convex = false;
+        let target = EdgeChainRef {
+            owner,
+            edge: logical.key,
+        };
+        let edge = solid.half_edges[logical.half_edges[0] as usize];
+        let next = solid.half_edges[edge.next as usize];
+        let midpoint = (solid.vertices[edge.origin as usize].position
+            + solid.vertices[next.origin as usize].position)
+            * 0.5;
+
+        assert!(hovered_source_edge(&solid, target, midpoint + Vec3::Z, Vec3::NEG_Z).is_none());
     }
 }

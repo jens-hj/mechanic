@@ -20,16 +20,17 @@ use crate::{
     CuboidSpec, CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError,
     DimensionLinkId, DimensionLinkSpec, DriveDwell, DriveKey, DriveLimits, DriveLimitsError,
     DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
-    DriveTarget, DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GearKeyChord,
-    GraphError, GridDimension, GridRotation, InputSeatLinkSpec, InputSpec, MaterialAppearance,
-    PartId, PartSpec, PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
-    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode, TransmissionSpec,
-    WeldSpec,
+    DriveTarget, DriveTrigger, EdgeChainRef, EdgeTreatment, EngineKind, EngineSpec, FaceKind,
+    FaceOwner, FaceRef, GearKeyChord, GraphError, GridDimension, GridRotation, InputSeatLinkSpec,
+    InputSpec, MaterialAppearance, PartId, PartSpec, PipeBendDimensionError, PipeBendDimensions,
+    PipeBendSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeFeature,
+    ShapeFeatureId, ShapeRegion, ShiftMode, SolidOwner, TopologyKey, TopologySource,
+    TransmissionSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 12;
+pub const CREATION_FORMAT_VERSION: u32 = 13;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -61,6 +62,12 @@ pub enum CreationError {
     /// A drive wire referenced a bearing the file does not define.
     #[error("creation references bearing {0}, which the file does not define")]
     MissingBearing(u32),
+    /// A feature target referenced a Shape region the file does not define.
+    #[error("creation references region {0}, which the file does not define")]
+    MissingRegion(u32),
+    /// A topology key referenced an earlier feature the file does not define.
+    #[error("creation references shape feature {0}, which the file does not define")]
+    MissingShapeFeature(u32),
     /// Combining documents exceeded the on-disk 32-bit row index space.
     #[error("creation has too many rows to combine")]
     TooManyRows,
@@ -242,6 +249,57 @@ pub struct FaceRefDoc {
     pub owner: FaceOwnerDoc,
     /// Oriented face on that owner.
     pub face: FaceKind,
+    /// Stable evaluated surface patch, when this connection uses trimmed or
+    /// feature-generated geometry.
+    #[serde(default)]
+    pub patch: Option<TopologyKeyDoc>,
+}
+
+/// Serialized owner of a parametric feature target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SolidOwnerDoc {
+    /// Index into the document's part list.
+    Part(u32),
+    /// Index into the document's Shape-region list.
+    Region(u32),
+}
+
+/// Serialized provenance of a stable topology key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TopologySourceDoc {
+    /// Base-generator topology.
+    Base,
+    /// Index of an earlier record in the ordered feature list.
+    Feature(u32),
+}
+
+/// Serialized stable logical-curve key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopologyKeyDoc {
+    /// Base or generating-feature provenance.
+    pub source: TopologySourceDoc,
+    /// Deterministic identity within that provenance.
+    pub local: u32,
+}
+
+/// One serialized feature target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeChainRefDoc {
+    /// Part or region carrying the chain.
+    pub owner: SolidOwnerDoc,
+    /// Stable logical edge key.
+    pub edge: TopologyKeyDoc,
+}
+
+/// One record in explicit global feature order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShapeFeatureDoc {
+    /// Logical chains treated together.
+    pub targets: Vec<EdgeChainRefDoc>,
+    /// Chamfer or fillet.
+    pub treatment: EdgeTreatment,
+    /// Equal setback or radius in exact position ticks.
+    pub amount_ticks: u32,
 }
 
 /// Weld between two touching faces.
@@ -436,6 +494,9 @@ pub struct CreationDocument {
     /// Editable shape regions. Absent in files written before regions existed.
     #[serde(default)]
     pub regions: Vec<RegionDoc>,
+    /// Parametric edge features in explicit replay order.
+    #[serde(default)]
+    pub shape_features: Vec<ShapeFeatureDoc>,
     /// Bearing rings placed but not yet attached through.
     #[serde(default)]
     pub sockets: Vec<BearingSocketDoc>,
@@ -475,6 +536,10 @@ impl CreationDocument {
             u32::try_from(self.parts.len()).map_err(|_| CreationError::TooManyRows)?;
         let bearing_offset =
             u32::try_from(self.bearings.len()).map_err(|_| CreationError::TooManyRows)?;
+        let region_offset =
+            u32::try_from(self.regions.len()).map_err(|_| CreationError::TooManyRows)?;
+        let feature_offset =
+            u32::try_from(self.shape_features.len()).map_err(|_| CreationError::TooManyRows)?;
         let add_part = |index: &mut u32| -> Result<(), CreationError> {
             *index = index
                 .checked_add(part_offset)
@@ -484,6 +549,15 @@ impl CreationDocument {
         let add_face = |face: &mut FaceRefDoc| -> Result<(), CreationError> {
             if let FaceOwnerDoc::Part(index) = &mut face.owner {
                 add_part(index)?;
+            }
+            if let Some(TopologyKeyDoc {
+                source: TopologySourceDoc::Feature(index),
+                ..
+            }) = &mut face.patch
+            {
+                *index = index
+                    .checked_add(feature_offset)
+                    .ok_or(CreationError::TooManyRows)?;
             }
             Ok(())
         };
@@ -525,6 +599,23 @@ impl CreationDocument {
         for socket in &mut other.sockets {
             add_face(&mut socket.source)?;
         }
+        for feature in &mut other.shape_features {
+            for target in &mut feature.targets {
+                match &mut target.owner {
+                    SolidOwnerDoc::Part(index) => add_part(index)?,
+                    SolidOwnerDoc::Region(index) => {
+                        *index = index
+                            .checked_add(region_offset)
+                            .ok_or(CreationError::TooManyRows)?;
+                    }
+                }
+                if let TopologySourceDoc::Feature(index) = &mut target.edge.source {
+                    *index = index
+                        .checked_add(feature_offset)
+                        .ok_or(CreationError::TooManyRows)?;
+                }
+            }
+        }
         self.parts.append(&mut other.parts);
         self.welds.append(&mut other.welds);
         self.rigid_links.append(&mut other.rigid_links);
@@ -535,6 +626,7 @@ impl CreationDocument {
             .append(&mut other.seat_controller_links);
         self.gearbox_configs.append(&mut other.gearbox_configs);
         self.regions.append(&mut other.regions);
+        self.shape_features.append(&mut other.shape_features);
         self.sockets.append(&mut other.sockets);
         Ok(())
     }
@@ -592,7 +684,9 @@ impl CreationDocument {
     pub fn from_graph(graph: &ConstructionGraph, name: &str, sockets: &[BearingSocket]) -> Self {
         let part_indices = index_map(graph.parts().map(|(id, _)| id));
         let bearing_indices = index_map(graph.bearings().map(|(id, _)| id));
-        let face = |face: FaceRef| face_doc(face, &part_indices);
+        let region_indices = index_map(graph.regions().map(|(id, _)| id));
+        let feature_indices = index_map(graph.shape_features().map(|(id, _)| id));
+        let face = |face: FaceRef| face_doc(face, &part_indices, &feature_indices);
         let part = |part: PartId| {
             *part_indices
                 .get(&part)
@@ -624,6 +718,25 @@ impl CreationDocument {
                             .collect()
                     }),
                     vertices: region.offsets().collect(),
+                })
+                .collect(),
+            shape_features: graph
+                .shape_features()
+                .map(|(_, feature)| ShapeFeatureDoc {
+                    targets: feature
+                        .targets
+                        .iter()
+                        .map(|target| {
+                            edge_chain_doc(
+                                *target,
+                                &part_indices,
+                                &region_indices,
+                                &feature_indices,
+                            )
+                        })
+                        .collect(),
+                    treatment: feature.treatment,
+                    amount_ticks: feature.amount_ticks,
                 })
                 .collect(),
             welds: graph
@@ -745,36 +858,26 @@ impl CreationDocument {
             part_ids.push(id);
         }
 
-        let mut connections =
-            Vec::with_capacity(self.welds.len() + self.rigid_links.len() + self.bearings.len());
-        for weld in &self.welds {
-            connections.push(BuildCommand::Weld(WeldSpec {
-                first: resolve_face(weld.first, &part_ids)?,
-                second: resolve_face(weld.second, &part_ids)?,
+        // Primitive welds establish rigid membership before Shape regions are
+        // claimed. Connections on generated patches wait until feature replay.
+        let mut initial_connections = Vec::with_capacity(self.welds.len() + self.rigid_links.len());
+        for weld in self
+            .welds
+            .iter()
+            .filter(|weld| weld.first.patch.is_none() && weld.second.patch.is_none())
+        {
+            initial_connections.push(BuildCommand::Weld(WeldSpec {
+                first: resolve_face(weld.first, &part_ids, &[])?,
+                second: resolve_face(weld.second, &part_ids, &[])?,
             }));
         }
         for link in &self.rigid_links {
-            connections.push(BuildCommand::RigidLink(RigidLinkSpec {
+            initial_connections.push(BuildCommand::RigidLink(RigidLinkSpec {
                 first: resolve_part(link.first, &part_ids)?,
                 second: resolve_part(link.second, &part_ids)?,
             }));
         }
-        let first_bearing = connections.len();
-        for bearing in &self.bearings {
-            connections.push(BuildCommand::AddBearing(
-                BearingSpec::new(
-                    resolve_face(bearing.source, &part_ids)?,
-                    resolve_face(bearing.target, &part_ids)?,
-                    Vec3::from_array(bearing.anchor),
-                    Vec3::from_array(bearing.axis),
-                )
-                .with_dimensions(BearingDimensions::new(
-                    bearing.outer_diameter,
-                    bearing.inner_diameter,
-                )?),
-            ));
-        }
-        let outcomes = graph.apply_batch(connections)?;
+        graph.apply_batch(initial_connections)?;
         for document in &self.regions {
             let region = ShapeRegion::from_origin_steps(
                 IVec3::from_array(document.origin_steps),
@@ -803,6 +906,54 @@ impl CreationDocument {
                 })?;
             }
         }
+
+        let region_ids = graph.regions().map(|(id, _)| id).collect::<Vec<_>>();
+        let mut feature_ids = Vec::<ShapeFeatureId>::with_capacity(self.shape_features.len());
+        for document in &self.shape_features {
+            let targets = document
+                .targets
+                .iter()
+                .copied()
+                .map(|target| resolve_edge_chain(target, &part_ids, &region_ids, &feature_ids))
+                .collect::<Result<Vec<_>, CreationError>>()?;
+            let outcome = graph.apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                targets,
+                document.treatment,
+                document.amount_ticks,
+            )))?;
+            let BuildOutcome::ShapeFeatureAdded(id) = outcome else {
+                unreachable!("adding a feature reports the feature it added")
+            };
+            feature_ids.push(id);
+        }
+
+        let mut final_connections = Vec::with_capacity(self.welds.len() + self.bearings.len());
+        for weld in self
+            .welds
+            .iter()
+            .filter(|weld| weld.first.patch.is_some() || weld.second.patch.is_some())
+        {
+            final_connections.push(BuildCommand::Weld(WeldSpec {
+                first: resolve_face(weld.first, &part_ids, &feature_ids)?,
+                second: resolve_face(weld.second, &part_ids, &feature_ids)?,
+            }));
+        }
+        let first_bearing = final_connections.len();
+        for bearing in &self.bearings {
+            final_connections.push(BuildCommand::AddBearing(
+                BearingSpec::new(
+                    resolve_face(bearing.source, &part_ids, &feature_ids)?,
+                    resolve_face(bearing.target, &part_ids, &feature_ids)?,
+                    Vec3::from_array(bearing.anchor),
+                    Vec3::from_array(bearing.axis),
+                )
+                .with_dimensions(BearingDimensions::new(
+                    bearing.outer_diameter,
+                    bearing.inner_diameter,
+                )?),
+            ));
+        }
+        let outcomes = graph.apply_batch(final_connections)?;
 
         let bearing_ids = outcomes[first_bearing..]
             .iter()
@@ -884,7 +1035,7 @@ impl CreationDocument {
             .iter()
             .map(|socket| {
                 Ok(BearingSocket {
-                    source: resolve_face(socket.source, &part_ids)?,
+                    source: resolve_face(socket.source, &part_ids, &feature_ids)?,
                     anchor: Vec3::from_array(socket.anchor),
                     dimensions: BearingDimensions::new(
                         socket.outer_diameter,
@@ -1016,7 +1167,11 @@ fn reflected_divisions(divisions: &[i32], size: i32) -> Vec<i32> {
         .collect()
 }
 
-fn face_doc(face: FaceRef, parts: &HashMap<PartId, u32>) -> FaceRefDoc {
+fn face_doc(
+    face: FaceRef,
+    parts: &HashMap<PartId, u32>,
+    features: &HashMap<ShapeFeatureId, u32>,
+) -> FaceRefDoc {
     FaceRefDoc {
         owner: match face.owner {
             FaceOwner::Part(part) => FaceOwnerDoc::Part(
@@ -1027,7 +1182,82 @@ fn face_doc(face: FaceRef, parts: &HashMap<PartId, u32>) -> FaceRefDoc {
             FaceOwner::Ground => FaceOwnerDoc::Ground,
         },
         face: face.face,
+        patch: face.patch.map(|patch| TopologyKeyDoc {
+            source: match patch.source {
+                TopologySource::Base => TopologySourceDoc::Base,
+                TopologySource::Feature(feature) => TopologySourceDoc::Feature(
+                    *features
+                        .get(&feature)
+                        .expect("a referenced generated patch has a live feature"),
+                ),
+            },
+            local: patch.local,
+        }),
     }
+}
+
+fn edge_chain_doc(
+    target: EdgeChainRef,
+    parts: &HashMap<PartId, u32>,
+    regions: &HashMap<crate::RegionId, u32>,
+    features: &HashMap<ShapeFeatureId, u32>,
+) -> EdgeChainRefDoc {
+    EdgeChainRefDoc {
+        owner: match target.owner {
+            SolidOwner::Part(part) => SolidOwnerDoc::Part(
+                *parts
+                    .get(&part)
+                    .expect("every feature part owner is live in its graph"),
+            ),
+            SolidOwner::Region(region) => SolidOwnerDoc::Region(
+                *regions
+                    .get(&region)
+                    .expect("every feature region owner is live in its graph"),
+            ),
+        },
+        edge: TopologyKeyDoc {
+            source: match target.edge.source {
+                TopologySource::Base => TopologySourceDoc::Base,
+                TopologySource::Feature(feature) => TopologySourceDoc::Feature(
+                    *features
+                        .get(&feature)
+                        .expect("generated topology references a live earlier feature"),
+                ),
+            },
+            local: target.edge.local,
+        },
+    }
+}
+
+fn resolve_edge_chain(
+    target: EdgeChainRefDoc,
+    parts: &[PartId],
+    regions: &[crate::RegionId],
+    features: &[ShapeFeatureId],
+) -> Result<EdgeChainRef, CreationError> {
+    let owner = match target.owner {
+        SolidOwnerDoc::Part(index) => SolidOwner::Part(resolve_part(index, parts)?),
+        SolidOwnerDoc::Region(index) => SolidOwner::Region(
+            *regions
+                .get(index as usize)
+                .ok_or(CreationError::MissingRegion(index))?,
+        ),
+    };
+    let source = match target.edge.source {
+        TopologySourceDoc::Base => TopologySource::Base,
+        TopologySourceDoc::Feature(index) => TopologySource::Feature(
+            *features
+                .get(index as usize)
+                .ok_or(CreationError::MissingShapeFeature(index))?,
+        ),
+    };
+    Ok(EdgeChainRef {
+        owner,
+        edge: TopologyKey {
+            source,
+            local: target.edge.local,
+        },
+    })
 }
 
 fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
@@ -1189,12 +1419,37 @@ fn resolve_part(index: u32, parts: &[PartId]) -> Result<PartId, CreationError> {
         .ok_or(CreationError::MissingPart(index))
 }
 
-fn resolve_face(face: FaceRefDoc, parts: &[PartId]) -> Result<FaceRef, CreationError> {
+fn resolve_face(
+    face: FaceRefDoc,
+    parts: &[PartId],
+    features: &[ShapeFeatureId],
+) -> Result<FaceRef, CreationError> {
+    let patch = face
+        .patch
+        .map(|patch| -> Result<crate::SurfacePatchKey, CreationError> {
+            Ok(crate::SurfacePatchKey {
+                source: match patch.source {
+                    TopologySourceDoc::Base => TopologySource::Base,
+                    TopologySourceDoc::Feature(index) => TopologySource::Feature(
+                        *features
+                            .get(index as usize)
+                            .ok_or(CreationError::MissingShapeFeature(index))?,
+                    ),
+                },
+                local: patch.local,
+            })
+        })
+        .transpose()?;
     Ok(match face.owner {
-        FaceOwnerDoc::Part(index) => FaceRef::part(resolve_part(index, parts)?, face.face),
+        FaceOwnerDoc::Part(index) => FaceRef {
+            owner: FaceOwner::Part(resolve_part(index, parts)?),
+            face: face.face,
+            patch,
+        },
         FaceOwnerDoc::Ground => FaceRef {
             owner: FaceOwner::Ground,
             face: face.face,
+            patch: None,
         },
     })
 }
@@ -1238,17 +1493,18 @@ mod tests {
 
     use super::{
         BearingSocket, CREATION_FORMAT_VERSION, CreationDocument, CreationError, FaceOwnerDoc,
-        PartDoc,
+        PartDoc, TopologySourceDoc,
     };
     use crate::{
         ActuatorAssignment, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
         ConstructionGraph, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions,
         CylinderSpec, DimensionLinkId, DimensionLinkSpec, DriveDwell, DriveKey, DriveLimits,
         DriveLinkSpec, DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget,
-        DriveTrigger, EngineKind, EngineSpec, FaceKind, FaceRef, GearKey, GearKeyChord,
-        GridRotation, InputSeatLinkSpec, InputSpec, MaterialAppearance, MaterialColor, MaterialDye,
-        MaterialFinish, PartSpec, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
-        SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, ShiftMode, WeldSpec,
+        DriveTrigger, EdgeChainRef, EdgeTreatment, EngineKind, EngineSpec, FaceKind, FaceRef,
+        GearKey, GearKeyChord, GridRotation, InputSeatLinkSpec, InputSpec, MaterialAppearance,
+        MaterialColor, MaterialDye, MaterialFinish, PartSpec, PipeBendDimensions, PipeBendSpec,
+        RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeFeature, ShapeRegion,
+        ShiftMode, SolidOwner, TopologySource, WeldSpec,
     };
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
@@ -2049,5 +2305,90 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn shape_feature_order_and_topology_provenance_round_trip() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawned(
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [2, 2, 2],
+                        BuildPose::new(IVec3::ZERO, GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap(),
+        );
+        let owner = SolidOwner::Part(part);
+        let first_edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+        let BuildOutcome::ShapeFeatureAdded(first) = graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef {
+                    owner,
+                    edge: first_edge,
+                }],
+                EdgeTreatment::Chamfer,
+                10,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let generated = graph
+            .evaluated_solid(owner)
+            .unwrap()
+            .logical_edges
+            .iter()
+            .find(|edge| edge.key.source == TopologySource::Feature(first))
+            .expect("the chamfer introduces selectable edges")
+            .key;
+        let BuildOutcome::ShapeFeatureAdded(second) = graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef {
+                    owner,
+                    edge: generated,
+                }],
+                EdgeTreatment::Fillet,
+                5,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        let patch = graph
+            .evaluated_solid(owner)
+            .unwrap()
+            .surfaces
+            .iter()
+            .find(|surface| surface.key.source == TopologySource::Feature(second))
+            .expect("the fillet creates generated surface patches")
+            .key;
+        let patch_face = FaceRef::patch(part, FaceKind::PositiveX, patch);
+        let patch_geometry = graph.face_geometry(patch_face).unwrap();
+        let socket = BearingSocket {
+            source: patch_face,
+            anchor: patch_geometry.center,
+            dimensions: BearingDimensions::default(),
+        };
+
+        let document = CreationDocument::from_graph(&graph, "Features", &[socket]);
+        assert_eq!(document.version, 13);
+        assert_eq!(document.shape_features.len(), 2);
+        assert!(matches!(
+            document.shape_features[1].targets[0].edge.source,
+            TopologySourceDoc::Feature(0)
+        ));
+        let loaded = round_trip(&document).into_graph().unwrap();
+        assert_eq!(
+            loaded.sockets[0].source.patch.map(|key| key.local),
+            Some(patch.local)
+        );
+        let restored = loaded.graph;
+        assert_eq!(restored.shape_features().count(), 2);
+        let restored_owner = SolidOwner::Part(restored.parts().next().unwrap().0);
+        assert!(restored.evaluated_solid(restored_owner).is_ok());
     }
 }

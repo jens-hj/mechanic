@@ -309,7 +309,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     .to_owned()
             }
             (false, Tool::Shape, _, _, _) => {
-                "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows/WASD nudge"
+                "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows nudge"
                     .to_owned()
             }
             (false, Tool::Chroma, _, _, _) => {
@@ -385,7 +385,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         format!("{plane_controls}     EDIT GROUNDED/STATIC ONLY     CTRL/CMD+Z  Undo")
     } else {
         format!(
-            "{plane_controls}     TAP ALT  Object snap     HOLD ALT  Show range     ALT+WHEEL  Adjust range     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo"
+            "{plane_controls}     SHIFT+WHEEL  Free range     TAP ALT  Object snap     HOLD ALT  Show range     ALT+WHEEL  Adjust snap range     CTRL/CMD+Z  Undo     SHIFT+CTRL/CMD+Z  Redo"
         )
     };
     let selected_wires = state
@@ -439,8 +439,17 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 )
             )
             .then(|| {
+                let free_range = if !in_world
+                    && selection
+                        .active_editor_tool()
+                        .is_some_and(crate::tool_supports_free_placement)
+                {
+                    format!("    Free range: {:.2} m", state.free_placement.range)
+                } else {
+                    String::new()
+                };
                 format!(
-                    "    Grid: {}    Object snap: {} ({:.2} m)",
+                    "    Grid: {}    Object snap: {} ({:.2} m){free_range}",
                     state.placement_grid.label(),
                     if state.smart_snap.enabled {
                         "On"

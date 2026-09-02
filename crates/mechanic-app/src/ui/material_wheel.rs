@@ -54,17 +54,17 @@ pub(crate) fn RadialSelector(model: State<Model>) -> Element {
                 for (choice, index) in { ordered_sectors(model.get().highlighted) } {
                     (choice_thumbnail(*choice, *index, sector_count(*choice)))
                 }
-                circle radius:36px fill:shell stroke:(width:3px color:shell-edge)
+                circle radius:36px exponent:1 fill:shell stroke:(width:3px color:shell-edge)
                 text font-family:typeface.display font-size:10px font-weight:700
                     letter-spacing:0.6px font-color:accent.key { context_name() }
                 stack width:{ Length::px(LABEL_WIDTH) } height:{ Length::px(LABEL_HEIGHT) }
                     align:center justify:center translate:(x:0px y:{ Length::px(LABEL_OFFSET_Y) })
                     nohit {
                     stack width:{ Length::px(LABEL_WIDTH) } height:{ Length::px(LABEL_HEIGHT) }
-                        translate:(x:0px y:6px) radius:{ Length::px(LABEL_CORNER_RADIUS) }
+                        translate:(x:0px y:6px) radius:{ Length::px(LABEL_CORNER_RADIUS) } exponent:1
                         fill:#090C0F {}
                     stack width:{ Length::px(LABEL_WIDTH) } height:{ Length::px(LABEL_HEIGHT) }
-                        align:center justify:center radius:{ Length::px(LABEL_CORNER_RADIUS) } clip {
+                        align:center justify:center radius:{ Length::px(LABEL_CORNER_RADIUS) } exponent:1 clip {
                         for (texture, ()) in {
                             model.get().highlighted.into_iter().filter_map(|choice| {
                                 choice_base_color_bytes(choice).map(|bytes| (bytes, ()))
@@ -102,7 +102,7 @@ pub(crate) fn RadialSelector(model: State<Model>) -> Element {
 fn material_ratings_panel(material: ConstructionMaterial) -> Element {
     view! {
         col width:fill height:fill gap:5px pad:(left:5px right:5px top:5px bottom:5px)
-            radius:5px fill:#090C0FDD {
+            radius:5px exponent:1 fill:#090C0FDD {
             for (index, rating) in { material_ratings(material).into_iter().enumerate() } {
                 (rating_row(rating.0, rating.1, *index))
             }
@@ -118,7 +118,7 @@ fn rating_row(label: &'static str, rating: u8, index: usize) -> Element {
     };
     view! {
         row width:fill height:16px align:center gap:4px pad:(left:4px right:4px)
-            radius:2px fill:{ color(row_tint) } {
+            radius:2px exponent:1 fill:{ color(row_tint) } {
             text width:104px font-family:typeface.display font-size:10px font-weight:700
                 letter-spacing:0.5px font-color:#F5F8FACC (label)
             (rating_segment(rating >= 1))
@@ -132,9 +132,9 @@ fn rating_row(label: &'static str, rating: u8, index: usize) -> Element {
 
 fn rating_segment(filled: bool) -> Element {
     if filled {
-        view! { el width:18px height:8px radius:2px fill:accent.key {} }
+        view! { el width:18px height:8px radius:2px exponent:1 fill:accent.key {} }
     } else {
-        view! { el width:18px height:8px radius:2px fill:shell-edge {} }
+        view! { el width:18px height:8px radius:2px exponent:1 fill:shell-edge {} }
     }
 }
 
@@ -203,7 +203,7 @@ fn sector_arc(model: State<Model>, choice: WheelChoice, index: usize) -> Element
     let gap = 2.0_f32.min(span * 0.1);
     let centre = -90.0 + small_f32(index) * span;
     view! {
-        circle radius:{ Length::px(SECTOR_RADIUS) }
+        circle radius:{ Length::px(SECTOR_RADIUS) } exponent:1
             arc:(from:{ centre - span * 0.5 + gap } to:{ centre + span * 0.5 - gap })
             stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
     }
@@ -237,13 +237,51 @@ fn choice_thumbnail(choice: WheelChoice, index: usize, count: usize) -> Element 
         WheelChoice::TerrainMaterial(material) => {
             let source = ImageSource::encoded(terrain_base_color_bytes(material));
             view! {
-                stack width:48px height:48px radius:24px clip
+                stack width:48px height:48px radius:24px exponent:1 clip
                     stroke:(width:3px color:shell-edge) align:center justify:center
                     translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
                     img fit:cover width:52px height:52px (source)
                 }
             }
         }
+        WheelChoice::ShapeMode(edit_mode) => shape_mode_thumbnail(edit_mode, position),
+    }
+}
+
+fn shape_mode_thumbnail(
+    edit_mode: crate::shape_tool::ShapeEditMode,
+    position: (f32, f32),
+) -> Element {
+    match edit_mode {
+        crate::shape_tool::ShapeEditMode::Vertex => view! {
+            canvas width:54px height:54px
+                translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                line from:(x:10px y:40px) to:(x:42px y:12px) stroke:(width:3px color:ink.fg)
+                circle at:(x:10px y:40px) radius:5px exponent:1 fill:accent.key
+                circle at:(x:42px y:12px) radius:5px exponent:1 fill:accent.key
+            }
+        },
+        crate::shape_tool::ShapeEditMode::Chamfer => view! {
+            canvas width:54px height:54px
+                translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                line from:(x:8px y:42px) to:(x:28px y:42px) stroke:(width:4px color:ink.fg)
+                line from:(x:28px y:42px) to:(x:44px y:26px) stroke:(width:4px color:accent.key)
+                line from:(x:44px y:26px) to:(x:44px y:8px) stroke:(width:4px color:ink.fg)
+            }
+        },
+        crate::shape_tool::ShapeEditMode::Fillet => view! {
+            canvas width:54px height:54px
+                translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                line from:(x:8px y:42px) to:(x:27px y:42px) stroke:(width:4px color:ink.fg)
+                line from:(x:27px y:42px) to:(x:35px y:40px)
+                    stroke:(width:4px cap:round color:accent.key)
+                line from:(x:35px y:40px) to:(x:41px y:34px)
+                    stroke:(width:4px cap:round color:accent.key)
+                line from:(x:41px y:34px) to:(x:43px y:26px)
+                    stroke:(width:4px cap:round color:accent.key)
+                line from:(x:43px y:26px) to:(x:43px y:8px) stroke:(width:4px color:ink.fg)
+            }
+        },
     }
 }
 
@@ -398,7 +436,7 @@ const fn choice_base_color_bytes(choice: WheelChoice) -> Option<&'static [u8]> {
     match choice {
         WheelChoice::ConstructionMaterial(material) => Some(material_base_color_bytes(material)),
         WheelChoice::TerrainMaterial(material) => Some(terrain_base_color_bytes(material)),
-        WheelChoice::Item(_) => None,
+        WheelChoice::Item(_) | WheelChoice::ShapeMode(_) => None,
     }
 }
 
@@ -470,6 +508,19 @@ mod tests {
             )))
             .len(),
             mechanic_world::TerrainMaterial::ALL.len()
+        );
+        assert_eq!(
+            ordered_sectors(Some(WheelChoice::ShapeMode(
+                crate::shape_tool::ShapeEditMode::Vertex
+            )))
+            .len(),
+            3
+        );
+        assert_eq!(
+            WheelChoice::ShapeMode(crate::shape_tool::ShapeEditMode::Fillet)
+                .context()
+                .label(),
+            "SHAPE"
         );
         assert_eq!(
             WheelChoice::Item(PlaceableItem::Bearing).context().label(),

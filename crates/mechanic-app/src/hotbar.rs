@@ -122,6 +122,7 @@ pub(crate) enum WheelChoice {
     ConstructionMaterial(ConstructionMaterial),
     Item(PlaceableItem),
     TerrainMaterial(TerrainMaterial),
+    ShapeMode(crate::shape_tool::ShapeEditMode),
 }
 
 /// A radial selector's data model, shared by input and rendering.
@@ -130,6 +131,7 @@ pub(crate) enum WheelContext {
     ConstructionMaterial,
     Item,
     TerrainMaterial,
+    Shape,
 }
 
 impl WheelChoice {
@@ -143,6 +145,7 @@ impl WheelChoice {
             Self::TerrainMaterial(TerrainMaterial::Sand) => "Sand",
             Self::TerrainMaterial(TerrainMaterial::Iron) => "Iron",
             Self::TerrainMaterial(TerrainMaterial::Graphite) => "Graphite",
+            Self::ShapeMode(mode) => mode.label(),
         }
     }
 
@@ -151,6 +154,7 @@ impl WheelChoice {
             Self::ConstructionMaterial(_) => WheelContext::ConstructionMaterial,
             Self::Item(_) => WheelContext::Item,
             Self::TerrainMaterial(_) => WheelContext::TerrainMaterial,
+            Self::ShapeMode(_) => WheelContext::Shape,
         }
     }
 }
@@ -161,6 +165,7 @@ impl WheelContext {
             Self::ConstructionMaterial => "MATERIALS",
             Self::Item => "ITEMS",
             Self::TerrainMaterial => "TERRAIN",
+            Self::Shape => "SHAPE",
         }
     }
 
@@ -169,6 +174,7 @@ impl WheelContext {
             Self::ConstructionMaterial => ConstructionMaterial::ALL.len(),
             Self::Item => PlaceableItem::ALL.len(),
             Self::TerrainMaterial => TerrainMaterial::ALL.len(),
+            Self::Shape => crate::shape_tool::ShapeEditMode::ALL.len(),
         }
     }
 
@@ -186,6 +192,10 @@ impl WheelContext {
                 .get(index)
                 .copied()
                 .map(WheelChoice::TerrainMaterial),
+            Self::Shape => crate::shape_tool::ShapeEditMode::ALL
+                .get(index)
+                .copied()
+                .map(WheelChoice::ShapeMode),
         }
     }
 

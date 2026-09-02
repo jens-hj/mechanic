@@ -66,14 +66,14 @@ mod tests {
         let _ambient = ui.enter();
         ui.mount(&view! {
             col width:min-content height:min-content {
-                PanelSurface elevated:true width:123px height:40px radius:5px {
+                PanelSurface elevated:true width:123px height:40px radius:5px exponent:1 {
                     text "panel"
                 }
                 Action #mechanic.action-danger label:"Remove" on-click:(|| {}) width:91px
                     height:31px {
                     text "action"
                 }
-                OverlayBadge width:37px height:19px radius:4px {
+                OverlayBadge width:37px height:19px radius:4px exponent:1 {
                     text "7"
                 }
             }

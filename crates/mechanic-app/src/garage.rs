@@ -36,7 +36,7 @@ struct GarageMaterials {
     light_glow: Handle<StandardMaterial>,
 }
 
-/// Adds the 6 × 6-cell, three-course Garage and its editor-only build scaffold.
+/// Adds the 6 × 6-cell, three-course Garage.
 pub(crate) fn spawn(
     commands: &mut Commands,
     asset_server: &AssetServer,
@@ -48,16 +48,6 @@ pub(crate) fn spawn(
     spawn_surfaces(commands, meshes, &garage_materials);
 
     let cube = meshes.add(Cuboid::default());
-    commands.spawn((
-        Name::new("Garage build scaffold"),
-        Mesh3d(cube.clone()),
-        MeshMaterial3d(garage_materials.mint_glow.clone()),
-        Transform::from_xyz(0.0, BUILD_MIN_Y - 0.01, 0.0).with_scale(Vec3::new(
-            GROUND_HALF_SIZE * 2.0,
-            0.02,
-            GROUND_HALF_SIZE * 2.0,
-        )),
-    ));
     spawn_kerbs(commands, &cube, &garage_materials);
     spawn_columns(commands, &cube, &garage_materials);
     spawn_trusses(commands, &cube, &garage_materials);

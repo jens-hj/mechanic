@@ -267,7 +267,7 @@ fn engine_lane(handles: &Handles, kind: EngineKind) -> Element {
     let gearbox = gearbox_area(handles, kind);
     let mismatch = move || engine_read(model, kind, false, |engine| engine.mismatch);
     view! {
-        row height:min-content shrink:0 margin:(top:10px) radius:12px fill:lane.fill
+        row height:min-content shrink:0 margin:(top:10px) radius:12px exponent:1 fill:lane.fill
             stroke:(width:1px color:{
                 if mismatch() { color(accent.angle) } else { color(lane.edge) }
             }) {
@@ -314,7 +314,7 @@ fn engine_summary(model: State<PanelModel>, kind: EngineKind) -> Element {
         col width:262px shrink:0 gap:10px pad:(left:14px right:14px top:14px bottom:12px)
             stroke:(width:1px color:lane.edge edges:right) {
             row height:min-content align:center gap:9px {
-                col width:30px height:30px shrink:0 align:center justify:center radius:7px
+                col width:30px height:30px shrink:0 align:center justify:center radius:7px exponent:1
                     fill:{ engine_wash(kind) } stroke:(width:1px color:{ engine_accent(kind) })
                     font-color:{ engine_accent(kind) } {
                     text font-size:14px font-weight:700 (initial)
@@ -332,10 +332,10 @@ fn engine_summary(model: State<PanelModel>, kind: EngineKind) -> Element {
                 (speed)
                 (bearings)
             }
-            row height:34px align:center gap:7px pad:(horizontal:9px vertical:0px) radius:8px
+            row height:34px align:center gap:7px pad:(horizontal:9px vertical:0px) radius:8px exponent:1
                 fill:if mismatch() { { color(wash.angle) } } else { { color(chip.fill) } }
                 stroke:(width:1px color:if mismatch() { color(accent.angle) } else { color(chip.edge) }) {
-                col width:7px height:7px shrink:0 radius:4px
+                col width:7px height:7px shrink:0 radius:4px exponent:1
                     fill:if mismatch() { { color(accent.angle) } } else { { engine_accent(kind) } } {}
                 text width:1fr font-size:9px font-weight:700 letter-spacing:0.45px text-wrap:none
                     font-color:if mismatch() { { color(accent.angle) } } else { { color(ink.muted) } }
@@ -440,9 +440,9 @@ fn gearbox_mismatch(model: State<PanelModel>, kind: EngineKind) -> Element {
     view! {
         col width:1fr min-width:0px height:194px align:center justify:center pad:20px {
             row max-width:720px height:min-content align:center gap:14px
-                pad:(horizontal:18px vertical:16px) radius:12px fill:wash.angle
+                pad:(horizontal:18px vertical:16px) radius:12px exponent:1 fill:wash.angle
                 stroke:(width:1px color:accent.angle) {
-                col width:34px height:34px shrink:0 align:center justify:center radius:9px
+                col width:34px height:34px shrink:0 align:center justify:center radius:9px exponent:1
                     fill:#3A2918 font-color:accent.angle {
                     text font-size:18px font-weight:700 "!"
                 }
@@ -509,16 +509,16 @@ fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
                     font-color:ink.fg "GEARBOX CONTROL"
                 text font-size:9px font-color:ink.faint "input : output ratios"
             }
-            row width:158px shrink:0 height:36px align:center gap:3px pad:3px radius:9px
+            row width:158px shrink:0 height:36px align:center gap:3px pad:3px radius:9px exponent:1
                 fill:chip.fill stroke:(width:1px color:chip.edge) {
-                col width:1fr height:28px align:center justify:center radius:6px
+                col width:1fr height:28px align:center justify:center radius:6px exponent:1
                     fill:if is_auto() { { color(accent.speed) } } else { Color::TRANSPARENT }
                     font-color:if is_auto() { { color(shell) } } else { { color(ink.muted) } }
                     @click:{ auto.gearbox(kind, GearboxEdit::Mode(ShiftMode::Auto)); }
                     hover { fill:reticle.fill_over } {
                     text font-size:10px font-weight:700 "AUTO"
                 }
-                col width:1fr height:28px align:center justify:center radius:6px
+                col width:1fr height:28px align:center justify:center radius:6px exponent:1
                     fill:if !is_auto() { { color(accent.speed) } } else { Color::TRANSPARENT }
                     font-color:if !is_auto() { { color(shell) } } else { { color(ink.muted) } }
                     @click:{ manual.gearbox(kind, GearboxEdit::Mode(ShiftMode::Manual)); }
@@ -554,7 +554,7 @@ fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
                 text font-size:9px font-weight:700 letter-spacing:0.5px "SWAP KEYS"
             }
             if conflict() {
-                row height:30px align:center gap:5px pad:(horizontal:9px vertical:0px) radius:7px
+                row height:30px align:center gap:5px pad:(horizontal:9px vertical:0px) radius:7px exponent:1
                     fill:wash.angle stroke:(width:1px color:accent.angle) font-color:accent.angle {
                     text font-size:12px font-weight:700 "!"
                     text font-size:9px font-weight:700 text-wrap:none "KEY CONFLICT"
@@ -601,20 +601,20 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
         move || Dimension::Px(track_width() * f32::from(divider()) / count() as f32);
     let marker = move || track_width() * f32::from(divider()) / count() as f32 - 1.5;
     view! {
-        row height:42px align:center gap:10px pad:(horizontal:10px vertical:0px) radius:9px
+        row height:42px align:center gap:10px pad:(horizontal:10px vertical:0px) radius:9px exponent:1
             fill:chip.fill stroke:(width:1px color:chip.edge) {
             col width:126px shrink:0 height:min-content gap:2px {
                 text font-family:typeface.display font-size:9px font-weight:700 letter-spacing:0.8px
                     font-color:ink.muted "DIRECTION SPLIT"
                 text font-size:9px font-color:ink.faint "drag to assign gears"
             }
-            col width:32px height:30px align:center justify:center radius:7px
+            col width:32px height:30px align:center justify:center radius:7px exponent:1
                 stroke:(width:1px color:chip.edge) font-color:accent.angle
                 @click:{ left.move_divider(kind, -1); }
                 hover { fill:wash.angle stroke:(width:1px color:accent.angle) } {
                 text font-size:11px font-weight:700 "R−"
             }
-            stack width:1fr min-width:120px height:30px radius:7px fill:wash.speed
+            stack width:1fr min-width:120px height:30px radius:7px exponent:1 fill:wash.speed
                 @layout:{ move |rect: Rect| bounds.set(rect) }
                 @drag:{ move |event: &DragEvent, _: &mut EventCtx| {
                     let rect = bounds.get_untracked();
@@ -627,7 +627,7 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
                         event.phase != DragPhase::End,
                     );
                 } } {
-                col width:{ reverse_width() } height:30px radius:7px fill:wash.angle {}
+                col width:{ reverse_width() } height:30px radius:7px exponent:1 fill:wash.angle {}
                 row align:center justify:between pad:(horizontal:10px vertical:0px) {
                     text font-size:9px font-weight:700 font-color:accent.angle
                         {
@@ -638,10 +638,10 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
                         format!("{} FORWARD", count().saturating_sub(usize::from(divider())))
                     }
                 }
-                col width:3px height:24px translate:(x:{ Length::px(marker()) } y:3px) radius:2px
+                col width:3px height:24px translate:(x:{ Length::px(marker()) } y:3px) radius:2px exponent:1
                     fill:ink.fg {}
             }
-            col width:32px height:30px align:center justify:center radius:7px
+            col width:32px height:30px align:center justify:center radius:7px exponent:1
                 stroke:(width:1px color:chip.edge) font-color:accent.angle
                 @click:{ right.move_divider(kind, 1); }
                 hover { fill:wash.angle stroke:(width:1px color:accent.angle) } {
@@ -713,7 +713,7 @@ fn ratio_card(handles: &Handles, kind: EngineKind, index: usize) -> Element {
         })
     };
     view! {
-        col width:128px shrink:0 height:82px gap:5px pad:(horizontal:9px vertical:8px) radius:10px
+        col width:128px shrink:0 height:82px gap:5px pad:(horizontal:9px vertical:8px) radius:10px exponent:1
             fill:if active() {
                 if reverse() { { color(wash.angle) } } else { { color(wash.speed) } }
             } else { { color(card.fill) } }
@@ -723,7 +723,7 @@ fn ratio_card(handles: &Handles, kind: EngineKind, index: usize) -> Element {
             shadow:(offset:(x:0px y:8px) blur:18px color:#00000052) {
             row height:18px align:center justify:between {
                 row width:min-content height:18px align:center pad:(horizontal:7px vertical:0px)
-                    radius:5px
+                    radius:5px exponent:1
                     fill:if reverse() { { color(wash.pill_angle) } } else { { color(wash.pill_speed) } }
                     font-color:if reverse() { { color(accent.angle) } } else { { color(accent.speed) } } {
                     text font-size:10px font-weight:700 { label() }
@@ -757,13 +757,13 @@ fn ratio_controls(handles: &Handles, kind: EngineKind, index: usize) -> Element 
     let increase = handles.clone();
     view! {
         row height:20px gap:4px {
-            col width:1fr align:center justify:center radius:5px fill:chip.fill
+            col width:1fr align:center justify:center radius:5px exponent:1 fill:chip.fill
                 stroke:(width:1px color:chip.edge)
                 @click:{ decrease.adjust_ratio(kind, index, -0.05); }
                 hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) } {
                 text font-size:12px "−"
             }
-            col width:1fr align:center justify:center radius:5px fill:chip.fill
+            col width:1fr align:center justify:center radius:5px exponent:1 fill:chip.fill
                 stroke:(width:1px color:chip.edge)
                 @click:{ increase.adjust_ratio(kind, index, 0.05); }
                 hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) } {
@@ -783,7 +783,7 @@ fn header(handles: &Handles) -> Element {
         row height:min-content align:center justify:between pad:(horizontal:22px vertical:16px)
             stroke:(width:1px color:shell-rule edges:bottom) {
             row height:min-content align:center gap:14px {
-                col width:34px height:34px align:center justify:center radius:8px fill:#0F2A2A
+                col width:34px height:34px align:center justify:center radius:8px exponent:1 fill:#0F2A2A
                     stroke:(width:1px color:accent.key) font-color:accent.key {
                     icon size:18px mark
                 }
@@ -796,7 +796,7 @@ fn header(handles: &Handles) -> Element {
             (capacity)
             row height:min-content align:center gap:18px {
                 (legend())
-                col width:32px height:32px align:center justify:center radius:8px
+                col width:32px height:32px align:center justify:center radius:8px exponent:1
                     stroke:(width:1px color:shell-rule) font-color:ink.muted
                     @click:{ close.close() }
                     hover { fill:reticle.fill-over stroke:(width:1px color:accent.key) } {
@@ -867,7 +867,7 @@ fn capacity_item(model: State<PanelModel>, kind: CapacityKind) -> Element {
     view! {
         row #mechanic.chip width:110px height:38px align:center gap:8px
             pad:(horizontal:8px vertical:0px) opacity:{ if active() { 1.0 } else { 0.32 } } {
-            col width:22px height:22px align:center justify:center radius:6px
+            col width:22px height:22px align:center justify:center radius:6px exponent:1
                 fill:{
                     match kind {
                         CapacityKind::Electric => color(wash.speed),
@@ -911,25 +911,25 @@ fn legend() -> Element {
 fn legend_item(label: &'static str) -> Element {
     let tile = match label {
         "hold angle" => view! {
-            col width:22px height:22px align:center justify:center radius:6px fill:wash.angle
+            col width:22px height:22px align:center justify:center radius:6px exponent:1 fill:wash.angle
                 font-color:accent.angle {
                 icon size:14px legend-angle
             }
         },
         "spin" => view! {
-            col width:22px height:22px align:center justify:center radius:6px fill:wash.speed
+            col width:22px height:22px align:center justify:center radius:6px exponent:1 fill:wash.speed
                 font-color:accent.speed {
                 icon size:14px legend-spin
             }
         },
         "key" => view! {
-            col width:22px height:22px align:center justify:center radius:6px fill:wash.key
+            col width:22px height:22px align:center justify:center radius:6px exponent:1 fill:wash.key
                 font-color:accent.key {
                 icon size:14px legend-key
             }
         },
         _ => view! {
-            col width:22px height:22px align:center justify:center radius:6px fill:wash.time
+            col width:22px height:22px align:center justify:center radius:6px exponent:1 fill:wash.time
                 font-color:accent.time {
                 icon size:14px legend-time
             }
@@ -971,7 +971,7 @@ fn lane_row(handles: &Handles, id: DriveLinkId) -> Element {
         move || handles.read(id, 0, |joint| joint.number).to_string()
     };
     view! {
-        row height:min-content margin:(top:10px) radius:12px
+        row height:min-content margin:(top:10px) radius:12px exponent:1
             fill:if $selected == Some(id) { { color(lane.fill_on) } } else { { color(lane.fill) } }
             stroke:(width:1px color:{
                 if located.get() == Some(id) {
@@ -986,7 +986,7 @@ fn lane_row(handles: &Handles, id: DriveLinkId) -> Element {
             col width:262px shrink:0 gap:10px pad:(left:14px right:14px top:14px bottom:12px)
                 stroke:(width:1px color:lane.edge edges:right) {
                 row height:min-content align:center gap:9px {
-                    col width:30px height:30px shrink:0 align:center justify:center radius:7px
+                    col width:30px height:30px shrink:0 align:center justify:center radius:7px exponent:1
                         fill:if $selected == Some(id) { { color(wash.badge) } }
                         else { { color(badge.fill) } }
                         stroke:(width:1px color:{
@@ -998,7 +998,7 @@ fn lane_row(handles: &Handles, id: DriveLinkId) -> Element {
                         text font-size:15px font-weight:700 { number() }
                     }
                     (name_field(&handles, id))
-                    col width:28px height:28px shrink:0 align:center justify:center radius:7px
+                    col width:28px height:28px shrink:0 align:center justify:center radius:7px exponent:1
                         stroke:(width:1px color:{
                             if located.get() == Some(id) { color(accent.key) } else { color(reticle.edge) }
                         })
@@ -1326,7 +1326,7 @@ fn wire_label(handles: &Handles, id: DriveLinkId, rank: usize, release: bool) ->
             // Wider on the right than the design's even 9px: the icon carries
             // its own bearing inside its box and a glyph does not, so equal
             // padding reads as text crowding the cap it sits against.
-            pad:(left:9px right:12px top:0px bottom:0px) radius:12px
+            pad:(left:9px right:12px top:0px bottom:0px) radius:12px exponent:1
             translate:(x:{ Length::px(at().0 - width.get() / 2.0) }
                        y:{ Length::px(at().1 - 12.0) })
             @layout:{ move |bounds: Rect| {
@@ -1380,7 +1380,7 @@ fn state_card(
     view! {
         col #mechanic.elevated width:204px height:214px align:center
             pad:(left:12px right:12px top:10px bottom:4px)
-            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:14px fill:card.fill
+            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:14px exponent:1 fill:card.fill
             stroke:(width:{ if caught() { 2.0 } else { 1.0 } } color:{
                 if caught() { draft_color(draft.get()) }
                 else if selected.get() == Some(id) { color(card.edge_on) }
@@ -1436,7 +1436,7 @@ fn card_header(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
         row height:20px align:center justify:between {
             row width:min-content height:20px align:center gap:6px {
                 row width:min-content height:20px align:center pad:(horizontal:7px vertical:0px)
-                    radius:5px
+                    radius:5px exponent:1
                     fill:{ if angled() { color(wash.pill_angle) } else { color(wash.pill_speed) } } {
                     text font-size:12px font-weight:700 { format!("S{}", index + 1) }
                 }
@@ -1447,19 +1447,19 @@ fn card_header(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                 }
             }
             row width:min-content height:20px align:center gap:4px {
-                col width:26px height:20px align:center justify:center radius:5px
+                col width:26px height:20px align:center justify:center radius:5px exponent:1
                     fill:{ if angled() { color(wash.mode_angle) } else { Color::TRANSPARENT } }
                     font-color:{ if angled() { color(accent.angle) } else { color(mode.off) } }
                     @click:{ to_angle.edit(id, PanelEdit::SetMode { state: slot, mode: Mode::Angle }) } {
                     icon size:15px mode-angle
                 }
-                col width:26px height:20px align:center justify:center radius:5px
+                col width:26px height:20px align:center justify:center radius:5px exponent:1
                     fill:{ if angled() { Color::TRANSPARENT } else { color(wash.mode_speed) } }
                     font-color:{ if angled() { color(mode.off) } else { color(accent.speed) } }
                     @click:{ to_speed.edit(id, PanelEdit::SetMode { state: slot, mode: Mode::Speed }) } {
                     icon size:15px mode-speed
                 }
-                col width:20px height:20px align:center justify:center radius:5px
+                col width:20px height:20px align:center justify:center radius:5px exponent:1
                     font-color:accent.danger opacity:0.5
                     @click:{ remove.edit(id, PanelEdit::RemoveState { state: slot }) }
                     hover { opacity:1.0 fill:wash.delete } {
@@ -1635,21 +1635,21 @@ fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
             // corner — which would slide the dial off the number at its centre
             // by however much the sweep happened to reach.
             canvas width:132px height:132px {
-                circle at:(x:66px y:66px) radius:54px stroke:(width:13px color:dial.track)
+                circle at:(x:66px y:66px) radius:54px exponent:1 stroke:(width:13px color:dial.track)
                 if reading.travel_span().is_some() && reading.angled() {
-                    circle at:(x:66px y:66px) radius:54px
+                    circle at:(x:66px y:66px) radius:54px exponent:1
                         arc:(from:{ reading.travel_span().map_or(0.0, |span| span.0) }
                              to:{ reading.travel_span().map_or(0.0, |span| span.1) })
                         stroke:(width:13px color:wash.travel-arc)
                 }
                 if reading.span().is_some() {
-                    circle at:(x:66px y:66px) radius:54px
+                    circle at:(x:66px y:66px) radius:54px exponent:1
                         arc:(from:{ reading.span().map_or(0.0, |span| span.0) }
                              to:{ reading.span().map_or(0.0, |span| span.1) })
                         stroke:(width:13px cap:round color:{ reading.accent() })
                 }
                 if reading.over() {
-                    circle at:(x:66px y:66px) radius:63px
+                    circle at:(x:66px y:66px) radius:63px exponent:1
                         arc:(from:{ reading.over_span().map_or(0.0, |span| span.0) }
                              to:{ reading.over_span().map_or(0.0, |span| span.1) })
                         stroke:(width:3px color:accent.danger)
@@ -1657,7 +1657,7 @@ fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                 line from:(x:66px y:3px) to:(x:66px y:16px)
                     stroke:(width:2px cap:round color:dial.tick)
                 circle at:(x:{ Length::px(reading.head().0) } y:{ Length::px(reading.head().1) })
-                    radius:9px fill:dial.knob
+                    radius:9px exponent:1 fill:dial.knob
                     stroke:(width:3px color:{ reading.accent() })
                 if reading.grips() {
                     line from:(x:{ Length::px(reading.tick(true, false).0) }
@@ -1672,10 +1672,10 @@ fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                         stroke:(width:2px cap:round color:dial.limit)
                     circle at:(x:{ Length::px(reading.grip(true).0) }
                               y:{ Length::px(reading.grip(true).1) })
-                        radius:6.5px fill:dial.knob stroke:(width:2px color:dial.grip)
+                        radius:6.5px exponent:1 fill:dial.knob stroke:(width:2px color:dial.grip)
                     circle at:(x:{ Length::px(reading.grip(false).0) }
                               y:{ Length::px(reading.grip(false).1) })
-                        radius:6.5px fill:dial.knob stroke:(width:2px color:dial.grip)
+                        radius:6.5px exponent:1 fill:dial.knob stroke:(width:2px color:dial.grip)
                 }
             }
             (readout)
@@ -1762,7 +1762,7 @@ fn keycap(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let clear = handles.clone();
     view! {
         row width:min-content height:34px min-width:46px align:center justify:center gap:6px
-            pad:(horizontal:10px vertical:0px) radius:8px margin:(top:6px)
+            pad:(horizontal:10px vertical:0px) radius:8px exponent:1 margin:(top:6px)
             fill:{
                 if arming() { color(wash.capturing) }
                 else if bound().is_some() { color(accent.key) }
@@ -1824,7 +1824,7 @@ fn release_port(
     let dragged: State<bool> = State::new(false);
     view! {
         col width:22px height:22px align:center justify:center
-            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:11px fill:port.fill
+            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:11px exponent:1 fill:port.fill
             stroke:(width:1px color:{
                 if !keyed() { color(port.off) }
                 else if latched() { color(port.idle) }
@@ -1892,7 +1892,7 @@ fn dwell_port(
     let top = move || band_top(model, id) + geometry::NODE_H - 11.0;
     view! {
         col width:22px height:22px align:center justify:center
-            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:11px fill:port.fill
+            translate:(x:(Length::px(left)) y:{ Length::px(top()) }) radius:11px exponent:1 fill:port.fill
             stroke:(width:1px color:{
                 if waiting() { color(accent.time) } else { color(port.idle) }
             })
@@ -1941,12 +1941,12 @@ fn add_card(handles: &Handles, id: DriveLinkId) -> Element {
     let left = move || Length::px(geometry::add_card_left(count()));
     view! {
         col width:204px height:214px align:center justify:center
-            translate:(x:{ left() } y:{ Length::px(top()) }) radius:14px
+            translate:(x:{ left() } y:{ Length::px(top()) }) radius:14px exponent:1
             stroke:(width:1px color:add.edge) opacity:0.6
             @click:{ handles.edit(id, PanelEdit::AddState) }
             hover { stroke:(width:1px color:accent.key) fill:add.fill-over opacity:1.0 } {
             canvas width:132px height:132px {
-                circle at:(x:66px y:66px) radius:54px stroke:(width:13px color:add.ring)
+                circle at:(x:66px y:66px) radius:54px exponent:1 stroke:(width:13px color:add.ring)
                 line from:(x:66px y:53px) to:(x:66px y:79px)
                     stroke:(width:2.4px cap:round color:ink.dim)
                 line from:(x:53px y:66px) to:(x:79px y:66px)
@@ -2192,7 +2192,7 @@ fn preset_button(handles: &Handles, id: DriveLinkId, which: Preset) -> Element {
     view! {
         Action label:(label.to_owned())
             on-click:(move || handles.edit(id, PanelEdit::ApplyPreset(which))) width:1fr height:34px
-            radius:8px fill:Color::TRANSPARENT stroke:(width:1px color:preset.edge)
+            radius:8px exponent:1 fill:Color::TRANSPARENT stroke:(width:1px color:preset.edge)
             hover { stroke:(width:1px color:accent.key) fill:preset.fill-over } {
             (glyph)
         }
