@@ -7,12 +7,15 @@ use std::{
     collections::{BTreeMap, BTreeSet, BinaryHeap},
 };
 
-use bevy_math::{DVec2, DVec3, Vec3};
+use bevy_math::{DVec2, DVec3, Quat, Vec3};
 use mechanic_core::PartId;
 
 use crate::{
     BrickCoord, TERRAIN_CELL_METERS, TerrainField, TerrainMaterial, TerrainMeshChunk,
     TerrainNodeId, TerrainOctree, TerrainRayHit, TerrainTransitionMask, WorldPosition,
+    construction_collision::{
+        ConstructionBodyPose, ConstructionContact, KinematicCollisionScene, construction_feet,
+    },
 };
 
 /// Read-only density source used by walking, raycasts, and support checks.
@@ -372,6 +375,18 @@ pub struct KinematicCapsuleConfig {
     pub sprint_speed: f64,
     /// Downward acceleration.
     pub gravity: f64,
+    /// Downward acceleration used for the authored jump arc.
+    pub airborne_gravity: f64,
+    /// Player mass used for equal-and-opposite construction reactions.
+    pub mass: f64,
+    /// Maximum grounded horizontal acceleration.
+    pub ground_acceleration: f64,
+    /// Maximum airborne horizontal acceleration.
+    pub air_acceleration: f64,
+    /// Tangential impulse limit relative to the normal impulse.
+    pub traction_coefficient: f64,
+    /// Normal velocity retained after impact.
+    pub restitution: f64,
 }
 
 impl Default for KinematicCapsuleConfig {
@@ -380,11 +395,17 @@ impl Default for KinematicCapsuleConfig {
             radius: 0.30,
             standing_height: 1.8,
             step_height: 0.35,
-            maximum_slope: 50.0_f64.to_radians(),
-            jump_height: 1.2,
+            maximum_slope: 45.0_f64.to_radians(),
+            jump_height: 0.75,
             walk_speed: 4.0,
             sprint_speed: 7.0,
             gravity: 9.81,
+            airborne_gravity: 24.0,
+            mass: 80.0,
+            ground_acceleration: 40.0,
+            air_acceleration: 10.0,
+            traction_coefficient: 0.8,
+            restitution: 0.0,
         }
     }
 }
@@ -400,6 +421,83 @@ pub struct KinematicInput {
     pub jump: bool,
 }
 
+/// Persistent moving-platform attachment in compound-local coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KinematicSupport {
+    /// Supporting compiled compound row.
+    pub compound_index: u32,
+    /// Supporting compiled collider row.
+    pub collider_index: u32,
+    /// Contact anchor retained in the body frame.
+    pub local_anchor: Vec3,
+    /// Pose used to apply the next published support-point delta.
+    pub previous_pose: ConstructionBodyPose,
+}
+
+/// Equal-and-opposite impulse queued for the next GPU physics tick.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct KinematicContactReaction {
+    /// Dynamic compound receiving the reaction.
+    pub compound_index: u32,
+    /// Contact point in the construction/GPU frame.
+    pub world_point: Vec3,
+    /// Impulse applied to the construction, opposite the player's response.
+    pub impulse: Vec3,
+}
+
+/// Maximum distinct contact reactions produced by one controller tick.
+pub const MAX_KINEMATIC_REACTIONS: usize = 8;
+
+/// Observable result of one fixed controller tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KinematicTickResult {
+    /// Fixed-capacity reaction rows; only the prefix ending at `reaction_count` is valid.
+    pub reactions: [KinematicContactReaction; MAX_KINEMATIC_REACTIONS],
+    /// Number of populated reaction rows.
+    pub reaction_count: usize,
+    /// World-up yaw inherited from a rotating support.
+    pub support_yaw_delta: f32,
+    /// Construction contacts resolved during the tick.
+    pub resolved_contacts: u32,
+    /// Upward construction step taken during this tick.
+    pub stepped_height: f32,
+}
+
+impl Default for KinematicTickResult {
+    fn default() -> Self {
+        Self {
+            reactions: [KinematicContactReaction::default(); MAX_KINEMATIC_REACTIONS],
+            reaction_count: 0,
+            support_yaw_delta: 0.0,
+            resolved_contacts: 0,
+            stepped_height: 0.0,
+        }
+    }
+}
+
+impl KinematicTickResult {
+    /// Populated equal-and-opposite reaction rows.
+    pub fn reaction_impulses(&self) -> &[KinematicContactReaction] {
+        &self.reactions[..self.reaction_count]
+    }
+
+    fn push_reaction(&mut self, reaction: KinematicContactReaction) {
+        if reaction.impulse.length_squared() <= 1.0e-12 {
+            return;
+        }
+        if let Some(existing) = self.reactions[..self.reaction_count]
+            .iter_mut()
+            .find(|existing| existing.compound_index == reaction.compound_index)
+        {
+            existing.world_point = reaction.world_point;
+            existing.impulse += reaction.impulse;
+        } else if self.reaction_count < MAX_KINEMATIC_REACTIONS {
+            self.reactions[self.reaction_count] = reaction;
+            self.reaction_count += 1;
+        }
+    }
+}
+
 /// Persistent capsule controller state. Position is the centre of its bottom face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KinematicCapsule {
@@ -411,6 +509,8 @@ pub struct KinematicCapsule {
     pub grounded: bool,
     /// Movement limits.
     pub config: KinematicCapsuleConfig,
+    /// Moving construction supporting the last tick, if any.
+    pub support: Option<KinematicSupport>,
 }
 
 impl KinematicCapsule {
@@ -421,55 +521,303 @@ impl KinematicCapsule {
             velocity: DVec3::ZERO,
             grounded: false,
             config: KinematicCapsuleConfig::default(),
+            support: None,
         }
     }
 
-    /// Advances one fixed tick with sweep-and-slide style penetration resolution.
-    pub fn tick(
+    /// Clears moving-platform state before seating or after collision-scene replacement.
+    pub fn clear_support(&mut self) {
+        self.support = None;
+    }
+
+    /// Advances one fixed tick against terrain and compiled construction.
+    #[allow(clippy::too_many_lines)] // Terrain preservation and construction response share one ordered solve.
+    pub fn tick<T: TerrainDensity>(
         &mut self,
-        terrain: &impl TerrainDensity,
+        scene: &mut KinematicCollisionScene<'_, T>,
         input: KinematicInput,
         delta_seconds: f64,
-    ) {
+    ) -> KinematicTickResult {
+        let mut result = KinematicTickResult::default();
+        let mut support_velocity = Vec3::ZERO;
+        if let Some(mut support) = self.support {
+            let current_pose = scene
+                .construction
+                .as_deref()
+                .and_then(|index| index.body_pose(support.compound_index));
+            if let Some(current_pose) = current_pose {
+                let previous_point = support.previous_pose.transform_point(support.local_anchor);
+                let current_point = current_pose.transform_point(support.local_anchor);
+                self.position.0 += DVec3::from(current_point - previous_point);
+                result.support_yaw_delta =
+                    world_up_yaw_delta(support.previous_pose.rotation, current_pose.rotation);
+                support.previous_pose = current_pose;
+                support_velocity = current_pose.velocity_at(current_point);
+                self.support = Some(support);
+            } else {
+                self.support = None;
+                self.grounded = false;
+            }
+        }
+        let started_grounded = self.grounded;
+        let retained_support = self.support;
+
         let speed = if input.sprint {
             self.config.sprint_speed
         } else {
             self.config.walk_speed
         };
         let movement = input.movement.clamp_length_max(1.0) * speed;
-        self.velocity.x = movement.x;
-        self.velocity.z = movement.y;
-        if self.grounded && !input.jump && input.movement.length_squared() <= f64::EPSILON {
-            let still_supported =
-                raycast_density(terrain, self.position, DVec3::NEG_Y, TERRAIN_CELL_METERS)
-                    .is_some_and(|hit| f64::from(hit.normal.y) >= self.config.maximum_slope.cos());
+        let target = movement;
+        let horizontal = DVec2::new(self.velocity.x, self.velocity.z);
+        let acceleration = if self.grounded {
+            self.config.ground_acceleration
+        } else {
+            self.config.air_acceleration
+        };
+        let accelerated = move_toward(horizontal, target, acceleration * delta_seconds);
+        self.velocity.x = accelerated.x;
+        self.velocity.z = accelerated.y;
+        let stationary_grounded =
+            self.grounded && !input.jump && input.movement.length_squared() <= f64::EPSILON;
+        if stationary_grounded {
+            let still_supported = self.support.is_some()
+                || raycast_density(
+                    scene.terrain,
+                    self.position,
+                    DVec3::NEG_Y,
+                    TERRAIN_CELL_METERS,
+                )
+                .is_some_and(|hit| f64::from(hit.normal.y) >= self.config.maximum_slope.cos());
             if still_supported {
                 self.velocity = DVec3::ZERO;
-                return;
+                if self.support.is_none() && scene.construction.is_none() {
+                    return result;
+                }
             }
             self.grounded = false;
+            self.support = None;
         }
         if input.jump && self.grounded {
-            self.velocity.y = (2.0 * self.config.gravity * self.config.jump_height).sqrt();
+            self.velocity.x += f64::from(support_velocity.x);
+            self.velocity.y = f64::from(support_velocity.y)
+                + (2.0 * self.config.airborne_gravity * self.config.jump_height).sqrt();
+            self.velocity.z += f64::from(support_velocity.z);
             self.grounded = false;
+            self.support = None;
         } else if self.grounded {
             self.velocity.y = 0.0;
         } else {
-            self.velocity.y -= self.config.gravity * delta_seconds;
+            self.velocity.y -= self.config.airborne_gravity * delta_seconds;
         }
 
-        let displacement = self.velocity * delta_seconds;
+        let mut displacement = self.velocity * delta_seconds;
+        if let Some(index) = scene.construction.as_deref_mut() {
+            // A retained support supplies this tick's reference-frame delta and
+            // velocity, but must be rediscovered below to survive the tick.
+            self.support = None;
+            let mut feet = construction_feet(self.position, scene.floating_origin);
+            let mut remaining = displacement.as_vec3();
+            let mut construction_ground = None;
+            for _ in 0..5 {
+                let Some(mut contact) = index.cast_capsule(feet, remaining, self.config) else {
+                    feet += remaining;
+                    break;
+                };
+                result.resolved_contacts = result.resolved_contacts.saturating_add(1);
+                if stationary_grounded && remaining.y < 0.0 {
+                    let contact_feet = feet + remaining * contact.time_of_impact;
+                    if let Some((_height, normal, surface_height)) = index.walkable_surface_height(
+                        contact.collider_index,
+                        contact_feet,
+                        feet.y - TERRAIN_CELL_METERS as f32 - 1.0e-3,
+                        feet.y + 1.0e-3,
+                        self.config,
+                        None,
+                    ) {
+                        contact.normal = normal;
+                        contact.point.y = surface_height;
+                    }
+                }
+                let walkable = f64::from(contact.normal.y) >= self.config.maximum_slope.cos();
+                if started_grounded
+                    && !walkable
+                    && remaining.x.mul_add(remaining.x, remaining.z * remaining.z) > 0.0
+                {
+                    let raised = feet + Vec3::Y * self.config.step_height as f32;
+                    if index.cast_capsule(raised, remaining, self.config).is_none() {
+                        let mut stepped = raised + remaining;
+                        let downward = Vec3::NEG_Y * (self.config.step_height as f32 + 1.0e-3);
+                        if let Some(mut step_floor) =
+                            index.cast_capsule(stepped, downward, self.config)
+                            && let Some((height, normal, surface_height)) = index
+                                .walkable_surface_height(
+                                    step_floor.collider_index,
+                                    stepped,
+                                    feet.y + 1.0e-4,
+                                    raised.y + 1.0e-3,
+                                    self.config,
+                                    Some(remaining),
+                                )
+                        {
+                            stepped.y = height + 1.0e-4 / normal.y;
+                            result.stepped_height =
+                                result.stepped_height.max((stepped.y - feet.y).max(0.0));
+                            step_floor.normal = normal;
+                            step_floor.point.y = surface_height;
+                            feet = stepped;
+                            construction_ground = Some(step_floor);
+                            break;
+                        }
+                    }
+                }
+                if contact.penetration > 0.0 {
+                    feet += contact.normal * (contact.penetration + 1.0e-4);
+                } else {
+                    feet += remaining * contact.time_of_impact.max(0.0);
+                }
+                let body_velocity = index
+                    .body_pose(contact.compound_index)
+                    .map_or(Vec3::ZERO, |pose| pose.velocity_at(contact.point));
+                let player_velocity = self.velocity.as_vec3() + support_velocity;
+                let relative_velocity = player_velocity - body_velocity;
+                let normal_speed = relative_velocity.dot(contact.normal);
+                let inverse_player_mass = (self.config.mass as f32).recip();
+                let inverse_body_mass = index.body_effective_inverse_mass(
+                    contact.compound_index,
+                    contact.point,
+                    contact.normal,
+                );
+                let denominator = inverse_player_mass + inverse_body_mass;
+                let impact_impulse = if normal_speed < 0.0 && denominator > 0.0 {
+                    -(1.0 + self.config.restitution as f32) * normal_speed / denominator
+                } else {
+                    0.0
+                };
+                let weight_impulse = if walkable {
+                    self.config.mass as f32
+                        * self.config.gravity as f32
+                        * delta_seconds as f32
+                        * contact.normal.y.max(0.0)
+                } else {
+                    0.0
+                };
+                let normal_impulse = impact_impulse.max(weight_impulse);
+                let tangent_velocity = relative_velocity - contact.normal * normal_speed;
+                let tangent_impulse = if walkable && denominator > 0.0 {
+                    let desired = -tangent_velocity / denominator;
+                    desired
+                        .clamp_length_max(self.config.traction_coefficient as f32 * normal_impulse)
+                } else {
+                    Vec3::ZERO
+                };
+                let player_impulse = contact.normal * impact_impulse + tangent_impulse;
+                self.velocity += DVec3::from(player_impulse * inverse_player_mass);
+                if !index.body_is_static(contact.compound_index) {
+                    result.push_reaction(KinematicContactReaction {
+                        compound_index: contact.compound_index,
+                        world_point: contact.point,
+                        impulse: -(contact.normal * normal_impulse + tangent_impulse),
+                    });
+                }
+                let into_surface = self.velocity.as_vec3().dot(contact.normal);
+                if into_surface < 0.0 {
+                    self.velocity -= DVec3::from(contact.normal * into_surface);
+                }
+                let unused = 1.0 - contact.time_of_impact.clamp(0.0, 1.0);
+                remaining *= unused;
+                let into_remaining = remaining.dot(contact.normal);
+                if into_remaining < 0.0 {
+                    remaining -= contact.normal * into_remaining;
+                }
+                if walkable && self.velocity.y <= f64::from(body_velocity.y + 0.05) {
+                    construction_ground = Some(contact);
+                }
+                if walkable && stationary_grounded {
+                    self.velocity.x = 0.0;
+                    self.velocity.z = 0.0;
+                    remaining = Vec3::ZERO;
+                }
+                if remaining.length_squared() <= 1.0e-12 {
+                    break;
+                }
+            }
+            displacement = DVec3::ZERO;
+
+            if construction_ground.is_none() && self.velocity.y <= 0.05 {
+                construction_ground =
+                    index.cast_capsule(feet, Vec3::NEG_Y * TERRAIN_CELL_METERS as f32, self.config);
+            }
+            if construction_ground.is_none()
+                && started_grounded
+                && !input.jump
+                && let Some(support) = retained_support
+                && let Some((height, normal, surface_height)) = index.walkable_surface_height(
+                    support.collider_index,
+                    feet,
+                    feet.y - self.config.step_height as f32 - 1.0e-3,
+                    feet.y + self.config.step_height as f32 + 1.0e-3,
+                    self.config,
+                    None,
+                )
+            {
+                feet.y = height + 1.0e-4 / normal.y;
+                construction_ground = Some(ConstructionContact {
+                    compound_index: support.compound_index,
+                    collider_index: support.collider_index,
+                    time_of_impact: 0.0,
+                    normal,
+                    point: Vec3::new(feet.x, surface_height, feet.z),
+                    penetration: 0.0,
+                });
+            }
+            if let Some(mut contact) = construction_ground {
+                if let Some((height, normal, surface_height)) = index.walkable_surface_height(
+                    contact.collider_index,
+                    feet,
+                    feet.y - TERRAIN_CELL_METERS as f32 - 1.0e-3,
+                    feet.y + 1.0e-3,
+                    self.config,
+                    None,
+                ) {
+                    feet.y = height + 1.0e-4 / normal.y;
+                    contact.normal = normal;
+                    contact.point.y = surface_height;
+                    construction_ground = Some(contact);
+                } else if f64::from(contact.normal.y) < self.config.maximum_slope.cos() {
+                    construction_ground = None;
+                }
+            }
+            if let Some(contact) = construction_ground
+                && let Some(pose) = index.body_pose(contact.compound_index)
+            {
+                self.grounded = true;
+                self.velocity.y = 0.0;
+                self.support = Some(KinematicSupport {
+                    compound_index: contact.compound_index,
+                    collider_index: contact.collider_index,
+                    local_anchor: pose.inverse_transform_point(contact.point),
+                    previous_pose: pose,
+                });
+                if stationary_grounded {
+                    self.velocity.x = 0.0;
+                    self.velocity.z = 0.0;
+                }
+            }
+            self.position = WorldPosition(scene.floating_origin + DVec3::from(feet));
+        }
+
         let mut candidate = WorldPosition(self.position.0 + displacement);
         for _ in 0..5 {
             let Some((penetration, normal)) =
-                deepest_capsule_penetration(terrain, candidate, self.config)
+                deepest_capsule_penetration(scene.terrain, candidate, self.config)
             else {
                 break;
             };
             let walkable = f64::from(normal.y) >= self.config.maximum_slope.cos();
             if !walkable && (displacement.x != 0.0 || displacement.z != 0.0) {
                 let stepped = WorldPosition(candidate.0 + DVec3::Y * self.config.step_height);
-                if deepest_capsule_penetration(terrain, stepped, self.config).is_none() {
+                if deepest_capsule_penetration(scene.terrain, stepped, self.config).is_none() {
                     candidate = stepped;
                     continue;
                 }
@@ -482,10 +830,15 @@ impl KinematicCapsule {
         }
         self.position = candidate;
 
-        self.grounded = false;
+        let construction_grounded = self.support.is_some();
+        self.grounded = construction_grounded;
         if self.velocity.y <= 0.05
-            && let Some(hit) =
-                raycast_density(terrain, self.position, DVec3::NEG_Y, TERRAIN_CELL_METERS)
+            && let Some(hit) = raycast_density(
+                scene.terrain,
+                self.position,
+                DVec3::NEG_Y,
+                TERRAIN_CELL_METERS,
+            )
             && f64::from(hit.normal.y) >= self.config.maximum_slope.cos()
         {
             // Keep the feet just outside the density surface so the next tick does not
@@ -493,7 +846,37 @@ impl KinematicCapsule {
             self.position = WorldPosition(hit.position.0 + DVec3::Y * 1.0e-4);
             self.velocity.y = 0.0;
             self.grounded = true;
+            self.support = None;
         }
+        if !self.grounded {
+            self.support = None;
+        }
+        if let Some(index) = scene.construction.as_deref_mut() {
+            index.finish_motion_snapshot();
+        }
+        result
+    }
+}
+
+fn move_toward(current: DVec2, target: DVec2, maximum_delta: f64) -> DVec2 {
+    let delta = target - current;
+    if delta.length_squared() <= maximum_delta * maximum_delta {
+        target
+    } else {
+        current + delta.normalize_or_zero() * maximum_delta
+    }
+}
+
+fn world_up_yaw_delta(previous: Quat, current: Quat) -> f32 {
+    let previous_forward = (previous * Vec3::NEG_Z).with_y(0.0).normalize_or_zero();
+    let current_forward = (current * Vec3::NEG_Z).with_y(0.0).normalize_or_zero();
+    if previous_forward == Vec3::ZERO || current_forward == Vec3::ZERO {
+        0.0
+    } else {
+        previous_forward
+            .cross(current_forward)
+            .y
+            .atan2(previous_forward.dot(current_forward))
     }
 }
 
@@ -788,8 +1171,8 @@ mod tests {
 
     use super::{
         ActiveTerrainScene, FoundationSample, FoundationSpatialIndex, FoundationSupport,
-        KinematicCapsule, KinematicInput, TerrainDensity, TerrainRayHit, TerrainSpatialIndex,
-        WorldConstructionEditability, raycast_density,
+        KinematicCapsule, KinematicCollisionScene, KinematicInput, TerrainDensity, TerrainRayHit,
+        TerrainSpatialIndex, WorldConstructionEditability, raycast_density,
     };
     use crate::{
         BrickCoord, TerrainMaterial, TerrainMeshRequest, TerrainNodeId, TerrainOctree,
@@ -820,7 +1203,32 @@ mod tests {
         }
     }
 
+    fn tick_terrain(
+        capsule: &mut KinematicCapsule,
+        terrain: &impl TerrainDensity,
+        input: KinematicInput,
+    ) {
+        let mut scene = KinematicCollisionScene {
+            terrain,
+            construction: None,
+            floating_origin: DVec3::ZERO,
+        };
+        capsule.tick(&mut scene, input, 1.0 / 60.0);
+    }
+
     struct CountingPlane(Cell<usize>);
+
+    struct Empty;
+
+    impl TerrainDensity for Empty {
+        fn density(&self, _position: WorldPosition) -> f32 {
+            -1.0
+        }
+
+        fn material(&self, _position: WorldPosition) -> TerrainMaterial {
+            TerrainMaterial::Rock
+        }
+    }
 
     impl TerrainDensity for CountingPlane {
         fn density(&self, position: WorldPosition) -> f32 {
@@ -921,38 +1329,50 @@ mod tests {
     fn capsule_lands_and_jumps_to_requested_height() {
         let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(0.0, 1.0, 0.0)));
         for _ in 0..120 {
-            capsule.tick(&Plane, KinematicInput::default(), 1.0 / 60.0);
+            tick_terrain(&mut capsule, &Plane, KinematicInput::default());
         }
         assert!(capsule.grounded);
         assert!(capsule.position.0.y.abs() < 0.02);
-        capsule.tick(
+        tick_terrain(
+            &mut capsule,
             &Plane,
             KinematicInput {
                 movement: DVec2::ZERO,
                 sprint: false,
                 jump: true,
             },
-            1.0 / 60.0,
         );
         let mut peak = capsule.position.0.y;
+        let mut airborne_ticks = 1;
         for _ in 0..120 {
-            capsule.tick(&Plane, KinematicInput::default(), 1.0 / 60.0);
+            tick_terrain(&mut capsule, &Plane, KinematicInput::default());
             peak = peak.max(capsule.position.0.y);
+            airborne_ticks += 1;
+            if capsule.grounded {
+                break;
+            }
         }
-        assert!((peak - 1.2).abs() < 0.12, "peak was {peak}");
+        assert!(
+            (peak - capsule.config.jump_height).abs() < 0.08,
+            "peak was {peak}"
+        );
+        assert!(
+            (28..=32).contains(&airborne_ticks),
+            "jump lasted {airborne_ticks} ticks"
+        );
     }
 
     #[test]
     fn grounded_capsule_stays_still_on_a_walkable_slope() {
         let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(0.0, 0.1, 0.0)));
         for _ in 0..60 {
-            capsule.tick(&Slope, KinematicInput::default(), 1.0 / 60.0);
+            tick_terrain(&mut capsule, &Slope, KinematicInput::default());
         }
         assert!(capsule.grounded);
         let settled = capsule.position;
 
         for _ in 0..120 {
-            capsule.tick(&Slope, KinematicInput::default(), 1.0 / 60.0);
+            tick_terrain(&mut capsule, &Slope, KinematicInput::default());
         }
 
         assert!(
@@ -963,33 +1383,474 @@ mod tests {
     }
 
     #[test]
+    fn grounded_capsule_stays_still_on_a_walkable_construction_slope() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([16, 1, 16], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("cuboid spawn returns its part");
+        };
+        let mut creation = graph.compile_with_static_parts([part]).unwrap();
+        let mechanic_core::ColliderShape::Cuboid { local_rotation, .. } =
+            &mut creation.colliders[0].shape
+        else {
+            panic!("unshaped cuboid keeps its fast-path collider");
+        };
+        *local_rotation = bevy_math::Quat::from_rotation_z(30.0_f32.to_radians());
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::Y));
+        for _ in 0..120 {
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        }
+        assert!(capsule.grounded);
+        let settled = capsule.position;
+
+        for _ in 0..120 {
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        }
+
+        assert!(
+            capsule.position.0.abs_diff_eq(settled.0, 1.0e-5),
+            "stationary capsule drifted from {settled:?} to {:?}",
+            capsule.position
+        );
+    }
+
+    #[test]
+    fn grounded_capsule_does_not_slide_from_a_flat_construction_edge() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([8, 1, 8], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("cuboid spawn returns its part");
+        };
+        let creation = graph.compile_with_static_parts([part]).unwrap();
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::Y));
+        for _ in 0..120 {
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        }
+        assert!(capsule.grounded);
+        capsule.position.0.x = 1.05;
+        let edge = capsule.position;
+
+        for _ in 0..120 {
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        }
+
+        assert!(capsule.grounded);
+        assert!(
+            (capsule.position.0.x - edge.0.x).abs() < 1.0e-3
+                && (capsule.position.0.z - edge.0.z).abs() < 1.0e-3
+                && (capsule.position.0.y - edge.0.y).abs() < 0.01,
+            "stationary capsule drifted from {edge:?} to {:?}",
+            capsule.position
+        );
+    }
+
+    #[test]
+    fn vertical_construction_contact_does_not_slow_a_fall() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1, 8, 8],
+                    BuildPose::new(bevy_math::IVec3::new(4, 4, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("cuboid spawn returns its part");
+        };
+        let creation = graph.compile_with_static_parts([part]).unwrap();
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let mut against_wall = KinematicCapsule::new(WorldPosition(DVec3::new(0.57, 0.1, 0.0)));
+        against_wall.velocity = DVec3::new(1.0, -2.0, 0.0);
+        let mut free_fall = against_wall;
+        let input = KinematicInput {
+            movement: DVec2::X,
+            sprint: false,
+            jump: false,
+        };
+        let mut wall_scene = KinematicCollisionScene {
+            terrain: &Empty,
+            construction: Some(&mut index),
+            floating_origin: DVec3::ZERO,
+        };
+        let result = against_wall.tick(&mut wall_scene, input, 1.0 / 60.0);
+        let mut empty_scene = KinematicCollisionScene {
+            terrain: &Empty,
+            construction: None,
+            floating_origin: DVec3::ZERO,
+        };
+        free_fall.tick(&mut empty_scene, input, 1.0 / 60.0);
+
+        assert!(
+            result.resolved_contacts > 0,
+            "the capsule should reach the wall"
+        );
+        assert!(
+            (against_wall.velocity.y - free_fall.velocity.y).abs() < 1.0e-6,
+            "wall contact slowed the fall: {} instead of {}",
+            against_wall.velocity.y,
+            free_fall.velocity.y,
+        );
+    }
+
+    #[test]
     fn sprint_uses_configured_faster_speed() {
         let mut walking = KinematicCapsule::new(WorldPosition(DVec3::ZERO));
         walking.grounded = true;
         let mut sprinting = walking;
 
-        walking.tick(
-            &Plane,
+        for _ in 0..20 {
+            tick_terrain(
+                &mut walking,
+                &Plane,
+                KinematicInput {
+                    movement: DVec2::X,
+                    sprint: false,
+                    jump: false,
+                },
+            );
+            tick_terrain(
+                &mut sprinting,
+                &Plane,
+                KinematicInput {
+                    movement: DVec2::X,
+                    sprint: true,
+                    jump: false,
+                },
+            );
+        }
+
+        assert!((walking.velocity.x - walking.config.walk_speed).abs() < f64::EPSILON);
+        assert!((sprinting.velocity.x - sprinting.config.sprint_speed).abs() < f64::EPSILON);
+        assert!(sprinting.position.0.x > walking.position.0.x);
+    }
+
+    #[test]
+    fn dynamic_construction_supports_and_receives_opposite_player_impulses() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([8, 1, 8], BuildPose::default()).unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::Y));
+        let mut landing_reaction = None;
+        for _ in 0..120 {
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            let result = capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+            landing_reaction = result
+                .reaction_impulses()
+                .first()
+                .copied()
+                .or(landing_reaction);
+        }
+        assert!(capsule.grounded);
+        assert_eq!(
+            capsule.support.map(|support| support.compound_index),
+            Some(0)
+        );
+        let reaction = landing_reaction.expect("dynamic floor receives player reaction");
+        assert!(reaction.impulse.y < 0.0, "{reaction:?}");
+
+        let mut scene = KinematicCollisionScene {
+            terrain: &Empty,
+            construction: Some(&mut index),
+            floating_origin: DVec3::ZERO,
+        };
+        let load = capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        assert!(
+            load.reaction_impulses()
+                .iter()
+                .any(|reaction| reaction.impulse.y < 0.0),
+            "a stationary player must load a dynamic platform"
+        );
+    }
+
+    #[test]
+    fn moving_support_carries_position_yaw_and_jump_velocity() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([16, 1, 16], BuildPose::default()).unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(0.5, 1.0, 0.0)));
+        for _ in 0..120 {
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        }
+        assert!(capsule.grounded);
+        let before = capsule.position;
+        let pose = crate::ConstructionBodyPose {
+            translation: Vec3::X,
+            rotation: bevy_math::Quat::from_rotation_y(core::f32::consts::FRAC_PI_2),
+            linear_velocity: Vec3::new(2.0, 0.0, 0.0),
+            angular_velocity: Vec3::Y,
+        };
+        assert!(index.refit_dynamic(&[pose]));
+        let mut scene = KinematicCollisionScene {
+            terrain: &Empty,
+            construction: Some(&mut index),
+            floating_origin: DVec3::ZERO,
+        };
+        let carried = capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        assert_ne!(capsule.position, before);
+        assert!((carried.support_yaw_delta - core::f32::consts::FRAC_PI_2).abs() < 1.0e-4);
+        let inherited_x = capsule
+            .support
+            .map(|support| {
+                pose.velocity_at(pose.transform_point(support.local_anchor))
+                    .x
+            })
+            .unwrap();
+
+        let mut scene = KinematicCollisionScene {
+            terrain: &Empty,
+            construction: Some(&mut index),
+            floating_origin: DVec3::ZERO,
+        };
+        capsule.tick(
+            &mut scene,
             KinematicInput {
-                movement: DVec2::X,
+                movement: DVec2::ZERO,
+                sprint: false,
+                jump: true,
+            },
+            1.0 / 60.0,
+        );
+        assert!(!capsule.grounded);
+        assert!(
+            (capsule.velocity.x - f64::from(inherited_x)).abs() < 0.05,
+            "{:?}",
+            capsule.velocity
+        );
+    }
+
+    #[test]
+    fn construction_step_climbs_only_to_the_compiled_top_face() {
+        let mut graph = ConstructionGraph::new();
+        let parts = graph
+            .apply_batch([
+                BuildCommand::Spawn(CuboidSpec::new([16, 1, 16], BuildPose::default()).unwrap()),
+                BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [4, 1, 8],
+                        BuildPose::new(bevy_math::IVec3::new(4, 1, 0), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ),
+            ])
+            .unwrap()
+            .into_iter()
+            .filter_map(|outcome| match outcome {
+                BuildOutcome::Spawned(part) => Some(part),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let creation = graph.compile_with_static_parts(parts).unwrap();
+        let step_top = creation
+            .colliders
+            .iter()
+            .filter_map(|collider| match collider.shape {
+                mechanic_core::ColliderShape::Cuboid { half_extents, .. } => Some(
+                    creation.compounds[collider.compound_index as usize]
+                        .root_translation
+                        .y
+                        + collider.local_center.y
+                        + half_extents.y,
+                ),
+                mechanic_core::ColliderShape::Convex(_) => None,
+            })
+            .fold(f32::NEG_INFINITY, f32::max);
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(-0.5, 0.125, 0.0)));
+        capsule.grounded = true;
+        let mut reported_step = 0.0_f32;
+        let mut maximum_height = capsule.position.0.y;
+        for _ in 0..25 {
+            let before = capsule.position;
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            let result = capsule.tick(
+                &mut scene,
+                KinematicInput {
+                    movement: DVec2::X,
+                    sprint: false,
+                    jump: false,
+                },
+                1.0 / 60.0,
+            );
+            reported_step = reported_step.max(result.stepped_height);
+            maximum_height = maximum_height.max(capsule.position.0.y);
+            if result.stepped_height > 0.0 {
+                assert!(
+                    (capsule.position.0.y - before.0.y - f64::from(result.stepped_height)).abs()
+                        < 1.0e-5
+                );
+            }
+        }
+        for _ in 0..30 {
+            let mut scene = KinematicCollisionScene {
+                terrain: &Empty,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            capsule.tick(&mut scene, KinematicInput::default(), 1.0 / 60.0);
+        }
+        assert!(capsule.position.0.x > 0.5, "{:?}", capsule.position);
+        assert!(reported_step > 0.0, "the ledge should use the step path");
+        assert!(
+            maximum_height <= f64::from(step_top) + 1.0e-3,
+            "step overshot its top: {maximum_height} > {step_top}",
+        );
+        assert!(
+            (capsule.position.0.y - f64::from(step_top)).abs() < 0.02,
+            "{:?}, step top {step_top}",
+            capsule.position,
+        );
+        assert!(capsule.grounded);
+    }
+
+    #[test]
+    fn construction_step_can_be_climbed_at_an_angle() {
+        let mut graph = ConstructionGraph::new();
+        let parts = graph
+            .apply_batch([
+                BuildCommand::Spawn(CuboidSpec::new([16, 1, 16], BuildPose::default()).unwrap()),
+                BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [4, 1, 8],
+                        BuildPose::new(bevy_math::IVec3::new(4, 1, 0), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ),
+            ])
+            .unwrap()
+            .into_iter()
+            .filter_map(|outcome| match outcome {
+                BuildOutcome::Spawned(part) => Some(part),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let creation = graph.compile_with_static_parts(parts).unwrap();
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let direction = DVec2::new(1.0, 1.0).normalize();
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(0.19, 0.125, -0.5)));
+        capsule.grounded = true;
+        capsule.velocity = DVec3::new(direction.x, 0.0, direction.y) * capsule.config.walk_speed;
+        let mut scene = KinematicCollisionScene {
+            terrain: &Empty,
+            construction: Some(&mut index),
+            floating_origin: DVec3::ZERO,
+        };
+        let result = capsule.tick(
+            &mut scene,
+            KinematicInput {
+                movement: direction,
                 sprint: false,
                 jump: false,
             },
             1.0 / 60.0,
         );
-        sprinting.tick(
-            &Plane,
-            KinematicInput {
-                movement: DVec2::X,
-                sprint: true,
-                jump: false,
-            },
-            1.0 / 60.0,
-        );
 
-        assert!((walking.velocity.x - walking.config.walk_speed).abs() < f64::EPSILON);
-        assert!((sprinting.velocity.x - sprinting.config.sprint_speed).abs() < f64::EPSILON);
-        assert!(sprinting.position.0.x > walking.position.0.x);
+        assert!(
+            result.stepped_height > 0.0,
+            "the angled approach should use the step path: {:?}",
+            capsule.position
+        );
+        assert!(capsule.position.0.y > 0.3, "{:?}", capsule.position);
+        assert!(capsule.grounded);
+    }
+
+    #[test]
+    fn grazing_a_step_edge_does_not_repeat_step_and_fall() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 1, 8],
+                    BuildPose::new(bevy_math::IVec3::new(4, 0, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("cuboid spawn returns its part");
+        };
+        let creation = graph.compile_with_static_parts([part]).unwrap();
+        let mut index = crate::ConstructionCollisionIndex::new(&creation);
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(-0.5, 0.0, 1.01)));
+        capsule.grounded = true;
+        let mut step_count = 0;
+        let mut largest_rise = 0.0_f64;
+        for _ in 0..120 {
+            let previous_height = capsule.position.0.y;
+            let mut scene = KinematicCollisionScene {
+                terrain: &Plane,
+                construction: Some(&mut index),
+                floating_origin: DVec3::ZERO,
+            };
+            let result = capsule.tick(
+                &mut scene,
+                KinematicInput {
+                    movement: DVec2::X,
+                    sprint: false,
+                    jump: false,
+                },
+                1.0 / 60.0,
+            );
+            step_count += usize::from(result.stepped_height > 0.0);
+            largest_rise = largest_rise.max(capsule.position.0.y - previous_height);
+        }
+
+        assert_eq!(step_count, 0, "a grazing path must stay beside the step");
+        assert!(largest_rise < 0.04, "grazing path jumped by {largest_rise}");
     }
 
     #[test]

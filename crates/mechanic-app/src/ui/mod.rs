@@ -109,12 +109,14 @@ pub(crate) enum WorldAction {
     Create { name: String, seed: String },
     Open(std::path::PathBuf),
     Delete(std::path::PathBuf),
+    ExitToSelector,
 }
 
 /// What was changed or requested in the pause menu.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PauseAction {
     Continue,
+    ExitToWorldSelector,
     OpenOptions,
     OpenControls,
     Back,
@@ -582,7 +584,15 @@ pub(crate) fn push(
         ui.pushed.chroma = chroma.appearance;
     }
     ui.handles.terrain_material.set(terrain_material.0);
-    let block = control_block::capture(&panel, &graph, &gearboxes, settings.controls());
+    // Vehicle bindings depend on graph topology, and discovering them walks the
+    // machine module. Compute that once only when a panel actually displays the
+    // result; doing it once per gameplay action made large worlds stall.
+    let vehicle_conflicts = if panel.controller().is_some() || pause.is_open() {
+        settings.controls().vehicle_conflicts(&graph.0)
+    } else {
+        Vec::new()
+    };
+    let block = control_block::capture(&panel, &graph, &gearboxes, !vehicle_conflicts.is_empty());
     if block != ui.pushed.block {
         ui.handles.block.model.set(block.clone());
         ui.pushed.block = block;
@@ -603,14 +613,11 @@ pub(crate) fn push(
         camera_fov_degrees: settings.camera_fov_degrees(),
         controls: settings.controls().clone(),
         capture: pause.binding_capture(),
-        vehicle_conflicts: GameAction::ALL
-            .into_iter()
-            .filter(|action| {
-                settings
-                    .controls()
-                    .conflicts_with_vehicle(&graph.0, *action)
-            })
-            .collect(),
+        vehicle_conflicts: if pause.is_open() {
+            vehicle_conflicts.clone()
+        } else {
+            Vec::new()
+        },
     };
     if pause_model != ui.pushed.pause {
         ui.handles.pause.set(pause_model.clone());
@@ -776,7 +783,9 @@ mod tests {
 
     use super::material_wheel;
     use super::testing::{Overlay, VIEWPORT, away};
-    use super::theme::{BODY_FAMILY, DISPLAY_FAMILY, accent, metrics, palette, typeface};
+    use super::theme::{
+        BODY_FAMILY, DISPLAY_FAMILY, bar as bar_tokens, metrics, palette, typeface,
+    };
     use super::{creations, escape_is_consumed, load_fonts, theme, worlds};
     use crate::hotbar::{SelectedTool, Tool};
 
@@ -977,7 +986,7 @@ mod tests {
                 .last()
                 .and_then(|shape| shape.strokes.first())
                 .and_then(|stroke| stroke.color.as_solid()),
-            Some(color(accent.key)),
+            Some(color(bar_tokens.slot_over)),
         );
         assert!(sectors.iter().all(|shape| shape.rect.size.width > 250.0));
 

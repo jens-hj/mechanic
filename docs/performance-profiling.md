@@ -27,6 +27,21 @@ cargo run --profile profiling -p mechanic-bench -- --scenario terrain_stream
 cargo run --profile profiling -p mechanic-bench -- --scenario terrain_dig
 ```
 
+The deterministic player/construction collision gate is CPU-only and should be
+captured separately from GPU physics:
+
+```sh
+cargo run --release -p mechanic-bench -- --scenario player_collision --seconds 30 --warmup 5
+```
+
+It uses exactly 131,072 indexed static colliders (32 local candidates per
+query) and 20,000 moving one-collider bodies. On the M1 Pro, warmed complete
+query p95 must remain at or below 0.25 ms and dynamic top-level refit p95 at or
+below 2.0 ms, with stable traversal/candidate capacities after warm-up. A
+retained 1,800-sample release check after 300 warm-up samples on 2026-09-02
+reported 0.009 ms query p95, 1.089 ms refit p95, 32 candidates, 1,800 contacts,
+and passed both gates.
+
 The articulated size sweep isolates the load-time serial/general route boundary:
 
 ```sh

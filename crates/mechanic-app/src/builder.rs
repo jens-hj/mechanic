@@ -448,6 +448,13 @@ impl PlacementSnapIndex {
         targets.sort_by_key(|target| target.part);
         targets
     }
+
+    pub(crate) fn overlaps(&self, spec: PartSpec) -> bool {
+        let (minimum, maximum) = part_world_bounds(spec);
+        self.nearby(minimum, maximum, 0.0)
+            .into_iter()
+            .any(|target| parts_overlap(spec, target.spec))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -3069,6 +3076,34 @@ pub(crate) fn validate_block_batch_in_bounds(
     Ok(())
 }
 
+/// Preview counterpart to [`validate_block_batch_in_bounds`] that narrows exact
+/// overlap tests through the placement index. The committed operation still
+/// performs the full validation when it is applied.
+pub(crate) fn validate_indexed_block_batch_in_bounds(
+    index: &PlacementSnapIndex,
+    start: PlacementCandidate,
+    specs: &[CuboidSpec],
+    bounds: PlacementBounds,
+) -> Result<(), PlacementError> {
+    if start.support != PlacementSupport::Free && start.anchor.is_none() {
+        return Err(PlacementError::NoFaceOverlap);
+    }
+    if specs.is_empty() {
+        return Err(PlacementError::EmptyBlockBatch);
+    }
+    for spec in specs {
+        let part = PartSpec::Cuboid(*spec);
+        let (minimum, maximum) = part_world_bounds(part);
+        validate_world_bounds(minimum, maximum, bounds)?;
+        for target in index.nearby(minimum, maximum, 0.0) {
+            if parts_overlap(part, target.spec) {
+                return Err(PlacementError::OverlapsPart(target.part));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Exact volume validation using the same spatial index as smart snapping.
 pub(crate) fn validate_block_volume_in_bounds(
     graph: &ConstructionGraph,
@@ -4987,22 +5022,62 @@ fn pipe_bend_collision_boxes(spec: PipeBendSpec) -> Vec<CollisionBox> {
             let phi = cross_step * (f32::from(sector) + 0.5);
             let normal = radial * phi.cos() + Vec3::Z * phi.sin();
             let cross_tangent = -radial * phi.sin() + Vec3::Z * phi.cos();
-            let center = Vec3::new(-bend_radius, bend_radius, 0.0)
+            let mut center = Vec3::new(-bend_radius, bend_radius, 0.0)
                 + radial * (bend_radius + cross_radius * phi.cos())
                 + Vec3::Z * (cross_radius * phi.sin());
+            let mut half = Vec3::new(
+                half_radial,
+                (bend_radius + outer) * (bend_step * 0.5).tan(),
+                outer * (cross_step * 0.5).tan(),
+            );
+            if bend_slice == 0 {
+                trim_pipe_bend_box_to_end_plane(
+                    &mut center,
+                    &mut half,
+                    [normal, tangent, cross_tangent],
+                    Vec3::new(-bend_radius, 0.0, 0.0),
+                    Vec3::NEG_X,
+                );
+            } else if bend_slice == 11 {
+                trim_pipe_bend_box_to_end_plane(
+                    &mut center,
+                    &mut half,
+                    [normal, tangent, cross_tangent],
+                    Vec3::new(0.0, bend_radius, 0.0),
+                    Vec3::Y,
+                );
+            }
             boxes.push(CollisionBox {
                 center: spec.pose.translation() + part_rotation * center,
                 rotation: part_rotation
                     * Quat::from_mat3(&Mat3::from_cols(normal, tangent, cross_tangent)),
-                half: Vec3::new(
-                    half_radial,
-                    (bend_radius + outer) * (bend_step * 0.5).tan(),
-                    outer * (cross_step * 0.5).tan(),
-                ),
+                half,
             });
         }
     }
     boxes
+}
+
+/// Keeps the conservative bend tessellation behind its two exact tangent caps.
+fn trim_pipe_bend_box_to_end_plane(
+    center: &mut Vec3,
+    half: &mut Vec3,
+    axes: [Vec3; 3],
+    plane_center: Vec3,
+    outward: Vec3,
+) {
+    let [normal, tangent, cross_tangent] = axes;
+    let tangent_projection = tangent.dot(outward);
+    let extent = half.x * normal.dot(outward).abs()
+        + half.y * tangent_projection.abs()
+        + half.z * cross_tangent.dot(outward).abs();
+    let protrusion = (*center - plane_center).dot(outward) + extent + CONTACT_EPSILON;
+    if protrusion <= 0.0 {
+        return;
+    }
+    let trim = (protrusion / tangent_projection.abs()).min(half.y * 2.0);
+    *center -= tangent * tangent_projection.signum() * trim * 0.5;
+    half.y -= trim * 0.5;
 }
 
 fn boxes_overlap(first: CollisionBox, second: CollisionBox) -> bool {
@@ -5105,7 +5180,7 @@ mod tests {
         ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, DimensionLinkId,
         EdgeChainRef, EdgeTreatment, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
         GridRotation, POSITION_TICKS_PER_GRID_UNIT, PartId, PartSpec, PendingOperation,
-        RigidLinkSpec, ShapeFeature, SolidOwner, WeldSpec,
+        PipeBendDimensions, PipeBendSpec, RigidLinkSpec, ShapeFeature, SolidOwner, WeldSpec,
     };
 
     use super::{
@@ -5128,7 +5203,8 @@ mod tests {
         stage_cylinder_from_source, stage_dimension_link_in_bounds, stage_engine_from_source,
         stage_engine_in_bounds, stage_input_in_bounds, stage_pipe_run, stage_pipe_run_in_bounds,
         stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission, stage_weld_objects,
-        transmission_candidate_from_hit, validate_block_batch_in_bounds, validate_part,
+        transmission_candidate_from_hit, validate_block_batch_in_bounds,
+        validate_indexed_block_batch_in_bounds, validate_part,
     };
 
     fn spawn_cube(graph: &mut ConstructionGraph, units: IVec3, size: u8) -> mechanic_core::PartId {
@@ -5342,6 +5418,54 @@ mod tests {
         assert!(
             validation_count <= 25,
             "equivalent guides caused {validation_count} duplicate validations"
+        );
+    }
+
+    #[test]
+    fn indexed_preview_validation_rejects_only_nearby_overlaps() {
+        let mut graph = ConstructionGraph::new();
+        let existing = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap();
+        let BuildOutcome::Spawned(existing) = existing else {
+            panic!("spawn returned a different outcome");
+        };
+        let mut index = PlacementSnapIndex::default();
+        index.rebuild(&graph);
+        let candidate = |x| PlacementCandidate {
+            spec: CuboidSpec::new(
+                [1; 3],
+                BuildPose::new(IVec3::new(x, 0, 0), GridRotation::default()),
+            )
+            .unwrap(),
+            attached_face: FaceKind::NegativeY,
+            anchor: None,
+            support: PlacementSupport::Free,
+        };
+
+        assert!(matches!(
+            validate_indexed_block_batch_in_bounds(
+                &index,
+                candidate(0),
+                &[candidate(0).spec],
+                PlacementBounds::World {
+                    origin: DVec2::ZERO,
+                },
+            ),
+            Err(PlacementError::OverlapsPart(part)) if part == existing
+        ));
+        assert!(
+            validate_indexed_block_batch_in_bounds(
+                &index,
+                candidate(1_000),
+                &[candidate(1_000).spec],
+                PlacementBounds::World {
+                    origin: DVec2::ZERO,
+                },
+            )
+            .is_ok()
         );
     }
 
@@ -6474,6 +6598,54 @@ mod tests {
             stage_pipe_run_in_bounds(&graph, &pipe, PipeRunAttachment::Free, bounds).unwrap();
         assert_eq!(staged.part_count(), 1);
         assert_eq!(staged.weld_count(), 0);
+    }
+
+    #[test]
+    fn multiple_dimension_links_with_distinct_ids_can_coexist() {
+        let bounds = PlacementBounds::GarageBuild;
+        let grid = PlacementGrid::Centimetres25;
+        let rotation = GridRotation::default();
+        let base = free_cuboid_candidate(
+            Vec3::new(0.0, 7.5, 0.0),
+            Vec3::NEG_Z,
+            [2, 1, 1],
+            rotation,
+            grid,
+            bounds,
+        );
+        let graph =
+            stage_block_batch_in_bounds(&ConstructionGraph::new(), base, &[base.spec], bounds)
+                .unwrap();
+        let first = free_cuboid_candidate(
+            Vec3::new(-0.5, 7.5, 0.0),
+            Vec3::NEG_Z,
+            mechanic_core::DimensionLinkSpec::GRID_UNITS,
+            rotation,
+            grid,
+            bounds,
+        );
+        let graph =
+            stage_dimension_link_in_bounds(&graph, first, DimensionLinkId(11), bounds).unwrap();
+        let second = free_cuboid_candidate(
+            Vec3::new(0.5, 7.5, 0.0),
+            Vec3::NEG_Z,
+            mechanic_core::DimensionLinkSpec::GRID_UNITS,
+            rotation,
+            grid,
+            bounds,
+        );
+        let graph =
+            stage_dimension_link_in_bounds(&graph, second, DimensionLinkId(12), bounds).unwrap();
+
+        let mut ids = graph
+            .parts()
+            .filter_map(|(part, _)| graph.dimension_link_id(part))
+            .collect::<Vec<_>>();
+        ids.sort_unstable_by_key(|id| id.0);
+        assert_eq!(ids, vec![DimensionLinkId(11), DimensionLinkId(12)]);
+        assert_eq!(graph.part_count(), 3);
+        assert_eq!(graph.weld_count(), 2);
+        assert_eq!(graph.compile().unwrap().compounds.len(), 1);
     }
 
     #[test]
@@ -8006,6 +8178,76 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("1.00 m clearance"));
+    }
+
+    #[test]
+    fn pipe_bend_end_raycasts_report_the_flat_caps() {
+        let mut graph = ConstructionGraph::new();
+        let dimensions = PipeBendDimensions::new(0.20, 0.10, 0.25).unwrap();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
+                dimensions,
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            panic!("pipe bend must spawn")
+        };
+
+        for (origin, direction, face) in [
+            (
+                Vec3::new(0.075, dimensions.radius() + 1.0, 0.0),
+                Vec3::NEG_Y,
+                FaceKind::PositiveY,
+            ),
+            (
+                Vec3::new(-dimensions.radius() - 1.0, 0.0, 0.075),
+                Vec3::X,
+                FaceKind::NegativeX,
+            ),
+        ] {
+            let hit = raycast_construction(&graph, origin, direction)
+                .expect("the pipe bend cap is visible");
+            assert_eq!(hit.face, FaceRef::part(part, face));
+        }
+    }
+
+    #[test]
+    fn sub_block_pipe_can_turn_immediately_after_an_existing_bend() {
+        let mut graph = ConstructionGraph::new();
+        let bend_dimensions = PipeBendDimensions::new(0.20, 0.10, 0.25).unwrap();
+        let BuildOutcome::Spawned(source) = graph
+            .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
+                bend_dimensions,
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            panic!("source bend must spawn")
+        };
+        let start = Vec3::Y * bend_dimensions.radius();
+        let corner = start + Vec3::Y * 0.25;
+        let pieces = pipe_run_pieces(
+            &[start, corner, corner + Vec3::X * 0.25],
+            &[0.25],
+            CylinderDimensions::new(0.20, 0.10, 0.25).unwrap(),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+
+        let staged = stage_pipe_run(
+            &graph,
+            &pieces,
+            PipeRunAttachment::AutoWeld {
+                source: FaceOwner::Part(source),
+            },
+        )
+        .expect("the new bend only touches the source at its inlet cap");
+
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(staged.part_count(), 2);
+        assert_eq!(staged.weld_count(), 1);
+        assert!(staged.compile().is_ok());
     }
 
     #[test]

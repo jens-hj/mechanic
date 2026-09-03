@@ -57,6 +57,7 @@ impl Tone {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
     let timings = snapshot.kernel_timings.unwrap_or_default();
     let has_kernel_timings = snapshot.kernel_timings.is_some();
@@ -152,6 +153,21 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
             ),
             count_u64_row("Foundation candidates", snapshot.foundation_candidate_count),
             count_u64_row("Foundation samples", snapshot.foundation_sample_count),
+            timing_row(
+                "Player collision",
+                snapshot.player_collision_query_ms,
+                0.25,
+                0.5,
+            ),
+            timing_row(
+                "Dynamic index refit",
+                snapshot.dynamic_collision_refit_ms,
+                2.0,
+                4.0,
+            ),
+            count_row("Player candidates", snapshot.player_collision_candidates),
+            count_row("Player contacts", snapshot.player_collision_contacts),
+            count_row("Queued reactions", snapshot.player_reaction_impulses),
         ],
     }
 }

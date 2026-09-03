@@ -153,7 +153,7 @@ pub struct GpuCollider {
     pub shape: [u32; 4],
 }
 
-/// Contact properties for the infinite ground plane.
+/// Contact properties for one collider's local terrain-support plane.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct GpuGroundSurface {
@@ -162,6 +162,7 @@ pub struct GpuGroundSurface {
     /// Nominal block compliance, Young's modulus, and two reserved lanes.
     pub elasticity: [f32; 4],
     /// xyz upward plane normal and w signed plane offset (`dot(point, normal)`).
+    /// A zero normal disables terrain contact for this collider.
     pub plane: [f32; 4],
 }
 

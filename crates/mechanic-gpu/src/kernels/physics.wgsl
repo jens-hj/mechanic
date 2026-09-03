@@ -30,6 +30,11 @@ struct ExternalImpulse {
     metadata: vec4<u32>,
 };
 
+struct ExternalImpulseBatch {
+    metadata: vec4<u32>,
+    rows: array<ExternalImpulse, 64>,
+};
+
 const INVALID_NUMERIC_FLAG: u32 = 2u;
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
@@ -40,7 +45,7 @@ const INVALID_NUMERIC_FLAG: u32 = 2u;
 @group(0) @binding(5) var<storage, read> inverse_masses: array<f32>;
 @group(0) @binding(6) var<storage, read_write> error_flags: atomic<u32>;
 @group(0) @binding(7) var<storage, read> masses: array<Mass>;
-@group(0) @binding(8) var<uniform> external_impulse: ExternalImpulse;
+@group(0) @binding(8) var<uniform> external_impulses: ExternalImpulseBatch;
 @group(0) @binding(9) var<storage, read> mechanism_roots: array<u32>;
 
 fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
@@ -71,22 +76,26 @@ fn finite4(value: vec4<f32>) -> bool {
 
 @compute @workgroup_size(1)
 fn apply_external_impulse() {
-    let body = external_impulse.metadata.x;
-    let inverse_mass = masses[body].inverse_mass.x;
-    if inverse_mass <= 0.0 {
-        return;
+    let count = min(external_impulses.metadata.x, 64u);
+    for (var row_index = 0u; row_index < count; row_index += 1u) {
+        let external_impulse = external_impulses.rows[row_index];
+        let body = external_impulse.metadata.x;
+        let inverse_mass = masses[body].inverse_mass.x;
+        if inverse_mass <= 0.0 {
+            continue;
+        }
+        let impulse = external_impulse.impulse.xyz;
+        let arm = external_impulse.world_point.xyz - positions[body].xyz;
+        linear_velocities[body] = vec4<f32>(
+            linear_velocities[body].xyz + impulse * inverse_mass,
+            0.0,
+        );
+        angular_velocities[body] = vec4<f32>(
+            angular_velocities[body].xyz
+                + world_inverse_inertia(body, cross(arm, impulse)),
+            0.0,
+        );
     }
-    let impulse = external_impulse.impulse.xyz;
-    let arm = external_impulse.world_point.xyz - positions[body].xyz;
-    linear_velocities[body] = vec4<f32>(
-        linear_velocities[body].xyz + impulse * inverse_mass,
-        0.0,
-    );
-    angular_velocities[body] = vec4<f32>(
-        angular_velocities[body].xyz
-            + world_inverse_inertia(body, cross(arm, impulse)),
-        0.0,
-    );
 }
 
 @compute @workgroup_size(256)

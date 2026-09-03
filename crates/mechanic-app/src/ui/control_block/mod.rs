@@ -282,7 +282,7 @@ pub(crate) fn capture(
     panel: &ControlPanelState,
     graph: &EditorGraph,
     gearboxes: &GearboxRuntime,
-    controls: &crate::controls::Controls,
+    gameplay_binding_conflict: bool,
 ) -> PanelModel {
     let Some(controller) = panel.controller() else {
         return PanelModel::default();
@@ -374,9 +374,7 @@ pub(crate) fn capture(
         lanes,
         engine_lanes,
         hardware: HardwareModel::from(inventory),
-        gameplay_binding_conflict: crate::controls::GameAction::ALL
-            .into_iter()
-            .any(|action| controls.conflicts_with_vehicle(&graph.0, action)),
+        gameplay_binding_conflict,
     }
 }
 
@@ -592,7 +590,7 @@ mod tests {
             &state,
             &crate::EditorGraph(graph),
             &crate::sequencer::GearboxRuntime::default(),
-            &crate::controls::Controls::default(),
+            false,
         ));
         overlay.settle();
         (overlay, link)

@@ -53,6 +53,11 @@ pub(crate) struct PerformanceSnapshot {
     pub(crate) foundation_refresh_ms: Option<f64>,
     pub(crate) foundation_candidate_count: Option<u64>,
     pub(crate) foundation_sample_count: Option<u64>,
+    pub(crate) player_collision_query_ms: Option<f64>,
+    pub(crate) dynamic_collision_refit_ms: Option<f64>,
+    pub(crate) player_collision_candidates: Option<u32>,
+    pub(crate) player_collision_contacts: Option<u32>,
+    pub(crate) player_reaction_impulses: Option<u32>,
 }
 
 /// Rolling measurements behind the opt-in performance overlay.
@@ -213,6 +218,13 @@ pub(crate) fn sample(
         foundation_candidate_count: in_world
             .then_some(world_diagnostics.foundation_candidate_count),
         foundation_sample_count: in_world.then_some(world_diagnostics.foundation_sample_count),
+        player_collision_query_ms: in_world.then_some(world_diagnostics.player_collision_query_ms),
+        dynamic_collision_refit_ms: in_world
+            .then_some(world_diagnostics.dynamic_collision_refit_ms),
+        player_collision_candidates: in_world
+            .then_some(world_diagnostics.player_collision_candidates),
+        player_collision_contacts: in_world.then_some(world_diagnostics.player_collision_contacts),
+        player_reaction_impulses: in_world.then_some(world_diagnostics.player_reaction_impulses),
     };
 }
 

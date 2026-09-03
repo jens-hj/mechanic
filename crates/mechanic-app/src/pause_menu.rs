@@ -14,6 +14,7 @@ pub(crate) struct BindingCapture {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PauseRequest {
     Continue,
+    ExitToWorldSelector,
     OpenOptions,
     OpenControls,
     Back,
@@ -122,6 +123,7 @@ impl PauseMenuState {
     pub(crate) fn act(&mut self, action: PauseAction) {
         self.requested = Some(match action {
             PauseAction::Continue => PauseRequest::Continue,
+            PauseAction::ExitToWorldSelector => PauseRequest::ExitToWorldSelector,
             PauseAction::OpenOptions => PauseRequest::OpenOptions,
             PauseAction::OpenControls => PauseRequest::OpenControls,
             PauseAction::Back => PauseRequest::Back,

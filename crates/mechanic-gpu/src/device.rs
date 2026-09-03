@@ -22,10 +22,13 @@ use crate::{
 };
 
 const FUSED_VELOCITY_BEARING_LIMIT: u32 = 64;
-const FUSED_GROUND_CONTACT_BEARING_LIMIT: u32 = 4;
+const FUSED_GROUND_CONTACT_BEARING_LIMIT: u32 = 64;
 const FUSED_STREAMED_CONTACT_BEARING_LIMIT: u32 = 64;
 const SERIAL_MECHANISM_SOLVER_MULTIPLIER: u32 = 12;
 const ASYNC_READBACK_RING_SIZE: usize = 3;
+
+/// Number of external impulses staged and applied by one serial GPU pass.
+pub const EXTERNAL_IMPULSE_BATCH_CAPACITY: usize = 64;
 
 /// Per-scene pipeline switches that do not adapt during simulation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,11 +77,11 @@ const fn uses_fused_velocity_schedule(bearing_count: u32, body_count: u32) -> bo
 }
 
 const fn uses_fused_contact_schedule(bearing_count: u32, ground_plane_enabled: bool) -> bool {
-    // Flat-ground scenes can generate one persistent contact per collider, so
-    // the serial fused solver only wins for the measured four-bearing class.
-    // Streamed worlds normally have sparse contacts; keeping their complete
-    // <=64-bearing solve in one dispatch removes the pass-count cliff seen by
-    // Bente. Both choices are immutable after the scene is loaded.
+    // Keep contact and bearing projection tightly coupled for small mechanisms.
+    // This is necessary for large body-to-wheel mass ratios: a parallel pass
+    // can otherwise let the chassis outrun the wheel contacts before their
+    // impulses propagate through the bearings. Both choices are immutable
+    // after the scene is loaded.
     let limit = if ground_plane_enabled {
         FUSED_GROUND_CONTACT_BEARING_LIMIT
     } else {
@@ -258,6 +261,14 @@ pub enum GpuImpulseError {
     /// The world point or impulse contains NaN or infinity.
     #[error("external impulse point and vector must be finite")]
     NonFinite,
+    /// Direct batch submission accepts one fixed staging batch.
+    #[error("external impulse batch contains {provided} rows; capacity is {capacity}")]
+    BatchCapacity {
+        /// Supplied rows.
+        provided: usize,
+        /// Fixed staging capacity.
+        capacity: usize,
+    },
 }
 
 /// A replacement scene state cannot be uploaded safely.
@@ -276,12 +287,86 @@ pub enum GpuBodyStateError {
     NonFinite,
 }
 
+/// A replacement set of collider-local terrain support planes is invalid.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum GpuGroundPlaneError {
+    /// Plane rows must exactly match the uploaded collider count.
+    #[error("ground plane count {provided} does not match collider count {expected}")]
+    PlaneCount {
+        /// Number of rows supplied by the caller.
+        provided: usize,
+        /// Number of collider rows allocated by the scene.
+        expected: u32,
+    },
+    /// A normal or offset contains NaN or infinity.
+    #[error("ground plane contains NaN or infinity")]
+    NonFinite,
+}
+
+/// One local terrain plane assigned to a compiled collider.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GpuGroundPlane {
+    /// Normal pointing out of terrain toward the construction.
+    pub normal: Vec3,
+    /// Signed plane offset, satisfying `dot(point, normal) == offset`.
+    pub offset: f32,
+}
+
+impl GpuGroundPlane {
+    /// No terrain surface is available beneath this collider.
+    pub const DISABLED: Self = Self {
+        normal: Vec3::ZERO,
+        offset: 0.0,
+    };
+
+    /// Creates a plane passing through `point` with the supplied outward normal.
+    pub fn through_point(normal: Vec3, point: Vec3) -> Self {
+        let normal = normal.normalize_or_zero();
+        Self {
+            normal,
+            offset: normal.dot(point),
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct GpuExternalImpulse {
-    world_point: [f32; 4],
-    impulse: [f32; 4],
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+/// One validated construction-frame impulse consumed by the GPU serial pass.
+pub struct GpuExternalImpulse {
+    /// xyz construction-frame contact point; w is unused.
+    pub world_point: [f32; 4],
+    /// xyz impulse applied to the compound; w is unused.
+    pub impulse: [f32; 4],
+    /// Body index in x; remaining lanes are reserved.
+    pub metadata: [u32; 4],
+}
+
+impl GpuExternalImpulse {
+    /// Creates one world-space impulse row.
+    pub const fn new(body_index: u32, world_point: Vec3, impulse: Vec3) -> Self {
+        Self {
+            world_point: [world_point.x, world_point.y, world_point.z, 0.0],
+            impulse: [impulse.x, impulse.y, impulse.z, 0.0],
+            metadata: [body_index, 0, 0, 0],
+        }
+    }
+
+    /// Target compound row.
+    pub const fn body_index(self) -> u32 {
+        self.metadata[0]
+    }
+
+    fn is_finite(self) -> bool {
+        self.world_point[..3].iter().all(|lane| lane.is_finite())
+            && self.impulse[..3].iter().all(|lane| lane.is_finite())
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuExternalImpulseBatch {
     metadata: [u32; 4],
+    rows: [GpuExternalImpulse; EXTERNAL_IMPULSE_BATCH_CAPACITY],
 }
 
 /// Custom compute resources backed by Bevy's shared wgpu device and queue.
@@ -349,7 +434,7 @@ struct CollisionResources {
     _contacts: wgpu::Buffer,
     _manifold_keys: wgpu::Buffer,
     _persistent_manifolds: wgpu::Buffer,
-    ground_surface: wgpu::Buffer,
+    ground_surfaces: wgpu::Buffer,
     _active_contacts: wgpu::Buffer,
     indirect_args: wgpu::Buffer,
     velocity_deltas: wgpu::Buffer,
@@ -807,7 +892,7 @@ impl GpuPhysics {
         let external_impulse = create_uniform_buffer(
             device,
             "mechanic external impulse",
-            &GpuExternalImpulse::zeroed(),
+            &GpuExternalImpulseBatch::zeroed(),
         );
         let external_impulse_pipeline = compute_pipeline(
             pipelines,
@@ -1043,21 +1128,39 @@ impl GpuPhysics {
         world_point: Vec3,
         impulse: Vec3,
     ) -> Result<wgpu::SubmissionIndex, GpuImpulseError> {
-        if body_index >= self.body_count {
-            return Err(GpuImpulseError::BodyIndexOutOfRange {
-                body_index,
-                body_count: self.body_count,
+        self.apply_impulses(
+            device,
+            queue,
+            &[GpuExternalImpulse::new(body_index, world_point, impulse)],
+        )
+    }
+
+    /// Validates and applies at most one fixed staging batch as a serial pass.
+    ///
+    /// Validation covers every row before the queue is modified, so invalid input
+    /// can never produce a partial submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuImpulseError`] when the batch exceeds staging capacity or any
+    /// row has an invalid body index or non-finite point/vector.
+    pub fn apply_impulses(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        impulses: &[GpuExternalImpulse],
+    ) -> Result<wgpu::SubmissionIndex, GpuImpulseError> {
+        if impulses.len() > EXTERNAL_IMPULSE_BATCH_CAPACITY {
+            return Err(GpuImpulseError::BatchCapacity {
+                provided: impulses.len(),
+                capacity: EXTERNAL_IMPULSE_BATCH_CAPACITY,
             });
         }
-        if !world_point.is_finite() || !impulse.is_finite() {
-            return Err(GpuImpulseError::NonFinite);
-        }
-        let row = GpuExternalImpulse {
-            world_point: [world_point.x, world_point.y, world_point.z, 0.0],
-            impulse: [impulse.x, impulse.y, impulse.z, 0.0],
-            metadata: [body_index, 0, 0, 0],
-        };
-        queue.write_buffer(&self.external_impulse, 0, bytes_of(&row));
+        self.validate_impulses(impulses)?;
+        let mut batch = GpuExternalImpulseBatch::zeroed();
+        batch.metadata[0] = u32::try_from(impulses.len()).unwrap_or(u32::MAX);
+        batch.rows[..impulses.len()].copy_from_slice(impulses);
+        queue.write_buffer(&self.external_impulse, 0, bytes_of(&batch));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("mechanic external impulse"),
         });
@@ -1070,6 +1173,22 @@ impl GpuPhysics {
             None,
         );
         Ok(queue.submit([encoder.finish()]))
+    }
+
+    fn validate_impulses(&self, impulses: &[GpuExternalImpulse]) -> Result<(), GpuImpulseError> {
+        for row in impulses {
+            let body_index = row.body_index();
+            if body_index >= self.body_count {
+                return Err(GpuImpulseError::BodyIndexOutOfRange {
+                    body_index,
+                    body_count: self.body_count,
+                });
+            }
+            if !row.is_finite() {
+                return Err(GpuImpulseError::NonFinite);
+            }
+        }
+        Ok(())
     }
 
     /// Replaces all authoritative body transforms and velocities at a safe app-owned boundary.
@@ -1126,29 +1245,78 @@ impl GpuPhysics {
         Ok(())
     }
 
-    /// Changes the explicit flat collision plane used by garage and benchmark scenes.
+    /// Assigns the same explicit flat collision plane to every collider.
     pub fn write_ground_plane(&self, queue: &wgpu::Queue, normal: Vec3, offset: f32) {
-        let normal = normal.normalize_or_zero();
+        let length = normal.length();
+        let plane = if length > 0.0 {
+            GpuGroundPlane {
+                normal: normal / length,
+                offset: offset / length,
+            }
+        } else {
+            GpuGroundPlane::DISABLED
+        };
+        let planes = vec![plane; self.collider_count as usize];
+        // This method constructs exactly one finite row per uploaded collider.
+        let _ = self.write_ground_planes(queue, &planes);
+    }
+
+    /// Replaces the terrain-support plane independently for every collider.
+    ///
+    /// Per-collider planes let a large mechanism rest on the streamed terrain
+    /// beneath each of its parts without pretending the entire world is one
+    /// moving infinite plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuGroundPlaneError`] when the row count differs from the
+    /// uploaded collider count or a row is not finite.
+    pub fn write_ground_planes(
+        &self,
+        queue: &wgpu::Queue,
+        planes: &[GpuGroundPlane],
+    ) -> Result<(), GpuGroundPlaneError> {
+        if planes.len() != self.collider_count as usize {
+            return Err(GpuGroundPlaneError::PlaneCount {
+                provided: planes.len(),
+                expected: self.collider_count,
+            });
+        }
+        if planes
+            .iter()
+            .any(|plane| !plane.normal.is_finite() || !plane.offset.is_finite())
+        {
+            return Err(GpuGroundPlaneError::NonFinite);
+        }
         let concrete = ConstructionMaterial::Concrete.properties();
-        queue.write_buffer(
-            &self.collision.ground_surface,
-            0,
-            bytes_of(&GpuGroundSurface {
-                response: [
-                    concrete.static_friction,
-                    concrete.dynamic_friction,
-                    concrete.restitution,
-                    concrete.rolling_resistance,
-                ],
-                elasticity: [
-                    concrete.nominal_block_compliance(),
-                    concrete.youngs_modulus_pa,
-                    0.0,
-                    0.0,
-                ],
-                plane: [normal.x, normal.y, normal.z, offset],
-            }),
-        );
+        let rows = planes
+            .iter()
+            .map(|plane| {
+                let length = plane.normal.length();
+                let (normal, offset) = if length > 0.0 {
+                    (plane.normal / length, plane.offset / length)
+                } else {
+                    (Vec3::ZERO, 0.0)
+                };
+                GpuGroundSurface {
+                    response: [
+                        concrete.static_friction,
+                        concrete.dynamic_friction,
+                        concrete.restitution,
+                        concrete.rolling_resistance,
+                    ],
+                    elasticity: [
+                        concrete.nominal_block_compliance(),
+                        concrete.youngs_modulus_pa,
+                        0.0,
+                        0.0,
+                    ],
+                    plane: [normal.x, normal.y, normal.z, offset],
+                }
+            })
+            .collect::<Vec<_>>();
+        queue.write_buffer(&self.collision.ground_surfaces, 0, cast_slice(&rows));
+        Ok(())
     }
 
     /// Enables non-blocking per-tick telemetry and prototype snapshot staging.
@@ -1180,6 +1348,39 @@ impl GpuPhysics {
     /// Encodes and submits one 60 Hz integration/publication pass.
     #[allow(clippy::too_many_lines)]
     pub fn dispatch_tick(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        tick_index: u64,
+    ) -> GpuTickSubmission {
+        self.encode_and_submit_tick(device, queue, tick_index)
+    }
+
+    /// Applies all pending impulses in ordered serial batches, then dispatches a tick.
+    ///
+    /// Every row is validated before the first queue write. Sets larger than the fixed
+    /// staging buffer are split without dropping contacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuImpulseError`] when any pending row has an invalid body index or
+    /// non-finite point/vector.
+    pub fn dispatch_tick_with_impulses(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        tick_index: u64,
+        impulses: &[GpuExternalImpulse],
+    ) -> Result<GpuTickSubmission, GpuImpulseError> {
+        self.validate_impulses(impulses)?;
+        for batch in impulses.chunks(EXTERNAL_IMPULSE_BATCH_CAPACITY) {
+            self.apply_impulses(device, queue, batch)?;
+        }
+        Ok(self.encode_and_submit_tick(device, queue, tick_index))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn encode_and_submit_tick(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3176,24 +3377,25 @@ fn create_collision_resources(
         wgpu::BufferUsages::STORAGE,
     );
     let concrete = ConstructionMaterial::Concrete.properties();
-    let ground_surface = create_uniform_buffer(
+    let ground_surface = GpuGroundSurface {
+        response: [
+            concrete.static_friction,
+            concrete.dynamic_friction,
+            concrete.restitution,
+            concrete.rolling_resistance,
+        ],
+        elasticity: [
+            concrete.nominal_block_compliance(),
+            concrete.youngs_modulus_pa,
+            0.0,
+            0.0,
+        ],
+        plane: [0.0, 1.0, 0.0, 0.0],
+    };
+    let ground_surfaces = create_storage_buffer(
         device,
-        "mechanic ground surface",
-        &GpuGroundSurface {
-            response: [
-                concrete.static_friction,
-                concrete.dynamic_friction,
-                concrete.restitution,
-                concrete.rolling_resistance,
-            ],
-            elasticity: [
-                concrete.nominal_block_compliance(),
-                concrete.youngs_modulus_pa,
-                0.0,
-                0.0,
-            ],
-            plane: [0.0, 1.0, 0.0, 0.0],
-        },
+        "mechanic collider terrain surfaces",
+        &vec![ground_surface; collider_count.max(1)],
     );
     let active_contacts = create_sized_buffer(
         device,
@@ -3279,7 +3481,6 @@ fn create_collision_resources(
         entry(9, &pairs),
         entry(10, &contacts),
         entry(28, convex_shapes),
-        entry(29, &ground_surface),
     ];
     if !mechanism_self_collisions {
         narrowphase_bindings.push(entry(27, &body_components));
@@ -3309,7 +3510,7 @@ fn create_collision_resources(
             entry(6, colliders),
             entry(10, &contacts),
             entry(28, convex_shapes),
-            entry(29, &ground_surface),
+            entry(29, &ground_surfaces),
         ],
     );
     let finalize_contacts_pipeline = compute_pipeline(
@@ -3483,7 +3684,7 @@ fn create_collision_resources(
         _contacts: contacts,
         _manifold_keys: manifold_keys,
         _persistent_manifolds: persistent_manifolds,
-        ground_surface,
+        ground_surfaces,
         _active_contacts: active_contacts,
         indirect_args,
         velocity_deltas,
@@ -3890,16 +4091,18 @@ mod tests {
     use bevy_math::{IVec3, Vec3};
     use mechanic_core::{
         BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
-        ConstructionMaterial, CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceRef,
-        GridRotation, PartId, PipeBendDimensions, PipeBendSpec, RigidLinkSpec, WeldSpec,
+        ConstructionMaterial, CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec,
+        DriveMode, FaceKind, FaceRef, GridRotation, PartId, PipeBendDimensions, PipeBendSpec,
+        RigidLinkSpec, WeldSpec,
     };
 
     use crate::GpuMechanismCoordinate;
 
     use super::{
-        FULL_CYLINDER_GROUND_FIRST, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines,
-        contact_pair_capacity, full_cylinder_ground_data, uses_fused_contact_schedule,
-        uses_fused_velocity_schedule,
+        EXTERNAL_IMPULSE_BATCH_CAPACITY, FULL_CYLINDER_GROUND_FIRST, GpuExternalImpulse,
+        GpuGroundPlane, GpuGroundPlaneError, GpuImpulseError, GpuPhysics, GpuPhysicsConfig,
+        GpuPhysicsPipelines, contact_pair_capacity, full_cylinder_ground_data,
+        uses_fused_contact_schedule, uses_fused_velocity_schedule,
     };
 
     #[test]
@@ -3909,7 +4112,8 @@ mod tests {
         assert!(!uses_fused_velocity_schedule(64, 257));
 
         assert!(uses_fused_contact_schedule(4, true));
-        assert!(!uses_fused_contact_schedule(5, true));
+        assert!(uses_fused_contact_schedule(64, true));
+        assert!(!uses_fused_contact_schedule(65, true));
         assert!(uses_fused_contact_schedule(64, false));
         assert!(!uses_fused_contact_schedule(65, false));
     }
@@ -4928,6 +5132,175 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
+    fn pipe_bend_suspension_car_fixture() -> ArticulatedCarFixture {
+        let mut graph = ConstructionGraph::new();
+        let static_marker = spawned_part(
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [2, 2, 2],
+                        BuildPose::new(IVec3::new(0, 1, -400), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap(),
+        );
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(static_marker, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+        let chassis_spec = CuboidSpec::new(
+            [12, 1, 8],
+            BuildPose::from_position_ticks(IVec3::new(0, 450, 0), GridRotation::default()),
+        )
+        .unwrap()
+        .with_material(ConstructionMaterial::Stone);
+        let chassis_part = spawned_part(graph.apply(BuildCommand::Spawn(chassis_spec)).unwrap());
+        let bend_dimensions = PipeBendDimensions::new(0.2, 0.0, 0.25).unwrap();
+
+        let corners = [
+            (600, 1.5, 1, 0.875, 1.125),
+            (-600, -1.5, 1, 0.875, 1.125),
+            (-600, -1.5, -1, -0.875, -1.125),
+            (600, 1.5, -1, -0.875, -1.125),
+        ];
+        let mut bends = [None; 4];
+        let mut wheels = [None; 4];
+        // Match the unfavorable child-before-parent ordering of a garage-built
+        // car. Correct contact support must not depend on creation order.
+        for (wheel, corner) in [
+            (true, 0),
+            (false, 1),
+            (true, 1),
+            (false, 2),
+            (true, 2),
+            (false, 3),
+            (false, 0),
+            (true, 3),
+        ] {
+            let (x_ticks, _, z_sign, _, _) = corners[corner];
+            let bend_rotation = if z_sign > 0 {
+                GridRotation::new(0, 3, 3)
+            } else {
+                GridRotation::new(0, 1, 3)
+            };
+            let wheel_rotation = if z_sign > 0 {
+                GridRotation::new(1, 0, 0)
+            } else {
+                GridRotation::new(1, 2, 2)
+            };
+            if wheel {
+                wheels[corner] = Some(spawned_part(
+                    graph
+                        .apply(BuildCommand::SpawnCylinder(
+                            CylinderSpec::new(
+                                CylinderDimensions::new(0.95, 0.0, 0.25).unwrap(),
+                                BuildPose::from_position_ticks(
+                                    IVec3::new(x_ticks, 290, z_sign * 500),
+                                    wheel_rotation,
+                                ),
+                            )
+                            .with_material(ConstructionMaterial::Rubber),
+                        ))
+                        .unwrap(),
+                ));
+            } else {
+                bends[corner] = Some(spawned_part(
+                    graph
+                        .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
+                            bend_dimensions,
+                            BuildPose::from_position_ticks(
+                                IVec3::new(x_ticks, 300, z_sign * 350),
+                                bend_rotation,
+                            ),
+                        )))
+                        .unwrap(),
+                ));
+            }
+        }
+        let ballast = spawned_part(
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [4, 3, 4],
+                        BuildPose::new(IVec3::new(-1, 5, 0), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap(),
+        );
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: chassis_part,
+                second: ballast,
+            }))
+            .unwrap();
+        let bends = bends.map(Option::unwrap);
+        let wheels = wheels.map(Option::unwrap);
+        for corner in [0, 3, 2, 1] {
+            let (_, x, _, bend_z, _) = corners[corner];
+            graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(chassis_part, FaceKind::NegativeY),
+                    FaceRef::part(bends[corner], FaceKind::NegativeX),
+                    Vec3::new(x, 1.0, bend_z),
+                    Vec3::NEG_Y,
+                )))
+                .unwrap();
+        }
+        for corner in [1, 0, 3, 2] {
+            let (_, x, z_sign, _, wheel_z) = corners[corner];
+            graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(bends[corner], FaceKind::PositiveY),
+                    FaceRef::part(wheels[corner], FaceKind::NegativeY),
+                    Vec3::new(x, 0.75, wheel_z),
+                    if z_sign > 0 { Vec3::Z } else { Vec3::NEG_Z },
+                )))
+                .unwrap();
+        }
+
+        let mut creation = graph.compile().unwrap();
+        for drive in &mut creation.coordinate_drives[..4] {
+            *drive = CoordinateDrive {
+                mode: DriveMode::Angle,
+                target_speed: 0.0,
+                target_angle: 0.0,
+                max_speed: std::f32::consts::PI,
+                max_acceleration: 3.65,
+                source_a_max_acceleration: 3.65,
+                source_a_no_load_speed: std::f32::consts::PI,
+                source_b_max_acceleration: 0.0,
+                source_b_no_load_speed: 0.0,
+                min_angle: -std::f32::consts::FRAC_PI_4,
+                max_angle: std::f32::consts::FRAC_PI_4,
+            };
+        }
+        let body_for = |part| {
+            creation
+                .part_to_compound
+                .iter()
+                .find_map(|(candidate, body)| (*candidate == part).then_some(*body))
+                .unwrap()
+        };
+        let chassis = body_for(chassis_part);
+        let mut dynamic_bodies = vec![chassis];
+        dynamic_bodies.extend(bends.into_iter().map(body_for));
+        let wheel_bodies = wheels.iter().copied().map(body_for).collect::<Vec<_>>();
+        dynamic_bodies.extend(wheel_bodies.iter().copied());
+        dynamic_bodies.sort_unstable();
+        dynamic_bodies.dedup();
+        ArticulatedCarFixture {
+            creation,
+            chassis,
+            dynamic_bodies,
+            wheel_bodies,
+        }
+    }
+
     #[test]
     fn full_cylinder_ground_contacts_match_visual_wheel_radius() {
         let fixture = articulated_car_fixture();
@@ -5024,6 +5397,82 @@ mod tests {
     }
 
     #[test]
+    fn collider_local_ground_planes_support_bodies_at_different_heights() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let mut graph = ConstructionGraph::new();
+        let low = match graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::from_half_grid(IVec3::new(-16, 16, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        {
+            BuildOutcome::Spawned(part) => part,
+            other => panic!("unexpected build outcome {other:?}"),
+        };
+        let high = match graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::from_half_grid(IVec3::new(16, 16, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        {
+            BuildOutcome::Spawned(part) => part,
+            other => panic!("unexpected build outcome {other:?}"),
+        };
+        let creation = graph.compile().unwrap();
+        let body_for = |part| {
+            creation
+                .part_to_compound
+                .iter()
+                .find_map(|(candidate, body)| (*candidate == part).then_some(*body as usize))
+                .unwrap()
+        };
+        let planes = creation
+            .colliders
+            .iter()
+            .map(|collider| GpuGroundPlane {
+                normal: Vec3::Y,
+                offset: if collider.source_part == low {
+                    0.0
+                } else {
+                    0.75
+                },
+            })
+            .collect::<Vec<_>>();
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        assert_eq!(
+            gpu.write_ground_planes(&queue, &planes[..1]),
+            Err(GpuGroundPlaneError::PlaneCount {
+                provided: 1,
+                expected: 2,
+            })
+        );
+        gpu.write_ground_planes(&queue, &planes).unwrap();
+        for tick in 1..=180 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let snapshot = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+        let low_y = snapshot[body_for(low)].position[1];
+        let high_y = snapshot[body_for(high)].position[1];
+        assert!((low_y - 0.5).abs() < 0.02, "low body settled at {low_y}");
+        assert!(
+            (high_y - 1.25).abs() < 0.02,
+            "high body settled at {high_y}"
+        );
+        assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+    }
+
+    #[test]
     fn asynchronous_tick_readback_is_monotonic_and_tick_matched() {
         let Some((device, queue)) = test_device() else {
             return;
@@ -5083,6 +5532,67 @@ mod tests {
         assert!(snapshot[body as usize].position[0] > initial.x + 0.01);
         assert!(snapshot[body as usize].rotation[2] < -0.01);
         assert_eq!(creation.part_to_compound[0].0, part);
+    }
+
+    #[test]
+    fn external_impulse_batches_chunk_repeated_rows_and_validate_atomically() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::new(IVec3::new(0, 8, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let initial = creation.compounds[0].root_translation;
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+
+        let mut invalid =
+            vec![GpuExternalImpulse::new(0, initial, Vec3::X); EXTERNAL_IMPULSE_BATCH_CAPACITY + 1];
+        invalid[EXTERNAL_IMPULSE_BATCH_CAPACITY].metadata[0] = 1;
+        assert_eq!(
+            gpu.dispatch_tick_with_impulses(&device, &queue, 1, &invalid)
+                .unwrap_err(),
+            GpuImpulseError::BodyIndexOutOfRange {
+                body_index: 1,
+                body_count: 1,
+            }
+        );
+        gpu.dispatch_tick(&device, &queue, 1);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let unchanged = gpu.read_snapshot_transforms(&device, &queue, 1).unwrap();
+        assert!((unchanged[0].position[0] - initial.x).abs() < 1.0e-6);
+
+        let rows = vec![
+            GpuExternalImpulse::new(0, initial, Vec3::X * 10.0);
+            EXTERNAL_IMPULSE_BATCH_CAPACITY + 1
+        ];
+        gpu.dispatch_tick_with_impulses(&device, &queue, 2, &rows)
+            .unwrap();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let moved = gpu.read_snapshot_transforms(&device, &queue, 2).unwrap();
+        assert!(moved[0].position[0] > initial.x);
+
+        let non_finite = [GpuExternalImpulse::new(0, initial, Vec3::splat(f32::NAN))];
+        assert_eq!(
+            gpu.dispatch_tick_with_impulses(&device, &queue, 3, &non_finite)
+                .unwrap_err(),
+            GpuImpulseError::NonFinite
+        );
+        assert_eq!(
+            gpu.apply_impulses(&device, &queue, &rows[..=EXTERNAL_IMPULSE_BATCH_CAPACITY],)
+                .unwrap_err(),
+            GpuImpulseError::BatchCapacity {
+                provided: EXTERNAL_IMPULSE_BATCH_CAPACITY + 1,
+                capacity: EXTERNAL_IMPULSE_BATCH_CAPACITY,
+            }
+        );
     }
 
     #[test]
@@ -5213,6 +5723,82 @@ mod tests {
         assert!(
             max_bearing_speed < 0.02,
             "bearing angular speed was {max_bearing_speed}"
+        );
+    }
+
+    #[test]
+    fn curved_suspension_car_lands_without_contact_correction_launch() {
+        let fixture = pipe_bend_suspension_car_fixture();
+        let ground_data = full_cylinder_ground_data(&fixture.creation.colliders);
+        assert_eq!(
+            ground_data
+                .iter()
+                .filter(|data| data.role == FULL_CYLINDER_GROUND_FIRST)
+                .count(),
+            4
+        );
+        assert_eq!(fixture.creation.bearings.len(), 8);
+        assert_eq!(fixture.dynamic_bodies.len(), 9);
+        assert!(
+            fixture
+                .creation
+                .compounds
+                .iter()
+                .any(|compound| compound.collider_range.len() >= 192)
+        );
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let gpu = GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &fixture.creation,
+            GpuPhysicsConfig {
+                mechanism_self_collisions: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let initial_chassis = fixture.creation.compounds[fixture.chassis as usize].root_translation;
+        let mut maximum_chassis_height = initial_chassis.y;
+        let mut minimum_wheel_height = f32::INFINITY;
+        for tick in 1..=1_200 {
+            gpu.dispatch_tick(&device, &queue, tick);
+            if tick.is_multiple_of(30) {
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let snapshot = gpu
+                    .read_snapshot_transforms(&device, &queue, (tick % 3) as u8)
+                    .unwrap();
+                maximum_chassis_height = maximum_chassis_height
+                    .max(transform_position(snapshot[fixture.chassis as usize]).y);
+                minimum_wheel_height = fixture
+                    .wheel_bodies
+                    .iter()
+                    .map(|&wheel| transform_position(snapshot[wheel as usize]).y)
+                    .fold(minimum_wheel_height, f32::min);
+            }
+        }
+
+        let diagnostics = gpu.read_last_tick(&device).unwrap();
+        let final_snapshot = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+        let final_wheel_height = fixture
+            .wheel_bodies
+            .iter()
+            .map(|&wheel| transform_position(final_snapshot[wheel as usize]).y)
+            .fold(f32::INFINITY, f32::min);
+        assert_eq!(diagnostics.error_flags, 0);
+        assert!(
+            maximum_chassis_height < initial_chassis.y + 0.5,
+            "ground correction launched the chassis from {} m to {maximum_chassis_height} m",
+            initial_chassis.y,
+        );
+        assert!(
+            minimum_wheel_height >= 0.39,
+            "a wheel sank through the ground to {minimum_wheel_height} m"
+        );
+        assert!(
+            final_wheel_height >= 0.44,
+            "a wheel remained below the ground at {final_wheel_height} m"
         );
     }
 

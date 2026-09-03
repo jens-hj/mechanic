@@ -192,6 +192,7 @@ fn PauseOptions(handles: Handles, fov: State<f32>) -> Element {
 #[component]
 fn PauseMain(handles: Handles, model: State<Model>) -> Element {
     let continue_action = handles.clone();
+    let world_selector_action = handles.clone();
     let options_action = handles.clone();
     let controls_action = handles.clone();
     let exit_action = handles.clone();
@@ -214,6 +215,11 @@ fn PauseMain(handles: Handles, model: State<Model>) -> Element {
                 on-click:(move || controls_action.ask(UiIntent::Pause(PauseAction::OpenControls)))
                 width:fill height:42px {
                 text #mechanic.value "Controls"
+            }
+            Action label:"Exit to World Selector"
+                on-click:(move || world_selector_action.ask(UiIntent::Pause(PauseAction::ExitToWorldSelector)))
+                width:fill height:42px {
+                text #mechanic.value "Exit to World Selector"
             }
             if model.with(|found| found.page == PausePage::ExitConfirmation) {
                 col #mechanic.pause-confirm width:fill height:min-content gap:10px pad:14px {
@@ -288,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn continue_and_exit_emit_their_intents() {
+    fn continue_world_selector_and_exit_emit_their_intents() {
         let overlay = showing(PausePage::Main);
         let mut actions: Vec<_> = overlay
             .reachable_boxes()
@@ -297,11 +303,13 @@ mod tests {
             .collect();
         actions.sort_by(|left, right| left.origin.y.total_cmp(&right.origin.y));
         overlay.click(actions[0].center());
+        overlay.click(actions[3].center());
         overlay.click(actions.last().expect("exit action").center());
         assert_eq!(
             overlay.intents(),
             vec![
                 UiIntent::Pause(PauseAction::Continue),
+                UiIntent::Pause(PauseAction::ExitToWorldSelector),
                 UiIntent::Pause(PauseAction::Exit),
             ]
         );

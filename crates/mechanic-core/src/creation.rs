@@ -837,26 +837,88 @@ impl CreationDocument {
         }
 
         let mut graph = ConstructionGraph::new();
-        let mut part_ids = Vec::with_capacity(self.parts.len());
+        let mut part_ids = vec![None; self.parts.len()];
+        let mut transmission_children = vec![Vec::new(); self.parts.len()];
+        let mut unresolved_transmissions = 0;
         for (index, part) in self.parts.iter().copied().enumerate() {
-            let command = match part {
-                PartDoc::Transmission { parent, pose } => {
-                    let parent = part_ids
-                        .get(parent as usize)
-                        .copied()
-                        .ok_or(CreationError::MissingPart(parent))?;
-                    BuildCommand::AttachTransmission {
-                        parent,
-                        spec: TransmissionSpec::new(pose.into()),
-                    }
-                }
-                other => build_command(other)?,
+            let PartDoc::Transmission { parent, .. } = part else {
+                let BuildOutcome::Spawned(id) = graph.apply(build_command(part)?)? else {
+                    unreachable!("part {index} replay uses a spawn command")
+                };
+                part_ids[index] = Some(id);
+                continue;
             };
-            let BuildOutcome::Spawned(id) = graph.apply(command)? else {
-                unreachable!("part {index} replay uses a spawn command")
+            let Some(children) = transmission_children.get_mut(parent as usize) else {
+                return Err(CreationError::MissingPart(parent));
             };
-            part_ids.push(id);
+            children.push(index);
+            unresolved_transmissions += 1;
         }
+
+        let mut ready = self
+            .parts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, part)| match part {
+                PartDoc::Transmission { parent, .. }
+                    if part_ids.get(*parent as usize).is_some_and(Option::is_some) =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        while let Some(index) = ready.pop() {
+            let PartDoc::Transmission { parent, pose } = self.parts[index] else {
+                unreachable!("only transmissions wait for their parents")
+            };
+            let parent_id = part_ids
+                .get(parent as usize)
+                .copied()
+                .flatten()
+                .ok_or(CreationError::MissingPart(parent))?;
+            let BuildOutcome::Spawned(id) = graph.apply(BuildCommand::AttachTransmission {
+                parent: parent_id,
+                spec: TransmissionSpec::new(pose.into()),
+            })?
+            else {
+                unreachable!("transmission replay uses a spawn command")
+            };
+            part_ids[index] = Some(id);
+            unresolved_transmissions -= 1;
+            ready.extend(
+                transmission_children
+                    .get(index)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+        }
+        if unresolved_transmissions != 0 {
+            let Some(parent) = self
+                .parts
+                .iter()
+                .enumerate()
+                .find_map(|(index, part)| match part {
+                    PartDoc::Transmission { parent, .. } if part_ids[index].is_none() => {
+                        Some(*parent)
+                    }
+                    _ => None,
+                })
+            else {
+                return Err(CreationError::MissingPart(u32::MAX));
+            };
+            return Err(CreationError::MissingPart(parent));
+        }
+        let part_ids = part_ids
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                id.ok_or_else(|| {
+                    CreationError::MissingPart(u32::try_from(index).unwrap_or(u32::MAX))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Primitive welds establish rigid membership before Shape regions are
         // claimed. Connections on generated patches wait until feature replay.
@@ -2155,6 +2217,76 @@ mod tests {
         let restored = document.into_graph().unwrap().graph;
         let (_, replayed) = restored.regions().next().unwrap();
         assert_eq!(replayed.plane_counts(), [3, 2, 2]);
+    }
+
+    #[test]
+    fn transmissions_round_trip_when_arena_order_precedes_their_parents() {
+        let mut graph = ConstructionGraph::new();
+        let first_disposable = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([1, 1, 1], IVec3::new(20, 1, 0))))
+                .unwrap(),
+        );
+        let second_disposable = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([1, 1, 1], IVec3::new(24, 1, 0))))
+                .unwrap(),
+        );
+        let engine = spawned(
+            graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    EngineKind::Gas,
+                    BuildPose::new(IVec3::ZERO, GridRotation::default()),
+                )))
+                .unwrap(),
+        );
+        graph.apply(BuildCommand::Remove(first_disposable)).unwrap();
+        graph
+            .apply(BuildCommand::Remove(second_disposable))
+            .unwrap();
+        let first = spawned(
+            graph
+                .apply(BuildCommand::AttachTransmission {
+                    parent: engine,
+                    spec: graph.next_transmission_spec(engine).unwrap(),
+                })
+                .unwrap(),
+        );
+        graph
+            .apply(BuildCommand::AttachTransmission {
+                parent: first,
+                spec: graph.next_transmission_spec(first).unwrap(),
+            })
+            .unwrap();
+
+        let document = CreationDocument::from_graph(&graph, "Forward parents", &[]);
+        assert!(matches!(
+            document.parts.as_slice(),
+            [
+                PartDoc::Transmission { parent: 1, .. },
+                PartDoc::Transmission { parent: 2, .. },
+                PartDoc::Engine { .. }
+            ]
+        ));
+
+        let restored = round_trip(&document).into_graph().unwrap().graph;
+        assert_eq!(restored.part_count(), 3);
+        let restored_engine = restored
+            .parts()
+            .find_map(|(part, spec)| matches!(spec, PartSpec::Engine(_)).then_some(part))
+            .unwrap();
+        let restored_first = restored
+            .parts()
+            .find_map(|(part, spec)| {
+                (matches!(spec, PartSpec::Transmission(_))
+                    && restored.transmission_parent(part) == Some(restored_engine))
+                .then_some(part)
+            })
+            .unwrap();
+        assert!(restored.parts().any(|(part, spec)| {
+            matches!(spec, PartSpec::Transmission(_))
+                && restored.transmission_parent(part) == Some(restored_first)
+        }));
     }
 
     #[test]

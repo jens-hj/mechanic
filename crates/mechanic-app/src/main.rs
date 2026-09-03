@@ -76,7 +76,8 @@ use builder::{
     stage_pipe_run_in_bounds, stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission,
     stage_weld_objects, transmission_candidate_from_hit_in_bounds, try_face_geometry_from_ref,
     validate_block_batch_in_bounds, validate_block_volume_in_bounds,
-    validate_cylinder_candidate_in_bounds, validate_pipe_run_in_bounds,
+    validate_cylinder_candidate_in_bounds, validate_indexed_block_batch_in_bounds,
+    validate_pipe_run_in_bounds,
 };
 #[cfg(test)]
 use builder::{candidate_from_hit, stage_bearing_attachment};
@@ -94,20 +95,20 @@ use mechanic_core::{
     ActuatorAssignment, AppearanceTarget, BearingDimensions, BearingId, BearingSocket,
     BuildCommand, BuildOutcome, CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape,
     CompiledCreation, ConstructionEditDelta, ConstructionGraph, ConstructionMaterial,
-    ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions, DimensionLinkSpec,
-    DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceKind, FaceOwner, FaceRef,
-    GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER,
-    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
-    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
-    MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, POSITION_TICK_METERS,
-    POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId, PartPiece, PartSpec,
-    PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, STEPS_PER_CELL,
-    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError, TransmissionSpec,
-    face_neighbour_offset, part_cells,
+    ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions, DimensionLinkId,
+    DimensionLinkSpec, DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceKind, FaceOwner,
+    FaceRef, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec,
+    MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
+    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
+    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance,
+    POSITION_TICK_METERS, POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId,
+    PartPiece, PartSpec, PendingOperation, PipeBendDimensions, RegionId, STEP_METERS,
+    STEPS_PER_CELL, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError,
+    TransmissionSpec, face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
-    FIXED_DT_SECONDS, FixedStepScheduler, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines,
-    GpuTickReadback, GpuTransform, GpuVelocity,
+    FIXED_DT_SECONDS, FixedStepScheduler, GpuExternalImpulse, GpuGroundPlane, GpuPhysics,
+    GpuPhysicsConfig, GpuPhysicsPipelines, GpuTickReadback, GpuTransform, GpuVelocity,
 };
 use pause_menu::{PauseMenuState, PauseRequest};
 use performance::PerformanceMetrics;
@@ -916,6 +917,7 @@ fn handle_pause_request(
     mut settings: ResMut<AppSettings>,
     history: Res<EditorHistory>,
     space: Res<State<world::AppSpace>>,
+    mut worlds: ResMut<world::WorldListState>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(request) = pause.take_request() else {
@@ -923,6 +925,10 @@ fn handle_pause_request(
     };
     match request {
         PauseRequest::Continue => pause.close(),
+        PauseRequest::ExitToWorldSelector => {
+            worlds.act(ui::WorldAction::ExitToSelector);
+            pause.close();
+        }
         PauseRequest::OpenOptions => pause.open_options(),
         PauseRequest::OpenControls => pause.open_controls(),
         PauseRequest::Back | PauseRequest::CancelExit => pause.return_to_main(),
@@ -1091,9 +1097,9 @@ fn maintain_space_simulation(
     if simulation.world_revision == Some(revision) {
         return;
     }
-    if !runtime.foundations_match_editor_revision(history.current_revision) {
+    let Some(static_parts) = runtime.static_parts_for_physics(history.current_revision) else {
         return;
-    }
+    };
     if graph.0.part_count() == 0 {
         publication.pending = None;
         publication.failed_revision = None;
@@ -1108,10 +1114,13 @@ fn maintain_space_simulation(
     }
 
     let graph = graph.0.clone();
-    let anchored = runtime.anchored_parts().collect::<Vec<_>>();
+    let ground_plane = runtime.active_assembly_ground_plane();
     let physics_config = GpuPhysicsConfig {
-        ground_plane_enabled: false,
-        mechanism_self_collisions: !showcase::uses_reduced_collision_mode(&graph),
+        ground_plane_enabled: ground_plane.is_some(),
+        mechanism_self_collisions: world_mechanism_self_collisions(
+            &graph,
+            runtime.active_dimension_link(),
+        ),
         ..GpuPhysicsConfig::default()
     };
     let device = render_device.clone();
@@ -1121,7 +1130,15 @@ fn maintain_space_simulation(
     publication.pending = Some(WorldPhysicsTask {
         revision,
         task: AsyncComputeTaskPool::get().spawn(async move {
-            prepare_world_physics(graph, anchored, physics_config, device, queue, pipelines)
+            prepare_world_physics(
+                graph,
+                static_parts,
+                physics_config,
+                ground_plane,
+                device,
+                queue,
+                pipelines,
+            )
         }),
     });
 }
@@ -1137,6 +1154,7 @@ fn prepare_world_physics(
     graph: ConstructionGraph,
     anchored: Vec<PartId>,
     physics_config: GpuPhysicsConfig,
+    ground_plane: Option<(Vec3, f32)>,
     render_device: RenderDevice,
     render_queue: RenderQueue,
     pipelines: Arc<GpuPhysicsPipelines>,
@@ -1147,14 +1165,18 @@ fn prepare_world_physics(
             .map_err(|error| error.to_string())?;
         let gpu = creation_requires_live_physics(&creation)
             .then(|| {
-                GpuPhysics::new_with_pipelines(
+                let gpu = GpuPhysics::new_with_pipelines(
                     render_device.wgpu_device(),
                     &render_queue,
                     &creation,
                     physics_config,
                     &pipelines,
                 )
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+                if let Some((normal, offset)) = ground_plane {
+                    gpu.write_ground_plane(&render_queue, normal, offset);
+                }
+                Ok::<_, String>(gpu)
             })
             .transpose()?;
         Ok(PreparedWorldPhysics {
@@ -1177,7 +1199,7 @@ fn replacement_simulation(
         creation,
         gpu,
     } = prepared;
-    let (transforms, velocities) = rebuilt_body_states(&creation, previous);
+    let (transforms, velocities) = rebuilt_body_states(&creation, &graph, previous);
     let next_tick = previous.next_tick.max(1);
     let Some(gpu) = gpu else {
         return Ok(AppSimulation {
@@ -1218,12 +1240,16 @@ fn replacement_simulation(
 
 #[cfg(test)]
 mod world_physics_publication_tests {
-    use bevy::prelude::IVec3;
-    use mechanic_core::{BuildCommand, BuildOutcome, BuildPose, CuboidSpec, GridRotation};
+    use bevy::prelude::{IVec3, Quat, Vec3};
+    use mechanic_core::{
+        BuildCommand, BuildOutcome, BuildPose, CuboidSpec, DimensionLinkId, DimensionLinkSpec,
+        FaceKind, FaceRef, GridRotation, WeldSpec,
+    };
+    use mechanic_gpu::GpuTransform;
 
     use super::{
-        AppSimulation, ConstructionGraph, editor_part_is_static_or_pending,
-        world_physics_result_is_current,
+        AppSimulation, ConstructionGraph, editor_part_is_static_or_pending, rebuilt_body_states,
+        world_mechanism_self_collisions, world_physics_result_is_current,
     };
 
     #[test]
@@ -1233,6 +1259,17 @@ mod world_physics_publication_tests {
         assert!(world_physics_result_is_current(desired, desired));
         assert!(!world_physics_result_is_current((41, 7), desired));
         assert!(!world_physics_result_is_current((42, 6), desired));
+    }
+
+    #[test]
+    fn linked_vehicle_disables_internal_mechanism_contacts() {
+        let graph = ConstructionGraph::new();
+
+        assert!(!world_mechanism_self_collisions(
+            &graph,
+            Some(DimensionLinkId(1))
+        ));
+        assert!(world_mechanism_self_collisions(&graph, None));
     }
 
     #[test]
@@ -1309,6 +1346,65 @@ mod world_physics_publication_tests {
             moving_part
         ));
     }
+
+    #[test]
+    fn deleting_dimension_link_preserves_the_live_body_pose() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(block) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [2, 1, 1],
+                    BuildPose::new(IVec3::new(0, 1, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(7),
+                BuildPose::new(IVec3::new(2, 1, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(block, FaceKind::PositiveX),
+                second: FaceRef::part(link, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let previous_creation = graph.compile().unwrap();
+        let live_rotation = Quat::from_rotation_y(0.7);
+        let live_position = Vec3::new(4.0, 5.0, 6.0);
+        let live_transform = GpuTransform {
+            position: live_position.extend(0.0).to_array(),
+            rotation: live_rotation.to_array(),
+        };
+        let previous = AppSimulation {
+            creation: Some(previous_creation.clone()),
+            published_graph: graph.clone(),
+            previous_transforms: vec![live_transform],
+            transforms: vec![live_transform],
+            previous_snapshot_tick: 1,
+            snapshot_tick: 2,
+            ..Default::default()
+        };
+
+        graph.apply(BuildCommand::Remove(link)).unwrap();
+        let creation = graph.compile().unwrap();
+        let root_delta = creation.compounds[0].root_translation
+            - previous_creation.compounds[0].root_translation;
+        let expected_position = live_position + live_rotation * root_delta;
+        let (transforms, _) = rebuilt_body_states(&creation, &graph, &previous);
+        let rebuilt = transforms[0];
+
+        assert!(Vec3::from_slice(&rebuilt.position[..3]).abs_diff_eq(expected_position, 1.0e-5));
+        assert!(Quat::from_array(rebuilt.rotation).abs_diff_eq(live_rotation, 1.0e-5));
+    }
 }
 
 fn creation_requires_live_physics(creation: &CompiledCreation) -> bool {
@@ -1318,8 +1414,16 @@ fn creation_requires_live_physics(creation: &CompiledCreation) -> bool {
         .any(|compound| !compound.is_static)
 }
 
+fn world_mechanism_self_collisions(
+    graph: &ConstructionGraph,
+    active_dimension_link: Option<DimensionLinkId>,
+) -> bool {
+    active_dimension_link.is_none() && !showcase::uses_reduced_collision_mode(graph)
+}
+
 fn rebuilt_body_states(
     creation: &CompiledCreation,
+    graph: &ConstructionGraph,
     previous: &AppSimulation,
 ) -> (Vec<GpuTransform>, Vec<GpuVelocity>) {
     let mut transforms = creation
@@ -1345,8 +1449,7 @@ fn rebuilt_body_states(
         .iter()
         .enumerate()
         .filter(|(_, compound)| !compound.is_static)
-        .map(|(index, compound)| (compound.source_parts.as_slice(), index))
-        .collect::<HashMap<_, _>>();
+        .collect::<Vec<_>>();
     let tick_delta = previous
         .snapshot_tick
         .saturating_sub(previous.previous_snapshot_tick);
@@ -1356,12 +1459,48 @@ fn rebuilt_body_states(
         if compound.is_static {
             continue;
         }
-        let Some(&old_index) = previous_bodies.get(compound.source_parts.as_slice()) else {
+        let old_index = previous_bodies
+            .iter()
+            .find_map(|(index, previous_compound)| {
+                (previous_compound.source_parts == compound.source_parts).then_some(*index)
+            })
+            .or_else(|| {
+                previous_bodies
+                    .iter()
+                    .filter(|(_, previous_compound)| {
+                        body_membership_differs_only_by_dimension_links(
+                            &compound.source_parts,
+                            &previous_compound.source_parts,
+                            graph,
+                            &previous.published_graph,
+                        )
+                    })
+                    .max_by_key(|(_, previous_compound)| {
+                        compound
+                            .source_parts
+                            .iter()
+                            .filter(|part| previous_compound.source_parts.contains(part))
+                            .count()
+                    })
+                    .map(|(index, _)| *index)
+            });
+        let Some(old_index) = old_index else {
             continue;
         };
         let Some(&current) = previous.transforms.get(old_index) else {
             continue;
         };
+        let previous_compound = &previous_creation.compounds[old_index];
+        let root_delta = compound.root_translation - previous_compound.root_translation;
+        let remap_root = |transform: GpuTransform| {
+            let rotation = Quat::from_array(transform.rotation);
+            let position = Vec3::from_slice(&transform.position[..3]) + rotation * root_delta;
+            GpuTransform {
+                position: position.extend(0.0).to_array(),
+                ..transform
+            }
+        };
+        let current = remap_root(current);
         transforms[new_index] = current;
         if elapsed <= f32::EPSILON {
             continue;
@@ -1370,7 +1509,7 @@ fn rebuilt_body_states(
             .previous_transforms
             .get(old_index)
             .copied()
-            .unwrap_or(current);
+            .map_or(current, remap_root);
         let current_position = Vec3::from_slice(&current.position[..3]);
         let prior_position = Vec3::from_slice(&prior.position[..3]);
         let current_rotation = Quat::from_array(current.rotation);
@@ -1385,6 +1524,23 @@ fn rebuilt_body_states(
         };
     }
     (transforms, velocities)
+}
+
+fn body_membership_differs_only_by_dimension_links(
+    current: &[PartId],
+    previous: &[PartId],
+    graph: &ConstructionGraph,
+    previous_graph: &ConstructionGraph,
+) -> bool {
+    current.iter().any(|part| previous.contains(part))
+        && current
+            .iter()
+            .filter(|part| !previous.contains(part))
+            .all(|part| graph.dimension_link_id(*part).is_some())
+        && previous
+            .iter()
+            .filter(|part| !current.contains(part))
+            .all(|part| previous_graph.dimension_link_id(*part).is_some())
 }
 
 /// Whether the primary modifier plus `S` was pressed this frame.
@@ -1542,6 +1698,7 @@ fn handle_seat_interaction(
     actions: Res<ButtonInput<GameAction>>,
     overlay: Res<ui::UiInput>,
     wheel: Res<MaterialWheelState>,
+    graph: Res<EditorGraph>,
     simulation: Res<AppSimulation>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut camera: Single<
@@ -1556,21 +1713,13 @@ fn handle_seat_interaction(
     mut player: ResMut<PlayerState>,
     mut state: ResMut<EditorState>,
 ) {
-    if !simulation.is_running() {
-        if player.seat.is_some() {
-            let camera_position = camera.2.translation;
-            player.leave_seat_at(camera_position);
-        }
-        return;
-    }
-
     if actions.just_pressed(GameAction::Interact)
         && player.world_input_active()
         && !overlay.blocks_keyboard()
         && !wheel.open
     {
         if let Some(seat) = player.seat {
-            let beside = seat_world_pose(&simulation.published_graph, &simulation, seat)
+            let beside = seat_world_pose(&graph.0, &simulation, seat)
                 .map_or(camera.2.translation, |(centre, rotation)| {
                     centre + rotation * (Vec3::X * 0.9)
                 });
@@ -1584,24 +1733,16 @@ fn handle_seat_interaction(
             .viewport_to_world(camera_global, cursor_position)
             .ok()
             .and_then(|ray| {
-                raycast_simulation(
-                    &simulation.published_graph,
-                    simulation
-                        .creation
-                        .as_ref()
-                        .expect("running simulation has a compiled creation"),
-                    &simulation.transforms,
-                    ray.origin,
-                    ray.direction.as_vec3(),
-                )
+                raycast_seat_interaction(&graph.0, &simulation, ray.origin, ray.direction.as_vec3())
             });
-        if let Some(hit) = hit
-            && camera::seat_entry_allowed(
-                hit.distance,
-                simulation.published_graph.is_seat(hit.part),
-            )
+        let seat = hit.and_then(|(part, _)| {
+            seat_surface_distance(&graph.0, &simulation, part, player.position)
+                .map(|distance| (part, distance))
+        });
+        if let Some((part, distance)) = seat
+            && camera::seat_entry_allowed(distance, true)
         {
-            player.seat = Some(hit.part);
+            player.seat = Some(part);
             camera.1.yaw = 0.0;
             camera.1.pitch = 0.0;
             state.feedback = Some("Seated — mouse looks around, E leaves the Seat".to_owned());
@@ -1617,9 +1758,7 @@ fn handle_seat_interaction(
     let Some(seat) = player.seat else {
         return;
     };
-    let Some((seat_center, seat_rotation)) =
-        seat_world_pose(&simulation.published_graph, &simulation, seat)
-    else {
+    let Some((seat_center, seat_rotation)) = seat_world_pose(&graph.0, &simulation, seat) else {
         player.seat = None;
         return;
     };
@@ -1632,27 +1771,67 @@ fn handle_seat_interaction(
     **global = GlobalTransform::from(**transform);
 }
 
+fn seat_interaction_graph<'a>(
+    graph: &'a ConstructionGraph,
+    simulation: &'a AppSimulation,
+) -> &'a ConstructionGraph {
+    if simulation.creation.is_some() {
+        &simulation.published_graph
+    } else {
+        graph
+    }
+}
+
+fn raycast_seat_interaction(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<(PartId, f32)> {
+    let interaction_graph = seat_interaction_graph(graph, simulation);
+    if let Some(creation) = simulation.creation.as_ref() {
+        return raycast_simulation(
+            interaction_graph,
+            creation,
+            &simulation.transforms,
+            origin,
+            direction,
+        )
+        .map(|hit| (hit.part, hit.distance));
+    }
+    let hit = raycast_construction(interaction_graph, origin, direction)?;
+    let FaceOwner::Part(part) = hit.face.owner else {
+        return None;
+    };
+    Some((part, hit.distance))
+}
+
 pub(crate) fn seat_world_pose(
     graph: &ConstructionGraph,
     simulation: &AppSimulation,
     seat: PartId,
 ) -> Option<(Vec3, Quat)> {
-    let creation = simulation.creation.as_ref()?;
-    let compound = creation
-        .part_to_compound
-        .iter()
-        .find_map(|(part, compound)| (*part == seat).then_some(*compound))?;
-    let snapshot = simulation.transforms.get(compound as usize)?;
-    let PartSpec::Seat(spec) = graph.part(seat).copied()? else {
+    seat_interaction_graph(graph, simulation)
+        .is_seat(seat)
+        .then(|| simulation.live_part_pose(graph, seat))?
+}
+
+fn seat_surface_distance(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    seat: PartId,
+    point: Vec3,
+) -> Option<f32> {
+    let PartSpec::Seat(spec) = seat_interaction_graph(graph, simulation)
+        .part(seat)
+        .copied()?
+    else {
         return None;
     };
-    let root_position = Vec3::from_slice(&snapshot.position[..3]);
-    let root_rotation = Quat::from_array(snapshot.rotation);
-    let seat_rotation = root_rotation * spec.pose.rotation.quaternion();
-    let seat_center = root_position
-        + root_rotation
-            * (spec.pose.translation() - creation.compounds[compound as usize].root_translation);
-    Some((seat_center, seat_rotation))
+    let (centre, rotation) = seat_world_pose(graph, simulation, seat)?;
+    let local = rotation.inverse() * (point - centre);
+    let outside = (local.abs() - spec.cuboid().size_meters() * 0.5).max(Vec3::ZERO);
+    Some(outside.length())
 }
 
 /// Advances every driven bearing's program and pushes changed rows to the GPU.
@@ -2032,58 +2211,18 @@ fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
     minimum.is_finite().then_some((minimum, maximum))
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::type_complexity
-)]
-fn advance_simulation(
-    time: Res<Time>,
-    graph_and_world: (Res<EditorGraph>, Res<world::WorldRuntime>),
-    sequencer: Res<DriveSequencer>,
-    gearboxes: Res<GearboxRuntime>,
-    selection: Res<SelectedTool>,
-    mut state: ResMut<EditorState>,
+/// Polls completed physics snapshots without dispatching new work.
+///
+/// World walking runs after this system, so collision and rendered machinery consume
+/// the same newest valid transform publication.
+fn poll_simulation_readbacks(
     mut simulation: ResMut<AppSimulation>,
-    mut hammer: ResMut<HammerInteraction>,
+    mut state: ResMut<EditorState>,
     render_device: Res<RenderDevice>,
-    render_queue: Res<RenderQueue>,
-    visuals: Res<EditorVisuals>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut construction_visuals: Query<
-        (&ConstructionVisual, &mut Visibility),
-        (Without<BearingVisual>, Without<SimulationVisual>),
-    >,
-    mut bearing_visibility: Single<
-        &mut Visibility,
-        (
-            With<BearingVisual>,
-            Without<ConstructionVisual>,
-            Without<SimulationVisual>,
-        ),
-    >,
-    mut authored_visuals: Query<
-        (&AuthoredPartVisual, &mut Visibility),
-        (
-            Without<ConstructionVisual>,
-            Without<BearingVisual>,
-            Without<SimulationVisual>,
-        ),
-    >,
-    mut simulation_visuals: Query<
-        (&SimulationVisual, &mut Visibility),
-        (Without<ConstructionVisual>, Without<BearingVisual>),
-    >,
 ) {
-    let (_, world_runtime) = graph_and_world;
     if !simulation.is_running() {
         return;
     }
-    let published_graph = simulation.published_graph.clone();
-
-    // Poll before scheduling more work. This is deliberately non-blocking:
-    // completed tick telemetry and transforms arrive whenever the shared GPU
-    // queue reaches their staging copies.
     loop {
         let completed = simulation
             .gpu
@@ -2123,6 +2262,94 @@ fn advance_simulation(
             }
         }
     }
+}
+
+fn terrain_ground_planes(
+    world: &world::WorldRuntime,
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+) -> Vec<GpuGroundPlane> {
+    let mut part_planes = HashMap::<PartId, GpuGroundPlane>::new();
+    creation
+        .colliders
+        .iter()
+        .map(|collider| {
+            let body_index = collider.compound_index as usize;
+            let Some(compound) = creation.compounds.get(body_index) else {
+                return GpuGroundPlane::DISABLED;
+            };
+            if compound.is_static {
+                return GpuGroundPlane::DISABLED;
+            }
+            *part_planes.entry(collider.source_part).or_insert_with(|| {
+                let Some(spec) = graph.part(collider.source_part) else {
+                    return GpuGroundPlane::DISABLED;
+                };
+                let Some(transform) = transforms.get(body_index) else {
+                    return GpuGroundPlane::DISABLED;
+                };
+                let root_position = Vec3::from_slice(&transform.position[..3]);
+                let root_rotation = Quat::from_array(transform.rotation).normalize();
+                let part_position = root_position
+                    + root_rotation * (spec.pose().translation() - compound.root_translation);
+                world
+                    .terrain_plane_beneath(part_position)
+                    .map_or(GpuGroundPlane::DISABLED, |(normal, offset)| {
+                        GpuGroundPlane { normal, offset }
+                    })
+            })
+        })
+        .collect()
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::type_complexity
+)]
+fn advance_simulation(
+    time: Res<Time>,
+    mut world_runtime: ResMut<world::WorldRuntime>,
+    sequencer: Res<DriveSequencer>,
+    gearboxes: Res<GearboxRuntime>,
+    selection: Res<SelectedTool>,
+    mut state: ResMut<EditorState>,
+    mut simulation: ResMut<AppSimulation>,
+    mut hammer: ResMut<HammerInteraction>,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    visuals: Res<EditorVisuals>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut construction_visuals: Query<
+        (&ConstructionVisual, &mut Visibility),
+        (Without<BearingVisual>, Without<SimulationVisual>),
+    >,
+    mut bearing_visibility: Single<
+        &mut Visibility,
+        (
+            With<BearingVisual>,
+            Without<ConstructionVisual>,
+            Without<SimulationVisual>,
+        ),
+    >,
+    mut authored_visuals: Query<
+        (&AuthoredPartVisual, &mut Visibility),
+        (
+            Without<ConstructionVisual>,
+            Without<BearingVisual>,
+            Without<SimulationVisual>,
+        ),
+    >,
+    mut simulation_visuals: Query<
+        (&SimulationVisual, &mut Visibility),
+        (Without<ConstructionVisual>, Without<BearingVisual>),
+    >,
+) {
+    if !simulation.is_running() {
+        return;
+    }
+    let published_graph = simulation.published_graph.clone();
 
     if state.drive_rows_dirty {
         state.drive_rows_dirty = false;
@@ -2131,6 +2358,27 @@ fn advance_simulation(
                 &render_queue,
                 &geared_gpu_drive_rows(creation, &published_graph, &sequencer, &gearboxes),
             )
+        {
+            stop_failed_simulation(&mut simulation, &mut state, error.to_string());
+            return;
+        }
+    }
+
+    if world_runtime.active_dimension_link().is_some() {
+        let ground_planes = terrain_ground_planes(
+            &world_runtime,
+            &published_graph,
+            simulation
+                .creation
+                .as_ref()
+                .expect("running simulation has compiled creation"),
+            &simulation.transforms,
+        );
+        if let Err(error) = simulation
+            .gpu
+            .as_ref()
+            .expect("running simulation has GPU state")
+            .write_ground_planes(&render_queue, &ground_planes)
         {
             stop_failed_simulation(&mut simulation, &mut state, error.to_string());
             return;
@@ -2161,18 +2409,31 @@ fn advance_simulation(
     if !ticks.is_empty() {
         let physics_started = std::time::Instant::now();
         for tick in ticks {
-            if let Err(error) =
-                apply_pending_hammer_impact(&simulation, &mut hammer, &render_device, &render_queue)
-            {
-                hammer.pending = None;
-                stop_failed_simulation(&mut simulation, &mut state, error);
-                return;
+            match pending_hammer_impulse(&simulation, &mut hammer) {
+                Ok(Some(impulse)) => world_runtime.queue_player_reaction(impulse),
+                Ok(None) => {}
+                Err(error) => {
+                    hammer.pending = None;
+                    stop_failed_simulation(&mut simulation, &mut state, error);
+                    return;
+                }
             }
-            simulation
+            let dispatch = simulation
                 .gpu
                 .as_ref()
                 .expect("running simulation has GPU state")
-                .dispatch_tick(render_device.wgpu_device(), &render_queue, tick);
+                .dispatch_tick_with_impulses(
+                    render_device.wgpu_device(),
+                    &render_queue,
+                    tick,
+                    world_runtime.pending_player_reactions(),
+                );
+            if let Err(error) = dispatch {
+                world_runtime.clear_player_reactions();
+                stop_failed_simulation(&mut simulation, &mut state, error.to_string());
+                return;
+            }
+            world_runtime.clear_player_reactions();
         }
         simulation.record_performance(physics_started.elapsed(), None);
     }
@@ -2833,6 +3094,7 @@ struct WireHoverVisual;
 const BEARING_RENDER_DEPTH_BIAS: f32 = 2.0;
 const BEARING_RENDER_RADIAL_SKIN: f32 = 0.001;
 const PREVIEW_RENDER_DEPTH_BIAS: f32 = 1.0;
+const DELETE_PREVIEW_SCALE: f32 = 1.015;
 /// Matches the 0.992 scale of a single 0.25 m block preview without making
 /// large sheet previews shrink in proportion to their full width.
 const BLOCK_SHEET_PREVIEW_INSET_METERS: f32 = 0.001;
@@ -3156,6 +3418,7 @@ fn main() {
                         apply_camera_fov,
                         camera::update_material_wheel,
                         camera::update_player_camera,
+                        poll_simulation_readbacks.run_if(world::world_playing),
                         handle_seat_interaction,
                         handle_shortcuts,
                     )
@@ -4943,16 +5206,7 @@ fn update_hover(
             Some((inner, outer)) => {
                 raycast_construction_for_annulus(&graph.0, ray.origin, ray_direction, inner, outer)
             }
-            None if placement_bounds.is_world() => raycast_construction_with_ground(
-                &graph.0,
-                ray.origin,
-                ray_direction,
-                terrain_ground,
-            ),
-            None if placement_bounds == PlacementBounds::GarageBuild => {
-                raycast_construction_with_ground(&graph.0, ray.origin, ray_direction, None)
-            }
-            None => raycast_construction(&graph.0, ray.origin, ray_direction),
+            None => nearest_editable,
         };
         let hit = hit.filter(|hit| match hit.face.owner {
             FaceOwner::Ground => true,
@@ -5662,8 +5916,8 @@ fn refresh_tool_preview_with_cylinder(
                                 smart_snap.range,
                                 &supports,
                                 |guided| {
-                                    validate_block_batch_in_bounds(
-                                        graph,
+                                    validate_indexed_block_batch_in_bounds(
+                                        &state.snap_index,
                                         guided,
                                         &[guided.spec],
                                         bounds,
@@ -5700,8 +5954,13 @@ fn refresh_tool_preview_with_cylinder(
                         placement_grid,
                         smart_snap.range,
                         |guided| {
-                            validate_block_batch_in_bounds(graph, guided, &[guided.spec], bounds)
-                                .is_ok()
+                            validate_indexed_block_batch_in_bounds(
+                                &state.snap_index,
+                                guided,
+                                &[guided.spec],
+                                bounds,
+                            )
+                            .is_ok()
                         },
                     );
                     state.smart_guides = active_guides;
@@ -5763,8 +6022,8 @@ fn refresh_tool_preview_with_cylinder(
                 error
             } else {
                 placement_candidate.and_then(|candidate| {
-                    let error = validate_block_batch_in_bounds(
-                        graph,
+                    let error = validate_indexed_block_batch_in_bounds(
+                        &state.snap_index,
                         candidate,
                         &[candidate.spec],
                         state.placement_bounds,
@@ -8356,9 +8615,14 @@ fn handle_build_actions(
     wheel: Res<MaterialWheelState>,
     mut world_runtime: Option<ResMut<world::WorldRuntime>>,
 ) {
+    let deleting_moving_dimension_link = actions.just_pressed(GameAction::Secondary)
+        && state
+            .hovered_simulation
+            .is_some_and(|hit| graph.0.dimension_link_id(hit.part).is_some());
     if state.world_edit_blocker == Some(WorldEditBlocker::MovingConstruction)
         && (actions.just_pressed(GameAction::Primary)
             || actions.just_pressed(GameAction::Secondary))
+        && !deleting_moving_dimension_link
     {
         state.feedback = Some(
             "Moving constructions cannot be edited; anchor them before changing parts".to_owned(),
@@ -8405,11 +8669,23 @@ fn handle_build_actions(
         state.feedback = Some("Pipe run cancelled".to_owned());
         return;
     }
+    if tool == Tool::Connector
+        && actions.just_pressed(GameAction::Secondary)
+        && state.wire_drag.take().is_some()
+    {
+        state.feedback = Some("Drive wire cancelled".to_owned());
+        return;
+    }
+    if actions.just_pressed(GameAction::Secondary)
+        && let Some(socket) = state
+            .hovered_bearing
+            .and_then(|index| state.placed_bearings.get(index).copied())
+        && let Some(feedback) = reverse_drive_wires(&mut graph.0, &mut state, &mut history, socket)
+    {
+        state.feedback = Some(feedback);
+        return;
+    }
     if tool == Tool::Connector && actions.just_pressed(GameAction::Secondary) {
-        if state.wire_drag.take().is_some() {
-            state.feedback = Some("Drive wire cancelled".to_owned());
-            return;
-        }
         state.feedback = Some(disconnect_connector_links(
             &mut graph.0,
             &mut state,
@@ -8503,6 +8779,13 @@ fn handle_build_actions(
                         Some("Release right mouse to delete Dimension Link".to_owned());
                 }
             }
+        } else if let Some(part) = state
+            .hovered_simulation
+            .map(|hit| hit.part)
+            .filter(|part| graph.0.dimension_link_id(*part).is_some())
+        {
+            state.delete_target = Some(DeleteTarget::Part(part));
+            state.feedback = Some("Release right mouse to delete Dimension Link".to_owned());
         }
     }
     if actions.just_released(GameAction::Secondary) {
@@ -8563,7 +8846,9 @@ fn handle_build_actions(
                             graph.0 = staged;
                             state.placed_bearings = placed_bearings;
                             history.commit(previous);
-                            state.feedback = Some(if migrated == 0 {
+                            state.feedback = Some(if deleted_link.is_some() {
+                                "Deleted Dimension Link and incident connections".to_owned()
+                            } else if migrated == 0 {
                                 "Deleted cylinder and incident connections".to_owned()
                             } else {
                                 format!("Deleted cylinder; moved {migrated} bearing(s)")
@@ -9443,7 +9728,8 @@ fn connect_drive_wire(
     }
 }
 
-/// Removes every drive wire on the hovered bearing. Returns the feedback line.
+/// Removes Input-chain links from the hovered endpoint. Bearing drive reversal
+/// is handled first by [`reverse_drive_wires`].
 fn disconnect_connector_links(
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
@@ -9453,11 +9739,8 @@ fn disconnect_connector_links(
         let _ = graph.apply(BuildCommand::CancelPending);
         return "Drive wire cancelled".to_owned();
     }
-    if let Some(socket) = state
-        .hovered_bearing
-        .and_then(|index| state.placed_bearings.get(index).copied())
-    {
-        return disconnect_drive_wires(graph, state, history, socket);
+    if state.hovered_bearing.is_some() {
+        return "That bearing is not wired to a control block".to_owned();
     }
     let Some(part) = hovered_part(state.hovered) else {
         return "Right click a linked bearing, Input, Seat, or Controller".to_owned();
@@ -9487,31 +9770,43 @@ fn disconnect_connector_links(
     }
 }
 
-fn disconnect_drive_wires(
+/// Flips every drive wire on one placed socket, preserving its controller and
+/// program. `None` means the socket is not driven and the normal secondary
+/// action should continue.
+fn reverse_drive_wires(
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
     socket: PlacedBearing,
-) -> String {
+) -> Option<String> {
     let bearings = socket_bearings(graph, socket);
     let links = graph
         .drive_links()
-        .filter_map(|(id, link)| bearings.contains(&link.bearing).then_some(id))
+        .filter_map(|(id, link)| bearings.contains(&link.bearing).then_some((id, *link)))
         .collect::<Vec<_>>();
     if links.is_empty() {
-        return "That bearing is not wired to a control block".to_owned();
+        return None;
     }
     let previous = EditorSnapshot::capture(graph, state);
     let mut staged = graph.begin_edit();
-    match staged.apply_batch(links.iter().copied().map(BuildCommand::RemoveDriveLink)) {
+    let commands = links
+        .iter()
+        .map(|&(id, _)| BuildCommand::RemoveDriveLink(id))
+        .chain(links.iter().map(|&(_, link)| {
+            BuildCommand::AddDriveLink(DriveLinkSpec {
+                reversed: !link.reversed,
+                ..link
+            })
+        }));
+    Some(match staged.apply_batch(commands) {
         Ok(_) => {
             *graph = staged.finish();
             history.commit(previous);
             state.construction_mesh_dirty = true;
-            "Removed this bearing's drive wire".to_owned()
+            "Changed this bearing's default direction".to_owned()
         }
         Err(error) => error.to_string(),
-    }
+    })
 }
 
 fn bearing_uses_socket(bearing: &mechanic_core::BearingSpec, socket: PlacedBearing) -> bool {
@@ -9945,14 +10240,12 @@ fn handle_hammer_actions(
     });
 }
 
-fn apply_pending_hammer_impact(
+fn pending_hammer_impulse(
     simulation: &AppSimulation,
     hammer: &mut HammerInteraction,
-    render_device: &RenderDevice,
-    render_queue: &RenderQueue,
-) -> Result<(), String> {
+) -> Result<Option<GpuExternalImpulse>, String> {
     let Some(impact) = hammer.pending.as_mut() else {
-        return Ok(());
+        return Ok(None);
     };
     let transform = simulation
         .transforms
@@ -9961,23 +10254,12 @@ fn apply_pending_hammer_impact(
     let position = Vec3::from_slice(&transform.position[..3]);
     let rotation = Quat::from_array(transform.rotation);
     let world_point = position + rotation * impact.local_point;
-    simulation
-        .gpu
-        .as_ref()
-        .expect("running simulation has GPU state")
-        .apply_impulse(
-            render_device.wgpu_device(),
-            render_queue,
-            impact.body_index,
-            world_point,
-            impact.impulse_per_tick,
-        )
-        .map_err(|error| format!("Hammer strike failed: {error}"))?;
+    let impulse = GpuExternalImpulse::new(impact.body_index, world_point, impact.impulse_per_tick);
     impact.remaining_ticks -= 1;
     if impact.remaining_ticks == 0 {
         hammer.pending = None;
     }
-    Ok(())
+    Ok(Some(impulse))
 }
 
 fn hammer_impulse_magnitude(elapsed_seconds: f32) -> f32 {
@@ -10709,7 +10991,7 @@ fn update_previews(
                 .filter_map(|&part| graph.0.part(part).copied())
                 .collect::<Vec<_>>();
             if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
-                *mesh = combined_parts_mesh_scaled(&specs, 1.0);
+                *mesh = delete_preview_mesh(&specs);
             }
             rendered_revisions.delete = state.delete_preview_revision;
         }
@@ -10743,7 +11025,7 @@ fn update_previews(
             DeleteTarget::Part(part) => {
                 if let Some(spec) = graph.0.part(part).copied() {
                     if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
-                        *mesh = combined_parts_mesh_scaled(&[spec], 1.015);
+                        *mesh = delete_preview_mesh(&[spec]);
                     }
                     delete.0.0 = visuals.delete_drag_preview_mesh.clone();
                     *delete.1 = Transform::default();
@@ -11085,7 +11367,7 @@ fn tool_status_line(
     };
     match tool {
         Tool::Connector => format!(
-            "Tool: Connector    Drag a block to a bearing, or a bearing to a block    {}    Right click a wired bearing removes it",
+            "Tool: Connector    Drag a block to a bearing, or a bearing to a block    {}    Right click a wired bearing changes its default direction",
             selected_wires.map_or_else(
                 || "No block selected".to_owned(),
                 |wires| format!(
@@ -12089,6 +12371,10 @@ fn combined_parts_mesh_scaled(specs: &[PartSpec], scale_factor: f32) -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+fn delete_preview_mesh(specs: &[PartSpec]) -> Mesh {
+    combined_parts_mesh_scaled(specs, DELETE_PREVIEW_SCALE)
 }
 
 /// Exact world bounds of a block sheet, including the outer half-block skin.
@@ -13370,7 +13656,7 @@ fn append_drive_indicator(
         DriveTarget::Angle(angle) => angle,
         DriveTarget::Speed(speed) => speed,
     };
-    let winding = if signed < 0.0 { -1.0 } else { 1.0 };
+    let winding = if signed.is_sign_negative() { -1.0 } else { 1.0 };
 
     let mut previous = anchor + radial(0.0) * radius;
     for segment in 1..=ARC_SEGMENTS {
@@ -14698,9 +14984,10 @@ mod rendering_tests {
         combined_drive_xray_mesh, combined_material_construction_mesh,
         combined_simulation_bearing_mesh, combined_simulation_material_mesh,
         combined_simulation_mesh, configure_authored_texture, configure_bearing_texture,
-        configure_repeating_texture, construction_tint_mask_path, drive_xray_is_visible,
-        joint_xray_is_visible, preview_material, renderable_mesh, simulation_material_is_present,
-        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
+        configure_repeating_texture, construction_tint_mask_path, delete_preview_mesh,
+        drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
+        simulation_material_is_present, single_authored_part_mesh, single_bearing_mesh,
+        single_cylinder_mesh,
     };
 
     #[test]
@@ -15308,6 +15595,24 @@ mod rendering_tests {
         ] {
             assert!(preview_material(color).depth_bias > 0.0);
         }
+    }
+
+    #[test]
+    fn delete_preview_surrounds_every_selected_block_face() {
+        let spec = CuboidSpec::new([2, 4, 6], BuildPose::default()).unwrap();
+        let half_extents = spec.size_meters() * 0.5;
+        let vertices = positions(&delete_preview_mesh(&[PartSpec::Cuboid(spec)]));
+        let minimum = vertices
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::INFINITY), Vec3::min);
+        let maximum = vertices
+            .iter()
+            .copied()
+            .fold(Vec3::splat(f32::NEG_INFINITY), Vec3::max);
+
+        assert!(minimum.cmplt(-half_extents).all());
+        assert!(maximum.cmpgt(half_extents).all());
     }
 
     #[test]
@@ -16583,6 +16888,44 @@ mod rendering_tests {
     }
 
     #[test]
+    fn default_zero_speed_overlay_mirrors_the_wires_direction() {
+        let with_default_program = |reversed| {
+            let mut graph = hinged_pair_with_control_block(reversed);
+            let (link_id, link) = graph
+                .drive_links()
+                .next()
+                .map(|(id, link)| (id, *link))
+                .unwrap();
+            graph.apply(BuildCommand::RemoveDriveLink(link_id)).unwrap();
+            graph
+                .apply(BuildCommand::AddDriveLink(DriveLinkSpec {
+                    program: DriveProgram::default(),
+                    ..link
+                }))
+                .unwrap();
+            graph
+        };
+        let forward = positions(&combined_drive_xray_mesh(
+            &with_default_program(false),
+            &[],
+            &DriveSequencer::default(),
+        ));
+        let reversed = positions(&combined_drive_xray_mesh(
+            &with_default_program(true),
+            &[],
+            &DriveSequencer::default(),
+        ));
+
+        assert_eq!(forward.len(), reversed.len());
+        assert!(
+            forward
+                .iter()
+                .zip(&reversed)
+                .any(|(left, right)| !left.abs_diff_eq(*right, 1.0e-4))
+        );
+    }
+
+    #[test]
     fn drive_overlay_shows_for_the_control_block_tools() {
         for tool in [Tool::Controller, Tool::Connector] {
             assert!(joint_xray_is_visible(tool, false, 1));
@@ -16615,9 +16958,10 @@ mod interaction_tests {
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveLinkSpec, EdgeChainRef, EdgeTreatment, FaceKind, FaceOwner, FaceRef, GridRotation,
-        MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, PartId, PartSpec,
-        PendingOperation, RigidLinkSpec, STEP_METERS, ShapeRegion, SolidOwner, WeldSpec,
+        DimensionLinkId, DimensionLinkSpec, DriveLinkSpec, EdgeChainRef, EdgeTreatment, FaceKind,
+        FaceOwner, FaceRef, GridRotation, MaterialAppearance, MaterialColor, MaterialDye,
+        MaterialFinish, PartId, PartSpec, PendingOperation, RigidLinkSpec, STEP_METERS,
+        ShapeRegion, SolidOwner, WeldSpec,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -16627,18 +16971,19 @@ mod interaction_tests {
         CylinderToolSettings, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
         HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, MaterialWheelState, PipeDrag,
         PipeEditMode, PlacedBearing, PlacementPlane, PlayerState, PointerSample, SelectedTool,
-        SurfaceHit, Tool, active_drag_plane, adjusted_bearing_dimensions,
-        adjusted_cylinder_dimensions, apply_history_action, bearing_attachment_candidate,
-        bearing_attachment_is_highlighted, block_sheet_bounds, candidate_from_hit, choose_region,
-        closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
-        delete_box_parts, disconnect_drive_wires, hammer_delivery, hammer_impulse_magnitude,
-        hammer_point_travel, handle_block_actions, handle_build_actions, handle_chroma_actions,
-        handle_feature_shape_actions, handle_tool_change, pipe_pointer_delta, pipe_turn_direction,
-        raycast_construction, raycast_placed_bearing_discs, raycast_placed_bearings,
-        raycast_simulation, refresh_block_drag, refresh_region_drag, refresh_tool_preview,
+        SimulationHit, SurfaceHit, Tool, WorldEditBlocker, active_drag_plane,
+        adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
+        bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_bounds,
+        candidate_from_hit, choose_region, closest_axis_parameter, connect_control_link,
+        connect_drive_wire, cycle_orientation, delete_box_parts, hammer_delivery,
+        hammer_impulse_magnitude, hammer_point_travel, handle_block_actions, handle_build_actions,
+        handle_chroma_actions, handle_feature_shape_actions, handle_tool_change,
+        pipe_pointer_delta, pipe_turn_direction, raycast_construction,
+        raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
+        refresh_block_drag, refresh_region_drag, refresh_tool_preview,
         requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
-        rigid_body_parts, stage_part_deletion_preserving_bearings, tangent_feature_chain,
-        tool_status_line, weld_connected_shape_owners, wire_drag_step,
+        reverse_drive_wires, rigid_body_parts, stage_part_deletion_preserving_bearings,
+        tangent_feature_chain, tool_status_line, weld_connected_shape_owners, wire_drag_step,
     };
     use super::{RegionDrag, commit_region_drag, region_area};
     use crate::builder::{SmartGuide, block_sheet_specs};
@@ -16663,6 +17008,70 @@ mod interaction_tests {
         assert!(state.world_drag_active());
         assert!(state.cancel_delete_gesture());
         assert!(!state.world_drag_active());
+    }
+
+    #[test]
+    fn right_click_deletes_a_dimension_link_from_a_moving_construction() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(7),
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let state = EditorState {
+            hovered_simulation: Some(SimulationHit {
+                part: link,
+                body_index: 0,
+                distance: 1.0,
+                point: Vec3::ZERO,
+            }),
+            world_edit_blocker: Some(WorldEditBlocker::MovingConstruction),
+            ..Default::default()
+        };
+        let mut actions = ButtonInput::default();
+        actions.press(GameAction::Secondary);
+        let mut app = App::new();
+        app.insert_resource(actions)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(EditorGraph(graph))
+            .insert_resource(state)
+            .insert_resource(EditorHistory::default())
+            .insert_resource(crate::chroma::ChromaBrush::default())
+            .insert_resource(AppSimulation::default())
+            .insert_resource(SelectedTool::from_editor_tool(Tool::DimensionLink))
+            .insert_resource(BearingToolSettings::default())
+            .insert_resource(CylinderToolSettings::default())
+            .insert_resource(crate::ui::UiInput::default())
+            .insert_resource(MaterialWheelState::default())
+            .insert_resource(PlayerState {
+                input_captured: true,
+                ..Default::default()
+            })
+            .add_systems(Update, handle_build_actions);
+
+        app.update();
+        assert!(
+            app.world()
+                .resource::<EditorState>()
+                .delete_target
+                .is_some()
+        );
+        {
+            let mut actions = app.world_mut().resource_mut::<ButtonInput<GameAction>>();
+            actions.clear();
+            actions.release(GameAction::Secondary);
+        }
+        app.update();
+
+        assert!(app.world().resource::<EditorGraph>().0.part(link).is_none());
+        assert_eq!(
+            app.world().resource::<EditorState>().feedback.as_deref(),
+            Some("Deleted Dimension Link and incident connections")
+        );
     }
 
     #[test]
@@ -18419,7 +18828,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn clicking_a_wired_bearing_again_reverses_it_and_right_click_removes_the_wire() {
+    fn clicking_a_wired_bearing_again_reverses_it() {
         let (mut graph, socket, controller) = wired_socket_graph();
         let bearing = graph.bearings().next().unwrap().0;
         graph
@@ -18444,9 +18853,66 @@ mod interaction_tests {
                 .is_some_and(|(_, link)| link.reversed)
         );
 
-        let message = disconnect_drive_wires(&mut graph, &mut state, &mut history, socket);
-        assert!(message.contains("Removed"), "{message}");
-        assert_eq!(graph.drive_link_count(), 0);
+        let message = reverse_drive_wires(&mut graph, &mut state, &mut history, socket).unwrap();
+        assert!(message.contains("default direction"), "{message}");
+        assert_eq!(graph.drive_link_count(), 1);
+        assert!(!graph.drive_links().next().unwrap().1.reversed);
+    }
+
+    #[test]
+    fn right_clicking_a_wired_bearing_changes_its_default_direction() {
+        let (mut graph, socket, controller) = wired_socket_graph();
+        let bearing = graph.bearings().next().unwrap().0;
+        graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .unwrap();
+        let state = EditorState {
+            hovered_bearing: Some(0),
+            placed_bearings: vec![socket],
+            ..Default::default()
+        };
+        let mut mouse = ButtonInput::default();
+        mouse.press(GameAction::Secondary);
+        let mut app = App::new();
+        app.insert_resource(mouse)
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(EditorGraph(graph))
+            .insert_resource(state)
+            .insert_resource(EditorHistory::default())
+            .insert_resource(crate::chroma::ChromaBrush::default())
+            .insert_resource(AppSimulation::default())
+            .insert_resource(SelectedTool::from_editor_tool(Tool::Block))
+            .insert_resource(BearingToolSettings::default())
+            .insert_resource(CylinderToolSettings::default())
+            .insert_resource(crate::ui::UiInput::default())
+            .insert_resource(MaterialWheelState::default())
+            .insert_resource(PlayerState {
+                input_captured: true,
+                ..Default::default()
+            })
+            .add_systems(Update, handle_build_actions);
+
+        app.update();
+        {
+            let mut mouse = app.world_mut().resource_mut::<ButtonInput<GameAction>>();
+            mouse.clear();
+            mouse.release(GameAction::Secondary);
+        }
+        app.update();
+
+        let graph = app.world().resource::<EditorGraph>();
+        let state = app.world().resource::<EditorState>();
+        assert_eq!(graph.0.drive_link_count(), 1);
+        assert!(graph.0.drive_links().next().unwrap().1.reversed);
+        assert_eq!(state.placed_bearings, vec![socket]);
+        assert!(
+            state
+                .feedback
+                .as_deref()
+                .is_some_and(|message| message.contains("default direction"))
+        );
     }
 
     #[test]
@@ -19101,17 +19567,30 @@ mod history_tests {
 mod showcase_loading_tests {
     use std::time::Duration;
 
-    use bevy::prelude::IVec3;
+    use bevy::prelude::{IVec3, Quat, Vec3};
     use mechanic_core::{
-        BuildCommand, BuildOutcome, BuildPose, CuboidSpec, GridRotation, TopologyError,
+        BuildCommand, BuildOutcome, BuildPose, CuboidSpec, GridRotation, PartId, SeatSpec,
+        TopologyError,
     };
-    use mechanic_gpu::FixedStepScheduler;
+    use mechanic_gpu::{FixedStepScheduler, GpuTransform};
 
     use super::{
-        ConstructionGraph, EditorHistory, EditorSnapshot, EditorState, HistoryAction,
-        apply_history_action, creation_requires_live_physics, install_editor_graph,
-        next_simulation_ticks, showcase, visual_snapshot_is_due,
+        AppSimulation, ConstructionGraph, EditorHistory, EditorSnapshot, EditorState,
+        HistoryAction, apply_history_action, creation_requires_live_physics, install_editor_graph,
+        next_simulation_ticks, raycast_seat_interaction, seat_surface_distance, seat_world_pose,
+        showcase, visual_snapshot_is_due,
     };
+
+    fn graph_with_seat() -> (ConstructionGraph, PartId) {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(seat) = graph
+            .apply(BuildCommand::SpawnSeat(SeatSpec::new(BuildPose::default())))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        (graph, seat)
+    }
 
     #[test]
     fn terrain_anchored_construction_does_not_start_live_physics() {
@@ -19129,6 +19608,60 @@ mod showcase_loading_tests {
         assert!(!creation_requires_live_physics(
             &graph.compile_with_static_parts([part]).unwrap()
         ));
+    }
+
+    #[test]
+    fn stopped_published_construction_supports_seat_interaction() {
+        let (graph, seat) = graph_with_seat();
+        let creation = graph.compile_with_static_parts([seat]).unwrap();
+        let simulation = AppSimulation {
+            transforms: vec![GpuTransform {
+                position: creation.compounds[0]
+                    .root_translation
+                    .extend(0.0)
+                    .to_array(),
+                rotation: Quat::IDENTITY.to_array(),
+            }],
+            creation: Some(creation),
+            published_graph: graph.clone(),
+            failure: Some("stopped for test".to_owned()),
+            ..AppSimulation::default()
+        };
+
+        assert!(!simulation.is_running());
+        assert_eq!(
+            raycast_seat_interaction(&graph, &simulation, Vec3::Z * 2.0, Vec3::NEG_Z)
+                .map(|hit| hit.0),
+            Some(seat)
+        );
+    }
+
+    #[test]
+    fn authored_seat_is_interactive_before_physics_publication() {
+        let (graph, seat) = graph_with_seat();
+        let simulation = AppSimulation::default();
+
+        assert_eq!(
+            raycast_seat_interaction(&graph, &simulation, Vec3::Z * 2.0, Vec3::NEG_Z)
+                .map(|hit| hit.0),
+            Some(seat)
+        );
+        let (position, rotation) = seat_world_pose(&graph, &simulation, seat).unwrap();
+        assert!(position.abs_diff_eq(Vec3::ZERO, 1.0e-6));
+        assert!(rotation.abs_diff_eq(Quat::IDENTITY, 1.0e-6));
+    }
+
+    #[test]
+    fn seat_range_is_measured_from_the_player_in_third_person() {
+        let (graph, seat) = graph_with_seat();
+        let simulation = AppSimulation::default();
+        let camera_hit =
+            raycast_seat_interaction(&graph, &simulation, Vec3::Z * 6.0, Vec3::NEG_Z).unwrap();
+        let player_distance =
+            seat_surface_distance(&graph, &simulation, seat, Vec3::Z * 2.0).unwrap();
+
+        assert!(camera_hit.1 > 3.0);
+        assert!(player_distance < 3.0);
     }
 
     #[test]

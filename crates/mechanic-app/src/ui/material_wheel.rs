@@ -193,20 +193,25 @@ fn sector_arc(model: State<Model>, choice: WheelChoice, index: usize) -> Element
     let selected = move || model.get().highlighted == Some(choice);
     let stroke = move || {
         if selected() {
-            color(accent.key)
+            color(bar.slot_over)
         } else {
             color(bar.fill)
         }
     };
-    let count = small_f32(sector_count(choice));
-    let span = 360.0 / count;
-    let gap = 2.0_f32.min(span * 0.1);
-    let centre = -90.0 + small_f32(index) * span;
+    let (from, to) = sector_angles(choice, index);
     view! {
         circle radius:{ Length::px(SECTOR_RADIUS) } exponent:1
-            arc:(from:{ centre - span * 0.5 + gap } to:{ centre + span * 0.5 - gap })
+            arc:(from:{ from } to:{ to })
             stroke:(width:{ SECTOR_WIDTH } color:{ stroke() })
     }
+}
+
+fn sector_angles(choice: WheelChoice, index: usize) -> (f32, f32) {
+    let count = small_f32(sector_count(choice));
+    let span = std::f32::consts::TAU / count;
+    let gap = 2.0_f32.to_radians().min(span * 0.1);
+    let centre = -std::f32::consts::FRAC_PI_2 + small_f32(index) * span;
+    (centre - span * 0.5 + gap, centre + span * 0.5 - gap)
 }
 
 fn choice_thumbnail(choice: WheelChoice, index: usize, count: usize) -> Element {
@@ -444,7 +449,7 @@ const fn choice_base_color_bytes(choice: WheelChoice) -> Option<&'static [u8]> {
 mod tests {
     use super::{
         Model, block_thumbnail_bytes, material_base_color_bytes, material_ratings, ordered_sectors,
-        terrain_base_color_bytes,
+        sector_angles, terrain_base_color_bytes,
     };
     use crate::hotbar::{PlaceableItem, WheelChoice};
     use mechanic_core::ConstructionMaterial;
@@ -487,6 +492,20 @@ mod tests {
                 .len(),
             ConstructionMaterial::ALL.len(),
         );
+    }
+
+    #[test]
+    fn selector_sector_angles_are_subturn_radian_sweeps() {
+        for choice in [
+            WheelChoice::ConstructionMaterial(ConstructionMaterial::Concrete),
+            WheelChoice::Item(PlaceableItem::Bearing),
+            WheelChoice::TerrainMaterial(mechanic_world::TerrainMaterial::Soil),
+            WheelChoice::ShapeMode(crate::shape_tool::ShapeEditMode::Vertex),
+        ] {
+            let (from, to) = sector_angles(choice, 0);
+            assert!(to > from);
+            assert!(to - from < std::f32::consts::TAU);
+        }
     }
 
     #[test]

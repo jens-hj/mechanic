@@ -20,9 +20,10 @@ pub use collision::{
     ContactManifold, ContactPoint, Obb, SatContact, obb_contact_manifold, obb_sat,
 };
 pub use device::{
-    GpuBodyStateError, GpuCompletedTickReadback, GpuImpulseError, GpuKernelTimings, GpuPhysics,
-    GpuPhysicsConfig, GpuPhysicsError, GpuPhysicsPipelines, GpuReadbackError, GpuTickReadback,
-    GpuTickSubmission, SnapshotBuffers,
+    EXTERNAL_IMPULSE_BATCH_CAPACITY, GpuBodyStateError, GpuCompletedTickReadback,
+    GpuExternalImpulse, GpuGroundPlane, GpuGroundPlaneError, GpuImpulseError, GpuKernelTimings,
+    GpuPhysics, GpuPhysicsConfig, GpuPhysicsError, GpuPhysicsPipelines, GpuReadbackError,
+    GpuTickReadback, GpuTickSubmission, SnapshotBuffers,
 };
 pub use render::{
     TerrainRenderAcknowledgement, TerrainRenderArena, TerrainRenderArenaLimits, TerrainRenderChunk,

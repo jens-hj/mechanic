@@ -112,10 +112,12 @@ const MAX_GAMMA_LOG2: f32 = -8.0;
 const RESTITUTION_SPEED_THRESHOLD: f32 = 1.0;
 const PENETRATION_SLOP: f32 = 0.001;
 const MAX_PENETRATION_CORRECTION_SPEED: f32 = 1.0;
+const MAX_ANALYTIC_CYLINDER_CORRECTION_SPEED: f32 = 4.0;
 const CACHED_NORMAL_ALIGNMENT: f32 = 0.98;
 const MAX_CACHED_POINT_MOVEMENT: f32 = 0.02;
 const CYLINDER_MANIFOLD_ALIGNMENT: f32 = 0.05;
 const MAX_SORTED_SERIAL_CONTACTS: u32 = 64u;
+const MAX_SMALL_MECHANISM_CONTACT_ITERATIONS: u32 = 384u;
 const INVALID_MANIFOLD_SLOT: u32 = 0xffffffffu;
 const MAX_MANIFOLD_PROBES: u32 = 256u;
 const ANALYTIC_CYLINDER_FLAG: u32 = 0x80000000u;
@@ -127,16 +129,8 @@ const CYLINDER_FACE_RELAXATION_SCALE: f32 = 0.0625;
 const COLLIDER_SHAPE_CUBOID: u32 = 0u;
 const COLLIDER_SHAPE_CONVEX: u32 = 1u;
 
-fn mixed_surface_response(collider_a: u32, collider_b: u32) -> vec4<f32> {
+fn mixed_collider_response(collider_a: u32, collider_b: u32) -> vec4<f32> {
     let first = colliders[collider_a].surface_response;
-    if collider_b == INVALID_MANIFOLD_SLOT {
-        return vec4<f32>(
-            sqrt(first.x * ground_surface.response.x),
-            sqrt(first.y * ground_surface.response.y),
-            max(first.z, ground_surface.response.z),
-            sqrt(first.w * ground_surface.response.w),
-        );
-    }
     let second = colliders[collider_b].surface_response;
     return vec4<f32>(
         sqrt(first.x * second.x),
@@ -146,12 +140,15 @@ fn mixed_surface_response(collider_a: u32, collider_b: u32) -> vec4<f32> {
     );
 }
 
-fn combined_contact_compliance(collider_a: u32, collider_b: u32) -> f32 {
-    let first = colliders[collider_a].surface_elasticity.x;
-    if collider_b == INVALID_MANIFOLD_SLOT {
-        return first + ground_surface.elasticity.x;
-    }
-    return first + colliders[collider_b].surface_elasticity.x;
+fn mixed_ground_response(collider: u32) -> vec4<f32> {
+    let first = colliders[collider].surface_response;
+    let ground = ground_surfaces[collider].response;
+    return vec4<f32>(
+        sqrt(first.x * ground.x),
+        sqrt(first.y * ground.y),
+        max(first.z, ground.z),
+        sqrt(first.w * ground.w),
+    );
 }
 
 fn pack_raw_surface_response(response: vec4<f32>) -> f32 {
@@ -224,7 +221,7 @@ fn tangent_basis(normal: vec3<f32>) -> TangentBasis {
 @group(0) @binding(26) var<storage, read_write> world_masses: array<WorldMass>;
 @group(0) @binding(27) var<storage, read> body_components: array<u32>;
 @group(0) @binding(28) var<storage, read> convex_shapes: array<vec4<f32>>;
-@group(0) @binding(29) var<uniform> ground_surface: GroundSurface;
+@group(0) @binding(29) var<storage, read> ground_surfaces: array<GroundSurface>;
 @group(0) @binding(30) var<storage, read> bearings: array<Bearing>;
 
 fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
@@ -414,17 +411,17 @@ fn project_collider(index: u32, axis: vec3<f32>) -> Interval {
 /// horizontal axes drop out of its support function. Taking a single lowest
 /// vertex instead would put the whole ground reaction on one corner and make a
 /// shaped part rock on it, so the flat case has to be reproduced here.
-fn convex_ground_support(index: u32) -> vec3<f32> {
+fn convex_ground_support(index: u32, direction: vec3<f32>) -> vec3<f32> {
     let count = convex_vertex_count(index);
-    var lowest = convex_vertex(index, 0u).y;
+    var furthest = dot(convex_vertex(index, 0u), direction);
     for (var vertex = 1u; vertex < count; vertex += 1u) {
-        lowest = min(lowest, convex_vertex(index, vertex).y);
+        furthest = max(furthest, dot(convex_vertex(index, vertex), direction));
     }
     var sum = vec3<f32>(0.0);
     var coplanar = 0.0;
     for (var vertex = 0u; vertex < count; vertex += 1u) {
         let point = convex_vertex(index, vertex);
-        if point.y <= lowest + 1.0e-4 {
+        if dot(point, direction) >= furthest - 1.0e-4 {
             sum += point;
             coplanar += 1.0;
         }
@@ -949,8 +946,9 @@ fn emit_narrowphase_contact(pair: vec2<u32>) {
         return;
     }
     let contact_point = calculate_contact_point(pair.x, pair.y, sat.normal);
-    let response = mixed_surface_response(pair.x, pair.y);
-    let compliance = combined_contact_compliance(pair.x, pair.y);
+    let response = mixed_collider_response(pair.x, pair.y);
+    let compliance = colliders[pair.x].surface_elasticity.x
+        + colliders[pair.y].surface_elasticity.x;
     let flags = select(
         0u,
         CYLINDER_FACE_PAIR_FLAG,
@@ -991,8 +989,9 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
         return;
     }
     let contact_point = calculate_contact_point(pair.x, pair.y, sat.normal);
-    let response = mixed_surface_response(pair.x, pair.y);
-    let compliance = combined_contact_compliance(pair.x, pair.y);
+    let response = mixed_collider_response(pair.x, pair.y);
+    let compliance = colliders[pair.x].surface_elasticity.x
+        + colliders[pair.y].surface_elasticity.x;
     let flags = select(
         0u,
         CYLINDER_FACE_PAIR_FLAG,
@@ -1044,11 +1043,15 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
         return;
     }
     let collider = colliders[collider_index];
+    let ground_surface = ground_surfaces[collider_index];
+    if dot(ground_surface.plane.xyz, ground_surface.plane.xyz) < 1.0e-10 {
+        return;
+    }
     let normal = normalize(ground_surface.plane.xyz);
     let down = -normal;
     var support_point = collider_support_point(collider_index, down);
     if collider_is_convex(collider_index) {
-        support_point = convex_ground_support(collider_index);
+        support_point = convex_ground_support(collider_index, down);
     }
     if collider.metadata.w != 0u {
         let contact_count = full_cylinder_contact_count(collider_index, down);
@@ -1062,8 +1065,8 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
         return;
     }
     let output = atomicAdd(&diagnostics[2], 1u);
-    let response = mixed_surface_response(collider_index, INVALID_MANIFOLD_SLOT);
-    let compliance = combined_contact_compliance(collider_index, INVALID_MANIFOLD_SLOT);
+    let response = mixed_ground_response(collider_index);
+    let compliance = collider.surface_elasticity.x + ground_surface.elasticity.x;
     if output < config.pair_capacity {
         contacts[output].metadata = vec4<u32>(
             collider.metadata.x,
@@ -1200,9 +1203,14 @@ fn contact_velocity(body: u32, arm: vec3<f32>) -> vec3<f32> {
 
 fn penetration_bias(penetration: f32, analytic_cylinder_ground: bool) -> f32 {
     let recovery = select(0.2, 1.0, analytic_cylinder_ground);
+    let maximum_speed = select(
+        MAX_PENETRATION_CORRECTION_SPEED,
+        MAX_ANALYTIC_CYLINDER_CORRECTION_SPEED,
+        analytic_cylinder_ground,
+    );
     return min(
         max(penetration - PENETRATION_SLOP, 0.0) * recovery / config.delta_seconds,
-        MAX_PENETRATION_CORRECTION_SPEED,
+        maximum_speed,
     );
 }
 
@@ -1695,6 +1703,26 @@ fn project_bearing_velocities_serial_immediate() {
     }
 }
 
+fn small_mechanism_contact_iterations() -> u32 {
+    var maximum_adjacent_mass_ratio = 1.0;
+    for (var index = 0u; index < config.bearing_count; index += 1u) {
+        let bearing = bearings[index];
+        let inverse_mass_a = world_masses[bearing.metadata.x].inverse_inertia_x_mass.w;
+        let inverse_mass_b = world_masses[bearing.metadata.y].inverse_inertia_x_mass.w;
+        if inverse_mass_a > 0.0 && inverse_mass_b > 0.0 {
+            maximum_adjacent_mass_ratio = max(
+                maximum_adjacent_mass_ratio,
+                max(inverse_mass_a, inverse_mass_b) / min(inverse_mass_a, inverse_mass_b),
+            );
+        }
+    }
+    let mass_ratio_iterations = u32(ceil(maximum_adjacent_mass_ratio * 4.5));
+    return min(
+        max(config.solver_iterations * 12u, mass_ratio_iterations),
+        MAX_SMALL_MECHANISM_CONTACT_ITERATIONS,
+    );
+}
+
 // The small articulated contact route keeps the established serial ordering
 // and iteration count inside one dispatch. This removes the Metal command-pass
 // boundary between every contact and bearing projection without changing the
@@ -1744,7 +1772,11 @@ fn solve_small_mechanism_contacts() {
         }
     }
     project_bearing_velocities_serial_immediate();
-    let iterations = max(config.solver_iterations, 1u) * 12u;
+    // Alternating a wheel contact with its bearing rows converges in proportion
+    // to the mass ratio across that joint. A fixed budget lets a light wheel on
+    // a heavy chassis sink, and the resulting tilt then creates false chassis
+    // contacts. Scale only this small serial path and keep it bounded.
+    let iterations = small_mechanism_contact_iterations();
     for (var iteration = 1u; iteration < iterations; iteration += 1u) {
         if active_count <= MAX_SORTED_SERIAL_CONTACTS {
             for (var active_index = 0u; active_index < active_count; active_index += 1u) {

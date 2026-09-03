@@ -26,13 +26,15 @@ use bevy::{
 };
 use mechanic_core::{
     BearingSocket, ConstructionEditDelta, ConstructionGraph, CreationDocument, DimensionLinkId,
-    PartId, PartSpec,
+    FaceOwnerDoc, PartId, PartSpec,
 };
+use mechanic_gpu::GpuExternalImpulse;
 #[cfg(test)]
 use mechanic_world::TerrainFace;
 use mechanic_world::{
-    ActiveTerrainNode, ActiveTerrainScene, AutosaveState, FloatingOrigin, FoundationSpatialIndex,
-    FoundationSupport, KinematicCapsule, KinematicInput, OpenWorldResult, SavedWorld,
+    ActiveTerrainNode, ActiveTerrainScene, AutosaveState, ConstructionBodyPose,
+    ConstructionCollisionIndex, FloatingOrigin, FoundationSpatialIndex, FoundationSupport,
+    KinematicCapsule, KinematicCollisionScene, KinematicInput, OpenWorldResult, SavedWorld,
     SavedWorldStatus, TerrainBoundsCache, TerrainDensity, TerrainEditBatch, TerrainEditOutcome,
     TerrainField, TerrainMaterial, TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest,
     TerrainNodeId, TerrainOctree, TerrainRayHit, TerrainReadiness, TerrainScene, TerrainSelection,
@@ -45,7 +47,7 @@ use mechanic_world::{
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
 use crate::{
     AppSimulation, EditorGraph, EditorHistory, EditorState, PlacedBearing,
-    builder::{GROUND_HALF_SIZE, part_world_bounds, parts_overlap},
+    builder::{GROUND_HALF_SIZE, PlacementSnapIndex, part_world_bounds},
     camera::{MainCamera, PlayerCamera, PlayerState},
     controls::GameAction,
     garage,
@@ -77,6 +79,9 @@ fn exposure_for_space(space: AppSpace) -> Exposure {
 
 const MAX_PENDING_TERRAIN_EDITS: usize = 4_096;
 const TERRAIN_EDIT_BATCH_SIZE: usize = 64;
+const CONTROLLER_DT: f64 = 1.0 / 60.0;
+const MAX_CONTROLLER_TICKS_PER_FRAME: usize = 4;
+const STEP_VISUAL_SMOOTHING_SECONDS: f32 = 0.08;
 
 #[derive(Component)]
 struct WorldOwned;
@@ -132,6 +137,11 @@ impl Material for TerrainRenderMaterial {
 struct TerrainMeshTask {
     node: ActiveTerrainNode,
     task: Task<Result<TerrainMeshResult, String>>,
+}
+
+struct PlayerCollisionBuild {
+    editor_revision: u64,
+    task: Task<Result<ConstructionCollisionIndex, String>>,
 }
 
 struct TerrainMeshResult {
@@ -237,6 +247,11 @@ pub(crate) struct WorldDiagnostics {
     pub(crate) foundation_candidate_count: u64,
     pub(crate) foundation_sample_count: u64,
     pub(crate) foundation_refresh_ms: f64,
+    pub(crate) player_collision_query_ms: f64,
+    pub(crate) dynamic_collision_refit_ms: f64,
+    pub(crate) player_collision_candidates: u32,
+    pub(crate) player_collision_contacts: u32,
+    pub(crate) player_reaction_impulses: u32,
 }
 
 /// State backing the full-window Mosaic world list.
@@ -298,7 +313,10 @@ impl WorldListState {
     }
 
     pub(crate) fn act(&mut self, action: WorldAction) {
-        if self.phase == WorldListPhase::Picking {
+        if self.phase == WorldListPhase::Picking
+            || matches!(&action, WorldAction::ExitToSelector)
+                && self.phase == WorldListPhase::Playing
+        {
             self.requested = Some(action);
         }
     }
@@ -332,6 +350,8 @@ pub(crate) struct WorldRuntime {
     known_world_parts: BTreeMap<PartId, PartSpec>,
     foundations: Vec<TerrainFoundation>,
     foundation_index: FoundationSpatialIndex,
+    // Portable assemblies must never inherit terrain-foundation immobility.
+    foundation_exempt_parts: BTreeSet<PartId>,
     pending_foundation_sync: Option<PendingFoundationSync>,
     foundation_revision: u64,
     terrain_revision: u64,
@@ -353,6 +373,18 @@ pub(crate) struct WorldRuntime {
     terrain_texture_mips_pending: Vec<Handle<Image>>,
     selection_focus: Option<WorldPosition>,
     selected_terrain_revision: u64,
+    construction_collision: Option<ConstructionCollisionIndex>,
+    collision_revision: Option<(u64, u64)>,
+    collision_editor_revision: Option<u64>,
+    collision_build: Option<PlayerCollisionBuild>,
+    collision_failed_revision: Option<u64>,
+    collision_snapshot_tick: u64,
+    collision_poses: Vec<ConstructionBodyPose>,
+    controller_accumulator: f64,
+    jump_queued: bool,
+    step_visual_offset: f32,
+    pending_player_reactions: Vec<GpuExternalImpulse>,
+    walking_suspended: bool,
 }
 
 impl WorldRuntime {
@@ -379,19 +411,121 @@ impl WorldRuntime {
         ))
     }
 
+    /// Local tangent plane beneath the portable assembly, used by mechanism
+    /// physics until streamed terrain triangles can participate directly.
+    pub(crate) fn active_assembly_ground_plane(&self) -> Option<(Vec3, f32)> {
+        let parts = self
+            .pending_foundation_sync
+            .as_ref()
+            .map_or(&self.known_world_parts, |pending| &pending.parts);
+        let (minimum, maximum) = self
+            .foundation_exempt_parts
+            .iter()
+            .filter_map(|part| parts.get(part).copied())
+            .map(part_world_bounds)
+            .fold(
+                (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+                |(minimum, maximum), (part_minimum, part_maximum)| {
+                    (minimum.min(part_minimum), maximum.max(part_maximum))
+                },
+            );
+        if !minimum.is_finite() {
+            return None;
+        }
+        self.ground_plane_beneath(Vec3::new(
+            (minimum.x + maximum.x) * 0.5,
+            maximum.y,
+            (minimum.z + maximum.z) * 0.5,
+        ))
+    }
+
+    pub(crate) fn ground_plane_beneath(&self, local_position: Vec3) -> Option<(Vec3, f32)> {
+        let local_probe = local_position + Vec3::Y * 64.0;
+        let scene = TerrainScene {
+            field: &self.field,
+            edits: &self.edits,
+        };
+        let hit = raycast_density(
+            &scene,
+            WorldPosition(self.floating_origin.0 + local_probe.as_dvec3()),
+            DVec3::NEG_Y,
+            256.0,
+        )?;
+        let local_hit = hit.position.relative_to(self.floating_origin);
+        // A changing tilted infinite plane injects angular and vertical energy
+        // as a vehicle crosses terrain samples. Track only terrain elevation;
+        // the explicit plane remains horizontal and stable.
+        Some((Vec3::Y, local_hit.y))
+    }
+
+    /// Exact streamed-terrain tangent plane beneath one moving construction part.
+    pub(crate) fn terrain_plane_beneath(&self, local_position: Vec3) -> Option<(Vec3, f32)> {
+        let local_probe = local_position + Vec3::Y * 64.0;
+        let global_probe = WorldPosition(self.floating_origin.0 + local_probe.as_dvec3());
+        let active = ActiveTerrainScene {
+            chunks: &self.active_terrain,
+            ready_faces: &self.active_terrain_ready_faces,
+            spatial_index: &self.active_terrain_index,
+        };
+        let hit = active
+            .raycast(global_probe, DVec3::NEG_Y, 256.0)
+            .or_else(|| {
+                raycast_density(
+                    &TerrainScene {
+                        field: &self.field,
+                        edits: &self.edits,
+                    },
+                    global_probe,
+                    DVec3::NEG_Y,
+                    256.0,
+                )
+            })?;
+        let local_hit = hit.position.relative_to(self.floating_origin);
+        let mut normal = hit.normal.normalize_or(Vec3::Y);
+        if normal.y < 0.0 {
+            normal = -normal;
+        }
+        Some((normal, normal.dot(local_hit)))
+    }
+
     pub(crate) fn anchored_parts(&self) -> impl Iterator<Item = PartId> + '_ {
         self.foundations
             .iter()
             .filter(|foundation| foundation.support.has_valid_anchor())
             .map(|foundation| foundation.part)
+            .filter(|part| !self.foundation_exempt_parts.contains(part))
     }
 
     pub(crate) const fn foundation_revision(&self) -> u64 {
         self.foundation_revision
     }
 
-    pub(crate) fn foundations_match_editor_revision(&self, editor_revision: u64) -> bool {
+    pub(crate) fn pending_player_reactions(&self) -> &[GpuExternalImpulse] {
+        &self.pending_player_reactions
+    }
+
+    pub(crate) fn clear_player_reactions(&mut self) {
+        self.pending_player_reactions.clear();
+    }
+
+    pub(crate) fn queue_player_reaction(&mut self, impulse: GpuExternalImpulse) {
+        self.pending_player_reactions.push(impulse);
+    }
+
+    #[cfg(test)]
+    fn foundations_match_editor_revision(&self, editor_revision: u64) -> bool {
         self.synced_editor_revision == editor_revision && self.pending_foundation_sync.is_none()
+    }
+
+    pub(crate) fn static_parts_for_physics(&self, editor_revision: u64) -> Option<Vec<PartId>> {
+        static_parts_for_physics(
+            &self.known_world_parts,
+            &self.foundations,
+            &self.foundation_exempt_parts,
+            self.pending_foundation_sync.as_ref(),
+            self.synced_editor_revision,
+            editor_revision,
+        )
     }
 
     pub(crate) fn allocate_dimension_link_id(&mut self) -> DimensionLinkId {
@@ -591,6 +725,7 @@ impl FromWorld for WorldRuntime {
             known_world_parts: BTreeMap::new(),
             foundations: Vec::new(),
             foundation_index: FoundationSpatialIndex::default(),
+            foundation_exempt_parts: BTreeSet::new(),
             pending_foundation_sync: None,
             foundation_revision: 0,
             terrain_revision: 0,
@@ -612,6 +747,18 @@ impl FromWorld for WorldRuntime {
             terrain_texture_mips_pending: Vec::new(),
             selection_focus: None,
             selected_terrain_revision: u64::MAX,
+            construction_collision: None,
+            collision_revision: None,
+            collision_editor_revision: None,
+            collision_build: None,
+            collision_failed_revision: None,
+            collision_snapshot_tick: 0,
+            collision_poses: Vec::new(),
+            controller_accumulator: 0.0,
+            jump_queued: false,
+            step_visual_offset: 0.0,
+            pending_player_reactions: Vec::with_capacity(64),
+            walking_suspended: false,
         }
     }
 }
@@ -632,7 +779,9 @@ impl Plugin for WorldPrototypePlugin {
                 Update,
                 (
                     select_and_size_brush.after(crate::controls::update_action_state),
-                    walk_world.after(crate::camera::update_player_camera),
+                    walk_world
+                        .after(crate::camera::update_player_camera)
+                        .after(crate::poll_simulation_readbacks),
                     use_brush.after(walk_world),
                     coordinate_terrain_edits.after(use_brush),
                     prepare_terrain_texture_mips,
@@ -652,7 +801,7 @@ impl Plugin for WorldPrototypePlugin {
                     .after(crate::controls::update_action_state)
                     .run_if(world_list_closed),
             )
-            .add_systems(Update, handle_world_list);
+            .add_systems(Update, handle_world_list.after(crate::handle_pause_request));
     }
 }
 
@@ -682,6 +831,9 @@ pub(crate) fn world_playing(list: Res<WorldListState>) -> bool {
 fn handle_world_list(
     mut list: ResMut<WorldListState>,
     mut runtime: ResMut<WorldRuntime>,
+    space: Res<State<AppSpace>>,
+    graph: Res<EditorGraph>,
+    mut editor: ResMut<EditorState>,
     mut next_space: ResMut<NextState<AppSpace>>,
 ) {
     let Some(action) = list.requested.take() else {
@@ -762,6 +914,40 @@ fn handle_world_list(
                 Err(error) => list.notice = Some(error.to_string()),
             }
         }
+        WorldAction::ExitToSelector => {
+            let active_space = *space.get();
+            if let Err(error) =
+                save_before_world_selector(&mut runtime, active_space, &graph.0, &editor)
+            {
+                editor.feedback = Some(format!("Could not exit to the world selector: {error}"));
+                list.notice = Some(error);
+                return;
+            }
+            list.phase = WorldListPhase::Picking;
+            list.loading_progress = TerrainReadiness::default();
+            list.notice = None;
+            list.refresh(&runtime.store);
+            if active_space == AppSpace::World {
+                next_space.set(AppSpace::Garage);
+            }
+        }
+    }
+}
+
+fn save_before_world_selector(
+    runtime: &mut WorldRuntime,
+    space: AppSpace,
+    graph: &ConstructionGraph,
+    editor: &EditorState,
+) -> Result<(), String> {
+    if space == AppSpace::World {
+        runtime.document.return_anchor = Some(runtime.capsule.position);
+    }
+    finish_terrain_edits(runtime)?;
+    save_all(runtime)?;
+    match space {
+        AppSpace::Garage => save_garage_instance(runtime, graph, editor),
+        AppSpace::World => save_world_instance(runtime, graph, editor),
     }
 }
 
@@ -783,6 +969,7 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.known_world_parts.clear();
     runtime.foundations.clear();
     runtime.foundation_index = FoundationSpatialIndex::default();
+    runtime.foundation_exempt_parts.clear();
     runtime.pending_foundation_sync = None;
     runtime.foundation_revision = 0;
     runtime.terrain_revision = 0;
@@ -790,6 +977,7 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.pending_foundation_edit = TerrainEditBatch::default();
     runtime.foundation_edit_acknowledgement = 0;
     runtime.synced_editor_revision = 0;
+    reset_player_collision_publication(runtime);
     runtime.autosave = AutosaveState::default();
     runtime.last_brush_edit = None;
     runtime.pending_terrain_edits.clear();
@@ -813,21 +1001,6 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     Ok(())
 }
 
-fn component_surface_distance(
-    player: Vec3,
-    center: Vec3,
-    rotation: Quat,
-    half_extents: Vec3,
-) -> f32 {
-    let local = (rotation.inverse() * (player - center)).abs();
-    let outside = (local - half_extents).max(Vec3::ZERO);
-    if outside.length_squared() > 0.0 {
-        outside.length()
-    } else {
-        (half_extents - local).min_element()
-    }
-}
-
 fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
     let mut minimum = Vec3::splat(f32::INFINITY);
     let mut maximum = Vec3::splat(f32::NEG_INFINITY);
@@ -839,12 +1012,10 @@ fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
     minimum.is_finite().then_some((minimum, maximum))
 }
 
-fn collision_free(candidate: &ConstructionGraph, destination: &ConstructionGraph) -> bool {
-    candidate.parts().all(|(_, incoming)| {
-        destination
-            .parts()
-            .all(|(_, existing)| !parts_overlap(*incoming, *existing))
-    })
+fn collision_free(candidate: &ConstructionGraph, destination: &PlacementSnapIndex) -> bool {
+    candidate
+        .parts()
+        .all(|(_, incoming)| !destination.overlaps(*incoming))
 }
 
 fn terrain_clear(
@@ -867,18 +1038,53 @@ fn terrain_clear(
     })
 }
 
+fn foundation_clear(
+    candidate: &ConstructionGraph,
+    terrain: &impl TerrainDensity,
+    floating_origin: FloatingOrigin,
+) -> bool {
+    candidate.parts().all(|(_, part)| {
+        !part_foundation_support(terrain, *part, floating_origin).has_valid_anchor()
+    })
+}
+
+fn part_foundation_support(
+    terrain: &impl TerrainDensity,
+    part: PartSpec,
+    floating_origin: FloatingOrigin,
+) -> FoundationSupport {
+    let (minimum, maximum) = part_world_bounds(part);
+    FoundationSupport::rectangular(
+        terrain,
+        TerrainRayHit {
+            position: WorldPosition(
+                floating_origin.0
+                    + Vec3::new(
+                        (minimum.x + maximum.x) * 0.5,
+                        minimum.y,
+                        (minimum.z + maximum.z) * 0.5,
+                    )
+                    .as_dvec3(),
+            ),
+            normal: Vec3::Y,
+            distance: 0.0,
+            material_weights: [0.0; TerrainMaterial::COUNT],
+            chunk_generation: 0,
+            triangle: 0,
+        },
+        f64::from(maximum.x - minimum.x),
+        f64::from(maximum.z - minimum.z),
+    )
+}
+
 fn player_clear(candidate: &ConstructionGraph, feet: Vec3) -> bool {
-    const PLAYER_RADIUS: f32 = 0.30;
-    const PLAYER_HEIGHT: f32 = 1.8;
+    const TRANSFER_CLEARANCE: f32 = 2.0;
     candidate.parts().all(|(_, part)| {
         let (low, high) = part_world_bounds(*part);
-        if high.y <= feet.y || low.y >= feet.y + PLAYER_HEIGHT {
-            return true;
-        }
         let closest_x = feet.x.clamp(low.x, high.x);
         let closest_z = feet.z.clamp(low.z, high.z);
         Vec2::new(feet.x - closest_x, feet.z - closest_z).length_squared()
-            > PLAYER_RADIUS * PLAYER_RADIUS
+            > TRANSFER_CLEARANCE * TRANSFER_CLEARANCE
     })
 }
 
@@ -911,6 +1117,81 @@ fn component_document(
         })
         .collect::<Vec<_>>();
     CreationDocument::from_graph(graph, name, &sockets)
+}
+
+fn detach_authored_ground(document: &mut CreationDocument) {
+    document.welds.retain(|weld| {
+        !matches!(weld.first.owner, FaceOwnerDoc::Ground)
+            && !matches!(weld.second.owner, FaceOwnerDoc::Ground)
+    });
+}
+
+fn returned_component_parts(
+    graph: &ConstructionGraph,
+    active: DimensionLinkId,
+) -> Result<BTreeSet<PartId>, String> {
+    let link = graph
+        .dimension_link(active)
+        .ok_or_else(|| "returned Dimension Link is missing from the World".to_owned())?;
+    graph
+        .structural_component(link, [])
+        .map(|component| component.parts().collect())
+        .map_err(|error| error.to_string())
+}
+
+fn remove_cached_foundations(
+    foundations: &mut Vec<TerrainFoundation>,
+    index: &mut FoundationSpatialIndex,
+    parts: &BTreeSet<PartId>,
+) -> bool {
+    let removed = foundations
+        .iter()
+        .any(|foundation| parts.contains(&foundation.part));
+    for &part in parts {
+        index.remove(part);
+    }
+    foundations.retain(|foundation| !parts.contains(&foundation.part));
+    removed
+}
+
+fn dimension_link_component_parts(graph: &ConstructionGraph) -> BTreeSet<PartId> {
+    let links = graph
+        .parts()
+        .filter_map(|(part, spec)| matches!(spec, PartSpec::DimensionLink(_)).then_some(part))
+        .collect::<Vec<_>>();
+    let mut parts = BTreeSet::new();
+    for link in links {
+        let component = graph
+            .structural_component(link, [])
+            .expect("a live Dimension Link has a structural component");
+        parts.extend(component.parts());
+    }
+    parts
+}
+
+fn static_parts_for_physics(
+    known_parts: &BTreeMap<PartId, PartSpec>,
+    _foundations: &[TerrainFoundation],
+    exempt_parts: &BTreeSet<PartId>,
+    pending: Option<&PendingFoundationSync>,
+    synced_editor_revision: u64,
+    editor_revision: u64,
+) -> Option<Vec<PartId>> {
+    let pending = pending.filter(|pending| pending.editor_revision == editor_revision);
+    if synced_editor_revision != editor_revision && pending.is_none() {
+        return None;
+    }
+    // Dimension Links are the explicit boundary between portable mechanisms
+    // and World construction. Terrain-support cache invalidation must never
+    // mobilize unrelated components while an edit is being reconciled.
+    let parts = pending.map_or(known_parts, |pending| &pending.parts);
+    Some(
+        parts
+            .keys()
+            .filter(|part| !exempt_parts.contains(part))
+            .copied()
+            .collect(),
+    )
 }
 
 fn merge_document(
@@ -947,6 +1228,8 @@ fn place_in_garage(
     destination: &SpaceEditorState,
 ) -> Result<SpaceEditorState, String> {
     let original = component_document(component, bearings, "Transferred construction");
+    let mut destination_index = PlacementSnapIndex::default();
+    destination_index.rebuild(&destination.graph);
     let offsets = deterministic_offsets(40);
     let mut dimension_overage = true;
     for yaw in 0_u8..4 {
@@ -989,7 +1272,7 @@ fn place_in_garage(
                 || high.z > GROUND_HALF_SIZE + 1.0e-4
                 || low.y < garage::BUILD_MIN_Y - 1.0e-4
                 || high.y > garage::BUILD_MAX_Y + 1.0e-4
-                || !collision_free(&loaded.graph, &destination.graph)
+                || !collision_free(&loaded.graph, &destination_index)
             {
                 continue;
             }
@@ -1011,13 +1294,16 @@ fn place_in_world(
     terrain: &impl TerrainDensity,
     floating_origin: FloatingOrigin,
 ) -> Result<SpaceEditorState, String> {
-    let original = component_document(component, bearings, "Returned construction");
+    let mut original = component_document(component, bearings, "Returned construction");
+    detach_authored_ground(&mut original);
     let loaded = original
         .clone()
         .into_graph()
         .map_err(|error| error.to_string())?;
     let (minimum, maximum) =
         graph_bounds(&loaded.graph).ok_or_else(|| "linked assembly is empty".to_owned())?;
+    let mut destination_index = PlacementSnapIndex::default();
+    destination_index.rebuild(&destination.graph);
     let center = (minimum + maximum) * 0.5;
     let horizontal_base = IVec2::new(
         ((target.x - center.x) / 0.125).round() as i32,
@@ -1036,18 +1322,25 @@ fn place_in_world(
             continue;
         };
         let surface_y = surface.position.relative_to(floating_origin).y;
-        let vertical = ((surface_y - minimum.y) / 0.125).round() as i32;
-        let mut candidate = original.clone();
-        candidate.transform_cardinal(0, IVec3::new(horizontal.x, vertical, horizontal.y));
-        let loaded = candidate
-            .clone()
-            .into_graph()
-            .map_err(|error| error.to_string())?;
-        if collision_free(&loaded.graph, &destination.graph)
-            && terrain_clear(&loaded.graph, terrain, floating_origin)
-            && player_clear(&loaded.graph, target)
-        {
-            return merge_document(destination, candidate);
+        // Keep the authored pose above the foundation probe; live physics owns the landing.
+        let vertical = ((surface_y - minimum.y) / 0.125).ceil() as i32 + 1;
+        for clearance in 0..=1 {
+            let mut candidate = original.clone();
+            candidate.transform_cardinal(
+                0,
+                IVec3::new(horizontal.x, vertical + clearance, horizontal.y),
+            );
+            let loaded = candidate
+                .clone()
+                .into_graph()
+                .map_err(|error| error.to_string())?;
+            if collision_free(&loaded.graph, &destination_index)
+                && terrain_clear(&loaded.graph, terrain, floating_origin)
+                && foundation_clear(&loaded.graph, terrain, floating_origin)
+                && player_clear(&loaded.graph, target)
+            {
+                return merge_document(destination, candidate);
+            }
         }
     }
     Err("No terrain- and construction-safe return placement was found within 20 m".to_owned())
@@ -1066,7 +1359,6 @@ fn transfer_active_assembly(
     graph: &mut ConstructionGraph,
     history: &mut EditorHistory,
     editor: &mut EditorState,
-    player: PlayerState,
     simulation: &mut AppSimulation,
 ) -> TransferAttempt {
     let Some(active) = runtime.document.active_dimension_link else {
@@ -1075,24 +1367,6 @@ fn transfer_active_assembly(
     let Some(link_part) = graph.dimension_link(active) else {
         return TransferAttempt::PlayerOnly;
     };
-    let Some(link) = graph.part(link_part).copied().and_then(|spec| match spec {
-        PartSpec::DimensionLink(link) => Some(link),
-        _ => None,
-    }) else {
-        return TransferAttempt::PlayerOnly;
-    };
-    let (live_center, live_rotation) = simulation
-        .live_part_pose(graph, link_part)
-        .unwrap_or((link.pose.translation(), link.pose.rotation.quaternion()));
-    if component_surface_distance(
-        player.position,
-        live_center,
-        live_rotation,
-        link.cuboid().size_meters() * 0.5,
-    ) > 5.0
-    {
-        return TransferAttempt::PlayerOnly;
-    }
     let component = match graph.structural_component(link_part, runtime.anchored_parts()) {
         Ok(component) => component,
         Err(error) => return TransferAttempt::Refused(error.to_string()),
@@ -1146,6 +1420,13 @@ fn transfer_active_assembly(
             }
         }
     };
+    let returned_world_parts = match space {
+        AppSpace::World => BTreeSet::new(),
+        AppSpace::Garage => match returned_component_parts(&destination.graph, active) {
+            Ok(parts) => parts,
+            Err(error) => return TransferAttempt::Refused(error),
+        },
+    };
     let remainder = SpaceEditorState {
         graph: partition.remainder,
         history: EditorHistory::default(),
@@ -1183,7 +1464,19 @@ fn transfer_active_assembly(
     }
     match space {
         AppSpace::World => runtime.garage_editor = Some(destination),
-        AppSpace::Garage => runtime.world_editor = Some(destination),
+        AppSpace::Garage => {
+            let removed = remove_cached_foundations(
+                &mut runtime.foundations,
+                &mut runtime.foundation_index,
+                &returned_world_parts,
+            );
+            runtime.pending_foundation_sync = None;
+            runtime.synced_editor_revision = destination.history.current_revision.wrapping_add(1);
+            if removed {
+                runtime.foundation_revision = runtime.foundation_revision.wrapping_add(1);
+            }
+            runtime.world_editor = Some(destination);
+        }
     }
     graph.clone_from(&remainder.graph);
     *history = EditorHistory::default();
@@ -1230,7 +1523,6 @@ fn toggle_space(
         &mut graph.0,
         &mut history,
         &mut editor,
-        *player,
         &mut simulation,
     ) {
         TransferAttempt::Transferred => {
@@ -1318,6 +1610,7 @@ fn enter_world(
     editor.placed_bearings = world_editor.placed_bearings;
     crate::cancel_transient_editor_state(&mut graph.0, &mut editor);
     editor.construction_mesh_dirty = true;
+    reset_player_collision_publication(&mut runtime);
 
     let start = runtime
         .document
@@ -1629,18 +1922,50 @@ fn leave_world(
     *exposure = exposure_for_space(AppSpace::Garage);
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn walk_world(
     time: Res<Time>,
     actions: Res<ButtonInput<GameAction>>,
-    camera: Single<&PlayerCamera, With<MainCamera>>,
+    mut camera: Single<&mut PlayerCamera, With<MainCamera>>,
     list: Res<WorldListState>,
+    graph: Res<EditorGraph>,
+    history: Res<EditorHistory>,
+    simulation: Res<AppSimulation>,
     mut runtime: ResMut<WorldRuntime>,
     mut player: ResMut<PlayerState>,
+    mut diagnostics: ResMut<WorldDiagnostics>,
     mut world_owned: Query<&mut Transform, With<WorldOwned>>,
 ) {
+    sync_player_construction_collision(
+        &mut runtime,
+        &simulation,
+        &graph.0,
+        history.current_revision,
+    );
     if list.phase() != WorldListPhase::Playing {
         runtime.capsule.velocity = bevy::math::DVec3::ZERO;
+        runtime.jump_queued = false;
         return;
+    }
+    let reactions_are_authoritative = simulation.is_running()
+        && runtime.collision_revision == simulation.world_revision
+        && runtime.collision_editor_revision == Some(history.current_revision);
+    if player.seat.is_some() {
+        runtime.capsule.velocity = DVec3::ZERO;
+        runtime.capsule.clear_support();
+        runtime.controller_accumulator = 0.0;
+        runtime.jump_queued = false;
+        runtime.step_visual_offset = 0.0;
+        runtime.walking_suspended = true;
+        return;
+    }
+    if runtime.walking_suspended {
+        runtime.capsule.position =
+            WorldPosition(runtime.floating_origin.0 + player.position.as_dvec3());
+        runtime.capsule.velocity = DVec3::ZERO;
+        runtime.capsule.clear_support();
+        runtime.step_visual_offset = 0.0;
+        runtime.walking_suspended = false;
     }
     let mut local = Vec2::ZERO;
     local.y += if actions.pressed(GameAction::MoveForward) {
@@ -1668,7 +1993,6 @@ fn walk_world(
     let movement = (right * local.x + forward * local.y)
         .with_y(0.0)
         .normalize_or_zero();
-    let mut capsule = runtime.capsule;
     if !runtime.player_terrain_ready {
         let ready = runtime.active_terrain.iter().any(|(&id, chunk)| {
             terrain_chunk_has_collision_near(
@@ -1678,31 +2002,86 @@ fn walk_world(
                     .get(&id)
                     .copied()
                     .unwrap_or_default(),
-                capsule,
+                &runtime.capsule,
             )
         });
         if !ready {
-            capsule.velocity = bevy::math::DVec3::ZERO;
-            runtime.capsule = capsule;
-            player.position = capsule.position.relative_to(runtime.floating_origin);
+            runtime.capsule.velocity = bevy::math::DVec3::ZERO;
+            player.position = runtime
+                .capsule
+                .position
+                .relative_to(runtime.floating_origin);
             return;
         }
         runtime.player_terrain_ready = true;
     }
+    let (controller_ticks, jump_queued) = {
+        let WorldRuntime {
+            controller_accumulator,
+            jump_queued,
+            ..
+        } = &mut *runtime;
+        advance_controller(
+            controller_accumulator,
+            jump_queued,
+            f64::from(time.delta_secs()),
+            actions.just_pressed(GameAction::Jump),
+        )
+    };
+    if controller_ticks == 0 {
+        return;
+    }
+
+    let mut collision_index = runtime.construction_collision.take();
+    let mut pending_reactions = core::mem::take(&mut runtime.pending_player_reactions);
     let scene = ActiveTerrainScene {
         chunks: &runtime.active_terrain,
         ready_faces: &runtime.active_terrain_ready_faces,
         spatial_index: &runtime.active_terrain_index,
     };
-    capsule.tick(
-        &scene,
-        KinematicInput {
-            movement: bevy::math::DVec2::new(f64::from(movement.x), f64::from(movement.z)),
-            sprint: actions.pressed(GameAction::Sprint),
-            jump: actions.just_pressed(GameAction::Jump),
-        },
-        f64::from(time.delta_secs().min(1.0 / 30.0)),
-    );
+    let mut capsule = runtime.capsule;
+    let mut resolved_contacts = 0_u32;
+    let mut queued_reactions = 0_u32;
+    let mut stepped_height = 0.0_f32;
+    for tick in 0..controller_ticks {
+        let mut collision_scene = KinematicCollisionScene {
+            terrain: &scene,
+            construction: collision_index.as_mut(),
+            floating_origin: runtime.floating_origin.0,
+        };
+        let result = capsule.tick(
+            &mut collision_scene,
+            KinematicInput {
+                movement: bevy::math::DVec2::new(f64::from(movement.x), f64::from(movement.z)),
+                sprint: actions.pressed(GameAction::Sprint),
+                jump: tick == 0 && jump_queued,
+            },
+            CONTROLLER_DT,
+        );
+        camera.yaw += result.support_yaw_delta;
+        resolved_contacts = resolved_contacts.saturating_add(result.resolved_contacts);
+        stepped_height += result.stepped_height;
+        for reaction in result.reaction_impulses() {
+            if reactions_are_authoritative {
+                pending_reactions.push(GpuExternalImpulse::new(
+                    reaction.compound_index,
+                    reaction.world_point,
+                    reaction.impulse,
+                ));
+                queued_reactions = queued_reactions.saturating_add(1);
+            }
+        }
+    }
+    if let Some(index) = collision_index.as_ref() {
+        let metrics = index.metrics();
+        diagnostics.player_collision_query_ms = metrics.query_ms;
+        diagnostics.dynamic_collision_refit_ms = metrics.dynamic_refit_ms;
+        diagnostics.player_collision_candidates = metrics.candidate_count;
+    }
+    diagnostics.player_collision_contacts = resolved_contacts;
+    diagnostics.player_reaction_impulses = queued_reactions;
+    runtime.pending_player_reactions = pending_reactions;
+    runtime.construction_collision = collision_index;
     runtime.capsule = capsule;
     // The active World construction graph is still authored in this local frame. Keep that
     // frame stable across the finite prototype world until instances gain their own root entity.
@@ -1715,8 +2094,211 @@ fn walk_world(
         }
         player.position -= shift.as_vec3();
     }
-    player.position = capsule.position.relative_to(runtime.floating_origin);
+    let capsule_position = capsule.position.relative_to(runtime.floating_origin);
+    runtime.step_visual_offset = smooth_step_visual_offset(
+        runtime.step_visual_offset,
+        stepped_height,
+        time.delta_secs(),
+    );
+    player.position = capsule_position + Vec3::Y * runtime.step_visual_offset;
     runtime.document.player_pose.translation = capsule.position;
+}
+
+fn advance_controller(
+    accumulator: &mut f64,
+    jump_queued: &mut bool,
+    delta_seconds: f64,
+    jump_pressed: bool,
+) -> (usize, bool) {
+    *jump_queued |= jump_pressed;
+    *accumulator += delta_seconds;
+    let ticks = ((*accumulator / CONTROLLER_DT) as usize).min(MAX_CONTROLLER_TICKS_PER_FRAME);
+    if ticks == 0 {
+        return (0, false);
+    }
+    *accumulator -= CONTROLLER_DT * ticks as f64;
+    (ticks, core::mem::take(jump_queued))
+}
+
+fn smooth_step_visual_offset(current: f32, stepped_height: f32, delta_seconds: f32) -> f32 {
+    let offset = current - stepped_height;
+    let smoothed = offset * (-delta_seconds / STEP_VISUAL_SMOOTHING_SECONDS).exp();
+    if smoothed.abs() < 1.0e-4 {
+        0.0
+    } else {
+        smoothed
+    }
+}
+
+fn sync_player_construction_collision(
+    runtime: &mut WorldRuntime,
+    simulation: &AppSimulation,
+    graph: &ConstructionGraph,
+    editor_revision: u64,
+) {
+    let authoritative_revision = simulation
+        .world_revision
+        .filter(|revision| revision.0 == editor_revision);
+    if authoritative_revision.is_some()
+        && (runtime.collision_revision != authoritative_revision
+            || runtime.collision_editor_revision != Some(editor_revision))
+    {
+        install_player_collision(
+            runtime,
+            simulation
+                .creation
+                .as_ref()
+                .map(ConstructionCollisionIndex::new),
+            editor_revision,
+            authoritative_revision,
+        );
+        runtime.collision_build = None;
+        runtime.collision_failed_revision = None;
+    } else if authoritative_revision.is_none() {
+        sync_provisional_player_collision(runtime, graph, editor_revision);
+    }
+
+    let Some(physics_revision) = runtime.collision_revision else {
+        return;
+    };
+    if simulation.world_revision != Some(physics_revision) {
+        return;
+    }
+    let Some(index) = runtime.construction_collision.as_mut() else {
+        return;
+    };
+    if runtime.collision_snapshot_tick == simulation.snapshot_tick
+        && runtime.collision_poses.len() == simulation.transforms.len()
+    {
+        return;
+    }
+    let tick_delta = simulation
+        .snapshot_tick
+        .saturating_sub(runtime.collision_snapshot_tick);
+    let elapsed = tick_delta.max(1) as f32 * mechanic_gpu::FIXED_DT_SECONDS;
+    runtime
+        .collision_poses
+        .resize(simulation.transforms.len(), ConstructionBodyPose::default());
+    for (body, transform) in simulation.transforms.iter().copied().enumerate() {
+        let translation = Vec3::from_slice(&transform.position[..3]);
+        let rotation = Quat::from_array(transform.rotation).normalize();
+        let previous = index.body_pose(body as u32).unwrap_or_default();
+        let linear_velocity = if runtime.collision_snapshot_tick == 0 {
+            Vec3::ZERO
+        } else {
+            (translation - previous.translation) / elapsed
+        };
+        let angular_velocity = if runtime.collision_snapshot_tick == 0 {
+            Vec3::ZERO
+        } else {
+            angular_velocity(previous.rotation, rotation, elapsed)
+        };
+        runtime.collision_poses[body] = ConstructionBodyPose {
+            translation,
+            rotation,
+            linear_velocity,
+            angular_velocity,
+        };
+    }
+    if index.refit_dynamic(&runtime.collision_poses) {
+        runtime.collision_snapshot_tick = simulation.snapshot_tick;
+    }
+}
+
+fn sync_provisional_player_collision(
+    runtime: &mut WorldRuntime,
+    graph: &ConstructionGraph,
+    editor_revision: u64,
+) {
+    if runtime
+        .collision_build
+        .as_ref()
+        .is_some_and(|build| build.editor_revision != editor_revision)
+    {
+        runtime.collision_build = None;
+    }
+    let completed = runtime
+        .collision_build
+        .as_mut()
+        .and_then(|build| check_ready(&mut build.task));
+    if let Some(completed) = completed {
+        let completed_revision = runtime
+            .collision_build
+            .take()
+            .expect("completed collision build is still owned")
+            .editor_revision;
+        if completed_revision == editor_revision {
+            match completed {
+                Ok(index) => {
+                    install_player_collision(runtime, Some(index), editor_revision, None);
+                    runtime.collision_failed_revision = None;
+                }
+                Err(error) => {
+                    runtime.collision_failed_revision = Some(editor_revision);
+                    warn!("could not compile player construction collision: {error}");
+                }
+            }
+        }
+    }
+    if runtime.collision_editor_revision != Some(editor_revision)
+        && runtime.collision_build.is_none()
+        && runtime.collision_failed_revision != Some(editor_revision)
+    {
+        runtime.pending_player_reactions.clear();
+        runtime.capsule.clear_support();
+        let graph = graph.clone();
+        runtime.collision_build = Some(PlayerCollisionBuild {
+            editor_revision,
+            task: AsyncComputeTaskPool::get()
+                .spawn(async move { compile_player_collision(&graph) }),
+        });
+    }
+}
+
+fn compile_player_collision(
+    graph: &ConstructionGraph,
+) -> Result<ConstructionCollisionIndex, String> {
+    let creation = graph.compile().map_err(|error| error.to_string())?;
+    Ok(ConstructionCollisionIndex::new(&creation))
+}
+
+fn install_player_collision(
+    runtime: &mut WorldRuntime,
+    collision: Option<ConstructionCollisionIndex>,
+    editor_revision: u64,
+    physics_revision: Option<(u64, u64)>,
+) {
+    runtime.pending_player_reactions.clear();
+    runtime.capsule.clear_support();
+    runtime.construction_collision = collision;
+    runtime.collision_revision = physics_revision;
+    runtime.collision_editor_revision = Some(editor_revision);
+    runtime.collision_snapshot_tick = 0;
+    runtime.collision_poses.clear();
+}
+
+fn reset_player_collision_publication(runtime: &mut WorldRuntime) {
+    runtime.construction_collision = None;
+    runtime.collision_revision = None;
+    runtime.collision_editor_revision = None;
+    runtime.collision_build = None;
+    runtime.collision_failed_revision = None;
+    runtime.collision_snapshot_tick = 0;
+    runtime.collision_poses.clear();
+    runtime.pending_player_reactions.clear();
+    runtime.capsule.clear_support();
+    runtime.jump_queued = false;
+    runtime.step_visual_offset = 0.0;
+}
+
+fn angular_velocity(previous: Quat, current: Quat, elapsed: f32) -> Vec3 {
+    let delta = (current * previous.inverse()).normalize();
+    let (axis, angle) = delta.to_axis_angle();
+    if angle.is_finite() && elapsed > 0.0 {
+        axis * angle / elapsed
+    } else {
+        Vec3::ZERO
+    }
 }
 
 fn select_and_size_brush(
@@ -2025,7 +2607,7 @@ fn update_terrain_selection(
                 let capsule = runtime.capsule;
                 let critical = startup_region_nodes(&cut, capsule.position).collect::<Vec<_>>();
                 runtime.terrain_streamer.set_pinned(
-                    player_collision_nodes(&cut, capsule).chain(critical.iter().copied()),
+                    player_collision_nodes(&cut, &capsule).chain(critical.iter().copied()),
                 );
                 runtime
                     .terrain_streamer
@@ -2416,7 +2998,7 @@ fn integrate_terrain_remeshes(
                         .get(&id)
                         .copied()
                         .unwrap_or_default(),
-                    runtime.capsule,
+                    &runtime.capsule,
                 )
             })
         {
@@ -2456,10 +3038,10 @@ fn terrain_mesh_is_renderable(chunk: &TerrainMeshChunk, index_count: usize) -> b
     !chunk.vertices.is_empty() && index_count != 0
 }
 
-fn player_collision_nodes(
-    cut: &[ActiveTerrainNode],
-    capsule: KinematicCapsule,
-) -> impl Iterator<Item = TerrainNodeId> + '_ {
+fn player_collision_nodes<'a>(
+    cut: &'a [ActiveTerrainNode],
+    capsule: &KinematicCapsule,
+) -> impl Iterator<Item = TerrainNodeId> + 'a {
     let (minimum, maximum) = capsule_loading_bounds(capsule);
     cut.iter()
         .map(|node| node.id)
@@ -2469,7 +3051,7 @@ fn player_collision_nodes(
 fn terrain_chunk_has_collision_near(
     chunk: &TerrainMeshChunk,
     ready_faces: TerrainTransitionMask,
-    capsule: KinematicCapsule,
+    capsule: &KinematicCapsule,
 ) -> bool {
     let (minimum, maximum) = capsule_loading_bounds(capsule);
     bounds_overlap(
@@ -2483,7 +3065,7 @@ fn terrain_chunk_has_collision_near(
         != 0
 }
 
-fn capsule_loading_bounds(capsule: KinematicCapsule) -> (bevy::math::DVec3, bevy::math::DVec3) {
+fn capsule_loading_bounds(capsule: &KinematicCapsule) -> (bevy::math::DVec3, bevy::math::DVec3) {
     let radius = capsule.config.radius;
     (
         capsule.position.0 - bevy::math::DVec3::new(radius, capsule.config.step_height, radius),
@@ -2625,16 +3207,39 @@ pub(crate) fn sync_world_foundations(
             .collect::<BTreeMap<_, _>>();
         let delta =
             ConstructionEditDelta::between_parts(&runtime.known_world_parts, &current_parts);
+        let previous_exempt_parts = runtime.foundation_exempt_parts.clone();
+        let current_exempt_parts = dimension_link_component_parts(&graph.0);
+        let exemption_changes = previous_exempt_parts
+            .symmetric_difference(&current_exempt_parts)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let replaced_parts = delta
+            .removed
+            .iter()
+            .chain(&delta.modified)
+            .copied()
+            .chain(exemption_changes.iter().copied())
+            .collect();
+        let new_parts = delta
+            .added
+            .iter()
+            .chain(&delta.modified)
+            .copied()
+            .chain(
+                previous_exempt_parts
+                    .difference(&current_exempt_parts)
+                    .copied(),
+            )
+            .filter(|part| current_parts.contains_key(part) && !current_exempt_parts.contains(part))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        runtime.foundation_exempt_parts = current_exempt_parts;
         runtime.pending_foundation_sync = Some(PendingFoundationSync {
             editor_revision: history.current_revision,
             parts: current_parts,
-            replaced_parts: delta
-                .removed
-                .iter()
-                .chain(&delta.modified)
-                .copied()
-                .collect(),
-            new_parts: delta.added.iter().chain(&delta.modified).copied().collect(),
+            replaced_parts,
+            new_parts,
             next_part: 0,
             foundations: Vec::new(),
             index: FoundationSpatialIndex::default(),
@@ -2649,6 +3254,15 @@ pub(crate) fn sync_world_foundations(
     };
     diagnostics.foundation_candidate_count =
         u64::try_from(pending.new_parts.len()).unwrap_or(u64::MAX);
+    // Linked assemblies make every unrelated component an explicit static
+    // environment for physics, so terrain-foundation sampling cannot change
+    // the published body classification. Keep the work staged and resume it
+    // if the link leaves the World instead of burning the frame budget now.
+    if !runtime.foundation_exempt_parts.is_empty() && pending.next_part < pending.new_parts.len() {
+        runtime.pending_foundation_sync = Some(pending);
+        diagnostics.foundation_refresh_ms = frame_started.elapsed().as_secs_f64() * 1_000.0;
+        return;
+    }
     let scene = ActiveTerrainScene {
         chunks: &runtime.active_terrain,
         ready_faces: &runtime.active_terrain_ready_faces,
@@ -2665,29 +3279,7 @@ pub(crate) fn sync_world_foundations(
         let Some(&spec) = pending.parts.get(&part) else {
             continue;
         };
-        let (minimum, maximum) = part_world_bounds(spec);
-        let position = WorldPosition(
-            runtime.floating_origin.0
-                + Vec3::new(
-                    (minimum.x + maximum.x) * 0.5,
-                    minimum.y,
-                    (minimum.z + maximum.z) * 0.5,
-                )
-                .as_dvec3(),
-        );
-        let support = FoundationSupport::rectangular(
-            &scene,
-            TerrainRayHit {
-                position,
-                normal: Vec3::Y,
-                distance: 0.0,
-                material_weights: [0.0; TerrainMaterial::COUNT],
-                chunk_generation: 0,
-                triangle: 0,
-            },
-            f64::from(maximum.x - minimum.x),
-            f64::from(maximum.z - minimum.z),
-        );
+        let support = part_foundation_support(&scene, spec, runtime.floating_origin);
         diagnostics.foundation_sample_count = diagnostics
             .foundation_sample_count
             .saturating_add(u64::try_from(support.sample_count()).unwrap_or(u64::MAX));
@@ -2705,6 +3297,8 @@ pub(crate) fn sync_world_foundations(
         return;
     }
 
+    let released_provisional_parts =
+        runtime.foundation_exempt_parts.is_empty() && !pending.new_parts.is_empty();
     let removed_foundation = runtime
         .foundations
         .iter()
@@ -2720,7 +3314,9 @@ pub(crate) fn sync_world_foundations(
     runtime.foundations.append(&mut pending.foundations);
     runtime.known_world_parts = pending.parts;
     runtime.synced_editor_revision = pending.editor_revision;
-    if added || removed_foundation {
+    if runtime.foundation_exempt_parts.is_empty()
+        && (added || removed_foundation || released_provisional_parts)
+    {
         runtime.foundation_revision = runtime.foundation_revision.wrapping_add(1);
     }
     diagnostics.foundation_refresh_ms = frame_started.elapsed().as_secs_f64() * 1_000.0;
@@ -2962,42 +3558,57 @@ fn terrain_chunk_mesh(chunk: &TerrainMeshChunk, indices: Vec<u32>) -> Mesh {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{
+        collections::BTreeSet,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use bevy::{
         asset::RenderAssetUsages,
         camera::Exposure,
         math::DVec3,
         mesh::VertexAttributeValues,
-        prelude::{App, IVec3, Image, State, Update},
+        prelude::{App, IVec3, Image, State, Update, Vec3},
         render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+        state::app::AppExtStates,
     };
-    use mechanic_core::{BuildPose, ConstructionGraph, CuboidSpec, GridRotation};
+    use mechanic_core::{
+        BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec, DimensionLinkId,
+        DimensionLinkSpec, FaceKind, FaceOwner, FaceRef, GridRotation, WeldSpec,
+    };
     use mechanic_world::{
-        ActiveTerrainNode, BrickCoord, KinematicCapsule, TerrainEditBatch, TerrainFace,
-        TerrainField, TerrainMeshChunk, TerrainMeshRequest, TerrainNodeId, TerrainOctree,
-        TerrainReadiness, TerrainTransitionMask, WorldBounds, WorldPosition, WorldSeed, WorldStore,
-        mesh_chunk, select_active_nodes,
+        ActiveTerrainNode, BrickCoord, FloatingOrigin, FoundationSample, FoundationSpatialIndex,
+        FoundationSupport, KinematicCapsule, TerrainDensity, TerrainEditBatch, TerrainFace,
+        TerrainField, TerrainMaterial, TerrainMeshChunk, TerrainMeshRequest, TerrainNodeId,
+        TerrainOctree, TerrainRayHit, TerrainReadiness, TerrainTransitionMask, WorldBounds,
+        WorldPosition, WorldSeed, WorldStore, mesh_chunk, select_active_nodes,
     };
 
     use super::{
-        AppSpace, TerrainAcknowledgements, TerrainEditOperation, TerrainStrokeSample,
-        WorldDiagnostics, WorldListPhase, WorldListState, WorldPrototypePlugin, WorldRuntime,
-        component_surface_distance, exposure_for_space, foundation_edit_is_ready,
-        full_rgba8_mip_byte_count, generate_rgba8_mip_chain, load_space_editors,
-        nodes_touch_on_face, player_collision_nodes, ready_obsolete_nodes, sync_world_foundations,
-        terrain_chunk_has_collision_near, terrain_chunk_mesh, terrain_edit_commands,
-        terrain_mesh_is_renderable,
+        AppSpace, CONTROLLER_DT, SpaceEditorState, TerrainAcknowledgements, TerrainEditOperation,
+        TerrainStrokeSample, WorldDiagnostics, WorldListPhase, WorldListState,
+        WorldPrototypePlugin, WorldRuntime, advance_controller, compile_player_collision,
+        dimension_link_component_parts, exposure_for_space, foundation_edit_is_ready,
+        full_rgba8_mip_byte_count, generate_rgba8_mip_chain, graph_bounds, handle_world_list,
+        install_world, load_space_editors, nodes_touch_on_face, place_in_world,
+        player_collision_nodes, ready_obsolete_nodes, remove_cached_foundations,
+        returned_component_parts, smooth_step_visual_offset, static_parts_for_physics,
+        sync_world_foundations, terrain_chunk_has_collision_near, terrain_chunk_mesh,
+        terrain_edit_commands, terrain_mesh_is_renderable,
     };
+    use super::{PendingFoundationSync, TerrainFoundation};
     use crate::{EditorGraph, EditorHistory, EditorState, garage, showcase};
 
     struct TempWorldStore(std::path::PathBuf);
 
+    static NEXT_TEMP_WORLD_STORE: AtomicUsize = AtomicUsize::new(0);
+
     impl TempWorldStore {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "mechanic-world-install-test-{}",
-                std::process::id()
+                "mechanic-world-install-test-{}-{}",
+                std::process::id(),
+                NEXT_TEMP_WORLD_STORE.fetch_add(1, Ordering::Relaxed),
             ));
             let _ = std::fs::remove_dir_all(&path);
             Self(path)
@@ -3008,6 +3619,96 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    struct FlatTerrain(f64);
+
+    impl TerrainDensity for FlatTerrain {
+        fn density(&self, position: WorldPosition) -> f32 {
+            (self.0 - position.0.y) as f32
+        }
+
+        fn material(&self, _position: WorldPosition) -> TerrainMaterial {
+            TerrainMaterial::Soil
+        }
+    }
+
+    struct SlopedTerrain;
+
+    impl TerrainDensity for SlopedTerrain {
+        fn density(&self, position: WorldPosition) -> f32 {
+            (position.0.x * 0.25 - position.0.y) as f32
+        }
+
+        fn material(&self, _position: WorldPosition) -> TerrainMaterial {
+            TerrainMaterial::Soil
+        }
+    }
+
+    #[test]
+    fn player_collision_compiles_before_foundation_classification() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1, 8, 8],
+                    BuildPose::new(IVec3::new(4, 4, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let mut collision = compile_player_collision(&graph).unwrap();
+        assert!(
+            collision
+                .cast_capsule(
+                    bevy::prelude::Vec3::ZERO,
+                    bevy::prelude::Vec3::X * 2.0,
+                    mechanic_world::KinematicCapsuleConfig::default(),
+                )
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn automatic_step_rise_is_smoothed_without_changing_the_collision_height() {
+        let mut offset = smooth_step_visual_offset(0.0, 0.25, 1.0 / 60.0);
+        assert!(offset > -0.25 && offset < 0.0, "{offset}");
+        let first = offset;
+        for _ in 0..60 {
+            offset = smooth_step_visual_offset(offset, 0.0, 1.0 / 60.0);
+        }
+        assert!(offset.abs() < 1.0e-4, "{offset}");
+        assert!(first.abs() < 0.25);
+    }
+
+    #[test]
+    fn jump_request_is_buffered_until_the_next_fixed_controller_tick() {
+        let mut accumulator = 0.0;
+        let mut jump_queued = false;
+
+        assert_eq!(
+            advance_controller(
+                &mut accumulator,
+                &mut jump_queued,
+                CONTROLLER_DT * 0.5,
+                true,
+            ),
+            (0, false)
+        );
+        assert_eq!(
+            advance_controller(
+                &mut accumulator,
+                &mut jump_queued,
+                CONTROLLER_DT * 0.5,
+                false,
+            ),
+            (1, true)
+        );
+        assert_eq!(
+            advance_controller(&mut accumulator, &mut jump_queued, CONTROLLER_DT, false,),
+            (1, false)
+        );
     }
 
     #[test]
@@ -3022,22 +3723,413 @@ mod tests {
     }
 
     #[test]
-    fn travel_range_is_measured_from_the_link_box_surface() {
-        let half_extents = bevy::prelude::Vec3::new(0.25, 0.125, 0.125);
-        let at_limit = component_surface_distance(
-            bevy::prelude::Vec3::new(5.25, 0.0, 0.0),
-            bevy::prelude::Vec3::ZERO,
-            bevy::prelude::Quat::IDENTITY,
-            half_extents,
+    fn garage_creation_enters_world_detached_and_clear_of_terrain() {
+        const TERRAIN_HEIGHT: f64 = 0.06;
+
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [2; 3],
+                    BuildPose::new(IVec3::new(0, 1, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(part, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+
+        let placed = place_in_world(
+            &graph,
+            &[],
+            &SpaceEditorState::default(),
+            Vec3::ZERO,
+            &FlatTerrain(TERRAIN_HEIGHT),
+            FloatingOrigin::default(),
+        )
+        .unwrap();
+
+        assert!(placed.graph.welds().all(|(_, weld)| {
+            !matches!(weld.first.owner, FaceOwner::Ground)
+                && !matches!(weld.second.owner, FaceOwner::Ground)
+        }));
+        let (minimum, maximum) = graph_bounds(&placed.graph).unwrap();
+        assert!(f64::from(minimum.y) - TERRAIN_HEIGHT >= 0.125 - 1.0e-6);
+        let closest_x = 0.0_f32.clamp(minimum.x, maximum.x);
+        let closest_z = 0.0_f32.clamp(minimum.z, maximum.z);
+        assert!(closest_x.mul_add(closest_x, closest_z * closest_z) > 4.0);
+        let support = FoundationSupport::rectangular(
+            &FlatTerrain(TERRAIN_HEIGHT),
+            TerrainRayHit {
+                position: WorldPosition(
+                    Vec3::new(
+                        (minimum.x + maximum.x) * 0.5,
+                        minimum.y,
+                        (minimum.z + maximum.z) * 0.5,
+                    )
+                    .as_dvec3(),
+                ),
+                normal: Vec3::Y,
+                distance: 0.0,
+                material_weights: [0.0; TerrainMaterial::COUNT],
+                chunk_generation: 0,
+                triangle: 0,
+            },
+            f64::from(maximum.x - minimum.x),
+            f64::from(maximum.z - minimum.z),
         );
-        assert!((at_limit - 5.0).abs() < f32::EPSILON);
-        assert!(
-            component_surface_distance(
-                bevy::prelude::Vec3::new(5.251, 0.0, 0.0),
-                bevy::prelude::Vec3::ZERO,
-                bevy::prelude::Quat::IDENTITY,
-                half_extents,
-            ) > 5.0
+        assert!(!support.has_valid_anchor());
+    }
+
+    #[test]
+    fn garage_creation_enters_sloped_world_without_becoming_a_foundation() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([8, 2, 2], BuildPose::new(IVec3::Y, GridRotation::default()))
+                    .unwrap(),
+            ))
+            .unwrap();
+
+        let placed = place_in_world(
+            &graph,
+            &[],
+            &SpaceEditorState::default(),
+            Vec3::new(0.0, -10.0, 0.0),
+            &SlopedTerrain,
+            FloatingOrigin::default(),
+        )
+        .unwrap();
+
+        for (_, part) in placed.graph.parts() {
+            let (minimum, maximum) = crate::builder::part_world_bounds(*part);
+            let support = FoundationSupport::rectangular(
+                &SlopedTerrain,
+                TerrainRayHit {
+                    position: WorldPosition(
+                        Vec3::new(
+                            (minimum.x + maximum.x) * 0.5,
+                            minimum.y,
+                            (minimum.z + maximum.z) * 0.5,
+                        )
+                        .as_dvec3(),
+                    ),
+                    normal: Vec3::Y,
+                    distance: 0.0,
+                    material_weights: [0.0; TerrainMaterial::COUNT],
+                    chunk_generation: 0,
+                    triangle: 0,
+                },
+                f64::from(maximum.x - minimum.x),
+                f64::from(maximum.z - minimum.z),
+            );
+            assert!(!support.has_valid_anchor());
+        }
+    }
+
+    #[test]
+    fn returning_component_discards_foundations_cached_under_reused_part_ids() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(chassis) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2, 1, 1], BuildPose::new(IVec3::Y, GridRotation::default()))
+                    .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(4),
+                BuildPose::new(IVec3::new(2, 1, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(chassis, FaceKind::PositiveX),
+                second: FaceRef::part(link, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let BuildOutcome::Spawned(unrelated) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(20, 0, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let support = || FoundationSupport {
+            samples: vec![FoundationSample {
+                position: WorldPosition::default(),
+                valid: true,
+            }],
+        };
+        let mut foundations = vec![
+            TerrainFoundation {
+                part: chassis,
+                support: support(),
+            },
+            TerrainFoundation {
+                part: unrelated,
+                support: support(),
+            },
+        ];
+        let mut index = FoundationSpatialIndex::default();
+        for foundation in &foundations {
+            index.insert(foundation.part, &foundation.support);
+        }
+
+        let returned = returned_component_parts(&graph, DimensionLinkId(4)).unwrap();
+        assert!(remove_cached_foundations(
+            &mut foundations,
+            &mut index,
+            &returned,
+        ));
+
+        assert_eq!(foundations.len(), 1);
+        assert_eq!(foundations[0].part, unrelated);
+        assert_eq!(index.len(), 1);
+        assert!(!returned.contains(&unrelated));
+        let compiled = graph
+            .compile_with_static_parts(foundations.iter().map(|foundation| foundation.part))
+            .unwrap();
+        let body_for = |part| {
+            compiled
+                .part_to_compound
+                .iter()
+                .find_map(|(candidate, body)| (*candidate == part).then_some(*body as usize))
+                .unwrap()
+        };
+        assert!(!compiled.compounds[body_for(chassis)].is_static);
+        assert!(compiled.compounds[body_for(unrelated)].is_static);
+    }
+
+    #[test]
+    fn dimension_link_component_publishes_dynamic_during_background_foundation_sync() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(chassis) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2, 1, 1], BuildPose::new(IVec3::Y, GridRotation::default()))
+                    .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(7),
+                BuildPose::new(IVec3::new(2, 1, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(chassis, FaceKind::PositiveX),
+                second: FaceRef::part(link, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let BuildOutcome::Spawned(unrelated) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(20, 0, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let valid_support = || FoundationSupport {
+            samples: vec![FoundationSample {
+                position: WorldPosition::default(),
+                valid: true,
+            }],
+        };
+        let foundations = vec![
+            TerrainFoundation {
+                part: chassis,
+                support: valid_support(),
+            },
+            TerrainFoundation {
+                part: unrelated,
+                support: valid_support(),
+            },
+        ];
+        let exempt = dimension_link_component_parts(&graph);
+        let pending = PendingFoundationSync {
+            editor_revision: 8,
+            parts: graph.parts().map(|(part, spec)| (part, *spec)).collect(),
+            replaced_parts: BTreeSet::new(),
+            new_parts: graph.parts().map(|(part, _)| part).collect(),
+            next_part: 32,
+            foundations: Vec::new(),
+            index: FoundationSpatialIndex::default(),
+        };
+
+        assert_eq!(exempt, BTreeSet::from([chassis, link]));
+        let static_parts = static_parts_for_physics(
+            &pending.parts,
+            &foundations,
+            &exempt,
+            Some(&pending),
+            7,
+            pending.editor_revision,
+        )
+        .expect("a portable component can publish before the world scan completes");
+        assert_eq!(static_parts, vec![unrelated]);
+
+        let compiled = graph.compile_with_static_parts(static_parts).unwrap();
+        let body_for = |part| {
+            compiled
+                .part_to_compound
+                .iter()
+                .find_map(|(candidate, body)| (*candidate == part).then_some(*body as usize))
+                .unwrap()
+        };
+        assert!(!compiled.compounds[body_for(chassis)].is_static);
+        assert!(!compiled.compounds[body_for(link)].is_static);
+        assert!(compiled.compounds[body_for(unrelated)].is_static);
+    }
+
+    #[test]
+    fn linked_creation_does_not_mobilize_unrelated_world_construction() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(chassis) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2, 1, 1], BuildPose::new(IVec3::Y, GridRotation::default()))
+                    .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(12),
+                BuildPose::new(IVec3::new(2, 1, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(chassis, FaceKind::PositiveX),
+                second: FaceRef::part(link, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let BuildOutcome::Spawned(unrelated) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(20, 0, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let known_parts = graph.parts().map(|(part, spec)| (part, *spec)).collect();
+        let exempt = dimension_link_component_parts(&graph);
+
+        let static_parts =
+            static_parts_for_physics(&known_parts, &[], &exempt, None, 3, 3).unwrap();
+        assert_eq!(static_parts, vec![unrelated]);
+
+        let compiled = graph.compile_with_static_parts(static_parts).unwrap();
+        let body_for = |part| {
+            compiled
+                .part_to_compound
+                .iter()
+                .find_map(|(candidate, body)| (*candidate == part).then_some(*body as usize))
+                .unwrap()
+        };
+        assert!(!compiled.compounds[body_for(chassis)].is_static);
+        assert!(!compiled.compounds[body_for(link)].is_static);
+        assert!(compiled.compounds[body_for(unrelated)].is_static);
+    }
+
+    #[test]
+    fn linked_creation_gets_ground_plane_from_pending_world_snapshot() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(12),
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let parts = graph.parts().map(|(part, spec)| (part, *spec)).collect();
+
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        let spawn = runtime.field.safe_spawn();
+        runtime.floating_origin.0 = spawn.0.round();
+        runtime.foundation_exempt_parts.insert(link);
+        runtime.pending_foundation_sync = Some(PendingFoundationSync {
+            editor_revision: 1,
+            parts,
+            replaced_parts: BTreeSet::new(),
+            new_parts: vec![link],
+            next_part: 0,
+            foundations: Vec::new(),
+            index: FoundationSpatialIndex::default(),
+        });
+
+        let (normal, offset) = runtime
+            .active_assembly_ground_plane()
+            .expect("pending linked construction still receives terrain support");
+        assert_eq!(normal, Vec3::Y);
+        assert!(offset.is_finite());
+    }
+
+    #[test]
+    fn ordinary_world_construction_stays_static_during_foundation_reconciliation() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let pending = PendingFoundationSync {
+            editor_revision: 2,
+            parts: graph.parts().map(|(part, spec)| (part, *spec)).collect(),
+            replaced_parts: BTreeSet::new(),
+            new_parts: vec![part],
+            next_part: 0,
+            foundations: Vec::new(),
+            index: FoundationSpatialIndex::default(),
+        };
+
+        assert_eq!(
+            static_parts_for_physics(&pending.parts, &[], &BTreeSet::new(), Some(&pending), 1, 2,),
+            Some(vec![part])
         );
     }
 
@@ -3059,6 +4151,72 @@ mod tests {
         assert!(state.is_open());
         state.phase = WorldListPhase::Playing;
         assert!(!state.is_open());
+        state.act(crate::ui::WorldAction::ExitToSelector);
+        assert_eq!(
+            state.requested,
+            Some(crate::ui::WorldAction::ExitToSelector)
+        );
+    }
+
+    #[test]
+    fn exiting_to_the_selector_saves_and_allows_the_world_to_reload() {
+        let temporary = TempWorldStore::new();
+        let store = WorldStore::new(&temporary.0);
+        let document = store.create_world("Reloadable", Some(7)).unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::new(IVec3::ZERO, GridRotation::default()))
+                    .unwrap(),
+            ))
+            .unwrap();
+
+        let mut app = App::new();
+        app.add_plugins(bevy::state::app::StatesPlugin);
+        app.init_state::<AppSpace>();
+        app.init_resource::<WorldRuntime>();
+        {
+            let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+            runtime.store = store;
+            install_world(&mut runtime, document).unwrap();
+        }
+        app.init_resource::<WorldListState>();
+        app.insert_resource(EditorGraph(graph));
+        app.init_resource::<EditorState>();
+        app.add_systems(Update, handle_world_list);
+        {
+            let mut list = app.world_mut().resource_mut::<WorldListState>();
+            list.phase = WorldListPhase::Playing;
+            list.act(crate::ui::WorldAction::ExitToSelector);
+        }
+
+        app.update();
+
+        let path = {
+            let list = app.world().resource::<WorldListState>();
+            assert_eq!(list.phase(), WorldListPhase::Picking);
+            list.entries()[0].path.clone()
+        };
+        app.world_mut()
+            .resource_mut::<WorldListState>()
+            .act(crate::ui::WorldAction::Open(path));
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<WorldListState>().phase(),
+            WorldListPhase::Loading
+        );
+        assert_eq!(
+            app.world()
+                .resource::<WorldRuntime>()
+                .pending_garage_editor
+                .as_ref()
+                .unwrap()
+                .graph
+                .part_count(),
+            1
+        );
     }
 
     #[test]
@@ -3231,6 +4389,153 @@ mod tests {
     }
 
     #[test]
+    fn linked_creation_bypasses_large_world_foundation_publication_barrier() {
+        let mut graph = ConstructionGraph::new();
+        let mut edit = graph.begin_edit();
+        edit.reserve_parts_and_welds(129, 0);
+        let unrelated = edit.spawn_cuboids((0..128).map(|x| {
+            CuboidSpec::new(
+                [1; 3],
+                BuildPose::new(IVec3::new(x, 0, 0), GridRotation::default()),
+            )
+            .unwrap()
+        }));
+        graph = edit.finish();
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(11),
+                BuildPose::new(IVec3::new(300, 4, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        app.init_resource::<WorldListState>();
+        app.init_resource::<EditorState>();
+        app.init_resource::<WorldDiagnostics>();
+        app.insert_resource(EditorGraph(graph));
+        app.insert_resource(EditorHistory {
+            current_revision: 1,
+            next_revision: 1,
+            ..Default::default()
+        });
+        app.world_mut().resource_mut::<WorldListState>().phase = WorldListPhase::Playing;
+        app.add_systems(Update, sync_world_foundations);
+
+        app.update();
+
+        let runtime = app.world().resource::<WorldRuntime>();
+        assert_eq!(
+            runtime
+                .pending_foundation_sync
+                .as_ref()
+                .expect("foundation work remains deferred while the link is active")
+                .next_part,
+            0
+        );
+        assert_eq!(runtime.foundation_exempt_parts, BTreeSet::from([link]));
+        let static_parts = runtime
+            .static_parts_for_physics(1)
+            .expect("the linked creation must publish during the background scan");
+        assert!(!static_parts.contains(&link));
+        assert!(unrelated.iter().all(|part| static_parts.contains(part)));
+    }
+
+    #[test]
+    fn adding_dimension_link_releases_cached_foundation_for_whole_component() {
+        let mut previous_graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(chassis) = previous_graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2, 1, 1], BuildPose::new(IVec3::Y, GridRotation::default()))
+                    .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(unrelated) = previous_graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(20, 0, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut graph = previous_graph.clone();
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(12),
+                BuildPose::new(IVec3::new(2, 1, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(chassis, FaceKind::PositiveX),
+                second: FaceRef::part(link, FaceKind::NegativeX),
+            }))
+            .unwrap();
+        let valid_support = || FoundationSupport {
+            samples: vec![FoundationSample {
+                position: WorldPosition::default(),
+                valid: true,
+            }],
+        };
+
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        app.init_resource::<WorldListState>();
+        app.init_resource::<EditorState>();
+        app.init_resource::<WorldDiagnostics>();
+        app.insert_resource(EditorGraph(graph));
+        app.insert_resource(EditorHistory {
+            current_revision: 2,
+            next_revision: 2,
+            ..Default::default()
+        });
+        app.world_mut().resource_mut::<WorldListState>().phase = WorldListPhase::Playing;
+        {
+            let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+            runtime.known_world_parts = previous_graph
+                .parts()
+                .map(|(part, spec)| (part, *spec))
+                .collect();
+            runtime.synced_editor_revision = 1;
+            for part in [chassis, unrelated] {
+                let support = valid_support();
+                runtime.foundation_index.insert(part, &support);
+                runtime
+                    .foundations
+                    .push(TerrainFoundation { part, support });
+            }
+        }
+        app.add_systems(Update, sync_world_foundations);
+
+        app.update();
+
+        let runtime = app.world().resource::<WorldRuntime>();
+        assert!(runtime.foundations_match_editor_revision(2));
+        assert_eq!(
+            runtime.foundation_exempt_parts,
+            BTreeSet::from([chassis, link])
+        );
+        assert_eq!(
+            runtime.anchored_parts().collect::<Vec<_>>(),
+            vec![unrelated]
+        );
+        assert_eq!(runtime.static_parts_for_physics(2), Some(vec![unrelated]));
+    }
+
+    #[test]
     fn empty_terrain_chunks_are_not_published_to_bevys_mesh_allocator() {
         let mut chunk = TerrainMeshChunk::default();
         assert!(!terrain_mesh_is_renderable(&chunk, 0));
@@ -3337,21 +4642,21 @@ mod tests {
         assert!(!terrain_chunk_has_collision_near(
             &chunk,
             TerrainTransitionMask::NONE,
-            capsule,
+            &capsule,
         ));
 
         chunk.index_groups.regular = vec![0, 1, 2];
         assert!(terrain_chunk_has_collision_near(
             &chunk,
             TerrainTransitionMask::NONE,
-            capsule,
+            &capsule,
         ));
         chunk.bounds.minimum.0.x = 20.0;
         chunk.bounds.maximum.0.x = 25.0;
         assert!(!terrain_chunk_has_collision_near(
             &chunk,
             TerrainTransitionMask::NONE,
-            capsule,
+            &capsule,
         ));
     }
 
@@ -3368,7 +4673,7 @@ mod tests {
             ..local
         };
         assert_eq!(
-            player_collision_nodes(&[far, local], capsule).collect::<Vec<_>>(),
+            player_collision_nodes(&[far, local], &capsule).collect::<Vec<_>>(),
             vec![local.id],
         );
     }
@@ -3380,7 +4685,7 @@ mod tests {
         let terrain = TerrainOctree::default().snapshot();
         let cut = select_active_nodes(&field, &terrain, spawn);
         let capsule = KinematicCapsule::new(spawn);
-        let pins = player_collision_nodes(&cut, capsule).collect::<Vec<_>>();
+        let pins = player_collision_nodes(&cut, &capsule).collect::<Vec<_>>();
         assert!(!pins.is_empty());
         assert!(pins.into_iter().any(|id| {
             let node = cut
@@ -3396,7 +4701,7 @@ mod tests {
                     transition_mask: node.transition_mask,
                 },
             );
-            terrain_chunk_has_collision_near(&chunk, TerrainTransitionMask::NONE, capsule)
+            terrain_chunk_has_collision_near(&chunk, TerrainTransitionMask::NONE, &capsule)
         }));
     }
 

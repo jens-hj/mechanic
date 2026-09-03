@@ -1,6 +1,9 @@
 //! Rebindable gameplay actions shared by input systems, HUD text, and settings.
 
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 use bevy::{input::mouse::AccumulatedMouseScroll, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -325,8 +328,6 @@ impl GameAction {
             (self, other),
             (Self::Sprint, Self::FinePlacement | Self::SelectionModifier)
                 | (Self::FinePlacement | Self::SelectionModifier, Self::Sprint)
-                | (Self::Descend, Self::PrecisionPlacement)
-                | (Self::PrecisionPlacement, Self::Descend)
                 | (Self::ZoomIn, Self::FreePlacementRangeIncrease)
                 | (Self::FreePlacementRangeIncrease, Self::ZoomIn)
                 | (Self::ZoomOut, Self::FreePlacementRangeDecrease)
@@ -528,11 +529,7 @@ impl Default for Controls {
             Some(InputChord::key(K::ShiftRight)),
         );
         set(A::Jump, Some(InputChord::key(K::Space)), None);
-        set(
-            A::Descend,
-            Some(InputChord::key(K::ControlLeft)),
-            Some(InputChord::key(K::ControlRight)),
-        );
+        set(A::Descend, Some(InputChord::key(K::KeyC)), None);
         set(A::Primary, Some(InputChord::mouse(MouseButton::Left)), None);
         set(
             A::Secondary,
@@ -732,26 +729,29 @@ impl Controls {
             })
         })
     }
-    pub(crate) fn conflicts_with_vehicle(
-        &self,
-        graph: &ConstructionGraph,
-        action: GameAction,
-    ) -> bool {
-        let binding = self[action];
-        vehicle_chords(graph)
+    pub(crate) fn vehicle_conflicts(&self, graph: &ConstructionGraph) -> Vec<GameAction> {
+        let vehicle = vehicle_chords(graph);
+        GameAction::ALL
             .into_iter()
-            .any(|vehicle| binding.0.contains(&Some(vehicle)))
+            .filter(|action| {
+                self[*action]
+                    .0
+                    .into_iter()
+                    .flatten()
+                    .any(|binding| vehicle.contains(&binding))
+            })
+            .collect()
     }
 }
 
-fn vehicle_chords(graph: &ConstructionGraph) -> Vec<InputChord> {
+fn vehicle_chords(graph: &ConstructionGraph) -> HashSet<InputChord> {
     let mut chords = graph
         .drive_links()
         .flat_map(|(_, link)| link.program.states())
         .filter_map(|state| state.trigger())
         .filter_map(|trigger| symbol_key(trigger.key().symbol()))
         .map(InputChord::key)
-        .collect::<Vec<_>>();
+        .collect::<HashSet<_>>();
     for (controller, _) in graph.parts().filter(|(part, _)| graph.is_controller(*part)) {
         for kind in [EngineKind::Electric, EngineKind::Gas] {
             if let Ok(config) = graph.gearbox_config(controller, kind) {
@@ -1018,6 +1018,19 @@ mod tests {
             controls.label(GameAction::FreePlacementRangeDecrease),
             "Shift+Wheel Down"
         );
+    }
+
+    #[test]
+    fn descend_and_precision_placement_have_distinct_defaults() {
+        let controls = Controls::default();
+
+        assert_eq!(controls.label(GameAction::Descend), "C");
+        assert_eq!(
+            controls.binding(GameAction::PrecisionPlacement).0[0],
+            Some(InputChord::key(KeyCode::ControlLeft))
+        );
+        assert!(!controls.conflicts(GameAction::Descend));
+        assert!(!controls.conflicts(GameAction::PrecisionPlacement));
     }
 
     #[test]

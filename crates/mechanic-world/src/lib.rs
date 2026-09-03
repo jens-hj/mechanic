@@ -3,6 +3,7 @@
 //! Rendering remains owned by `mechanic-app`, and the GPU runtime consumes only
 //! [`TerrainCollisionChunk`]. This crate deliberately has no Bevy ECS dependency.
 
+mod construction_collision;
 mod coordinates;
 mod edits;
 mod generation;
@@ -12,6 +13,10 @@ mod query;
 mod streaming;
 mod transvoxel;
 
+pub use construction_collision::{
+    ConstructionBodyPose, ConstructionCollisionIndex, ConstructionCollisionMetrics,
+    ConstructionContact, KinematicCollisionScene,
+};
 pub use coordinates::{
     BRICK_EDGE_CELLS, BRICK_EDGE_METERS, BUILD_POSITION_TICK_METERS, BrickCoord, CoordinateError,
     FloatingOrigin, TERRAIN_CELL_METERS, WORLD_HALF_EXTENT_CELLS, WORLD_HALF_EXTENT_METERS,
@@ -37,8 +42,9 @@ pub use persistence::{
 };
 pub use query::{
     ActiveTerrainScene, FoundationRefresh, FoundationSample, FoundationSpatialIndex,
-    FoundationSupport, KinematicCapsule, KinematicCapsuleConfig, KinematicInput, TerrainDensity,
-    TerrainScene, TerrainSpatialIndex, WorldConstructionEditability, raycast_density,
+    FoundationSupport, KinematicCapsule, KinematicCapsuleConfig, KinematicContactReaction,
+    KinematicInput, KinematicSupport, KinematicTickResult, TerrainDensity, TerrainScene,
+    TerrainSpatialIndex, WorldConstructionEditability, raycast_density,
 };
 pub use streaming::{
     ActiveTerrainNode, TerrainBoundsCache, TerrainCoordinatorResult, TerrainFace,

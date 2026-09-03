@@ -88,7 +88,8 @@ cargo run -p mechanic-app
 - Press `F3` to toggle the pointer-transparent performance overlay. It reports
   FPS, average and p95 frame time, render CPU/GPU time when the adapter exposes
   it, actual simulation tick rate, physics CPU/GPU time, individual collision
-  stages, scene/contact counts, and solver failure flags.
+  stages, scene/contact counts, player collision query/refit time and candidate,
+  contact, and queued-reaction counts, and solver failure flags.
 - Option/Alt + left-drag to orbit (middle-drag also works), Shift + left-drag
   to move the orbital centre across the ground plane, and use the mouse wheel
   or trackpad scroll to zoom. Right-click removes one hovered cylinder. On a
@@ -224,7 +225,7 @@ cargo run -p mechanic-app
   block group to another covered part of the same ring. Every group attached
   directly to one socket becomes part of the same rigid rotor, even across a
   gap, and they all share that bearing's single rotational motion.
-  Right-click on the orange ring removes the bearing and all of its joint
+  Right-click on an unwired orange ring removes the bearing and all of its joint
   attachments without deleting their blocks; right-clicking through its hole
   reaches and removes the block behind it. The bearing remains supported by
   blocks under its ring surface, so a block in the hole can be removed
@@ -256,11 +257,13 @@ cargo run -p mechanic-app
   in either direction. Whatever the pointer is over that a wire can land on — a
   joint or a control block — is drawn slightly oversized through the
   construction, so the target is visible before the button goes down. The wire
-  follows the pointer and snaps to whichever end would complete it. Pressing and releasing without moving leaves the wire
+  follows the pointer and snaps to whichever end would complete it. Pressing and
+  releasing without moving leaves the wire
   armed, so click-then-click works too. Wiring aims at the whole joint, hole and
   pin included, rather than at the thin ring. Dragging an already-wired pair
-  again reverses its direction, and right-clicking a wired bearing removes the
-  wire. A bearing with no part attached through it yet cannot be wired — attach
+  again reverses its direction. Right-clicking a wired bearing changes its
+  default direction. A bearing with no
+  part attached through it yet cannot be wired — attach
   one first. Each
   bearing obeys at most one control block, while one control block can drive
   any number of bearings, each with its own program.
@@ -357,6 +360,14 @@ cargo run -p mechanic-app
   bodies limited so they cannot cross thin collision geometry between ticks.
   Tools remain selectable in either mode, but build tools act only while
   building and Hammer acts only while actively simulating.
+- In the World, the unseated player capsule collides with the exact compiled
+  construction collider set as well as terrain. Moving machinery can push or
+  carry the player; rotating supports carry the contact anchor and horizontal
+  facing without tilting the capsule, and jumping inherits support-point
+  velocity. Player reactions are immediate, while equal-and-opposite impulses
+  join the next GPU physics tick. Seating suspends walking collision and leaving
+  a Seat resynchronizes and depenetrates the capsule. Garage flight remains
+  intentionally collision-free.
 
 New blocks and cylinders automatically weld through positive-area material
 overlap on touching flat faces, including only the material retained by a
@@ -436,6 +447,7 @@ cargo run -p mechanic-bench --release -- --scenario four_bar
 cargo run -p mechanic-bench --release -- --scenario invalid_loop
 cargo run -p mechanic-bench --release -- --scenario dense_100k --seconds 30 --warmup 5
 cargo run -p mechanic-bench --release -- --scenario loops_100k --seconds 30 --warmup 5
+cargo run -p mechanic-bench --release -- --scenario player_collision --seconds 30 --warmup 5
 ```
 
 Benchmark output is machine-readable JSONL. The four-bar cases prove correction
@@ -443,6 +455,15 @@ and explicit rejection but do not unlock editor work. A scale gate only passes
 when the requested scene has its exact required body count, complete production
 kernel coverage, no dropped contacts or runtime failure, 60 TPS, and p95 tick
 cost at most 16.67 ms.
+
+`player_collision` is the CPU character-collision gate. It builds 131,072
+indexed static colliders with 32 local narrowphase candidates and a separate
+20,000-body moving scene. Its JSONL reports warmed player-query and dynamic-BVH
+refit p95, candidate/contact counts, and scratch-capacity stability. The M1 Pro
+gates are 0.25 ms for the complete query and 2.0 ms for the refit. A retained
+1,800-sample release run after 300 warm-up samples on 2026-09-02 measured
+0.009 ms and 1.089 ms respectively, with 32 candidates, 1,800 contacts, stable
+scratch capacity, and both gates passed.
 
 ## Capacity policy
 
