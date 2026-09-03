@@ -1641,8 +1641,8 @@ fn handle_dimension_link_interaction(
 
 /// Opens or closes the control-block panel with `E`.
 ///
-/// The panel targets the hovered control block, falling back to the selected
-/// one, so it opens both from the world and from whatever was last wired.
+/// The panel targets the hovered editor or simulation control block, falling
+/// back to the selected one, so moving vehicles remain programmable.
 #[allow(clippy::too_many_arguments)]
 fn handle_control_panel_shortcut(
     actions: Res<ButtonInput<GameAction>>,
@@ -1650,8 +1650,6 @@ fn handle_control_panel_shortcut(
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut panel: ResMut<ControlPanelState>,
-    space: Res<State<world::AppSpace>>,
-    simulation: Res<AppSimulation>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
     pause: Res<PauseMenuState>,
@@ -1676,6 +1674,12 @@ fn handle_control_panel_shortcut(
         .filter(|&part| graph.0.is_controller(part))
         .or_else(|| {
             state
+                .hovered_simulation
+                .map(|hit| hit.part)
+                .filter(|&part| graph.0.is_controller(part))
+        })
+        .or_else(|| {
+            state
                 .selected_controller
                 .filter(|&part| graph.0.is_controller(part))
         });
@@ -1683,12 +1687,6 @@ fn handle_control_panel_shortcut(
         state.feedback = Some("Point at a control block, or select one, then press E".to_owned());
         return;
     };
-    if *space.get() == world::AppSpace::World
-        && !editor_part_is_static_or_pending(&graph.0, &simulation, controller)
-    {
-        state.feedback = Some("Moving constructions cannot be programmed".to_owned());
-        return;
-    }
     state.selected_controller = Some(controller);
     panel.open(controller);
 }
@@ -2539,13 +2537,23 @@ fn advance_simulation(
             }
         }
     }
-    if bearings_visible && let Some(mut mesh) = meshes.get_mut(&visuals.bearing_mesh) {
-        *mesh = combined_simulation_bearing_mesh(
+    if bearings_visible {
+        let rings = combined_simulation_bearing_mesh(
             &published_graph,
             creation,
             &simulation.transforms,
             &state.placed_bearings,
         );
+        if joint_xray_is_visible(
+            selection.active_editor_tool(),
+            visible_bearing_count(&published_graph, &state.placed_bearings),
+        ) && let Some(mut mesh) = meshes.get_mut(&visuals.joint_xray_mesh)
+        {
+            *mesh = rings.clone();
+        }
+        if let Some(mut mesh) = meshes.get_mut(&visuals.bearing_mesh) {
+            *mesh = rings;
+        }
     }
     // The drive overlay follows the bodies while they move, so it is rebuilt
     // from the same published snapshot -- but only while it is on screen. A
@@ -5300,10 +5308,22 @@ fn update_hover(
     // dropped on a bearing without having to hit its thin ring.
     let wiring = tool == Tool::Connector;
     let bearing_hit = if wiring {
-        raycast_placed_bearing_discs(&graph.0, &state.placed_bearings, ray.origin, ray_direction)
-            .or_else(|| {
-                raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction)
-            })
+        raycast_live_placed_bearing_discs(
+            &graph.0,
+            &simulation,
+            &state.placed_bearings,
+            ray.origin,
+            ray_direction,
+        )
+        .or_else(|| {
+            raycast_live_placed_bearings(
+                &graph.0,
+                &simulation,
+                &state.placed_bearings,
+                ray.origin,
+                ray_direction,
+            )
+        })
     } else if matches!(tool, Tool::Block | Tool::Cylinder) || actions.pressed(GameAction::Secondary)
     {
         raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction)
@@ -5341,7 +5361,7 @@ fn update_hover(
             state.free_placement.range,
             actions.pressed(GameAction::Secondary),
         );
-        clear_hover(&mut state);
+        clear_editor_hover(&mut state);
         state.free_placement_point = free_point;
         refresh_tool_preview_with_cylinder(
             &graph.0,
@@ -5858,6 +5878,15 @@ fn clear_hover(state: &mut EditorState) {
     state.preview_error = None;
     state.preview_warning = None;
     state.smart_guides.clear();
+}
+
+/// Clears editor-only targeting without discarding a live simulation hit.
+fn clear_editor_hover(state: &mut EditorState) {
+    let hovered_simulation = state.hovered_simulation;
+    let world_edit_blocker = state.world_edit_blocker;
+    clear_hover(state);
+    state.hovered_simulation = hovered_simulation;
+    state.world_edit_blocker = world_edit_blocker;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -8623,6 +8652,7 @@ fn handle_build_actions(
         && (actions.just_pressed(GameAction::Primary)
             || actions.just_pressed(GameAction::Secondary))
         && !deleting_moving_dimension_link
+        && selection.active_editor_tool() != Some(Tool::Connector)
     {
         state.feedback = Some(
             "Moving constructions cannot be edited; anchor them before changing parts".to_owned(),
@@ -9526,9 +9556,8 @@ fn wire_end_under_cursor(graph: &ConstructionGraph, state: &EditorState) -> Opti
     if let Some(index) = state.hovered_bearing {
         return Some(WireEnd::Bearing(index));
     }
-    let FaceOwner::Part(part) = state.hovered?.face.owner else {
-        return None;
-    };
+    let part =
+        hovered_part(state.hovered).or_else(|| state.hovered_simulation.map(|hit| hit.part))?;
     match graph.part(part) {
         Some(PartSpec::Controller(_)) => Some(WireEnd::Controller(part)),
         Some(PartSpec::Input(_)) => Some(WireEnd::Input(part)),
@@ -9537,23 +9566,39 @@ fn wire_end_under_cursor(graph: &ConstructionGraph, state: &EditorState) -> Opti
     }
 }
 
-fn wire_end_position(graph: &ConstructionGraph, state: &EditorState, end: WireEnd) -> Option<Vec3> {
+fn wire_end_position(
+    graph: &ConstructionGraph,
+    state: &EditorState,
+    simulation: &AppSimulation,
+    end: WireEnd,
+) -> Option<Vec3> {
     match end {
         WireEnd::Controller(part) | WireEnd::Input(part) | WireEnd::Seat(part) => {
-            Some(graph.part(part)?.pose().translation())
+            if simulation.is_running() {
+                simulation.live_part_pose(graph, part).map(|pose| pose.0)
+            } else {
+                Some(graph.part(part)?.pose().translation())
+            }
         }
-        WireEnd::Bearing(index) => Some(state.placed_bearings.get(index)?.anchor),
+        WireEnd::Bearing(index) => {
+            live_placed_bearing_pose(graph, simulation, *state.placed_bearings.get(index)?)
+                .map(|pose| pose.0)
+        }
     }
 }
 
 /// Both ends of the wire being dragged: where it started, and either the joint
 /// it would land on or the pointer itself.
-fn wire_drag_endpoints(graph: &ConstructionGraph, state: &EditorState) -> Option<(Vec3, Vec3)> {
+fn wire_drag_endpoints(
+    graph: &ConstructionGraph,
+    state: &EditorState,
+    simulation: &AppSimulation,
+) -> Option<(Vec3, Vec3)> {
     let drag = state.wire_drag?;
-    let from = wire_end_position(graph, state, drag.from)?;
+    let from = wire_end_position(graph, state, simulation, drag.from)?;
     let target = wire_end_under_cursor(graph, state)
         .filter(|end| drag.from.paired_with(*end).is_some())
-        .and_then(|end| wire_end_position(graph, state, end));
+        .and_then(|end| wire_end_position(graph, state, simulation, end));
     if let Some(target) = target {
         return Some((from, target));
     }
@@ -10511,6 +10556,35 @@ fn raycast_placed_bearings(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<(usize, f32)> {
+    raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
+        Some((
+            bearing.anchor,
+            face_geometry_from_ref(bearing.source, Some(graph)).normal,
+        ))
+    })
+}
+
+fn raycast_live_placed_bearings(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    bearings: &[PlacedBearing],
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<(usize, f32)> {
+    if !simulation.is_running() {
+        return raycast_placed_bearings(graph, bearings, origin, direction);
+    }
+    raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
+        live_placed_bearing_pose(graph, simulation, bearing)
+    })
+}
+
+fn raycast_placed_bearings_with_pose(
+    bearings: &[PlacedBearing],
+    origin: Vec3,
+    direction: Vec3,
+    mut pose: impl FnMut(PlacedBearing) -> Option<(Vec3, Vec3)>,
+) -> Option<(usize, f32)> {
     if !origin.is_finite() || !direction.is_finite() || direction.length_squared() < f32::EPSILON {
         return None;
     }
@@ -10518,15 +10592,10 @@ fn raycast_placed_bearings(
     bearings
         .iter()
         .enumerate()
-        .filter_map(|(index, bearing)| {
-            let normal = face_geometry_from_ref(bearing.source, Some(graph)).normal;
-            let distance = raycast_bearing_annulus(
-                origin,
-                direction,
-                bearing.anchor,
-                normal,
-                bearing.dimensions,
-            )?;
+        .filter_map(|(index, &bearing)| {
+            let (anchor, axis) = pose(bearing)?;
+            let distance =
+                raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)?;
             Some((index, distance))
         })
         .min_by(|left, right| left.1.total_cmp(&right.1))
@@ -10541,6 +10610,35 @@ fn raycast_placed_bearing_discs(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<(usize, f32)> {
+    raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
+        Some((
+            bearing.anchor,
+            face_geometry_from_ref(bearing.source, Some(graph)).normal,
+        ))
+    })
+}
+
+fn raycast_live_placed_bearing_discs(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    bearings: &[PlacedBearing],
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<(usize, f32)> {
+    if !simulation.is_running() {
+        return raycast_placed_bearing_discs(graph, bearings, origin, direction);
+    }
+    raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
+        live_placed_bearing_pose(graph, simulation, bearing)
+    })
+}
+
+fn raycast_placed_bearing_discs_with_pose(
+    bearings: &[PlacedBearing],
+    origin: Vec3,
+    direction: Vec3,
+    mut pose: impl FnMut(PlacedBearing) -> Option<(Vec3, Vec3)>,
+) -> Option<(usize, f32)> {
     if !origin.is_finite() || !direction.is_finite() || direction.length_squared() < f32::EPSILON {
         return None;
     }
@@ -10548,19 +10646,18 @@ fn raycast_placed_bearing_discs(
     bearings
         .iter()
         .enumerate()
-        .filter_map(|(index, bearing)| {
-            let axis = face_geometry_from_ref(bearing.source, Some(graph))
-                .normal
-                .normalize();
+        .filter_map(|(index, &bearing)| {
+            let (anchor, axis) = pose(bearing)?;
+            let axis = axis.normalize();
             let slope = direction.dot(axis);
             if slope.abs() < 1.0e-6 {
                 return None;
             }
-            let distance = (bearing.anchor - origin).dot(axis) / slope;
+            let distance = (anchor - origin).dot(axis) / slope;
             if distance <= 0.0 {
                 return None;
             }
-            let radius = (origin + direction * distance - bearing.anchor).length();
+            let radius = (origin + direction * distance - anchor).length();
             (radius <= bearing.dimensions.outer_diameter() * 0.5).then_some((index, distance))
         })
         .min_by(|left, right| left.1.total_cmp(&right.1))
@@ -10669,7 +10766,7 @@ fn sync_visual_meshes(
         ),
     >,
 ) {
-    if !state.construction_mesh_dirty {
+    if !should_sync_editor_visual_meshes(state.construction_mesh_dirty, simulation.is_running()) {
         return;
     }
     let edit_delta = ConstructionEditDelta::between(&state.rendered_graph, &graph.0);
@@ -10778,7 +10875,6 @@ fn sync_visual_meshes(
         let rings = combined_bearing_mesh(&graph.0, &state.placed_bearings);
         if joint_xray_is_visible(
             selection.active_editor_tool(),
-            simulation.is_running(),
             visible_bearing_count(&graph.0, &state.placed_bearings),
         ) && let Some(mut mesh) = meshes.get_mut(&visuals.joint_xray_mesh)
         {
@@ -10798,16 +10894,14 @@ fn sync_visual_meshes(
     state.construction_mesh_dirty = false;
 }
 
+const fn should_sync_editor_visual_meshes(dirty: bool, simulation_running: bool) -> bool {
+    dirty && !simulation_running
+}
+
 /// The bearing x-ray is also shown while wiring, so a drive wire can be traced
 /// back through the construction to the block that owns it.
-fn joint_xray_is_visible(
-    tool: impl Into<Option<Tool>>,
-    simulating: bool,
-    bearing_count: usize,
-) -> bool {
-    matches!(tool.into(), Some(Tool::Controller | Tool::Connector))
-        && !simulating
-        && bearing_count > 0
+fn joint_xray_is_visible(tool: impl Into<Option<Tool>>, bearing_count: usize) -> bool {
+    matches!(tool.into(), Some(Tool::Controller | Tool::Connector)) && bearing_count > 0
 }
 
 /// The drive overlay additionally stays up while simulating, so the joint a key
@@ -10875,7 +10969,6 @@ fn update_joint_xray(
         drive_xray_is_visible(selection.active_editor_tool(), control_link_count(&graph.0));
     let joint_visible = joint_xray_is_visible(
         selection.active_editor_tool(),
-        simulation.is_running(),
         visible_bearing_count(&graph.0, &state.placed_bearings),
     );
     // An overlay's mesh is left alone while it is hidden, so it has to be
@@ -12832,6 +12925,25 @@ fn simulation_placed_bearing_pose(
     ))
 }
 
+fn live_placed_bearing_pose(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    bearing: PlacedBearing,
+) -> Option<(Vec3, Vec3)> {
+    if simulation.is_running() {
+        return simulation_placed_bearing_pose(
+            &simulation.published_graph,
+            simulation.creation.as_ref()?,
+            &simulation.transforms,
+            bearing,
+        );
+    }
+    Some((
+        bearing.anchor,
+        face_geometry_from_ref(bearing.source, Some(graph)).normal,
+    ))
+}
+
 fn raycast_simulation_bearings(
     graph: &ConstructionGraph,
     creation: &CompiledCreation,
@@ -13803,7 +13915,7 @@ fn update_wire_hover_preview(
     graph: Res<EditorGraph>,
     state: Res<EditorState>,
     selection: Res<SelectedTool>,
-    _simulation: Res<AppSimulation>,
+    simulation: Res<AppSimulation>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: Local<Option<WireEnd>>,
@@ -13815,20 +13927,29 @@ fn update_wire_hover_preview(
         None
     };
     let placement = match hovered {
-        Some(WireEnd::Bearing(index)) => state.placed_bearings.get(index).map(|socket| {
-            let normal = face_geometry_from_ref(socket.source, Some(&graph.0)).normal;
-            Transform::from_translation(socket.anchor)
-                .with_rotation(Quat::from_rotation_arc(Vec3::Y, normal))
-                .with_scale(Vec3::splat(WIRE_HOVER_BEARING_SCALE))
+        Some(WireEnd::Bearing(index)) => state.placed_bearings.get(index).and_then(|&socket| {
+            let (anchor, axis) = live_placed_bearing_pose(&graph.0, &simulation, socket)?;
+            Some(
+                Transform::from_translation(anchor)
+                    .with_rotation(Quat::from_rotation_arc(Vec3::Y, axis))
+                    .with_scale(Vec3::splat(WIRE_HOVER_BEARING_SCALE)),
+            )
         }),
         Some(WireEnd::Controller(part) | WireEnd::Input(part) | WireEnd::Seat(part)) => graph
             .0
             .part(part)
             .and_then(|spec| spec.as_cuboid())
-            .map(|block| {
-                Transform::from_translation(block.pose.translation())
-                    .with_rotation(block.pose.rotation.quaternion())
-                    .with_scale(block.size_meters() * WIRE_HOVER_BLOCK_SCALE)
+            .and_then(|block| {
+                let (translation, rotation) = if simulation.is_running() {
+                    simulation.live_part_pose(&graph.0, part)?
+                } else {
+                    (block.pose.translation(), block.pose.rotation.quaternion())
+                };
+                Some(
+                    Transform::from_translation(translation)
+                        .with_rotation(rotation)
+                        .with_scale(block.size_meters() * WIRE_HOVER_BLOCK_SCALE),
+                )
             }),
         None => None,
     };
@@ -13859,6 +13980,7 @@ fn update_wire_drag_preview(
     graph: Res<EditorGraph>,
     actions: Res<ButtonInput<GameAction>>,
     mut state: ResMut<EditorState>,
+    simulation: Res<AppSimulation>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: Local<bool>,
@@ -13872,7 +13994,7 @@ fn update_wire_drag_preview(
     {
         state.wire_drag = None;
     }
-    let endpoints = wire_drag_endpoints(&graph.0, &state);
+    let endpoints = wire_drag_endpoints(&graph.0, &state, &simulation);
     if endpoints.is_none() && !*drawn {
         return;
     }
@@ -14986,9 +15108,16 @@ mod rendering_tests {
         combined_simulation_mesh, configure_authored_texture, configure_bearing_texture,
         configure_repeating_texture, construction_tint_mask_path, delete_preview_mesh,
         drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
-        simulation_material_is_present, single_authored_part_mesh, single_bearing_mesh,
-        single_cylinder_mesh,
+        should_sync_editor_visual_meshes, simulation_material_is_present,
+        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
     };
+
+    #[test]
+    fn tool_changes_do_not_rebuild_editor_meshes_over_a_running_simulation() {
+        assert!(!should_sync_editor_visual_meshes(true, true));
+        assert!(should_sync_editor_visual_meshes(true, false));
+        assert!(!should_sync_editor_visual_meshes(false, false));
+    }
 
     #[test]
     fn a_4096_block_sheet_renders_as_one_globally_mapped_cuboid() {
@@ -16552,12 +16681,11 @@ mod rendering_tests {
     }
 
     #[test]
-    fn joint_xray_is_build_only_and_requires_a_bearing() {
-        assert!(joint_xray_is_visible(Tool::Controller, false, 1));
-        assert!(joint_xray_is_visible(Tool::Connector, false, 1));
-        assert!(!joint_xray_is_visible(Tool::Controller, true, 1));
-        assert!(!joint_xray_is_visible(Tool::Controller, false, 0));
-        assert!(!joint_xray_is_visible(Tool::Block, false, 1));
+    fn joint_xray_requires_a_control_tool_and_bearing() {
+        assert!(joint_xray_is_visible(Tool::Controller, 1));
+        assert!(joint_xray_is_visible(Tool::Connector, 1));
+        assert!(!joint_xray_is_visible(Tool::Controller, 0));
+        assert!(!joint_xray_is_visible(Tool::Block, 1));
     }
 
     fn hinged_pair_with_control_block(reversed: bool) -> ConstructionGraph {
@@ -16928,11 +17056,7 @@ mod rendering_tests {
     #[test]
     fn drive_overlay_shows_for_the_control_block_tools() {
         for tool in [Tool::Controller, Tool::Connector] {
-            assert!(joint_xray_is_visible(tool, false, 1));
-            // Unlike the bearing rings, the drive overlay does not depend on
-            // the mode: it stays up while the simulation runs so a driven joint
-            // can be watched moving.
-            assert!(!joint_xray_is_visible(tool, true, 1));
+            assert!(joint_xray_is_visible(tool, 1));
             assert!(drive_xray_is_visible(tool, 1));
             assert!(!drive_xray_is_visible(tool, 0));
         }
@@ -16954,7 +17078,7 @@ mod rendering_tests {
 
 #[cfg(test)]
 mod interaction_tests {
-    use bevy::prelude::{App, ButtonInput, IVec3, KeyCode, Quat, Update, Vec2, Vec3};
+    use bevy::prelude::{App, ButtonInput, IVec3, KeyCode, Quat, State, Update, Vec2, Vec3};
     use mechanic_core::{
         BearingDimensions, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
@@ -16974,16 +17098,18 @@ mod interaction_tests {
         SimulationHit, SurfaceHit, Tool, WorldEditBlocker, active_drag_plane,
         adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
         bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_bounds,
-        candidate_from_hit, choose_region, closest_axis_parameter, connect_control_link,
-        connect_drive_wire, cycle_orientation, delete_box_parts, hammer_delivery,
-        hammer_impulse_magnitude, hammer_point_travel, handle_block_actions, handle_build_actions,
-        handle_chroma_actions, handle_feature_shape_actions, handle_tool_change,
-        pipe_pointer_delta, pipe_turn_direction, raycast_construction,
-        raycast_placed_bearing_discs, raycast_placed_bearings, raycast_simulation,
-        refresh_block_drag, refresh_region_drag, refresh_tool_preview,
-        requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
-        reverse_drive_wires, rigid_body_parts, stage_part_deletion_preserving_bearings,
+        candidate_from_hit, choose_region, clear_editor_hover, closest_axis_parameter,
+        connect_control_link, connect_drive_wire, cycle_orientation, delete_box_parts,
+        hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
+        handle_build_actions, handle_chroma_actions, handle_feature_shape_actions,
+        handle_tool_change, pipe_pointer_delta, pipe_turn_direction, raycast_construction,
+        raycast_placed_bearing_discs, raycast_placed_bearing_discs_with_pose,
+        raycast_placed_bearings, raycast_simulation, refresh_block_drag, refresh_region_drag,
+        refresh_tool_preview, requested_bearing_dimension_adjustment,
+        requested_cylinder_dimension_adjustment, reverse_drive_wires, rigid_body_parts,
+        simulation_placed_bearing_pose, stage_part_deletion_preserving_bearings,
         tangent_feature_chain, tool_status_line, weld_connected_shape_owners, wire_drag_step,
+        wire_end_under_cursor,
     };
     use super::{RegionDrag, commit_region_drag, region_area};
     use crate::builder::{SmartGuide, block_sheet_specs};
@@ -17071,6 +17197,90 @@ mod interaction_tests {
         assert_eq!(
             app.world().resource::<EditorState>().feedback.as_deref(),
             Some("Deleted Dimension Link and incident connections")
+        );
+    }
+
+    #[test]
+    fn connector_can_begin_wiring_a_moving_bearing() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let bearing = PlacedBearing {
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+            dimensions: BearingDimensions::default(),
+        };
+        let state = EditorState {
+            hovered_bearing: Some(0),
+            placed_bearings: vec![bearing],
+            world_edit_blocker: Some(WorldEditBlocker::MovingConstruction),
+            ..Default::default()
+        };
+        let mut actions = ButtonInput::default();
+        actions.press(GameAction::Primary);
+        let mut app = App::new();
+        app.insert_resource(actions)
+            .insert_resource(EditorGraph(graph))
+            .insert_resource(state)
+            .insert_resource(EditorHistory::default())
+            .insert_resource(crate::chroma::ChromaBrush::default())
+            .insert_resource(AppSimulation::default())
+            .insert_resource(SelectedTool::from_editor_tool(Tool::Connector))
+            .insert_resource(BearingToolSettings::default())
+            .insert_resource(CylinderToolSettings::default())
+            .insert_resource(crate::ui::UiInput::default())
+            .insert_resource(MaterialWheelState::default())
+            .insert_resource(PlayerState {
+                input_captured: true,
+                ..Default::default()
+            })
+            .add_systems(Update, handle_build_actions);
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<EditorState>().wire_drag,
+            Some(WireDrag {
+                from: WireEnd::Bearing(0),
+                armed: false,
+            })
+        );
+    }
+
+    #[test]
+    fn connector_recognizes_a_moving_control_block() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let state = EditorState {
+            hovered_simulation: Some(SimulationHit {
+                part: controller,
+                body_index: 0,
+                distance: 1.0,
+                point: Vec3::ZERO,
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            wire_end_under_cursor(&graph, &state),
+            Some(WireEnd::Controller(controller))
         );
     }
 
@@ -18251,6 +18461,60 @@ mod interaction_tests {
     }
 
     #[test]
+    fn connector_pick_follows_a_simulated_bearing() {
+        let mut graph = ConstructionGraph::new();
+        let support = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(support)).unwrap() else {
+            unreachable!()
+        };
+        let bearing = PlacedBearing {
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+            dimensions: BearingDimensions::default(),
+        };
+        let creation = graph.compile().unwrap();
+        let compound = creation
+            .part_to_compound
+            .iter()
+            .find_map(|&(candidate, compound)| (candidate == part).then_some(compound))
+            .unwrap();
+        let translation = Vec3::new(4.0, 0.0, 0.0);
+        let mut transforms = creation
+            .compounds
+            .iter()
+            .map(|compound| GpuTransform {
+                position: compound.root_translation.extend(0.0).to_array(),
+                rotation: compound.root_rotation.to_array(),
+            })
+            .collect::<Vec<_>>();
+        transforms[compound as usize].position =
+            (creation.compounds[compound as usize].root_translation + translation)
+                .extend(0.0)
+                .to_array();
+        let ray_origin = bearing.anchor + translation + Vec3::Y * 3.0;
+
+        assert!(
+            raycast_placed_bearing_discs(&graph, &[bearing], ray_origin, Vec3::NEG_Y).is_none(),
+            "the authored bearing no longer sits under the pointer"
+        );
+        assert_eq!(
+            raycast_placed_bearing_discs_with_pose(
+                &[bearing],
+                ray_origin,
+                Vec3::NEG_Y,
+                |bearing| simulation_placed_bearing_pose(&graph, &creation, &transforms, bearing,),
+            )
+            .map(|hit| hit.0),
+            Some(0),
+            "the connector should pick the bearing at its simulated pose"
+        );
+    }
+
+    #[test]
     fn placed_bearing_is_picked_before_support_and_attaches_on_release() {
         let mut graph = ConstructionGraph::new();
         let support = CuboidSpec::new(
@@ -19184,6 +19448,63 @@ mod interaction_tests {
 
         panel.close();
         assert!(!panel.is_open());
+    }
+
+    #[test]
+    fn the_panel_opens_on_a_moving_simulation_control_block() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let creation = graph.compile().unwrap();
+        let mut actions = ButtonInput::default();
+        actions.press(GameAction::Interact);
+        let mut state = super::EditorState {
+            hovered_simulation: Some(SimulationHit {
+                part: controller,
+                body_index: 0,
+                distance: 1.0,
+                point: Vec3::ZERO,
+            }),
+            world_edit_blocker: Some(WorldEditBlocker::MovingConstruction),
+            ..Default::default()
+        };
+        // `update_hover` clears ordinary editor targeting when the live hit is
+        // nearer than the authored surface. The live target must survive.
+        clear_editor_hover(&mut state);
+        let mut app = App::new();
+        app.insert_resource(actions)
+            .insert_resource(crate::creation_menu::CreationMenuState::default())
+            .insert_resource(super::EditorGraph(graph.clone()))
+            .insert_resource(state)
+            .insert_resource(crate::control_panel::ControlPanelState::default())
+            .insert_resource(State::new(crate::world::AppSpace::World))
+            .insert_resource(super::AppSimulation {
+                creation: Some(creation),
+                published_graph: graph,
+                ..Default::default()
+            })
+            .insert_resource(PlayerState {
+                input_captured: true,
+                ..Default::default()
+            })
+            .insert_resource(MaterialWheelState::default())
+            .insert_resource(crate::pause_menu::PauseMenuState::default())
+            .add_systems(Update, super::handle_control_panel_shortcut);
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .resource::<crate::control_panel::ControlPanelState>()
+                .controller(),
+            Some(controller)
+        );
     }
 
     #[test]
