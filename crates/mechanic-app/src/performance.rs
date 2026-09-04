@@ -27,6 +27,10 @@ pub(crate) struct PerformanceSnapshot {
     pub(crate) simulation_ticks_per_second: Option<f64>,
     pub(crate) tick_backlog: Option<u64>,
     pub(crate) physics_cpu_ms: Option<f64>,
+    pub(crate) ticks_submitted_per_frame: Option<u32>,
+    pub(crate) in_flight_tick_count: Option<u32>,
+    pub(crate) submission_to_readback_ms: Option<f64>,
+    pub(crate) visual_update_ms: Option<f64>,
     pub(crate) physics_gpu_ms: Option<f64>,
     pub(crate) kernel_timings: Option<GpuKernelTimings>,
     pub(crate) body_count: Option<u32>,
@@ -34,9 +38,12 @@ pub(crate) struct PerformanceSnapshot {
     pub(crate) pair_count: Option<u32>,
     pub(crate) contact_count: Option<u32>,
     pub(crate) active_contact_count: Option<u32>,
+    pub(crate) planned_solver_sweeps: Option<u32>,
+    pub(crate) executed_solver_sweeps: Option<u32>,
     pub(crate) error_flags: Option<u32>,
     pub(crate) terrain_stage_ms: Option<f64>,
     pub(crate) terrain_selection_ms: Option<f64>,
+    pub(crate) terrain_selection_count: Option<u64>,
     pub(crate) terrain_sampling_ms: Option<f64>,
     pub(crate) terrain_polygonization_ms: Option<f64>,
     pub(crate) terrain_seams_ms: Option<f64>,
@@ -151,7 +158,7 @@ pub(crate) fn sample(
     metrics.note_frame(&diagnostics);
     if !metrics.open {
         metrics.refresh_elapsed = Duration::ZERO;
-        metrics.last_tick_index = simulation.next_tick;
+        metrics.last_tick_index = simulation.completed_tick;
         return;
     }
 
@@ -161,12 +168,14 @@ pub(crate) fn sample(
     }
 
     let elapsed_seconds = metrics.refresh_elapsed.as_secs_f64();
-    let completed_ticks = simulation.next_tick.saturating_sub(metrics.last_tick_index);
+    let completed_ticks = simulation
+        .completed_tick
+        .saturating_sub(metrics.last_tick_index);
     let completed_ticks = u32::try_from(completed_ticks).unwrap_or(u32::MAX);
     let ticks_per_second =
         (elapsed_seconds > 0.0).then(|| f64::from(completed_ticks) / elapsed_seconds);
     metrics.refresh_elapsed = Duration::ZERO;
-    metrics.last_tick_index = simulation.next_tick;
+    metrics.last_tick_index = simulation.completed_tick;
     metrics.force_refresh = false;
 
     let running = simulation.is_running();
@@ -191,6 +200,12 @@ pub(crate) fn sample(
         simulation_ticks_per_second: running.then_some(ticks_per_second).flatten(),
         tick_backlog: running.then_some(simulation.tick_backlog),
         physics_cpu_ms: running.then_some(simulation.physics_cpu_ms).flatten(),
+        ticks_submitted_per_frame: running.then_some(simulation.ticks_submitted_per_frame),
+        in_flight_tick_count: running.then_some(simulation.in_flight_tick_count),
+        submission_to_readback_ms: running
+            .then_some(simulation.submission_to_readback_ms)
+            .flatten(),
+        visual_update_ms: running.then_some(simulation.visual_update_ms).flatten(),
         physics_gpu_ms: readback.and_then(|value| value.gpu_tick_ms),
         kernel_timings: readback.and_then(|value| value.kernel_timings),
         body_count: creation.map(|value| capped_u32(value.compounds.len())),
@@ -198,9 +213,12 @@ pub(crate) fn sample(
         pair_count: readback.map(|value| value.pair_count),
         contact_count: readback.map(|value| value.contact_count),
         active_contact_count: readback.map(|value| value.active_contact_count),
+        planned_solver_sweeps: readback.map(|value| value.planned_solver_sweeps),
+        executed_solver_sweeps: readback.map(|value| value.executed_solver_sweeps),
         error_flags: readback.map(|value| value.error_flags),
         terrain_stage_ms: in_world.then_some(world_diagnostics.terrain_stage_ms),
         terrain_selection_ms: in_world.then_some(world_diagnostics.selection_ms),
+        terrain_selection_count: in_world.then_some(world_diagnostics.selection_count),
         terrain_sampling_ms: in_world.then_some(world_diagnostics.column_sampling_ms),
         terrain_polygonization_ms: in_world.then_some(world_diagnostics.polygonization_ms),
         terrain_seams_ms: in_world.then_some(world_diagnostics.transitions_caps_ms),

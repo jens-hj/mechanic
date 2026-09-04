@@ -62,10 +62,10 @@ use builder::{
     bearing_anchor_from_hit_with_grid, bearing_attachment_candidate, bearing_overlaps_candidate,
     bearing_overlaps_cylinder_candidate, bearing_support_face, bearing_support_face_excluding,
     begin_weld, block_box_bounds, block_box_specs, block_span_from_rays,
-    candidate_from_hit_with_grid_and_supports, cylinder_candidate_from_hit_with_grid,
-    face_geometry_from_ref, free_cuboid_candidate, free_cylinder_candidate,
-    oriented_cuboid_candidate_from_hit_with_grid, part_world_bounds, pipe_run_pieces,
-    raycast_construction, raycast_construction_for_annulus,
+    candidate_from_hit_with_grid_and_supports, center_cylinder_candidate_on_bearing,
+    cylinder_candidate_from_hit_with_grid, face_geometry_from_ref, free_cuboid_candidate,
+    free_cylinder_candidate, oriented_cuboid_candidate_from_hit_with_grid, part_world_bounds,
+    pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
     raycast_construction_for_annulus_with_ground, raycast_construction_with_ground,
     raycast_oriented_cuboid, raycast_placement_plane_point, rigid_body_parts, smart_snap_anchor,
     smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_cuboid_candidate_with_supports,
@@ -337,10 +337,23 @@ struct AppSimulation {
     static_mesh_dirty: bool,
     render_dirty: bool,
     physics_cpu_ms: Option<f64>,
+    ticks_submitted_per_frame: u32,
+    in_flight_tick_count: u32,
+    submission_to_readback_ms: Option<f64>,
+    visual_update_ms: Option<f64>,
     last_tick_readback: Option<GpuTickReadback>,
     failure: Option<String>,
     world_revision: Option<(u64, u64)>,
 }
+
+#[derive(Resource, Default)]
+struct SimulationVisualCache {
+    revision: Option<WorldPhysicsRevision>,
+    roots: Vec<Entity>,
+}
+
+#[derive(Component)]
+struct SimulationBodyVisualRoot(u32);
 
 type WorldPhysicsRevision = (u64, u64);
 
@@ -688,12 +701,22 @@ struct PipeDrag {
     material: ConstructionMaterial,
     appearance: MaterialAppearance,
     mode: PipeEditMode,
+    /// Initial bearing attachments drag laterally across the bearing plane.
+    /// Rotating the edit mode or adding a bend ends this one-shot placement mode.
+    bearing_offset: Option<BearingOffsetDrag>,
     choosing_direction: bool,
     press: PointerSample,
     anchor_endpoint: Vec3,
     anchor_dimensions: CylinderDimensions,
     pieces: Vec<PipeRunPiece>,
     error: Option<PlacementError>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BearingOffsetDrag {
+    start: Vec3,
+    endpoint: Vec3,
+    normal: Vec3,
 }
 
 #[derive(Clone, Debug)]
@@ -1232,6 +1255,10 @@ fn replacement_simulation(
         static_mesh_dirty: true,
         render_dirty: true,
         physics_cpu_ms: None,
+        ticks_submitted_per_frame: 0,
+        in_flight_tick_count: 0,
+        submission_to_readback_ms: None,
+        visual_update_ms: None,
         last_tick_readback: None,
         failure: None,
         world_revision: Some(revision),
@@ -2238,6 +2265,7 @@ fn poll_simulation_readbacks(
                 }
                 simulation.completed_tick = completed.tick_index;
                 simulation.last_tick_readback = Some(completed.diagnostics);
+                simulation.submission_to_readback_ms = Some(completed.submission_to_readback_ms);
                 if visual_snapshot_is_due(simulation.snapshot_tick, completed.tick_index) {
                     simulation.previous_transforms =
                         core::mem::replace(&mut simulation.transforms, completed.transforms);
@@ -2310,6 +2338,175 @@ fn terrain_ground_planes(
     clippy::too_many_lines,
     clippy::type_complexity
 )]
+fn sync_simulation_visual_cache(
+    mut commands: Commands,
+    mut simulation: ResMut<AppSimulation>,
+    mut cache: ResMut<SimulationVisualCache>,
+    visuals: Res<EditorVisuals>,
+    state: Res<EditorState>,
+    world_runtime: Res<world::WorldRuntime>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut roots: Query<(&SimulationBodyVisualRoot, &mut Transform)>,
+    mut legacy_visuals: Query<&mut Visibility, Or<(With<AuthoredPartVisual>, With<BearingVisual>)>>,
+) {
+    let Some(revision) = simulation.world_revision else {
+        for entity in cache.roots.drain(..) {
+            commands.entity(entity).despawn();
+        }
+        cache.revision = None;
+        return;
+    };
+    let Some(creation) = simulation.creation.as_ref() else {
+        return;
+    };
+
+    let started = std::time::Instant::now();
+    let rebuild = cache.revision != Some(revision);
+    if rebuild {
+        for entity in cache.roots.drain(..) {
+            commands.entity(entity).despawn();
+        }
+        let graph = &simulation.published_graph;
+        let active_dimension_link = world_runtime.active_dimension_link();
+        let local_transforms = vec![
+            GpuTransform {
+                position: [0.0, 0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            };
+            creation.compounds.len()
+        ];
+        for (body_index, compound) in creation.compounds.iter().enumerate() {
+            if compound.is_static {
+                continue;
+            }
+            let body = u32::try_from(body_index).unwrap_or(u32::MAX);
+            let ordinary = ConstructionMaterial::ALL
+                .into_iter()
+                .filter(|&material| {
+                    simulation_material_is_present_for_compound(graph, creation, body, material)
+                })
+                .map(|material| {
+                    let mesh = local_simulation_material_mesh(
+                        graph,
+                        creation,
+                        &local_transforms,
+                        body,
+                        material,
+                    );
+                    (
+                        meshes.add(mesh),
+                        visuals.construction_materials[material_index(material)].clone(),
+                        material,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let authored = AuthoredPart::ALL
+                .into_iter()
+                .filter(|&appearance| {
+                    creation.part_to_compound.iter().any(|&(part, compound)| {
+                        compound == body
+                            && graph.part(part).is_some_and(|spec| {
+                                appearance.matches(graph, part, *spec, active_dimension_link)
+                            })
+                    })
+                })
+                .map(|appearance| {
+                    (
+                        meshes.add(local_simulation_authored_mesh(
+                            graph,
+                            creation,
+                            &local_transforms,
+                            body,
+                            appearance,
+                            active_dimension_link,
+                        )),
+                        visuals.authored_materials[appearance.index()].clone(),
+                        appearance,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let bearing =
+                simulation_body_has_bearing(graph, creation, body, &state.placed_bearings).then(
+                    || {
+                        meshes.add(local_simulation_bearing_mesh(
+                            graph,
+                            creation,
+                            &local_transforms,
+                            body,
+                            &state.placed_bearings,
+                        ))
+                    },
+                );
+            let transform = simulation
+                .transforms
+                .get(body_index)
+                .copied()
+                .map_or(Transform::IDENTITY, transform_from_gpu);
+            let root = commands
+                .spawn((
+                    Name::new(format!("Simulation body {body}")),
+                    transform,
+                    Visibility::Visible,
+                    SimulationBodyVisualRoot(body),
+                ))
+                .with_children(|root| {
+                    for (mesh, material, kind) in ordinary {
+                        root.spawn((
+                            Name::new(format!("{} local simulation mesh", kind.label())),
+                            Mesh3d(mesh),
+                            MeshMaterial3d(material),
+                            NoFrustumCulling,
+                        ));
+                    }
+                    for (mesh, material, appearance) in authored {
+                        root.spawn((
+                            Name::new(format!("{appearance:?} local simulation mesh")),
+                            Mesh3d(mesh),
+                            MeshMaterial3d(material),
+                            NoFrustumCulling,
+                        ));
+                    }
+                    if let Some(mesh) = bearing {
+                        root.spawn((
+                            Name::new("Local bearing mesh"),
+                            Mesh3d(mesh),
+                            MeshMaterial3d(visuals.bearing_material.clone()),
+                            NoFrustumCulling,
+                        ));
+                    }
+                })
+                .id();
+            cache.roots.push(root);
+        }
+        cache.revision = Some(revision);
+    } else if simulation.render_dirty {
+        for (root, mut transform) in &mut roots {
+            if let Some(snapshot) = simulation.transforms.get(root.0 as usize).copied() {
+                *transform = transform_from_gpu(snapshot);
+            }
+        }
+    } else {
+        return;
+    }
+    for mut visibility in &mut legacy_visuals {
+        *visibility = Visibility::Hidden;
+    }
+    simulation.record_visual_update(started.elapsed());
+}
+
+fn transform_from_gpu(transform: GpuTransform) -> Transform {
+    Transform {
+        translation: Vec3::from_slice(&transform.position[..3]),
+        rotation: Quat::from_array(transform.rotation).normalize(),
+        ..default()
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::type_complexity
+)]
 fn advance_simulation(
     time: Res<Time>,
     mut world_runtime: ResMut<world::WorldRuntime>,
@@ -2323,35 +2520,13 @@ fn advance_simulation(
     render_queue: Res<RenderQueue>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut construction_visuals: Query<
-        (&ConstructionVisual, &mut Visibility),
-        (Without<BearingVisual>, Without<SimulationVisual>),
-    >,
-    mut bearing_visibility: Single<
-        &mut Visibility,
-        (
-            With<BearingVisual>,
-            Without<ConstructionVisual>,
-            Without<SimulationVisual>,
-        ),
-    >,
-    mut authored_visuals: Query<
-        (&AuthoredPartVisual, &mut Visibility),
-        (
-            Without<ConstructionVisual>,
-            Without<BearingVisual>,
-            Without<SimulationVisual>,
-        ),
-    >,
-    mut simulation_visuals: Query<
-        (&SimulationVisual, &mut Visibility),
-        (Without<ConstructionVisual>, Without<BearingVisual>),
-    >,
+    mut construction_visuals: Query<(&ConstructionVisual, &mut Visibility), Without<BearingVisual>>,
 ) {
     if !simulation.is_running() {
         return;
     }
     let published_graph = simulation.published_graph.clone();
+    simulation.ticks_submitted_per_frame = 0;
 
     if state.drive_rows_dirty {
         state.drive_rows_dirty = false;
@@ -2409,6 +2584,8 @@ fn advance_simulation(
         )
     };
     if !ticks.is_empty() {
+        let tick_count =
+            usize::try_from(ticks.end.saturating_sub(ticks.start)).unwrap_or(usize::MAX);
         let physics_started = std::time::Instant::now();
         for tick in ticks {
             match pending_hammer_impulse(&simulation, &mut hammer) {
@@ -2437,8 +2614,13 @@ fn advance_simulation(
             }
             world_runtime.clear_player_reactions();
         }
-        simulation.record_performance(physics_started.elapsed(), None);
+        simulation.record_performance(physics_started.elapsed(), tick_count, None);
     }
+    simulation.in_flight_tick_count = simulation.gpu.as_ref().map_or(0, |gpu| {
+        u32::try_from(gpu.in_flight_tick_count()).unwrap_or(u32::MAX)
+    });
+
+    let visual_started = std::time::Instant::now();
 
     if simulation.static_mesh_dirty {
         let creation = simulation
@@ -2484,78 +2666,20 @@ fn advance_simulation(
         .creation
         .as_ref()
         .expect("running simulation has compiled creation");
-    for material in ConstructionMaterial::ALL {
-        let visible = simulation_material_is_present(
-            &published_graph,
-            creation,
-            SimulationMeshKind::Dynamic,
-            material,
-        );
-        if visible
-            && let Some(mut asset) =
-                meshes.get_mut(&visuals.simulation_meshes[material_index(material)])
-        {
-            *asset = renderable_mesh(combined_simulation_material_mesh(
-                &published_graph,
-                creation,
-                &simulation.transforms,
-                SimulationMeshKind::Dynamic,
-                material,
-            ));
-        }
-        for (visual, mut visibility) in &mut simulation_visuals {
-            if visual.0 == material {
-                *visibility = if visible {
-                    Visibility::Visible
-                } else {
-                    Visibility::Hidden
-                };
-            }
-        }
-    }
-    // Every mesh below is written only while its own visual is on screen. A
-    // hidden mesh has no slab allocation, so writing to one both wastes the
-    // rebuild and makes the renderer log a use-after-free every frame.
     let bearings_visible = published_graph.bearing_count() > 0 || !state.placed_bearings.is_empty();
-    let active_dimension_link = world_runtime.active_dimension_link();
-    for appearance in AuthoredPart::ALL {
-        let visible = published_graph.parts().any(|(part, spec)| {
-            appearance.matches(&published_graph, part, *spec, active_dimension_link)
-        });
-        if visible && let Some(mut mesh) = meshes.get_mut(visuals.authored_mesh(appearance)) {
-            *mesh = combined_simulation_authored_mesh(
-                &published_graph,
-                creation,
-                &simulation.transforms,
-                appearance,
-                active_dimension_link,
-            );
-        }
-        for (visual, mut visibility) in &mut authored_visuals {
-            if visual.0 == appearance {
-                *visibility = if visible {
-                    Visibility::Visible
-                } else {
-                    Visibility::Hidden
-                };
-            }
-        }
-    }
-    if bearings_visible {
+    if bearings_visible
+        && joint_xray_is_visible(
+            selection.active_editor_tool(),
+            visible_bearing_count(&published_graph, &state.placed_bearings),
+        )
+    {
         let rings = combined_simulation_bearing_mesh(
             &published_graph,
             creation,
             &simulation.transforms,
             &state.placed_bearings,
         );
-        if joint_xray_is_visible(
-            selection.active_editor_tool(),
-            visible_bearing_count(&published_graph, &state.placed_bearings),
-        ) && let Some(mut mesh) = meshes.get_mut(&visuals.joint_xray_mesh)
-        {
-            *mesh = rings.clone();
-        }
-        if let Some(mut mesh) = meshes.get_mut(&visuals.bearing_mesh) {
+        if let Some(mut mesh) = meshes.get_mut(&visuals.joint_xray_mesh) {
             *mesh = rings;
         }
     }
@@ -2576,12 +2700,8 @@ fn advance_simulation(
             &sequencer,
         );
     }
-    **bearing_visibility = if bearings_visible {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
     simulation.render_dirty = false;
+    simulation.record_visual_update(visual_started.elapsed());
 }
 
 fn next_simulation_ticks(
@@ -2644,16 +2764,27 @@ impl AppSimulation {
     fn record_performance(
         &mut self,
         cpu_elapsed: std::time::Duration,
+        tick_count: usize,
         readback: Option<GpuTickReadback>,
     ) {
         const SMOOTHING: f64 = 0.2;
-        let cpu_ms = cpu_elapsed.as_secs_f64() * 1_000.0;
+        let count = u32::try_from(tick_count).unwrap_or(u32::MAX).max(1);
+        let cpu_ms = cpu_elapsed.as_secs_f64() * 1_000.0 / f64::from(count);
+        self.ticks_submitted_per_frame = count;
         self.physics_cpu_ms = Some(self.physics_cpu_ms.map_or(cpu_ms, |previous| {
             previous + (cpu_ms - previous) * SMOOTHING
         }));
         if let Some(readback) = readback {
             self.last_tick_readback = Some(readback);
         }
+    }
+
+    fn record_visual_update(&mut self, elapsed: std::time::Duration) {
+        const SMOOTHING: f64 = 0.2;
+        let milliseconds = elapsed.as_secs_f64() * 1_000.0;
+        self.visual_update_ms = Some(self.visual_update_ms.map_or(milliseconds, |previous| {
+            previous + (milliseconds - previous) * SMOOTHING
+        }));
     }
 }
 
@@ -2787,7 +2918,8 @@ struct EditorVisuals {
     construction_meshes: [Handle<Mesh>; ConstructionMaterial::ALL.len()],
     construction_materials: [Handle<ConstructionRenderMaterial>; ConstructionMaterial::ALL.len()],
     ghost_materials: [Handle<ConstructionRenderMaterial>; ConstructionMaterial::ALL.len()],
-    simulation_meshes: [Handle<Mesh>; ConstructionMaterial::ALL.len()],
+    authored_materials: [Handle<StandardMaterial>; AuthoredPart::ALL.len()],
+    bearing_material: Handle<StandardMaterial>,
     bearing_mesh: Handle<Mesh>,
     joint_xray_mesh: Handle<Mesh>,
     shape_node_mesh: Handle<Mesh>,
@@ -2877,9 +3009,6 @@ struct DeletePreview;
 
 #[derive(Component)]
 struct ConstructionVisual(ConstructionMaterial);
-
-#[derive(Component)]
-struct SimulationVisual(ConstructionMaterial);
 
 #[derive(Component)]
 struct BearingVisual;
@@ -3364,6 +3493,7 @@ fn main() {
         .init_resource::<PerformanceMetrics>()
         .init_resource::<AppSettings>()
         .init_resource::<AppSimulation>()
+        .init_resource::<SimulationVisualCache>()
         .init_resource::<WorldPhysicsPublication>()
         .init_resource::<HammerInteraction>()
         .init_resource::<BearingToolSettings>()
@@ -3458,6 +3588,7 @@ fn main() {
                         update_wire_drag_preview,
                         update_wire_hover_preview,
                         maintain_space_simulation.after(world::sync_world_foundations),
+                        sync_simulation_visual_cache,
                         run_drive_sequencer,
                         advance_simulation.run_if(world::world_playing),
                         sync_player_avatar,
@@ -3485,7 +3616,6 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
 ) {
     let construction_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
-    let simulation_meshes = ConstructionMaterial::ALL.map(|_| meshes.add(Cuboid::default()));
     let bearing_mesh = meshes.add(Cuboid::default());
     let joint_xray_mesh = meshes.add(Cuboid::default());
     let shape_node_mesh = meshes.add(degenerate_overlay_mesh());
@@ -3655,7 +3785,8 @@ fn setup(
         construction_meshes: construction_meshes.clone(),
         construction_materials: construction_materials.clone(),
         ghost_materials: ghost_materials.clone(),
-        simulation_meshes: simulation_meshes.clone(),
+        authored_materials: authored_materials.clone(),
+        bearing_material: bearing_material.clone(),
         bearing_mesh: bearing_mesh.clone(),
         joint_xray_mesh: joint_xray_mesh.clone(),
         shape_node_mesh: shape_node_mesh.clone(),
@@ -3702,14 +3833,6 @@ fn setup(
             NoFrustumCulling,
             Visibility::Hidden,
             ConstructionVisual(material),
-        ));
-        commands.spawn((
-            Name::new(format!("{} simulation mesh", material.label())),
-            Mesh3d(simulation_meshes[index].clone()),
-            MeshMaterial3d(construction_materials[index].clone()),
-            NoFrustumCulling,
-            Visibility::Hidden,
-            SimulationVisual(material),
         ));
     }
     commands.spawn((
@@ -4729,7 +4852,10 @@ fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
         },
     );
     if let Some(drag) = state.pipe_drag.as_mut() {
-        drag.mode = drag.mode.next();
+        let leaving_bearing_offset = drag.bearing_offset.take().is_some();
+        if !leaving_bearing_offset {
+            drag.mode = drag.mode.next();
+        }
         drag.anchor_endpoint = drag.endpoint;
         drag.anchor_dimensions = drag.dimensions;
         if let Some(press) = sample {
@@ -4804,6 +4930,7 @@ fn begin_pipe_turn(state: &mut EditorState) -> String {
     if drag.dimensions.sweep_angle_degrees() != 360 {
         return "Partial-cylinder sectors support straight runs only".to_owned();
     }
+    drag.bearing_offset = None;
     let leg_start = drag.corners.last().copied().unwrap_or(drag.start);
     let leg_length = drag.endpoint.distance(leg_start);
     let previous_radius = drag.bend_radii.last().copied().unwrap_or(0.0);
@@ -4822,7 +4949,12 @@ fn begin_pipe_turn(state: &mut EditorState) -> String {
             ray_direction,
         };
     }
-    "Endpoint frozen — aim toward a perpendicular arrow; wheel changes radius".to_owned()
+    if pipe_bend_radius_is_fixed(drag.dimensions.outer_diameter()) {
+        "Endpoint frozen — aim toward a perpendicular arrow; bend radius fixed at one block"
+            .to_owned()
+    } else {
+        "Endpoint frozen — aim toward a perpendicular arrow; wheel changes radius".to_owned()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5520,6 +5652,41 @@ fn invalidate_block_drag(state: &mut EditorState, error: PlacementError) {
     }
 }
 
+fn refresh_bearing_offset_drag(
+    graph: &ConstructionGraph,
+    state: &mut EditorState,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> bool {
+    let Some((press, offset)) = state
+        .pipe_drag
+        .as_ref()
+        .and_then(|drag| drag.bearing_offset.map(|offset| (drag.press, offset)))
+    else {
+        return false;
+    };
+    if !camera::ray_drag_started(press.ray_direction, ray_direction) {
+        return true;
+    }
+    let Some(delta) = bearing_offset_from_rays(
+        offset.start,
+        offset.normal,
+        state.placement_grid,
+        press.ray_origin,
+        press.ray_direction,
+        ray_origin,
+        ray_direction,
+    ) else {
+        invalidate_pipe_drag(state, PlacementError::DragPlaneUnavailable);
+        return true;
+    };
+    let drag = state.pipe_drag.as_mut().expect("pipe drag remains active");
+    drag.start = offset.start + delta;
+    drag.endpoint = offset.endpoint + delta;
+    rebuild_pipe_drag(graph, state);
+    true
+}
+
 fn refresh_pipe_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
@@ -5527,6 +5694,9 @@ fn refresh_pipe_drag(
     ray_origin: Vec3,
     ray_direction: Vec3,
 ) {
+    if refresh_bearing_offset_drag(graph, state, ray_origin, ray_direction) {
+        return;
+    }
     let Some(snapshot) = state.pipe_drag.as_ref().map(|drag| {
         (
             drag.press,
@@ -5602,29 +5772,41 @@ fn refresh_pipe_drag(
         }
         PipeEditMode::OuterDiameter | PipeEditMode::InnerDiameter => {
             let delta = pipe_pointer_delta(press.ray_direction, ray_direction);
-            let steps = (delta / 0.005).round();
-            let mut outer = anchor_dimensions.outer_diameter();
-            let mut inner = anchor_dimensions.inner_diameter();
-            match mode {
-                PipeEditMode::OuterDiameter => {
-                    outer = (outer + steps * CYLINDER_DIAMETER_STEP)
-                        .clamp(MIN_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER);
-                    inner = inner.min(outer - MIN_CYLINDER_DIAMETER_GAP);
-                }
-                PipeEditMode::InnerDiameter => {
-                    inner = (inner + steps * CYLINDER_DIAMETER_STEP)
-                        .clamp(0.0, outer - MIN_CYLINDER_DIAMETER_GAP);
-                }
-                PipeEditMode::Length => unreachable!(),
+            drag.dimensions = pipe_drag_dimensions(mode, anchor_dimensions, delta);
+            drag.pending_radius =
+                constrained_pipe_bend_radius(drag.dimensions.outer_diameter(), drag.pending_radius);
+            for radius in &mut drag.bend_radii {
+                *radius = constrained_pipe_bend_radius(drag.dimensions.outer_diameter(), *radius);
             }
-            drag.dimensions =
-                CylinderDimensions::new(outer, inner, anchor_dimensions.axial_length())
-                    .expect("clamped pipe dimensions remain valid")
-                    .with_sweep_angle_degrees(anchor_dimensions.sweep_angle_degrees())
-                    .expect("the existing sector sweep remains valid");
         }
     }
     rebuild_pipe_drag(graph, state);
+}
+
+fn pipe_drag_dimensions(
+    mode: PipeEditMode,
+    anchor: CylinderDimensions,
+    pointer_delta: f32,
+) -> CylinderDimensions {
+    let steps = (pointer_delta / 0.005).round();
+    let mut outer = anchor.outer_diameter();
+    let mut inner = anchor.inner_diameter();
+    match mode {
+        PipeEditMode::OuterDiameter => {
+            outer = (outer + steps * CYLINDER_DIAMETER_STEP)
+                .clamp(MIN_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER);
+            inner = inner.min(outer - MIN_CYLINDER_DIAMETER_GAP);
+        }
+        PipeEditMode::InnerDiameter => {
+            inner = (inner + steps * CYLINDER_DIAMETER_STEP)
+                .clamp(0.0, outer - MIN_CYLINDER_DIAMETER_GAP);
+        }
+        PipeEditMode::Length => unreachable!("length dragging does not resize a pipe diameter"),
+    }
+    CylinderDimensions::new(outer, inner, anchor.axial_length())
+        .expect("clamped pipe dimensions remain valid")
+        .with_sweep_angle_degrees(anchor.sweep_angle_degrees())
+        .expect("the existing sector sweep remains valid")
 }
 
 fn rebuild_pipe_drag(graph: &ConstructionGraph, state: &mut EditorState) {
@@ -5697,6 +5879,38 @@ fn closest_axis_parameter(
         .then(|| (-axis_direction.dot(offset) + parallel * ray_direction.dot(offset)) / denominator)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn bearing_offset_from_rays(
+    plane_origin: Vec3,
+    plane_normal: Vec3,
+    grid: PlacementGrid,
+    press_origin: Vec3,
+    press_direction: Vec3,
+    current_origin: Vec3,
+    current_direction: Vec3,
+) -> Option<Vec3> {
+    fn intersection(origin: Vec3, direction: Vec3, point: Vec3, normal: Vec3) -> Option<Vec3> {
+        let denominator = direction.dot(normal);
+        if !origin.is_finite() || !direction.is_finite() || denominator.abs() <= f32::EPSILON {
+            return None;
+        }
+        let distance = (point - origin).dot(normal) / denominator;
+        (distance >= 0.0 && distance.is_finite()).then_some(origin + direction * distance)
+    }
+
+    let press = intersection(press_origin, press_direction, plane_origin, plane_normal)?;
+    let current = intersection(
+        current_origin,
+        current_direction,
+        plane_origin,
+        plane_normal,
+    )?;
+    let step = grid.step_meters();
+    let mut offset = ((current - press) / step).round() * step;
+    offset -= plane_normal * offset.dot(plane_normal);
+    Some(offset)
+}
+
 fn pipe_pointer_delta(anchor: Vec3, current: Vec3) -> f32 {
     let pitch = current.y.asin() - anchor.y.asin();
     let yaw = wrap_angle(current.x.atan2(current.z) - anchor.x.atan2(anchor.z));
@@ -5742,14 +5956,15 @@ fn adjust_pipe_bend_radius(
         .pipe_drag
         .as_mut()
         .expect("radius adjustment requires an active pipe drag");
-    let minimum = PipeBendDimensions::minimum_radius(drag.dimensions.outer_diameter());
+    let outer_diameter = drag.dimensions.outer_diameter();
+    let minimum = PipeBendDimensions::minimum_radius(outer_diameter);
     let current = if drag.choosing_direction || drag.bend_radii.is_empty() {
         drag.pending_radius
     } else {
         *drag.bend_radii.last().expect("a latest bend exists")
     };
     let requested = current + f32::from(direction) * GRID_UNIT_METERS;
-    let radius = requested.clamp(minimum, mechanic_core::MAX_PIPE_BEND_RADIUS);
+    let radius = constrained_pipe_bend_radius(outer_diameter, requested);
     if drag.choosing_direction || drag.bend_radii.is_empty() {
         drag.pending_radius = radius;
     } else {
@@ -5757,7 +5972,12 @@ fn adjust_pipe_bend_radius(
         drag.pending_radius = radius;
     }
     rebuild_pipe_drag(graph, state);
-    let message = if (radius - requested).abs() > 1.0e-5 {
+    let message = if pipe_bend_radius_is_fixed(outer_diameter) {
+        format!(
+            "Bend radius fixed at {:.2} m for pipes up to one block",
+            PipeBendDimensions::DEFAULT_RADIUS
+        )
+    } else if (radius - requested).abs() > 1.0e-5 {
         if requested < minimum {
             format!("Bend radius clamped to minimum {minimum:.2} m for this diameter")
         } else {
@@ -5770,6 +5990,20 @@ fn adjust_pipe_bend_radius(
         format!("Bend radius: {radius:.2} m")
     };
     (radius, message)
+}
+
+fn constrained_pipe_bend_radius(outer_diameter: f32, requested: f32) -> f32 {
+    let minimum = PipeBendDimensions::minimum_radius(outer_diameter);
+    let maximum = if pipe_bend_radius_is_fixed(outer_diameter) {
+        PipeBendDimensions::DEFAULT_RADIUS
+    } else {
+        mechanic_core::MAX_PIPE_BEND_RADIUS
+    };
+    requested.clamp(minimum, maximum)
+}
+
+pub(crate) fn pipe_bend_radius_is_fixed(outer_diameter: f32) -> bool {
+    outer_diameter <= GRID_UNIT_METERS
 }
 
 fn refresh_delete_drag(
@@ -6199,9 +6433,8 @@ fn refresh_tool_preview_with_cylinder(
                             candidate
                         })
                     })
-                    .map(|mut candidate| {
-                        candidate.support = PlacementSupport::Bearing;
-                        candidate
+                    .map(|candidate| {
+                        center_cylinder_candidate_on_bearing(candidate, bearing.anchor)
                     })
             } else {
                 placement_candidate
@@ -7811,14 +8044,22 @@ fn sync_drag_plane(
         } else {
             2
         };
-        if drag.choosing_direction || drag.mode != PipeEditMode::Length {
+        let arrow_origin = if drag.bearing_offset.is_some() {
+            drag.start
+        } else {
+            drag.endpoint
+        };
+        if drag.bearing_offset.is_some()
+            || drag.choosing_direction
+            || drag.mode != PipeEditMode::Length
+        {
             for axis in 0..3 {
                 if axis != incoming_axis {
-                    append_axis_arrows(drag.endpoint, axis, &mut arrows);
+                    append_axis_arrows(arrow_origin, axis, &mut arrows);
                 }
             }
         } else {
-            append_axis_arrows(drag.endpoint, incoming_axis, &mut arrows);
+            append_axis_arrows(arrow_origin, incoming_axis, &mut arrows);
         }
     } else if let Some((low, high, plane)) = active_drag_plane(&state, &simulation) {
         append_drag_plane(low, high, plane, &mut sheet);
@@ -9077,6 +9318,13 @@ fn handle_build_actions(
             let start = candidate.spec.pose.translation()
                 - direction * candidate.spec.dimensions.axial_length() * 0.5;
             let endpoint = start + direction * candidate.spec.dimensions.axial_length();
+            let bearing_offset = matches!(attachment, BlockAttachment::Bearing { .. }).then_some(
+                BearingOffsetDrag {
+                    start,
+                    endpoint,
+                    normal: direction,
+                },
+            );
             let pieces = vec![PipeRunPiece {
                 spec: PartSpec::Cylinder(candidate.spec),
                 inlet: mechanic_core::FaceKind::NegativeY,
@@ -9089,13 +9337,15 @@ fn handle_build_actions(
                 endpoint,
                 directions: vec![direction],
                 bend_radii: Vec::new(),
-                pending_radius: cylinder_settings.bend_radius.max(
-                    PipeBendDimensions::minimum_radius(candidate.spec.dimensions.outer_diameter()),
+                pending_radius: constrained_pipe_bend_radius(
+                    candidate.spec.dimensions.outer_diameter(),
+                    cylinder_settings.bend_radius,
                 ),
                 dimensions: candidate.spec.dimensions,
                 material: candidate.spec.material,
                 appearance: candidate.spec.appearance,
                 mode: PipeEditMode::Length,
+                bearing_offset,
                 choosing_direction: false,
                 press: PointerSample {
                     cursor,
@@ -9108,10 +9358,13 @@ fn handle_build_actions(
                 error: None,
             });
             state.pipe_preview_revision = state.pipe_preview_revision.wrapping_add(1);
-            state.feedback = Some(
+            state.feedback = Some(if bearing_offset.is_some() {
+                "Bearing and pipe centred — drag to offset, release to commit; R edits length"
+                    .to_owned()
+            } else {
                 "Dragging pipe length — R cycles dimensions, F adds a 90° bend, release commits"
-                    .to_owned(),
-            );
+                    .to_owned()
+            });
             return;
         }
         if actions.just_released(GameAction::Primary) {
@@ -9761,22 +10014,39 @@ fn connect_control_link(
     command: BuildCommand,
     success: &str,
 ) -> String {
+    let removal = match &command {
+        BuildCommand::AddInputSeatLink(spec) => graph.input_seat_links().find_map(|(id, link)| {
+            (*link == *spec).then_some((
+                BuildCommand::RemoveInputSeatLink(id),
+                "Removed Input-to-Seat link",
+            ))
+        }),
+        BuildCommand::AddSeatControllerLink(spec) => {
+            graph.seat_controller_links().find_map(|(id, link)| {
+                (*link == *spec).then_some((
+                    BuildCommand::RemoveSeatControllerLink(id),
+                    "Removed Seat-to-Controller link",
+                ))
+            })
+        }
+        _ => None,
+    };
+    let (command, feedback) = removal.unwrap_or((command, success));
     let previous = EditorSnapshot::capture(graph, state);
     match graph.apply(command) {
         Ok(_) => {
             history.commit(previous);
-            // The new link is a line in the drive overlay, and that overlay is
-            // only rebuilt on request. Without this the wire stays invisible
-            // until something else happens to dirty the mesh.
+            // The changed link is a line in the drive overlay, and that overlay
+            // is only rebuilt on request.
             state.construction_mesh_dirty = true;
-            success.to_owned()
+            feedback.to_owned()
         }
         Err(error) => error.to_string(),
     }
 }
 
-/// Wires `controller` to every bearing row of one placed socket, or reverses
-/// those rows when the pair is already wired. Returns the feedback line.
+/// Wires `controller` to every bearing row of one placed socket, or removes
+/// those wires when the pair is already connected. Returns the feedback line.
 fn connect_drive_wire(
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
@@ -9798,25 +10068,18 @@ fn connect_drive_wire(
         .map(|(id, link)| (id, *link))
         .collect::<Vec<_>>();
     let previous = EditorSnapshot::capture(graph, state);
-    let commands = if existing.is_empty() {
+    let removing = !existing.is_empty();
+    let commands = if removing {
+        existing
+            .iter()
+            .map(|&(id, _)| BuildCommand::RemoveDriveLink(id))
+            .collect::<Vec<_>>()
+    } else {
         bearings
             .iter()
             .map(|&bearing| BuildCommand::AddDriveLink(DriveLinkSpec::new(controller, bearing)))
             .collect::<Vec<_>>()
-    } else {
-        // Clicking a bearing already wired to this block flips its direction.
-        existing
-            .iter()
-            .map(|&(id, _)| BuildCommand::RemoveDriveLink(id))
-            .chain(existing.iter().map(|&(_, link)| {
-                BuildCommand::AddDriveLink(DriveLinkSpec {
-                    reversed: !link.reversed,
-                    ..link
-                })
-            }))
-            .collect::<Vec<_>>()
     };
-    let reversing = !existing.is_empty();
 
     let mut staged = graph.begin_edit();
     match staged.apply_batch(commands) {
@@ -9825,8 +10088,8 @@ fn connect_drive_wire(
             history.commit(previous);
             state.selected_controller = Some(controller);
             state.construction_mesh_dirty = true;
-            if reversing {
-                "Reversed this bearing's direction".to_owned()
+            if removing {
+                format!("Removed drive wire from {} bearing row(s)", existing.len())
             } else {
                 let summary = graph
                     .bearing_drive_link(bearings[0])
@@ -10811,29 +11074,14 @@ fn sync_visual_meshes(
     mut state: ResMut<EditorState>,
     visuals: Res<EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut construction_visuals: Query<
-        (&ConstructionVisual, &mut Visibility),
-        (Without<BearingVisual>, Without<SimulationVisual>),
-    >,
+    mut construction_visuals: Query<(&ConstructionVisual, &mut Visibility), Without<BearingVisual>>,
     mut bearing_visibility: Single<
         &mut Visibility,
-        (
-            With<BearingVisual>,
-            Without<ConstructionVisual>,
-            Without<SimulationVisual>,
-        ),
-    >,
-    mut simulation_visuals: Query<
-        (&SimulationVisual, &mut Visibility),
-        (Without<ConstructionVisual>, Without<BearingVisual>),
+        (With<BearingVisual>, Without<ConstructionVisual>),
     >,
     mut authored_visuals: Query<
         (&AuthoredPartVisual, &mut Visibility),
-        (
-            Without<ConstructionVisual>,
-            Without<BearingVisual>,
-            Without<SimulationVisual>,
-        ),
+        (Without<ConstructionVisual>, Without<BearingVisual>),
     >,
 ) {
     if !should_sync_editor_visual_meshes(state.construction_mesh_dirty, simulation.is_running()) {
@@ -10905,9 +11153,6 @@ fn sync_visual_meshes(
                 };
             }
         }
-    }
-    for (_, mut visibility) in &mut simulation_visuals {
-        *visibility = Visibility::Hidden;
     }
     for appearance in AuthoredPart::ALL {
         let appearance_changed = rebuild_all
@@ -12605,7 +12850,7 @@ fn combined_simulation_mesh(
     transforms: &[GpuTransform],
     kind: SimulationMeshKind,
 ) -> Mesh {
-    combined_simulation_mesh_filtered(graph, creation, transforms, kind, None)
+    combined_simulation_mesh_filtered(graph, creation, transforms, kind, None, None)
 }
 
 fn combined_simulation_material_mesh(
@@ -12615,7 +12860,24 @@ fn combined_simulation_material_mesh(
     kind: SimulationMeshKind,
     material: ConstructionMaterial,
 ) -> Mesh {
-    combined_simulation_mesh_filtered(graph, creation, transforms, kind, Some(material))
+    combined_simulation_mesh_filtered(graph, creation, transforms, kind, Some(material), None)
+}
+
+fn local_simulation_material_mesh(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    local_transforms: &[GpuTransform],
+    compound: u32,
+    material: ConstructionMaterial,
+) -> Mesh {
+    combined_simulation_mesh_filtered(
+        graph,
+        creation,
+        local_transforms,
+        SimulationMeshKind::Dynamic,
+        Some(material),
+        Some(compound),
+    )
 }
 
 fn simulation_material_is_present(
@@ -12639,6 +12901,22 @@ fn simulation_material_is_present(
     })
 }
 
+fn simulation_material_is_present_for_compound(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    compound: u32,
+    material: ConstructionMaterial,
+) -> bool {
+    creation.part_to_compound.iter().any(|&(part, body)| {
+        body == compound
+            && graph
+                .part(part)
+                .copied()
+                .and_then(ordinary_material)
+                .is_some_and(|candidate| candidate == material)
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 fn combined_simulation_mesh_filtered(
     graph: &ConstructionGraph,
@@ -12646,6 +12924,7 @@ fn combined_simulation_mesh_filtered(
     transforms: &[GpuTransform],
     kind: SimulationMeshKind,
     material: Option<ConstructionMaterial>,
+    compound_filter: Option<u32>,
 ) -> Mesh {
     let pipe_texture_offsets = pipe_texture_offsets(graph);
     let welded_pipe_ends = welded_pipe_ends(graph);
@@ -12654,6 +12933,9 @@ fn combined_simulation_mesh_filtered(
         .iter()
         .filter(|(part, compound_index)| {
             let part_material = graph.part(*part).copied().and_then(ordinary_material);
+            if compound_filter.is_some_and(|wanted| wanted != *compound_index) {
+                return false;
+            }
             let is_static = creation.compounds[*compound_index as usize].is_static;
             let right_motion = match kind {
                 SimulationMeshKind::Static => is_static,
@@ -12770,10 +13052,29 @@ fn combined_simulation_mesh_filtered(
     .with_inserted_indices(Indices::U32(indices))
 }
 
-fn combined_simulation_authored_mesh(
+fn local_simulation_authored_mesh(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    local_transforms: &[GpuTransform],
+    compound: u32,
+    appearance: AuthoredPart,
+    active_dimension_link: Option<mechanic_core::DimensionLinkId>,
+) -> Mesh {
+    combined_simulation_authored_mesh_filtered(
+        graph,
+        creation,
+        local_transforms,
+        Some(compound),
+        appearance,
+        active_dimension_link,
+    )
+}
+
+fn combined_simulation_authored_mesh_filtered(
     graph: &ConstructionGraph,
     creation: &CompiledCreation,
     transforms: &[GpuTransform],
+    compound_filter: Option<u32>,
     appearance: AuthoredPart,
     active_dimension_link: Option<mechanic_core::DimensionLinkId>,
 ) -> Mesh {
@@ -12782,10 +13083,11 @@ fn combined_simulation_authored_mesh(
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
-    for &(part, compound_index) in creation.part_to_compound.iter().filter(|(part, _)| {
-        graph
-            .part(*part)
-            .is_some_and(|spec| appearance.matches(graph, *part, *spec, active_dimension_link))
+    for &(part, compound_index) in creation.part_to_compound.iter().filter(|(part, compound)| {
+        compound_filter.is_none_or(|wanted| wanted == *compound)
+            && graph
+                .part(*part)
+                .is_some_and(|spec| appearance.matches(graph, *part, *spec, active_dimension_link))
     }) {
         let transform = transforms[compound_index as usize];
         let root_translation = Vec3::from_array(transform.position[..3].try_into().unwrap());
@@ -12872,6 +13174,32 @@ fn combined_simulation_bearing_mesh(
     transforms: &[GpuTransform],
     placed_bearings: &[PlacedBearing],
 ) -> Mesh {
+    combined_simulation_bearing_mesh_filtered(graph, creation, transforms, None, placed_bearings)
+}
+
+fn local_simulation_bearing_mesh(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    local_transforms: &[GpuTransform],
+    compound: u32,
+    placed_bearings: &[PlacedBearing],
+) -> Mesh {
+    combined_simulation_bearing_mesh_filtered(
+        graph,
+        creation,
+        local_transforms,
+        Some(compound),
+        placed_bearings,
+    )
+}
+
+fn combined_simulation_bearing_mesh_filtered(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    compound_filter: Option<u32>,
+    placed_bearings: &[PlacedBearing],
+) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
@@ -12879,6 +13207,9 @@ fn combined_simulation_bearing_mesh(
     let mut indices = Vec::new();
 
     for compiled in &creation.bearings {
+        if compound_filter.is_some_and(|wanted| wanted != compiled.compound_a) {
+            continue;
+        }
         let bearing = graph
             .bearing(compiled.source_bearing)
             .expect("compiled bearing source remains in graph");
@@ -12916,6 +13247,9 @@ fn combined_simulation_bearing_mesh(
         else {
             continue;
         };
+        if compound_filter.is_some_and(|wanted| wanted != compound_index) {
+            continue;
+        }
         let initial = &creation.compounds[compound_index as usize];
         let inverse_initial_rotation = initial.root_rotation.inverse();
         let local_anchor = inverse_initial_rotation * (bearing.anchor - initial.root_translation);
@@ -12947,6 +13281,30 @@ fn combined_simulation_bearing_mesh(
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+fn simulation_body_has_bearing(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    compound: u32,
+    placed_bearings: &[PlacedBearing],
+) -> bool {
+    creation.bearings.iter().any(|bearing| {
+        bearing.compound_a == compound
+            && graph.bearing(bearing.source_bearing).is_some_and(|source| {
+                !placed_bearings
+                    .iter()
+                    .any(|&socket| bearing_uses_socket(source, socket))
+            })
+    }) || placed_bearings.iter().any(|bearing| {
+        let FaceOwner::Part(source) = bearing.source.owner else {
+            return false;
+        };
+        creation
+            .part_to_compound
+            .iter()
+            .any(|&(part, body)| part == source && body == compound)
+    })
 }
 
 /// Where one graph bearing sits in simulation space.
@@ -15177,9 +15535,10 @@ mod rendering_tests {
         combined_simulation_bearing_mesh, combined_simulation_material_mesh,
         combined_simulation_mesh, configure_authored_texture, configure_bearing_texture,
         configure_repeating_texture, construction_tint_mask_path, delete_preview_mesh,
-        drive_xray_is_visible, joint_xray_is_visible, preview_material, renderable_mesh,
-        should_sync_editor_visual_meshes, simulation_material_is_present,
-        single_authored_part_mesh, single_bearing_mesh, single_cylinder_mesh,
+        drive_xray_is_visible, joint_xray_is_visible, local_simulation_material_mesh,
+        preview_material, renderable_mesh, should_sync_editor_visual_meshes,
+        simulation_material_is_present, single_authored_part_mesh, single_bearing_mesh,
+        single_cylinder_mesh, transform_from_gpu,
     };
 
     #[test]
@@ -15187,6 +15546,51 @@ mod rendering_tests {
         assert!(!should_sync_editor_visual_meshes(true, true));
         assert!(should_sync_editor_visual_meshes(true, false));
         assert!(!should_sync_editor_visual_meshes(false, false));
+    }
+
+    #[test]
+    fn cached_local_mesh_follows_one_compound_transform() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [3, 2, 1],
+                    BuildPose::new(IVec3::new(2, 3, 4), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let rotation = Quat::from_rotation_y(0.7);
+        let snapshot = GpuTransform {
+            position: [10.0, 2.0, -3.0, 0.0],
+            rotation: rotation.to_array(),
+        };
+        let world = combined_simulation_material_mesh(
+            &graph,
+            &creation,
+            &[snapshot],
+            SimulationMeshKind::Dynamic,
+            ConstructionMaterial::Steel,
+        );
+        let local = local_simulation_material_mesh(
+            &graph,
+            &creation,
+            &[GpuTransform {
+                position: [0.0; 4],
+                rotation: Quat::IDENTITY.to_array(),
+            }],
+            0,
+            ConstructionMaterial::Steel,
+        );
+        let transform = transform_from_gpu(snapshot);
+        let transformed = positions(&local)
+            .into_iter()
+            .map(|position| transform.transform_point(position))
+            .collect::<Vec<_>>();
+        for (actual, expected) in transformed.into_iter().zip(positions(&world)) {
+            assert!(actual.abs_diff_eq(expected, 1.0e-5));
+        }
     }
 
     #[test]
@@ -17161,23 +17565,25 @@ mod interaction_tests {
 
     use super::{
         AUTHORED_ORIENTATION_COUNT, AUTHORED_ORIENTATIONS, AppSimulation, BearingDimensionTarget,
-        BearingToolSettings, BlockAttachment, BlockDrag, BlockVolume, CylinderDimensionTarget,
-        CylinderToolSettings, EditorGraph, EditorHistory, EditorState, HAMMER_CHARGE_SECONDS,
-        HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction, MaterialWheelState, PipeDrag,
-        PipeEditMode, PlacedBearing, PlacementPlane, PlayerState, PointerSample, SelectedTool,
-        SimulationHit, SurfaceHit, Tool, WorldEditBlocker, active_drag_plane,
-        adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
-        bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_bounds,
+        BearingOffsetDrag, BearingToolSettings, BlockAttachment, BlockDrag, BlockVolume,
+        CylinderDimensionTarget, CylinderToolSettings, EditorGraph, EditorHistory, EditorState,
+        HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction,
+        MaterialWheelState, PipeDrag, PipeEditMode, PlacedBearing, PlacementGrid, PlacementPlane,
+        PlayerState, PointerSample, SelectedTool, SimulationHit, SurfaceHit, Tool,
+        WorldEditBlocker, active_drag_plane, adjusted_bearing_dimensions,
+        adjusted_cylinder_dimensions, apply_history_action, bearing_attachment_candidate,
+        bearing_attachment_is_highlighted, bearing_offset_from_rays, block_sheet_bounds,
         candidate_from_hit, choose_region, clear_editor_hover, closer_feature_hit,
-        closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
-        delete_box_parts, hammer_delivery, hammer_impulse_magnitude, hammer_point_travel,
-        handle_block_actions, handle_build_actions, handle_chroma_actions,
-        handle_feature_shape_actions, handle_tool_change, pipe_pointer_delta, pipe_turn_direction,
-        raycast_construction, raycast_placed_bearing_discs, raycast_placed_bearing_discs_with_pose,
-        raycast_placed_bearings, raycast_simulation, refresh_block_drag, refresh_region_drag,
-        refresh_tool_preview, requested_bearing_dimension_adjustment,
-        requested_cylinder_dimension_adjustment, reverse_drive_wires, rigid_body_parts,
-        simulation_placed_bearing_pose, stage_part_deletion_preserving_bearings,
+        closest_axis_parameter, connect_control_link, connect_drive_wire,
+        constrained_pipe_bend_radius, cycle_orientation, delete_box_parts, hammer_delivery,
+        hammer_impulse_magnitude, hammer_point_travel, handle_block_actions, handle_build_actions,
+        handle_chroma_actions, handle_feature_shape_actions, handle_tool_change,
+        pipe_pointer_delta, pipe_turn_direction, raycast_construction,
+        raycast_placed_bearing_discs, raycast_placed_bearing_discs_with_pose,
+        raycast_placed_bearings, raycast_simulation, refresh_bearing_offset_drag,
+        refresh_block_drag, refresh_region_drag, refresh_tool_preview,
+        requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
+        rigid_body_parts, simulation_placed_bearing_pose, stage_part_deletion_preserving_bearings,
         tangent_feature_chain, tool_status_line, weld_connected_shape_owners, wire_drag_step,
         wire_end_under_cursor,
     };
@@ -18768,6 +19174,44 @@ mod interaction_tests {
     }
 
     #[test]
+    fn bearing_claims_an_offset_pipe_preview_but_centres_it_by_default() {
+        let mut graph = ConstructionGraph::new();
+        let support = CuboidSpec::new(
+            [4, 4, 4],
+            BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(support)).unwrap() else {
+            unreachable!()
+        };
+        let bearing = PlacedBearing {
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+            dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
+        };
+        let mut state = EditorState {
+            hovered: Some(SurfaceHit {
+                distance: 1.0,
+                point: Vec3::new(0.36, 1.0, 0.0),
+                face: bearing.source,
+            }),
+            placed_bearings: vec![bearing],
+            pointer_position: Some(Vec2::ZERO),
+            pointer_ray: Some((Vec3::new(0.36, 3.0, 0.0), Vec3::NEG_Y)),
+            ..Default::default()
+        };
+
+        refresh_tool_preview(&graph, &mut state, Tool::Cylinder);
+
+        assert_eq!(state.attachment_bearing, Some(0));
+        let preview = state.cylinder_preview.unwrap();
+        let direction = preview.spec.pose.rotation.quaternion() * Vec3::Y;
+        let inlet_center = preview.spec.pose.translation()
+            - direction * preview.spec.dimensions.axial_length() * 0.5;
+        assert!(inlet_center.abs_diff_eq(bearing.anchor, 1.0e-5));
+    }
+
+    #[test]
     fn right_click_through_bearing_hole_deletes_block_but_keeps_bearing() {
         let mut graph = ConstructionGraph::new();
         let parts = [IVec3::new(0, 1, 0), IVec3::new(2, 1, 0)].map(|center| {
@@ -19118,7 +19562,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn linking_an_input_to_a_seat_asks_for_the_wire_overlay_to_be_redrawn() {
+    fn making_the_same_control_connection_twice_removes_it() {
         let mut graph = ConstructionGraph::new();
         let BuildOutcome::Spawned(input) = graph
             .apply(BuildCommand::SpawnInput(mechanic_core::InputSpec::new(
@@ -19131,6 +19575,14 @@ mod interaction_tests {
         let BuildOutcome::Spawned(seat) = graph
             .apply(BuildCommand::SpawnSeat(mechanic_core::SeatSpec::new(
                 BuildPose::new(IVec3::new(8, 2, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::new(16, 2, 0), GridRotation::default()),
             )))
             .unwrap()
         else {
@@ -19153,6 +19605,40 @@ mod interaction_tests {
         // rebuilt on request: without the flag it stays invisible until some
         // unrelated edit happens to dirty the mesh.
         assert!(state.construction_mesh_dirty);
+
+        state.construction_mesh_dirty = false;
+        let message = connect_control_link(
+            &mut graph,
+            &mut state,
+            &mut history,
+            BuildCommand::AddInputSeatLink(mechanic_core::InputSeatLinkSpec { input, seat }),
+            "Linked Input to Seat",
+        );
+
+        assert_eq!(message, "Removed Input-to-Seat link");
+        assert_eq!(graph.input_seat_links().count(), 0);
+        assert!(state.construction_mesh_dirty);
+
+        for expected in [
+            "Linked Seat to Controller",
+            "Removed Seat-to-Controller link",
+        ] {
+            state.construction_mesh_dirty = false;
+            let message = connect_control_link(
+                &mut graph,
+                &mut state,
+                &mut history,
+                BuildCommand::AddSeatControllerLink(mechanic_core::SeatControllerLinkSpec {
+                    seat,
+                    controller,
+                }),
+                "Linked Seat to Controller",
+            );
+
+            assert_eq!(message, expected);
+            assert!(state.construction_mesh_dirty);
+        }
+        assert_eq!(graph.seat_controller_links().count(), 0);
     }
 
     #[test]
@@ -19211,7 +19697,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn clicking_a_wired_bearing_again_reverses_it() {
+    fn making_the_same_drive_connection_twice_removes_it() {
         let (mut graph, socket, controller) = wired_socket_graph();
         let bearing = graph.bearings().next().unwrap().0;
         graph
@@ -19227,19 +19713,10 @@ mod interaction_tests {
         let mut history = EditorHistory::default();
 
         let message = connect_drive_wire(&mut graph, &mut state, &mut history, controller, 0);
-        assert!(message.contains("Reversed"), "{message}");
-        assert_eq!(graph.drive_link_count(), 1);
-        assert!(graph.drive_links().next().unwrap().1.reversed);
-        assert!(
-            graph
-                .bearing_drive_link(bearing)
-                .is_some_and(|(_, link)| link.reversed)
-        );
-
-        let message = reverse_drive_wires(&mut graph, &mut state, &mut history, socket).unwrap();
-        assert!(message.contains("default direction"), "{message}");
-        assert_eq!(graph.drive_link_count(), 1);
-        assert!(!graph.drive_links().next().unwrap().1.reversed);
+        assert!(message.contains("Removed"), "{message}");
+        assert_eq!(graph.drive_link_count(), 0);
+        assert!(graph.bearing_drive_link(bearing).is_none());
+        assert!(state.construction_mesh_dirty);
     }
 
     #[test]
@@ -19674,6 +20151,108 @@ mod interaction_tests {
     }
 
     #[test]
+    fn one_block_and_smaller_pipe_bends_are_fixed_to_one_block() {
+        for outer_diameter in [0.05, 0.20, 0.25] {
+            assert!(
+                (constrained_pipe_bend_radius(outer_diameter, 1.0) - 0.25).abs() < f32::EPSILON
+            );
+        }
+        assert!((constrained_pipe_bend_radius(0.30, 1.0) - 1.0).abs() < f32::EPSILON);
+        assert!((constrained_pipe_bend_radius(0.30, 0.25) - 0.50).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn bearing_pipe_drag_moves_only_across_the_bearing_plane() {
+        let camera = Vec3::new(0.0, 2.0, -4.0);
+        let press = (Vec3::ZERO - camera).normalize();
+        let current = (Vec3::new(0.31, 0.0, 0.12) - camera).normalize();
+
+        let offset = bearing_offset_from_rays(
+            Vec3::ZERO,
+            Vec3::Y,
+            PlacementGrid::Centimetres25,
+            camera,
+            press,
+            camera,
+            current,
+        )
+        .unwrap();
+
+        assert!(offset.abs_diff_eq(Vec3::X * 0.25, 1.0e-5));
+    }
+
+    #[test]
+    fn bearing_offset_drag_translates_the_whole_pipe_before_release() {
+        let graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::default();
+        let start = Vec3::ZERO;
+        let endpoint = Vec3::Y * dimensions.axial_length();
+        let camera = Vec3::new(0.0, 2.0, -4.0);
+        let press_direction = (start - camera).normalize();
+        let pieces = crate::builder::pipe_run_pieces(
+            &[start, endpoint],
+            &[],
+            dimensions,
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let mut state = EditorState {
+            pipe_drag: Some(PipeDrag {
+                attachment: BlockAttachment::Bearing {
+                    source: FaceRef::ground(),
+                    anchor: start,
+                    dimensions: BearingDimensions::default(),
+                },
+                start,
+                corners: Vec::new(),
+                endpoint,
+                directions: vec![Vec3::Y],
+                bend_radii: Vec::new(),
+                pending_radius: 0.25,
+                dimensions,
+                material: ConstructionMaterial::Steel,
+                appearance: MaterialAppearance::BAKED,
+                mode: PipeEditMode::Length,
+                bearing_offset: Some(BearingOffsetDrag {
+                    start,
+                    endpoint,
+                    normal: Vec3::Y,
+                }),
+                choosing_direction: false,
+                press: pointer_sample(Vec2::ZERO, camera, press_direction),
+                anchor_endpoint: endpoint,
+                anchor_dimensions: dimensions,
+                pieces,
+                error: None,
+            }),
+            ..Default::default()
+        };
+        let current_direction = (Vec3::new(0.31, 0.0, 0.12) - camera).normalize();
+
+        assert!(refresh_bearing_offset_drag(
+            &graph,
+            &mut state,
+            camera,
+            current_direction,
+        ));
+
+        let drag = state.pipe_drag.unwrap();
+        assert!(drag.start.abs_diff_eq(Vec3::X * 0.25, 1.0e-5));
+        assert!(
+            drag.endpoint
+                .abs_diff_eq(Vec3::X * 0.25 + Vec3::Y * 0.25, 1.0e-5)
+        );
+        let PartSpec::Cylinder(pipe) = drag.pieces[0].spec else {
+            panic!("a straight run remains a cylinder")
+        };
+        assert!(
+            pipe.pose
+                .translation()
+                .abs_diff_eq(Vec3::new(0.25, 0.125, 0.0), 1.0e-5)
+        );
+    }
+
+    #[test]
     fn pipe_turn_chooser_locks_only_perpendicular_aim_beyond_the_dead_zone() {
         let anchor = Vec3::Z;
         assert_eq!(
@@ -19719,6 +20298,7 @@ mod interaction_tests {
             material: ConstructionMaterial::Steel,
             appearance: MaterialAppearance::BAKED,
             mode: PipeEditMode::Length,
+            bearing_offset: None,
             choosing_direction: false,
             press: PointerSample {
                 cursor: Vec2::ZERO,

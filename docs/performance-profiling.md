@@ -27,12 +27,31 @@ cargo run --profile profiling -p mechanic-bench -- --scenario terrain_stream
 cargo run --profile profiling -p mechanic-bench -- --scenario terrain_dig
 ```
 
-The deterministic player/construction collision gate is CPU-only and should be
-captured separately from GPU physics:
+The deterministic player/construction collision gate is CPU-only. The TEST2
+vehicle gate is a separate GPU run with the captured 94-part, 9-body,
+842-collider, 8-bearing topology:
 
 ```sh
 cargo run --release -p mechanic-bench -- --scenario player_collision --seconds 30 --warmup 5
+cargo run --release -p mechanic-bench -- --scenario test2_car --seconds 30 --warmup 5
 ```
+
+The vehicle JSONL names all six phases and reports its immutable solver route,
+configured iterations, planned/executed fused sweeps, per-tick CPU encoding,
+submission/readback latency, in-flight slots, and visual-update cost. Its gate
+also requires four active ground contacts, eight fused sweeps, residuals within
+the existing physics tolerances, 60 TPS, and GPU physics p95 at or below 8.3 ms.
+Each fused contact projection propagates through the contacted body's tree path
+to the root and back (at most 64 bearings). Bearings solve their five constraints
+as a block, and motors use the resulting constrained effective inertia. The
+reported sweep count counts contact sweeps, including this path work; it is not
+a count of individual bearing projections. The GPU test
+`front_steered_car_turns_through_ground_friction` separately checks left/right
+chassis yaw, straight-line drift, steering angle, and support while driving.
+For the integrated 1920×1080 capture, wait for local terrain to read 36/36 and
+streaming backlog to reach zero, then record 30 seconds. The F3 “Terrain selection worker”
+row is asynchronous worker duration; “Terrain reselections” is its completion
+frequency counter, not main-thread frame time.
 
 It uses exactly 131,072 indexed static colliders (32 local candidates per
 query) and 20,000 moving one-collider bodies. On the M1 Pro, warmed complete

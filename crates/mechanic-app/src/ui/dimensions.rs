@@ -13,7 +13,7 @@ use super::components::{OverlayBadge, OverlayBadgeProps, PanelSurface, PanelSurf
 use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
-use crate::{AppSimulation, EditorState};
+use crate::{AppSimulation, EditorState, pipe_bend_radius_is_fixed};
 
 const LABEL_W: f32 = 132.0;
 const LABEL_H: f32 = 28.0;
@@ -94,7 +94,11 @@ pub(crate) fn capture(
                     drag.dimensions.inner_diameter(),
                     bend_radius,
                 ),
-                plane: if drag.choosing_direction {
+                plane: if drag.choosing_direction
+                    && pipe_bend_radius_is_fixed(drag.dimensions.outer_diameter())
+                {
+                    "Choose turn direction · one-block radius".to_owned()
+                } else if drag.choosing_direction {
                     "Choose turn direction · wheel changes radius".to_owned()
                 } else {
                     format!("{} mode · R cycles · F bends", drag.mode.label())

@@ -448,6 +448,7 @@ cargo run -p mechanic-bench --release -- --scenario invalid_loop
 cargo run -p mechanic-bench --release -- --scenario dense_100k --seconds 30 --warmup 5
 cargo run -p mechanic-bench --release -- --scenario loops_100k --seconds 30 --warmup 5
 cargo run -p mechanic-bench --release -- --scenario player_collision --seconds 30 --warmup 5
+cargo run -p mechanic-bench --release -- --scenario test2_car --seconds 30 --warmup 5
 ```
 
 Benchmark output is machine-readable JSONL. The four-bar cases prove correction

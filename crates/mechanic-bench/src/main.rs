@@ -12,10 +12,14 @@ use std::{
 use bevy_math::{IVec3, Vec3};
 use mechanic_core::{
     BearingSpec, BuildCommand, BuildOutcome, BuildPose, CompiledCreation, ConstructionGraph,
-    CuboidSpec, FaceKind, FaceRef, GridRotation, PartId,
+    ConstructionMaterial, CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveMode,
+    FaceKind, FaceRef, GridRotation, PartId, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
+    ShapeRegion,
 };
 use mechanic_gpu::{
-    CONSTRAINT_NON_CONVERGENCE_FLAG, GpuMechanismCoordinate, GpuPhysics, GpuPhysicsConfig,
+    CONSTRAINT_NON_CONVERGENCE_FLAG, DRIVE_MODE_ANGLE, DRIVE_MODE_PASSIVE, DRIVE_MODE_SPEED,
+    GpuGroundPlane, GpuMechanismCoordinate, GpuMechanismDrive, GpuPhysics, GpuPhysicsConfig,
+    GpuSolverRoute,
 };
 use mechanic_world::{
     ActiveTerrainNode, ConstructionBodyPose, ConstructionCollisionIndex, KinematicCapsuleConfig,
@@ -45,6 +49,7 @@ enum Scenario {
     TerrainStream,
     TerrainDig,
     PlayerCollision,
+    Test2Car,
 }
 
 impl Scenario {
@@ -64,6 +69,7 @@ impl Scenario {
             "terrain_stream" => Some(Self::TerrainStream),
             "terrain_dig" => Some(Self::TerrainDig),
             "player_collision" => Some(Self::PlayerCollision),
+            "test2_car" => Some(Self::Test2Car),
             _ => None,
         }
     }
@@ -84,6 +90,7 @@ impl Scenario {
             Self::TerrainStream => "terrain_stream",
             Self::TerrainDig => "terrain_dig",
             Self::PlayerCollision => "player_collision",
+            Self::Test2Car => "test2_car",
         }
     }
 
@@ -146,6 +153,7 @@ fn run() -> Result<bool, String> {
         | Scenario::Bearings256) => scenario.bearing_count().unwrap_or_default() + 1,
         Scenario::FourBar | Scenario::InvalidLoop => 4,
         Scenario::Dense100k | Scenario::Loops100k => SCALE_BODY_COUNT,
+        Scenario::Test2Car => 9,
         Scenario::TerrainStream | Scenario::TerrainDig | Scenario::PlayerCollision => {
             unreachable!()
         }
@@ -177,10 +185,12 @@ fn run() -> Result<bool, String> {
         &queue,
         &creation,
         GpuPhysicsConfig {
-            collisions_enabled: matches!(options.scenario, Scenario::Smoke | Scenario::Dense100k)
-                || options.scenario.bearing_count().is_some(),
+            collisions_enabled: matches!(
+                options.scenario,
+                Scenario::Smoke | Scenario::Dense100k | Scenario::Test2Car
+            ) || options.scenario.bearing_count().is_some(),
             ground_plane_enabled: true,
-            mechanism_self_collisions: true,
+            mechanism_self_collisions: options.scenario != Scenario::Test2Car,
             solver_iterations: 8,
         },
     )
@@ -218,6 +228,7 @@ fn run() -> Result<bool, String> {
     let measured_capacity = usize::try_from(measured_ticks)
         .map_err(|_| "measured tick count does not fit this platform".to_owned())?;
     let mut engine_tick_costs_ms = Vec::with_capacity(measured_capacity);
+    let mut encoding_costs_ms = Vec::with_capacity(measured_capacity);
     let mut blocking_wait_costs_ms = Vec::with_capacity(measured_capacity);
     let mut gpu_tick_costs_ms = Vec::with_capacity(measured_capacity);
     let mut kernel_costs_ms: [Vec<f64>; 7] =
@@ -226,11 +237,56 @@ fn run() -> Result<bool, String> {
     let mut pair_count = 0_u32;
     let mut contact_count = 0_u32;
     let mut active_contact_count = 0_u32;
+    let mut planned_solver_sweeps = 0_u32;
+    let mut executed_solver_sweeps = 0_u32;
     let mut anchor_residual_meters = 0.0_f32;
     let mut axis_residual_degrees = 0.0_f32;
+    let mut test2_phase = usize::MAX;
+    let test2_base_drives = (options.scenario == Scenario::Test2Car).then(|| {
+        creation
+            .coordinate_drives
+            .iter()
+            .copied()
+            .map(GpuMechanismDrive::from)
+            .collect::<Vec<_>>()
+    });
     for tick in 1..=measured_ticks {
+        if let Some(base_drives) = &test2_base_drives {
+            let phase =
+                usize::try_from((tick.saturating_sub(1) * 6 / measured_ticks.max(1)).min(5))
+                    .unwrap_or(5);
+            if phase != test2_phase {
+                let drives = test2_phase_drives(base_drives, &creation, phase);
+                gpu.write_mechanism_drives(&queue, &drives)
+                    .map_err(|error| error.to_string())?;
+                if phase == 5 {
+                    let normal = Vec3::new(0.08, 1.0, 0.04).normalize();
+                    let planes = creation
+                        .colliders
+                        .iter()
+                        .map(|collider| {
+                            let point = Vec3::new(
+                                0.0,
+                                if collider.compound_index.is_multiple_of(2) {
+                                    0.04
+                                } else {
+                                    -0.02
+                                },
+                                0.0,
+                            );
+                            GpuGroundPlane::through_point(normal, point)
+                        })
+                        .collect::<Vec<_>>();
+                    gpu.write_ground_planes(&queue, &planes)
+                        .map_err(|error| error.to_string())?;
+                }
+                test2_phase = phase;
+            }
+        }
         let start = Instant::now();
+        let encoding_started = Instant::now();
         gpu.dispatch_tick(&device, &queue, warmup_ticks + tick);
+        encoding_costs_ms.push(encoding_started.elapsed().as_secs_f64() * 1_000.0);
         let blocking_wait_started = Instant::now();
         device
             .poll(wgpu::PollType::wait_indefinitely())
@@ -243,6 +299,8 @@ fn run() -> Result<bool, String> {
         pair_count = pair_count.max(readback.pair_count);
         contact_count = contact_count.max(readback.contact_count);
         active_contact_count = active_contact_count.max(readback.active_contact_count);
+        planned_solver_sweeps = planned_solver_sweeps.max(readback.planned_solver_sweeps);
+        executed_solver_sweeps = executed_solver_sweeps.max(readback.executed_solver_sweeps);
         anchor_residual_meters = anchor_residual_meters.max(readback.anchor_residual_meters);
         axis_residual_degrees = axis_residual_degrees.max(readback.axis_residual_degrees);
         if let Some(gpu_tick_ms) = readback.gpu_tick_ms {
@@ -264,6 +322,7 @@ fn run() -> Result<bool, String> {
         engine_tick_costs_ms.push(start.elapsed().as_secs_f64() * 1000.0);
     }
     engine_tick_costs_ms.sort_by(f64::total_cmp);
+    encoding_costs_ms.sort_by(f64::total_cmp);
     blocking_wait_costs_ms.sort_by(f64::total_cmp);
     gpu_tick_costs_ms.sort_by(f64::total_cmp);
     for costs in &mut kernel_costs_ms {
@@ -278,6 +337,7 @@ fn run() -> Result<bool, String> {
     let gpu_p50_ms = (!gpu_tick_costs_ms.is_empty()).then(|| percentile(&gpu_tick_costs_ms, 50));
     let gpu_p99_ms = (!gpu_tick_costs_ms.is_empty()).then(|| percentile(&gpu_tick_costs_ms, 99));
     let blocking_wait_p95_ms = percentile_95(&blocking_wait_costs_ms);
+    let encoding_p95_ms = percentile_95(&encoding_costs_ms);
     let diagnostics_bytes_per_tick = core::mem::size_of::<mechanic_gpu::GpuDiagnostics>()
         + usize::from(gpu.has_gpu_timestamps()) * 14 * core::mem::size_of::<u64>();
     let mapped_bytes = measured_capacity.saturating_mul(diagnostics_bytes_per_tick);
@@ -287,21 +347,36 @@ fn run() -> Result<bool, String> {
     } else {
         "unavailable"
     };
+    let phases_json = if options.scenario == Scenario::Test2Car {
+        "[\"idle\",\"drop_settle\",\"straight_acceleration\",\"steering_under_power\",\"coasting\",\"uneven_terrain\"]"
+    } else {
+        "[]"
+    };
 
     // The smoke kernel proves shared-buffer integration and publication. The
     // scale scenarios remain hard-failed until all declared collision or
     // articulation passes are dispatched and timestamped.
     let kernel_coverage_complete = matches!(
         options.scenario,
-        Scenario::Smoke | Scenario::FourBar | Scenario::InvalidLoop
+        Scenario::Smoke | Scenario::FourBar | Scenario::InvalidLoop | Scenario::Test2Car
     ) || options.scenario.bearing_count().is_some();
     let expected_constraint_failure = options.scenario == Scenario::InvalidLoop;
-    let correctness_passed = if expected_constraint_failure {
+    let base_correctness_passed = if expected_constraint_failure {
         error_flags & CONSTRAINT_NON_CONVERGENCE_FLAG != 0
     } else {
         error_flags == 0
     };
-    let gpu_budget_ms = if options
+    let test2_correctness_passed = options.scenario != Scenario::Test2Car
+        || (active_contact_count == 4
+            && gpu.solver_route() == GpuSolverRoute::FusedSmallMechanism
+            && planned_solver_sweeps == 8
+            && executed_solver_sweeps == 8
+            && anchor_residual_meters <= mechanic_core::ANCHOR_TOLERANCE_METERS
+            && axis_residual_degrees <= mechanic_core::AXIS_TOLERANCE_DEGREES);
+    let correctness_passed = base_correctness_passed && test2_correctness_passed;
+    let gpu_budget_ms = if options.scenario == Scenario::Test2Car {
+        8.3
+    } else if options
         .scenario
         .bearing_count()
         .is_some_and(|count| count <= 64)
@@ -320,18 +395,25 @@ fn run() -> Result<bool, String> {
             "\"bodies\":{},\"colliders\":{},\"bearings\":{},",
             "\"warmup_ticks\":{},\"measured_ticks\":{},",
             "\"construction_ms\":{:.3},\"mean_engine_tick_ms\":{:.3},",
+            "\"cpu_encoding_per_tick_p95_ms\":{:.3},",
             "\"p50_engine_tick_ms\":{:.3},\"p95_engine_tick_ms\":{:.3},",
             "\"p99_engine_tick_ms\":{:.3},",
             "\"p50_gpu_tick_ms\":{},\"p95_gpu_tick_ms\":{},\"p99_gpu_tick_ms\":{},",
             "\"submission_count\":{},\"blocking_wait_p95_ms\":{:.3},",
             "\"mapped_bytes\":{},\"bulk_snapshot_readback_bytes\":0,",
             "\"dynamic_mesh_upload_bytes\":0,\"tick_backlog\":0,",
+            "\"ticks_submitted_per_frame\":1,\"in_flight_slots\":1,",
+            "\"submission_to_readback_p95_ms\":{:.3},\"visual_update_p95_ms\":0.000,",
+            "\"solver_route\":\"{}\",\"solver_iterations\":{},",
+            "\"planned_solver_sweeps\":{},\"executed_solver_sweeps\":{},",
+            "\"phases\":{},",
             "\"kernel_pipeline_p95_ms\":{},\"physics_tps\":{:.2},",
             "\"kernel_integration_p95_ms\":{},\"kernel_mechanism_p95_ms\":{},",
             "\"kernel_broadphase_p95_ms\":{},\"kernel_narrowphase_p95_ms\":{},",
             "\"kernel_contact_solver_p95_ms\":{},\"kernel_bearings_p95_ms\":{},",
             "\"kernel_snapshot_p95_ms\":{},",
             "\"pairs\":{},\"contacts\":{},\"active_contacts\":{},",
+            "\"expected_ground_contacts\":{},\"ground_contacts_passed\":{},",
             "\"anchor_residual_m\":{:.8},",
             "\"axis_residual_deg\":{:.8},\"error_flags\":{},",
             "\"timing_source\":\"{}\",",
@@ -349,6 +431,7 @@ fn run() -> Result<bool, String> {
         measured_ticks,
         construction_ms,
         engine_mean_ms,
+        encoding_p95_ms,
         engine_p50_ms,
         engine_p95_ms,
         engine_p99_ms,
@@ -358,6 +441,12 @@ fn run() -> Result<bool, String> {
         measured_ticks,
         blocking_wait_p95_ms,
         mapped_bytes,
+        engine_p95_ms,
+        gpu.solver_route().name(),
+        8,
+        planned_solver_sweeps,
+        executed_solver_sweeps,
+        phases_json,
         gpu_p95_ms.map_or_else(|| "null".to_owned(), |value| format!("{value:.3}")),
         achieved_tps,
         optional_percentile_95(&kernel_costs_ms[0]),
@@ -370,6 +459,12 @@ fn run() -> Result<bool, String> {
         pair_count,
         contact_count,
         active_contact_count,
+        if options.scenario == Scenario::Test2Car {
+            4
+        } else {
+            0
+        },
+        options.scenario != Scenario::Test2Car || active_contact_count == 4,
         anchor_residual_meters,
         axis_residual_degrees,
         error_flags,
@@ -403,7 +498,7 @@ fn parse_options() -> Result<Options, String> {
                 scenario = args.get(index).and_then(|value| Scenario::parse(value));
                 if scenario.is_none() {
                     return Err(
-                        "--scenario must be smoke, open_bearing, four_bearing_contact, bearings_16, bearings_64, bearings_65, bearings_256, four_bar, invalid_loop, dense_100k, loops_100k, terrain_stream, terrain_dig, or player_collision"
+                        "--scenario must be smoke, open_bearing, four_bearing_contact, bearings_16, bearings_64, bearings_65, bearings_256, four_bar, invalid_loop, dense_100k, loops_100k, terrain_stream, terrain_dig, player_collision, or test2_car"
                             .to_owned(),
                     );
                 }
@@ -418,7 +513,7 @@ fn parse_options() -> Result<Options, String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "usage: mechanic-bench --scenario smoke|open_bearing|four_bearing_contact|bearings_16|bearings_64|bearings_65|bearings_256|four_bar|invalid_loop|dense_100k|loops_100k|terrain_stream|terrain_dig|player_collision [--seconds N] [--warmup N]"
+                    "usage: mechanic-bench --scenario smoke|open_bearing|four_bearing_contact|bearings_16|bearings_64|bearings_65|bearings_256|four_bar|invalid_loop|dense_100k|loops_100k|terrain_stream|terrain_dig|player_collision|test2_car [--seconds N] [--warmup N]"
                         .to_owned(),
                 );
             }
@@ -503,10 +598,260 @@ fn build_scenario(scenario: Scenario) -> Result<CompiledCreation, String> {
         Scenario::InvalidLoop => build_four_bar(true),
         Scenario::Dense100k => build_dense(SCALE_BODY_COUNT),
         Scenario::Loops100k => build_loops_100k(),
+        Scenario::Test2Car => build_test2_car(),
         Scenario::TerrainStream | Scenario::TerrainDig | Scenario::PlayerCollision => {
             Err("terrain scenarios do not build construction bodies".to_owned())
         }
     }
+}
+
+fn spawned_part(outcome: BuildOutcome) -> Result<PartId, String> {
+    match outcome {
+        BuildOutcome::Spawned(part) => Ok(part),
+        other => Err(format!("expected spawned part, got {other:?}")),
+    }
+}
+
+/// Repository-owned reproduction of the TEST2 vehicle's expensive topology.
+#[allow(clippy::too_many_lines)]
+fn build_test2_car() -> Result<CompiledCreation, String> {
+    let mut graph = ConstructionGraph::new();
+    let chassis = spawned_part(
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [12, 1, 8],
+                    BuildPose::from_position_ticks(IVec3::new(0, 450, 0), GridRotation::default()),
+                )
+                .map_err(|error| error.to_string())?
+                .with_material(ConstructionMaterial::Stone),
+            ))
+            .map_err(|error| error.to_string())?,
+    )?;
+
+    // Seventy-seven source blocks are represented by one region collider. The
+    // remaining eight rigidly linked blocks preserve the captured 94-part / ten
+    // chassis-collider shape without changing the four expensive pipe bends.
+    let mut region_parts = Vec::new();
+    for z in -5..=5 {
+        for x in -3..=3 {
+            let part = spawned_part(
+                graph
+                    .apply(BuildCommand::Spawn(
+                        CuboidSpec::new(
+                            [1, 1, 1],
+                            BuildPose::new(IVec3::new(x, 6, z), GridRotation::default()),
+                        )
+                        .map_err(|error| error.to_string())?
+                        .with_material(ConstructionMaterial::Stone),
+                    ))
+                    .map_err(|error| error.to_string())?,
+            )?;
+            graph
+                .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                    first: chassis,
+                    second: part,
+                }))
+                .map_err(|error| error.to_string())?;
+            region_parts.push(part);
+        }
+    }
+    debug_assert_eq!(region_parts.len(), 77);
+    graph
+        .apply(BuildCommand::AddRegion(
+            ShapeRegion::new(
+                IVec3::new(-7, 11, -11),
+                IVec3::new(7, 1, 11),
+                ConstructionMaterial::Stone,
+            )
+            .map_err(|error| error.to_string())?,
+        ))
+        .map_err(|error| error.to_string())?;
+    let detail_positions = [
+        IVec3::new(-5, 8, -4),
+        IVec3::new(-3, 8, -4),
+        IVec3::new(-1, 8, -4),
+        IVec3::new(1, 8, -4),
+        IVec3::new(3, 8, -4),
+        IVec3::new(5, 8, -4),
+        IVec3::new(-5, 8, 4),
+        IVec3::new(5, 8, 4),
+    ];
+    for position in detail_positions {
+        let part = spawned_part(
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new([1, 1, 1], BuildPose::new(position, GridRotation::default()))
+                        .map_err(|error| error.to_string())?
+                        .with_material(ConstructionMaterial::Stone),
+                ))
+                .map_err(|error| error.to_string())?,
+        )?;
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: chassis,
+                second: part,
+            }))
+            .map_err(|error| error.to_string())?;
+    }
+
+    let bend_dimensions =
+        PipeBendDimensions::new(0.2, 0.0, 0.25).map_err(|error| error.to_string())?;
+    let corners = [
+        (600, 1.5, 1, 0.875, 1.125),
+        (-600, -1.5, 1, 0.875, 1.125),
+        (-600, -1.5, -1, -0.875, -1.125),
+        (600, 1.5, -1, -0.875, -1.125),
+    ];
+    let mut bends = [None; 4];
+    let mut wheels = [None; 4];
+    for (wheel, corner) in [
+        (true, 0),
+        (false, 1),
+        (true, 1),
+        (false, 2),
+        (true, 2),
+        (false, 3),
+        (false, 0),
+        (true, 3),
+    ] {
+        let (x_ticks, _, z_sign, _, _) = corners[corner];
+        if wheel {
+            wheels[corner] = Some(spawned_part(
+                graph
+                    .apply(BuildCommand::SpawnCylinder(
+                        CylinderSpec::new(
+                            CylinderDimensions::new(0.95, 0.0, 0.25)
+                                .map_err(|error| error.to_string())?,
+                            BuildPose::from_position_ticks(
+                                IVec3::new(x_ticks, 290, z_sign * 500),
+                                if z_sign > 0 {
+                                    GridRotation::new(1, 0, 0)
+                                } else {
+                                    GridRotation::new(1, 2, 2)
+                                },
+                            ),
+                        )
+                        .with_material(ConstructionMaterial::Rubber),
+                    ))
+                    .map_err(|error| error.to_string())?,
+            )?);
+        } else {
+            bends[corner] = Some(spawned_part(
+                graph
+                    .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
+                        bend_dimensions,
+                        BuildPose::from_position_ticks(
+                            IVec3::new(x_ticks, 300, z_sign * 350),
+                            if z_sign > 0 {
+                                GridRotation::new(0, 3, 3)
+                            } else {
+                                GridRotation::new(0, 1, 3)
+                            },
+                        ),
+                    )))
+                    .map_err(|error| error.to_string())?,
+            )?);
+        }
+    }
+    let bends = bends.map(Option::unwrap);
+    let wheels = wheels.map(Option::unwrap);
+    for corner in [0, 3, 2, 1] {
+        let (_, x, _, bend_z, _) = corners[corner];
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(chassis, FaceKind::NegativeY),
+                FaceRef::part(bends[corner], FaceKind::NegativeX),
+                Vec3::new(x, 1.0, bend_z),
+                Vec3::NEG_Y,
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    for corner in [1, 0, 3, 2] {
+        let (_, x, z_sign, _, wheel_z) = corners[corner];
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(bends[corner], FaceKind::PositiveY),
+                FaceRef::part(wheels[corner], FaceKind::NegativeY),
+                Vec3::new(x, 0.75, wheel_z),
+                if z_sign > 0 { Vec3::Z } else { Vec3::NEG_Z },
+            )))
+            .map_err(|error| error.to_string())?;
+    }
+    let mut creation = graph.compile().map_err(|error| error.to_string())?;
+    if graph.part_count() != 94
+        || creation.compounds.len() != 9
+        || creation.colliders.len() != 842
+        || creation.bearings.len() != 8
+    {
+        return Err(format!(
+            "test2_car fixture generated {} parts, {} bodies, {} colliders, and {} bearings",
+            graph.part_count(),
+            creation.compounds.len(),
+            creation.colliders.len(),
+            creation.bearings.len(),
+        ));
+    }
+    for coordinate in 0..4 {
+        creation.coordinate_drives[coordinate] = CoordinateDrive {
+            mode: DriveMode::Angle,
+            max_speed: std::f32::consts::PI,
+            max_acceleration: 20.0,
+            source_a_max_acceleration: 20.0,
+            source_a_no_load_speed: std::f32::consts::PI,
+            min_angle: -std::f32::consts::FRAC_PI_4,
+            max_angle: std::f32::consts::FRAC_PI_4,
+            ..CoordinateDrive::default()
+        };
+    }
+    for coordinate in 4..8 {
+        creation.coordinate_drives[coordinate] = CoordinateDrive {
+            mode: DriveMode::Speed,
+            max_speed: std::f32::consts::TAU * 6.0,
+            max_acceleration: 40.0,
+            source_a_max_acceleration: 40.0,
+            source_a_no_load_speed: std::f32::consts::TAU * 6.0,
+            min_angle: f32::NEG_INFINITY,
+            max_angle: f32::INFINITY,
+            ..CoordinateDrive::default()
+        };
+    }
+    Ok(creation)
+}
+
+fn test2_phase_drives(
+    base: &[GpuMechanismDrive],
+    creation: &CompiledCreation,
+    phase: usize,
+) -> Vec<GpuMechanismDrive> {
+    let mut drives = base.to_vec();
+    for drive in &mut drives[..4] {
+        drive.mode = DRIVE_MODE_ANGLE;
+        drive.target_angle = if phase == 3 {
+            std::f32::consts::FRAC_PI_6
+        } else {
+            0.0
+        };
+    }
+    for (coordinate, drive) in drives.iter_mut().enumerate().skip(4) {
+        if matches!(phase, 0 | 1 | 4) {
+            drive.mode = DRIVE_MODE_PASSIVE;
+            drive.target_speed = 0.0;
+            continue;
+        }
+        drive.mode = DRIVE_MODE_SPEED;
+        let source_bearing = creation.loop_topology.tree_bearings[coordinate];
+        let bearing = creation
+            .bearings
+            .iter()
+            .find(|bearing| bearing.source_bearing == source_bearing)
+            .expect("tree bearing remains compiled");
+        let axis =
+            creation.compounds[bearing.compound_a as usize].root_rotation * bearing.local_axis_a;
+        drive.target_speed =
+            axis.cross(Vec3::Y).dot(Vec3::X).signum() * std::f32::consts::TAU * 6.0;
+    }
+    drives
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
@@ -1396,6 +1741,15 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Scenario, build_scenario};
+
+    #[test]
+    fn test2_car_preserves_captured_topology() {
+        let creation = build_scenario(Scenario::Test2Car).unwrap();
+        assert_eq!(creation.part_to_compound.len(), 94);
+        assert_eq!(creation.compounds.len(), 9);
+        assert_eq!(creation.colliders.len(), 842);
+        assert_eq!(creation.bearings.len(), 8);
+    }
 
     #[test]
     fn smoke_scene_has_expected_rows() {

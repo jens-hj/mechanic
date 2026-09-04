@@ -229,6 +229,13 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             drag.parts.len(),
             drag.plane.label()
         )
+    } else if let Some(drag) = state.pipe_drag.as_ref() {
+        if drag.bearing_offset.is_some() {
+            "Bearing and pipe centred — drag to offset, release to place; R edits length"
+                .to_owned()
+        } else {
+            "Release to place pipe run — R cycles dimensions, F adds bends".to_owned()
+        }
     } else {
         match (
             live_hammer,
@@ -255,7 +262,8 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Green bearing attachment active — click or drag to connect blocks".to_owned()
             }
             (false, Tool::Cylinder, _, _, Some(_)) => {
-                "Green bearing attachment active — hold and drag to connect a pipe run".to_owned()
+                "Green bearing attachment active — click centres the pipe; hold and drag to offset it"
+                    .to_owned()
             }
             (true, Tool::Hammer, _, _, _) => {
                 "Hold left mouse on a moving cuboid; release to strike".to_owned()
@@ -294,7 +302,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     .to_owned()
             }
             (false, Tool::Servo, _, _, _) => {
-                "Q rotates; place a 6000 N·m, 30 RPM Servo (one angle-controlled bearing)"
+                "Q rotates; place a 12000 N·m, 30 RPM Servo (one angle-controlled bearing)"
                     .to_owned()
             }
             (false, Tool::Seat, _, _, _) => {

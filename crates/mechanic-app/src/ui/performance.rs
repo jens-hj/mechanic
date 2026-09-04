@@ -79,6 +79,18 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
             ),
             count_u64_row("Physics backlog", snapshot.tick_backlog),
             timing_row("Physics CPU", snapshot.physics_cpu_ms, 8.0, 16.7),
+            count_row(
+                "Ticks submitted / frame",
+                snapshot.ticks_submitted_per_frame,
+            ),
+            count_row("In-flight tick slots", snapshot.in_flight_tick_count),
+            timing_row(
+                "Submission to readback",
+                snapshot.submission_to_readback_ms,
+                16.7,
+                50.0,
+            ),
+            timing_row("Visual update", snapshot.visual_update_ms, 2.0, 8.0),
             timing_row("Physics GPU", snapshot.physics_gpu_ms, 8.0, 16.7),
             timing_row(
                 "Contact solver",
@@ -111,14 +123,20 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
             ),
             capacity_row("Broadphase pairs", snapshot.pair_count),
             contact_row(snapshot.active_contact_count, snapshot.contact_count),
+            count_pair_row(
+                "Solver sweeps",
+                snapshot.executed_solver_sweeps,
+                snapshot.planned_solver_sweeps,
+            ),
             flags_row(snapshot.error_flags),
             timing_row("Terrain stage", snapshot.terrain_stage_ms, 2.0, 8.0),
             timing_row(
-                "Terrain selection",
+                "Terrain selection worker",
                 snapshot.terrain_selection_ms,
                 8.0,
                 100.0,
             ),
+            count_u64_row("Terrain reselections", snapshot.terrain_selection_count),
             timing_row("Terrain sampling", snapshot.terrain_sampling_ms, 2.0, 4.0),
             timing_row(
                 "Terrain polygonize",
@@ -351,11 +369,18 @@ mod tests {
 
         assert!(model.open);
         assert_eq!(model.frame_rows[0].value, "42.0");
-        assert_eq!(model.physics_rows[4].value, "12.00 ms");
-        assert_eq!(model.physics_rows[4].tone, Tone::Bad);
-        assert_eq!(model.physics_rows[9].tone, Tone::Bad);
-        assert_eq!(model.physics_rows[10].value, "700 / 900");
-        assert_eq!(model.physics_rows[11].tone, Tone::Good);
+        let row = |label| {
+            model
+                .physics_rows
+                .iter()
+                .find(|row| row.label == label)
+                .expect("diagnostic row is present")
+        };
+        assert_eq!(row("Contact solver").value, "12.00 ms");
+        assert_eq!(row("Contact solver").tone, Tone::Bad);
+        assert_eq!(row("Broadphase pairs").tone, Tone::Bad);
+        assert_eq!(row("Contacts active / made").value, "700 / 900");
+        assert_eq!(row("Failure flags").tone, Tone::Good);
     }
 
     #[test]

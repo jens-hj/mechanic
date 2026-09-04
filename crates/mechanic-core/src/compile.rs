@@ -808,6 +808,18 @@ fn validate_transmission_depths(graph: &ConstructionGraph) -> Result<(), Topolog
     Ok(())
 }
 
+fn floating_component_root(compounds: &[CompiledCompound], component: &[u32]) -> Option<u32> {
+    component.iter().copied().reduce(|root, candidate| {
+        if compounds[candidate as usize].mass_properties.mass
+            > compounds[root as usize].mass_properties.mass
+        {
+            candidate
+        } else {
+            root
+        }
+    })
+}
+
 fn compile_tree_metadata(
     compounds: &[CompiledCompound],
     bearings: &[CompiledBearing],
@@ -853,7 +865,12 @@ fn compile_tree_metadata(
             .filter(|&body| compounds[body as usize].is_static)
             .collect::<Vec<_>>();
         let roots = if fixed_roots.is_empty() {
-            component.first().copied().into_iter().collect::<Vec<_>>()
+            // Rooting a floating mechanism at a light appendage makes the
+            // opposite side of that joint contain almost the whole machine,
+            // producing asymmetric coordinate inertia for mirrored actuators.
+            floating_component_root(compounds, component)
+                .into_iter()
+                .collect::<Vec<_>>()
         } else {
             fixed_roots
         };
@@ -2895,6 +2912,56 @@ mod tests {
         assert_eq!(topology.body_parents[1].preorder_index, 1);
         assert_eq!(topology.body_parents[2].preorder_index, 2);
         assert_eq!(topology.contraction_rounds, vec![vec![1, 2]]);
+    }
+
+    #[test]
+    fn mirrored_floating_branches_use_heavy_chassis_root_and_equal_inertia() {
+        let mut graph = ConstructionGraph::new();
+        let left = spawn(&mut graph, IVec3::new(-2, 0, 0));
+        let right = spawn(&mut graph, IVec3::new(2, 0, 0));
+        let BuildOutcome::Spawned(chassis) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [8, 4, 8],
+                    BuildPose::new(IVec3::new(0, 4, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        bearing(
+            &mut graph,
+            chassis,
+            FaceKind::NegativeY,
+            left,
+            FaceKind::PositiveY,
+            Vec3::new(-0.5, 0.5, 0.0),
+            Vec3::NEG_Y,
+        );
+        bearing(
+            &mut graph,
+            chassis,
+            FaceKind::NegativeY,
+            right,
+            FaceKind::PositiveY,
+            Vec3::new(0.5, 0.5, 0.0),
+            Vec3::NEG_Y,
+        );
+
+        let topology = graph.compile().unwrap().loop_topology;
+        assert_eq!(topology.component_roots, vec![vec![2]]);
+        assert!(topology.body_parents[2].is_root);
+        assert_eq!(topology.body_parents[0].parent_body, 2);
+        assert_eq!(topology.body_parents[1].parent_body, 2);
+        assert_eq!(topology.coordinate_axis_inertia.len(), 2);
+        assert!(
+            (topology.coordinate_axis_inertia[0] - topology.coordinate_axis_inertia[1]).abs()
+                < 1.0e-4,
+            "mirrored branches compiled unequal inertia: {:?}",
+            topology.coordinate_axis_inertia
+        );
     }
 
     #[test]

@@ -51,7 +51,7 @@ impl PlacementGrid {
         }
     }
 
-    const fn step_meters(self) -> f32 {
+    pub(crate) const fn step_meters(self) -> f32 {
         match self {
             Self::Centimetres25 => 0.25,
             Self::Centimetres5 => 0.05,
@@ -2563,10 +2563,10 @@ fn pose_for_axis_segment(
     let rotation = rotation_y_to_direction(direction).ok_or_else(|| {
         PlacementError::PipeRun("pipe leg has no cardinal orientation".to_owned())
     })?;
-    let center_half_units = ((start + end) * 0.5 / HALF_GRID_UNIT_METERS)
+    let center_ticks = ((start + end) * 0.5 / POSITION_TICK_METERS)
         .round()
         .as_ivec3();
-    Ok(BuildPose::from_half_grid(center_half_units, rotation))
+    Ok(BuildPose::from_position_ticks(center_ticks, rotation))
 }
 
 fn rotation_y_to_direction(direction: Vec3) -> Option<GridRotation> {
@@ -3601,6 +3601,24 @@ pub(crate) fn bearing_overlaps_cylinder_candidate(
             .abs()
             <= CONTACT_EPSILON
         && bearing_ring_overlaps_face(anchor, dimensions, &target_face)
+}
+
+/// Moves a cylinder laterally so its attachment-face centre starts on the
+/// bearing axis. The axial position and orientation already come from the
+/// supporting face and remain unchanged.
+pub(crate) fn center_cylinder_candidate_on_bearing(
+    mut candidate: CylinderPlacementCandidate,
+    anchor: Vec3,
+) -> CylinderPlacementCandidate {
+    let attachment = cylinder_face_geometry(candidate.spec, candidate.attached_face)
+        .expect("cylinder attachment face is flat");
+    let translation_ticks = candidate.spec.pose.translation_position_ticks()
+        + snap_world_to_position_ticks(anchor - attachment.center);
+    candidate.spec.pose =
+        BuildPose::from_position_ticks(translation_ticks, candidate.spec.pose.rotation);
+    candidate.anchor = Some(anchor);
+    candidate.support = PlacementSupport::Bearing;
+    candidate
 }
 
 #[cfg(test)]
@@ -5189,21 +5207,21 @@ mod tests {
         PlacementSnapIndex, PlacementSupport, SurfaceHit, bearing_anchor_from_hit,
         bearing_attachment_candidate, bearing_overlaps_candidate, bearing_ring_overlaps_face,
         bearing_support_face, begin_weld, block_box_bounds, block_box_specs, block_sheet_specs,
-        block_span_from_rays, candidate_from_hit, cuboid_candidate_from_hit,
-        cylinder_candidate_from_hit, face_geometry_from_ref, face_is_flat, free_cuboid_candidate,
-        free_cylinder_candidate, locked_bearings, newly_locked_bearings,
-        oriented_cuboid_candidate_from_hit, oriented_cuboid_candidate_from_hit_with_grid,
-        pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
-        raycast_construction_with_ground, raycast_placement_plane_point, raycast_sources,
-        render_free_smart_guides, rigid_body_parts, smart_snap_block_span,
-        smart_snap_cuboid_candidate, smart_snap_free_cuboid_candidate, stage_bearing_attachment,
-        stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source,
-        stage_block_batch_from_source_in_bounds, stage_block_batch_in_bounds,
-        stage_block_volume_in_bounds, stage_controller_in_bounds, stage_cuboid,
-        stage_cylinder_from_source, stage_dimension_link_in_bounds, stage_engine_from_source,
-        stage_engine_in_bounds, stage_input_in_bounds, stage_pipe_run, stage_pipe_run_in_bounds,
-        stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission, stage_weld_objects,
-        transmission_candidate_from_hit, validate_block_batch_in_bounds,
+        block_span_from_rays, candidate_from_hit, center_cylinder_candidate_on_bearing,
+        cuboid_candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref,
+        face_is_flat, free_cuboid_candidate, free_cylinder_candidate, locked_bearings,
+        newly_locked_bearings, oriented_cuboid_candidate_from_hit,
+        oriented_cuboid_candidate_from_hit_with_grid, pipe_run_pieces, raycast_construction,
+        raycast_construction_for_annulus, raycast_construction_with_ground,
+        raycast_placement_plane_point, raycast_sources, render_free_smart_guides, rigid_body_parts,
+        smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_free_cuboid_candidate,
+        stage_bearing_attachment, stage_bearing_block_batch, stage_block_batch,
+        stage_block_batch_from_source, stage_block_batch_from_source_in_bounds,
+        stage_block_batch_in_bounds, stage_block_volume_in_bounds, stage_controller_in_bounds,
+        stage_cuboid, stage_cylinder_from_source, stage_dimension_link_in_bounds,
+        stage_engine_from_source, stage_engine_in_bounds, stage_input_in_bounds, stage_pipe_run,
+        stage_pipe_run_in_bounds, stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission,
+        stage_weld_objects, transmission_candidate_from_hit, validate_block_batch_in_bounds,
         validate_indexed_block_batch_in_bounds, validate_part,
     };
 
@@ -7367,6 +7385,31 @@ mod tests {
     }
 
     #[test]
+    fn bearing_attachment_centres_a_cylinder_before_it_is_dragged() {
+        let mut graph = ConstructionGraph::new();
+        let base = spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
+        let source = FaceRef::part(base, FaceKind::PositiveY);
+        let anchor = Vec3::new(0.25, 1.0, -0.25);
+        let candidate = cylinder_candidate_from_hit(
+            &graph,
+            SurfaceHit {
+                distance: 1.0,
+                point: Vec3::new(0.50, 1.0, 0.25),
+                face: source,
+            },
+            CylinderDimensions::default(),
+        )
+        .unwrap();
+
+        let centered = center_cylinder_candidate_on_bearing(candidate, anchor);
+        let face = super::cylinder_face_geometry(centered.spec, centered.attached_face).unwrap();
+
+        assert!(face.center.abs_diff_eq(anchor, 1.0e-5));
+        assert_eq!(centered.anchor, Some(anchor));
+        assert_eq!(centered.support, PlacementSupport::Bearing);
+    }
+
+    #[test]
     fn oversized_bearing_attaches_to_any_block_face_overlapped_by_its_ring() {
         let mut graph = ConstructionGraph::new();
         let base = spawn_cube(&mut graph, IVec3::new(0, 2, 0), 4);
@@ -8102,6 +8145,27 @@ mod tests {
         assert!(
             face_is_flat(&graph, FaceRef::part(part, FaceKind::NegativeY)),
             "the untouched underside must still take a block"
+        );
+    }
+
+    #[test]
+    fn pipe_run_preserves_fine_grid_lateral_offsets() {
+        let start = Vec3::new(0.05, 0.0, 0.10);
+        let pieces = pipe_run_pieces(
+            &[start, start + Vec3::Y * 0.25],
+            &[],
+            CylinderDimensions::default(),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let PartSpec::Cylinder(pipe) = pieces[0].spec else {
+            panic!("a straight run produces a cylinder")
+        };
+
+        assert!(
+            pipe.pose
+                .translation()
+                .abs_diff_eq(Vec3::new(0.05, 0.125, 0.10), 1.0e-5)
         );
     }
 

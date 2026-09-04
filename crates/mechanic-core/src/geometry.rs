@@ -854,7 +854,7 @@ impl ServoSpec {
     /// Fixed local x/y/z side lengths in grid units.
     pub const GRID_UNITS: [u8; 3] = [1, 1, 1];
     /// Stall torque supplied by one servo, in newton metres.
-    pub const STALL_TORQUE_NEWTON_METERS: f32 = 6_000.0;
+    pub const STALL_TORQUE_NEWTON_METERS: f32 = 12_000.0;
     /// Maximum servo motion in revolutions per minute.
     pub const NO_LOAD_RPM: f32 = 30.0;
 
@@ -1777,7 +1777,7 @@ mod tests {
             (EngineKind::Electric.no_load_rpm(), 120.0),
             (EngineKind::Gas.stall_torque_newton_meters(), 6_000.0),
             (EngineKind::Gas.no_load_rpm(), 360.0),
-            (ServoSpec::STALL_TORQUE_NEWTON_METERS, 6_000.0),
+            (ServoSpec::STALL_TORQUE_NEWTON_METERS, 12_000.0),
             (ServoSpec::NO_LOAD_RPM, 30.0),
         ] {
             assert!((actual - expected).abs() < f32::EPSILON);

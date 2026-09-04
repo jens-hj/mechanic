@@ -66,10 +66,10 @@ pub struct GpuDiagnostics {
     pub max_axis_microdegrees: u32,
     /// Contacts requiring a non-zero projected response.
     pub active_contact_count: u32,
-    /// Reserved.
-    pub reserved_b: u32,
-    /// Reserved.
-    pub reserved_c: u32,
+    /// Contact/bearing sweeps budgeted for the selected solver route.
+    pub planned_solver_sweeps: u32,
+    /// Contact/bearing sweeps actually executed by the selected solver route.
+    pub executed_solver_sweeps: u32,
 }
 
 /// Position and unit quaternion stored as two aligned vectors.

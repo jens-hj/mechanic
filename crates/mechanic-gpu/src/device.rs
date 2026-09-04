@@ -5,6 +5,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
+use std::time::Instant;
 
 use bevy_math::Vec3;
 use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
@@ -24,7 +25,6 @@ use crate::{
 const FUSED_VELOCITY_BEARING_LIMIT: u32 = 64;
 const FUSED_GROUND_CONTACT_BEARING_LIMIT: u32 = 64;
 const FUSED_STREAMED_CONTACT_BEARING_LIMIT: u32 = 64;
-const SERIAL_MECHANISM_SOLVER_MULTIPLIER: u32 = 12;
 const ASYNC_READBACK_RING_SIZE: usize = 3;
 
 /// Number of external impulses staged and applied by one serial GPU pass.
@@ -42,6 +42,25 @@ pub struct GpuPhysicsConfig {
     pub mechanism_self_collisions: bool,
     /// Fixed number of projected impulse iterations.
     pub solver_iterations: u32,
+}
+
+/// Immutable contact-solver schedule selected when a scene is uploaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuSolverRoute {
+    /// Parallel contact projection with separate mechanism correction passes.
+    General,
+    /// One ordered dispatch for a small floating articulated mechanism.
+    FusedSmallMechanism,
+}
+
+impl GpuSolverRoute {
+    /// Stable diagnostic label used by benchmark JSONL.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::FusedSmallMechanism => "fused_small_mechanism",
+        }
+    }
 }
 
 impl Default for GpuPhysicsConfig {
@@ -135,6 +154,10 @@ pub struct GpuTickReadback {
     pub contact_count: u32,
     /// Contacts dispatched through the projected impulse iterations.
     pub active_contact_count: u32,
+    /// Contact/bearing sweeps budgeted for the selected solver route.
+    pub planned_solver_sweeps: u32,
+    /// Contact/bearing sweeps executed by the selected solver route.
+    pub executed_solver_sweeps: u32,
     /// Largest derived bearing anchor residual in metres.
     pub anchor_residual_meters: f32,
     /// Largest derived bearing axis residual in degrees.
@@ -152,6 +175,8 @@ pub struct GpuCompletedTickReadback {
     pub tick_index: u64,
     /// Snapshot-ring slot written by the completed tick.
     pub snapshot_slot: u8,
+    /// Wall-clock latency from queue submission until mapped readback consumption.
+    pub submission_to_readback_ms: f64,
     /// Fixed-size validation and timestamp telemetry.
     pub diagnostics: GpuTickReadback,
     /// CPU prototype-render rows captured from the same tick.
@@ -435,6 +460,7 @@ struct PendingAsyncReadback {
     snapshot_slot: u8,
     receiver: mpsc::Receiver<Result<(), String>>,
     remaining_callbacks: u8,
+    submitted_at: Instant,
 }
 
 #[derive(Debug)]
@@ -578,6 +604,31 @@ struct TimestampResources {
 }
 
 impl GpuPhysics {
+    /// Contact-solver route fixed for this uploaded scene.
+    pub const fn solver_route(&self) -> GpuSolverRoute {
+        if self.mechanism.active
+            && self.mechanism.has_dynamic_root
+            && uses_fused_contact_schedule(
+                self.bearing_count,
+                self.pipeline_config.ground_plane_enabled,
+            )
+        {
+            GpuSolverRoute::FusedSmallMechanism
+        } else {
+            GpuSolverRoute::General
+        }
+    }
+
+    /// Number of asynchronous tick slots awaiting readback completion.
+    pub fn in_flight_tick_count(&self) -> usize {
+        self.async_readbacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|slot| slot.pending.is_some())
+            .count()
+    }
+
     /// Uploads a compiled creation. The supplied device/queue may be Bevy's
     /// `RenderDevice` and `RenderQueue` deref targets, avoiding a second device.
     ///
@@ -1414,7 +1465,8 @@ impl GpuPhysics {
             bearing_count: self.bearing_count,
             suppression_count: self.suppression_count,
             pair_capacity: self.pair_capacity,
-            flags: u32::from(self.pipeline_config.collisions_enabled),
+            flags: u32::from(self.pipeline_config.collisions_enabled)
+                | (u32::from(self.solver_route() == GpuSolverRoute::FusedSmallMechanism) << 1),
             hash_capacity: u32::try_from(BROADPHASE_HASH_CAPACITY).unwrap_or(u32::MAX),
             solver_iterations: self.pipeline_config.solver_iterations.max(1),
             reserved_a: self.collision.lbvh.sort_count,
@@ -2009,11 +2061,7 @@ impl GpuPhysics {
         } else if self.mechanism.active && self.mechanism.has_dynamic_root {
             self.encode_contact_bearing_velocity_projection_iteration(encoder, serial_mechanism);
         }
-        let iterations = if serial_mechanism {
-            self.pipeline_config.solver_iterations.max(1) * SERIAL_MECHANISM_SOLVER_MULTIPLIER
-        } else {
-            self.pipeline_config.solver_iterations.max(1)
-        };
+        let iterations = self.pipeline_config.solver_iterations.max(1);
         if !serial_mechanism {
             for _ in 1..iterations {
                 indirect_compute_pass(
@@ -2144,6 +2192,7 @@ impl GpuPhysics {
         Ok(Some(GpuCompletedTickReadback {
             tick_index: pending.tick_index,
             snapshot_slot: pending.snapshot_slot,
+            submission_to_readback_ms: pending.submitted_at.elapsed().as_secs_f64() * 1_000.0,
             diagnostics: self.decode_tick_readback(diagnostics, timestamp_values),
             transforms: positions
                 .into_iter()
@@ -2214,6 +2263,8 @@ impl GpuPhysics {
             pair_count: diagnostics.pair_count,
             contact_count: diagnostics.contact_count,
             active_contact_count: diagnostics.active_contact_count,
+            planned_solver_sweeps: diagnostics.planned_solver_sweeps,
+            executed_solver_sweeps: diagnostics.executed_solver_sweeps,
             anchor_residual_meters: diagnostic_units(diagnostics.max_anchor_micrometers),
             axis_residual_degrees: diagnostic_units(diagnostics.max_axis_microdegrees),
         }
@@ -2307,6 +2358,8 @@ impl GpuPhysics {
             pair_count: diagnostics.pair_count,
             contact_count: diagnostics.contact_count,
             active_contact_count: diagnostics.active_contact_count,
+            planned_solver_sweeps: diagnostics.planned_solver_sweeps,
+            executed_solver_sweeps: diagnostics.executed_solver_sweeps,
             anchor_residual_meters: diagnostic_units(diagnostics.max_anchor_micrometers),
             axis_residual_degrees: diagnostic_units(diagnostics.max_axis_microdegrees),
         })
@@ -4210,6 +4263,7 @@ fn begin_async_mapping(slot: &mut AsyncReadbackSlot, tick_index: u64, snapshot_s
         snapshot_slot,
         receiver,
         remaining_callbacks: callback_count,
+        submitted_at: Instant::now(),
     });
 }
 
@@ -5339,6 +5393,14 @@ mod tests {
     fn pipe_bend_suspension_car_fixture_with_steering_torque(
         steering_torque: f32,
     ) -> ArticulatedCarFixture {
+        pipe_bend_car_fixture(steering_torque, false)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn pipe_bend_car_fixture(
+        steering_torque: f32,
+        front_steering_only: bool,
+    ) -> ArticulatedCarFixture {
         let mut graph = ConstructionGraph::new();
         let static_marker = spawned_part(
             graph
@@ -5447,6 +5509,15 @@ mod tests {
         let wheels = wheels.map(Option::unwrap);
         for corner in [0, 3, 2, 1] {
             let (_, x, _, bend_z, _) = corners[corner];
+            if front_steering_only && x < 0.0 {
+                graph
+                    .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                        first: chassis_part,
+                        second: bends[corner],
+                    }))
+                    .unwrap();
+                continue;
+            }
             graph
                 .apply(BuildCommand::AddBearing(BearingSpec::new(
                     FaceRef::part(chassis_part, FaceKind::NegativeY),
@@ -5469,7 +5540,7 @@ mod tests {
         }
 
         let mut creation = graph.compile().unwrap();
-        for coordinate in 0..4 {
+        for coordinate in 0..if front_steering_only { 2 } else { 4 } {
             let acceleration =
                 steering_torque / creation.loop_topology.coordinate_axis_inertia[coordinate];
             let drive = &mut creation.coordinate_drives[coordinate];
@@ -6080,6 +6151,8 @@ mod tests {
             .map(|&wheel| transform_position(final_snapshot[wheel as usize]).y)
             .fold(f32::INFINITY, f32::min);
         assert_eq!(diagnostics.error_flags, 0);
+        assert_eq!(diagnostics.planned_solver_sweeps, 8);
+        assert_eq!(diagnostics.executed_solver_sweeps, 8);
         assert!(
             maximum_chassis_height < initial_chassis.y + 0.5,
             "ground correction launched the chassis from {} m to {maximum_chassis_height} m",
@@ -6344,6 +6417,128 @@ mod tests {
             maximum_settled_error.to_degrees(),
         );
         assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn front_steered_car_turns_through_ground_friction() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let fixture = pipe_bend_car_fixture(ServoSpec::STALL_TORQUE_NEWTON_METERS, true);
+        let pipelines = super::GpuPhysicsPipelines::new();
+        let mut turns = Vec::new();
+        for target in [-30.0_f32, 0.0, 30.0] {
+            let gpu = GpuPhysics::new_with_pipelines(
+                &device,
+                &queue,
+                &fixture.creation,
+                GpuPhysicsConfig {
+                    mechanism_self_collisions: false,
+                    ..Default::default()
+                },
+                &pipelines,
+            )
+            .unwrap();
+            for tick in 1..=240 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let start = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+            let chassis = fixture.chassis as usize;
+            let initial = transform_position(start[chassis]);
+            let initial_rotation = bevy_math::Quat::from_array(start[chassis].rotation);
+            let mut drives = fixture
+                .creation
+                .coordinate_drives
+                .iter()
+                .copied()
+                .map(crate::GpuMechanismDrive::from)
+                .collect::<Vec<_>>();
+            for drive in &mut drives[..2] {
+                drive.target_angle = target.to_radians();
+            }
+            for bearing in &fixture.creation.bearings {
+                let coordinate = bearing.coordinate_index.unwrap() as usize;
+                if coordinate < 2 {
+                    continue;
+                }
+                let acceleration =
+                    1_000.0 / fixture.creation.loop_topology.coordinate_axis_inertia[coordinate];
+                drives[coordinate] = crate::GpuMechanismDrive::from(CoordinateDrive {
+                    mode: DriveMode::Speed,
+                    target_speed: bearing.local_axis_a.cross(Vec3::Y).dot(Vec3::X).signum() * 3.0,
+                    max_speed: 3.0,
+                    max_acceleration: acceleration,
+                    source_b_max_acceleration: acceleration,
+                    source_b_no_load_speed: 30.0,
+                    ..CoordinateDrive::default()
+                });
+            }
+            gpu.write_mechanism_drives(&queue, &drives).unwrap();
+            for tick in 241..=600 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                if tick % 30 == 0 {
+                    let sample = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+                    let up = bevy_math::Quat::from_array(sample[chassis].rotation) * Vec3::Y;
+                    assert!(up.y > 0.98, "car tipped at tick {tick}: {up:?}");
+                    let height_change = transform_position(sample[chassis]).y - initial.y;
+                    assert!(
+                        height_change.abs() < 0.15,
+                        "car bounced at tick {tick}: {height_change}"
+                    );
+                    for &wheel in &fixture.wheel_bodies {
+                        assert!(
+                            sample[wheel as usize].position[1] > 0.44,
+                            "wheel sank at tick {tick}"
+                        );
+                    }
+                }
+            }
+            let end = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+            let forward = initial_rotation.conjugate()
+                * bevy_math::Quat::from_array(end[chassis].rotation)
+                * Vec3::X;
+            let yaw = (-forward.z).atan2(forward.x).to_degrees();
+            let displacement =
+                initial_rotation.conjugate() * (transform_position(end[chassis]) - initial);
+            eprintln!("steer={target} yaw={yaw} displacement={displacement:?}");
+            for bearing in &fixture.creation.bearings[..2] {
+                let relative = relative_bearing_rotation(&end, bearing);
+                let angle =
+                    (2.0 * relative.xyz().dot(bearing.local_axis_a).atan2(relative.w)).to_degrees();
+                eprintln!("steering angle={angle}");
+                assert!(
+                    (angle - target).abs() < 3.0,
+                    "steering deflected: target {target}, actual {angle}"
+                );
+            }
+            assert!(
+                displacement.x > 3.0,
+                "car did not drive forward: {displacement:?}"
+            );
+            assert!(
+                forward.y.abs() < 0.1,
+                "car tipped while steering: {forward:?}"
+            );
+            assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+            turns.push((yaw, displacement.z));
+        }
+        assert!(
+            turns[0].0 > 20.0 && turns[0].1 < -1.0,
+            "left command did not turn: {turns:?}"
+        );
+        assert!(
+            turns[2].0 < -20.0 && turns[2].1 > 1.0,
+            "right command did not turn: {turns:?}"
+        );
+        assert!(
+            turns[1].0.abs() < 2.0 && turns[1].1.abs() < 0.2,
+            "straight command drifted: {turns:?}"
+        );
+        assert!(
+            (turns[0].0 + turns[2].0).abs() < 5.0,
+            "turns were asymmetric: {turns:?}"
+        );
     }
 
     #[test]

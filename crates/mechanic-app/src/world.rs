@@ -231,6 +231,7 @@ struct PendingFoundationSync {
 pub(crate) struct WorldDiagnostics {
     pub(crate) terrain_stage_ms: f64,
     pub(crate) selection_ms: f64,
+    pub(crate) selection_count: u64,
     pub(crate) column_sampling_ms: f64,
     pub(crate) polygonization_ms: f64,
     pub(crate) transitions_caps_ms: f64,
@@ -2592,6 +2593,7 @@ fn update_terrain_selection(
         match completed {
             Ok(result) => {
                 diagnostics.selection_ms = result.elapsed_ms;
+                diagnostics.selection_count = diagnostics.selection_count.saturating_add(1);
                 diagnostics.bounds_cache_bytes =
                     u64::try_from(result.selection.stats.cache_memory_bytes).unwrap_or(u64::MAX);
                 runtime.terrain_bounds_cache = result.bounds_cache;

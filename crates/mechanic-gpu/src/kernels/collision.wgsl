@@ -107,9 +107,16 @@ struct BearingProjectionFrame {
     arm_b: vec3<f32>,
     tangent_a: vec3<f32>,
     tangent_b: vec3<f32>,
+    // For the hinge matrix [A B; B^T D], cache A^-1, A^-1 B,
+    // and (D - B^T A^-1 B)^-1 once per tick.
+    inverse_linear: mat3x3<f32>,
+    linear_angular: mat2x3<f32>,
+    inverse_angular: mat2x2<f32>,
+    drive_inverse_inertia: f32,
 };
 
 var<private> bearing_projection_frames: array<BearingProjectionFrame, 64>;
+var<private> bearing_parent_rows: array<u32, 64>;
 
 struct WorldMass {
     inverse_inertia_x_mass: vec4<f32>,
@@ -141,7 +148,6 @@ const CACHED_NORMAL_ALIGNMENT: f32 = 0.98;
 const MAX_CACHED_POINT_MOVEMENT: f32 = 0.02;
 const CYLINDER_MANIFOLD_ALIGNMENT: f32 = 0.05;
 const MAX_SORTED_SERIAL_CONTACTS: u32 = 64u;
-const MAX_SMALL_MECHANISM_CONTACT_ITERATIONS: u32 = 384u;
 const INVALID_MANIFOLD_SLOT: u32 = 0xffffffffu;
 const MAX_MANIFOLD_PROBES: u32 = 256u;
 const ANALYTIC_CYLINDER_FLAG: u32 = 0x80000000u;
@@ -1214,6 +1220,10 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
 @compute @workgroup_size(1)
 fn finalize_active_contacts() {
     let active_count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
+    if active_count > 0u && (config.flags & 2u) != 0u {
+        atomicStore(&diagnostics[6], config.solver_iterations);
+        atomicStore(&diagnostics[7], config.solver_iterations);
+    }
     indirect_args[6] = (active_count + 255u) / 256u;
     indirect_args[7] = 1u;
     indirect_args[8] = 1u;
@@ -1587,68 +1597,6 @@ fn solve_accumulate_serial() {
     solve_contacts_serial(min(atomicLoad(&diagnostics[5]), config.pair_capacity));
 }
 
-fn solve_bearing_linear_axis_immediate(
-    body_a: u32,
-    body_b: u32,
-    arm_a: vec3<f32>,
-    arm_b: vec3<f32>,
-    relative: vec3<f32>,
-    direction: vec3<f32>,
-) {
-    let angular_a = cross(arm_a, direction);
-    let angular_b = cross(arm_b, direction);
-    let inverse_mass_a = world_masses[body_a].inverse_inertia_x_mass.w;
-    let inverse_mass_b = world_masses[body_b].inverse_inertia_x_mass.w;
-    let denominator = inverse_mass_a + inverse_mass_b
-        + dot(angular_a, inverse_inertia(body_a, angular_a))
-        + dot(angular_b, inverse_inertia(body_b, angular_b));
-    if denominator <= 1.0e-12 {
-        return;
-    }
-    let impulse = direction * (dot(relative, direction) / denominator);
-    linear_velocities[body_a] = vec4<f32>(
-        linear_velocities[body_a].xyz + impulse * inverse_mass_a,
-        0.0,
-    );
-    angular_velocities[body_a] = vec4<f32>(
-        angular_velocities[body_a].xyz
-            + inverse_inertia(body_a, cross(arm_a, impulse)),
-        0.0,
-    );
-    linear_velocities[body_b] = vec4<f32>(
-        linear_velocities[body_b].xyz - impulse * inverse_mass_b,
-        0.0,
-    );
-    angular_velocities[body_b] = vec4<f32>(
-        angular_velocities[body_b].xyz
-            + inverse_inertia(body_b, cross(arm_b, -impulse)),
-        0.0,
-    );
-}
-
-fn solve_bearing_angular_axis_immediate(
-    body_a: u32,
-    body_b: u32,
-    relative: vec3<f32>,
-    axis: vec3<f32>,
-) {
-    let inverse_a = inverse_inertia(body_a, axis);
-    let inverse_b = inverse_inertia(body_b, axis);
-    let denominator = dot(axis, inverse_a + inverse_b);
-    if denominator <= 1.0e-12 {
-        return;
-    }
-    let impulse = dot(relative, axis) / denominator;
-    angular_velocities[body_a] = vec4<f32>(
-        angular_velocities[body_a].xyz + inverse_a * impulse,
-        0.0,
-    );
-    angular_velocities[body_b] = vec4<f32>(
-        angular_velocities[body_b].xyz - inverse_b * impulse,
-        0.0,
-    );
-}
-
 fn drive_axis(constraint: DriveConstraint) -> vec3<f32> {
     let parent = constraint.metadata.y;
     let bearing = constraint.bearing;
@@ -1692,12 +1640,13 @@ fn project_drive_velocity_row_immediate(index: u32) {
     {
         return;
     }
+    project_bearing_velocity_row_immediate(index);
     let child = constraint.metadata.x;
     let parent = constraint.metadata.y;
     let axis = drive_axis(constraint);
     let inverse_parent = inverse_inertia(parent, axis);
     let inverse_child = inverse_inertia(child, axis);
-    let denominator = dot(axis, inverse_parent + inverse_child);
+    let denominator = bearing_projection_frames[index].drive_inverse_inertia;
     if denominator <= 1.0e-12 {
         return;
     }
@@ -1739,51 +1688,120 @@ fn project_bearing_velocity_row_immediate(index: u32) {
     let arm_a = frame.arm_a;
     let arm_b = frame.arm_b;
 
-    var anchor_velocity_a = linear_velocities[body_a].xyz
+    let anchor_velocity_a = linear_velocities[body_a].xyz
         + cross(angular_velocities[body_a].xyz, arm_a);
-    var anchor_velocity_b = linear_velocities[body_b].xyz
+    let anchor_velocity_b = linear_velocities[body_b].xyz
         + cross(angular_velocities[body_b].xyz, arm_b);
-    solve_bearing_linear_axis_immediate(
-        body_a,
-        body_b,
-        arm_a,
-        arm_b,
-        anchor_velocity_b - anchor_velocity_a,
-        vec3<f32>(1.0, 0.0, 0.0),
+    let relative_linear = anchor_velocity_b - anchor_velocity_a;
+    let relative_angular = angular_velocities[body_b].xyz - angular_velocities[body_a].xyz;
+    let angular_error = vec2<f32>(
+        dot(relative_angular, frame.tangent_a), dot(relative_angular, frame.tangent_b),
     );
-    anchor_velocity_a = linear_velocities[body_a].xyz
-        + cross(angular_velocities[body_a].xyz, arm_a);
-    anchor_velocity_b = linear_velocities[body_b].xyz
-        + cross(angular_velocities[body_b].xyz, arm_b);
-    solve_bearing_linear_axis_immediate(
-        body_a,
-        body_b,
-        arm_a,
-        arm_b,
-        anchor_velocity_b - anchor_velocity_a,
-        vec3<f32>(0.0, 1.0, 0.0),
+    // Solve the five hinge rows together using their Schur complement. A light
+    // off-centre knuckle must not trade anchor slip for forbidden rotation.
+    let angular_impulse = frame.inverse_angular
+        * (angular_error - transpose(frame.linear_angular) * relative_linear);
+    let impulse = frame.inverse_linear * relative_linear
+        - frame.linear_angular * angular_impulse;
+    let torque = frame.tangent_a * angular_impulse.x + frame.tangent_b * angular_impulse.y;
+    linear_velocities[body_a] += vec4<f32>(
+        impulse * world_masses[body_a].inverse_inertia_x_mass.w, 0.0,
     );
-    anchor_velocity_a = linear_velocities[body_a].xyz
-        + cross(angular_velocities[body_a].xyz, arm_a);
-    anchor_velocity_b = linear_velocities[body_b].xyz
-        + cross(angular_velocities[body_b].xyz, arm_b);
-    solve_bearing_linear_axis_immediate(
-        body_a,
-        body_b,
-        arm_a,
-        arm_b,
-        anchor_velocity_b - anchor_velocity_a,
-        vec3<f32>(0.0, 0.0, 1.0),
+    linear_velocities[body_b] -= vec4<f32>(
+        impulse * world_masses[body_b].inverse_inertia_x_mass.w, 0.0,
     );
+    angular_velocities[body_a] += vec4<f32>(
+        inverse_inertia(body_a, cross(arm_a, impulse) + torque), 0.0,
+    );
+    angular_velocities[body_b] -= vec4<f32>(
+        inverse_inertia(body_b, cross(arm_b, impulse) + torque), 0.0,
+    );
+}
 
-    var relative_angular = angular_velocities[body_b].xyz - angular_velocities[body_a].xyz;
-    solve_bearing_angular_axis_immediate(body_a, body_b, relative_angular, frame.tangent_a);
-    relative_angular = angular_velocities[body_b].xyz - angular_velocities[body_a].xyz;
-    solve_bearing_angular_axis_immediate(body_a, body_b, relative_angular, frame.tangent_b);
+fn bearing_linear_response(
+    a: u32, b: u32, ra: vec3<f32>, rb: vec3<f32>, axis: vec3<f32>,
+) -> vec3<f32> {
+    let inverse_mass = world_masses[a].inverse_inertia_x_mass.w
+        + world_masses[b].inverse_inertia_x_mass.w;
+    return axis * inverse_mass
+        + cross(inverse_inertia(a, cross(ra, axis)), ra)
+        + cross(inverse_inertia(b, cross(rb, axis)), rb);
+}
+
+fn prepare_bearing_block(index: u32) {
+    let bearing = drive_constraints[index].bearing;
+    let a = bearing.metadata.x;
+    let b = bearing.metadata.y;
+    let frame = bearing_projection_frames[index];
+    let ra = frame.arm_a;
+    let rb = frame.arm_b;
+    let x = bearing_linear_response(a, b, ra, rb, vec3<f32>(1.0, 0.0, 0.0));
+    let y = bearing_linear_response(a, b, ra, rb, vec3<f32>(0.0, 1.0, 0.0));
+    let z = bearing_linear_response(a, b, ra, rb, vec3<f32>(0.0, 0.0, 1.0));
+    let determinant = dot(x, cross(y, z));
+    if determinant <= 1.0e-30 {
+        return;
+    }
+    let inverse_linear = transpose(mat3x3<f32>(cross(y, z), cross(z, x), cross(x, y)))
+        * (1.0 / determinant);
+    let ia = inverse_inertia(a, frame.tangent_a);
+    let ib = inverse_inertia(b, frame.tangent_a);
+    let ja = inverse_inertia(a, frame.tangent_b);
+    let jb = inverse_inertia(b, frame.tangent_b);
+    let coupling = mat2x3<f32>(
+        cross(ia, ra) + cross(ib, rb), cross(ja, ra) + cross(jb, rb),
+    );
+    let linear_angular = inverse_linear * coupling;
+    let angular = mat2x2<f32>(
+        vec2<f32>(dot(frame.tangent_a, ia + ib), dot(frame.tangent_b, ia + ib)),
+        vec2<f32>(dot(frame.tangent_a, ja + jb), dot(frame.tangent_b, ja + jb)),
+    ) - transpose(coupling) * linear_angular;
+    let angular_determinant = angular[0][0] * angular[1][1] - angular[0][1] * angular[1][0];
+    if angular_determinant <= 1.0e-30 {
+        return;
+    }
+    bearing_projection_frames[index].inverse_linear = inverse_linear;
+    bearing_projection_frames[index].linear_angular = linear_angular;
+    bearing_projection_frames[index].inverse_angular = mat2x2<f32>(
+        vec2<f32>(angular[1][1], -angular[0][1]),
+        vec2<f32>(-angular[1][0], angular[0][0]),
+    ) * (1.0 / angular_determinant);
+    // The motor's effective inertia includes the five constrained directions.
+    // The impulse budget is still the same accumulated, torque-limited budget.
+    let axis = normalize(cross(frame.tangent_a, frame.tangent_b));
+    let inverse_axis_a = inverse_inertia(a, axis);
+    let inverse_axis_b = inverse_inertia(b, axis);
+    let motor_linear = cross(inverse_axis_a, ra) + cross(inverse_axis_b, rb);
+    let motor_angular = vec2<f32>(
+        dot(frame.tangent_a, inverse_axis_a + inverse_axis_b),
+        dot(frame.tangent_b, inverse_axis_a + inverse_axis_b),
+    );
+    let constrained_angular = bearing_projection_frames[index].inverse_angular
+        * (motor_angular - transpose(linear_angular) * motor_linear);
+    let constrained_linear = inverse_linear * motor_linear
+        - linear_angular * constrained_angular;
+    bearing_projection_frames[index].drive_inverse_inertia = max(
+        dot(axis, inverse_axis_a + inverse_axis_b)
+            - dot(motor_linear, constrained_linear) - dot(motor_angular, constrained_angular),
+        0.0,
+    );
 }
 
 fn prepare_bearing_projection_frames() {
     for (var index = 0u; index < config.bearing_count; index += 1u) {
+        bearing_parent_rows[index] = INVALID_MANIFOLD_SLOT;
+        let constraint = drive_constraints[index];
+        if constraint.metadata.w != INVALID_MANIFOLD_SLOT {
+            for (var parent_row = 0u; parent_row < config.bearing_count; parent_row += 1u) {
+                let parent = drive_constraints[parent_row];
+                if parent.metadata.w != INVALID_MANIFOLD_SLOT
+                    && parent.metadata.x == constraint.metadata.y
+                {
+                    bearing_parent_rows[index] = parent_row;
+                    break;
+                }
+            }
+        }
         let bearing = drive_constraints[index].bearing;
         let body_a = bearing.metadata.x;
         let body_b = bearing.metadata.y;
@@ -1801,7 +1819,12 @@ fn prepare_bearing_projection_frames() {
             quat_rotate(rotations[body_b], bearing.local_anchor_b.xyz),
             tangent_a,
             cross(hinge_axis, tangent_a),
+            mat3x3<f32>(),
+            mat2x3<f32>(),
+            mat2x2<f32>(),
+            0.0,
         );
+        prepare_bearing_block(index);
     }
 }
 
@@ -1811,34 +1834,52 @@ fn project_bearing_velocities_serial_immediate() {
         project_bearing_velocity_row_immediate(index);
     }
     for (var index = config.bearing_count; index > 0u; index -= 1u) {
+        project_drive_velocity_row_immediate(index - 1u);
         project_bearing_velocity_row_immediate(index - 1u);
     }
 }
 
-fn small_mechanism_contact_iterations() -> u32 {
-    var maximum_adjacent_mass_ratio = 1.0;
+// Carry a contact correction through the contacted body's tree path before
+// solving the next contact. The return pass restores the child's constraints
+// after its ancestors have responded. Closures retain the full sweep below.
+fn project_contact_bearing_path(body: u32) {
+    if body == INVALID_MANIFOLD_SLOT {
+        return;
+    }
+    var row = INVALID_MANIFOLD_SLOT;
     for (var index = 0u; index < config.bearing_count; index += 1u) {
-        let bearing = drive_constraints[index].bearing;
-        let inverse_mass_a = world_masses[bearing.metadata.x].inverse_inertia_x_mass.w;
-        let inverse_mass_b = world_masses[bearing.metadata.y].inverse_inertia_x_mass.w;
-        if inverse_mass_a > 0.0 && inverse_mass_b > 0.0 {
-            maximum_adjacent_mass_ratio = max(
-                maximum_adjacent_mass_ratio,
-                max(inverse_mass_a, inverse_mass_b) / min(inverse_mass_a, inverse_mass_b),
-            );
+        let constraint = drive_constraints[index];
+        if constraint.metadata.w != INVALID_MANIFOLD_SLOT && constraint.metadata.x == body {
+            row = index;
+            break;
         }
     }
-    let mass_ratio_iterations = u32(ceil(maximum_adjacent_mass_ratio * 4.5));
-    return min(
-        max(config.solver_iterations * 12u, mass_ratio_iterations),
-        MAX_SMALL_MECHANISM_CONTACT_ITERATIONS,
-    );
+    var path: array<u32, 64>;
+    var count = 0u;
+    while row != INVALID_MANIFOLD_SLOT && count < config.bearing_count {
+        path[count] = row;
+        count += 1u;
+        project_drive_velocity_row_immediate(row);
+        project_bearing_velocity_row_immediate(row);
+        row = bearing_parent_rows[row];
+    }
+    while count > 0u {
+        count -= 1u;
+        project_drive_velocity_row_immediate(path[count]);
+        project_bearing_velocity_row_immediate(path[count]);
+    }
 }
 
-// The small articulated contact route keeps the established serial ordering
-// and iteration count inside one dispatch. This removes the Metal command-pass
-// boundary between every contact and bearing projection without changing the
-// equations, warm start, or impulse persistence.
+fn solve_articulated_contact_immediate(contact_index: u32) {
+    solve_contact_immediate(contact_index);
+    project_contact_bearing_path(contacts[contact_index].metadata.x);
+    project_contact_bearing_path(contacts[contact_index].metadata.y);
+}
+
+// The small articulated contact route keeps contact and bearing corrections in
+// one ordered dispatch. Each contact includes a bounded leaf/root/leaf bearing
+// projection; each sweep ends with a full projection including loop closures.
+// The contact sweep budget stays fixed, independent of body mass ratios.
 @compute @workgroup_size(1)
 fn solve_small_mechanism_contacts() {
     var active_count = 0u;
@@ -1884,25 +1925,21 @@ fn solve_small_mechanism_contacts() {
         }
     }
     project_bearing_velocities_serial_immediate();
-    // Alternating a wheel contact with its bearing rows converges in proportion
-    // to the mass ratio across that joint. A fixed budget lets a light wheel on
-    // a heavy chassis sink, and the resulting tilt then creates false chassis
-    // contacts. Scale only this small serial path and keep it bounded.
-    let iterations = small_mechanism_contact_iterations();
+    let iterations = config.solver_iterations;
     for (var iteration = 1u; iteration < iterations; iteration += 1u) {
         if active_count <= MAX_SORTED_SERIAL_CONTACTS {
             for (var active_index = 0u; active_index < active_count; active_index += 1u) {
-                solve_contact_immediate(sorted_contacts[active_index]);
+                solve_articulated_contact_immediate(sorted_contacts[active_index]);
             }
             for (var active_index = active_count; active_index > 0u; active_index -= 1u) {
-                solve_contact_immediate(sorted_contacts[active_index - 1u]);
+                solve_articulated_contact_immediate(sorted_contacts[active_index - 1u]);
             }
         } else {
             for (var active_index = 0u; active_index < active_count; active_index += 1u) {
-                solve_contact_immediate(active_contacts[active_index]);
+                solve_articulated_contact_immediate(active_contacts[active_index]);
             }
             for (var active_index = active_count; active_index > 0u; active_index -= 1u) {
-                solve_contact_immediate(active_contacts[active_index - 1u]);
+                solve_articulated_contact_immediate(active_contacts[active_index - 1u]);
             }
         }
         project_bearing_velocities_serial_immediate();
