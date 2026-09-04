@@ -59,6 +59,15 @@ struct Drive {
     padding: f32,
 };
 
+struct DriveConstraint {
+    bearing: Bearing,
+    drive: Drive,
+    // Axis inertia, accumulated impulse, current angle, reserved.
+    state: vec4<f32>,
+    // Child body, parent body, tree direction, coordinate.
+    metadata: vec4<u32>,
+};
+
 const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 // Diagonal Jacobi rows share off-centre inertia terms and adjacent bodies.
 // Under-relaxation keeps their simultaneous impulses dissipative.
@@ -67,9 +76,13 @@ const GRAVITY_ALIGNED_BEARING_SLEEP_SPEED: f32 = 0.005;
 const INVALID_INDEX: u32 = 0xffffffffu;
 const DRIVE_MODE_PASSIVE: u32 = 0u;
 const DRIVE_MODE_ANGLE: u32 = 2u;
-// Angle targets settle rather than hunt: inside this band the servo asks for
-// zero speed instead of chasing the last thousandth of a radian.
+// The outer position loop converts error to a tapered velocity request. The
+// existing torque-limited velocity loop supplies derivative damping, matching
+// the cascaded position/velocity control used by physical servos.
+const DRIVE_ANGLE_POSITION_GAIN: f32 = 6.0;
+const DRIVE_ANGLE_BRAKE_MARGIN: f32 = 0.8;
 const DRIVE_ANGLE_DEADBAND: f32 = 0.0005;
+const SMALL_MECHANISM_SERIAL_CLEANUP_STEPS: u32 = 5u;
 const INVALID_NUMERIC_FLAG: u32 = 2u;
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
@@ -85,6 +98,7 @@ const INVALID_NUMERIC_FLAG: u32 = 2u;
 @group(0) @binding(10) var<storage, read> preorder: array<u32>;
 @group(0) @binding(11) var<storage, read_write> diagnostics: array<atomic<u32>>;
 @group(0) @binding(12) var<storage, read> drives: array<Drive>;
+@group(0) @binding(13) var<storage, read_write> drive_constraints: array<DriveConstraint>;
 
 fn quat_rotate(rotation: vec4<f32>, vector: vec3<f32>) -> vec3<f32> {
     let t = 2.0 * cross(rotation.xyz, vector);
@@ -113,6 +127,122 @@ fn add_delta(body: u32, linear: vec3<f32>, angular: vec3<f32>) {
     atomicAdd(&velocity_deltas[base + 3u], i32(round(angular.x * FIXED_VELOCITY_SCALE)));
     atomicAdd(&velocity_deltas[base + 4u], i32(round(angular.y * FIXED_VELOCITY_SCALE)));
     atomicAdd(&velocity_deltas[base + 5u], i32(round(angular.z * FIXED_VELOCITY_SCALE)));
+}
+
+@compute @workgroup_size(256)
+fn prepare_drive_constraints(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let index = invocation.x;
+    if index >= config.bearing_count {
+        return;
+    }
+    let coordinate = drive_constraints[index].metadata.w;
+    if coordinate != INVALID_INDEX {
+        drive_constraints[index].state.y = 0.0;
+        drive_constraints[index].state.z = coordinates[coordinate].angle;
+    }
+}
+
+fn drive_desired_speed(index: u32) -> f32 {
+    let constraint = drive_constraints[index];
+    let drive = constraint.drive;
+    var desired = clamp(drive.target_speed, -drive.max_speed, drive.max_speed);
+    if drive.mode == DRIVE_MODE_ANGLE {
+        let error = drive.target_angle - constraint.state.z;
+        let proportional = DRIVE_ANGLE_POSITION_GAIN * abs(error);
+        let brake = DRIVE_ANGLE_BRAKE_MARGIN
+            * sqrt(2.0 * drive.max_acceleration * abs(error));
+        desired = sign(error) * min(min(proportional, brake), drive.max_speed);
+        if abs(error) < DRIVE_ANGLE_DEADBAND {
+            desired = 0.0;
+        }
+    }
+    return desired;
+}
+
+fn drive_source_fade(measured: f32, requested: f32, no_load_speed: f32) -> f32 {
+    if no_load_speed <= 0.0 {
+        return 0.0;
+    }
+    if abs(requested) > 1.0e-6 && measured * requested > 0.0 {
+        return clamp(1.0 - abs(measured) / no_load_speed, 0.0, 1.0);
+    }
+    return 1.0;
+}
+
+fn drive_max_impulse(index: u32, measured: f32, desired: f32) -> f32 {
+    let constraint = drive_constraints[index];
+    let drive = constraint.drive;
+    let requested = desired - measured;
+    let acceleration =
+        drive.source_a_max_acceleration
+            * drive_source_fade(measured, requested, drive.source_a_no_load_speed)
+        + drive.source_b_max_acceleration
+            * drive_source_fade(measured, requested, drive.source_b_no_load_speed);
+    return max(acceleration * constraint.state.x * config.delta_seconds, 0.0);
+}
+
+fn project_drive_velocity_row(index: u32) {
+    let constraint = drive_constraints[index];
+    if constraint.metadata.w == INVALID_INDEX || constraint.drive.mode == DRIVE_MODE_PASSIVE {
+        return;
+    }
+    let child = constraint.metadata.x;
+    let parent = constraint.metadata.y;
+    let bearing = constraint.bearing;
+    var axis = normalize(quat_rotate(rotations[parent], bearing.local_axis_a.xyz));
+    if constraint.metadata.z != 0u {
+        axis = -normalize(quat_rotate(rotations[parent], bearing.local_axis_b.xyz));
+    }
+    let inverse_parent = world_inverse_inertia(parent, axis);
+    let inverse_child = world_inverse_inertia(child, axis);
+    let denominator = dot(axis, inverse_parent + inverse_child);
+    if denominator <= 1.0e-12 {
+        return;
+    }
+    let measured = dot(angular_velocities[child].xyz - angular_velocities[parent].xyz, axis);
+    let desired = drive_desired_speed(index);
+    let previous = constraint.state.y;
+    let limit = drive_max_impulse(index, measured, desired);
+    let accumulated = clamp(previous + (desired - measured) / denominator, -limit, limit);
+    let impulse = accumulated - previous;
+    drive_constraints[index].state.y = accumulated;
+    add_delta(parent, vec3<f32>(0.0), -inverse_parent * impulse);
+    add_delta(child, vec3<f32>(0.0), inverse_child * impulse);
+}
+
+fn project_drive_velocity_row_immediate(index: u32) {
+    let constraint = drive_constraints[index];
+    if constraint.metadata.w == INVALID_INDEX || constraint.drive.mode == DRIVE_MODE_PASSIVE {
+        return;
+    }
+    let child = constraint.metadata.x;
+    let parent = constraint.metadata.y;
+    let bearing = constraint.bearing;
+    var axis = normalize(quat_rotate(rotations[parent], bearing.local_axis_a.xyz));
+    if constraint.metadata.z != 0u {
+        axis = -normalize(quat_rotate(rotations[parent], bearing.local_axis_b.xyz));
+    }
+    let inverse_parent = world_inverse_inertia(parent, axis);
+    let inverse_child = world_inverse_inertia(child, axis);
+    let denominator = dot(axis, inverse_parent + inverse_child);
+    if denominator <= 1.0e-12 {
+        return;
+    }
+    let measured = dot(angular_velocities[child].xyz - angular_velocities[parent].xyz, axis);
+    let desired = drive_desired_speed(index);
+    let previous = constraint.state.y;
+    let limit = drive_max_impulse(index, measured, desired);
+    let accumulated = clamp(previous + (desired - measured) / denominator, -limit, limit);
+    let impulse = accumulated - previous;
+    drive_constraints[index].state.y = accumulated;
+    angular_velocities[parent] = vec4<f32>(
+        angular_velocities[parent].xyz - inverse_parent * impulse,
+        0.0,
+    );
+    angular_velocities[child] = vec4<f32>(
+        angular_velocities[child].xyz + inverse_child * impulse,
+        0.0,
+    );
 }
 
 fn solve_linear_axis(
@@ -219,7 +349,7 @@ fn solve_angular_axis_immediate(
 }
 
 fn project_bearing_velocity_row(index: u32) {
-    let bearing = bearings[index];
+    let bearing = drive_constraints[index].bearing;
     let body_a = bearing.metadata.x;
     let body_b = bearing.metadata.y;
     let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
@@ -281,6 +411,7 @@ fn project_bearing_velocity_row(index: u32) {
 @compute @workgroup_size(1)
 fn project_bearing_velocities_serial() {
     for (var index = 0u; index < config.bearing_count; index += 1u) {
+        project_drive_velocity_row_immediate(index);
         project_bearing_velocity_row(index);
     }
     for (var index = config.bearing_count; index > 0u; index -= 1u) {
@@ -294,7 +425,8 @@ fn project_bearing_velocities(@builtin(global_invocation_id) invocation: vec3<u3
     if index >= config.bearing_count {
         return;
     }
-    let bearing = bearings[index];
+    project_drive_velocity_row(index);
+    let bearing = drive_constraints[index].bearing;
     let body_a = bearing.metadata.x;
     let body_b = bearing.metadata.y;
     let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
@@ -340,17 +472,26 @@ fn apply_velocity_deltas(@builtin(global_invocation_id) invocation: vec3<u32>) {
     angular_velocities[body] = vec4<f32>(angular_velocities[body].xyz + angular_delta, 0.0);
 }
 
-// Small mechanisms fit in one workgroup, so every Jacobi projection/apply
-// boundary can use an explicit workgroup-wide storage barrier instead of a
-// separate Metal dispatch. The equations and iteration count remain identical
-// to the general two-entry-point route above.
+// Adjacent driven coordinates share bodies, so solve their motor impulses
+// serially before the parallel bearing projection. This prevents a wheel drive
+// from erasing its steering drive's correction while retaining the fused
+// workgroup path for the more numerous bearing rows. The shared accumulators
+// still cap every motor to one tick of torque.
 @compute @workgroup_size(256)
 fn project_small_mechanism_velocities(
     @builtin(local_invocation_index) index: u32,
 ) {
     for (var iteration = 0u; iteration < max(config.solver_iterations, 1u); iteration += 1u) {
+        if index == 0u {
+            for (var drive_index = 0u; drive_index < config.bearing_count; drive_index += 1u) {
+                project_drive_velocity_row_immediate(drive_index);
+            }
+        }
+        storageBarrier();
+        workgroupBarrier();
+
         if index < config.bearing_count {
-            let bearing = bearings[index];
+            let bearing = drive_constraints[index].bearing;
             let body_a = bearing.metadata.x;
             let body_b = bearing.metadata.y;
             let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
@@ -427,6 +568,17 @@ fn project_small_mechanism_velocities(
         storageBarrier();
         workgroupBarrier();
     }
+    if index == 0u {
+        for (var cleanup = 0u; cleanup < SMALL_MECHANISM_SERIAL_CLEANUP_STEPS; cleanup += 1u) {
+            for (var row = 0u; row < config.bearing_count; row += 1u) {
+                project_drive_velocity_row_immediate(row);
+                project_bearing_velocity_row(row);
+            }
+            for (var row = config.bearing_count; row > 0u; row -= 1u) {
+                project_bearing_velocity_row(row - 1u);
+            }
+        }
+    }
 }
 
 fn permitted_axis(body: u32) -> vec3<f32> {
@@ -467,47 +619,11 @@ fn advance_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if coordinate == INVALID_INDEX {
         return;
     }
-    // Constraint projection can feed world-space body motion back into a permitted
-    // coordinate after body damping. Damp the authoritative joint speed here so
-    // coupled passive bearings cannot retain a numerical limit cycle.
-    let measured = permitted_speed(body) * config.angular_damping;
+    // Body integration has already applied the once-per-tick damping. Integrate
+    // the joint velocity produced by the coupled constraint solve unchanged.
+    let measured = permitted_speed(body);
     let drive = drives[coordinate];
-    var speed = 0.0;
-    if drive.mode == DRIVE_MODE_PASSIVE {
-        speed = stabilized_speed(body, measured);
-    } else {
-        // A driven joint bypasses the gravity-aligned sleep clamp, which would
-        // otherwise zero any motor slower than its threshold. The measured speed
-        // still comes from real body motion, so gravity and contacts back-drive
-        // the joint and a weak motor stalls instead of holding its target.
-        var desired = clamp(drive.target_speed, -drive.max_speed, drive.max_speed);
-        if drive.mode == DRIVE_MODE_ANGLE {
-            let error = drive.target_angle - coordinates[coordinate].angle;
-            // Trapezoid profile: never ask for more speed than the torque budget
-            // can brake off within the remaining error, so the joint arrives and
-            // holds instead of overshooting and oscillating.
-            let brake = sqrt(2.0 * drive.max_acceleration * abs(error));
-            desired = sign(error) * min(brake, drive.max_speed);
-            if abs(error) < DRIVE_ANGLE_DEADBAND {
-                desired = 0.0;
-            }
-        }
-        let source_a_fade = select(
-            0.0,
-            clamp(1.0 - abs(measured) / max(drive.source_a_no_load_speed, 0.0001), 0.0, 1.0),
-            drive.source_a_no_load_speed > 0.0,
-        );
-        let source_b_fade = select(
-            0.0,
-            clamp(1.0 - abs(measured) / max(drive.source_b_no_load_speed, 0.0001), 0.0, 1.0),
-            drive.source_b_no_load_speed > 0.0,
-        );
-        let available_acceleration =
-            drive.source_a_max_acceleration * source_a_fade
-            + drive.source_b_max_acceleration * source_b_fade;
-        let budget = available_acceleration * config.delta_seconds;
-        speed = measured + clamp(desired - measured, -budget, budget);
-    }
+    var speed = select(measured, stabilized_speed(body, measured), drive.mode == DRIVE_MODE_PASSIVE);
     var angle = coordinates[coordinate].angle + speed * config.delta_seconds;
     if angle < drive.min_angle {
         angle = drive.min_angle;

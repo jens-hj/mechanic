@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, Ordering},
@@ -363,10 +363,21 @@ impl GpuExternalImpulse {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct GpuExternalImpulseBatch {
     metadata: [u32; 4],
     rows: [GpuExternalImpulse; EXTERNAL_IMPULSE_BATCH_CAPACITY],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct GpuDriveConstraint {
+    bearing: GpuBearing,
+    drive: GpuMechanismDrive,
+    /// Axis inertia, accumulated impulse, current angle, reserved.
+    state: [f32; 4],
+    /// Child body, parent body, tree direction, coordinate.
+    metadata: [u32; 4],
 }
 
 /// Custom compute resources backed by Bevy's shared wgpu device and queue.
@@ -501,6 +512,8 @@ struct MechanismResources {
     _bodies: wgpu::Buffer,
     coordinates: wgpu::Buffer,
     drives: wgpu::Buffer,
+    drive_constraints: wgpu::Buffer,
+    drive_constraint_rows: Vec<u32>,
     _preorder: wgpu::Buffer,
     _contraction_schedule: wgpu::Buffer,
     velocity_deltas: wgpu::Buffer,
@@ -538,6 +551,8 @@ struct MechanismResources {
     project_velocity_serial_bind_group: wgpu::BindGroup,
     apply_velocity_pipeline: wgpu::ComputePipeline,
     apply_velocity_bind_group: wgpu::BindGroup,
+    prepare_drives_pipeline: wgpu::ComputePipeline,
+    prepare_drives_bind_group: wgpu::BindGroup,
     advance_coordinates_pipeline: wgpu::ComputePipeline,
     advance_coordinates_bind_group: wgpu::BindGroup,
     capture_coordinates_pipeline: wgpu::ComputePipeline,
@@ -1017,7 +1032,7 @@ impl GpuPhysics {
             &colliders,
             &convex_shapes,
             &suppressed_pairs,
-            &bearings,
+            &mechanism.drive_constraints,
             &body_components,
             pipeline_config.mechanism_self_collisions,
         );
@@ -1547,6 +1562,14 @@ impl GpuPhysics {
     fn encode_mechanism_passes(&self, encoder: &mut wgpu::CommandEncoder) {
         let mechanism = &self.mechanism;
         let workgroups = self.body_count.div_ceil(256);
+        direct_compute_pass(
+            encoder,
+            "mechanic prepare drive constraints",
+            &mechanism.prepare_drives_pipeline,
+            &mechanism.prepare_drives_bind_group,
+            self.bearing_count.div_ceil(256),
+            None,
+        );
         self.encode_bearing_velocity_projection(encoder, true);
         direct_compute_pass(
             encoder,
@@ -2399,6 +2422,13 @@ impl GpuPhysics {
         }
         if !drives.is_empty() {
             queue.write_buffer(&self.mechanism.drives, 0, cast_slice(drives));
+            for (coordinate, drive) in drives.iter().enumerate() {
+                let row = self.mechanism.drive_constraint_rows[coordinate];
+                let offset = u64::from(row)
+                    * u64::try_from(size_of::<GpuDriveConstraint>()).unwrap_or(u64::MAX)
+                    + u64::try_from(size_of::<GpuBearing>()).unwrap_or(u64::MAX);
+                queue.write_buffer(&self.mechanism.drive_constraints, offset, bytes_of(drive));
+            }
         }
         Ok(())
     }
@@ -2463,11 +2493,39 @@ fn create_mechanism_resources(
         .enumerate()
         .map(|(row, bearing)| (bearing.source_bearing, row))
         .collect::<BTreeMap<_, _>>();
+    let coordinate_by_bearing = creation
+        .loop_topology
+        .tree_bearings
+        .iter()
+        .enumerate()
+        .map(|(coordinate, &bearing)| (bearing, coordinate))
+        .collect::<BTreeMap<_, _>>();
+    let powered_components = creation
+        .loop_topology
+        .body_parents
+        .iter()
+        .filter_map(|body| {
+            let coordinate = *coordinate_by_bearing.get(&body.tree_bearing?)?;
+            (creation.coordinate_drives.get(coordinate)?.mode != mechanic_core::DriveMode::Passive)
+                .then_some(body.component_index)
+        })
+        .collect::<BTreeSet<_>>();
     let root_flags = creation
         .loop_topology
         .body_parents
         .iter()
-        .map(|body| u32::from(body.is_root))
+        .map(|body| {
+            let powered_coordinate = body
+                .tree_bearing
+                .and_then(|bearing| coordinate_by_bearing.get(&bearing))
+                .and_then(|&coordinate| creation.coordinate_drives.get(coordinate))
+                .is_some_and(|drive| drive.mode != mechanic_core::DriveMode::Passive);
+            u32::from(body.is_root)
+                | (u32::from(
+                    powered_coordinate
+                        || (body.is_root && powered_components.contains(&body.component_index)),
+                ) << 1)
+        })
         .collect::<Vec<_>>();
     let bodies = creation
         .compounds
@@ -2574,6 +2632,77 @@ fn create_mechanism_resources(
         vec![GpuMechanismDrive::PASSIVE; coordinate_count as usize]
     };
     let drives = create_storage_buffer(device, "mechanic mechanism drives", &drive_rows);
+    let child_by_bearing = creation
+        .loop_topology
+        .body_parents
+        .iter()
+        .enumerate()
+        .filter_map(|(body, topology)| {
+            topology.tree_bearing.map(|bearing| {
+                (
+                    bearing,
+                    (
+                        u32::try_from(body).unwrap_or(u32::MAX),
+                        topology.parent_body,
+                        topology.bearing_direction,
+                    ),
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut drive_constraint_rows = vec![u32::MAX; coordinate_count as usize];
+    let drive_constraint_rows_gpu = creation
+        .bearings
+        .iter()
+        .enumerate()
+        .map(|(row, bearing)| {
+            let coordinate = bearing.coordinate_index.unwrap_or(u32::MAX);
+            if coordinate != u32::MAX {
+                drive_constraint_rows[coordinate as usize] = u32::try_from(row).unwrap_or(u32::MAX);
+            }
+            let (child, parent, direction) = child_by_bearing
+                .get(&bearing.source_bearing)
+                .copied()
+                .unwrap_or((u32::MAX, u32::MAX, 0));
+            let drive = usize::try_from(coordinate)
+                .ok()
+                .and_then(|coordinate| drive_rows.get(coordinate))
+                .copied()
+                .unwrap_or(GpuMechanismDrive::PASSIVE);
+            let axis_inertia = usize::try_from(coordinate)
+                .ok()
+                .and_then(|coordinate| {
+                    creation
+                        .loop_topology
+                        .coordinate_axis_inertia
+                        .get(coordinate)
+                })
+                .copied()
+                .unwrap_or(f32::INFINITY);
+            GpuDriveConstraint {
+                bearing: GpuBearing {
+                    local_anchor_a: vec4(bearing.local_anchor_a, 0.0),
+                    local_anchor_b: vec4(bearing.local_anchor_b, 0.0),
+                    local_axis_a: vec4(bearing.local_axis_a, 0.0),
+                    local_axis_b: vec4(bearing.local_axis_b, 0.0),
+                    metadata: [
+                        bearing.compound_a,
+                        bearing.compound_b,
+                        coordinate,
+                        u32::from(bearing.coordinate_index.is_none()),
+                    ],
+                },
+                drive,
+                state: [axis_inertia, 0.0, 0.0, 0.0],
+                metadata: [child, parent, direction, coordinate],
+            }
+        })
+        .collect::<Vec<_>>();
+    let drive_constraints = create_storage_buffer(
+        device,
+        "mechanic drive constraints",
+        &drive_constraint_rows_gpu,
+    );
     let preorder = create_readonly_storage_buffer(device, "mechanic mechanism preorder", &preorder);
     let contraction_schedule = create_readonly_storage_buffer(
         device,
@@ -2743,6 +2872,23 @@ fn create_mechanism_resources(
         "mechanic articulated dynamics kernels",
         include_str!("kernels/articulated.wgsl"),
     );
+    let prepare_drives_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic prepare drive constraints",
+        &articulated_shader,
+        "prepare_drive_constraints",
+    );
+    let prepare_drives_bind_group = bind_group(
+        device,
+        "mechanic prepare drive constraint bindings",
+        &prepare_drives_pipeline,
+        &[
+            entry(0, config),
+            entry(8, &coordinates),
+            entry(13, &drive_constraints),
+        ],
+    );
     let project_velocity_pipeline = compute_pipeline(
         pipelines,
         device,
@@ -2760,8 +2906,8 @@ fn create_mechanism_resources(
             entry(3, linear_velocities),
             entry(4, angular_velocities),
             entry(5, masses),
-            entry(6, bearings),
             entry(9, &velocity_deltas),
+            entry(13, &drive_constraints),
         ],
     );
     let project_small_velocity_pipeline = compute_pipeline(
@@ -2781,8 +2927,8 @@ fn create_mechanism_resources(
             entry(3, linear_velocities),
             entry(4, angular_velocities),
             entry(5, masses),
-            entry(6, bearings),
             entry(9, &velocity_deltas),
+            entry(13, &drive_constraints),
         ],
     );
     let project_velocity_serial_pipeline = compute_pipeline(
@@ -2802,7 +2948,7 @@ fn create_mechanism_resources(
             entry(3, linear_velocities),
             entry(4, angular_velocities),
             entry(5, masses),
-            entry(6, bearings),
+            entry(13, &drive_constraints),
         ],
     );
     let apply_velocity_pipeline = compute_pipeline(
@@ -2996,6 +3142,8 @@ fn create_mechanism_resources(
         _bodies: bodies,
         coordinates,
         drives,
+        drive_constraints,
+        drive_constraint_rows,
         _preorder: preorder,
         _contraction_schedule: contraction_schedule,
         velocity_deltas,
@@ -3033,6 +3181,8 @@ fn create_mechanism_resources(
         project_velocity_serial_bind_group,
         apply_velocity_pipeline,
         apply_velocity_bind_group,
+        prepare_drives_pipeline,
+        prepare_drives_bind_group,
         advance_coordinates_pipeline,
         advance_coordinates_bind_group,
         capture_coordinates_pipeline,
@@ -3343,7 +3493,7 @@ fn create_collision_resources(
     colliders: &wgpu::Buffer,
     convex_shapes: &wgpu::Buffer,
     suppressed_pairs: &wgpu::Buffer,
-    bearings: &wgpu::Buffer,
+    drive_constraints: &wgpu::Buffer,
     body_components: &[u32],
     mechanism_self_collisions: bool,
 ) -> CollisionResources {
@@ -3637,7 +3787,7 @@ fn create_collision_resources(
             entry(16, &active_contacts),
             entry(25, angular_velocities),
             entry(26, &world_masses),
-            entry(30, bearings),
+            entry(30, drive_constraints),
         ],
     );
     let solve_apply_pipeline = compute_pipeline(
@@ -4092,8 +4242,8 @@ mod tests {
     use mechanic_core::{
         BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
         ConstructionMaterial, CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec,
-        DriveMode, FaceKind, FaceRef, GridRotation, PartId, PipeBendDimensions, PipeBendSpec,
-        RigidLinkSpec, WeldSpec,
+        DriveMode, EngineKind, FaceKind, FaceRef, GearboxConfig, GridRotation, PartId,
+        PipeBendDimensions, PipeBendSpec, RigidLinkSpec, ServoSpec, WeldSpec,
     };
 
     use crate::GpuMechanismCoordinate;
@@ -4742,8 +4892,47 @@ mod tests {
         link.limits = limits;
         link.program = program;
         graph.apply(BuildCommand::AddDriveLink(link)).unwrap();
-        let creation = graph.compile().unwrap();
+        let mut creation = graph.compile().unwrap();
+        creation.coordinate_drives[0] = test_coordinate_drive(
+            &creation,
+            limits,
+            program
+                .state(0)
+                .expect("test program has one state")
+                .target(),
+        );
         (graph, creation)
+    }
+
+    fn test_coordinate_drive(
+        creation: &mechanic_core::CompiledCreation,
+        limits: mechanic_core::DriveLimits,
+        target: mechanic_core::DriveTarget,
+    ) -> CoordinateDrive {
+        let axis_inertia = creation.loop_topology.coordinate_axis_inertia[0];
+        let torque = limits.max_torque_newton_meters();
+        let acceleration = if torque.is_infinite() {
+            100.0
+        } else {
+            torque / axis_inertia
+        };
+        CoordinateDrive {
+            mode: if target.angle().is_some() {
+                DriveMode::Angle
+            } else {
+                DriveMode::Speed
+            },
+            target_speed: target.speed().unwrap_or(0.0),
+            target_angle: target.angle().unwrap_or(0.0),
+            max_speed: limits.max_speed_rad_s(),
+            max_acceleration: acceleration,
+            source_a_max_acceleration: acceleration,
+            source_a_no_load_speed: limits.max_speed_rad_s(),
+            source_b_max_acceleration: 0.0,
+            source_b_no_load_speed: 0.0,
+            min_angle: limits.min_angle(),
+            max_angle: limits.max_angle(),
+        }
     }
 
     /// Signed joint angle of the first bearing, read back from a snapshot.
@@ -4986,11 +5175,19 @@ mod tests {
                 actuator: drive_spec.actuator,
             })
             .unwrap();
-        let rows = creation
-            .resolve_coordinate_drives(&graph)
-            .into_iter()
-            .map(crate::GpuMechanismDrive::from)
-            .collect::<Vec<_>>();
+        let target = graph
+            .drive_links()
+            .next()
+            .and_then(|(_, spec)| spec.resolved_target(0))
+            .unwrap();
+        let rows = [test_coordinate_drive(
+            &creation,
+            limits(3.0, f32::INFINITY),
+            target,
+        )]
+        .into_iter()
+        .map(crate::GpuMechanismDrive::from)
+        .collect::<Vec<_>>();
         gpu.write_mechanism_drives(&queue, &rows).unwrap();
 
         for tick in 1..=60 {
@@ -5132,8 +5329,16 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn pipe_bend_suspension_car_fixture() -> ArticulatedCarFixture {
+        // The overshoot-only fixture models a heavy hydraulic steering rack.
+        // Powered steering coverage below uses the production Servo torque.
+        pipe_bend_suspension_car_fixture_with_steering_torque(64_000.0)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn pipe_bend_suspension_car_fixture_with_steering_torque(
+        steering_torque: f32,
+    ) -> ArticulatedCarFixture {
         let mut graph = ConstructionGraph::new();
         let static_marker = spawned_part(
             graph
@@ -5264,14 +5469,17 @@ mod tests {
         }
 
         let mut creation = graph.compile().unwrap();
-        for drive in &mut creation.coordinate_drives[..4] {
+        for coordinate in 0..4 {
+            let acceleration =
+                steering_torque / creation.loop_topology.coordinate_axis_inertia[coordinate];
+            let drive = &mut creation.coordinate_drives[coordinate];
             *drive = CoordinateDrive {
                 mode: DriveMode::Angle,
                 target_speed: 0.0,
                 target_angle: 0.0,
                 max_speed: std::f32::consts::PI,
-                max_acceleration: 3.65,
-                source_a_max_acceleration: 3.65,
+                max_acceleration: acceleration,
+                source_a_max_acceleration: acceleration,
                 source_a_no_load_speed: std::f32::consts::PI,
                 source_b_max_acceleration: 0.0,
                 source_b_no_load_speed: 0.0,
@@ -5293,6 +5501,91 @@ mod tests {
         dynamic_bodies.extend(wheel_bodies.iter().copied());
         dynamic_bodies.sort_unstable();
         dynamic_bodies.dedup();
+        ArticulatedCarFixture {
+            creation,
+            chassis,
+            dynamic_bodies,
+            wheel_bodies,
+        }
+    }
+
+    fn rigid_axle_car_fixture() -> ArticulatedCarFixture {
+        let mut graph = ConstructionGraph::new();
+        let chassis_part = spawned_part(
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [12, 2, 11],
+                        BuildPose::from_position_ticks(
+                            IVec3::new(0, 300, 0),
+                            GridRotation::default(),
+                        ),
+                    )
+                    .unwrap()
+                    .with_material(ConstructionMaterial::Stone),
+                ))
+                .unwrap(),
+        );
+        let mut wheels = Vec::new();
+        for x_ticks in [-400_i32, 400] {
+            for z_ticks in [-600_i32, 600] {
+                let z_sign = z_ticks.signum();
+                let anchor_x = if x_ticks < 0 { -1.0 } else { 1.0 };
+                let anchor_z = if z_ticks < 0 { -1.375 } else { 1.375 };
+                let wheel = spawned_part(
+                    graph
+                        .apply(BuildCommand::SpawnCylinder(
+                            CylinderSpec::new(
+                                CylinderDimensions::new(0.95, 0.0, 0.25).unwrap(),
+                                BuildPose::from_position_ticks(
+                                    IVec3::new(x_ticks, 200, z_ticks),
+                                    if z_sign > 0 {
+                                        GridRotation::new(1, 0, 0)
+                                    } else {
+                                        GridRotation::new(1, 2, 2)
+                                    },
+                                ),
+                            )
+                            .with_material(ConstructionMaterial::Rubber),
+                        ))
+                        .unwrap(),
+                );
+                wheels.push(wheel);
+                graph
+                    .apply(BuildCommand::AddBearing(BearingSpec::new(
+                        FaceRef::part(
+                            chassis_part,
+                            if z_sign > 0 {
+                                FaceKind::PositiveZ
+                            } else {
+                                FaceKind::NegativeZ
+                            },
+                        ),
+                        FaceRef::part(wheel, FaceKind::NegativeY),
+                        Vec3::new(anchor_x, 0.5, anchor_z),
+                        if z_sign > 0 { Vec3::Z } else { Vec3::NEG_Z },
+                    )))
+                    .unwrap();
+            }
+        }
+
+        let mut creation = graph.compile().unwrap();
+        for drive in &mut creation.coordinate_drives {
+            drive.mode = DriveMode::Speed;
+            drive.target_speed = 0.0;
+            drive.max_speed = std::f32::consts::TAU * 6.0;
+        }
+        let body_for = |part| {
+            creation
+                .part_to_compound
+                .iter()
+                .find_map(|(candidate, body)| (*candidate == part).then_some(*body))
+                .unwrap()
+        };
+        let chassis = body_for(chassis_part);
+        let wheel_bodies = wheels.into_iter().map(body_for).collect::<Vec<_>>();
+        let mut dynamic_bodies = vec![chassis];
+        dynamic_bodies.extend(wheel_bodies.iter().copied());
         ArticulatedCarFixture {
             creation,
             chassis,
@@ -5803,6 +6096,503 @@ mod tests {
     }
 
     #[test]
+    fn steering_servos_reach_angle_without_overshooting() {
+        let fixture = pipe_bend_suspension_car_fixture();
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let gpu = GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &fixture.creation,
+            GpuPhysicsConfig {
+                mechanism_self_collisions: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for tick in 1..=240 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+
+        let target = std::f32::consts::FRAC_PI_6;
+        let mut drives = fixture
+            .creation
+            .coordinate_drives
+            .iter()
+            .copied()
+            .map(crate::GpuMechanismDrive::from)
+            .collect::<Vec<_>>();
+        for drive in &mut drives[..4] {
+            drive.target_angle = target;
+        }
+        gpu.write_mechanism_drives(&queue, &drives).unwrap();
+
+        let bearing_angle = |snapshot: &[crate::GpuTransform], coordinate: usize| {
+            let source_bearing = fixture.creation.loop_topology.tree_bearings[coordinate];
+            let bearing = fixture
+                .creation
+                .bearings
+                .iter()
+                .find(|bearing| bearing.source_bearing == source_bearing)
+                .unwrap();
+            let relative = relative_bearing_rotation(snapshot, bearing);
+            2.0 * relative
+                .xyz()
+                .dot(bearing.local_axis_a.normalize())
+                .atan2(relative.w)
+        };
+        let mut maximum_angles = [f32::NEG_INFINITY; 4];
+        let mut final_angles = [0.0; 4];
+        let mut previous_tick = 240;
+        for sample_tick in 241..=480 {
+            for tick in previous_tick + 1..=sample_tick {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            previous_tick = sample_tick;
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let snapshot = gpu
+                .read_snapshot_transforms(&device, &queue, (sample_tick % 3) as u8)
+                .unwrap();
+            for coordinate in 0..4 {
+                let angle = bearing_angle(&snapshot, coordinate);
+                maximum_angles[coordinate] = maximum_angles[coordinate].max(angle);
+                final_angles[coordinate] = angle;
+            }
+        }
+
+        let tolerance = 0.15_f32.to_radians();
+        for coordinate in 0..4 {
+            assert!(
+                maximum_angles[coordinate] <= target + tolerance,
+                "steering coordinate {coordinate} overshot 30 degrees to {} degrees",
+                maximum_angles[coordinate].to_degrees(),
+            );
+            assert!(
+                (final_angles[coordinate] - target).abs() <= tolerance,
+                "steering coordinate {coordinate} settled at {} degrees",
+                final_angles[coordinate].to_degrees(),
+            );
+        }
+        assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn production_servos_hold_steering_under_first_gear_gas_drive() {
+        const FIRST_GEAR_RATIO: f32 = 3.0;
+        const COMMAND_SPEED: f32 = std::f32::consts::TAU * 6.0;
+        const STEERING_COORDINATES: usize = 4;
+        const HOLD_TOLERANCE: f32 = std::f32::consts::PI / 180.0;
+
+        let mut fixture = pipe_bend_suspension_car_fixture_with_steering_torque(
+            ServoSpec::STALL_TORQUE_NEWTON_METERS,
+        );
+        assert_eq!(fixture.creation.coordinate_drives.len(), 8);
+        for coordinate in 0..STEERING_COORDINATES {
+            let inertia = fixture.creation.loop_topology.coordinate_axis_inertia[coordinate];
+            let compiled_torque =
+                fixture.creation.coordinate_drives[coordinate].source_a_max_acceleration * inertia;
+            assert!((compiled_torque - ServoSpec::STALL_TORQUE_NEWTON_METERS).abs() < 0.01);
+        }
+        for coordinate in STEERING_COORDINATES..fixture.creation.coordinate_drives.len() {
+            let source_bearing = fixture.creation.loop_topology.tree_bearings[coordinate];
+            let bearing = fixture
+                .creation
+                .bearings
+                .iter()
+                .find(|bearing| bearing.source_bearing == source_bearing)
+                .unwrap();
+            let world_axis = fixture.creation.compounds[bearing.compound_a as usize].root_rotation
+                * bearing.local_axis_a;
+            let inertia = fixture.creation.loop_topology.coordinate_axis_inertia[coordinate];
+            let acceleration =
+                EngineKind::Gas.stall_torque_newton_meters() * FIRST_GEAR_RATIO / 4.0 / inertia;
+            fixture.creation.coordinate_drives[coordinate] = CoordinateDrive {
+                mode: DriveMode::Speed,
+                target_speed: 0.0,
+                target_angle: 0.0,
+                max_speed: EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU
+                    / 60.0
+                    / FIRST_GEAR_RATIO,
+                max_acceleration: acceleration,
+                source_a_max_acceleration: 0.0,
+                source_a_no_load_speed: 0.0,
+                source_b_max_acceleration: acceleration,
+                source_b_no_load_speed: EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU
+                    / 60.0
+                    / FIRST_GEAR_RATIO,
+                min_angle: f32::NEG_INFINITY,
+                max_angle: f32::INFINITY,
+            };
+            assert!(world_axis.cross(Vec3::Y).dot(Vec3::X).abs() > 0.99);
+        }
+
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let gpu = GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &fixture.creation,
+            GpuPhysicsConfig {
+                mechanism_self_collisions: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for tick in 1..=240 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        let settled = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+        let starting_position = transform_position(settled[fixture.chassis as usize]);
+        let mut drives = fixture
+            .creation
+            .coordinate_drives
+            .iter()
+            .copied()
+            .map(crate::GpuMechanismDrive::from)
+            .collect::<Vec<_>>();
+        for (coordinate, drive) in drives.iter_mut().enumerate().skip(STEERING_COORDINATES) {
+            let source_bearing = fixture.creation.loop_topology.tree_bearings[coordinate];
+            let bearing = fixture
+                .creation
+                .bearings
+                .iter()
+                .find(|bearing| bearing.source_bearing == source_bearing)
+                .unwrap();
+            let world_axis = fixture.creation.compounds[bearing.compound_a as usize].root_rotation
+                * bearing.local_axis_a;
+            drive.target_speed = world_axis.cross(Vec3::Y).dot(Vec3::X).signum() * COMMAND_SPEED;
+        }
+        gpu.write_mechanism_drives(&queue, &drives).unwrap();
+        let bearing_angle = |snapshot: &[crate::GpuTransform], coordinate: usize| {
+            let source_bearing = fixture.creation.loop_topology.tree_bearings[coordinate];
+            let bearing = fixture
+                .creation
+                .bearings
+                .iter()
+                .find(|bearing| bearing.source_bearing == source_bearing)
+                .unwrap();
+            let relative = relative_bearing_rotation(snapshot, bearing);
+            2.0 * relative
+                .xyz()
+                .dot(bearing.local_axis_a.normalize())
+                .atan2(relative.w)
+        };
+
+        let mut maximum_center_error = 0.0_f32;
+        let mut maximum_horizontal_travel = 0.0_f32;
+        for sample_tick in (243..=600).step_by(3) {
+            for tick in sample_tick - 2..=sample_tick {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let snapshot = gpu
+                .read_snapshot_transforms(&device, &queue, (sample_tick % 3) as u8)
+                .unwrap();
+            let displacement =
+                transform_position(snapshot[fixture.chassis as usize]) - starting_position;
+            maximum_horizontal_travel = maximum_horizontal_travel
+                .max(Vec3::new(displacement.x, 0.0, displacement.z).length());
+            for coordinate in 0..STEERING_COORDINATES {
+                maximum_center_error =
+                    maximum_center_error.max(bearing_angle(&snapshot, coordinate).abs());
+            }
+        }
+        assert!(
+            maximum_horizontal_travel > 1.0,
+            "first-gear drive moved the chassis only {maximum_horizontal_travel} m",
+        );
+        assert!(
+            maximum_center_error <= HOLD_TOLERANCE,
+            "full first-gear drive deflected centred steering by {} degrees",
+            maximum_center_error.to_degrees(),
+        );
+
+        let target = std::f32::consts::FRAC_PI_6;
+        for drive in &mut drives[..STEERING_COORDINATES] {
+            drive.target_angle = target;
+        }
+        gpu.write_mechanism_drives(&queue, &drives).unwrap();
+        let mut maximum_settled_error = 0.0_f32;
+        let mut final_angles = [0.0; STEERING_COORDINATES];
+        for sample_tick in (603..=1_080).step_by(3) {
+            for tick in sample_tick - 2..=sample_tick {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let snapshot = gpu
+                .read_snapshot_transforms(&device, &queue, (sample_tick % 3) as u8)
+                .unwrap();
+            for (coordinate, final_angle) in final_angles.iter_mut().enumerate() {
+                let angle = bearing_angle(&snapshot, coordinate);
+                *final_angle = angle;
+                if sample_tick >= 960 {
+                    maximum_settled_error = maximum_settled_error.max((angle - target).abs());
+                }
+            }
+        }
+        for (coordinate, angle) in final_angles.into_iter().enumerate() {
+            assert!(
+                (angle - target).abs() <= HOLD_TOLERANCE,
+                "steering coordinate {coordinate} reached {} instead of 30 degrees under drive",
+                angle.to_degrees(),
+            );
+        }
+        assert!(
+            maximum_settled_error <= HOLD_TOLERANCE,
+            "powered steering wandered by {} degrees after settling",
+            maximum_settled_error.to_degrees(),
+        );
+        assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn sustained_gas_drive_stays_forward_with_bounded_longitudinal_slip() {
+        const COMMAND_SPEED: f32 = std::f32::consts::TAU * 6.0;
+        const WHEEL_RADIUS: f32 = 0.475;
+        const SAMPLE_TICKS: u64 = 3;
+        const SAMPLE_SECONDS: f32 = 0.05;
+        const DRIVE_END_TICK: u64 = 3_600;
+        const REVERSE_TICKS: u64 = 720;
+        const REVERSE_SECONDS: f32 = 12.0;
+
+        let fixture = rigid_axle_car_fixture();
+        let mass = fixture
+            .dynamic_bodies
+            .iter()
+            .map(|&body| {
+                fixture.creation.compounds[body as usize]
+                    .mass_properties
+                    .mass
+            })
+            .sum::<f32>();
+        assert!(
+            (11_000.0..=12_500.0).contains(&mass),
+            "fixture mass was {mass} kg"
+        );
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let gpu = GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &fixture.creation,
+            GpuPhysicsConfig {
+                mechanism_self_collisions: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for tick in 1..=240 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        let gearbox = GearboxConfig::for_depth(2, true);
+        assert_eq!(gearbox.ratios(), [4.0, 3.0, 1.0]);
+        let rolling_sign = |bearing: &mechanic_core::CompiledBearing| {
+            let world_axis = fixture.creation.compounds[bearing.compound_a as usize].root_rotation
+                * bearing.local_axis_a;
+            world_axis.cross(Vec3::Y).dot(Vec3::X).signum()
+        };
+        let make_drives = |ratio: f32, command_speed: f32| {
+            let output_speed = EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU / 60.0 / ratio;
+            let mut drives = fixture
+                .creation
+                .coordinate_drives
+                .iter()
+                .copied()
+                .map(crate::GpuMechanismDrive::from)
+                .collect::<Vec<_>>();
+            for (coordinate, drive) in drives.iter_mut().enumerate() {
+                let source_bearing = fixture.creation.loop_topology.tree_bearings[coordinate];
+                let bearing = fixture
+                    .creation
+                    .bearings
+                    .iter()
+                    .find(|bearing| bearing.source_bearing == source_bearing)
+                    .unwrap();
+                let acceleration = EngineKind::Gas.stall_torque_newton_meters() * ratio
+                    / 4.0
+                    / fixture.creation.loop_topology.coordinate_axis_inertia[coordinate];
+                *drive = crate::GpuMechanismDrive::from(CoordinateDrive {
+                    mode: DriveMode::Speed,
+                    target_speed: rolling_sign(bearing) * command_speed,
+                    target_angle: 0.0,
+                    max_speed: output_speed,
+                    max_acceleration: acceleration,
+                    source_a_max_acceleration: 0.0,
+                    source_a_no_load_speed: 0.0,
+                    source_b_max_acceleration: acceleration,
+                    source_b_no_load_speed: output_speed,
+                    min_angle: f32::NEG_INFINITY,
+                    max_angle: f32::INFINITY,
+                });
+            }
+            drives
+        };
+
+        let mut ratio = gearbox.ratios()[usize::from(gearbox.reverse_gears())];
+        let mut drives = make_drives(ratio, COMMAND_SPEED);
+        gpu.write_mechanism_drives(&queue, &drives).unwrap();
+
+        let mut previous = gpu.read_snapshot_transforms(&device, &queue, 0).unwrap();
+        let initial_x = transform_position(previous[fixture.chassis as usize]).x;
+        let mut furthest_x = initial_x;
+        let mut maximum_speed = 0.0_f32;
+        let mut maximum_speed_tick = 0_u64;
+        let mut speed_at_twelve_seconds = 0.0_f32;
+        let mut shifted = false;
+        let mut maximum_engine_rpm = 0.0_f32;
+        let mut slips = Vec::new();
+        for sample_tick in (240 + SAMPLE_TICKS..=DRIVE_END_TICK).step_by(3) {
+            for tick in sample_tick - SAMPLE_TICKS + 1..=sample_tick {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let current = gpu
+                .read_snapshot_transforms(&device, &queue, (sample_tick % 3) as u8)
+                .unwrap();
+            let current_x = transform_position(current[fixture.chassis as usize]).x;
+            let previous_x = transform_position(previous[fixture.chassis as usize]).x;
+            let chassis_speed = (current_x - previous_x) / SAMPLE_SECONDS;
+            let wheel_surface_speed = fixture
+                .creation
+                .bearings
+                .iter()
+                .map(|bearing| {
+                    let angular_velocity = |body: u32| {
+                        let current_rotation =
+                            bevy_math::Quat::from_array(current[body as usize].rotation);
+                        let previous_rotation =
+                            bevy_math::Quat::from_array(previous[body as usize].rotation);
+                        let mut delta = current_rotation * previous_rotation.conjugate();
+                        if delta.w < 0.0 {
+                            delta = -delta;
+                        }
+                        let vector = delta.xyz();
+                        if vector.length_squared() <= 1.0e-12 {
+                            Vec3::ZERO
+                        } else {
+                            vector.normalize()
+                                * (2.0 * vector.length().atan2(delta.w) / SAMPLE_SECONDS)
+                        }
+                    };
+                    let parent_rotation =
+                        bevy_math::Quat::from_array(current[bearing.compound_a as usize].rotation);
+                    let axis = parent_rotation * bearing.local_axis_a.normalize();
+                    let relative_angular =
+                        angular_velocity(bearing.compound_b) - angular_velocity(bearing.compound_a);
+                    relative_angular.dot(axis) * axis.cross(Vec3::Y).dot(Vec3::X) * WHEEL_RADIUS
+                })
+                .sum::<f32>()
+                / 4.0;
+
+            furthest_x = furthest_x.max(current_x);
+            assert!(
+                current_x >= furthest_x - 0.05,
+                "forward displacement reversed by {} m at tick {sample_tick}",
+                furthest_x - current_x,
+            );
+            assert!(
+                chassis_speed >= -0.05,
+                "chassis reversed at {chassis_speed} m/s on tick {sample_tick}",
+            );
+            if chassis_speed > maximum_speed {
+                maximum_speed = chassis_speed;
+                maximum_speed_tick = sample_tick;
+            }
+            if sample_tick == 960 {
+                speed_at_twelve_seconds = chassis_speed;
+            }
+            if chassis_speed > 0.5 {
+                let slip = (wheel_surface_speed - chassis_speed).abs()
+                    / wheel_surface_speed.abs().max(chassis_speed.abs()).max(0.5);
+                slips.push(slip);
+            }
+            if !shifted {
+                let engine_rpm =
+                    wheel_surface_speed.abs() / WHEEL_RADIUS * ratio * 60.0 / std::f32::consts::TAU;
+                maximum_engine_rpm = maximum_engine_rpm.max(engine_rpm);
+                if engine_rpm >= 0.75 * EngineKind::Gas.no_load_rpm() {
+                    ratio = 1.0;
+                    drives = make_drives(ratio, COMMAND_SPEED);
+                    gpu.write_mechanism_drives(&queue, &drives).unwrap();
+                    shifted = true;
+                }
+            }
+            previous = current;
+        }
+
+        slips.sort_by(f32::total_cmp);
+        let p95_slip = slips[(slips.len() * 95 / 100).min(slips.len() - 1)];
+        let geared_ceiling = COMMAND_SPEED * WHEEL_RADIUS;
+        assert!(
+            shifted,
+            "automatic first-to-second shift was never reached; peak engine speed {maximum_engine_rpm} RPM, chassis {maximum_speed} m/s"
+        );
+        assert!(
+            speed_at_twelve_seconds >= 8.33,
+            "vehicle reached only {speed_at_twelve_seconds} m/s after 12 seconds; peak {maximum_speed}, p95 slip {p95_slip}",
+        );
+        assert!(
+            maximum_speed >= 13.9,
+            "vehicle peaked at only {maximum_speed} m/s during sustained drive",
+        );
+        assert!(
+            maximum_speed <= geared_ceiling + 0.25,
+            "vehicle exceeded the geared no-load ceiling at tick {maximum_speed_tick}: {maximum_speed} > {geared_ceiling}; 12-second speed {speed_at_twelve_seconds}, p95 slip {p95_slip}",
+        );
+        assert!(
+            p95_slip < 0.10,
+            "p95 longitudinal slip was {:.1}%",
+            p95_slip * 100.0
+        );
+
+        let coast_start = previous;
+        for drive in &mut drives {
+            drive.target_speed = 0.0;
+            drive.max_acceleration = 0.0;
+            drive.max_speed = 0.0;
+            drive.source_b_max_acceleration = 0.0;
+            drive.source_b_no_load_speed = 0.0;
+        }
+        gpu.write_mechanism_drives(&queue, &drives).unwrap();
+        for tick in DRIVE_END_TICK + 1..=DRIVE_END_TICK + 120 {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        let coast_end = gpu
+            .read_snapshot_transforms(&device, &queue, ((DRIVE_END_TICK + 120) % 3) as u8)
+            .unwrap();
+        let coast_speed = (transform_position(coast_end[fixture.chassis as usize]).x
+            - transform_position(coast_start[fixture.chassis as usize]).x)
+            / 2.0;
+        assert!(
+            coast_speed > 1.0,
+            "neutral actively stopped the vehicle: {coast_speed} m/s"
+        );
+
+        let reverse = make_drives(gearbox.ratios()[0], -COMMAND_SPEED);
+        gpu.write_mechanism_drives(&queue, &reverse).unwrap();
+        for tick in DRIVE_END_TICK + 121..=DRIVE_END_TICK + 120 + REVERSE_TICKS {
+            gpu.dispatch_tick(&device, &queue, tick);
+        }
+        let reverse_end = gpu
+            .read_snapshot_transforms(
+                &device,
+                &queue,
+                ((DRIVE_END_TICK + 120 + REVERSE_TICKS) % 3) as u8,
+            )
+            .unwrap();
+        let reverse_speed = (transform_position(reverse_end[fixture.chassis as usize]).x
+            - transform_position(coast_end[fixture.chassis as usize]).x)
+            / REVERSE_SECONDS;
+        assert!(
+            reverse_speed < -0.05,
+            "explicit reverse did not reverse: {reverse_speed} m/s"
+        );
+        assert_eq!(gpu.read_last_tick(&device).unwrap().error_flags, 0);
+    }
+
+    #[test]
     fn struck_articulated_wheel_recovers_without_crossing_ground() {
         let fixture = articulated_car_fixture();
         let Some((device, queue)) = test_device() else {
@@ -6004,10 +6794,14 @@ mod tests {
             gpu.read_snapshot_transforms(&device, &queue, 1).unwrap()[child as usize]
         };
         let baseline = run(None);
-        let struck = run(Some(Vec3::NEG_Y * 500.0));
+        let struck = run(Some(Vec3::NEG_Y * 2_000.0));
         let baseline_rotation = bevy_math::Quat::from_array(baseline.rotation);
         let struck_rotation = bevy_math::Quat::from_array(struck.rotation);
-        assert!(baseline_rotation.angle_between(struck_rotation) > 0.01);
+        let difference = baseline_rotation.angle_between(struck_rotation);
+        assert!(
+            difference > 0.01,
+            "external impulse changed rotation by only {difference} rad: baseline={baseline_rotation:?}, struck={struck_rotation:?}"
+        );
     }
 
     fn run_ticks(

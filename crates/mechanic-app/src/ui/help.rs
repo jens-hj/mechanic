@@ -283,7 +283,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     .to_owned()
             }
             (false, Tool::GasEngine, _, _, _) => {
-                "Q rotates; place a 200 N·m, 220 RPM gas engine (4 bearing ports)".to_owned()
+                "Q rotates; place a 6000 N·m, 360 RPM gas engine (4 bearing ports)".to_owned()
             }
             (false, Tool::ElectricEngine, _, _, _) => {
                 "Q rotates; place a 500 N·m, 120 RPM electric engine (4 bearing ports)"
@@ -294,7 +294,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     .to_owned()
             }
             (false, Tool::Servo, _, _, _) => {
-                "Q rotates; place a 150 N·m, 30 RPM Servo (one angle-controlled bearing)"
+                "Q rotates; place a 6000 N·m, 30 RPM Servo (one angle-controlled bearing)"
                     .to_owned()
             }
             (false, Tool::Seat, _, _, _) => {

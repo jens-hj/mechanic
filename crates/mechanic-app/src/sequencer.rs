@@ -180,6 +180,7 @@ pub(crate) struct SequencerRow {
 pub(crate) struct DriveSequencer {
     rows: Vec<SequencerRow>,
     started: bool,
+    publication: Option<(u64, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -426,7 +427,7 @@ fn automatic_shift_destination(
     let ratio = config.ratios()[current];
     let engine_rpm = measured_speed.abs() * ratio * 60.0 / core::f32::consts::TAU;
     let (first, last) = gear_bank_range(kind, config, current);
-    if engine_rpm >= 0.85 * kind.no_load_rpm() && current < last {
+    if engine_rpm >= 0.75 * kind.no_load_rpm() && current < last {
         current + 1
     } else if engine_rpm <= 0.40 * kind.no_load_rpm() && current > first {
         current - 1
@@ -484,7 +485,7 @@ fn dominant_request_sign(
             {
                 return None;
             }
-            spec.resolved_target(row.cursor.active)?.speed()
+            spec.program.state(row.cursor.active)?.target().speed()
         })
         .max_by(|left, right| left.abs().total_cmp(&right.abs()))
         .unwrap_or(0.0)
@@ -560,6 +561,11 @@ impl DriveSequencer {
         self.started
     }
 
+    /// Whether the rows belong to the currently published physics scene.
+    pub(crate) fn is_started_for(&self, publication: Option<(u64, u64)>) -> bool {
+        self.started && self.publication == publication
+    }
+
     /// Live rows, in coordinate order.
     pub(crate) fn rows(&self) -> &[SequencerRow] {
         &self.rows
@@ -577,7 +583,12 @@ impl DriveSequencer {
     ///
     /// A bearing that lost the physical-duplicate collapse still resolves,
     /// because compilation records every graph bearing's coordinate.
-    pub(crate) fn start(&mut self, creation: &CompiledCreation, graph: &ConstructionGraph) {
+    pub(crate) fn start(
+        &mut self,
+        creation: &CompiledCreation,
+        graph: &ConstructionGraph,
+        publication: Option<(u64, u64)>,
+    ) {
         let coordinates = &creation.loop_topology.bearing_coordinates;
         let mut by_coordinate = BTreeMap::new();
         for (link, spec) in graph.drive_links() {
@@ -592,12 +603,14 @@ impl DriveSequencer {
         }
         self.rows = by_coordinate.into_values().collect();
         self.started = true;
+        self.publication = publication;
     }
 
     /// Clears every row when the simulation ends.
     pub(crate) fn stop(&mut self) {
         self.rows.clear();
         self.started = false;
+        self.publication = None;
     }
 
     /// Advances every row, reporting whether any of them changed state.
@@ -754,7 +767,9 @@ pub(crate) fn geared_gpu_drive_rows(
             continue;
         }
         let requested_sign = spec
-            .resolved_target(row.cursor.active)
+            .program
+            .state(row.cursor.active)
+            .map(mechanic_core::DriveState::target)
             .and_then(DriveTarget::speed)
             .map_or(0, |speed| {
                 if speed > 0.0 {
@@ -765,9 +780,9 @@ pub(crate) fn geared_gpu_drive_rows(
                     0
                 }
             });
-        if gearboxes.gas_direction(graph, spec.controller) != Some(requested_sign)
-            && let Some(slot) = rows.get_mut(row.coordinate as usize)
-        {
+        let gas_engaged = requested_sign != 0
+            && gearboxes.gas_direction(graph, spec.controller) == Some(requested_sign);
+        if !gas_engaged && let Some(slot) = rows.get_mut(row.coordinate as usize) {
             slot.source_b_max_acceleration = 0.0;
             slot.source_b_no_load_speed = 0.0;
             slot.max_acceleration = slot.source_a_max_acceleration;
@@ -1043,6 +1058,132 @@ mod tests {
         (graph, creation, controller)
     }
 
+    fn gas_drive(
+        speed: f32,
+        reversed: bool,
+    ) -> (
+        mechanic_core::ConstructionGraph,
+        mechanic_core::CompiledCreation,
+        super::DriveSequencer,
+        super::GearboxRuntime,
+    ) {
+        use bevy::prelude::IVec3;
+        use mechanic_core::{
+            ActuatorAssignment, BuildCommand, BuildOutcome, BuildPose, EngineSpec, FaceKind,
+            FaceRef, GridRotation, WeldSpec,
+        };
+
+        let program = DriveProgram::new(
+            &[DriveState::new(DriveTarget::Speed(speed)).unwrap()],
+            false,
+        )
+        .unwrap();
+        let (mut graph, _, controller) = driven_arm(program);
+        let (link_id, mut link) = graph
+            .drive_links()
+            .next()
+            .map(|(id, link)| (id, *link))
+            .unwrap();
+        graph.apply(BuildCommand::RemoveDriveLink(link_id)).unwrap();
+        link.actuator = ActuatorAssignment::motor(0, 100).unwrap();
+        link.reversed = reversed;
+        graph.apply(BuildCommand::AddDriveLink(link)).unwrap();
+        let BuildOutcome::Spawned(engine) = graph
+            .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                EngineKind::Gas,
+                BuildPose::new(IVec3::new(0, 42, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(controller, FaceKind::PositiveY),
+                second: FaceRef::part(engine, FaceKind::NegativeY),
+            }))
+            .unwrap();
+        let first_spec = graph.next_transmission_spec(engine).unwrap();
+        let BuildOutcome::Spawned(first) = graph
+            .apply(BuildCommand::AttachTransmission {
+                parent: engine,
+                spec: first_spec,
+            })
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let second_spec = graph.next_transmission_spec(first).unwrap();
+        graph
+            .apply(BuildCommand::AttachTransmission {
+                parent: first,
+                spec: second_spec,
+            })
+            .unwrap();
+
+        let creation = graph.compile().unwrap();
+        let mut sequencer = super::DriveSequencer::default();
+        sequencer.start(&creation, &graph, Some((7, 3)));
+        let mut gearboxes = super::GearboxRuntime::default();
+        gearboxes.start(&graph, &sequencer);
+        (graph, creation, sequencer, gearboxes)
+    }
+
+    #[test]
+    fn wire_reversal_does_not_select_the_opposite_gas_gear_bank() {
+        for reversed in [false, true] {
+            let (graph, creation, sequencer, mut gearboxes) = gas_drive(2.0, reversed);
+            let controller = graph
+                .drive_link(sequencer.rows()[0].link)
+                .unwrap()
+                .controller;
+            let config = graph.gearbox_config(controller, EngineKind::Gas).unwrap();
+            assert_eq!(config.ratios(), [4.0, 3.0, 1.0]);
+            let keyboard = bevy::input::ButtonInput::default();
+            for (tick, measured_speed, expected_gear) in
+                [(21, 10.0, 2), (42, 5.0, 1), (63, 10.0, 2)]
+            {
+                gearboxes.step(
+                    &graph,
+                    &sequencer,
+                    &keyboard,
+                    None,
+                    tick,
+                    &[(controller, EngineKind::Gas, measured_speed)],
+                    false,
+                );
+                assert_eq!(
+                    gearboxes.active_gear(controller, EngineKind::Gas),
+                    Some(expected_gear)
+                );
+                assert!(expected_gear >= usize::from(config.reverse_gears()));
+                let rows = super::geared_gpu_drive_rows(&creation, &graph, &sequencer, &gearboxes);
+                assert!(rows[0].source_b_max_acceleration > 0.0);
+                assert_eq!(rows[0].target_speed.is_sign_negative(), reversed);
+            }
+        }
+    }
+
+    #[test]
+    fn zero_speed_explicitly_disengages_gas_torque() {
+        let (graph, creation, sequencer, gearboxes) = gas_drive(0.0, false);
+
+        let rows = super::geared_gpu_drive_rows(&creation, &graph, &sequencer, &gearboxes);
+        assert!(rows.iter().all(|row| row.source_b_max_acceleration == 0.0));
+    }
+
+    #[test]
+    fn sequencer_rows_are_scoped_to_the_physics_publication() {
+        let program = DriveProgram::default();
+        let (graph, creation, _) = driven_arm(program);
+        let mut sequencer = super::DriveSequencer::default();
+
+        sequencer.start(&creation, &graph, Some((4, 8)));
+        assert!(sequencer.is_started_for(Some((4, 8))));
+        assert!(!sequencer.is_started_for(Some((5, 8))));
+        assert!(!sequencer.is_started_for(Some((4, 9))));
+    }
+
     #[test]
     fn a_key_press_reaches_the_gpu_row_for_that_bearings_coordinate() {
         use mechanic_core::{DriveTarget, DriveTrigger};
@@ -1057,7 +1198,7 @@ mod tests {
         let (graph, creation, controller) = driven_arm(program);
 
         let mut sequencer = super::DriveSequencer::default();
-        sequencer.start(&creation, &graph);
+        sequencer.start(&creation, &graph, None);
         assert_eq!(sequencer.rows().len(), 1, "one driven bearing, one row");
 
         // State 0 holds the arm still.
@@ -1093,7 +1234,7 @@ mod tests {
             .unwrap();
 
         let mut sequencer = super::DriveSequencer::default();
-        sequencer.start(&creation, &graph);
+        sequencer.start(&creation, &graph, None);
         let forward = super::gpu_drive_rows(&creation, &graph, &sequencer);
         assert!(forward[0].target_speed > 0.0);
 
@@ -1102,7 +1243,7 @@ mod tests {
         reversed.reversed = true;
         graph.apply(BuildCommand::AddDriveLink(reversed)).unwrap();
         let mut sequencer = super::DriveSequencer::default();
-        sequencer.start(&creation, &graph);
+        sequencer.start(&creation, &graph, None);
         let backward = super::gpu_drive_rows(&creation, &graph, &sequencer);
         assert!((backward[0].target_speed + forward[0].target_speed).abs() < 1.0e-5);
     }

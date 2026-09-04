@@ -1853,11 +1853,15 @@ fn run_drive_sequencer(
         }
         return;
     }
-    if !sequencer.is_started() {
+    if !sequencer.is_started_for(simulation.world_revision) {
         let Some(creation) = simulation.creation.as_ref() else {
             return;
         };
-        sequencer.start(creation, &simulation.published_graph);
+        sequencer.start(
+            creation,
+            &simulation.published_graph,
+            simulation.world_revision,
+        );
         gearboxes.start(&simulation.published_graph, &sequencer);
         state.drive_rows_dirty = true;
     }

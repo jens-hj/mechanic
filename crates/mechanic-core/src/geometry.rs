@@ -96,7 +96,7 @@ impl ConstructionMaterial {
             Self::Graphite => MaterialProperties::new(1_900.0, 0.25, 0.15, 0.10, 0.010, 12.0e9),
             Self::Iron => MaterialProperties::new(7_870.0, 0.70, 0.55, 0.15, 0.003, 170.0e9),
             Self::Plastic => MaterialProperties::new(950.0, 0.40, 0.30, 0.40, 0.020, 1.0e9),
-            Self::Rubber => MaterialProperties::new(1_100.0, 1.00, 0.80, 0.70, 0.040, 0.01e9),
+            Self::Rubber => MaterialProperties::new(1_100.0, 1.00, 0.80, 0.70, 0.010, 0.01e9),
             Self::Sand => MaterialProperties::new(1_700.0, 0.65, 0.50, 0.05, 0.035, 0.03e9),
             Self::Steel => MaterialProperties::new(7_850.0, 0.74, 0.57, 0.20, 0.002, 200.0e9),
             Self::Stone => MaterialProperties::new(2_700.0, 0.60, 0.48, 0.05, 0.015, 50.0e9),
@@ -815,7 +815,7 @@ impl EngineKind {
     /// Stall torque supplied by one engine, in newton metres.
     pub const fn stall_torque_newton_meters(self) -> f32 {
         match self {
-            Self::Gas => 200.0,
+            Self::Gas => 6_000.0,
             Self::Electric => 500.0,
         }
     }
@@ -823,7 +823,7 @@ impl EngineKind {
     /// No-load shaft speed supplied by one engine, in revolutions per minute.
     pub const fn no_load_rpm(self) -> f32 {
         match self {
-            Self::Gas => 220.0,
+            Self::Gas => 360.0,
             Self::Electric => 120.0,
         }
     }
@@ -854,7 +854,7 @@ impl ServoSpec {
     /// Fixed local x/y/z side lengths in grid units.
     pub const GRID_UNITS: [u8; 3] = [1, 1, 1];
     /// Stall torque supplied by one servo, in newton metres.
-    pub const STALL_TORQUE_NEWTON_METERS: f32 = 150.0;
+    pub const STALL_TORQUE_NEWTON_METERS: f32 = 6_000.0;
     /// Maximum servo motion in revolutions per minute.
     pub const NO_LOAD_RPM: f32 = 30.0;
 
@@ -1656,7 +1656,7 @@ mod tests {
             ),
             (
                 ConstructionMaterial::Rubber,
-                [1_100.0, 1.00, 0.80, 0.70, 0.040, 0.01e9],
+                [1_100.0, 1.00, 0.80, 0.70, 0.010, 0.01e9],
             ),
             (
                 ConstructionMaterial::Sand,
@@ -1775,9 +1775,9 @@ mod tests {
         for (actual, expected) in [
             (EngineKind::Electric.stall_torque_newton_meters(), 500.0),
             (EngineKind::Electric.no_load_rpm(), 120.0),
-            (EngineKind::Gas.stall_torque_newton_meters(), 200.0),
-            (EngineKind::Gas.no_load_rpm(), 220.0),
-            (ServoSpec::STALL_TORQUE_NEWTON_METERS, 150.0),
+            (EngineKind::Gas.stall_torque_newton_meters(), 6_000.0),
+            (EngineKind::Gas.no_load_rpm(), 360.0),
+            (ServoSpec::STALL_TORQUE_NEWTON_METERS, 6_000.0),
             (ServoSpec::NO_LOAD_RPM, 30.0),
         ] {
             assert!((actual - expected).abs() < f32::EPSILON);

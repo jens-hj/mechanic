@@ -187,15 +187,19 @@ impl GearboxConfig {
     /// Default configuration for a chain depth. A depth of zero is direct drive.
     pub fn for_depth(depth: u8, gas: bool) -> Self {
         let gear_count = usize::from(depth).saturating_add(1).min(MAX_GEARS);
+        let forward_gear_count = gear_count - usize::from(gas && depth != 0);
         let mut ratios = vec![1.0];
-        if gear_count >= 2 {
+        if forward_gear_count >= 2 {
             ratios = vec![3.0, 1.0];
         }
-        if gear_count >= 3 {
+        if forward_gear_count >= 3 {
             ratios.push(0.75);
         }
-        while ratios.len() < gear_count {
+        while ratios.len() < forward_gear_count {
             insert_largest_gap(&mut ratios);
+        }
+        if gas && depth != 0 {
+            ratios.insert(0, if forward_gear_count == 1 { 3.0 } else { 4.0 });
         }
         Self {
             mode: ShiftMode::Auto,
@@ -323,6 +327,13 @@ mod tests {
             assert!(config.ratios().windows(2).all(|pair| pair[0] > pair[1]));
         }
         assert_eq!(GearboxConfig::for_depth(17, true).ratios().len(), MAX_GEARS);
+    }
+
+    #[test]
+    fn gas_transmissions_keep_a_low_forward_gear_after_reverse() {
+        let config = GearboxConfig::for_depth(2, true);
+        assert_eq!(config.ratios(), [4.0, 3.0, 1.0]);
+        assert_eq!(config.reverse_gears(), 1);
     }
 
     #[test]

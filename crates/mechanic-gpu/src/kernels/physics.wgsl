@@ -36,6 +36,8 @@ struct ExternalImpulseBatch {
 };
 
 const INVALID_NUMERIC_FLAG: u32 = 2u;
+const POWERED_LINEAR_DAMPING: f32 = 0.99999;
+const POWERED_ANGULAR_DAMPING: f32 = 0.9999;
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4<f32>>;
@@ -114,9 +116,13 @@ fn integrate(@builtin(global_invocation_id) invocation: vec3<u32>) {
     var angular = angular_velocities[index];
     if inverse_masses[index] > 0.0 {
         linear.y += config.gravity_y * config.delta_seconds;
-        linear = vec4<f32>(linear.xyz * config.linear_damping, linear.w);
-        angular = vec4<f32>(angular.xyz * config.angular_damping, angular.w);
-        if mechanism_roots[index] != 0u {
+        let mechanism_flags = mechanism_roots[index];
+        let powered = (mechanism_flags & 2u) != 0u;
+        let linear_damping = select(config.linear_damping, POWERED_LINEAR_DAMPING, powered);
+        let angular_damping = select(config.angular_damping, POWERED_ANGULAR_DAMPING, powered);
+        linear = vec4<f32>(linear.xyz * linear_damping, linear.w);
+        angular = vec4<f32>(angular.xyz * angular_damping, angular.w);
+        if (mechanism_flags & 1u) != 0u {
             position = vec4<f32>(
                 position.xyz + linear.xyz * config.delta_seconds,
                 position.w,

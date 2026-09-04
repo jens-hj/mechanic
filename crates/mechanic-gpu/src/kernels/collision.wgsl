@@ -78,6 +78,30 @@ struct Bearing {
     metadata: vec4<u32>,
 };
 
+struct Drive {
+    mode: u32,
+    max_acceleration: f32,
+    max_speed: f32,
+    target_speed: f32,
+    target_angle: f32,
+    min_angle: f32,
+    max_angle: f32,
+    source_a_max_acceleration: f32,
+    source_a_no_load_speed: f32,
+    source_b_max_acceleration: f32,
+    source_b_no_load_speed: f32,
+    padding: f32,
+};
+
+struct DriveConstraint {
+    bearing: Bearing,
+    drive: Drive,
+    // Axis inertia, accumulated impulse, current angle, reserved.
+    state: vec4<f32>,
+    // Child body, parent body, tree direction, coordinate.
+    metadata: vec4<u32>,
+};
+
 struct BearingProjectionFrame {
     arm_a: vec3<f32>,
     arm_b: vec3<f32>,
@@ -123,6 +147,11 @@ const MAX_MANIFOLD_PROBES: u32 = 256u;
 const ANALYTIC_CYLINDER_FLAG: u32 = 0x80000000u;
 const CYLINDER_FACE_PAIR_FLAG: u32 = 0x40000000u;
 const CONTACT_FLAG_MASK: u32 = ANALYTIC_CYLINDER_FLAG | CYLINDER_FACE_PAIR_FLAG;
+const DRIVE_MODE_PASSIVE: u32 = 0u;
+const DRIVE_MODE_ANGLE: u32 = 2u;
+const DRIVE_ANGLE_POSITION_GAIN: f32 = 6.0;
+const DRIVE_ANGLE_BRAKE_MARGIN: f32 = 0.8;
+const DRIVE_ANGLE_DEADBAND: f32 = 0.0005;
 // A full cylinder has sixteen overlapping sector rows. Face landings therefore
 // need one sixteenth of the ordinary per-contact Jacobi correction.
 const CYLINDER_FACE_RELAXATION_SCALE: f32 = 0.0625;
@@ -222,7 +251,7 @@ fn tangent_basis(normal: vec3<f32>) -> TangentBasis {
 @group(0) @binding(27) var<storage, read> body_components: array<u32>;
 @group(0) @binding(28) var<storage, read> convex_shapes: array<vec4<f32>>;
 @group(0) @binding(29) var<storage, read> ground_surfaces: array<GroundSurface>;
-@group(0) @binding(30) var<storage, read> bearings: array<Bearing>;
+@group(0) @binding(30) var<storage, read_write> drive_constraints: array<DriveConstraint>;
 
 fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(
@@ -1620,8 +1649,90 @@ fn solve_bearing_angular_axis_immediate(
     );
 }
 
+fn drive_axis(constraint: DriveConstraint) -> vec3<f32> {
+    let parent = constraint.metadata.y;
+    let bearing = constraint.bearing;
+    var axis = normalize(quat_rotate(rotations[parent], bearing.local_axis_a.xyz));
+    if constraint.metadata.z != 0u {
+        axis = -normalize(quat_rotate(rotations[parent], bearing.local_axis_b.xyz));
+    }
+    return axis;
+}
+
+fn drive_desired_speed(constraint: DriveConstraint) -> f32 {
+    let drive = constraint.drive;
+    var desired = clamp(drive.target_speed, -drive.max_speed, drive.max_speed);
+    if drive.mode == DRIVE_MODE_ANGLE {
+        let error = drive.target_angle - constraint.state.z;
+        let proportional = DRIVE_ANGLE_POSITION_GAIN * abs(error);
+        let brake = DRIVE_ANGLE_BRAKE_MARGIN
+            * sqrt(2.0 * drive.max_acceleration * abs(error));
+        desired = sign(error) * min(min(proportional, brake), drive.max_speed);
+        if abs(error) < DRIVE_ANGLE_DEADBAND {
+            desired = 0.0;
+        }
+    }
+    return desired;
+}
+
+fn drive_source_fade(measured: f32, requested: f32, no_load_speed: f32) -> f32 {
+    if no_load_speed <= 0.0 {
+        return 0.0;
+    }
+    if abs(requested) > 1.0e-6 && measured * requested > 0.0 {
+        return clamp(1.0 - abs(measured) / no_load_speed, 0.0, 1.0);
+    }
+    return 1.0;
+}
+
+fn project_drive_velocity_row_immediate(index: u32) {
+    let constraint = drive_constraints[index];
+    if constraint.metadata.w == INVALID_MANIFOLD_SLOT
+        || constraint.drive.mode == DRIVE_MODE_PASSIVE
+    {
+        return;
+    }
+    let child = constraint.metadata.x;
+    let parent = constraint.metadata.y;
+    let axis = drive_axis(constraint);
+    let inverse_parent = inverse_inertia(parent, axis);
+    let inverse_child = inverse_inertia(child, axis);
+    let denominator = dot(axis, inverse_parent + inverse_child);
+    if denominator <= 1.0e-12 {
+        return;
+    }
+    let measured = dot(
+        angular_velocities[child].xyz - angular_velocities[parent].xyz,
+        axis,
+    );
+    let desired = drive_desired_speed(constraint);
+    let drive = constraint.drive;
+    let requested = desired - measured;
+    let acceleration =
+        drive.source_a_max_acceleration
+            * drive_source_fade(measured, requested, drive.source_a_no_load_speed)
+        + drive.source_b_max_acceleration
+            * drive_source_fade(measured, requested, drive.source_b_no_load_speed);
+    let limit = max(
+        acceleration * constraint.state.x * config.delta_seconds,
+        0.0,
+    );
+    let previous = constraint.state.y;
+    let accumulated = clamp(previous + (desired - measured) / denominator, -limit, limit);
+    let impulse = accumulated - previous;
+    drive_constraints[index].state.y = accumulated;
+    angular_velocities[parent] = vec4<f32>(
+        angular_velocities[parent].xyz - inverse_parent * impulse,
+        0.0,
+    );
+    angular_velocities[child] = vec4<f32>(
+        angular_velocities[child].xyz + inverse_child * impulse,
+        0.0,
+    );
+}
+
 fn project_bearing_velocity_row_immediate(index: u32) {
-    let bearing = bearings[index];
+    let bearing = drive_constraints[index].bearing;
     let body_a = bearing.metadata.x;
     let body_b = bearing.metadata.y;
     let frame = bearing_projection_frames[index];
@@ -1673,7 +1784,7 @@ fn project_bearing_velocity_row_immediate(index: u32) {
 
 fn prepare_bearing_projection_frames() {
     for (var index = 0u; index < config.bearing_count; index += 1u) {
-        let bearing = bearings[index];
+        let bearing = drive_constraints[index].bearing;
         let body_a = bearing.metadata.x;
         let body_b = bearing.metadata.y;
         let axis_a = normalize(quat_rotate(rotations[body_a], bearing.local_axis_a.xyz));
@@ -1696,6 +1807,7 @@ fn prepare_bearing_projection_frames() {
 
 fn project_bearing_velocities_serial_immediate() {
     for (var index = 0u; index < config.bearing_count; index += 1u) {
+        project_drive_velocity_row_immediate(index);
         project_bearing_velocity_row_immediate(index);
     }
     for (var index = config.bearing_count; index > 0u; index -= 1u) {
@@ -1706,7 +1818,7 @@ fn project_bearing_velocities_serial_immediate() {
 fn small_mechanism_contact_iterations() -> u32 {
     var maximum_adjacent_mass_ratio = 1.0;
     for (var index = 0u; index < config.bearing_count; index += 1u) {
-        let bearing = bearings[index];
+        let bearing = drive_constraints[index].bearing;
         let inverse_mass_a = world_masses[bearing.metadata.x].inverse_inertia_x_mass.w;
         let inverse_mass_b = world_masses[bearing.metadata.y].inverse_inertia_x_mass.w;
         if inverse_mass_a > 0.0 && inverse_mass_b > 0.0 {
