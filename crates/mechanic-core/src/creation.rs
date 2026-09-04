@@ -30,7 +30,7 @@ use crate::{
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 13;
+pub const CREATION_FORMAT_VERSION: u32 = 14;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -2507,7 +2507,7 @@ mod tests {
         };
 
         let document = CreationDocument::from_graph(&graph, "Features", &[socket]);
-        assert_eq!(document.version, 13);
+        assert_eq!(document.version, 14);
         assert_eq!(document.shape_features.len(), 2);
         assert!(matches!(
             document.shape_features[1].targets[0].edge.source,
@@ -2522,5 +2522,70 @@ mod tests {
         assert_eq!(restored.shape_features().count(), 2);
         let restored_owner = SolidOwner::Part(restored.parts().next().unwrap().0);
         assert!(restored.evaluated_solid(restored_owner).is_ok());
+    }
+
+    #[test]
+    fn nested_cylinder_features_round_trip_and_compile_under_format_fourteen() {
+        let mut graph = ConstructionGraph::new();
+        let dimensions = CylinderDimensions::new(0.5, 0.0, 0.5).unwrap();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                dimensions,
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let rim = graph
+            .evaluated_solid(owner)
+            .unwrap()
+            .logical_edges
+            .iter()
+            .find(|edge| edge.closed && edge.convex)
+            .unwrap()
+            .key;
+        let BuildOutcome::ShapeFeatureAdded(chamfer) = graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef { owner, edge: rim }],
+                EdgeTreatment::Chamfer,
+                20,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let follow_up = graph
+            .evaluated_solid(owner)
+            .unwrap()
+            .logical_edges
+            .iter()
+            .find(|edge| {
+                edge.key.source == TopologySource::Feature(chamfer) && edge.closed && edge.convex
+            })
+            .unwrap()
+            .key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef {
+                    owner,
+                    edge: follow_up,
+                }],
+                EdgeTreatment::Fillet,
+                20,
+            )))
+            .unwrap();
+
+        let document = CreationDocument::from_graph(&graph, "Nested cylinder", &[]);
+        assert_eq!(document.version, 14);
+        let restored = round_trip(&document).into_graph().unwrap().graph;
+        let restored_owner = SolidOwner::Part(restored.parts().next().unwrap().0);
+        let solid = restored.evaluated_solid(restored_owner).unwrap();
+        assert!(solid.volume() > 0.0);
+        assert!(!solid.cells.is_empty());
+        let compiled = restored.compile().unwrap();
+        assert!(compiled.compounds[0].mass_properties.mass > 0.0);
+        assert!(!compiled.colliders.is_empty());
     }
 }

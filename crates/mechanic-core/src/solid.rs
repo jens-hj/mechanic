@@ -23,7 +23,10 @@ use crate::{
 };
 
 const EPSILON: f64 = 1.0e-8;
-const KEY_SCALE: f64 = 1_000_000.0;
+// Independently clipped neighboring cells can differ below float render
+// precision. Ten-micrometre keys stitch those seams without approaching the
+// 2.5 mm authored position grid.
+const KEY_SCALE: f64 = 100_000.0;
 const FILLET_MAX_FACET_DEGREES: f64 = 7.5;
 
 /// A construction solid which may own feature targets.
@@ -230,8 +233,13 @@ pub enum SolidError {
 #[derive(Clone, Debug)]
 struct PolyFace {
     vertices: Vec<DVec3>,
+    // Facet identity remains distinct for picking and UV provenance.
     patch: SurfacePatchKey,
+    // Family identity joins tessellated facets into one logical boundary.
+    family: SurfacePatchKey,
     smoothing_group: u32,
+    // Families joined tangentially to this facet are not sharp edges.
+    smooth_with: Vec<SurfacePatchKey>,
     uv_provenance: SurfacePatchKey,
 }
 
@@ -240,12 +248,14 @@ struct PolyCell {
     faces: Vec<PolyFace>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ClipPlane {
     normal: DVec3,
     offset: f64,
     patch: SurfacePatchKey,
+    family: SurfacePatchKey,
     smoothing_group: u32,
+    smooth_with: Vec<SurfacePatchKey>,
     uv_provenance: SurfacePatchKey,
 }
 
@@ -257,7 +267,9 @@ struct EdgeSegment {
     b: DVec3,
     first_normal: DVec3,
     second_normal: DVec3,
-    first_patch: SurfacePatchKey,
+    first_family: SurfacePatchKey,
+    second_family: SurfacePatchKey,
+    uv_provenance: SurfacePatchKey,
     cell: usize,
     convex: bool,
 }
@@ -346,50 +358,15 @@ fn evaluate(
             .iter()
             .filter(|segment| selected.contains(&segment.key))
         {
-            let dot = segment
-                .first_normal
-                .dot(segment.second_normal)
-                .clamp(-1.0, 1.0);
-            let angle = dot.acos();
-            if !(1.0e-6..=core::f64::consts::PI - 1.0e-6).contains(&angle) {
-                continue;
-            }
-            let steps = match feature.treatment {
-                EdgeTreatment::Chamfer => 1,
-                EdgeTreatment::Fillet => {
-                    ((angle.to_degrees() / FILLET_MAX_FACET_DEGREES).ceil() as usize).max(1)
-                }
-            };
-            for step in 0..steps {
-                let step = f64::from(u32::try_from(step).unwrap_or(u32::MAX));
-                let steps = f64::from(u32::try_from(steps).unwrap_or(u32::MAX));
-                let fraction = (step + 0.5) / steps;
-                let normal = slerp_unit(segment.first_normal, segment.second_normal, fraction);
-                let edge_offset = normal.dot(segment.a);
-                let offset = match feature.treatment {
-                    EdgeTreatment::Chamfer => {
-                        let sine = (angle * 0.5).sin().max(EPSILON);
-                        edge_offset - amount * sine
-                    }
-                    EdgeTreatment::Fillet => {
-                        fillet_chord_offset(segment, normal, amount, angle / steps, edge_offset)
-                    }
-                };
-                let patch = generated_patch_key(feature_id, segment, step as usize + 1);
-                planes_by_cell
-                    .entry(segment.cell)
-                    .or_default()
-                    .push(ClipPlane {
-                        normal,
-                        offset,
-                        patch,
-                        smoothing_group: u32::from(matches!(
-                            feature.treatment,
-                            EdgeTreatment::Fillet
-                        )) * (feature_id.index().saturating_add(1)),
-                        uv_provenance: segment.first_patch,
-                    });
-            }
+            append_edge_profile_planes(
+                feature_id,
+                feature.treatment,
+                amount,
+                &segments,
+                &selected,
+                segment,
+                &mut planes_by_cell,
+            );
         }
         if feature.treatment == EdgeTreatment::Fillet {
             append_fillet_junction_planes(
@@ -407,6 +384,107 @@ fn evaluate(
         }
     }
     build_evaluated(&cells)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_edge_profile_planes(
+    feature: ShapeFeatureId,
+    treatment: EdgeTreatment,
+    amount: f64,
+    segments: &[EdgeSegment],
+    selected: &BTreeSet<TopologyKey>,
+    segment: &EdgeSegment,
+    planes_by_cell: &mut BTreeMap<usize, Vec<ClipPlane>>,
+) {
+    let dot = segment
+        .first_normal
+        .dot(segment.second_normal)
+        .clamp(-1.0, 1.0);
+    let angle = dot.acos();
+    if !(1.0e-6..=core::f64::consts::PI - 1.0e-6).contains(&angle) {
+        return;
+    }
+    let steps = match treatment {
+        EdgeTreatment::Chamfer => 1,
+        EdgeTreatment::Fillet => {
+            ((angle.to_degrees() / FILLET_MAX_FACET_DEGREES).ceil() as usize).max(1)
+        }
+    };
+    for step_index in 0..steps {
+        let step = f64::from(u32::try_from(step_index).unwrap_or(u32::MAX));
+        let step_count = f64::from(u32::try_from(steps).unwrap_or(u32::MAX));
+        let normal = slerp_unit(
+            segment.first_normal,
+            segment.second_normal,
+            (step + 0.5) / step_count,
+        );
+        let edge_offset = normal.dot(segment.a);
+        let offset = match treatment {
+            EdgeTreatment::Chamfer => edge_offset - amount * (angle * 0.5).sin().max(EPSILON),
+            EdgeTreatment::Fillet => {
+                fillet_chord_offset(segment, normal, amount, angle / step_count, edge_offset)
+            }
+        };
+        let profile_step = step_index + 1;
+        let smooth_with = if treatment == EdgeTreatment::Fillet {
+            [
+                (step_index == 0).then_some(segment.first_family),
+                (step_index + 1 == steps).then_some(segment.second_family),
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
+        } else {
+            Vec::new()
+        };
+        append_chain_clip_plane(
+            segments,
+            selected,
+            segment,
+            ClipPlane {
+                normal,
+                offset,
+                patch: generated_patch_key(feature, segment, profile_step),
+                family: generated_patch_family_key(feature, segment.key, profile_step),
+                smoothing_group: u32::from(treatment == EdgeTreatment::Fillet)
+                    * feature.index().saturating_add(1),
+                smooth_with,
+                uv_provenance: segment.uv_provenance,
+            },
+            planes_by_cell,
+        );
+    }
+}
+
+fn append_chain_clip_plane(
+    segments: &[EdgeSegment],
+    selected: &BTreeSet<TopologyKey>,
+    source: &EdgeSegment,
+    plane: ClipPlane,
+    planes_by_cell: &mut BTreeMap<usize, Vec<ClipPlane>>,
+) {
+    if source.key.source == TopologySource::Base {
+        planes_by_cell.entry(source.cell).or_default().push(plane);
+        return;
+    }
+
+    // A generated circular chain crosses convex-cell seams. Give both cells at
+    // each seam the same adjacent profile planes so their shared face is cut
+    // identically instead of acquiring sub-micron T-junctions.
+    let endpoints = [point_key(source.a), point_key(source.b)];
+    let affected = segments
+        .iter()
+        .filter(|segment| selected.contains(&segment.key) && segment.key == source.key)
+        .filter(|segment| {
+            [point_key(segment.a), point_key(segment.b)]
+                .into_iter()
+                .any(|point| endpoints.contains(&point))
+        })
+        .map(|segment| segment.cell)
+        .collect::<BTreeSet<_>>();
+    for cell in affected {
+        planes_by_cell.entry(cell).or_default().push(plane.clone());
+    }
 }
 
 fn append_fillet_junction_planes(
@@ -429,12 +507,7 @@ fn append_fillet_junction_planes(
         }
     }
     for ((cell, vertex_key), incident_edges) in incident {
-        let edge_count = incident_edges
-            .iter()
-            .map(|edge| edge.key)
-            .collect::<BTreeSet<_>>()
-            .len();
-        if edge_count < 3 {
+        if distinct_edge_count(&incident_edges) < 3 {
             continue;
         }
         let mut normals = BTreeMap::<PointKey, DVec3>::new();
@@ -454,6 +527,7 @@ fn append_fillet_junction_planes(
             incident_edges[0].b
         };
         let [first, second, third] = [normals[0], normals[1], normals[2]];
+        let smooth_with = incident_surface_families(&incident_edges);
         let determinant = first.dot(second.cross(third));
         if determinant.abs() <= EPSILON {
             continue;
@@ -495,7 +569,8 @@ fn append_fillet_junction_planes(
                     radius,
                     [a, b, c],
                     ordinal,
-                    incident_edges[0].first_patch,
+                    incident_edges[0].uv_provenance,
+                    &smooth_with,
                     planes_by_cell.entry(cell).or_default(),
                 );
                 ordinal += 1;
@@ -508,7 +583,8 @@ fn append_fillet_junction_planes(
                         radius,
                         [b, d, c],
                         ordinal,
-                        incident_edges[0].first_patch,
+                        incident_edges[0].uv_provenance,
+                        &smooth_with,
                         planes_by_cell.entry(cell).or_default(),
                     );
                     ordinal += 1;
@@ -516,6 +592,23 @@ fn append_fillet_junction_planes(
             }
         }
     }
+}
+
+fn distinct_edge_count(segments: &[&EdgeSegment]) -> usize {
+    segments
+        .iter()
+        .map(|edge| edge.key)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn incident_surface_families(segments: &[&EdgeSegment]) -> Vec<SurfacePatchKey> {
+    segments
+        .iter()
+        .flat_map(|edge| [edge.first_family, edge.second_family])
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -527,6 +620,7 @@ fn push_fillet_junction_plane(
     directions: [DVec3; 3],
     ordinal: usize,
     uv_provenance: SurfacePatchKey,
+    smooth_with: &[SurfacePatchKey],
     planes: &mut Vec<ClipPlane>,
 ) {
     let points = directions.map(|direction| centre + direction * radius);
@@ -540,9 +634,23 @@ fn push_fillet_junction_plane(
         normal,
         offset: normal.dot(points[0]),
         patch: generated_junction_patch_key(feature, vertex, ordinal),
+        family: generated_junction_family_key(feature, vertex),
         smoothing_group: feature.index().saturating_add(1),
+        smooth_with: smooth_with.to_vec(),
         uv_provenance,
     });
+}
+
+fn generated_junction_family_key(feature: ShapeFeatureId, vertex: DVec3) -> SurfacePatchKey {
+    let mut hash = 2_166_136_261_u32;
+    for value in [0x4a46_414d, point_word(point_key(vertex))] {
+        hash ^= value;
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    SurfacePatchKey {
+        source: TopologySource::Feature(feature),
+        local: hash,
+    }
 }
 
 fn generated_junction_patch_key(
@@ -672,6 +780,27 @@ fn generated_patch_key(
     }
 }
 
+fn generated_patch_family_key(
+    feature: ShapeFeatureId,
+    target: TopologyKey,
+    step: usize,
+) -> SurfacePatchKey {
+    let mut hash = 2_166_136_261_u32;
+    for value in [
+        0x4641_4d49,
+        topology_word(target),
+        target.local,
+        u32::try_from(step).unwrap_or(u32::MAX),
+    ] {
+        hash ^= value;
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    SurfacePatchKey {
+        source: TopologySource::Feature(feature),
+        local: hash,
+    }
+}
+
 fn point_word(point: PointKey) -> u32 {
     point.0.into_iter().fold(0_u32, |hash, value| {
         let bytes = value.cast_unsigned().to_le_bytes();
@@ -717,7 +846,9 @@ fn clip_cell(cell: &PolyCell, plane: ClipPlane) -> Option<PolyCell> {
             faces.push(PolyFace {
                 vertices: polygon,
                 patch: face.patch,
+                family: face.family,
                 smoothing_group: face.smoothing_group,
+                smooth_with: face.smooth_with.clone(),
                 uv_provenance: face.uv_provenance,
             });
         }
@@ -739,7 +870,9 @@ fn clip_cell(cell: &PolyCell, plane: ClipPlane) -> Option<PolyCell> {
         faces.push(PolyFace {
             vertices: cap,
             patch: plane.patch,
+            family: plane.family,
             smoothing_group: plane.smoothing_group,
+            smooth_with: plane.smooth_with,
             uv_provenance: plane.uv_provenance,
         });
     }
@@ -793,6 +926,8 @@ fn stitch(cells: &[PolyCell]) -> Result<(Stitched, Vec<EdgeSegment>), SolidError
     let mut vertices = Vec::<BoundaryVertex>::new();
     let mut half_edges = Vec::<BoundaryHalfEdge>::new();
     let mut surfaces = Vec::<SurfacePatch>::new();
+    let mut surface_families = Vec::<SurfacePatchKey>::new();
+    let mut surface_continuity = Vec::<Vec<SurfacePatchKey>>::new();
     let mut directed = BTreeMap::<(u32, u32), u32>::new();
     let mut half_edge_cells = Vec::<usize>::new();
     for (cell_index, face_index) in boundary {
@@ -840,6 +975,8 @@ fn stitch(cells: &[PolyCell]) -> Result<(Stitched, Vec<EdgeSegment>), SolidError
             smoothing_group: face.smoothing_group,
             uv_provenance: face.uv_provenance,
         });
+        surface_families.push(face.family);
+        surface_continuity.push(face.smooth_with.clone());
     }
     for (&(origin, destination), &edge) in &directed {
         let Some(&twin) = directed.get(&(destination, origin)) else {
@@ -854,34 +991,52 @@ fn stitch(cells: &[PolyCell]) -> Result<(Stitched, Vec<EdgeSegment>), SolidError
         if edge_index as u32 > edge.twin {
             continue;
         }
-        let first_surface = &surfaces[edge.face as usize];
-        let second_surface = &surfaces[half_edges[edge.twin as usize].face as usize];
-        let first = first_surface.key;
-        let second = second_surface.key;
-        if first == second
+        let twin_index = edge.twin;
+        let first_face = edge.face as usize;
+        let second_face = half_edges[twin_index as usize].face as usize;
+        let first_surface = &surfaces[first_face];
+        let second_surface = &surfaces[second_face];
+        let first_family = surface_families[first_face];
+        let second_family = surface_families[second_face];
+        if first_family == second_family
             || (first_surface.smoothing_group != 0
                 && first_surface.smoothing_group == second_surface.smoothing_group)
+            || surface_continuity[first_face].contains(&second_family)
+            || surface_continuity[second_face].contains(&first_family)
         {
             continue;
         }
-        let key = topology_key(first, second);
-        logical.entry(key).or_default().push(edge_index as u32);
-        let a = DVec3::from(vertices[edge.origin as usize].position);
-        let b = DVec3::from(vertices[half_edges[edge.next as usize].origin as usize].position);
-        let first_normal = DVec3::from(surfaces[edge.face as usize].normal);
-        let second_normal =
-            DVec3::from(surfaces[half_edges[edge.twin as usize].face as usize].normal);
+        let key = topology_key(first_family, second_family);
+        let (canonical_edge_index, canonical_twin_index) =
+            if (first_family, first_surface.key) <= (second_family, second_surface.key) {
+                (edge_index as u32, twin_index)
+            } else {
+                (twin_index, edge_index as u32)
+            };
+        logical.entry(key).or_default().push(canonical_edge_index);
+        let canonical_edge = half_edges[canonical_edge_index as usize];
+        let canonical_twin = half_edges[canonical_twin_index as usize];
+        let canonical_first = &surfaces[canonical_edge.face as usize];
+        let canonical_second = &surfaces[canonical_twin.face as usize];
+        let a = DVec3::from(vertices[canonical_edge.origin as usize].position);
+        let b = DVec3::from(
+            vertices[half_edges[canonical_edge.next as usize].origin as usize].position,
+        );
+        let first_normal = DVec3::from(canonical_first.normal);
+        let second_normal = DVec3::from(canonical_second.normal);
         let tangent = (b - a).normalize();
         let convex = first_normal.cross(second_normal).dot(tangent) > EPSILON;
         segments.push(EdgeSegment {
             key,
-            half_edge: edge_index as u32,
+            half_edge: canonical_edge_index,
             a,
             b,
             first_normal,
             second_normal,
-            first_patch: first,
-            cell: half_edge_cells[edge_index],
+            first_family: surface_families[canonical_edge.face as usize],
+            second_family: surface_families[canonical_twin.face as usize],
+            uv_provenance: canonical_first.uv_provenance,
+            cell: half_edge_cells[canonical_edge_index as usize],
             convex,
         });
     }
@@ -1068,6 +1223,13 @@ const fn patch_word(key: SurfacePatchKey) -> u32 {
     }
 }
 
+const fn topology_word(key: TopologyKey) -> u32 {
+    match key.source {
+        TopologySource::Base => 0,
+        TopologySource::Feature(feature) => feature.index().wrapping_add(1),
+    }
+}
+
 fn pieces_to_cells(pieces: Vec<PartPiece>) -> Vec<PolyCell> {
     pieces
         .into_iter()
@@ -1153,7 +1315,9 @@ fn base_face(vertices: Vec<DVec3>, local: u32) -> PolyFace {
     PolyFace {
         vertices,
         patch: key,
+        family: key,
         smoothing_group: 0,
+        smooth_with: Vec::new(),
         uv_provenance: key,
     }
 }
@@ -1529,7 +1693,9 @@ mod tests {
             b: DVec3::Z,
             first_normal: DVec3::X,
             second_normal: DVec3::Y,
-            first_patch: patch,
+            first_family: patch,
+            second_family: patch,
+            uv_provenance: patch,
             cell: 0,
             convex: true,
         };
@@ -1924,6 +2090,206 @@ mod tests {
         );
         assert!(solid.logical_edges.len() < 24);
         assert!(solid.volume() > 0.0);
+    }
+
+    fn cylinder_spec(inner_diameter: f32, sweep_degrees: u16) -> PartSpec {
+        let dimensions = CylinderDimensions::new(0.5, inner_diameter, 0.5)
+            .unwrap()
+            .with_sweep_angle_degrees(sweep_degrees)
+            .unwrap();
+        PartSpec::Cylinder(CylinderSpec::new(dimensions, BuildPose::default()))
+    }
+
+    fn target(owner: SolidOwner, edge: TopologyKey) -> EdgeChainRef {
+        EdgeChainRef { owner, edge }
+    }
+
+    #[test]
+    fn solid_and_hollow_cylinder_rims_accept_five_centimetre_treatments() {
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        for spec in [cylinder_spec(0.0, 360), cylinder_spec(0.25, 360)] {
+            let base = evaluate_part_solid(spec, []).unwrap();
+            let rims = base
+                .logical_edges
+                .iter()
+                .filter(|edge| edge.closed && edge.convex)
+                .map(|edge| edge.key)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rims.len(),
+                if matches!(spec, PartSpec::Cylinder(cylinder) if cylinder.dimensions.inner_diameter() > 0.0)
+                {
+                    4
+                } else {
+                    2
+                }
+            );
+            assert!(rims.iter().all(|key| {
+                base.logical_edge(*key)
+                    .is_some_and(|edge| edge.half_edges.len() == 24)
+            }));
+            for (edge_index, edge) in rims.into_iter().enumerate() {
+                for treatment in [EdgeTreatment::Chamfer, EdgeTreatment::Fillet] {
+                    let feature = ShapeFeatureId::from_parts(edge_index as u32, 0);
+                    evaluate_part_solid(
+                        spec,
+                        [(
+                            feature,
+                            ShapeFeature::new([target(owner, edge)], treatment, 20),
+                        )],
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("{treatment:?} rejected cylinder rim {edge_index}: {error}")
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hollow_sector_curved_rims_and_axial_cut_edges_accept_treatments() {
+        let spec = cylinder_spec(0.25, 90);
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        let base = evaluate_part_solid(spec, []).unwrap();
+        let curved_rims = base
+            .logical_edges
+            .iter()
+            .filter(|edge| !edge.closed && edge.convex && edge.half_edges.len() > 1)
+            .map(|edge| edge.key)
+            .collect::<Vec<_>>();
+        assert_eq!(curved_rims.len(), 4);
+        let axial_cuts = base
+            .logical_edges
+            .iter()
+            .filter(|edge| {
+                edge.convex && edge.half_edges.len() == 1 && {
+                    let half_edge = base.half_edges[edge.half_edges[0] as usize];
+                    let next = base.half_edges[half_edge.next as usize];
+                    let a = base.vertices[half_edge.origin as usize].position;
+                    let b = base.vertices[next.origin as usize].position;
+                    (a.y - b.y).abs() > 0.49
+                }
+            })
+            .map(|edge| edge.key)
+            .collect::<Vec<_>>();
+        assert_eq!(axial_cuts.len(), 4);
+
+        for (index, edge) in curved_rims.iter().copied().enumerate() {
+            for treatment in [EdgeTreatment::Chamfer, EdgeTreatment::Fillet] {
+                let feature = ShapeFeatureId::from_parts(index as u32, 0);
+                evaluate_part_solid(
+                    spec,
+                    [(
+                        feature,
+                        ShapeFeature::new([target(owner, edge)], treatment, 20),
+                    )],
+                )
+                .unwrap_or_else(|error| panic!("sector {treatment:?} failed: {error}"));
+            }
+        }
+        for (index, edge) in axial_cuts.iter().copied().enumerate() {
+            for treatment in [EdgeTreatment::Chamfer, EdgeTreatment::Fillet] {
+                let feature = ShapeFeatureId::from_parts(index as u32 + 4, 0);
+                evaluate_part_solid(
+                    spec,
+                    [(
+                        feature,
+                        ShapeFeature::new([target(owner, edge)], treatment, 5),
+                    )],
+                )
+                .unwrap_or_else(|error| panic!("sector axial {treatment:?} failed: {error}"));
+            }
+        }
+
+        let fillet_id = ShapeFeatureId::from_parts(8, 0);
+        let filleted = evaluate_part_solid(
+            spec,
+            [(
+                fillet_id,
+                ShapeFeature::new([target(owner, curved_rims[0])], EdgeTreatment::Fillet, 20),
+            )],
+        )
+        .unwrap();
+        assert!(filleted.logical_edges.iter().any(|edge| {
+            edge.key.source == TopologySource::Feature(fillet_id) && edge.convex && !edge.closed
+        }));
+    }
+
+    #[test]
+    fn chamfered_cylinder_rim_produces_two_treatable_closed_chains() {
+        let spec = cylinder_spec(0.0, 360);
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        let base = evaluate_part_solid(spec, []).unwrap();
+        let rim = base
+            .logical_edges
+            .iter()
+            .find(|edge| edge.closed && edge.convex)
+            .unwrap()
+            .key;
+        let chamfer_id = ShapeFeatureId::from_parts(0, 0);
+        let chamfer = ShapeFeature::new([target(owner, rim)], EdgeTreatment::Chamfer, 20);
+        let chamfered = evaluate_part_solid(spec, [(chamfer_id, chamfer.clone())]).unwrap();
+        let generated = chamfered
+            .logical_edges
+            .iter()
+            .filter(|edge| {
+                edge.key.source == TopologySource::Feature(chamfer_id) && edge.closed && edge.convex
+            })
+            .map(|edge| edge.key)
+            .collect::<Vec<_>>();
+        assert_eq!(generated.len(), 2);
+        assert!(generated.iter().all(|key| {
+            chamfered
+                .logical_edge(*key)
+                .is_some_and(|edge| edge.half_edges.len() == 24)
+        }));
+
+        for edge in generated {
+            for treatment in [EdgeTreatment::Chamfer, EdgeTreatment::Fillet] {
+                let follow_up_id = ShapeFeatureId::from_parts(1, 0);
+                let follow_up = ShapeFeature::new([target(owner, edge)], treatment, 20);
+                evaluate_part_solid(
+                    spec,
+                    [(chamfer_id, chamfer.clone()), (follow_up_id, follow_up)],
+                )
+                .unwrap_or_else(|error| panic!("follow-up {treatment:?} failed: {error}"));
+            }
+        }
+    }
+
+    #[test]
+    fn cylinder_fillet_tangencies_are_not_selectable_edges() {
+        let spec = cylinder_spec(0.0, 360);
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        let base = evaluate_part_solid(spec, []).unwrap();
+        let rim = base
+            .logical_edges
+            .iter()
+            .find(|edge| edge.closed && edge.convex)
+            .unwrap()
+            .key;
+        let feature = ShapeFeatureId::from_parts(0, 0);
+        let filleted = evaluate_part_solid(
+            spec,
+            [(
+                feature,
+                ShapeFeature::new([target(owner, rim)], EdgeTreatment::Fillet, 20),
+            )],
+        )
+        .unwrap();
+
+        assert!(
+            filleted
+                .logical_edges
+                .iter()
+                .all(|edge| { edge.key.source != TopologySource::Feature(feature) })
+        );
+        assert!(
+            filleted
+                .logical_edges
+                .iter()
+                .any(|edge| edge.closed && edge.convex)
+        );
     }
 
     #[test]

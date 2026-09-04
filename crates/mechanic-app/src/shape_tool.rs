@@ -184,6 +184,57 @@ pub(crate) fn hovered_source_edge(
     })
 }
 
+/// Returns the ray entry distance for the solid's edge-pick-inflated bounds.
+/// This lets silhouette edges be acquired before an ordinary surface hit
+/// exists, including a pointer ray that passes just outside a cylinder rim.
+#[cfg(test)]
+pub(crate) fn inflated_bounds_ray_distance(
+    solid: &EvaluatedSolid,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<f32> {
+    let first = solid.vertices.first()?.position;
+    let (mut minimum, mut maximum) = (first, first);
+    for vertex in &solid.vertices[1..] {
+        minimum = minimum.min(vertex.position);
+        maximum = maximum.max(vertex.position);
+    }
+    inflated_aabb_ray_distance(minimum, maximum, ray_origin, ray_direction)
+}
+
+/// Returns the ray entry distance for an axis-aligned box enlarged by the
+/// edge-pick radius.
+pub(crate) fn inflated_aabb_ray_distance(
+    mut minimum: Vec3,
+    mut maximum: Vec3,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<f32> {
+    minimum -= Vec3::splat(EDGE_PICK_RADIUS);
+    maximum += Vec3::splat(EDGE_PICK_RADIUS);
+
+    let mut entry = 0.0_f32;
+    let mut exit = f32::INFINITY;
+    for axis in 0..3 {
+        let origin = ray_origin[axis];
+        let direction = ray_direction[axis];
+        if direction.abs() <= 1.0e-6 {
+            if origin < minimum[axis] || origin > maximum[axis] {
+                return None;
+            }
+            continue;
+        }
+        let first = (minimum[axis] - origin) / direction;
+        let second = (maximum[axis] - origin) / direction;
+        entry = entry.max(first.min(second));
+        exit = exit.min(first.max(second));
+        if exit < entry {
+            return None;
+        }
+    }
+    (exit >= 0.0).then_some(entry)
+}
+
 fn hovered_feature_edge_matching(
     solid: &EvaluatedSolid,
     owner: SolidOwner,
@@ -828,13 +879,14 @@ mod tests {
     use super::{
         FeatureDrag, FeatureEdgeHit, ShapeMirror, ShapeSnap, begin_group_drag, clamp_into_region,
         drag_edits, drag_offset, edge_insertion, hovered_feature_edge, hovered_source_edge,
-        hovered_vertex, mirrored_edits, most_visible_axis, nudge_edits, screen_axis,
-        vertex_position,
+        hovered_vertex, inflated_bounds_ray_distance, mirrored_edits, most_visible_axis,
+        nudge_edits, screen_axis, vertex_position,
     };
     use bevy::prelude::*;
     use mechanic_core::{
         BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, ConstructionMaterial, CuboidSpec,
-        EdgeChainRef, EdgeTreatment, STEP_METERS, STEPS_PER_CELL, ShapeRegion, SolidOwner,
+        CylinderDimensions, CylinderSpec, EdgeChainRef, EdgeTreatment, STEP_METERS, STEPS_PER_CELL,
+        ShapeRegion, SolidOwner,
     };
 
     fn region(size: IVec3) -> ShapeRegion {
@@ -1294,5 +1346,34 @@ mod tests {
             * 0.5;
 
         assert!(hovered_source_edge(&solid, target, midpoint + Vec3::Z, Vec3::NEG_Z).is_none());
+    }
+
+    #[test]
+    fn silhouette_ray_outside_the_surface_bounds_selects_the_whole_cylinder_rim() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                CylinderDimensions::default(),
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let solid = graph.evaluated_solid(owner).unwrap();
+        let ray_origin = Vec3::new(0.155, 1.0, 0.0);
+        let ray_direction = Vec3::NEG_Y;
+
+        assert!(ray_origin.x > 0.125, "the ray misses the cylinder surface");
+        assert!(
+            inflated_bounds_ray_distance(&solid, ray_origin, ray_direction).is_some(),
+            "the edge-pick-inflated bounds acquire the silhouette"
+        );
+        let hit = hovered_feature_edge(&solid, owner, ray_origin, ray_direction)
+            .expect("the nearby silhouette rim is selectable");
+        let logical = solid.logical_edge(hit.target.edge).unwrap();
+        assert!(logical.closed);
+        assert_eq!(logical.half_edges.len(), 24);
     }
 }

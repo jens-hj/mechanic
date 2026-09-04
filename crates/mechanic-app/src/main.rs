@@ -6802,7 +6802,20 @@ fn handle_feature_shape_actions(
         )),
         FaceOwner::Ground => None,
     });
-    let owner = pointed_owner.or(state.feature_focus);
+    let focused_owner = pointed_owner.or(state.feature_focus);
+    let evaluated_hit = focused_owner
+        .and_then(|owner| {
+            let solid = graph.evaluated_solid(owner).ok()?;
+            shape_tool::hovered_feature_edge(&solid, owner, ray_origin, ray_direction)
+        })
+        .or_else(|| {
+            if focused_owner.is_none() {
+                hovered_feature_edge_without_surface(graph, ray_origin, ray_direction)
+            } else {
+                None
+            }
+        });
+    let owner = focused_owner.or_else(|| evaluated_hit.map(|hit| hit.target.owner));
     state.hovered_source_feature = None;
     let treatment = match mode {
         shape_tool::ShapeEditMode::Chamfer => mechanic_core::EdgeTreatment::Chamfer,
@@ -6828,15 +6841,9 @@ fn handle_feature_shape_actions(
             })
             .min_by(|left, right| left.1.distance.total_cmp(&right.1.distance))
     });
-    if let Some((feature, hit)) = virtual_hit {
-        state.hovered_source_feature = Some(feature);
-        state.hovered_feature_edge = Some(hit);
-    } else {
-        state.hovered_feature_edge = owner.and_then(|owner| {
-            let solid = graph.evaluated_solid(owner).ok()?;
-            shape_tool::hovered_feature_edge(&solid, owner, ray_origin, ray_direction)
-        });
-    }
+    let (source_feature, hovered) = closer_feature_hit(evaluated_hit, virtual_hit);
+    state.hovered_source_feature = source_feature;
+    state.hovered_feature_edge = hovered;
 
     if !actions.just_pressed(GameAction::Primary) {
         return;
@@ -6951,6 +6958,65 @@ fn clamp_feature_amount(
         amount = amount.saturating_sub(increment.max(1));
     }
     0
+}
+
+fn hovered_feature_edge_without_surface(
+    graph: &ConstructionGraph,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<shape_tool::FeatureEdgeHit> {
+    let mut owners = graph
+        .parts()
+        .filter_map(|(part, spec)| {
+            ordinary_material(*spec)?;
+            Some(graph.region_of(part).map_or(
+                mechanic_core::SolidOwner::Part(part),
+                mechanic_core::SolidOwner::Region,
+            ))
+        })
+        .collect::<Vec<_>>();
+    owners.sort_unstable();
+    owners.dedup();
+
+    owners
+        .into_iter()
+        .filter_map(|owner| {
+            let (minimum, maximum) = match owner {
+                mechanic_core::SolidOwner::Part(part) => {
+                    builder::part_world_bounds(*graph.part(part)?)
+                }
+                mechanic_core::SolidOwner::Region(region) => {
+                    region_world_bounds(graph.region(region)?)
+                }
+            };
+            shape_tool::inflated_aabb_ray_distance(minimum, maximum, ray_origin, ray_direction)?;
+            let solid = graph.evaluated_solid(owner).ok()?;
+            shape_tool::hovered_feature_edge(&solid, owner, ray_origin, ray_direction)
+        })
+        .min_by(|left, right| {
+            let left_along = (left.point - ray_origin).dot(ray_direction);
+            let right_along = (right.point - ray_origin).dot(ray_direction);
+            left_along
+                .total_cmp(&right_along)
+                .then_with(|| left.distance.total_cmp(&right.distance))
+        })
+}
+
+fn closer_feature_hit(
+    evaluated: Option<shape_tool::FeatureEdgeHit>,
+    source: Option<(mechanic_core::ShapeFeatureId, shape_tool::FeatureEdgeHit)>,
+) -> (
+    Option<mechanic_core::ShapeFeatureId>,
+    Option<shape_tool::FeatureEdgeHit>,
+) {
+    match (evaluated, source) {
+        (Some(real), Some((feature, dashed))) if dashed.distance < real.distance => {
+            (Some(feature), Some(dashed))
+        }
+        (Some(real), _) => (None, Some(real)),
+        (None, Some((feature, dashed))) => (Some(feature), Some(dashed)),
+        (None, None) => (None, None),
+    }
 }
 
 fn feature_amount_label(treatment: mechanic_core::EdgeTreatment, amount_ticks: u32) -> String {
@@ -17089,7 +17155,7 @@ mod interaction_tests {
         DimensionLinkId, DimensionLinkSpec, DriveLinkSpec, EdgeChainRef, EdgeTreatment, FaceKind,
         FaceOwner, FaceRef, GridRotation, MaterialAppearance, MaterialColor, MaterialDye,
         MaterialFinish, PartId, PartSpec, PendingOperation, RigidLinkSpec, STEP_METERS,
-        ShapeRegion, SolidOwner, WeldSpec,
+        ShapeFeature, ShapeRegion, SolidOwner, WeldSpec,
     };
     use mechanic_gpu::GpuTransform;
 
@@ -17102,12 +17168,12 @@ mod interaction_tests {
         SimulationHit, SurfaceHit, Tool, WorldEditBlocker, active_drag_plane,
         adjusted_bearing_dimensions, adjusted_cylinder_dimensions, apply_history_action,
         bearing_attachment_candidate, bearing_attachment_is_highlighted, block_sheet_bounds,
-        candidate_from_hit, choose_region, clear_editor_hover, closest_axis_parameter,
-        connect_control_link, connect_drive_wire, cycle_orientation, delete_box_parts,
-        hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
-        handle_build_actions, handle_chroma_actions, handle_feature_shape_actions,
-        handle_tool_change, pipe_pointer_delta, pipe_turn_direction, raycast_construction,
-        raycast_placed_bearing_discs, raycast_placed_bearing_discs_with_pose,
+        candidate_from_hit, choose_region, clear_editor_hover, closer_feature_hit,
+        closest_axis_parameter, connect_control_link, connect_drive_wire, cycle_orientation,
+        delete_box_parts, hammer_delivery, hammer_impulse_magnitude, hammer_point_travel,
+        handle_block_actions, handle_build_actions, handle_chroma_actions,
+        handle_feature_shape_actions, handle_tool_change, pipe_pointer_delta, pipe_turn_direction,
+        raycast_construction, raycast_placed_bearing_discs, raycast_placed_bearing_discs_with_pose,
         raycast_placed_bearings, raycast_simulation, refresh_block_drag, refresh_region_drag,
         refresh_tool_preview, requested_bearing_dimension_adjustment,
         requested_cylinder_dimension_adjustment, reverse_drive_wires, rigid_body_parts,
@@ -17356,6 +17422,55 @@ mod interaction_tests {
         assert!(state.selected_feature_edges.is_empty());
         assert_eq!(state.selected_shape_feature, None);
         assert_eq!(history.undo.len(), 1);
+    }
+
+    #[test]
+    fn closer_generated_edge_wins_over_a_dashed_feature_source() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = SolidOwner::Part(part);
+        let target = EdgeChainRef {
+            owner,
+            edge: graph.evaluated_solid(owner).unwrap().logical_edges[0].key,
+        };
+        let BuildOutcome::ShapeFeatureAdded(feature) = graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [target],
+                EdgeTreatment::Chamfer,
+                10,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let hit = |distance| crate::shape_tool::FeatureEdgeHit {
+            target,
+            point: Vec3::ZERO,
+            tangent: Vec3::X,
+            bisector: Vec3::Y,
+            distance,
+        };
+
+        assert_eq!(
+            closer_feature_hit(Some(hit(0.01)), Some((feature, hit(0.03)))),
+            (None, Some(hit(0.01)))
+        );
+        assert_eq!(
+            closer_feature_hit(Some(hit(0.04)), Some((feature, hit(0.02)))),
+            (Some(feature), Some(hit(0.02)))
+        );
+        assert_eq!(
+            closer_feature_hit(Some(hit(0.02)), Some((feature, hit(0.02)))),
+            (None, Some(hit(0.02))),
+            "an equal-distance real edge must not enter source adjustment mode"
+        );
     }
 
     #[test]
