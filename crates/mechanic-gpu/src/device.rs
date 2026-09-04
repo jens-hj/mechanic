@@ -40,7 +40,9 @@ pub struct GpuPhysicsConfig {
     pub ground_plane_enabled: bool,
     /// Whether colliders in the same articulated mechanism may contact.
     pub mechanism_self_collisions: bool,
-    /// Fixed number of projected impulse iterations.
+    /// Base number of projected impulse iterations. Small mechanisms with angle
+    /// drives use at least 32 pre-integration velocity iterations; contact
+    /// sweeps retain this configured count.
     pub solver_iterations: u32,
 }
 
@@ -6540,6 +6542,8 @@ mod tests {
             "turns were asymmetric: {turns:?}"
         );
     }
+
+    include!("steering_tests.rs");
 
     #[test]
     #[allow(clippy::too_many_lines)]

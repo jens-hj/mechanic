@@ -17,6 +17,7 @@ mod components;
 mod control_block;
 mod creations;
 mod dimensions;
+mod driving;
 mod help;
 mod hotbar;
 pub(crate) mod markers;
@@ -64,6 +65,7 @@ use chroma::{ChromaPanel, ChromaPanelProps, ChromaStatus, ChromaStatusProps};
 use control_block::{ControlPanel, ControlPanelProps};
 use creations::{CreationPicker, CreationPickerProps};
 use dimensions::{DimensionOverlay, DimensionOverlayProps};
+use driving::{DrivingOverlay, DrivingOverlayProps};
 use help::{HelpPanel, HelpPanelProps};
 use hotbar::{Hotbar, HotbarProps};
 use markers::{MarkerOverlay, MarkerOverlayProps};
@@ -198,6 +200,8 @@ pub(crate) struct Handles {
     block: control_block::Handles,
     /// Opt-in frame, renderer, and physics diagnostics.
     performance: MosaicState<performance::Model>,
+    /// Speed and transmission instruments for the occupied vehicle.
+    driving: MosaicState<driving::Model>,
     /// What the overlay is asking for.
     intents: Rc<RefCell<Vec<UiIntent>>>,
 }
@@ -227,6 +231,7 @@ impl Handles {
             pause: MosaicState::new(pause::Model::default()),
             pause_fov: MosaicState::new(crate::settings::DEFAULT_CAMERA_FOV_DEGREES),
             performance: MosaicState::new(performance::Model::default()),
+            driving: MosaicState::new(driving::Model::default()),
             block: control_block::Handles {
                 model: MosaicState::new(control_block::PanelModel::default()),
                 selected: MosaicState::new(None),
@@ -267,6 +272,7 @@ struct Pushed {
     pause: pause::Model,
     material_wheel: material_wheel::Model,
     performance: performance::Model,
+    driving: driving::Model,
     block: control_block::PanelModel,
     shape_status: String,
 }
@@ -373,6 +379,8 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let pause_panel = handles.clone();
     let performance_model = handles.performance;
     let performance_viewport = handles.viewport;
+    let driving_model = handles.driving;
+    let driving_viewport = handles.viewport;
     view! {
         stack #mechanic.overlay width:fill height:fill align:start justify:start exponent:1 {
             if !worlds_model.with(|model| model.open) {
@@ -411,6 +419,13 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
             if block_open.with(control_block::PanelModel::is_open)
                 && !worlds_model.with(|model| model.open) {
                 ControlPanel handles:(block_panel.block.clone())
+            }
+            if driving_model.with(|model| model.open)
+                && !worlds_model.with(|model| model.open)
+                && !pause_model.with(|model| model.open)
+                && !block_open.with(control_block::PanelModel::is_open)
+                && !creations_open.with(|model| model.open) {
+                DrivingOverlay model:(driving_model) viewport:(driving_viewport)
             }
             if creations_open.with(|model| model.open)
                 && !worlds_model.with(|model| model.open) {
@@ -715,6 +730,37 @@ pub(crate) fn push_performance(
     if next != ui.pushed.performance {
         ui.handles.performance.set(next.clone());
         ui.pushed.performance = next;
+    }
+}
+
+/// Updates instruments at 10 Hz without another GPU readback or changing physics.
+#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+pub(crate) fn push_driving(
+    ui: Option<NonSendMut<AppUi>>,
+    simulation: Res<AppSimulation>,
+    player: Res<crate::camera::PlayerState>,
+    sequencer: Res<crate::sequencer::DriveSequencer>,
+    gearboxes: Res<crate::sequencer::GearboxRuntime>,
+    time: Res<bevy::prelude::Time>,
+    mut last_update: bevy::prelude::Local<f64>,
+) {
+    let Some(mut ui) = ui else {
+        return;
+    };
+    let active = player.seat.is_some() && simulation.is_running();
+    let now = time.elapsed_secs_f64();
+    if active && ui.pushed.driving.open && now - *last_update < 0.1 {
+        return;
+    }
+    *last_update = now;
+    let next = if active {
+        driving::capture(player.seat, &simulation, &sequencer, &gearboxes)
+    } else {
+        driving::Model::default()
+    };
+    if next != ui.pushed.driving {
+        ui.handles.driving.set(next.clone());
+        ui.pushed.driving = next;
     }
 }
 

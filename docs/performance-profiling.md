@@ -48,6 +48,14 @@ reported sweep count counts contact sweeps, including this path work; it is not
 a count of individual bearing projections. The GPU test
 `front_steered_car_turns_through_ground_friction` separately checks left/right
 chassis yaw, straight-line drift, steering angle, and support while driving.
+Small mechanisms with angle drives additionally use at least 32 velocity
+projection iterations **before** advancing their joint angles. This resolves
+wheel-drive/steering coupling without increasing the eight contact sweeps or
+the accumulated per-tick motor torque budget. Mechanisms without angle drives
+retain the configured velocity iteration count. The separate
+`high_speed_steering_returns_to_center_after_release` GPU regression uses the
+garage-built `front_steered_car.mech` fixture, holds both turn directions at
+50 km/h, then checks return to center, ground support, and failure flags.
 For the integrated 1920×1080 capture, wait for local terrain to read 36/36 and
 streaming backlog to reach zero, then record 30 seconds. The F3 “Terrain selection worker”
 row is asynchronous worker duration; “Terrain reselections” is its completion

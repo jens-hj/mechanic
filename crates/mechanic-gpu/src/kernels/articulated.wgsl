@@ -83,6 +83,10 @@ const DRIVE_ANGLE_POSITION_GAIN: f32 = 6.0;
 const DRIVE_ANGLE_BRAKE_MARGIN: f32 = 0.8;
 const DRIVE_ANGLE_DEADBAND: f32 = 0.0005;
 const SMALL_MECHANISM_SERIAL_CLEANUP_STEPS: u32 = 5u;
+// Angle drives sharing light knuckles with fast wheel drives must converge
+// before advance_coordinates integrates their velocities. Contact cleanup is
+// too late to undo an erroneous angle step, even with unused servo torque.
+const SMALL_MECHANISM_ANGLE_ITERATIONS: u32 = 32u;
 const INVALID_NUMERIC_FLAG: u32 = 2u;
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
@@ -481,7 +485,13 @@ fn apply_velocity_deltas(@builtin(global_invocation_id) invocation: vec3<u32>) {
 fn project_small_mechanism_velocities(
     @builtin(local_invocation_index) index: u32,
 ) {
-    for (var iteration = 0u; iteration < max(config.solver_iterations, 1u); iteration += 1u) {
+    var iterations = max(config.solver_iterations, 1u);
+    for (var row = 0u; row < config.bearing_count; row += 1u) {
+        if drive_constraints[row].drive.mode == DRIVE_MODE_ANGLE {
+            iterations = max(iterations, SMALL_MECHANISM_ANGLE_ITERATIONS);
+        }
+    }
+    for (var iteration = 0u; iteration < iterations; iteration += 1u) {
         if index == 0u {
             for (var drive_index = 0u; drive_index < config.bearing_count; drive_index += 1u) {
                 project_drive_velocity_row_immediate(drive_index);

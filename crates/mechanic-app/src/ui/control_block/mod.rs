@@ -111,6 +111,7 @@ pub(crate) fn write_gearbox(
 }
 
 /// The half of [`write_joint`] that already knows which control block is open.
+#[allow(clippy::too_many_lines)] // Keep one transactional edit and its validation together.
 fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
     let rows = panel_rows(&target.graph.0, controller);
     let Some(row) = rows.iter().find(|row| row.links.contains(&intent.lane)) else {
@@ -173,7 +174,16 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
             },
         };
     }
-    let (hardware_speed, _) = actuator_capability(actuator, inventory);
+    let (mut hardware_speed, _) = actuator_capability(actuator, inventory);
+    if matches!(
+        intent.edit,
+        PanelEdit::ApplyPreset(model::Preset::Drive | model::Preset::Spin)
+    ) {
+        // Author an output-speed request that still reaches the drivetrain's
+        // ceiling after an upshift. Runtime rows apply the active gear's limit.
+        hardware_speed =
+            preset_motor_speed(&target.graph.0, controller, actuator).unwrap_or(hardware_speed);
+    }
     if hardware_speed > 0.0
         && let Ok(hardware_limits) = limits.with_max_speed(hardware_speed)
     {
@@ -219,6 +229,25 @@ fn default_motor(inventory: mechanic_core::ActuatorInventory) -> Option<Actuator
     } else {
         None
     }
+}
+
+fn preset_motor_speed(
+    graph: &mechanic_core::ConstructionGraph,
+    controller: PartId,
+    actuator: ActuatorAssignment,
+) -> Option<f32> {
+    [EngineKind::Gas, EngineKind::Electric]
+        .into_iter()
+        .filter(|kind| match kind {
+            EngineKind::Gas => actuator.uses_gas(),
+            EngineKind::Electric => actuator.uses_electric(),
+        })
+        .filter_map(|kind| {
+            let config = graph.gearbox_config(controller, kind).ok()?;
+            let ratio = config.ratios().iter().copied().reduce(f32::min)?;
+            Some(kind.no_load_rpm() * core::f32::consts::TAU / 60.0 / ratio)
+        })
+        .reduce(f32::max)
 }
 
 const fn stepped_percent(current: u8) -> u8 {
@@ -574,6 +603,120 @@ mod tests {
             .expect("the wire is there")
             .0;
         (graph, link)
+    }
+
+    /// Exercises the same graph writer as the controller's preset buttons.
+    #[test]
+    #[allow(clippy::too_many_lines)] // Hardware fixture plus assertions across both gear ranges.
+    fn drive_preset_uses_two_gas_engines_and_the_full_gear_range() {
+        use bevy::ecs::system::SystemState;
+        use bevy::prelude::World;
+        use mechanic_core::{DriveTarget, EngineSpec, WeldSpec};
+
+        let (mut graph, link) = wired();
+        let controller = graph.drive_link(link).unwrap().controller;
+        for (position, first, second) in [
+            (
+                IVec3::new(2, 9, 0),
+                FaceKind::PositiveY,
+                FaceKind::NegativeY,
+            ),
+            (
+                IVec3::new(6, 5, 0),
+                FaceKind::PositiveX,
+                FaceKind::NegativeX,
+            ),
+        ] {
+            let BuildOutcome::Spawned(engine) = graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    EngineKind::Gas,
+                    BuildPose::from_half_grid(position, GridRotation::default()),
+                )))
+                .unwrap()
+            else {
+                panic!("engine");
+            };
+            graph
+                .apply(BuildCommand::Weld(WeldSpec {
+                    first: FaceRef::part(controller, first),
+                    second: FaceRef::part(engine, second),
+                }))
+                .unwrap();
+            let mut parent = engine;
+            for _ in 0..2 {
+                let spec = graph.next_transmission_spec(parent).unwrap();
+                let BuildOutcome::Spawned(child) = graph
+                    .apply(BuildCommand::AttachTransmission { parent, spec })
+                    .unwrap()
+                else {
+                    panic!("transmission");
+                };
+                parent = child;
+            }
+        }
+        assert_eq!(graph.actuator_inventory(controller).unwrap().gas_engines, 2);
+        let mut world = World::new();
+        world.insert_resource(crate::EditorGraph(graph));
+        world.init_resource::<crate::EditorState>();
+        world.init_resource::<crate::EditorHistory>();
+        world.init_resource::<crate::AppSimulation>();
+        let mut system = SystemState::<super::EditTarget>::new(&mut world);
+        let intent = super::Intent {
+            lane: link,
+            edit: PanelEdit::ApplyPreset(super::model::Preset::Drive),
+            transient: false,
+        };
+        for ratios in [vec![4.0, 3.0, 1.0], vec![4.0, 3.0, 0.25]] {
+            world
+                .resource_mut::<crate::EditorGraph>()
+                .0
+                .apply(BuildCommand::SetGearboxRatios {
+                    controller,
+                    kind: EngineKind::Gas,
+                    ratios: ratios.clone(),
+                })
+                .unwrap();
+            super::write_to(
+                controller,
+                &mut system.get_mut(&mut world).unwrap(),
+                &intent,
+            );
+            let graph = &world.resource::<crate::EditorGraph>().0;
+            let drive = graph.drive_link(link).unwrap();
+            let top = EngineKind::Gas.no_load_rpm() * core::f32::consts::TAU / 60.0 / ratios[2];
+            assert!(
+                matches!(drive.program.state(1).unwrap().target(), DriveTarget::Speed(speed) if (speed - top).abs() < 0.0001),
+                "W must request {top} rad/s, got {:?}",
+                drive.program
+            );
+            assert!(
+                matches!(drive.program.state(2).unwrap().target(), DriveTarget::Speed(speed) if (speed + top * 0.7).abs() < 0.0001)
+            );
+            assert_eq!(
+                drive
+                    .program
+                    .state(1)
+                    .unwrap()
+                    .trigger()
+                    .unwrap()
+                    .key()
+                    .symbol(),
+                'W'
+            );
+            assert_eq!(
+                drive
+                    .program
+                    .state(2)
+                    .unwrap()
+                    .trigger()
+                    .unwrap()
+                    .key()
+                    .symbol(),
+                'S'
+            );
+            assert!(world.resource::<crate::EditorState>().feedback.is_none());
+            graph.compile().unwrap();
+        }
     }
 
     /// The overlay with a control block open on one wired joint.

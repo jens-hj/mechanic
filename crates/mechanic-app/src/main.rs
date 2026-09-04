@@ -1666,10 +1666,10 @@ fn handle_dimension_link_interaction(
     state.construction_mesh_dirty = true;
 }
 
-/// Opens or closes the control-block panel with `E`.
+/// Opens the aimed-at control-block panel with `E`.
 ///
-/// The panel targets the hovered editor or simulation control block, falling
-/// back to the selected one, so moving vehicles remain programmable.
+/// Editor and live simulation hits both work. Remembered wiring selection must
+/// not take this shared interaction key away from seat entry or exit.
 #[allow(clippy::too_many_arguments)]
 fn handle_control_panel_shortcut(
     actions: Res<ButtonInput<GameAction>>,
@@ -1687,7 +1687,11 @@ fn handle_control_panel_shortcut(
     if panel.is_open() {
         return;
     }
-    if !actions.just_pressed(GameAction::Interact) || !player.world_input_active() || wheel.open {
+    if !actions.just_pressed(GameAction::Interact)
+        || !player.world_input_active()
+        || player.seat.is_some()
+        || wheel.open
+    {
         return;
     }
     if hovered_part(state.hovered).is_some_and(|part| graph.0.dimension_link_id(part).is_some())
@@ -1704,14 +1708,8 @@ fn handle_control_panel_shortcut(
                 .hovered_simulation
                 .map(|hit| hit.part)
                 .filter(|&part| graph.0.is_controller(part))
-        })
-        .or_else(|| {
-            state
-                .selected_controller
-                .filter(|&part| graph.0.is_controller(part))
         });
     let Some(controller) = target else {
-        state.feedback = Some("Point at a control block, or select one, then press E".to_owned());
         return;
     };
     state.selected_controller = Some(controller);
@@ -3593,7 +3591,7 @@ fn main() {
                         advance_simulation.run_if(world::world_playing),
                         sync_player_avatar,
                         update_previews,
-                        (performance::sample, ui::push_performance).chain(),
+                        (performance::sample, ui::push_performance, ui::push_driving).chain(),
                     )
                         .chain(),
                 )
@@ -20101,6 +20099,59 @@ mod interaction_tests {
                 .controller(),
             Some(controller)
         );
+    }
+
+    #[test]
+    fn remembered_controller_does_not_capture_seat_or_empty_space_interactions() {
+        let (mut graph, _, controller) = wired_socket_graph();
+        let BuildOutcome::Spawned(seat) = graph
+            .apply(BuildCommand::SpawnSeat(mechanic_core::SeatSpec::new(
+                BuildPose::new(IVec3::new(20, 0, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            panic!("seat");
+        };
+        let mut actions = ButtonInput::default();
+        actions.press(GameAction::Interact);
+        let mut panel = crate::control_panel::ControlPanelState::default();
+        panel.open(controller);
+        panel.close();
+        let mut app = App::new();
+        app.insert_resource(actions)
+            .insert_resource(crate::creation_menu::CreationMenuState::default())
+            .insert_resource(super::EditorGraph(graph))
+            .insert_resource(EditorState {
+                selected_controller: Some(controller),
+                ..Default::default()
+            })
+            .insert_resource(panel)
+            .insert_resource(PlayerState {
+                input_captured: true,
+                ..Default::default()
+            })
+            .insert_resource(MaterialWheelState::default())
+            .insert_resource(crate::pause_menu::PauseMenuState::default())
+            .add_systems(Update, super::handle_control_panel_shortcut);
+
+        for (aimed, seated) in [(None, false), (Some(seat), false), (Some(controller), true)] {
+            app.world_mut()
+                .resource_mut::<EditorState>()
+                .hovered_simulation = aimed.map(|part| SimulationHit {
+                part,
+                body_index: 0,
+                distance: 1.0,
+                point: Vec3::ZERO,
+            });
+            app.world_mut().resource_mut::<PlayerState>().seat = seated.then_some(seat);
+            app.update();
+            assert!(
+                !app.world()
+                    .resource::<crate::control_panel::ControlPanelState>()
+                    .is_open(),
+                "aim {aimed:?}, seated {seated}: remembered controller must not capture E",
+            );
+        }
     }
 
     #[test]

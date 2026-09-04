@@ -3,8 +3,10 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Largest supported drive speed, in radians per second.
-pub const MAX_DRIVE_SPEED_RAD_S: f32 = 25.0;
+/// Largest authorable drive speed, covering the fastest engine at minimum reduction.
+/// Actual speed and torque remain limited by the connected hardware and active gear.
+pub const MAX_DRIVE_SPEED_RAD_S: f32 =
+    crate::EngineKind::Gas.no_load_rpm() * core::f32::consts::TAU / 60.0 / crate::MIN_GEAR_RATIO;
 
 /// Largest supported drive angle magnitude, in radians.
 pub const MAX_DRIVE_LIMIT_RADIANS: f32 = core::f32::consts::TAU;
@@ -106,7 +108,10 @@ impl ActuatorAssignment {
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum DriveLimitsError {
     /// The maximum speed was not positive, or exceeded the supported range.
-    #[error("drive maximum speed must be positive and at most 25 rad/s")]
+    #[error(
+        "drive maximum speed must be positive and at most {} rad/s",
+        MAX_DRIVE_SPEED_RAD_S
+    )]
     SpeedOutOfRange,
     /// The maximum torque was zero, negative, or NaN.
     #[error("drive maximum torque must be positive, or infinite for an unlimited drive")]
@@ -135,7 +140,10 @@ pub enum DriveProgramError {
     #[error("drive state targets must be finite")]
     NonFiniteTarget,
     /// A target speed magnitude exceeded the supported range.
-    #[error("drive state speed magnitude must be at most 25 rad/s")]
+    #[error(
+        "drive state speed magnitude must be at most {} rad/s",
+        MAX_DRIVE_SPEED_RAD_S
+    )]
     SpeedOutOfRange,
     /// A target angle magnitude exceeded the supported range.
     #[error("drive state angle magnitude must be within one full turn")]
@@ -163,7 +171,7 @@ impl DriveTarget {
     /// # Errors
     ///
     /// Returns [`DriveProgramError`] when the value is non-finite, or when an
-    /// angle exceeds one full turn or a speed exceeds 25 rad/s.
+    /// angle exceeds one full turn or a speed exceeds [`MAX_DRIVE_SPEED_RAD_S`].
     pub fn validated(self) -> Result<Self, DriveProgramError> {
         let value = match self {
             Self::Angle(angle) => angle,
@@ -712,7 +720,7 @@ impl DriveLimits {
     /// # Errors
     ///
     /// Returns [`DriveLimitsError`] when the speed is not positive or above
-    /// 25 rad/s, the torque is not positive, or the angle limits are
+    /// [`MAX_DRIVE_SPEED_RAD_S`], the torque is not positive, or the angle limits are
     /// non-finite, beyond one full turn, or not ordered.
     pub fn new(
         max_speed_rad_s: f32,
@@ -887,7 +895,7 @@ mod tests {
             Err(DriveProgramError::NonFiniteTarget)
         );
         assert_eq!(
-            DriveState::new(DriveTarget::Speed(25.5)),
+            DriveState::new(DriveTarget::Speed(super::MAX_DRIVE_SPEED_RAD_S + 0.5)),
             Err(DriveProgramError::SpeedOutOfRange)
         );
         assert_eq!(
@@ -1032,7 +1040,7 @@ mod tests {
             Err(DriveLimitsError::SpeedOutOfRange)
         );
         assert_eq!(
-            DriveLimits::new(25.5, 1.0, None),
+            DriveLimits::new(super::MAX_DRIVE_SPEED_RAD_S + 0.5, 1.0, None),
             Err(DriveLimitsError::SpeedOutOfRange)
         );
         assert_eq!(
@@ -1056,6 +1064,25 @@ mod tests {
             limited.with_max_torque(-1.0),
             Err(DriveLimitsError::NonPositiveTorque)
         );
+    }
+
+    #[test]
+    fn programs_accept_engine_speeds_across_the_supported_gear_range() {
+        for kind in [crate::EngineKind::Gas, crate::EngineKind::Electric] {
+            for ratio in [crate::MIN_GEAR_RATIO, 1.0, crate::MAX_GEAR_RATIO] {
+                let speed = kind.no_load_rpm() * core::f32::consts::TAU / 60.0 / ratio;
+                let limits = DriveLimits::default().with_max_speed(speed).unwrap();
+                for target in [speed, -speed * 0.7] {
+                    let state = DriveState::new(DriveTarget::Speed(target)).unwrap();
+                    let program = DriveProgram::new(&[state], false).unwrap();
+                    assert_eq!(
+                        program.state(0).unwrap().target(),
+                        DriveTarget::Speed(target)
+                    );
+                }
+                assert!((limits.max_speed_rad_s() - speed).abs() < f32::EPSILON);
+            }
+        }
     }
 }
 
