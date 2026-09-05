@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on build directory
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.32s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_gpu-acda15e0dc9fccb3)
+
+running 1 test
+test device::tests::callback_timing_distinguishes_servicing_from_later_consumption ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.15s
+

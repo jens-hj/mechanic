@@ -1,0 +1,6 @@
+{
+  "crates/mechanic-app/assets/shaders/terrain_material.wgsl": "423ac980f25c94d70be0bb318bda5ab1b6f76773c92b5c565136439547334447",
+  "crates/mechanic-app/src/world/terrain_shader_tests.rs": "04c469751e0d54c318c5d5a75ed7da42b712731d4c136f252dee2fb0c76c9990",
+  "Cargo.lock": "4d173b3c90672df0147a0ae7173241e6c99792b1f77c830604dea5f27b69d16d",
+  "target/debug/deps/mechanic_app-99d3d4f679952880": "5dc618b49c0d73e2295056139d727e62153284d34be097f327de52c9913a4612"
+}

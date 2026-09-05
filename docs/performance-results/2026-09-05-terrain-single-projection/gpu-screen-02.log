@@ -1,0 +1,28 @@
+
+running 1 test
+2026-09-05T18:30:18.160798Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-09-05T18:30:18.207763Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-09-05T18:30:18.207846Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+Terrain shader comparison adapter: WgpuWrapper(AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })
+Terrain blended=false grid=33 4096x2524 MSAA4: opaque median reference=3.144/2.718 ms candidate=2.731/2.731 ms; max channel delta=1, channels over 2=0/41353216
+Terrain comparison image: /var/folders/_g/lqxwtfds47b716tcmlnkhj080000gn/T/mechanic-terrain-shader-52942/reference-false-33.png
+Terrain comparison image: /var/folders/_g/lqxwtfds47b716tcmlnkhj080000gn/T/mechanic-terrain-shader-52942/candidate-false-33.png
+Terrain blended=false grid=513 4096x2524 MSAA4: opaque median reference=5.260/5.263 ms candidate=5.280/5.309 ms; max channel delta=1, channels over 2=0/41353216
+Terrain comparison image: /var/folders/_g/lqxwtfds47b716tcmlnkhj080000gn/T/mechanic-terrain-shader-52942/reference-false-513.png
+Terrain comparison image: /var/folders/_g/lqxwtfds47b716tcmlnkhj080000gn/T/mechanic-terrain-shader-52942/candidate-false-513.png
+Terrain blended=true grid=33 4096x2524 MSAA4: opaque median reference=4.412/4.423 ms candidate=4.704/4.690 ms; max channel delta=24, channels over 2=3476/41353216
+Terrain comparison image: /var/folders/_g/lqxwtfds47b716tcmlnkhj080000gn/T/mechanic-terrain-shader-52942/reference-true-33.png
+Terrain comparison image: /var/folders/_g/lqxwtfds47b716tcmlnkhj080000gn/T/mechanic-terrain-shader-52942/candidate-true-33.png
+
+thread 'world::terrain_shader_tests::terrain_shader_preserves_pixels_and_measures_gpu_cost' (6895095) panicked at crates/mechanic-app/src/world/terrain_shader_tests.rs:295:9:
+terrain appearance changed: maximum channel delta 24
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test world::terrain_shader_tests::terrain_shader_preserves_pixels_and_measures_gpu_cost ... FAILED
+
+failures:
+
+failures:
+    world::terrain_shader_tests::terrain_shader_preserves_pixels_and_measures_gpu_cost
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 555 filtered out; finished in 16.76s
+

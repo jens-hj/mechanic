@@ -1,0 +1,9 @@
+{
+  "source_world": "/Users/jens/Library/Application Support/Mechanic/worlds/mechanic-attribution-source-3c2654af87374334b7f7ee1c8a37d7e2",
+  "temporary_world": "/Users/jens/Library/Application Support/Mechanic/worlds/mechanic-auto-57f0707e04a9432cbccda28450f1d467",
+  "manifest_sha256": "4e2f229b2c8044a3a6ce8a5c13cebae3610fced68c1648426c8688c2994132c6",
+  "binary": "/Users/jens/repos/mechanic/target/release/mechanic-app",
+  "assets": "/Users/jens/repos/mechanic/crates/mechanic-app",
+  "automated_background": true,
+  "controlled_foreground_benchmark": false
+}

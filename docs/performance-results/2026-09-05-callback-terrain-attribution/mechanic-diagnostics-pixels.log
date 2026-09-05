@@ -1,0 +1,21 @@
+   Compiling bevy_core_pipeline v0.19.0 (/Users/jens/repos/mechanic/vendor/bevy_core_pipeline)
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+   Compiling bevy_pbr v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_gizmos_render v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_internal v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_mosaic v0.1.0 (/Users/jens/repos/mechanic/crates/bevy_mosaic)
+   Compiling mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2m 14s
+     Running unittests src/main.rs (target/debug/deps/mechanic_app-99d3d4f679952880)
+
+running 1 test
+2026-09-05T17:59:25.230006Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-09-05T17:59:25.287975Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-09-05T17:59:25.288076Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+Terrain shader comparison adapter: WgpuWrapper(AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })
+Terrain pass partition pixel differences: 0/41353216
+test world::terrain_shader_tests::terrain_pass_partition_preserves_pixels_and_reports_separate_timing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 555 filtered out; finished in 2.01s
+

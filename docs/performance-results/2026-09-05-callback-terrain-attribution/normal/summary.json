@@ -1,0 +1,214 @@
+[
+  {
+    "file": "/private/tmp/mechanic-attribution-pair-01/normal/capture-1788631584407261000-52008.jsonl",
+    "metadata": {
+      "adapter": "WgpuWrapper(AdapterInfo { name: \"Apple M1 Pro\", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"\", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })",
+      "automated_background": true,
+      "executable": "/Users/jens/repos/mechanic/target/release/mechanic-app",
+      "experiment": "Baseline",
+      "f3": true,
+      "label": "mechanic-attribution-source-1152807e61004187afcd15f167af1ba2-background",
+      "present_mode": "AutoNoVsync",
+      "start_completed_tick": 1811,
+      "start_submitted_tick": 1814,
+      "terrain_pass_partition": false
+    },
+    "fps": 30.64104191728918,
+    "completed_tps": 34.25,
+    "submitted_tps": 34.25,
+    "frame_ms": {
+      "count": 1838,
+      "p50": 32.271792,
+      "p95": 42.666667,
+      "p99": 47.895916
+    },
+    "queue_submission_ms": {
+      "count": 2055,
+      "p50": 0.162709,
+      "p95": 0.305791,
+      "p99": 0.37512500000000004
+    },
+    "readback_latency_ms": {
+      "count": 2055,
+      "p50": 89.474333,
+      "p95": 96.979542,
+      "p99": 105.912375
+    },
+    "submission_to_callbacks_ms": {
+      "count": 2055,
+      "p50": 65.945167,
+      "p95": 94.508209,
+      "p99": 99.431167
+    },
+    "callback_to_publication_ms": {
+      "count": 2055,
+      "p50": 1.134375,
+      "p95": 33.287,
+      "p99": 37.782458999999996
+    },
+    "callbacks_during_poll_counts": {
+      "true": 41,
+      "false": 2014
+    },
+    "physics_poll_ms": {
+      "count": 3893,
+      "p50": 0.002333,
+      "p95": 0.012041,
+      "p99": 0.08937500000000001
+    },
+    "physics_poll_outcomes": {
+      "completed": 2055,
+      "empty": 1838,
+      "error": 0
+    },
+    "acquire_ms": {
+      "count": 1838,
+      "p50": 25.908583,
+      "p95": 35.973333000000004,
+      "p99": 41.770208000000004
+    },
+    "render_cpu_ms": {
+      "count": 1838,
+      "p50": 3.873583,
+      "p95": 4.3427500000000006,
+      "p99": 4.718458
+    },
+    "physics_gpu_ms": {
+      "count": 2055,
+      "p50": 5.529958000000001,
+      "p95": 6.445543000000001,
+      "p99": 7.028542
+    },
+    "physics_cpu_stages_ms": {
+      "encoding_ms": {
+        "count": 2055,
+        "p50": 0.037291,
+        "p95": 0.055333,
+        "p99": 0.07975
+      },
+      "finalization_ms": {
+        "count": 2055,
+        "p50": 1.097125,
+        "p95": 1.381833,
+        "p99": 1.596584
+      },
+      "submission_ms": {
+        "count": 2055,
+        "p50": 0.162709,
+        "p95": 0.305791,
+        "p99": 0.37512500000000004
+      },
+      "readback_setup_ms": {
+        "count": 2055,
+        "p50": 0.001959,
+        "p95": 0.003792,
+        "p99": 0.005667
+      }
+    },
+    "render_gpu_ms": {
+      "tracked_span_ms": {
+        "count": 1838,
+        "p50": 23.874084,
+        "p95": 26.090208,
+        "p99": 28.894875
+      },
+      "prepass_ms": {
+        "count": 1838,
+        "p50": 0.838416,
+        "p95": 1.652375,
+        "p99": 1.882542
+      },
+      "opaque_ms": {
+        "count": 1838,
+        "p50": 19.413208,
+        "p95": 21.436209,
+        "p99": 23.423333
+      },
+      "terrain_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "opaque_other_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "transparent_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "xray_ms": {
+        "count": 1838,
+        "p50": 0.80325,
+        "p95": 0.865792,
+        "p99": 1.80425
+      },
+      "other_ms": {
+        "count": 1838,
+        "p50": 1.40125,
+        "p95": 1.752667,
+        "p99": 2.406667
+      }
+    },
+    "terrain_passes_per_sample": {
+      "count": 1838,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0
+    },
+    "render_gpu_sample_age_ms": {
+      "count": 1838,
+      "p50": 96.776416,
+      "p95": 106.923875,
+      "p99": 118.147208
+    },
+    "in_flight_slots": {
+      "count": 1838,
+      "p50": 3,
+      "p95": 3,
+      "p99": 3
+    },
+    "focused_frame_counts": {
+      "true": 1838,
+      "false": 0
+    },
+    "backlog_start_end": [
+      1406,
+      2949
+    ],
+    "settings_seen": {
+      "f3": [
+        "true"
+      ],
+      "present_mode": [
+        "\"AutoNoVsync\""
+      ],
+      "window_pixels": [
+        "[4112, 2524]"
+      ],
+      "target_pixels": [
+        "[4112, 2524]"
+      ],
+      "viewport_pixels": [
+        "[4112, 2524]"
+      ],
+      "msaa": [
+        "4"
+      ]
+    },
+    "terrain_busy_frames": 0,
+    "physics_error_flags": [
+      0
+    ],
+    "gpu_samples": 1838,
+    "gpu_status_counts": {
+      "Complete": 1838
+    },
+    "gpu_samples_originating_before_capture": 3
+  }
+]

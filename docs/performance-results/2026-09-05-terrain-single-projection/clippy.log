@@ -1,0 +1,9 @@
+    Checking bevy_core_pipeline v0.19.0 (/Users/jens/repos/mechanic/vendor/bevy_core_pipeline)
+    Checking mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+    Checking bevy_pbr v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+    Checking bevy_gizmos_render v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+    Checking bevy_internal v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+    Checking bevy v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+    Checking bevy_mosaic v0.1.0 (/Users/jens/repos/mechanic/crates/bevy_mosaic)
+    Checking mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 42.39s

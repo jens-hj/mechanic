@@ -1,0 +1,22 @@
+Sampling process 45293 for 5 seconds with 1 millisecond of run time between samples
+Sampling completed, processing symbols...
+Sample analysis of process 45293 written to file /tmp/mechanic-fence-A1-profile.txt
+B1: armed
+B1: capture started
+B1: capture finished
+Sampling process 45628 for 5 seconds with 1 millisecond of run time between samples
+Sampling completed, processing symbols...
+Sample analysis of process 45628 written to file /tmp/mechanic-fence-B1-profile.txt
+B2: armed
+B2: capture started
+B2: capture finished
+Sampling process 45872 for 5 seconds with 1 millisecond of run time between samples
+Sampling completed, processing symbols...
+Sample analysis of process 45872 written to file /tmp/mechanic-fence-B2-profile.txt
+A2: armed
+A2: capture started
+A2: capture finished
+Sampling process 46064 for 5 seconds with 1 millisecond of run time between samples
+Sampling completed, processing symbols...
+Sample analysis of process 46064 written to file /tmp/mechanic-fence-A2-profile.txt
+A/B/B/A completed

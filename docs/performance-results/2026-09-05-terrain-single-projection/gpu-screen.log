@@ -1,0 +1,29 @@
+
+running 1 test
+2026-09-05T18:29:09.978775Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-09-05T18:29:10.037926Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-09-05T18:29:10.038008Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+Terrain shader comparison adapter: WgpuWrapper(AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })
+2026-09-05T18:29:12.015249Z ERROR bevy_render::render_resource::pipeline_cache: failed to process shader error:
+error: name `active` is a reserved keyword
+   ┌─ shaders/terrain_material.wgsl:80:9
+   │
+80 │     let active = projection > vec3<f32>(0.001);
+   │         ^^^^^^ definition of `active`
+   │
+   = name `active` is a reserved keyword
+
+
+
+thread 'world::terrain_shader_tests::terrain_shader_preserves_pixels_and_measures_gpu_cost' (6894373) panicked at crates/mechanic-app/src/world/terrain_shader_tests.rs:213:18:
+opaque GPU timestamps unavailable
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test world::terrain_shader_tests::terrain_shader_preserves_pixels_and_measures_gpu_cost ... FAILED
+
+failures:
+
+failures:
+    world::terrain_shader_tests::terrain_shader_preserves_pixels_and_measures_gpu_cost
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 555 filtered out; finished in 2.49s
+
