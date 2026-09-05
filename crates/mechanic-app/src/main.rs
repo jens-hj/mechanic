@@ -12,6 +12,7 @@ use std::{
     },
 };
 
+mod automation;
 mod builder;
 mod camera;
 mod chroma;
@@ -24,6 +25,9 @@ mod hotbar;
 mod multitool;
 mod pause_menu;
 mod performance;
+mod performance_capture;
+mod render_diagnostics;
+mod render_experiments;
 mod sequencer;
 mod settings;
 mod shape_tool;
@@ -337,6 +341,7 @@ struct AppSimulation {
     static_mesh_dirty: bool,
     render_dirty: bool,
     physics_cpu_ms: Option<f64>,
+    physics_submission_timings: Option<mechanic_gpu::GpuSubmissionTimings>,
     ticks_submitted_per_frame: u32,
     in_flight_tick_count: u32,
     submission_to_readback_ms: Option<f64>,
@@ -1238,6 +1243,9 @@ fn replacement_simulation(
         });
     };
     gpu.enable_async_readback();
+    if std::env::var_os("MECHANIC_PERF_CAPTURE_DIR").is_some_and(|v| !v.is_empty()) {
+        gpu.enable_readback_timing();
+    }
     gpu.write_body_states(render_queue, &transforms, &velocities)
         .map_err(|error| format!("cannot preserve live body state: {error}"))?;
     Ok(AppSimulation {
@@ -1255,6 +1263,7 @@ fn replacement_simulation(
         static_mesh_dirty: true,
         render_dirty: true,
         physics_cpu_ms: None,
+        physics_submission_timings: None,
         ticks_submitted_per_frame: 0,
         in_flight_tick_count: 0,
         submission_to_readback_ms: None,
@@ -2251,17 +2260,38 @@ fn poll_simulation_readbacks(
         return;
     }
     loop {
+        let poll_started = performance_capture::is_active().then(std::time::Instant::now);
         let completed = simulation
             .gpu
             .as_ref()
             .expect("running simulation has GPU state")
             .poll_tick_readback(render_device.wgpu_device());
+        if let Some(start) = poll_started {
+            performance_capture::record("physics_poll", || {
+                serde_json::json!({
+                    "duration_ms": start.elapsed().as_secs_f64()*1000.0,
+                    "outcome": match &completed { Ok(Some(_)) => "completed", Ok(None) => "empty", Err(_) => "error" }
+                })
+            });
+        }
+        if let Ok(Some(completed)) = &completed {
+            performance_capture::record(
+                "physics_readback",
+                || serde_json::json!({"tick":completed.tick_index, "latency_ms":completed.submission_to_readback_ms, "submission_to_callbacks_ms":completed.submission_to_callbacks_ms, "callbacks_during_poll":completed.callbacks_during_poll, "gpu_tick_ms":completed.diagnostics.gpu_tick_ms, "error_flags":completed.diagnostics.error_flags}),
+            );
+        }
         match completed {
             Ok(Some(completed)) if completed.diagnostics.error_flags == 0 => {
                 if completed.tick_index <= simulation.completed_tick {
                     continue;
                 }
                 simulation.completed_tick = completed.tick_index;
+                performance_capture::record("physics_publication", || {
+                    serde_json::json!({
+                        "tick":completed.tick_index,
+                        "callback_to_publication_ms":completed.callbacks_completed_at.map(|at| at.elapsed().as_secs_f64()*1000.0)
+                    })
+                });
                 simulation.last_tick_readback = Some(completed.diagnostics);
                 simulation.submission_to_readback_ms = Some(completed.submission_to_readback_ms);
                 if visual_snapshot_is_due(simulation.snapshot_tick, completed.tick_index) {
@@ -2585,6 +2615,7 @@ fn advance_simulation(
         let tick_count =
             usize::try_from(ticks.end.saturating_sub(ticks.start)).unwrap_or(usize::MAX);
         let physics_started = std::time::Instant::now();
+        let mut cpu_timings = mechanic_gpu::GpuSubmissionTimings::default();
         for tick in ticks {
             match pending_hammer_impulse(&simulation, &mut hammer) {
                 Ok(Some(impulse)) => world_runtime.queue_player_reaction(impulse),
@@ -2605,14 +2636,25 @@ fn advance_simulation(
                     tick,
                     world_runtime.pending_player_reactions(),
                 );
-            if let Err(error) = dispatch {
-                world_runtime.clear_player_reactions();
-                stop_failed_simulation(&mut simulation, &mut state, error.to_string());
-                return;
-            }
+            let submission = match dispatch {
+                Ok(submission) => submission,
+                Err(error) => {
+                    world_runtime.clear_player_reactions();
+                    stop_failed_simulation(&mut simulation, &mut state, error.to_string());
+                    return;
+                }
+            };
+            performance_capture::record(
+                "physics_submit",
+                || serde_json::json!({"tick":tick, "encoding_ms":submission.cpu_timings.encoding_ms, "finalization_ms":submission.cpu_timings.finalization_ms, "submission_ms":submission.cpu_timings.submission_ms, "readback_setup_ms":submission.cpu_timings.readback_setup_ms}),
+            );
+            cpu_timings.encoding_ms += submission.cpu_timings.encoding_ms;
+            cpu_timings.finalization_ms += submission.cpu_timings.finalization_ms;
+            cpu_timings.submission_ms += submission.cpu_timings.submission_ms;
+            cpu_timings.readback_setup_ms += submission.cpu_timings.readback_setup_ms;
             world_runtime.clear_player_reactions();
         }
-        simulation.record_performance(physics_started.elapsed(), tick_count, None);
+        simulation.record_performance(physics_started.elapsed(), tick_count, cpu_timings, None);
     }
     simulation.in_flight_tick_count = simulation.gpu.as_ref().map_or(0, |gpu| {
         u32::try_from(gpu.in_flight_tick_count()).unwrap_or(u32::MAX)
@@ -2763,6 +2805,7 @@ impl AppSimulation {
         &mut self,
         cpu_elapsed: std::time::Duration,
         tick_count: usize,
+        cpu_timings: mechanic_gpu::GpuSubmissionTimings,
         readback: Option<GpuTickReadback>,
     ) {
         const SMOOTHING: f64 = 0.2;
@@ -2772,6 +2815,23 @@ impl AppSimulation {
         self.physics_cpu_ms = Some(self.physics_cpu_ms.map_or(cpu_ms, |previous| {
             previous + (cpu_ms - previous) * SMOOTHING
         }));
+        let previous = self.physics_submission_timings;
+        let smooth = |total: f64, previous: Option<f64>| {
+            let per_tick = total / f64::from(count);
+            previous.map_or(per_tick, |value| value + (per_tick - value) * SMOOTHING)
+        };
+        self.physics_submission_timings = Some(mechanic_gpu::GpuSubmissionTimings {
+            encoding_ms: smooth(cpu_timings.encoding_ms, previous.map(|v| v.encoding_ms)),
+            finalization_ms: smooth(
+                cpu_timings.finalization_ms,
+                previous.map(|v| v.finalization_ms),
+            ),
+            submission_ms: smooth(cpu_timings.submission_ms, previous.map(|v| v.submission_ms)),
+            readback_setup_ms: smooth(
+                cpu_timings.readback_setup_ms,
+                previous.map(|v| v.readback_setup_ms),
+            ),
+        });
         if let Some(readback) = readback {
             self.last_tick_readback = Some(readback);
         }
@@ -3460,18 +3520,37 @@ fn authored_preview_material(
 
 #[allow(clippy::too_many_lines)] // The app schedule is kept in visible execution order.
 fn main() {
+    // Validate before starting the renderer; diagnostic modes are never persisted.
+    let render_experiment = render_experiments::current();
+    if render_experiment != render_experiments::RenderExperiment::Baseline {
+        eprintln!("Rendering diagnostic: {}", render_experiment.label());
+    }
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Mechanic — construction and simulation prototype".to_owned(),
-                resolution: (1280, 720).into(),
-                ..default()
-            }),
-            ..Default::default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(bevy::winit::WinitPlugin {
+                    prevent_activation: automation::enabled(),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Mechanic — construction and simulation prototype".to_owned(),
+                        resolution: if automation::enabled() {
+                            bevy::window::WindowResolution::new(4112, 2524)
+                                .with_scale_factor_override(2.0)
+                        } else {
+                            (1280, 720).into()
+                        },
+                        focused: !automation::enabled(),
+                        ..default()
+                    }),
+                    ..Default::default()
+                }),
+        )
         .add_plugins((
             FrameTimeDiagnosticsPlugin::new(120),
             bevy::render::diagnostic::RenderDiagnosticsPlugin,
+            render_diagnostics::RenderTimingsPlugin,
         ))
         .add_plugins(StreamingMeshAllocatorPlugin)
         .add_plugins(OneShotEnvironmentMapPlugin)
@@ -3489,6 +3568,8 @@ fn main() {
         .init_resource::<DebugFrameFreeze>()
         .init_resource::<PauseMenuState>()
         .init_resource::<PerformanceMetrics>()
+        .init_resource::<performance_capture::Recorder>()
+        .add_plugins(automation::AutomationPlugin)
         .init_resource::<AppSettings>()
         .init_resource::<AppSimulation>()
         .init_resource::<SimulationVisualCache>()
@@ -3591,7 +3672,13 @@ fn main() {
                         advance_simulation.run_if(world::world_playing),
                         sync_player_avatar,
                         update_previews,
-                        (performance::sample, ui::push_performance, ui::push_driving).chain(),
+                        (
+                            performance::sample,
+                            performance_capture::sample,
+                            ui::push_performance,
+                            ui::push_driving,
+                        )
+                            .chain(),
                     )
                         .chain(),
                 )
@@ -4079,6 +4166,7 @@ fn setup(
         .spawn((
             Name::new("Player camera"),
             Camera3d::default(),
+            render_experiments::current().msaa(),
             projection.clone(),
             garage::EXPOSURE,
             Tonemapping::SomewhatBoringDisplayTransform,
@@ -4091,12 +4179,15 @@ fn setup(
             camera_transform,
             player_camera,
             MainCamera,
+            render_diagnostics::ProfiledCamera,
             FovCamera,
         ))
         .with_children(|camera| {
             camera.spawn((
                 Name::new("Joint x-ray camera"),
                 Camera3d::default(),
+                // Both cameras share the world target and must use the same MSAA.
+                render_experiments::current().msaa(),
                 projection,
                 // The overlay rides the camera that draws last. This pass loads
                 // rather than clears, so an overlay painted before it is drawn

@@ -139,6 +139,23 @@ pub struct GpuTickSubmission {
     pub snapshot_slot: u8,
     /// Shared queue submission token.
     pub submission_index: wgpu::SubmissionIndex,
+    /// CPU wall-clock stage costs; these do not wait for GPU completion.
+    pub cpu_timings: GpuSubmissionTimings,
+}
+
+/// Non-overlapping CPU wall-clock costs for encoding and submitting one tick.
+/// Includes driver calls and any contention inside them, not just CPU execution.
+/// External-impulse dispatches and later readback polling are outside these stages.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GpuSubmissionTimings {
+    /// Config upload, command encoding, and readback staging allocation/copies.
+    pub encoding_ms: f64,
+    /// Finishing the command encoder into a command buffer.
+    pub finalization_ms: f64,
+    /// Shared queue submission, including pending uploads and resource maintenance.
+    pub submission_ms: f64,
+    /// Registering asynchronous mapping callbacks, not waiting for their completion.
+    pub readback_setup_ms: f64,
 }
 
 /// Validation values copied back after a tick without reading body state.
@@ -179,6 +196,13 @@ pub struct GpuCompletedTickReadback {
     pub snapshot_slot: u8,
     /// Wall-clock latency from queue submission until mapped readback consumption.
     pub submission_to_readback_ms: f64,
+    /// Time when the last mapping callback ran, if diagnostic timing is enabled.
+    /// This observes callback servicing, not the instant GPU execution completed.
+    pub callbacks_completed_at: Option<Instant>,
+    /// Queue-return to final mapping callback latency, when enabled.
+    pub submission_to_callbacks_ms: Option<f64>,
+    /// Whether the final callback ran during this call to `poll_tick_readback`.
+    pub callbacks_during_poll: Option<bool>,
     /// Fixed-size validation and timestamp telemetry.
     pub diagnostics: GpuTickReadback,
     /// CPU prototype-render rows captured from the same tick.
@@ -444,6 +468,7 @@ pub struct GpuPhysics {
     snapshot_bind_groups: Vec<wgpu::BindGroup>,
     timestamps: Option<TimestampResources>,
     async_readback_enabled: AtomicBool,
+    readback_timing_enabled: AtomicBool,
     async_readbacks: Mutex<Vec<AsyncReadbackSlot>>,
 }
 
@@ -460,7 +485,8 @@ struct AsyncReadbackSlot {
 struct PendingAsyncReadback {
     tick_index: u64,
     snapshot_slot: u8,
-    receiver: mpsc::Receiver<Result<(), String>>,
+    receiver: mpsc::Receiver<(Result<(), String>, Option<Instant>)>,
+    callbacks_completed_at: Option<Instant>,
     remaining_callbacks: u8,
     submitted_at: Instant,
 }
@@ -1176,6 +1202,7 @@ impl GpuPhysics {
             snapshot_bind_groups,
             timestamps,
             async_readback_enabled: AtomicBool::new(false),
+            readback_timing_enabled: AtomicBool::new(false),
             async_readbacks: Mutex::new(Vec::new()),
         })
     }
@@ -1396,6 +1423,12 @@ impl GpuPhysics {
         self.async_readback_enabled.store(true, Ordering::Release);
     }
 
+    /// Enables callback timestamps for subsequently submitted asynchronous ticks.
+    /// Adds no polling, waits, queue work, or readback slots.
+    pub fn enable_readback_timing(&self) {
+        self.readback_timing_enabled.store(true, Ordering::Release);
+    }
+
     /// Number of ticks that can be staged without waiting or allocating.
     ///
     /// The application uses this as its in-flight submission budget. Logical
@@ -1454,6 +1487,7 @@ impl GpuPhysics {
         queue: &wgpu::Queue,
         tick_index: u64,
     ) -> GpuTickSubmission {
+        let encoding_started = Instant::now();
         let snapshot_slot = u8::try_from(tick_index % 3).unwrap_or(0);
         let config = GpuTickConfig {
             body_count: self.body_count,
@@ -1602,14 +1636,38 @@ impl GpuPhysics {
             );
             Some(index)
         });
-        let submission_index = queue.submit([encoder.finish()]);
+        let encoding_ms = encoding_started.elapsed().as_secs_f64() * 1_000.0;
+        let finalization_started = Instant::now();
+        let command_buffer = encoder.finish();
+        let finalization_ms = finalization_started.elapsed().as_secs_f64() * 1_000.0;
+        let submission_started = Instant::now();
+        let submission_index = queue.submit([command_buffer]);
+        let submission_finished = Instant::now();
+        let submission_ms = submission_finished
+            .duration_since(submission_started)
+            .as_secs_f64()
+            * 1_000.0;
+        let readback_setup_started = Instant::now();
         if let (Some(slots), Some(index)) = (&mut async_readbacks, async_slot_index) {
-            begin_async_mapping(&mut slots[index], tick_index, snapshot_slot);
+            begin_async_mapping(
+                &mut slots[index],
+                tick_index,
+                snapshot_slot,
+                submission_finished,
+                self.readback_timing_enabled.load(Ordering::Acquire),
+            );
         }
+        let readback_setup_ms = readback_setup_started.elapsed().as_secs_f64() * 1_000.0;
         GpuTickSubmission {
             tick_index,
             snapshot_slot,
             submission_index,
+            cpu_timings: GpuSubmissionTimings {
+                encoding_ms,
+                finalization_ms,
+                submission_ms,
+                readback_setup_ms,
+            },
         }
     }
 
@@ -2118,6 +2176,10 @@ impl GpuPhysics {
         &self,
         device: &wgpu::Device,
     ) -> Result<Option<GpuCompletedTickReadback>, GpuReadbackError> {
+        let poll_started = self
+            .readback_timing_enabled
+            .load(Ordering::Acquire)
+            .then(Instant::now);
         device
             .poll(wgpu::PollType::Poll)
             .map_err(|error| GpuReadbackError::DevicePoll(error.to_string()))?;
@@ -2132,8 +2194,12 @@ impl GpuPhysics {
             };
             while pending.remaining_callbacks > 0 {
                 match pending.receiver.try_recv() {
-                    Ok(Ok(())) => pending.remaining_callbacks -= 1,
-                    Ok(Err(error)) => {
+                    Ok((Ok(()), observed_at)) => {
+                        pending.remaining_callbacks -= 1;
+                        pending.callbacks_completed_at =
+                            pending.callbacks_completed_at.max(observed_at);
+                    }
+                    Ok((Err(error), _)) => {
                         unmap_async_slot(slot);
                         slot.pending = None;
                         return Err(GpuReadbackError::BufferMap(error));
@@ -2195,6 +2261,14 @@ impl GpuPhysics {
             tick_index: pending.tick_index,
             snapshot_slot: pending.snapshot_slot,
             submission_to_readback_ms: pending.submitted_at.elapsed().as_secs_f64() * 1_000.0,
+            callbacks_completed_at: pending.callbacks_completed_at,
+            submission_to_callbacks_ms: pending
+                .callbacks_completed_at
+                .map(|at| at.duration_since(pending.submitted_at).as_secs_f64() * 1_000.0),
+            callbacks_during_poll: pending
+                .callbacks_completed_at
+                .zip(poll_started)
+                .map(|(at, start)| at >= start),
             diagnostics: self.decode_tick_readback(diagnostics, timestamp_values),
             transforms: positions
                 .into_iter()
@@ -4246,12 +4320,20 @@ fn create_async_readback_slot(
     }
 }
 
-fn begin_async_mapping(slot: &mut AsyncReadbackSlot, tick_index: u64, snapshot_slot: u8) {
+fn begin_async_mapping(
+    slot: &mut AsyncReadbackSlot,
+    tick_index: u64,
+    snapshot_slot: u8,
+    submitted_at: Instant,
+    timing: bool,
+) {
     let callback_count = 3 + u8::from(slot.timestamps.is_some());
     let (sender, receiver) = mpsc::sync_channel(usize::from(callback_count));
-    let map = |buffer: &wgpu::Buffer, sender: mpsc::SyncSender<Result<(), String>>| {
+    let map = |buffer: &wgpu::Buffer,
+               sender: mpsc::SyncSender<(Result<(), String>, Option<Instant>)>| {
         buffer.map_async(wgpu::MapMode::Read, .., move |result| {
-            let _ = sender.send(result.map_err(|error| error.to_string()));
+            let observed_at = timing.then(Instant::now);
+            let _ = sender.send((result.map_err(|error| error.to_string()), observed_at));
         });
     };
     map(&slot.diagnostics, sender.clone());
@@ -4265,7 +4347,8 @@ fn begin_async_mapping(slot: &mut AsyncReadbackSlot, tick_index: u64, snapshot_s
         snapshot_slot,
         receiver,
         remaining_callbacks: callback_count,
-        submitted_at: Instant::now(),
+        submitted_at,
+        callbacks_completed_at: None,
     });
 }
 
@@ -5839,6 +5922,29 @@ mod tests {
     }
 
     #[test]
+    fn callback_timing_distinguishes_servicing_from_later_consumption() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let creation = pendulum_creation(false);
+        let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+        gpu.enable_async_readback();
+        gpu.enable_readback_timing();
+        gpu.dispatch_tick(&device, &queue, 1);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let serviced = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let readback = gpu.poll_tick_readback(&device).unwrap().unwrap();
+        let callback = readback.callbacks_completed_at.unwrap();
+        assert!(callback <= serviced);
+        assert_eq!(readback.callbacks_during_poll, Some(false));
+        assert!(callback.elapsed() >= std::time::Duration::from_millis(5));
+        assert!(readback.submission_to_callbacks_ms.unwrap() <= readback.submission_to_readback_ms);
+        assert_eq!(readback.diagnostics.error_flags, 0);
+        assert_eq!(gpu.async_readback_slots_available(), 3);
+    }
+
+    #[test]
     fn asynchronous_tick_readback_is_monotonic_and_tick_matched() {
         let Some((device, queue)) = test_device() else {
             return;
@@ -5847,13 +5953,32 @@ mod tests {
         let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
         gpu.enable_async_readback();
         for tick in 1..=3 {
-            gpu.dispatch_tick(&device, &queue, tick);
+            let started = std::time::Instant::now();
+            let submission = gpu.dispatch_tick(&device, &queue, tick);
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            let timings = submission.cpu_timings;
+            let stages = [
+                timings.encoding_ms,
+                timings.finalization_ms,
+                timings.submission_ms,
+                timings.readback_setup_ms,
+            ];
+            assert!(
+                stages
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= 0.0)
+            );
+            assert!(stages.iter().sum::<f64>() <= elapsed_ms);
+            assert_eq!(submission.tick_index, tick);
         }
         assert_eq!(gpu.async_readback_slots_available(), 0);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
         let mut completed = Vec::new();
         while let Some(readback) = gpu.poll_tick_readback(&device).unwrap() {
+            assert_eq!(readback.callbacks_completed_at, None);
+            assert_eq!(readback.submission_to_callbacks_ms, None);
+            assert_eq!(readback.callbacks_during_poll, None);
             assert_eq!(readback.snapshot_slot, (readback.tick_index % 3) as u8);
             assert_eq!(readback.transforms.len(), creation.compounds.len());
             completed.push(readback.tick_index);

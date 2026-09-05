@@ -8,11 +8,16 @@ members = [
     "crates/mechanic-app",
 ]
 resolver = "2"
-exclude = ["vendor/wgpu-core", "vendor/wgpu-hal"]
+exclude = ["vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
+
+[patch."https://github.com/bevyengine/bevy.git"]
+bevy_core_pipeline = { path = "vendor/bevy_core_pipeline" }
+bevy_render = { path = "vendor/bevy_render" }
+bevy_winit = { path = "vendor/bevy_winit" }
 
 [workspace.package]
 version = "0.1.0"

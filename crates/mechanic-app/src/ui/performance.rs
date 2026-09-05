@@ -14,7 +14,8 @@ use super::styles::*;
 use super::theme::*;
 use crate::performance::PerformanceSnapshot;
 
-const PANEL_WIDTH: f32 = 292.0;
+const COLUMN_WIDTH: f32 = 268.0;
+const PANEL_WIDTH: f32 = COLUMN_WIDTH * 3.0 + 48.0;
 const PANEL_INSET: f32 = 16.0;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,6 +23,7 @@ pub(crate) struct Model {
     open: bool,
     frame_rows: Vec<Row>,
     physics_rows: Vec<Row>,
+    terrain_rows: Vec<Row>,
 }
 
 impl Model {
@@ -65,10 +67,98 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
         open: snapshot.open,
         frame_rows: vec![
             rate_row("FPS", snapshot.fps, 55.0, 30.0),
+            Row {
+                label: "Render experiment",
+                value: snapshot.render_experiment.label().to_owned(),
+                tone: if snapshot.render_experiment
+                    == crate::render_experiments::RenderExperiment::Baseline
+                {
+                    Tone::Neutral
+                } else {
+                    Tone::Warn
+                },
+            },
             timing_row("Frame average", snapshot.frame_ms, 16.7, 33.3),
             timing_row("Frame p95", snapshot.frame_p95_ms, 16.7, 33.3),
-            timing_row("Render CPU", snapshot.render_cpu_ms, 8.0, 16.7),
-            timing_row("Render GPU", snapshot.render_gpu_ms, 8.0, 16.7),
+            timing_row("Window acquire", snapshot.window_acquire_cpu_ms, 8.0, 16.7),
+            timing_row("Render/present CPU", snapshot.render_cpu_ms, 8.0, 16.7),
+            timing_row("Tracked GPU span", snapshot.render_gpu_ms, 8.0, 16.7),
+            Row {
+                label: "GPU scope",
+                value: "Tracked only".to_owned(),
+                tone: Tone::Neutral,
+            },
+            Row {
+                label: "GPU sample",
+                value: snapshot.render_health.status.label().to_owned(),
+                tone: if snapshot.render_health.status
+                    == crate::render_diagnostics::GpuSampleStatus::Complete
+                {
+                    Tone::Good
+                } else {
+                    Tone::Warn
+                },
+            },
+            count_pair_row(
+                "GPU pairs valid / total",
+                Some(snapshot.render_health.valid_pairs),
+                Some(snapshot.render_health.total_pairs),
+            ),
+            extent_row(
+                "World target",
+                snapshot
+                    .render_extent
+                    .map(|extent| extent.target.to_array()),
+            ),
+            extent_row(
+                "World viewport",
+                snapshot
+                    .render_extent
+                    .map(|extent| extent.viewport.to_array()),
+            ),
+            count_row(
+                "World MSAA samples",
+                snapshot.render_extent.map(|extent| extent.samples),
+            ),
+            timing_row(
+                "Prepass + shadows",
+                snapshot.render_breakdown.prepass_ms,
+                4.0,
+                8.0,
+            ),
+            timing_row(
+                "World opaque",
+                snapshot.render_breakdown.opaque_ms,
+                4.0,
+                8.0,
+            ),
+            timing_row("World post FX", snapshot.render_breakdown.post_ms, 4.0, 8.0),
+            timing_row("Mosaic UI", snapshot.render_breakdown.ui_ms, 2.0, 4.0),
+            timing_row(
+                "World transparency",
+                snapshot.render_breakdown.transparent_ms,
+                4.0,
+                8.0,
+            ),
+            timing_row(
+                "World output",
+                snapshot.render_breakdown.world_output_ms,
+                4.0,
+                8.0,
+            ),
+            timing_row("X-ray tracked", snapshot.render_breakdown.xray_ms, 4.0, 8.0),
+            timing_row(
+                "X-ray output",
+                snapshot.render_breakdown.xray_output_ms,
+                4.0,
+                8.0,
+            ),
+            timing_row(
+                "Other tracked",
+                snapshot.render_breakdown.other_ms,
+                4.0,
+                8.0,
+            ),
         ],
         physics_rows: vec![
             rate_row(
@@ -79,6 +169,34 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
             ),
             count_u64_row("Physics backlog", snapshot.tick_backlog),
             timing_row("Physics CPU", snapshot.physics_cpu_ms, 8.0, 16.7),
+            timing_row(
+                "CPU encoding",
+                snapshot.physics_submission_timings.map(|t| t.encoding_ms),
+                2.0,
+                8.0,
+            ),
+            timing_row(
+                "CPU finalization",
+                snapshot
+                    .physics_submission_timings
+                    .map(|t| t.finalization_ms),
+                2.0,
+                8.0,
+            ),
+            timing_row(
+                "CPU queue submit",
+                snapshot.physics_submission_timings.map(|t| t.submission_ms),
+                2.0,
+                8.0,
+            ),
+            timing_row(
+                "CPU readback setup",
+                snapshot
+                    .physics_submission_timings
+                    .map(|t| t.readback_setup_ms),
+                2.0,
+                8.0,
+            ),
             count_row(
                 "Ticks submitted / frame",
                 snapshot.ticks_submitted_per_frame,
@@ -129,6 +247,8 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
                 snapshot.planned_solver_sweeps,
             ),
             flags_row(snapshot.error_flags),
+        ],
+        terrain_rows: vec![
             timing_row("Terrain stage", snapshot.terrain_stage_ms, 2.0, 8.0),
             timing_row(
                 "Terrain selection worker",
@@ -203,17 +323,31 @@ pub(crate) fn PerformanceOverlay(model: State<Model>, viewport: State<Size>) -> 
                     text #mechanic.section font-color:accent.speed "PERFORMANCE"
                     text #mechanic.caption "F3"
                 }
-                (section("FRAME / RENDER"))
-                for (row, ()) in {
-                    model.get().frame_rows.into_iter().map(|row| (row, ()))
-                } {
-                    (metric_row(row.clone()))
-                }
-                (section("PHYSICS"))
-                for (row, ()) in {
-                    model.get().physics_rows.into_iter().map(|row| (row, ()))
-                } {
-                    (metric_row(row.clone()))
+                row gap:12px align:start {
+                    col width:(Length::px(COLUMN_WIDTH)) gap:5px {
+                        (section("FRAME / RENDER"))
+                        for (row, ()) in {
+                            model.get().frame_rows.into_iter().map(|row| (row, ()))
+                        } {
+                            (metric_row(row.clone()))
+                        }
+                    }
+                    col width:(Length::px(COLUMN_WIDTH)) gap:5px {
+                        (section("PHYSICS"))
+                        for (row, ()) in {
+                            model.get().physics_rows.into_iter().map(|row| (row, ()))
+                        } {
+                            (metric_row(row.clone()))
+                        }
+                    }
+                    col width:(Length::px(COLUMN_WIDTH)) gap:5px {
+                        (section("TERRAIN / COLLISION"))
+                        for (row, ()) in {
+                            model.get().terrain_rows.into_iter().map(|row| (row, ()))
+                        } {
+                            (metric_row(row.clone()))
+                        }
+                    }
                 }
             }
         }
@@ -305,6 +439,16 @@ fn count_row(label: &'static str, value: Option<u32>) -> Row {
     }
 }
 
+fn extent_row(label: &'static str, value: Option<[u32; 2]>) -> Row {
+    Row {
+        label,
+        value: value.map_or_else(not_available, |[width, height]| {
+            format!("{width} × {height}")
+        }),
+        tone: Tone::Neutral,
+    }
+}
+
 fn count_u64_row(label: &'static str, value: Option<u64>) -> Row {
     Row {
         label,
@@ -352,6 +496,119 @@ mod tests {
     use crate::ui::testing::{Overlay, VIEWPORT};
 
     #[test]
+    fn unavailable_render_measurements_are_not_reported_as_zero() {
+        let model = capture(&PerformanceSnapshot::default());
+        for label in [
+            "Window acquire",
+            "Render/present CPU",
+            "Tracked GPU span",
+            "World target",
+            "World viewport",
+            "World MSAA samples",
+            "Prepass + shadows",
+            "World opaque",
+            "World post FX",
+            "Mosaic UI",
+            "Other tracked",
+            "World transparency",
+            "World output",
+            "X-ray tracked",
+            "X-ray output",
+        ] {
+            let row = model
+                .frame_rows
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap();
+            assert_eq!(row.value, "N/A");
+            assert_eq!(row.tone, Tone::Neutral);
+        }
+    }
+
+    #[test]
+    fn partial_gpu_sample_explains_missing_timestamps_without_hiding_valid_groups() {
+        use crate::render_diagnostics::{GpuSampleHealth, GpuSampleStatus, TimestampError};
+        let model = capture(&PerformanceSnapshot {
+            render_health: GpuSampleHealth {
+                status: GpuSampleStatus::Partial(TimestampError::MissingEnd),
+                valid_pairs: 4,
+                total_pairs: 5,
+            },
+            render_breakdown: crate::render_diagnostics::GpuBreakdown {
+                opaque_ms: Some(12.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        for (label, expected) in [
+            ("GPU sample", "Partial: no end"),
+            ("GPU pairs valid / total", "4 / 5"),
+            ("Tracked GPU span", "N/A"),
+            ("Prepass + shadows", "N/A"),
+            ("World opaque", "12.00 ms"),
+        ] {
+            assert_eq!(
+                model
+                    .frame_rows
+                    .iter()
+                    .find(|row| row.label == label)
+                    .unwrap()
+                    .value,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn render_breakdown_displays_physical_extent_and_separate_passes() {
+        let model = capture(&PerformanceSnapshot {
+            render_extent: Some(crate::render_diagnostics::RenderExtent {
+                target: bevy::prelude::UVec2::new(3840, 2160),
+                viewport: bevy::prelude::UVec2::new(1920, 1080),
+                samples: 4,
+            }),
+            render_breakdown: crate::render_diagnostics::GpuBreakdown {
+                prepass_ms: Some(1.0),
+                terrain_ms: None,
+                opaque_other_ms: None,
+                opaque_ms: Some(30.0),
+                post_ms: Some(2.0),
+                ui_ms: Some(3.0),
+                transparent_ms: Some(5.0),
+                world_output_ms: Some(6.0),
+                xray_ms: Some(7.0),
+                xray_output_ms: Some(8.0),
+                other_ms: Some(4.0),
+            },
+            ..Default::default()
+        });
+        for (label, expected) in [
+            ("World target", "3840 × 2160"),
+            ("World viewport", "1920 × 1080"),
+            ("World MSAA samples", "4"),
+            ("Prepass + shadows", "1.00 ms"),
+            ("World opaque", "30.00 ms"),
+            ("World post FX", "2.00 ms"),
+            ("Mosaic UI", "3.00 ms"),
+            ("World transparency", "5.00 ms"),
+            ("World output", "6.00 ms"),
+            ("X-ray tracked", "7.00 ms"),
+            ("X-ray output", "8.00 ms"),
+            ("Other tracked", "4.00 ms"),
+        ] {
+            assert_eq!(
+                model
+                    .frame_rows
+                    .iter()
+                    .find(|row| row.label == label)
+                    .unwrap()
+                    .value,
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn capture_keeps_the_expensive_contact_counters_visible() {
         let model = capture(&PerformanceSnapshot {
             open: true,
@@ -384,22 +641,109 @@ mod tests {
     }
 
     #[test]
-    fn performance_panel_stays_in_the_corner_without_taking_the_pointer() {
-        let overlay = Overlay::mount();
-        overlay
-            .handles
-            .performance
-            .set(capture(&PerformanceSnapshot {
+    fn diagnostic_render_modes_are_named_and_warned_in_the_overlay() {
+        use crate::render_experiments::RenderExperiment;
+        for (mode, label, tone) in [
+            (RenderExperiment::Baseline, "Baseline", Tone::Neutral),
+            (RenderExperiment::NoMsaa, "No MSAA", Tone::Warn),
+            (
+                RenderExperiment::SimpleTerrain,
+                "Simple terrain",
+                Tone::Warn,
+            ),
+        ] {
+            let model = capture(&PerformanceSnapshot {
                 open: true,
-                fps: Some(60.0),
+                render_experiment: mode,
                 ..PerformanceSnapshot::default()
-            }));
-        overlay.settle();
+            });
+            let row = model
+                .frame_rows
+                .iter()
+                .find(|row| row.label == "Render experiment")
+                .unwrap();
+            assert_eq!(row.value, label);
+            assert_eq!(row.tone, tone);
+        }
+    }
 
-        assert!(!overlay.wants_pointer_at(mosaic_core::Vector2::new(VIEWPORT.width - 30.0, 30.0,)));
-        assert!(overlay.shapes().iter().any(|shape| {
-            (shape.rect.size.width - super::PANEL_WIDTH).abs() < 0.5
-                && shape.rect.origin.x > VIEWPORT.width / 2.0
-        }));
+    #[test]
+    fn performance_panel_stays_in_the_corner_without_taking_the_pointer() {
+        for viewport in [VIEWPORT, mosaic_core::Size::new(1280.0, 720.0)] {
+            let overlay = Overlay::mount();
+            overlay.handles.viewport.set(viewport);
+            overlay
+                .handles
+                .performance
+                .set(capture(&PerformanceSnapshot {
+                    open: true,
+                    fps: Some(60.0),
+                    ..PerformanceSnapshot::default()
+                }));
+            overlay.settle();
+
+            for label in [
+                "CPU encoding",
+                "CPU finalization",
+                "CPU queue submit",
+                "CPU readback setup",
+                "World target",
+                "World viewport",
+                "World opaque",
+                "Prepass + shadows",
+                "Mosaic UI",
+                "TERRAIN / COLLISION",
+                "Queued reactions",
+            ] {
+                assert!(overlay.labels().contains(&label.to_owned()));
+            }
+            assert!(
+                !overlay.wants_pointer_at(mosaic_core::Vector2::new(viewport.width - 30.0, 30.0,))
+            );
+            assert!(overlay.shapes().iter().any(|shape| {
+                (shape.rect.size.width - super::PANEL_WIDTH).abs() < 0.5
+                    && (shape.rect.origin.x + shape.rect.size.width
+                        - (viewport.width - super::PANEL_INSET))
+                        .abs()
+                        < 0.5
+                    && shape.rect.origin.y + shape.rect.size.height <= viewport.height
+            }));
+        }
+    }
+
+    #[test]
+    fn submission_stages_display_separately_and_missing_timings_stay_unknown() {
+        let known = capture(&PerformanceSnapshot {
+            physics_submission_timings: Some(mechanic_gpu::GpuSubmissionTimings {
+                encoding_ms: 1.25,
+                finalization_ms: 2.5,
+                submission_ms: 25.0,
+                readback_setup_ms: 0.125,
+            }),
+            ..PerformanceSnapshot::default()
+        });
+        let unknown = capture(&PerformanceSnapshot::default());
+        for (label, expected) in [
+            ("CPU encoding", "1.25 ms"),
+            ("CPU finalization", "2.50 ms"),
+            ("CPU queue submit", "25.00 ms"),
+            ("CPU readback setup", "0.12 ms"),
+        ] {
+            let row = known
+                .physics_rows
+                .iter()
+                .find(|row| row.label == label)
+                .unwrap();
+            assert_eq!(row.value, expected);
+            assert_eq!(
+                unknown
+                    .physics_rows
+                    .iter()
+                    .find(|row| row.label == label)
+                    .unwrap()
+                    .value,
+                "N/A"
+            );
+        }
     }
 }

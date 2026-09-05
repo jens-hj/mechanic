@@ -457,7 +457,8 @@ pub(crate) fn update_player_camera(
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut camera: Single<(&mut PlayerCamera, &mut Transform, &mut GlobalTransform), With<MainCamera>>,
 ) {
-    let panel_open = wheel.chroma_config
+    let panel_open = crate::automation::enabled()
+        || wheel.chroma_config
         || player_controls_blocked([
             menu.is_open(),
             panel.is_open(),

@@ -19,14 +19,20 @@ const DISPLAY_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PerformanceSnapshot {
     pub(crate) open: bool,
+    pub(crate) render_experiment: crate::render_experiments::RenderExperiment,
     pub(crate) fps: Option<f64>,
     pub(crate) frame_ms: Option<f64>,
     pub(crate) frame_p95_ms: Option<f64>,
+    pub(crate) window_acquire_cpu_ms: Option<f64>,
     pub(crate) render_cpu_ms: Option<f64>,
     pub(crate) render_gpu_ms: Option<f64>,
+    pub(crate) render_breakdown: crate::render_diagnostics::GpuBreakdown,
+    pub(crate) render_health: crate::render_diagnostics::GpuSampleHealth,
+    pub(crate) render_extent: Option<crate::render_diagnostics::RenderExtent>,
     pub(crate) simulation_ticks_per_second: Option<f64>,
     pub(crate) tick_backlog: Option<u64>,
     pub(crate) physics_cpu_ms: Option<f64>,
+    pub(crate) physics_submission_timings: Option<mechanic_gpu::GpuSubmissionTimings>,
     pub(crate) ticks_submitted_per_frame: Option<u32>,
     pub(crate) in_flight_tick_count: Option<u32>,
     pub(crate) submission_to_readback_ms: Option<f64>,
@@ -98,7 +104,7 @@ impl PerformanceMetrics {
         self.snapshot
     }
 
-    fn toggle(&mut self) -> bool {
+    pub(crate) fn toggle(&mut self) -> bool {
         self.open = !self.open;
         self.force_refresh = true;
         self.refresh_elapsed = Duration::ZERO;
@@ -129,11 +135,14 @@ impl PerformanceMetrics {
 /// F3 is deliberately a debug-only shortcut, like the existing F8 frame freeze.
 pub(crate) fn toggle(
     keyboard: Res<ButtonInput<KeyCode>>,
+    render_timings: Res<crate::render_diagnostics::RenderTimings>,
     mut metrics: ResMut<PerformanceMetrics>,
     mut window: Single<&mut Window, With<PrimaryWindow>>,
 ) {
     if keyboard.just_pressed(KeyCode::F3) {
-        window.present_mode = performance_present_mode(metrics.toggle());
+        let open = metrics.toggle();
+        render_timings.set_enabled(open);
+        window.present_mode = performance_present_mode(open);
     }
 }
 
@@ -150,6 +159,7 @@ const fn performance_present_mode(open: bool) -> PresentMode {
 pub(crate) fn sample(
     time: Res<Time<Real>>,
     diagnostics: Res<DiagnosticsStore>,
+    render_timings: Res<crate::render_diagnostics::RenderTimings>,
     simulation: Res<AppSimulation>,
     space: Res<State<crate::world::AppSpace>>,
     world_diagnostics: Res<crate::world::WorldDiagnostics>,
@@ -186,20 +196,27 @@ pub(crate) fn sample(
         .and_then(bevy::diagnostic::Diagnostic::smoothed);
     let frame_ms = mean(&metrics.frame_samples_ms);
     let frame_p95_ms = percentile_95(&metrics.frame_samples_ms);
-    let render_cpu_ms = render_time(&diagnostics, "elapsed_cpu");
-    let render_gpu_ms = render_time(&diagnostics, "elapsed_gpu");
+    let render = render_timings.snapshot();
     let in_world = *space.get() == crate::world::AppSpace::World;
 
     metrics.snapshot = PerformanceSnapshot {
         open: true,
+        render_experiment: crate::render_experiments::current(),
         fps,
         frame_ms,
         frame_p95_ms,
-        render_cpu_ms,
-        render_gpu_ms,
+        window_acquire_cpu_ms: render.acquire_cpu_ms,
+        render_cpu_ms: render.render_cpu_ms,
+        render_gpu_ms: render.render_gpu_ms,
+        render_breakdown: render.breakdown,
+        render_health: render.health,
+        render_extent: render.extent,
         simulation_ticks_per_second: running.then_some(ticks_per_second).flatten(),
         tick_backlog: running.then_some(simulation.tick_backlog),
         physics_cpu_ms: running.then_some(simulation.physics_cpu_ms).flatten(),
+        physics_submission_timings: running
+            .then_some(simulation.physics_submission_timings)
+            .flatten(),
         ticks_submitted_per_frame: running.then_some(simulation.ticks_submitted_per_frame),
         in_flight_tick_count: running.then_some(simulation.in_flight_tick_count),
         submission_to_readback_ms: running
@@ -261,19 +278,6 @@ fn percentile_95(values: &VecDeque<f64>) -> Option<f64> {
     sorted.get(rank.saturating_sub(1)).copied()
 }
 
-fn render_time(diagnostics: &DiagnosticsStore, suffix: &str) -> Option<f64> {
-    let values: Vec<_> = diagnostics
-        .iter()
-        .filter(|diagnostic| is_render_timing(diagnostic.path().as_str(), suffix))
-        .filter_map(bevy::diagnostic::Diagnostic::smoothed)
-        .collect();
-    (!values.is_empty()).then(|| values.iter().sum())
-}
-
-fn is_render_timing(path: &str, suffix: &str) -> bool {
-    path.starts_with("render/") && path.ends_with(&format!("/{suffix}"))
-}
-
 fn capped_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -284,7 +288,7 @@ mod tests {
 
     use bevy::window::PresentMode;
 
-    use super::{is_render_timing, mean, percentile_95, performance_present_mode};
+    use super::{mean, percentile_95, performance_present_mode};
 
     #[test]
     fn performance_overlay_measures_uncapped_presentation() {
@@ -300,19 +304,37 @@ mod tests {
     }
 
     #[test]
-    fn only_render_elapsed_diagnostics_are_aggregated() {
-        assert!(is_render_timing(
-            "render/main_opaque_pass_3d/elapsed_cpu",
-            "elapsed_cpu"
-        ));
-        assert!(is_render_timing(
-            "render/postprocessing/bloom/elapsed_gpu",
-            "elapsed_gpu"
-        ));
-        assert!(!is_render_timing("frame_time", "elapsed_cpu"));
-        assert!(!is_render_timing(
-            "render/main_opaque_pass_3d/fragment_shader_invocations",
-            "elapsed_gpu"
-        ));
+    fn submission_timings_average_ticks_before_smoothing() {
+        let mut simulation = crate::AppSimulation::default();
+        assert!(simulation.physics_submission_timings.is_none());
+        let totals = mechanic_gpu::GpuSubmissionTimings {
+            encoding_ms: 20.0,
+            finalization_ms: 8.0,
+            submission_ms: 6.0,
+            readback_setup_ms: 2.0,
+        };
+        simulation.record_performance(std::time::Duration::from_millis(40), 2, totals, None);
+        assert_eq!(simulation.physics_cpu_ms, Some(20.0));
+        assert_eq!(simulation.ticks_submitted_per_frame, 2);
+        assert_eq!(
+            simulation.physics_submission_timings,
+            Some(mechanic_gpu::GpuSubmissionTimings {
+                encoding_ms: 10.0,
+                finalization_ms: 4.0,
+                submission_ms: 3.0,
+                readback_setup_ms: 1.0,
+            })
+        );
+        simulation.record_performance(std::time::Duration::from_millis(40), 1, totals, None);
+        assert_eq!(simulation.physics_cpu_ms, Some(24.0));
+        let timings = simulation.physics_submission_timings.unwrap();
+        for (actual, expected) in [
+            (timings.encoding_ms, 12.0),
+            (timings.finalization_ms, 4.8),
+            (timings.submission_ms, 3.6),
+            (timings.readback_setup_ms, 1.2),
+        ] {
+            assert!((actual - expected).abs() < 1.0e-9);
+        }
     }
 }

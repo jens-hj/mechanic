@@ -128,8 +128,24 @@ pub(crate) struct TerrainRenderMaterial {
 }
 
 impl Material for TerrainRenderMaterial {
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.label = Some(
+            format!(
+                "mechanic_terrain:{}",
+                descriptor.label.as_deref().unwrap_or_default()
+            )
+            .into(),
+        );
+        Ok(())
+    }
+
     fn fragment_shader() -> ShaderRef {
-        "shaders/terrain_material.wgsl".into()
+        crate::render_experiments::current().terrain_shader().into()
     }
 }
 
@@ -3557,6 +3573,12 @@ fn terrain_chunk_mesh(chunk: &TerrainMeshChunk, indices: Vec<u32>) -> Mesh {
     mesh.insert_indices(Indices::U32(indices));
     mesh
 }
+
+#[cfg(test)]
+mod render_tests;
+
+#[cfg(test)]
+mod terrain_shader_tests;
 
 #[cfg(test)]
 mod tests {
