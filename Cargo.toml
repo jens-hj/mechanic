@@ -8,6 +8,11 @@ members = [
     "crates/mechanic-app",
 ]
 resolver = "2"
+exclude = ["vendor/wgpu-core", "vendor/wgpu-hal"]
+
+[patch.crates-io]
+wgpu-core = { path = "vendor/wgpu-core" }
+wgpu-hal = { path = "vendor/wgpu-hal" }
 
 [workspace.package]
 version = "0.1.0"

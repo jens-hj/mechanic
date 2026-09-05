@@ -28,3 +28,9 @@ jobs:
       - run: cargo check --workspace --all-targets
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Fence acquisition and concurrent queue regression
+        run: cargo test --manifest-path vendor/wgpu-core/Cargo.toml --features noop,wgsl --config 'patch.crates-io.wgpu-hal.path="vendor/wgpu-hal"' acquisition_does_not_block
+      - name: Fence regression with lock validation
+        env:
+          RUSTFLAGS: --cfg wgpu_validate_locks
+        run: cargo test --manifest-path vendor/wgpu-core/Cargo.toml --features noop,wgsl --config 'patch.crates-io.wgpu-hal.path="vendor/wgpu-hal"' acquisition_does_not_block

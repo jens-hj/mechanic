@@ -4,3 +4,6 @@
 .DS_Store
 /design
 .cargo/local-mosaic.toml
+
+/vendor/*/target
+__pycache__/
