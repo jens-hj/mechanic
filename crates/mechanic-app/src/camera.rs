@@ -464,12 +464,7 @@ pub(crate) fn update_player_camera(
             pause.is_open(),
             worlds.is_open(),
         ]);
-    cursor.grab_mode = if panel_open {
-        CursorGrabMode::None
-    } else {
-        CursorGrabMode::Locked
-    };
-    cursor.visible = panel_open;
+    update_cursor_capture(panel_open, &mut cursor);
     player.input_captured = !panel_open && !pause.blocks_world_input();
 
     let (view, transform, global) = &mut *camera;
@@ -521,11 +516,87 @@ fn player_controls_blocked(open_panels: [bool; 4]) -> bool {
     open_panels.into_iter().any(core::convert::identity)
 }
 
+fn update_cursor_capture(
+    panel_open: bool,
+    cursor: &mut Single<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    let grab_mode = if panel_open {
+        CursorGrabMode::None
+    } else {
+        CursorGrabMode::Locked
+    };
+    // Changed<CursorOptions> makes winit call the OS even for identical values.
+    // Read the actual component so external releases are still recaptured.
+    if cursor.grab_mode != grab_mode {
+        cursor.grab_mode = grab_mode;
+    }
+    if cursor.visible != panel_open {
+        cursor.visible = panel_open;
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use bevy::input::mouse::MouseScrollUnit;
+
+    #[test]
+    fn cursor_options_change_only_when_capture_state_changes() {
+        #[derive(Resource, Default)]
+        struct PanelOpen(bool);
+        let mut app = App::new();
+        app.init_resource::<PanelOpen>().add_systems(
+            Update,
+            |panel: Res<PanelOpen>, mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>| {
+                update_cursor_capture(panel.0, &mut cursor);
+            },
+        );
+        let window = app
+            .world_mut()
+            .spawn((PrimaryWindow, CursorOptions::default()))
+            .id();
+        app.update();
+        let cursor = app.world().get::<CursorOptions>(window).unwrap();
+        assert_eq!(cursor.grab_mode, CursorGrabMode::Locked);
+        assert!(!cursor.visible);
+        let changed = app
+            .world()
+            .entity(window)
+            .get_ref::<CursorOptions>()
+            .unwrap()
+            .last_changed();
+        app.update();
+        assert_eq!(
+            app.world()
+                .entity(window)
+                .get_ref::<CursorOptions>()
+                .unwrap()
+                .last_changed(),
+            changed
+        );
+        app.world_mut().resource_mut::<PanelOpen>().0 = true;
+        app.update();
+        let cursor = app.world().get::<CursorOptions>(window).unwrap();
+        assert_eq!(cursor.grab_mode, CursorGrabMode::None);
+        assert!(cursor.visible);
+        app.world_mut().resource_mut::<PanelOpen>().0 = false;
+        app.update();
+        assert_eq!(
+            app.world().get::<CursorOptions>(window).unwrap().grab_mode,
+            CursorGrabMode::Locked
+        );
+        // External release must be noticed even if the desired state is unchanged.
+        app.world_mut()
+            .get_mut::<CursorOptions>(window)
+            .unwrap()
+            .grab_mode = CursorGrabMode::None;
+        app.update();
+        assert_eq!(
+            app.world().get::<CursorOptions>(window).unwrap().grab_mode,
+            CursorGrabMode::Locked
+        );
+    }
 
     #[test]
     fn contextual_wheel_adjustments_suppress_zoom_only_when_consumed() {

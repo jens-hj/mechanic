@@ -54,63 +54,56 @@ fn footprint_adjusted_projection(
     return mix(projection, dominant_projection(projection), dominant_weight);
 }
 
-fn sample_triplanar(
-    map: texture_2d<f32>,
-    map_sampler: sampler,
-    coordinates: vec3<f32>,
-    projection: vec3<f32>,
-) -> vec4<f32> {
-    var sampled = vec4<f32>(0.0);
-    if projection.x > 0.001 {
-        sampled += textureSample(map, map_sampler, coordinates.yz) * projection.x;
-    }
-    if projection.y > 0.001 {
-        sampled += textureSample(map, map_sampler, coordinates.xz) * projection.y;
-    }
-    if projection.z > 0.001 {
-        sampled += textureSample(map, map_sampler, coordinates.xy) * projection.z;
-    }
-    return sampled;
+struct TerrainSample {
+    color: vec4<f32>,
+    surface: vec3<f32>,
+    normal: vec3<f32>,
 }
 
-fn unpack_normal(sampled: vec3<f32>) -> vec3<f32> {
-    return normalize(sampled * 2.0 - 1.0);
-}
-
-fn sample_triplanar_normal(
-    map: texture_2d<f32>,
-    map_sampler: sampler,
+// Each projection decision serves all three maps. Keep the per-projection
+// normal normalization and per-material normalization used by the full blend.
+fn sample_material(
+    color_map: texture_2d<f32>,
+    surface_map: texture_2d<f32>,
+    normal_map: texture_2d<f32>,
     coordinates: vec3<f32>,
     projection: vec3<f32>,
     geometric_normal: vec3<f32>,
-) -> vec3<f32> {
+) -> TerrainSample {
     let direction = select(vec3<f32>(-1.0), vec3<f32>(1.0), geometric_normal >= vec3<f32>(0.0));
-    var sampled = vec3<f32>(0.0);
+    var sampled: TerrainSample;
     if projection.x > 0.001 {
-        let tangent = unpack_normal(textureSample(map, map_sampler, coordinates.yz).rgb);
-        sampled += vec3<f32>(
+        sampled.color += textureSample(color_map, terrain_sampler, coordinates.yz) * projection.x;
+        sampled.surface += textureSample(surface_map, terrain_sampler, coordinates.yz).rgb * projection.x;
+        let tangent = normalize(textureSample(normal_map, terrain_sampler, coordinates.yz).rgb * 2.0 - 1.0);
+        sampled.normal += vec3<f32>(
             tangent.z * direction.x,
             tangent.x,
             tangent.y * direction.x,
         ) * projection.x;
     }
     if projection.y > 0.001 {
-        let tangent = unpack_normal(textureSample(map, map_sampler, coordinates.xz).rgb);
-        sampled += vec3<f32>(
+        sampled.color += textureSample(color_map, terrain_sampler, coordinates.xz) * projection.y;
+        sampled.surface += textureSample(surface_map, terrain_sampler, coordinates.xz).rgb * projection.y;
+        let tangent = normalize(textureSample(normal_map, terrain_sampler, coordinates.xz).rgb * 2.0 - 1.0);
+        sampled.normal += vec3<f32>(
             tangent.x,
             tangent.z * direction.y,
             -tangent.y * direction.y,
         ) * projection.y;
     }
     if projection.z > 0.001 {
-        let tangent = unpack_normal(textureSample(map, map_sampler, coordinates.xy).rgb);
-        sampled += vec3<f32>(
+        sampled.color += textureSample(color_map, terrain_sampler, coordinates.xy) * projection.z;
+        sampled.surface += textureSample(surface_map, terrain_sampler, coordinates.xy).rgb * projection.z;
+        let tangent = normalize(textureSample(normal_map, terrain_sampler, coordinates.xy).rgb * 2.0 - 1.0);
+        sampled.normal += vec3<f32>(
             tangent.x * direction.z,
             tangent.y,
             tangent.z * direction.z,
         ) * projection.z;
     }
-    return normalize(sampled);
+    sampled.normal = normalize(sampled.normal);
+    return sampled;
 }
 
 @fragment
@@ -142,130 +135,58 @@ fn fragment(
     // channel exactly zero, so avoid its three triplanar map lookups without
     // changing material blends along layer boundaries.
     if material_weights_a.x > 0.0 {
-        base_color += sample_triplanar(
-            grass_base_color,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ) * material_weights_a.x;
-        surface += sample_triplanar(
-            grass_orm,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ).rgb * material_weights_a.x;
-        mapped_normal += sample_triplanar_normal(
-            grass_normal,
-            terrain_sampler,
-            coordinates,
-            projection,
-            pbr_input.world_normal,
-        ) * material_weights_a.x;
+        let sampled = sample_material(
+            grass_base_color, grass_orm, grass_normal,
+            coordinates, projection, pbr_input.world_normal,
+        );
+        base_color += sampled.color * material_weights_a.x;
+        surface += sampled.surface * material_weights_a.x;
+        mapped_normal += sampled.normal * material_weights_a.x;
     }
     if material_weights_a.y > 0.0 {
-        base_color += sample_triplanar(
-            dirt_base_color,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ) * material_weights_a.y;
-        surface += sample_triplanar(
-            dirt_orm,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ).rgb * material_weights_a.y;
-        mapped_normal += sample_triplanar_normal(
-            dirt_normal,
-            terrain_sampler,
-            coordinates,
-            projection,
-            pbr_input.world_normal,
-        ) * material_weights_a.y;
+        let sampled = sample_material(
+            dirt_base_color, dirt_orm, dirt_normal,
+            coordinates, projection, pbr_input.world_normal,
+        );
+        base_color += sampled.color * material_weights_a.y;
+        surface += sampled.surface * material_weights_a.y;
+        mapped_normal += sampled.normal * material_weights_a.y;
     }
     if material_weights_a.z > 0.0 {
-        base_color += sample_triplanar(
-            stone_base_color,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ) * material_weights_a.z;
-        surface += sample_triplanar(
-            stone_orm,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ).rgb * material_weights_a.z;
-        mapped_normal += sample_triplanar_normal(
-            stone_normal,
-            terrain_sampler,
-            coordinates,
-            projection,
-            pbr_input.world_normal,
-        ) * material_weights_a.z;
+        let sampled = sample_material(
+            stone_base_color, stone_orm, stone_normal,
+            coordinates, projection, pbr_input.world_normal,
+        );
+        base_color += sampled.color * material_weights_a.z;
+        surface += sampled.surface * material_weights_a.z;
+        mapped_normal += sampled.normal * material_weights_a.z;
     }
     if material_weights_a.w > 0.0 {
-        base_color += sample_triplanar(
-            sand_base_color,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ) * material_weights_a.w;
-        surface += sample_triplanar(
-            sand_orm,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ).rgb * material_weights_a.w;
-        mapped_normal += sample_triplanar_normal(
-            dirt_normal,
-            terrain_sampler,
-            coordinates,
-            projection,
-            pbr_input.world_normal,
-        ) * material_weights_a.w;
+        let sampled = sample_material(
+            sand_base_color, sand_orm, dirt_normal,
+            coordinates, projection, pbr_input.world_normal,
+        );
+        base_color += sampled.color * material_weights_a.w;
+        surface += sampled.surface * material_weights_a.w;
+        mapped_normal += sampled.normal * material_weights_a.w;
     }
     if material_weights_b.x > 0.0 {
-        base_color += sample_triplanar(
-            iron_base_color,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ) * material_weights_b.x;
-        surface += sample_triplanar(
-            iron_orm,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ).rgb * material_weights_b.x;
-        mapped_normal += sample_triplanar_normal(
-            stone_normal,
-            terrain_sampler,
-            coordinates,
-            projection,
-            pbr_input.world_normal,
-        ) * material_weights_b.x;
+        let sampled = sample_material(
+            iron_base_color, iron_orm, stone_normal,
+            coordinates, projection, pbr_input.world_normal,
+        );
+        base_color += sampled.color * material_weights_b.x;
+        surface += sampled.surface * material_weights_b.x;
+        mapped_normal += sampled.normal * material_weights_b.x;
     }
     if material_weights_b.y > 0.0 {
-        base_color += sample_triplanar(
-            graphite_base_color,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ) * material_weights_b.y;
-        surface += sample_triplanar(
-            graphite_orm,
-            terrain_sampler,
-            coordinates,
-            projection,
-        ).rgb * material_weights_b.y;
-        mapped_normal += sample_triplanar_normal(
-            stone_normal,
-            terrain_sampler,
-            coordinates,
-            projection,
-            pbr_input.world_normal,
-        ) * material_weights_b.y;
+        let sampled = sample_material(
+            graphite_base_color, graphite_orm, stone_normal,
+            coordinates, projection, pbr_input.world_normal,
+        );
+        base_color += sampled.color * material_weights_b.y;
+        surface += sampled.surface * material_weights_b.y;
+        mapped_normal += sampled.normal * material_weights_b.y;
     }
     pbr_input.material.base_color = base_color;
     pbr_input.diffuse_occlusion = vec3<f32>(surface.r);

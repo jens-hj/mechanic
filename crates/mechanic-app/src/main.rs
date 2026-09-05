@@ -4234,6 +4234,31 @@ pub(crate) fn avatar_material(color: Color) -> StandardMaterial {
     }
 }
 
+fn sync_avatar_materials(
+    materials: &mut Assets<StandardMaterial>,
+    handles: &AvatarMaterials,
+    alpha: f32,
+) {
+    // Camera fade alpha is clamped to [0, 1]. Fully visible avatars belong in
+    // the opaque pass; intermediate alpha still needs normal blending.
+    let alpha_mode = if alpha >= 1.0 {
+        AlphaMode::Opaque
+    } else {
+        AlphaMode::Blend
+    };
+    for handle in [&handles.clothing, &handles.head, &handles.boots] {
+        if let Some(mut material) = materials.get_mut(handle) {
+            let base_color = material.base_color.with_alpha(alpha);
+            // AssetMut only emits Modified when mutably dereferenced. Reading
+            // first avoids rebuilding unchanged materials every frame.
+            if material.base_color != base_color || material.alpha_mode != alpha_mode {
+                material.base_color = base_color;
+                material.alpha_mode = alpha_mode;
+            }
+        }
+    }
+}
+
 pub(crate) fn avatar_pose(position: Vec3, scale: Vec3, rotation: Quat) -> Transform {
     Transform::from_translation(position)
         .with_rotation(rotation)
@@ -4404,11 +4429,7 @@ pub(crate) fn sync_player_avatar(
     } else {
         Visibility::Hidden
     };
-    for handle in [&handles.clothing, &handles.head, &handles.boots] {
-        if let Some(mut material) = materials.get_mut(handle) {
-            material.base_color = material.base_color.with_alpha(alpha);
-        }
-    }
+    sync_avatar_materials(&mut materials, &handles, alpha);
     let seated_pose = player
         .seat
         .and_then(|seat| seat_world_pose(&graph.0, &simulation, seat));
@@ -15538,6 +15559,78 @@ mod rendering_tests {
         simulation_material_is_present, single_authored_part_mesh, single_bearing_mesh,
         single_cylinder_mesh, transform_from_gpu,
     };
+
+    fn avatar_material_fixture() -> (App, super::AvatarMaterials) {
+        use bevy::{asset::AssetApp, prelude::*};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<StandardMaterial>();
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let handles = super::AvatarMaterials {
+            clothing: materials.add(super::avatar_material(Color::srgb(0.08, 0.48, 0.46))),
+            head: materials.add(super::avatar_material(Color::srgb(0.72, 0.58, 0.46))),
+            boots: materials.add(super::avatar_material(Color::srgb(0.055, 0.065, 0.075))),
+        };
+        (app, handles)
+    }
+
+    #[test]
+    fn avatar_is_opaque_only_at_full_visibility_and_preserves_its_fade() {
+        use bevy::prelude::*;
+
+        let (mut app, handles) = avatar_material_fixture();
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let original_colors = [&handles.clothing, &handles.head, &handles.boots]
+            .map(|handle| materials.get(handle).unwrap().base_color);
+        for (alpha, mode) in [
+            (0.0, AlphaMode::Blend),
+            (0.5, AlphaMode::Blend),
+            (0.999, AlphaMode::Blend),
+            (1.0, AlphaMode::Opaque),
+            (0.5, AlphaMode::Blend),
+            (0.0, AlphaMode::Blend),
+        ] {
+            super::sync_avatar_materials(&mut materials, &handles, alpha);
+            for (handle, color) in [&handles.clothing, &handles.head, &handles.boots]
+                .into_iter()
+                .zip(original_colors)
+            {
+                let material = materials.get(handle).unwrap();
+                assert_eq!(material.alpha_mode, mode);
+                assert_eq!(material.base_color, color.with_alpha(alpha));
+                assert_eq!(material.perceptual_roughness.to_bits(), 0.92_f32.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn avatar_unchanged_opacity_does_not_emit_material_modifications() {
+        use bevy::prelude::*;
+
+        let (mut app, handles) = avatar_material_fixture();
+        app.update();
+        app.world_mut()
+            .resource_mut::<Messages<AssetEvent<StandardMaterial>>>()
+            .clear();
+        for alpha in [0.5, 1.0, 0.5, 0.0] {
+            for expected_modifications in [3, 0, 0] {
+                super::sync_avatar_materials(
+                    &mut app.world_mut().resource_mut::<Assets<StandardMaterial>>(),
+                    &handles,
+                    alpha,
+                );
+                app.update();
+                let modified = app
+                    .world_mut()
+                    .resource_mut::<Messages<AssetEvent<StandardMaterial>>>()
+                    .drain()
+                    .filter(|event| matches!(event, AssetEvent::Modified { .. }))
+                    .count();
+                assert_eq!(modified, expected_modifications);
+            }
+        }
+    }
 
     #[test]
     fn tool_changes_do_not_rebuild_editor_meshes_over_a_running_simulation() {
