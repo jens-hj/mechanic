@@ -20,12 +20,23 @@ mod control_panel;
 mod controls;
 mod creation_menu;
 mod creation_store;
+mod frame_visuals;
+mod freeze;
+mod freeze_motion;
 mod garage;
 mod hotbar;
+mod linear_editor;
+mod linear_render;
+mod live_edit;
+mod live_weld;
+#[cfg(test)]
+mod moving_tool_tests;
 mod multitool;
 mod pause_menu;
 mod performance;
 mod performance_capture;
+#[cfg(test)]
+mod publication_frame_tests;
 mod render_diagnostics;
 mod render_experiments;
 mod sequencer;
@@ -70,8 +81,7 @@ use builder::{
     cylinder_candidate_from_hit_with_grid, face_geometry_from_ref, free_cuboid_candidate,
     free_cylinder_candidate, oriented_cuboid_candidate_from_hit_with_grid, part_world_bounds,
     pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
-    raycast_construction_for_annulus_with_ground, raycast_construction_with_ground,
-    raycast_oriented_cuboid, raycast_placement_plane_point, rigid_body_parts, smart_snap_anchor,
+    raycast_construction_for_annulus_with_ground, raycast_placement_plane_point, smart_snap_anchor,
     smart_snap_block_span, smart_snap_cuboid_candidate, smart_snap_cuboid_candidate_with_supports,
     smart_snap_cylinder_candidate, smart_snap_free_cuboid_candidate,
     smart_snap_free_cylinder_candidate, stage_bearing_attachment_in_bounds,
@@ -97,18 +107,18 @@ use creation_store::CreationStore;
 use hotbar::{SelectedMaterial, SelectedTerrainMaterial, SelectedTool, Tool};
 use mechanic_core::{
     ActuatorAssignment, AppearanceTarget, BearingDimensions, BearingId, BearingSocket,
-    BuildCommand, BuildOutcome, CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, ColliderShape,
-    CompiledCreation, ConstructionEditDelta, ConstructionGraph, ConstructionMaterial,
-    ControllerSpec, CreationDocument, CuboidSpec, CylinderDimensions, DimensionLinkId,
-    DimensionLinkSpec, DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceKind, FaceOwner,
-    FaceRef, GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec,
-    MAX_BEARING_OUTER_DIAMETER, MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES,
-    MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP,
-    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance,
-    POSITION_TICK_METERS, POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId,
-    PartPiece, PartSpec, PendingOperation, PipeBendDimensions, RegionId, STEP_METERS,
-    STEPS_PER_CELL, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError,
-    TransmissionSpec, face_neighbour_offset, part_cells,
+    BuildCommand, BuildOutcome, CYLINDER_SWEEP_STEP_DEGREES, CageIndex, CellGrid, CompiledCreation,
+    ConstructionEditDelta, ConstructionGraph, ConstructionMaterial, ControllerSpec,
+    CreationDocument, CuboidSpec, CylinderDimensions, DimensionLinkId, DimensionLinkSpec,
+    DriveLinkSpec, DriveState, DriveTarget, EngineKind, FaceKind, FaceOwner, FaceRef,
+    GRID_UNIT_METERS, GridRotation, InputSeatLinkSpec, InputSpec, MAX_BEARING_OUTER_DIAMETER,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MIN_BEARING_DIAMETER_GAP,
+    MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
+    MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, POSITION_TICK_METERS,
+    POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId, PartPiece, PartSpec,
+    PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, STEPS_PER_CELL,
+    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError, TransmissionSpec,
+    face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
     FIXED_DT_SECONDS, FixedStepScheduler, GpuExternalImpulse, GpuGroundPlane, GpuPhysics,
@@ -336,8 +346,11 @@ struct AppSimulation {
     completed_tick: u64,
     previous_transforms: Vec<GpuTransform>,
     transforms: Vec<GpuTransform>,
+    /// Latest authoritative state, independent of render snapshot throttling.
+    live_state: Option<LivePhysicsState>,
     previous_snapshot_tick: u64,
     snapshot_tick: u64,
+    pose_revision: u64,
     static_mesh_dirty: bool,
     render_dirty: bool,
     physics_cpu_ms: Option<f64>,
@@ -351,10 +364,29 @@ struct AppSimulation {
     world_revision: Option<(u64, u64)>,
 }
 
+#[derive(Clone, Debug)]
+struct LivePhysicsState {
+    tick: u64,
+    transforms: Vec<GpuTransform>,
+    velocities: Vec<GpuVelocity>,
+    coordinates: Vec<mechanic_gpu::GpuMechanismCoordinate>,
+}
+
 #[derive(Resource, Default)]
 struct SimulationVisualCache {
     revision: Option<WorldPhysicsRevision>,
+    active_dimension_link: Option<DimensionLinkId>,
     roots: Vec<Entity>,
+}
+
+impl SimulationVisualCache {
+    fn needs_rebuild(
+        &self,
+        revision: WorldPhysicsRevision,
+        active_dimension_link: Option<DimensionLinkId>,
+    ) -> bool {
+        self.revision != Some(revision) || self.active_dimension_link != active_dimension_link
+    }
 }
 
 #[derive(Component)]
@@ -378,7 +410,9 @@ struct WorldPhysicsTask {
 struct WorldPhysicsPublication {
     pipelines: Arc<GpuPhysicsPipelines>,
     pending: Option<WorldPhysicsTask>,
+    ready: Option<(WorldPhysicsRevision, PreparedWorldPhysics)>,
     failed_revision: Option<WorldPhysicsRevision>,
+    accepted_editor: Option<(EditorSnapshot, EditorHistory)>,
 }
 
 impl Default for WorldPhysicsPublication {
@@ -386,7 +420,9 @@ impl Default for WorldPhysicsPublication {
         Self {
             pipelines: Arc::new(GpuPhysicsPipelines::new()),
             pending: None,
+            ready: None,
             failed_revision: None,
+            accepted_editor: None,
         }
     }
 }
@@ -472,6 +508,9 @@ struct PointerSample {
 
 #[derive(Clone, Copy, Debug)]
 enum BlockAttachment {
+    Linear {
+        socket: PlacedBearing,
+    },
     AutoWeld {
         source: FaceOwner,
     },
@@ -501,6 +540,8 @@ struct DeleteDrag {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PlacedBearing {
+    kind: mechanic_core::BearingKind,
+    axis: Vec3,
     source: mechanic_core::FaceRef,
     anchor: Vec3,
     dimensions: BearingDimensions,
@@ -618,7 +659,10 @@ fn update_free_placement_settings(
 
 fn rebuild_placement_snap_index(graph: Res<EditorGraph>, mut state: ResMut<EditorState>) {
     if graph.is_changed() {
-        state.snap_index.rebuild(&graph.0);
+        let view = state
+            .edit_context
+            .and_then(|context| graph.0.in_edit_frame(context.frame).ok());
+        state.snap_index.rebuild(view.as_ref().unwrap_or(&graph.0));
     }
 }
 
@@ -741,7 +785,8 @@ struct ChromaStroke {
 
 impl EditorSnapshot {
     fn capture(graph: &ConstructionGraph, state: &EditorState) -> Self {
-        let mut graph = graph.clone();
+        let basis = graph.view_to_build();
+        let mut graph = graph.canonicalized();
         if graph.pending().is_some() {
             graph
                 .apply(BuildCommand::CancelPending)
@@ -749,13 +794,17 @@ impl EditorSnapshot {
         }
         Self {
             graph: Arc::new(graph),
-            placed_bearings: state.placed_bearings.clone(),
+            placed_bearings: state
+                .placed_bearings
+                .iter()
+                .map(|&bearing| live_edit::transform_bearing(bearing, basis))
+                .collect(),
             revision: 0,
         }
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Clone, Resource, Default)]
 struct EditorHistory {
     undo: VecDeque<EditorSnapshot>,
     redo: VecDeque<EditorSnapshot>,
@@ -1061,22 +1110,27 @@ enum DeleteTarget {
     Part(PartId),
 }
 
-#[allow(clippy::too_many_arguments)]
+// Keep the asynchronous scene lifecycle and its publication boundary together.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn maintain_space_simulation(
     space: Res<State<world::AppSpace>>,
     worlds: Res<world::WorldListState>,
-    graph: Res<EditorGraph>,
-    history: Res<EditorHistory>,
-    runtime: Res<world::WorldRuntime>,
+    mut graph: ResMut<EditorGraph>,
+    mut history: ResMut<EditorHistory>,
+    mut runtime: ResMut<world::WorldRuntime>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
     mut hammer: ResMut<HammerInteraction>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     mut publication: ResMut<WorldPhysicsPublication>,
+    mut frozen: ResMut<freeze::DimensionFreeze>,
 ) {
     if *space.get() == world::AppSpace::Garage {
+        frozen.reset();
+        publication.accepted_editor = None;
         publication.pending = None;
+        publication.ready = None;
         publication.failed_revision = None;
         if simulation.gpu.is_some() {
             simulation.gpu = None;
@@ -1087,7 +1141,10 @@ fn maintain_space_simulation(
         return;
     }
     if worlds.is_open() {
+        frozen.reset();
+        publication.accepted_editor = None;
         publication.pending = None;
+        publication.ready = None;
         publication.failed_revision = None;
         simulation.gpu = None;
         simulation.world_revision = None;
@@ -1106,18 +1163,62 @@ fn maintain_space_simulation(
             .expect("completed physics task is still owned")
             .revision;
         if world_physics_result_is_current(completed_revision, revision) {
-            match completed.and_then(|prepared| {
-                replacement_simulation(prepared, &simulation, revision, &render_queue)
-            }) {
-                Ok(replacement) => {
-                    *simulation = replacement;
-                    publication.failed_revision = None;
-                    *hammer = HammerInteraction::default();
-                }
+            match completed {
+                Ok(prepared) => publication.ready = Some((revision, prepared)),
                 Err(error) => {
                     publication.failed_revision = Some(revision);
                     state.feedback = Some(format!("Cannot update live world physics: {error}"));
                 }
+            }
+        }
+    }
+
+    if publication
+        .ready
+        .as_ref()
+        .is_some_and(|(prepared_revision, _)| {
+            !world_physics_result_is_current(*prepared_revision, revision)
+        })
+    {
+        publication.ready = None;
+    }
+    if publication.ready.is_some() {
+        if simulation.is_running() && simulation.completed_tick + 1 < simulation.next_tick {
+            // advance_simulation stops submitting while ready is owned here;
+            // polling continues until the final old tick is authoritative.
+            return;
+        }
+        let (_, prepared) = publication.ready.take().expect("ready scene exists");
+        let replacement = replacement_simulation(prepared, &simulation, revision, &render_queue)
+            .and_then(|mut replacement| {
+                let candidate = frozen.prepare_publication(&replacement, &runtime)?;
+                candidate.install_publication(&mut replacement, &render_queue)?;
+                Ok((replacement, candidate))
+            });
+        match replacement {
+            Ok((replacement, candidate)) => {
+                *simulation = replacement;
+                *frozen = candidate;
+                runtime.accept_frozen_publication(&graph.0, &state);
+                publication.accepted_editor =
+                    Some((EditorSnapshot::capture(&graph.0, &state), history.clone()));
+                publication.failed_revision = None;
+                *hammer = HammerInteraction::default();
+            }
+            Err(error) => {
+                publication.failed_revision = Some(revision);
+                state.feedback = Some(format!("Cannot update live world physics: {error}"));
+                if let Some((snapshot, accepted_history)) = &publication.accepted_editor
+                    && history.current_revision != accepted_history.current_revision
+                {
+                    graph.0 = (*snapshot.graph).clone();
+                    state.placed_bearings.clone_from(&snapshot.placed_bearings);
+                    *history = accepted_history.clone();
+                    cancel_transient_editor_state(&mut graph.0, &mut state);
+                    state.construction_mesh_dirty = true;
+                    state.feedback = Some(format!("Construction edit rejected: {error}"));
+                }
+                return;
             }
         }
     }
@@ -1130,6 +1231,7 @@ fn maintain_space_simulation(
     };
     if graph.0.part_count() == 0 {
         publication.pending = None;
+        publication.ready = None;
         publication.failed_revision = None;
         *simulation = AppSimulation {
             world_revision: Some(revision),
@@ -1227,12 +1329,21 @@ fn replacement_simulation(
         creation,
         gpu,
     } = prepared;
+    validate_merged_body_poses(&creation, &graph, previous)?;
     let (transforms, velocities) = rebuilt_body_states(&creation, &graph, previous);
+    let coordinates = rebuilt_mechanism_coordinates(&creation, previous, &transforms, &velocities);
     let next_tick = previous.next_tick.max(1);
+    let live_state = Some(LivePhysicsState {
+        tick: next_tick.saturating_sub(1),
+        transforms: transforms.clone(),
+        velocities: velocities.clone(),
+        coordinates: coordinates.clone(),
+    });
     let Some(gpu) = gpu else {
         return Ok(AppSimulation {
             creation: Some(creation),
             published_graph: graph,
+            live_state,
             next_tick,
             previous_transforms: transforms.clone(),
             transforms,
@@ -1248,7 +1359,10 @@ fn replacement_simulation(
     }
     gpu.write_body_states(render_queue, &transforms, &velocities)
         .map_err(|error| format!("cannot preserve live body state: {error}"))?;
+    gpu.initialize_mechanism_coordinates(render_queue, &coordinates)
+        .map_err(|error| format!("cannot preserve live joint state: {error}"))?;
     Ok(AppSimulation {
+        live_state,
         gpu: Some(gpu),
         creation: Some(creation),
         published_graph: graph,
@@ -1260,6 +1374,7 @@ fn replacement_simulation(
         transforms,
         previous_snapshot_tick: next_tick.saturating_sub(2),
         snapshot_tick: next_tick.saturating_sub(1),
+        pose_revision: previous.pose_revision.wrapping_add(1),
         static_mesh_dirty: true,
         render_dirty: true,
         physics_cpu_ms: None,
@@ -1427,6 +1542,18 @@ mod world_physics_publication_tests {
             transforms: vec![live_transform],
             previous_snapshot_tick: 1,
             snapshot_tick: 2,
+            live_state: Some(super::LivePhysicsState {
+                tick: 3,
+                transforms: vec![GpuTransform {
+                    position: (live_position + Vec3::Y).extend(0.0).to_array(),
+                    ..live_transform
+                }],
+                velocities: vec![mechanic_gpu::GpuVelocity {
+                    linear: [2.0, 3.0, 4.0, 0.0],
+                    angular: [0.0, 0.0, 2.0, 0.0],
+                }],
+                coordinates: Vec::new(),
+            }),
             ..Default::default()
         };
 
@@ -1434,12 +1561,304 @@ mod world_physics_publication_tests {
         let creation = graph.compile().unwrap();
         let root_delta = creation.compounds[0].root_translation
             - previous_creation.compounds[0].root_translation;
-        let expected_position = live_position + live_rotation * root_delta;
-        let (transforms, _) = rebuilt_body_states(&creation, &graph, &previous);
+        let expected_position = live_position + Vec3::Y + live_rotation * root_delta;
+        let (transforms, velocities) = rebuilt_body_states(&creation, &graph, &previous);
         let rebuilt = transforms[0];
 
         assert!(Vec3::from_slice(&rebuilt.position[..3]).abs_diff_eq(expected_position, 1.0e-5));
         assert!(Quat::from_array(rebuilt.rotation).abs_diff_eq(live_rotation, 1.0e-5));
+        let expected_velocity =
+            Vec3::new(2.0, 3.0, 4.0) + Vec3::new(0.0, 0.0, 2.0).cross(live_rotation * root_delta);
+        assert!(
+            Vec3::from_slice(&velocities[0].linear[..3]).abs_diff_eq(expected_velocity, 1.0e-5)
+        );
+        assert_eq!(
+            velocities[0].angular.map(f32::to_bits),
+            [0.0_f32, 0.0, 2.0, 0.0].map(f32::to_bits)
+        );
+    }
+    #[test]
+    fn surviving_joint_state_follows_bearing_identity_after_removal() {
+        use mechanic_core::BearingSpec;
+        use mechanic_gpu::GpuMechanismCoordinate;
+        let mut graph = ConstructionGraph::new();
+        let mut joints = Vec::new();
+        for z in [0_i16, 8] {
+            let mut parts = Vec::new();
+            for x in [0, 4] {
+                let BuildOutcome::Spawned(part) = graph
+                    .apply(BuildCommand::Spawn(
+                        CuboidSpec::new(
+                            [4; 3],
+                            BuildPose::new(IVec3::new(x, 2, i32::from(z)), GridRotation::default()),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap()
+                else {
+                    unreachable!()
+                };
+                parts.push(part);
+            }
+            let BuildOutcome::BearingAdded(bearing) = graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(parts[0], FaceKind::PositiveX),
+                    FaceRef::part(parts[1], FaceKind::NegativeX),
+                    Vec3::new(0.5, 0.5, f32::from(z) * 0.25),
+                    Vec3::X,
+                )))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            joints.push(bearing);
+        }
+        let compiled = graph.compile().unwrap();
+        let coordinates = vec![
+            GpuMechanismCoordinate {
+                position: 7.0,
+                velocity: 2.0,
+            },
+            GpuMechanismCoordinate {
+                position: -9.0,
+                velocity: -3.0,
+            },
+        ];
+        let surviving =
+            coordinates[compiled.loop_topology.bearing_coordinates[&joints[1]] as usize];
+        let previous = AppSimulation {
+            creation: Some(compiled),
+            live_state: Some(super::LivePhysicsState {
+                tick: 10,
+                transforms: Vec::new(),
+                velocities: Vec::new(),
+                coordinates,
+            }),
+            ..Default::default()
+        };
+        graph.apply(BuildCommand::RemoveBearing(joints[0])).unwrap();
+        let rebuilt = graph.compile().unwrap();
+        assert_eq!(
+            super::rebuilt_mechanism_coordinates(&rebuilt, &previous, &[], &[]),
+            vec![surviving]
+        );
+    }
+    #[test]
+    fn additions_removals_and_splits_inherit_the_live_rigid_velocity_field() {
+        use mechanic_gpu::GpuVelocity;
+        let mut original = ConstructionGraph::new();
+        let mut parts = Vec::new();
+        for x in 0..3 {
+            let BuildOutcome::Spawned(part) = original
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1; 3],
+                        BuildPose::new(IVec3::new(x, 8, 0), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            if let Some(&last) = parts.last() {
+                original
+                    .apply(BuildCommand::Weld(WeldSpec {
+                        first: FaceRef::part(last, FaceKind::PositiveX),
+                        second: FaceRef::part(part, FaceKind::NegativeX),
+                    }))
+                    .unwrap();
+            }
+            parts.push(part);
+        }
+        let compiled = original.compile().unwrap();
+        let old_root = compiled.compounds[0].root_translation;
+        let live_position = Vec3::new(2.0, 4.0, 6.0);
+        let live_rotation = Quat::from_rotation_y(0.8);
+        let linear = Vec3::new(1.0, 2.0, 3.0);
+        let angular = Vec3::new(0.0, 0.0, 2.0);
+        let previous = AppSimulation {
+            creation: Some(compiled),
+            published_graph: original.clone(),
+            live_state: Some(super::LivePhysicsState {
+                tick: 20,
+                transforms: vec![GpuTransform {
+                    position: live_position.extend(0.0).to_array(),
+                    rotation: live_rotation.to_array(),
+                }],
+                velocities: vec![GpuVelocity {
+                    linear: linear.extend(0.0).to_array(),
+                    angular: angular.extend(0.0).to_array(),
+                }],
+                coordinates: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        for edit in 0..3 {
+            let mut graph = original.clone();
+            match edit {
+                0 => {
+                    graph.apply(BuildCommand::Remove(parts[1])).unwrap();
+                }
+                1 => {
+                    graph.apply(BuildCommand::Remove(parts[2])).unwrap();
+                }
+                _ => {
+                    let BuildOutcome::Spawned(part) = graph
+                        .apply(BuildCommand::Spawn(
+                            CuboidSpec::new(
+                                [1; 3],
+                                BuildPose::new(IVec3::new(3, 8, 0), GridRotation::default()),
+                            )
+                            .unwrap(),
+                        ))
+                        .unwrap()
+                    else {
+                        unreachable!()
+                    };
+                    graph
+                        .apply(BuildCommand::Weld(WeldSpec {
+                            first: FaceRef::part(parts[2], FaceKind::PositiveX),
+                            second: FaceRef::part(part, FaceKind::NegativeX),
+                        }))
+                        .unwrap();
+                }
+            }
+            let rebuilt = graph.compile().unwrap();
+            assert_eq!(rebuilt.compounds.len(), if edit == 0 { 2 } else { 1 });
+            let (transforms, velocities) = rebuilt_body_states(&rebuilt, &graph, &previous);
+            for (body, compound) in rebuilt.compounds.iter().enumerate() {
+                let displacement = live_rotation * (compound.root_translation - old_root);
+                assert!(
+                    Vec3::from_slice(&transforms[body].position[..3])
+                        .abs_diff_eq(live_position + displacement, 1.0e-5)
+                );
+                assert!(
+                    Vec3::from_slice(&velocities[body].linear[..3])
+                        .abs_diff_eq(linear + angular.cross(displacement), 1.0e-5)
+                );
+                assert_eq!(
+                    velocities[body].angular.map(f32::to_bits),
+                    angular.extend(0.0).to_array().map(f32::to_bits)
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Share the moving-frame fixture across both joint kinds.
+    fn promoted_closure_recovers_motion_in_a_rotated_world_frame() {
+        use mechanic_core::BearingSpec;
+        use mechanic_gpu::GpuVelocity;
+        let mut graph = ConstructionGraph::new();
+        let mut parts = Vec::new();
+        for x in [0, 4] {
+            let BuildOutcome::Spawned(part) = graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [4; 3],
+                        BuildPose::new(IVec3::new(x, 2, 0), GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            parts.push(part);
+        }
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(parts[0], FaceKind::PositiveX),
+                FaceRef::part(parts[1], FaceKind::NegativeX),
+                Vec3::new(0.5, 0.5, 0.0),
+                Vec3::X,
+            )))
+            .unwrap();
+        let mut compiled = graph.compile().unwrap();
+        let mut old = compiled.clone();
+        old.loop_topology.bearing_coordinates.clear();
+        old.loop_topology.tree_bearings.clear();
+        old.bearings[0].coordinate_index = None;
+        let previous = AppSimulation {
+            creation: Some(old),
+            live_state: Some(super::LivePhysicsState {
+                tick: 9,
+                transforms: Vec::new(),
+                velocities: Vec::new(),
+                coordinates: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let rotation_a = Quat::from_rotation_y(0.9);
+        let origin = Vec3::new(4.0, 8.0, 3.0);
+        let linear_a = Vec3::new(2.0, 3.0, 4.0);
+        let angular_a = Vec3::new(0.3, 0.2, 0.1);
+        for linear in [false, true] {
+            if linear {
+                compiled.bearings[0].kind =
+                    mechanic_core::BearingKind::Linear(mechanic_core::LinearBearing {
+                        dimensions: mechanic_core::LinearBearingDimensions::default(),
+                        mount_normal: Vec3::Y,
+                        face: mechanic_core::CarriageFace::Top,
+                    });
+            }
+            let bearing = compiled.bearings[0];
+            let rotation_b = if linear {
+                rotation_a
+            } else {
+                rotation_a * Quat::from_rotation_x(0.7)
+            };
+            let axis = rotation_a * Vec3::X;
+            let arm_a = rotation_a * bearing.local_anchor_a;
+            let arm_b = rotation_b * bearing.local_anchor_b;
+            let separation = if linear { axis * 0.2 } else { Vec3::ZERO };
+            let position_b = origin + arm_a - arm_b + separation;
+            let angular_b = angular_a + if linear { Vec3::ZERO } else { axis * 1.2 };
+            let linear_b = linear_a + angular_a.cross(arm_a + separation) - angular_b.cross(arm_b)
+                + if linear { axis * 0.3 } else { Vec3::ZERO };
+            let mut transforms = vec![
+                GpuTransform {
+                    position: [0.0; 4],
+                    rotation: Quat::IDENTITY.to_array()
+                };
+                2
+            ];
+            let mut velocities = vec![
+                GpuVelocity {
+                    linear: [0.0; 4],
+                    angular: [0.0; 4]
+                };
+                2
+            ];
+            for (body, position, rotation, velocity, angular) in [
+                (bearing.compound_a, origin, rotation_a, linear_a, angular_a),
+                (
+                    bearing.compound_b,
+                    position_b,
+                    rotation_b,
+                    linear_b,
+                    angular_b,
+                ),
+            ] {
+                transforms[body as usize] = GpuTransform {
+                    position: position.extend(0.0).to_array(),
+                    rotation: rotation.to_array(),
+                };
+                velocities[body as usize] = GpuVelocity {
+                    linear: velocity.extend(0.0).to_array(),
+                    angular: angular.extend(0.0).to_array(),
+                };
+            }
+            let coordinates = super::rebuilt_mechanism_coordinates(
+                &compiled,
+                &previous,
+                &transforms,
+                &velocities,
+            );
+            assert!((coordinates[0].position - if linear { 0.2 } else { 0.7 }).abs() < 1.0e-5);
+            assert!((coordinates[0].velocity - if linear { 0.3 } else { 1.2 }).abs() < 1.0e-5);
+        }
     }
 }
 
@@ -1473,110 +1892,292 @@ fn rebuilt_body_states(
     let mut velocities = vec![
         GpuVelocity {
             linear: [0.0; 4],
-            angular: [0.0; 4],
+            angular: [0.0; 4]
         };
         creation.compounds.len()
     ];
     let Some(previous_creation) = previous.creation.as_ref() else {
         return (transforms, velocities);
     };
-    let previous_bodies = previous_creation
-        .compounds
+    let old_bodies = previous_creation
+        .part_to_compound
         .iter()
-        .enumerate()
-        .filter(|(_, compound)| !compound.is_static)
-        .collect::<Vec<_>>();
-    let tick_delta = previous
-        .snapshot_tick
-        .saturating_sub(previous.previous_snapshot_tick);
-    let tick_delta = u16::try_from(tick_delta).unwrap_or(u16::MAX);
-    let elapsed = f32::from(tick_delta) * FIXED_DT_SECONDS;
+        .copied()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let source_transforms = previous
+        .live_state
+        .as_ref()
+        .map_or(previous.transforms.as_slice(), |state| {
+            state.transforms.as_slice()
+        });
     for (new_index, compound) in creation.compounds.iter().enumerate() {
         if compound.is_static {
             continue;
         }
-        let old_index = previous_bodies
-            .iter()
-            .find_map(|(index, previous_compound)| {
-                (previous_compound.source_parts == compound.source_parts).then_some(*index)
-            })
-            .or_else(|| {
-                previous_bodies
-                    .iter()
-                    .filter(|(_, previous_compound)| {
-                        body_membership_differs_only_by_dimension_links(
-                            &compound.source_parts,
-                            &previous_compound.source_parts,
-                            graph,
-                            &previous.published_graph,
-                        )
-                    })
-                    .max_by_key(|(_, previous_compound)| {
-                        compound
-                            .source_parts
-                            .iter()
-                            .filter(|part| previous_compound.source_parts.contains(part))
-                            .count()
-                    })
-                    .map(|(index, _)| *index)
-            });
-        let Some(old_index) = old_index else {
+        let mut ancestors = edit_body_ancestors(compound, graph, &old_bodies);
+        ancestors.retain(|body, _| !previous_creation.compounds[*body].is_static);
+        let Some((&old_index, &(part, source))) = ancestors.first_key_value() else {
             continue;
         };
-        let Some(&current) = previous.transforms.get(old_index) else {
+        let Some(&current) = source_transforms.get(old_index) else {
             continue;
         };
-        let previous_compound = &previous_creation.compounds[old_index];
-        let root_delta = compound.root_translation - previous_compound.root_translation;
-        let remap_root = |transform: GpuTransform| {
-            let rotation = Quat::from_array(transform.rotation);
-            let position = Vec3::from_slice(&transform.position[..3]) + rotation * root_delta;
-            GpuTransform {
-                position: position.extend(0.0).to_array(),
-                ..transform
+        let Some(remapped) =
+            body_pose_from_edit_ancestor(compound, graph, previous, old_index, part, source)
+        else {
+            continue;
+        };
+        let position = Vec3::from_slice(&remapped.position[..3]);
+        transforms[new_index] = remapped;
+        if ancestors.len() == 1 {
+            if let Some(velocity) = previous
+                .live_state
+                .as_ref()
+                .and_then(|state| state.velocities.get(old_index))
+            {
+                let angular = Vec3::from_slice(&velocity.angular[..3]);
+                let displacement = position - Vec3::from_slice(&current.position[..3]);
+                velocities[new_index] = GpuVelocity {
+                    linear: (Vec3::from_slice(&velocity.linear[..3]) + angular.cross(displacement))
+                        .extend(0.0)
+                        .to_array(),
+                    angular: velocity.angular,
+                };
             }
-        };
-        let current = remap_root(current);
-        transforms[new_index] = current;
-        if elapsed <= f32::EPSILON {
-            continue;
+        } else {
+            velocities[new_index] = merged_body_velocity(
+                compound,
+                transforms[new_index],
+                ancestors.keys().copied(),
+                previous,
+            );
         }
-        let prior = previous
-            .previous_transforms
-            .get(old_index)
-            .copied()
-            .map_or(current, remap_root);
-        let current_position = Vec3::from_slice(&current.position[..3]);
-        let prior_position = Vec3::from_slice(&prior.position[..3]);
-        let current_rotation = Quat::from_array(current.rotation);
-        let prior_rotation = Quat::from_array(prior.rotation);
-        let delta = (current_rotation * prior_rotation.inverse()).normalize();
-        let (axis, angle) = delta.to_axis_angle();
-        velocities[new_index] = GpuVelocity {
-            linear: ((current_position - prior_position) / elapsed)
-                .extend(0.0)
-                .to_array(),
-            angular: (axis * (angle / elapsed)).extend(0.0).to_array(),
-        };
     }
     (transforms, velocities)
 }
 
-fn body_membership_differs_only_by_dimension_links(
-    current: &[PartId],
-    previous: &[PartId],
+/// The source body identities represented by this compound, each counted once.
+fn edit_body_ancestors(
+    compound: &mechanic_core::CompiledCompound,
     graph: &ConstructionGraph,
-    previous_graph: &ConstructionGraph,
-) -> bool {
-    current.iter().any(|part| previous.contains(part))
-        && current
-            .iter()
-            .filter(|part| !previous.contains(part))
-            .all(|part| graph.dimension_link_id(*part).is_some())
-        && previous
-            .iter()
-            .filter(|part| !current.contains(part))
-            .all(|part| previous_graph.dimension_link_id(*part).is_some())
+    old_bodies: &std::collections::BTreeMap<PartId, u32>,
+) -> std::collections::BTreeMap<usize, (PartId, PartId)> {
+    let mut ancestors = std::collections::BTreeMap::new();
+    for &part in &compound.source_parts {
+        let mut source = Some(part);
+        while source.is_some_and(|source| !old_bodies.contains_key(&source)) {
+            source = source.and_then(|source| graph.edit_source(source));
+        }
+        if let Some(source) = source
+            && let Some(&body) = old_bodies.get(&source)
+        {
+            ancestors.entry(body as usize).or_insert((part, source));
+        }
+    }
+    ancestors
+}
+
+fn body_pose_from_edit_ancestor(
+    compound: &mechanic_core::CompiledCompound,
+    graph: &ConstructionGraph,
+    previous: &AppSimulation,
+    body: usize,
+    part: PartId,
+    source: PartId,
+) -> Option<GpuTransform> {
+    let old = previous.creation.as_ref()?.compounds.get(body)?;
+    let source_transforms = previous
+        .live_state
+        .as_ref()
+        .map_or(previous.transforms.as_slice(), |state| {
+            state.transforms.as_slice()
+        });
+    let current = source_transforms.get(body)?;
+    let old_frame = previous.published_graph.part_frame(source)?;
+    let new_frame = graph.part_frame(part)?;
+    let authored_remap = old_frame.compose(new_frame.inverse());
+    let world_from_old_build = Quat::from_array(current.rotation) * old.root_rotation.conjugate();
+    let position = Vec3::from_slice(&current.position[..3])
+        + world_from_old_build
+            * (authored_remap.point(compound.root_translation) - old.root_translation);
+    let rotation =
+        (world_from_old_build * authored_remap.rotation() * compound.root_rotation).normalize();
+    Some(GpuTransform {
+        position: position.extend(0.0).to_array(),
+        rotation: rotation.to_array(),
+    })
+}
+
+/// Rejects a stale weld before any graph, renderer, or GPU state is published.
+fn validate_merged_body_poses(
+    creation: &CompiledCreation,
+    graph: &ConstructionGraph,
+    previous: &AppSimulation,
+) -> Result<(), String> {
+    let Some(old) = previous.creation.as_ref() else {
+        return Ok(());
+    };
+    let old_bodies = old.part_to_compound.iter().copied().collect();
+    for compound in &creation.compounds {
+        let ancestors = edit_body_ancestors(compound, graph, &old_bodies);
+        if ancestors.len() < 2 {
+            continue;
+        }
+        let mut expected = compound.is_static.then_some(GpuTransform {
+            position: compound.root_translation.extend(0.0).to_array(),
+            rotation: compound.root_rotation.to_array(),
+        });
+        for (&body, &(part, source)) in &ancestors {
+            let candidate =
+                body_pose_from_edit_ancestor(compound, graph, previous, body, part, source)
+                    .ok_or_else(|| {
+                        "Cannot weld: a source creation has no authoritative pose".to_owned()
+                    })?;
+            if let Some(expected) = expected {
+                let separation = Vec3::from_slice(&candidate.position[..3])
+                    .distance(Vec3::from_slice(&expected.position[..3]));
+                let relative = Quat::from_array(expected.rotation).conjugate()
+                    * Quat::from_array(candidate.rotation);
+                // One millimetre and 0.001 radians allow roundoff, not another
+                // animation step. Quaternion sign does not affect this test.
+                if !separation.is_finite()
+                    || separation > 0.001
+                    || !relative.is_finite()
+                    || relative.xyz().length() > (0.001_f32 * 0.5).sin()
+                {
+                    return Err("Cannot weld: the creations moved apart while preparing the edit; try again".to_owned());
+                }
+            } else {
+                expected = Some(candidate);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Conserves each source body's momentum once, measured about the new COM.
+fn merged_body_velocity(
+    compound: &mechanic_core::CompiledCompound,
+    transform: GpuTransform,
+    sources: impl Iterator<Item = usize>,
+    previous: &AppSimulation,
+) -> GpuVelocity {
+    let mut result = GpuVelocity {
+        linear: [0.0; 4],
+        angular: [0.0; 4],
+    };
+    let Some((creation, state)) = previous.creation.as_ref().zip(previous.live_state.as_ref())
+    else {
+        return result;
+    };
+    let center = Vec3::from_slice(&transform.position[..3]);
+    let mut momentum = Vec3::ZERO;
+    let mut angular_momentum = Vec3::ZERO;
+    for body in sources {
+        let Some((pose, velocity)) = state.transforms.get(body).zip(state.velocities.get(body))
+        else {
+            continue;
+        };
+        let mass = creation.compounds[body].mass_properties;
+        let linear = Vec3::from_slice(&velocity.linear[..3]);
+        let angular = Vec3::from_slice(&velocity.angular[..3]);
+        let basis = Mat3::from_quat(Quat::from_array(pose.rotation));
+        let body_momentum = mass.mass * linear;
+        momentum += body_momentum;
+        angular_momentum += basis * mass.inertia * basis.transpose() * angular
+            + (Vec3::from_slice(&pose.position[..3]) - center).cross(body_momentum);
+    }
+    let basis = Mat3::from_quat(Quat::from_array(transform.rotation));
+    let inverse_inertia = basis * compound.mass_properties.inverse_inertia * basis.transpose();
+    result.linear = (momentum / compound.mass_properties.mass)
+        .extend(0.0)
+        .to_array();
+    result.angular = (inverse_inertia * angular_momentum).extend(0.0).to_array();
+    result
+}
+
+fn rebuilt_mechanism_coordinates(
+    creation: &CompiledCreation,
+    previous: &AppSimulation,
+    transforms: &[GpuTransform],
+    velocities: &[GpuVelocity],
+) -> Vec<mechanic_gpu::GpuMechanismCoordinate> {
+    let old = previous.creation.as_ref().zip(previous.live_state.as_ref());
+    creation
+        .loop_topology
+        .tree_bearings
+        .iter()
+        .map(|bearing| {
+            old.and_then(|(compiled, state)| {
+                if let Some(&index) = compiled.loop_topology.bearing_coordinates.get(bearing) {
+                    return state.coordinates.get(index as usize).copied();
+                }
+                // Closure-only joints have no stored scalar coordinate. If one is
+                // promoted into the tree, recover its state from the same body tick.
+                compiled
+                    .bearings
+                    .iter()
+                    .find(|row| row.source_bearing == *bearing)?;
+                let row = creation
+                    .bearings
+                    .iter()
+                    .find(|row| row.source_bearing == *bearing)?;
+                coordinate_from_body_states(creation, row, transforms, velocities)
+            })
+            .unwrap_or(mechanic_gpu::GpuMechanismCoordinate {
+                position: 0.0,
+                velocity: 0.0,
+            })
+        })
+        .collect()
+}
+
+fn coordinate_from_body_states(
+    creation: &CompiledCreation,
+    bearing: &mechanic_core::CompiledBearing,
+    transforms: &[GpuTransform],
+    velocities: &[GpuVelocity],
+) -> Option<mechanic_gpu::GpuMechanismCoordinate> {
+    let a = bearing.compound_a as usize;
+    let b = bearing.compound_b as usize;
+    let pose_a = transforms.get(a)?;
+    let pose_b = transforms.get(b)?;
+    let velocity_a = velocities.get(a)?;
+    let velocity_b = velocities.get(b)?;
+    let rotation_a = Quat::from_array(pose_a.rotation).normalize();
+    let rotation_b = Quat::from_array(pose_b.rotation).normalize();
+    let angular_a = Vec3::from_slice(&velocity_a.angular[..3]);
+    let angular_b = Vec3::from_slice(&velocity_b.angular[..3]);
+    let axis = rotation_a * bearing.local_axis_a;
+    let (position, velocity) = match bearing.kind {
+        mechanic_core::BearingKind::Rotational => {
+            let initial = creation.compounds[a].root_rotation.conjugate()
+                * creation.compounds[b].root_rotation;
+            let delta = (rotation_a.conjugate() * rotation_b * initial.conjugate()).normalize();
+            let position = 2.0 * delta.xyz().dot(bearing.local_axis_a).atan2(delta.w);
+            // A closure has no winding counter. Choose its equivalent principal
+            // angle; surviving tree coordinates retain their full winding above.
+            let position = (position + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            (position, (angular_b - angular_a).dot(axis))
+        }
+        mechanic_core::BearingKind::Linear(_) => {
+            let arm_a = rotation_a * bearing.local_anchor_a;
+            let arm_b = rotation_b * bearing.local_anchor_b;
+            let separation = Vec3::from_slice(&pose_b.position[..3]) + arm_b
+                - Vec3::from_slice(&pose_a.position[..3])
+                - arm_a;
+            let relative_velocity = Vec3::from_slice(&velocity_b.linear[..3])
+                + angular_b.cross(arm_b)
+                - Vec3::from_slice(&velocity_a.linear[..3])
+                - angular_a.cross(arm_a);
+            (
+                separation.dot(axis),
+                relative_velocity.dot(axis) + separation.dot(angular_a.cross(axis)),
+            )
+        }
+    };
+    Some(mechanic_gpu::GpuMechanismCoordinate { position, velocity })
 }
 
 /// Whether the primary modifier plus `S` was pressed this frame.
@@ -1667,8 +2268,9 @@ fn handle_dimension_link_interaction(
         return;
     }
     state.feedback = Some(
-        match runtime.activate_dimension_link(*space.get(), &graph.0, part) {
-            Ok(_) => format!("Activated Dimension Link {}", id.0),
+        match runtime.toggle_dimension_link(*space.get(), &graph.0, part) {
+            Ok(Some(_)) => format!("Activated Dimension Link {}", id.0),
+            Ok(None) => format!("Deactivated Dimension Link {}", id.0),
             Err(error) => error,
         },
     );
@@ -1875,6 +2477,7 @@ fn run_drive_sequencer(
     keyboard: Res<ButtonInput<KeyCode>>,
     overlay: Res<ui::UiInput>,
     simulation: Res<AppSimulation>,
+    frozen: Res<freeze::DimensionFreeze>,
     mut sequencer: ResMut<DriveSequencer>,
     mut gearboxes: ResMut<GearboxRuntime>,
     mut state: ResMut<EditorState>,
@@ -1891,12 +2494,22 @@ fn run_drive_sequencer(
         let Some(creation) = simulation.creation.as_ref() else {
             return;
         };
-        sequencer.start(
-            creation,
-            &simulation.published_graph,
-            simulation.world_revision,
-        );
-        gearboxes.start(&simulation.published_graph, &sequencer);
+        if sequencer.is_started() && simulation.world_revision.is_some() {
+            sequencer.sync_publication(
+                creation,
+                &simulation.published_graph,
+                simulation.world_revision,
+                simulation.next_tick,
+            );
+            gearboxes.sync_publication(&simulation.published_graph, &sequencer);
+        } else {
+            sequencer.start(
+                creation,
+                &simulation.published_graph,
+                simulation.world_revision,
+            );
+            gearboxes.start(&simulation.published_graph, &sequencer);
+        }
         state.drive_rows_dirty = true;
     }
     let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
@@ -1904,15 +2517,18 @@ fn run_drive_sequencer(
         .seat
         .filter(|seat| simulation.published_graph.seat_input(*seat).is_some())
         .and_then(|seat| simulation.published_graph.seat_controller(seat));
-    let sequencer_changed = sequencer.step(
+    let suspended = frozen.suspended_controllers(&simulation);
+    let sequencer_changed = sequencer.step_with_held_bearings(
         &simulation.published_graph,
         &keys,
         keyboard_controller,
         simulation.next_tick,
+        &suspended,
+        &frozen.suspended_bearings(&simulation),
     );
     let measured_speeds =
         measured_engine_speeds(&simulation.published_graph, &simulation, &sequencer);
-    let gearbox_changed = gearboxes.step(
+    let gearbox_changed = gearboxes.step_with_suspension(
         &simulation.published_graph,
         &sequencer,
         &keyboard,
@@ -1922,6 +2538,7 @@ fn run_drive_sequencer(
         simulation.next_tick,
         &measured_speeds,
         false,
+        &suspended,
     );
     if sequencer_changed || gearbox_changed {
         state.drive_rows_dirty = true;
@@ -1967,14 +2584,29 @@ fn measured_engine_speeds(
         ) else {
             continue;
         };
-        let speed = signed_joint_speed(
-            Quat::from_array(previous_a.rotation),
-            Quat::from_array(previous_b.rotation),
-            Quat::from_array(current_a.rotation),
-            Quat::from_array(current_b.rotation),
-            bearing.local_axis_a,
-            delta_seconds,
-        );
+        let speed = if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            let displacement = |a: &GpuTransform, b: &GpuTransform| {
+                let rotation_a = Quat::from_array(a.rotation);
+                let rotation_b = Quat::from_array(b.rotation);
+                let separation = Vec3::from_slice(&b.position[..3])
+                    + rotation_b * bearing.local_anchor_b
+                    - Vec3::from_slice(&a.position[..3])
+                    - rotation_a * bearing.local_anchor_a;
+                separation.dot(rotation_a * bearing.local_axis_a)
+            };
+            (displacement(current_a, current_b) - displacement(previous_a, previous_b))
+                / delta_seconds
+                / mechanic_core::LINEAR_METERS_PER_RADIAN
+        } else {
+            signed_joint_speed(
+                Quat::from_array(previous_a.rotation),
+                Quat::from_array(previous_b.rotation),
+                Quat::from_array(current_a.rotation),
+                Quat::from_array(current_b.rotation),
+                bearing.local_axis_a,
+                delta_seconds,
+            )
+        };
         for kind in [EngineKind::Electric, EngineKind::Gas] {
             let powered = match kind {
                 EngineKind::Electric => link.actuator.uses_electric(),
@@ -2096,6 +2728,8 @@ fn handle_creation_request(
                     let placed = sockets
                         .into_iter()
                         .map(|socket| PlacedBearing {
+                            kind: socket.kind,
+                            axis: socket.axis,
                             source: socket.source,
                             anchor: socket.anchor,
                             dimensions: socket.dimensions,
@@ -2164,6 +2798,8 @@ fn capture_creation(
         .placed_bearings
         .iter()
         .map(|bearing| BearingSocket {
+            kind: bearing.kind,
+            axis: bearing.axis,
             source: bearing.source,
             anchor: bearing.anchor,
             dimensions: bearing.dimensions,
@@ -2216,7 +2852,7 @@ fn adopt_loaded_creation(
     state.selected_controller = None;
     state.placed_bearings = placed_bearings;
     state.construction_mesh_dirty = true;
-    if let Some((minimum, maximum)) = graph_bounds(graph) {
+    if let Some((minimum, maximum)) = graph_bounds(graph, &state.placed_bearings) {
         let (view, transform, global) = &mut **camera;
         player.place_outside_bounds(view, minimum, maximum);
         **transform = view.apply_pullback(
@@ -2236,13 +2872,34 @@ fn install_editor_graph(
     Ok(creation)
 }
 
-fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
+fn graph_bounds(graph: &ConstructionGraph, sockets: &[PlacedBearing]) -> Option<(Vec3, Vec3)> {
     let mut minimum = Vec3::splat(f32::INFINITY);
     let mut maximum = Vec3::splat(f32::NEG_INFINITY);
-    for (_, spec) in graph.parts() {
-        let (part_minimum, part_maximum) = part_world_bounds(*spec);
+    for (part, _) in graph.parts() {
+        let (part_minimum, part_maximum) = builder::composed_part_world_bounds(graph, part)?;
         minimum = minimum.min(part_minimum);
         maximum = maximum.max(part_maximum);
+    }
+    for (kind, anchor, axis) in graph
+        .bearings()
+        .map(|(_, bearing)| (bearing.kind, bearing.shared_anchor, bearing.axis))
+        .chain(
+            sockets
+                .iter()
+                .map(|socket| (socket.kind, socket.anchor, socket.axis)),
+        )
+    {
+        if let mechanic_core::BearingKind::Linear(rail) = kind
+            && let Ok(rotation) = rail.rotation(axis)
+        {
+            for chunk in mechanic_core::linear_bearing_meshes(rail.dimensions) {
+                for point in chunk.positions {
+                    let point = anchor + rotation * Vec3::from_array(point);
+                    minimum = minimum.min(point);
+                    maximum = maximum.max(point);
+                }
+            }
+        }
     }
     minimum.is_finite().then_some((minimum, maximum))
 }
@@ -2253,6 +2910,7 @@ fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
 /// the same newest valid transform publication.
 fn poll_simulation_readbacks(
     mut simulation: ResMut<AppSimulation>,
+    frozen: Res<freeze::DimensionFreeze>,
     mut state: ResMut<EditorState>,
     render_device: Res<RenderDevice>,
 ) {
@@ -2282,7 +2940,12 @@ fn poll_simulation_readbacks(
         }
         match completed {
             Ok(Some(completed)) if completed.diagnostics.error_flags == 0 => {
-                if completed.tick_index <= simulation.completed_tick {
+                if completed.tick_index <= simulation.completed_tick
+                    || simulation
+                        .live_state
+                        .as_ref()
+                        .is_some_and(|state| completed.tick_index <= state.tick)
+                {
                     continue;
                 }
                 simulation.completed_tick = completed.tick_index;
@@ -2294,11 +2957,18 @@ fn poll_simulation_readbacks(
                 });
                 simulation.last_tick_readback = Some(completed.diagnostics);
                 simulation.submission_to_readback_ms = Some(completed.submission_to_readback_ms);
+                simulation.live_state = Some(LivePhysicsState {
+                    tick: completed.tick_index,
+                    transforms: completed.transforms.clone(),
+                    velocities: completed.velocities,
+                    coordinates: completed.coordinates,
+                });
                 if visual_snapshot_is_due(simulation.snapshot_tick, completed.tick_index) {
                     simulation.previous_transforms =
                         core::mem::replace(&mut simulation.transforms, completed.transforms);
                     simulation.previous_snapshot_tick = simulation.snapshot_tick;
                     simulation.snapshot_tick = completed.tick_index;
+                    simulation.pose_revision = simulation.pose_revision.wrapping_add(1);
                     simulation.render_dirty = true;
                 }
             }
@@ -2320,6 +2990,7 @@ fn poll_simulation_readbacks(
             }
         }
     }
+    frozen.overlay(&mut simulation);
 }
 
 fn terrain_ground_planes(
@@ -2341,16 +3012,17 @@ fn terrain_ground_planes(
                 return GpuGroundPlane::DISABLED;
             }
             *part_planes.entry(collider.source_part).or_insert_with(|| {
-                let Some(spec) = graph.part(collider.source_part) else {
+                let Some(authored_position) = graph.part_position(collider.source_part) else {
                     return GpuGroundPlane::DISABLED;
                 };
                 let Some(transform) = transforms.get(body_index) else {
                     return GpuGroundPlane::DISABLED;
                 };
                 let root_position = Vec3::from_slice(&transform.position[..3]);
-                let root_rotation = Quat::from_array(transform.rotation).normalize();
-                let part_position = root_position
-                    + root_rotation * (spec.pose().translation() - compound.root_translation);
+                let root_rotation = Quat::from_array(transform.rotation).normalize()
+                    * compound.root_rotation.conjugate();
+                let part_position =
+                    root_position + root_rotation * (authored_position - compound.root_translation);
                 world
                     .terrain_plane_beneath(part_position)
                     .map_or(GpuGroundPlane::DISABLED, |(normal, offset)| {
@@ -2377,11 +3049,15 @@ fn sync_simulation_visual_cache(
     mut roots: Query<(&SimulationBodyVisualRoot, &mut Transform)>,
     mut legacy_visuals: Query<&mut Visibility, Or<(With<AuthoredPartVisual>, With<BearingVisual>)>>,
 ) {
-    let Some(revision) = simulation.world_revision else {
+    let Some(revision) = simulation
+        .world_revision
+        .filter(|_| simulation.is_running())
+    else {
         for entity in cache.roots.drain(..) {
             commands.entity(entity).despawn();
         }
         cache.revision = None;
+        cache.active_dimension_link = None;
         return;
     };
     let Some(creation) = simulation.creation.as_ref() else {
@@ -2389,13 +3065,13 @@ fn sync_simulation_visual_cache(
     };
 
     let started = std::time::Instant::now();
-    let rebuild = cache.revision != Some(revision);
+    let active_dimension_link = world_runtime.active_dimension_link();
+    let rebuild = cache.needs_rebuild(revision, active_dimension_link);
     if rebuild {
         for entity in cache.roots.drain(..) {
             commands.entity(entity).despawn();
         }
         let graph = &simulation.published_graph;
-        let active_dimension_link = world_runtime.active_dimension_link();
         let local_transforms = vec![
             GpuTransform {
                 position: [0.0, 0.0, 0.0, 0.0],
@@ -2507,6 +3183,7 @@ fn sync_simulation_visual_cache(
             cache.roots.push(root);
         }
         cache.revision = Some(revision);
+        cache.active_dimension_link = active_dimension_link;
     } else if simulation.render_dirty {
         for (root, mut transform) in &mut roots {
             if let Some(snapshot) = simulation.transforms.get(root.0 as usize).copied() {
@@ -2538,6 +3215,7 @@ fn transform_from_gpu(transform: GpuTransform) -> Transform {
 fn advance_simulation(
     time: Res<Time>,
     mut world_runtime: ResMut<world::WorldRuntime>,
+    publication: Res<WorldPhysicsPublication>,
     sequencer: Res<DriveSequencer>,
     gearboxes: Res<GearboxRuntime>,
     selection: Res<SelectedTool>,
@@ -2607,7 +3285,7 @@ fn advance_simulation(
             next_tick,
             tick_backlog,
             time.delta(),
-            false,
+            publication.ready.is_some(),
             u64::try_from(available).unwrap_or(u64::MAX),
         )
     };
@@ -2720,7 +3398,7 @@ fn advance_simulation(
             &state.placed_bearings,
         );
         if let Some(mut mesh) = meshes.get_mut(&visuals.joint_xray_mesh) {
-            *mesh = rings;
+            *mesh = renderable_mesh(rings);
         }
     }
     // The drive overlay follows the bodies while they move, so it is rebuilt
@@ -2783,22 +3461,9 @@ impl AppSimulation {
         part: PartId,
     ) -> Option<(Vec3, Quat)> {
         let Some(creation) = self.creation.as_ref() else {
-            let spec = *graph.part(part)?;
-            return Some((spec.pose().translation(), spec.pose().rotation.quaternion()));
+            return Some((graph.part_position(part)?, graph.part_rotation(part)?));
         };
-        let spec = *self.published_graph.part(part)?;
-        let body = creation
-            .part_to_compound
-            .iter()
-            .find_map(|(candidate, body)| (*candidate == part).then_some(*body))?;
-        let transform = self.transforms.get(body as usize)?;
-        let root_position = Vec3::from_slice(&transform.position[..3]);
-        let root_rotation = Quat::from_array(transform.rotation);
-        let initial = &creation.compounds[body as usize];
-        Some((
-            root_position + root_rotation * (spec.pose().translation() - initial.root_translation),
-            root_rotation * spec.pose().rotation.quaternion(),
-        ))
+        simulation_part_pose(&self.published_graph, creation, &self.transforms, part)
     }
 
     fn record_performance(
@@ -2848,10 +3513,13 @@ impl AppSimulation {
 
 #[derive(Resource, Default)]
 struct EditorState {
+    edit_context: Option<live_edit::EditContext>,
+    world_hovered_part: Option<PartId>,
+    linear: linear_editor::LinearToolState,
+    linear_attachment: Option<PlacedBearing>,
     placement_bounds: PlacementBounds,
     hovered: Option<SurfaceHit>,
     hovered_simulation: Option<SimulationHit>,
-    world_edit_blocker: Option<WorldEditBlocker>,
     /// Unattached bearing surface directly hit by the pointer ray.
     hovered_bearing: Option<usize>,
     /// Unattached bearing that would claim the current block preview.
@@ -2878,6 +3546,7 @@ struct EditorState {
     construction_publication_generation: u64,
     /// Last immutable graph revision atomically published to construction meshes.
     rendered_graph: ConstructionGraph,
+    rendered_world_revision: Option<WorldPhysicsRevision>,
     delete_target: Option<DeleteTarget>,
     block_drag: Option<BlockDrag>,
     block_preview_revision: u64,
@@ -2927,11 +3596,6 @@ struct EditorState {
     chroma_stroke: Option<ChromaStroke>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WorldEditBlocker {
-    MovingConstruction,
-}
-
 impl EditorState {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn world_drag_active(&self) -> bool {
@@ -2972,6 +3636,7 @@ impl EditorState {
 }
 
 #[derive(Resource)]
+#[cfg_attr(test, derive(Default))]
 struct EditorVisuals {
     construction_meshes: [Handle<Mesh>; ConstructionMaterial::ALL.len()],
     construction_materials: [Handle<ConstructionRenderMaterial>; ConstructionMaterial::ALL.len()],
@@ -3574,6 +4239,7 @@ fn main() {
         .init_resource::<AppSimulation>()
         .init_resource::<SimulationVisualCache>()
         .init_resource::<WorldPhysicsPublication>()
+        .init_resource::<freeze::DimensionFreeze>()
         .init_resource::<HammerInteraction>()
         .init_resource::<BearingToolSettings>()
         .init_resource::<ControlPanelState>()
@@ -3640,6 +4306,8 @@ fn main() {
                         camera::update_material_wheel,
                         camera::update_player_camera,
                         poll_simulation_readbacks.run_if(world::world_playing),
+                        freeze::update.run_if(world::world_playing),
+                        live_edit::refresh_context,
                         handle_seat_interaction,
                         handle_shortcuts,
                     )
@@ -3647,6 +4315,7 @@ fn main() {
                     (
                         (
                             handle_bearing_dimension_shortcuts,
+                            linear_editor::controls,
                             handle_cylinder_dimension_shortcuts,
                         )
                             .chain(),
@@ -3663,15 +4332,22 @@ fn main() {
                         update_joint_xray,
                         sync_placement_overlays,
                         sync_visual_meshes,
-                        (sync_shape_nodes, sync_region_focus, sync_drag_plane).chain(),
+                        (
+                            sync_shape_nodes,
+                            sync_region_focus,
+                            sync_drag_plane,
+                            sync_edit_overlay_transforms,
+                        )
+                            .chain(),
                         update_wire_drag_preview,
                         update_wire_hover_preview,
                         maintain_space_simulation.after(world::sync_world_foundations),
                         sync_simulation_visual_cache,
+                        linear_render::sync_linear_bearing_visuals,
                         run_drive_sequencer,
                         advance_simulation.run_if(world::world_playing),
                         sync_player_avatar,
-                        update_previews,
+                        (update_previews, live_edit::place_previews).chain(),
                         (
                             performance::sample,
                             performance_capture::sample,
@@ -4699,6 +5375,10 @@ fn cancel_transient_editor_state(graph: &mut ConstructionGraph, state: &mut Edit
     state.delete_drag = None;
     state.delete_target = None;
     state.region_drag = None;
+    state.vertex_drag = None;
+    state.feature_drag = None;
+    state.wire_drag = None;
+    state.edit_context = None;
     clear_hover(state);
 }
 
@@ -4756,7 +5436,9 @@ fn handle_shortcuts(
                 None => state.feedback = Some("Point at construction to sample it".to_owned()),
             }
         } else if selection.tool.is_some() {
-            clear_held_tool(&mut graph.0, &mut state, &mut selection, &mut hammer);
+            let mut view = live_edit::EditorView::new(&mut graph, &mut state);
+            let (graph, state) = view.parts();
+            clear_held_tool(&mut graph.0, state, &mut selection, &mut hammer);
         } else {
             let cursor = camera::viewport_center(Vec2::new(window.width(), window.height()));
             let ray = camera.0.viewport_to_world(camera.1, cursor).ok();
@@ -4800,7 +5482,15 @@ fn handle_shortcuts(
 enum PipetteSetup {
     Ground,
     Bearing(BearingDimensions),
+    Linear(mechanic_core::LinearBearing, Vec3),
     Part(PartId),
+}
+
+fn pipette_socket(socket: PlacedBearing) -> PipetteSetup {
+    match socket.kind {
+        mechanic_core::BearingKind::Rotational => PipetteSetup::Bearing(socket.dimensions),
+        mechanic_core::BearingKind::Linear(rail) => PipetteSetup::Linear(rail, socket.axis),
+    }
 }
 
 fn clear_held_tool(
@@ -4841,6 +5531,17 @@ fn pipette_at_ray(
             origin,
             direction,
         );
+        if let Some((index, distance)) = linear_editor::raycast_scene(
+            graph,
+            Some(simulation),
+            &state.placed_bearings,
+            origin,
+            direction,
+        ) && part.is_none_or(|part| distance < part.distance)
+            && bearing.is_none_or(|(_, ring_distance)| distance < ring_distance)
+        {
+            return Some(pipette_socket(state.placed_bearings[index]));
+        }
         return match (part, bearing) {
             (Some(part), Some((dimensions, distance))) if distance < part.distance => {
                 Some(PipetteSetup::Bearing(dimensions))
@@ -4852,12 +5553,10 @@ fn pipette_at_ray(
     }
     let part = raycast_construction(graph, origin, direction);
     let bearing = raycast_placed_bearings(graph, &state.placed_bearings, origin, direction)
-        .and_then(|(index, distance)| {
-            Some((state.placed_bearings.get(index)?.dimensions, distance))
-        });
+        .and_then(|(index, distance)| Some((*state.placed_bearings.get(index)?, distance)));
     match (part, bearing) {
         (Some(hit), Some((dimensions, distance))) if distance < hit.distance => {
-            Some(PipetteSetup::Bearing(dimensions))
+            Some(pipette_socket(dimensions))
         }
         (
             Some(SurfaceHit {
@@ -4871,7 +5570,7 @@ fn pipette_at_ray(
             _,
         ) => Some(PipetteSetup::Ground),
         (Some(hit), _) => hovered_part(Some(hit)).map(PipetteSetup::Part),
-        (None, Some((dimensions, _))) => Some(PipetteSetup::Bearing(dimensions)),
+        (None, Some((dimensions, _))) => Some(pipette_socket(dimensions)),
         (None, None) => None,
     }
 }
@@ -4889,6 +5588,16 @@ fn apply_pipette_setup(
     state.active_region = None;
     let tool = match setup {
         PipetteSetup::Ground => Tool::Block,
+        PipetteSetup::Linear(rail, axis) => {
+            state.linear.dimensions = rail.dimensions;
+            let (u, v) = axis_tangents(rail.mount_normal);
+            state.linear.turns = [u, v, -u, -v]
+                .iter()
+                .position(|candidate| candidate.abs_diff_eq(axis, 1.0e-5))
+                .and_then(|index| u8::try_from(index).ok())
+                .unwrap_or(0);
+            Tool::LinearBearing
+        }
         PipetteSetup::Bearing(dimensions) => {
             bearing_settings.dimensions = dimensions;
             Tool::Bearing
@@ -5309,14 +6018,7 @@ fn handle_tool_change(
     if !selection.is_changed() {
         return;
     }
-    if graph.0.pending().is_some() {
-        let _ = graph.0.apply(BuildCommand::CancelPending);
-    }
-    clear_hover(&mut state);
-    state.block_drag = None;
-    state.pipe_drag = None;
-    state.delete_drag = None;
-    state.wire_drag = None;
+    cancel_transient_editor_state(&mut graph.0, &mut state);
     if !selection
         .active_editor_tool()
         .is_some_and(Tool::edits_drives)
@@ -5327,7 +6029,7 @@ fn handle_tool_change(
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn update_hover(
-    graph: Res<EditorGraph>,
+    mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     window: Single<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -5391,7 +6093,6 @@ fn update_hover(
         return;
     };
     state.pointer_position = Some(cursor);
-    state.pointer_ray = Some((ray.origin, ray.direction.as_vec3()));
     let ray_direction = ray.direction.as_vec3();
     let terrain_ground = placement_bounds
         .is_world()
@@ -5424,19 +6125,101 @@ fn update_hover(
         })
         .flatten();
     state.hovered_simulation = moving_hit;
-    let nearest_editable =
-        raycast_construction_with_ground(&graph.0, ray.origin, ray_direction, terrain_ground)
-            .filter(|hit| match hit.face.owner {
-                FaceOwner::Ground => true,
-                FaceOwner::Part(part) => {
-                    editor_part_is_static_or_pending(&graph.0, &simulation, part)
-                }
-            });
-    state.world_edit_blocker = moving_hit
+    let nearest_editable = builder::raycast_construction_filtered_with_ground(
+        &graph.0,
+        ray.origin,
+        ray_direction,
+        terrain_ground,
+        |part| editor_part_is_static_or_pending(&graph.0, &simulation, part),
+    );
+    state.world_hovered_part = if moving_hit
         .is_some_and(|moving| nearest_editable.is_none_or(|hit| moving.distance <= hit.distance))
-        .then_some(WorldEditBlocker::MovingConstruction);
+    {
+        moving_hit.map(|hit| hit.part)
+    } else {
+        hovered_part(nearest_editable)
+    };
+    let attached_gesture = state.block_drag.is_some()
+        || state.pipe_drag.is_some()
+        || state.delete_drag.is_some()
+        || state.region_drag.is_some()
+        || state.vertex_drag.is_some()
+        || state.feature_drag.is_some()
+        || state.wire_drag.is_some()
+        || graph.0.pending().is_some();
+    let prior = state
+        .edit_context
+        .map(|context| (context.anchor, context.frame));
+    let anchor = if attached_gesture && state.edit_context.is_some() {
+        state.edit_context.map(|context| context.anchor)
+    } else if moving_hit
+        .is_some_and(|moving| nearest_editable.is_none_or(|hit| moving.distance <= hit.distance))
+    {
+        moving_hit.map(|hit| hit.part)
+    } else {
+        hovered_part(nearest_editable).filter(|&part| {
+            graph.0.part_frame(part) != Some(mechanic_core::ConstructionFrame::IDENTITY)
+        })
+    };
+    state.edit_context =
+        anchor.and_then(|part| live_edit::EditContext::resolve(&graph.0, &simulation, part));
+    if attached_gesture && prior.is_some() && state.edit_context.is_none() {
+        cancel_transient_editor_state(&mut graph.0, &mut state);
+        state.feedback = Some("The gesture's construction was removed".to_owned());
+        return;
+    }
+    let context = state.edit_context;
+    let mut view = live_edit::EditorView::new(&mut graph, &mut state);
+    let (graph, state) = view.parts();
+    if prior != context.map(|context| (context.anchor, context.frame)) {
+        state.snap_index.rebuild(&graph.0);
+    }
+    let world_ray = ray;
+    let ray = context.map_or(ray, |context| context.ray(ray));
+    let ray_direction = ray.direction.as_vec3();
+    state.pointer_ray = Some((ray.origin, ray_direction));
+    let terrain_ground = if context.is_some() {
+        None
+    } else {
+        terrain_ground
+    };
+    let placement_bounds = if context.is_some() && placement_bounds.is_world() {
+        PlacementBounds::World {
+            origin: bevy::math::DVec2::ZERO,
+        }
+    } else {
+        placement_bounds
+    };
+    state.placement_bounds = placement_bounds;
+    let accepts_part = |part| {
+        context.map_or_else(
+            || {
+                !placement_bounds.is_world()
+                    || editor_part_is_static_or_pending(&graph.0, &simulation, part)
+            },
+            |context| context.accepts_part(&graph.0, &simulation, part),
+        )
+    };
+    let nearest_editable = builder::raycast_construction_filtered_with_ground(
+        &graph.0,
+        ray.origin,
+        ray_direction,
+        terrain_ground,
+        accepts_part,
+    );
     let raycast_surface = |annulus: Option<(f32, f32)>| {
         let hit = match annulus {
+            Some((inner, outer)) if context.is_some() => {
+                builder::raycast_construction_for_annulus_filtered_with_ground(
+                    &graph.0,
+                    ray.origin,
+                    ray_direction,
+                    inner,
+                    outer,
+                    terrain_ground,
+                    accepts_part,
+                )
+            }
             Some((inner, outer)) if placement_bounds.is_world() => {
                 raycast_construction_for_annulus_with_ground(
                     &graph.0,
@@ -5464,11 +6247,12 @@ fn update_hover(
         };
         let hit = hit.filter(|hit| match hit.face.owner {
             FaceOwner::Ground => true,
-            FaceOwner::Part(part) if !placement_bounds.is_world() => graph.0.part(part).is_some(),
-            FaceOwner::Part(part) => editor_part_is_static_or_pending(&graph.0, &simulation, part),
+            FaceOwner::Part(part) => accepts_part(part),
         });
-        if moving_hit
-            .is_some_and(|moving| hit.is_none_or(|editable| moving.distance <= editable.distance))
+        if context.is_none()
+            && moving_hit.is_some_and(|moving| {
+                hit.is_none_or(|editable| moving.distance <= editable.distance)
+            })
         {
             None
         } else {
@@ -5476,29 +6260,18 @@ fn update_hover(
         }
     };
     if state.block_drag.is_some() {
-        refresh_block_drag(
-            &graph.0,
-            &mut state,
-            cursor,
-            ray.origin,
-            ray.direction.as_vec3(),
-        );
+        refresh_block_drag(&graph.0, state, cursor, ray.origin, ray.direction.as_vec3());
         return;
     }
     if state.pipe_drag.is_some() {
-        refresh_pipe_drag(
-            &graph.0,
-            &mut state,
-            cursor,
-            ray.origin,
-            ray.direction.as_vec3(),
-        );
+        refresh_pipe_drag(&graph.0, state, cursor, ray.origin, ray.direction.as_vec3());
         return;
     }
     if state.delete_drag.is_some() {
         refresh_delete_drag(
             &graph.0,
-            &mut state,
+            state,
+            &simulation,
             cursor,
             ray.origin,
             ray.direction.as_vec3(),
@@ -5534,7 +6307,8 @@ fn update_hover(
                 cylinder_settings.dimensions.inner_diameter(),
                 cylinder_settings.dimensions.outer_diameter(),
             ))),
-            Tool::Block
+            Tool::LinearBearing
+            | Tool::Block
             | Tool::Weld
             | Tool::Hammer
             | Tool::Controller
@@ -5553,21 +6327,37 @@ fn update_hover(
     // Wiring aims at the whole joint, hole and pin included, so a wire can be
     // dropped on a bearing without having to hit its thin ring.
     let wiring = tool == Tool::Connector;
+    let canonical_wiring_graph = wiring.then(|| graph.0.canonicalized());
+    let canonical_wiring_bearings = wiring.then(|| {
+        state
+            .placed_bearings
+            .iter()
+            .map(|&bearing| live_edit::transform_bearing(bearing, graph.0.view_to_build()))
+            .collect::<Vec<_>>()
+    });
     let bearing_hit = if wiring {
         raycast_live_placed_bearing_discs(
-            &graph.0,
+            canonical_wiring_graph
+                .as_ref()
+                .expect("wiring graph exists"),
             &simulation,
-            &state.placed_bearings,
-            ray.origin,
-            ray_direction,
+            canonical_wiring_bearings
+                .as_ref()
+                .expect("wiring sockets exist"),
+            world_ray.origin,
+            world_ray.direction.as_vec3(),
         )
         .or_else(|| {
             raycast_live_placed_bearings(
-                &graph.0,
+                canonical_wiring_graph
+                    .as_ref()
+                    .expect("wiring graph exists"),
                 &simulation,
-                &state.placed_bearings,
-                ray.origin,
-                ray_direction,
+                canonical_wiring_bearings
+                    .as_ref()
+                    .expect("wiring sockets exist"),
+                world_ray.origin,
+                world_ray.direction.as_vec3(),
             )
         })
     } else if matches!(tool, Tool::Block | Tool::Cylinder) || actions.pressed(GameAction::Secondary)
@@ -5587,7 +6377,7 @@ fn update_hover(
         state.hovered_bearing = Some(bearing);
         refresh_tool_preview_with_cylinder(
             &graph.0,
-            &mut state,
+            state,
             tool,
             cylinder_settings.dimensions,
             bearing_settings.dimensions,
@@ -5607,11 +6397,11 @@ fn update_hover(
             state.free_placement.range,
             actions.pressed(GameAction::Secondary),
         );
-        clear_editor_hover(&mut state);
+        clear_editor_hover(state);
         state.free_placement_point = free_point;
         refresh_tool_preview_with_cylinder(
             &graph.0,
-            &mut state,
+            state,
             tool,
             cylinder_settings.dimensions,
             bearing_settings.dimensions,
@@ -5627,7 +6417,7 @@ fn update_hover(
     state.hovered = Some(hit);
     refresh_tool_preview_with_cylinder(
         &graph.0,
-        &mut state,
+        state,
         tool,
         cylinder_settings.dimensions,
         bearing_settings.dimensions,
@@ -6119,6 +6909,7 @@ pub(crate) fn pipe_bend_radius_is_fixed(outer_diameter: f32) -> bool {
 fn refresh_delete_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
+    simulation: &AppSimulation,
     _cursor: Vec2,
     ray_origin: Vec3,
     ray_direction: Vec3,
@@ -6156,7 +6947,12 @@ fn refresh_delete_drag(
     if last_span == Some(span) {
         return;
     }
-    let result = delete_box_parts(graph, start, span);
+    let result = delete_box_parts(graph, start, span).map(|mut parts| {
+        if let Some(context) = state.edit_context {
+            parts.retain(|&part| context.accepts_part(graph, simulation, part));
+        }
+        parts
+    });
     let drag = state
         .delete_drag
         .as_mut()
@@ -6197,7 +6993,13 @@ fn delete_box_parts(
         .parts()
         .filter_map(|(part, spec)| {
             matches!(spec, PartSpec::Cuboid(_))
-                .then(|| centers.contains(&spec.pose().translation_position_ticks()))
+                .then(|| {
+                    graph.part_position(part).is_some_and(|point| {
+                        let ticks = point / mechanic_core::POSITION_TICK_METERS;
+                        let rounded = ticks.round();
+                        ticks.abs_diff_eq(rounded, 1.0e-3) && centers.contains(&rounded.as_ivec3())
+                    })
+                })
                 .unwrap_or(false)
                 .then_some(part)
         })
@@ -6216,9 +7018,10 @@ fn weld_lockup_warning(before: &ConstructionGraph, after: &ConstructionGraph) ->
 fn clear_hover(state: &mut EditorState) {
     state.hovered = None;
     state.hovered_simulation = None;
-    state.world_edit_blocker = None;
+    state.world_hovered_part = None;
     state.hovered_bearing = None;
     state.attachment_bearing = None;
+    state.linear_attachment = None;
     state.preview = None;
     state.cylinder_preview = None;
     state.free_placement_point = None;
@@ -6231,10 +7034,10 @@ fn clear_hover(state: &mut EditorState) {
 /// Clears editor-only targeting without discarding a live simulation hit.
 fn clear_editor_hover(state: &mut EditorState) {
     let hovered_simulation = state.hovered_simulation;
-    let world_edit_blocker = state.world_edit_blocker;
+    let world_hovered_part = state.world_hovered_part;
     clear_hover(state);
     state.hovered_simulation = hovered_simulation;
-    state.world_edit_blocker = world_edit_blocker;
+    state.world_hovered_part = world_hovered_part;
 }
 
 #[allow(clippy::too_many_lines)]
@@ -6252,15 +7055,106 @@ fn refresh_tool_preview_with_cylinder(
     state.cylinder_preview = None;
     state.bearing_preview_anchor = None;
     state.attachment_bearing = None;
+    state.linear_attachment = None;
     state.preview_warning = None;
     state.smart_guides.clear();
     // A shaped face is no longer an axis-aligned rectangle, so nothing can sit
     // flush on it until it is flattened back onto the grid.
     if let Some(hit) = state.hovered
+        && !state
+            .hovered_bearing
+            .and_then(|index| state.placed_bearings.get(index))
+            .is_some_and(|socket| matches!(socket.kind, mechanic_core::BearingKind::Linear(_)))
         && !builder::face_is_flat(graph, hit.face)
         && !matches!(tool, Tool::Shape | Tool::Hammer)
     {
         state.preview_error = Some(PlacementError::SurfaceNotFlat);
+        return;
+    }
+    if matches!(tool, Tool::Block | Tool::Cylinder)
+        && let Some(index) = state.hovered_bearing
+        && state
+            .placed_bearings
+            .get(index)
+            .is_some_and(|socket| matches!(socket.kind, mechanic_core::BearingKind::Linear(_)))
+    {
+        state.preview = None;
+        state.cylinder_preview = None;
+        state.attachment_bearing = None;
+        let occupied = graph
+            .bearings()
+            .find_map(|(_, bearing)| {
+                (bearing_uses_socket(bearing, state.placed_bearings[index])).then_some(bearing.kind)
+            })
+            .and_then(|kind| {
+                if let mechanic_core::BearingKind::Linear(rail) = kind {
+                    Some(rail.face)
+                } else {
+                    None
+                }
+            });
+        if let Some((socket, point)) =
+            linear_editor::selected_socket_on_face(state, index, occupied)
+        {
+            let mechanic_core::BearingKind::Linear(rail) = socket.kind else {
+                unreachable!()
+            };
+            state.attachment_bearing = Some(index);
+            state.linear_attachment = Some(socket);
+            let targets = bearing_socket_targets(graph, socket);
+            state.preview_error = if tool == Tool::Block {
+                match builder::linear_block_candidate(
+                    socket.anchor,
+                    rail,
+                    socket.axis,
+                    point,
+                    [1; 3],
+                    GridRotation::default(),
+                ) {
+                    Ok(mut candidate) => {
+                        candidate.spec = candidate
+                            .spec
+                            .with_material(material)
+                            .with_appearance(appearance);
+                        state.preview = Some(candidate);
+                        builder::stage_linear_block_batch_in_bounds(
+                            graph,
+                            candidate,
+                            &[candidate.spec],
+                            linear_editor::attachment(socket, &targets),
+                            state.placement_bounds,
+                        )
+                        .err()
+                    }
+                    Err(error) => Some(error),
+                }
+            } else {
+                match builder::linear_cylinder_candidate(
+                    socket.anchor,
+                    rail,
+                    socket.axis,
+                    point,
+                    cylinder_dimensions,
+                    0,
+                ) {
+                    Ok(mut candidate) => {
+                        candidate.spec = candidate
+                            .spec
+                            .with_material(material)
+                            .with_appearance(appearance);
+                        state.cylinder_preview = Some(candidate);
+                        builder::stage_linear_cylinder_in_bounds(
+                            graph,
+                            candidate,
+                            linear_editor::attachment(socket, &targets),
+                            state.placement_bounds,
+                        )
+                        .err()
+                    }
+                    Err(error) => Some(error),
+                }
+            };
+        }
         return;
     }
     state.preview_error = match (tool, graph.pending()) {
@@ -6688,6 +7582,10 @@ fn refresh_tool_preview_with_cylinder(
         // Shaping edits the grid rather than placing anything, so like these
         // it has no placement ghost of its own.
         (Tool::Weld | Tool::Hammer | Tool::Connector | Tool::Shape | Tool::Chroma, _) => None,
+        (Tool::LinearBearing, _) => {
+            linear_editor::refresh(graph, state);
+            state.preview_error.clone()
+        }
         (Tool::Bearing, _) => state.hovered.and_then(|hit| {
             if try_face_geometry_from_ref(hit.face, Some(graph)).is_none() {
                 Some(PlacementError::CurvedSurface)
@@ -6771,12 +7669,14 @@ fn handle_shape_actions(
     wheel: Res<MaterialWheelState>,
     camera_transform: Single<&GlobalTransform, With<MainCamera>>,
 ) {
+    let mut view = live_edit::EditorView::new(&mut graph, &mut state);
+    let (graph, state) = view.parts();
     if selection.active_editor_tool() != Some(Tool::Shape) {
         if state.vertex_drag.take().is_some() {
             state.construction_mesh_dirty = true;
         }
-        leave_region(&mut state);
-        leave_feature_shape(&mut state);
+        leave_region(state);
+        leave_feature_shape(state);
         return;
     }
     if mode.is_changed() {
@@ -6800,14 +7700,14 @@ fn handle_shape_actions(
         .active_region
         .is_some_and(|id| graph.0.region(id).is_none())
     {
-        leave_region(&mut state);
+        leave_region(state);
     }
     if *mode != shape_tool::ShapeEditMode::Vertex {
         handle_feature_shape_actions(
             &actions,
             &keys,
             &mut graph.0,
-            &mut state,
+            state,
             &mut history,
             *snap,
             *mode,
@@ -6827,11 +7727,21 @@ fn handle_shape_actions(
         );
         return;
     }
+    let camera_transform = state.edit_context.map_or_else(
+        || **camera_transform,
+        |context| {
+            let inverse = context.frame_to_world.inverse();
+            let mut local = camera_transform.compute_transform();
+            local.translation = inverse.point(local.translation);
+            local.rotation = inverse.rotation() * local.rotation;
+            GlobalTransform::from(local)
+        },
+    );
     if handle_shape_keyboard(
         &actions,
         &camera_transform,
         &mut graph.0,
-        &mut state,
+        state,
         &mut history,
         &mut mirror,
         &mut snap,
@@ -6869,7 +7779,7 @@ fn handle_shape_actions(
         choose_region(
             &actions,
             &mut graph.0,
-            &mut state,
+            state,
             &mut history,
             pointer_position,
             ray_origin,
@@ -6890,11 +7800,11 @@ fn handle_shape_actions(
         if actions.just_released(GameAction::Primary) {
             let drag = state.vertex_drag.take().expect("a drag is in progress");
             if drag.offset == drag.start_offset {
-                select_clicked_vertex(&mut state, drag.index, shift_held(&actions));
+                select_clicked_vertex(state, drag.index, shift_held(&actions));
             } else {
                 commit_vertex_drag(
                     &mut graph.0,
-                    &mut state,
+                    state,
                     &mut history,
                     region_id,
                     &region,
@@ -6962,7 +7872,7 @@ fn handle_shape_actions(
         ));
         state.vertex_drag = Some(drag);
     } else if let Some(offer) = state.edge_offer {
-        subdivide_region(&mut graph.0, &mut state, &mut history, region_id, offer);
+        subdivide_region(&mut graph.0, state, &mut history, region_id, offer);
     }
 }
 
@@ -7978,6 +8888,11 @@ fn sync_shape_nodes(
     mut markers: ShapeOverlay<ShapeNodeVisual, ShapeSelectedVisual, ShapePlaneVisual>,
     mut selected_markers: ShapeOverlay<ShapeSelectedVisual, ShapeNodeVisual, ShapePlaneVisual>,
 ) {
+    let local_graph = state
+        .edit_context
+        .and_then(|context| graph.0.in_edit_frame(context.frame).ok())
+        .map(EditorGraph);
+    let graph = local_graph.as_ref().unwrap_or(&graph);
     let hide = selection.active_editor_tool() != Some(Tool::Shape);
 
     // Two batches rather than one: a selected corner reads by colour as well as
@@ -8420,6 +9335,34 @@ fn sync_placement_overlays(
         }
     } else {
         *range.1 = Visibility::Hidden;
+    }
+}
+
+/// Overlay meshes live in the gesture's grid; moving its frame requires no mesh rebuild.
+#[allow(clippy::type_complexity)]
+fn sync_edit_overlay_transforms(
+    state: Res<EditorState>,
+    mut overlays: Query<
+        &mut Transform,
+        Or<(
+            With<ShapeNodeVisual>,
+            With<ShapeSelectedVisual>,
+            With<ShapePlaneVisual>,
+            With<ShapeArrowVisual>,
+            With<PlacementLatticeVisual>,
+            With<SmartGuideVisual>,
+            With<SmartSnapRangeVisual>,
+        )>,
+    >,
+) {
+    let frame = state
+        .edit_context
+        .map_or(mechanic_core::ConstructionFrame::IDENTITY, |context| {
+            context.frame_to_world
+        });
+    for mut transform in &mut overlays {
+        *transform =
+            Transform::from_translation(frame.translation()).with_rotation(frame.rotation());
     }
 }
 
@@ -9054,7 +9997,7 @@ fn handle_build_actions(
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
-    _simulation: Res<AppSimulation>,
+    simulation: Res<AppSimulation>,
     selection: Res<SelectedTool>,
     bearing_settings: Res<BearingToolSettings>,
     mut cylinder_settings: ResMut<CylinderToolSettings>,
@@ -9065,28 +10008,15 @@ fn handle_build_actions(
     wheel: Res<MaterialWheelState>,
     mut world_runtime: Option<ResMut<world::WorldRuntime>>,
 ) {
-    let deleting_moving_dimension_link = actions.just_pressed(GameAction::Secondary)
-        && state
-            .hovered_simulation
-            .is_some_and(|hit| graph.0.dimension_link_id(hit.part).is_some());
-    if state.world_edit_blocker == Some(WorldEditBlocker::MovingConstruction)
-        && (actions.just_pressed(GameAction::Primary)
-            || actions.just_pressed(GameAction::Secondary))
-        && !deleting_moving_dimension_link
-        && selection.active_editor_tool() != Some(Tool::Connector)
-    {
-        state.feedback = Some(
-            "Moving constructions cannot be edited; anchor them before changing parts".to_owned(),
-        );
-        return;
-    }
+    let mut view = live_edit::EditorView::new(&mut graph, &mut state);
+    let (graph, state) = view.parts();
     if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
         if actions.just_released(GameAction::Primary) && state.block_drag.take().is_some() {
-            clear_hover(&mut state);
+            clear_hover(state);
             state.feedback = Some("Block drag cancelled over hotbar".to_owned());
         }
         if actions.just_released(GameAction::Primary) && state.pipe_drag.take().is_some() {
-            clear_hover(&mut state);
+            clear_hover(state);
             state.feedback = Some("Pipe run cancelled over hotbar".to_owned());
         }
         if actions.just_released(GameAction::Secondary) && state.cancel_delete_gesture() {
@@ -9094,7 +10024,18 @@ fn handle_build_actions(
         }
         return;
     }
-    let Some(tool) = selection.active_editor_tool() else {
+    let empty_hand_link_delete = selection.tool.is_none()
+        && ((actions.just_pressed(GameAction::Secondary)
+            && hovered_part(state.hovered)
+                .or_else(|| state.hovered_simulation.map(|hit| hit.part))
+                .is_some_and(|part| graph.0.dimension_link_id(part).is_some()))
+            || (actions.just_released(GameAction::Secondary)
+                && matches!(state.delete_target, Some(DeleteTarget::Part(part))
+                    if graph.0.dimension_link_id(part).is_some())));
+    let Some(tool) = selection
+        .active_editor_tool()
+        .or_else(|| empty_hand_link_delete.then_some(Tool::DimensionLink))
+    else {
         return;
     };
     if tool == Tool::Shape {
@@ -9104,19 +10045,19 @@ fn handle_build_actions(
         handle_chroma_actions(
             &actions,
             &mut graph.0,
-            &mut state,
+            state,
             &mut history,
             chroma_brush.appearance,
         );
         return;
     }
     if actions.just_pressed(GameAction::Secondary) && state.block_drag.take().is_some() {
-        clear_hover(&mut state);
+        clear_hover(state);
         state.feedback = Some("Block drag cancelled".to_owned());
         return;
     }
     if actions.just_pressed(GameAction::Secondary) && state.pipe_drag.take().is_some() {
-        clear_hover(&mut state);
+        clear_hover(state);
         state.feedback = Some("Pipe run cancelled".to_owned());
         return;
     }
@@ -9131,7 +10072,7 @@ fn handle_build_actions(
         && let Some(socket) = state
             .hovered_bearing
             .and_then(|index| state.placed_bearings.get(index).copied())
-        && let Some(feedback) = reverse_drive_wires(&mut graph.0, &mut state, &mut history, socket)
+        && let Some(feedback) = reverse_drive_wires(&mut graph.0, state, &mut history, socket)
     {
         state.feedback = Some(feedback);
         return;
@@ -9139,7 +10080,7 @@ fn handle_build_actions(
     if tool == Tool::Connector && actions.just_pressed(GameAction::Secondary) {
         state.feedback = Some(disconnect_connector_links(
             &mut graph.0,
-            &mut state,
+            state,
             &mut history,
         ));
         return;
@@ -9244,7 +10185,7 @@ fn handle_build_actions(
             match target {
                 DeleteTarget::PlacedBearing(index) => {
                     if let Some(socket) = state.placed_bearings.get(index).copied() {
-                        let previous = EditorSnapshot::capture(&graph.0, &state);
+                        let previous = EditorSnapshot::capture(&graph.0, state);
                         let attached = graph
                             .0
                             .bearings()
@@ -9279,7 +10220,7 @@ fn handle_build_actions(
                                     attached.len()
                                 ));
                                 state.construction_mesh_dirty = true;
-                                clear_hover(&mut state);
+                                clear_hover(state);
                             }
                             Err(error) => state.feedback = Some(error.to_string()),
                         }
@@ -9287,7 +10228,7 @@ fn handle_build_actions(
                 }
                 DeleteTarget::Part(part) => {
                     let deleted_link = graph.0.dimension_link_id(part);
-                    let previous = EditorSnapshot::capture(&graph.0, &state);
+                    let previous = EditorSnapshot::capture(&graph.0, state);
                     match stage_part_deletion_preserving_bearings(
                         &graph.0,
                         &state.placed_bearings,
@@ -9310,7 +10251,7 @@ fn handle_build_actions(
                             {
                                 world_runtime.clear_active_dimension_link_if(id);
                             }
-                            clear_hover(&mut state);
+                            clear_hover(state);
                         }
                         Err(error) => state.feedback = Some(error.to_string()),
                     }
@@ -9322,7 +10263,7 @@ fn handle_build_actions(
                 state.feedback = Some(error.to_string());
                 return;
             }
-            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let previous = EditorSnapshot::capture(&graph.0, state);
             match stage_part_deletion_preserving_bearings(
                 &graph.0,
                 &state.placed_bearings,
@@ -9344,19 +10285,22 @@ fn handle_build_actions(
                         )
                     });
                     state.construction_mesh_dirty = true;
-                    clear_hover(&mut state);
+                    clear_hover(state);
                 }
                 Err(error) => state.feedback = Some(error.to_string()),
             }
         }
         return;
     }
+    if empty_hand_link_delete {
+        return;
+    }
     if tool == Tool::Connector {
-        handle_connector_actions(&actions, &mut graph.0, &mut state, &mut history);
+        handle_connector_actions(&actions, &mut graph.0, state, &mut history);
         return;
     }
     if tool == Tool::Block {
-        handle_block_actions(&actions, &mut graph.0, &mut state, &mut history);
+        handle_block_actions(&actions, &mut graph.0, state, &mut history);
         return;
     }
     if tool == Tool::Cylinder {
@@ -9366,7 +10310,7 @@ fn handle_build_actions(
         {
             let direction = i8::from(actions.just_pressed(GameAction::ZoomIn))
                 - i8::from(actions.just_pressed(GameAction::ZoomOut));
-            let (radius, message) = adjust_pipe_bend_radius(&graph.0, &mut state, direction);
+            let (radius, message) = adjust_pipe_bend_radius(&graph.0, state, direction);
             cylinder_settings.bend_radius = radius;
             state.feedback = Some(message);
             return;
@@ -9376,7 +10320,13 @@ fn handle_build_actions(
                 state.feedback = Some("Point at a flat face or compatible bearing".to_owned());
                 return;
             };
-            let attachment = if let Some(index) = state.attachment_bearing {
+            let attachment = if let Some(socket) = state.linear_attachment {
+                if let Some(error) = state.preview_error.as_ref() {
+                    state.feedback = Some(error.to_string());
+                    return;
+                }
+                BlockAttachment::Linear { socket }
+            } else if let Some(index) = state.attachment_bearing {
                 let Some(bearing) = state.placed_bearings.get(index).copied() else {
                     state.feedback = Some("Bearing is no longer available".to_owned());
                     return;
@@ -9491,16 +10441,26 @@ fn handle_build_actions(
                 state.feedback = Some(
                     "Pipe run not placed: choose a turn direction before releasing".to_owned(),
                 );
-                clear_hover(&mut state);
+                clear_hover(state);
                 return;
             }
             if let Some(error) = drag.error {
                 state.feedback = Some(error.to_string());
-                clear_hover(&mut state);
+                clear_hover(state);
                 return;
             }
-            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let previous = EditorSnapshot::capture(&graph.0, state);
             let staged = match drag.attachment {
+                BlockAttachment::Linear { socket } => {
+                    let targets = bearing_socket_targets(&graph.0, socket);
+                    stage_pipe_run_in_bounds(
+                        &graph.0,
+                        &drag.pieces,
+                        PipeRunAttachment::Linear(linear_editor::attachment(socket, &targets)),
+                        state.placement_bounds,
+                    )
+                }
+
                 BlockAttachment::AutoWeld { source } => stage_pipe_run_in_bounds(
                     &graph.0,
                     &drag.pieces,
@@ -9519,6 +10479,8 @@ fn handle_build_actions(
                     dimensions,
                 } => {
                     let socket = PlacedBearing {
+                        kind: mechanic_core::BearingKind::Rotational,
+                        axis: Vec3::ZERO,
                         source,
                         anchor,
                         dimensions,
@@ -9547,7 +10509,7 @@ fn handle_build_actions(
                         drag.bend_radii.len()
                     ));
                     state.construction_mesh_dirty = true;
-                    clear_hover(&mut state);
+                    clear_hover(state);
                 }
                 Err(error) => state.feedback = Some(error.to_string()),
             }
@@ -9563,15 +10525,41 @@ fn handle_build_actions(
         Tool::Block => unreachable!("block actions are handled before this match"),
         Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),
         Tool::Weld => {
-            let Some(hit) = state.hovered else {
+            let hit = state.hovered.or_else(|| {
+                state.world_hovered_part.map(|part| SurfaceHit {
+                    face: FaceRef::part(part, FaceKind::PositiveY),
+                    point: Vec3::ZERO,
+                    distance: 0.0,
+                })
+            });
+            let Some(hit) = hit else {
                 state.feedback = Some("Select an object".to_owned());
                 return;
             };
             if let Some(PendingOperation::Weld(first)) = graph.0.pending() {
-                match stage_weld_objects(&graph.0, first.owner, hit.face.owner) {
+                let second = state
+                    .world_hovered_part
+                    .map_or(hit.face.owner, FaceOwner::Part);
+                let staged = if simulation.world_revision.is_some()
+                    && let (Some(_), FaceOwner::Part(first), FaceOwner::Part(second)) =
+                        (&simulation.creation, first.owner, second)
+                {
+                    live_weld::stage(&graph.0.canonicalized(), &simulation, first, second).and_then(
+                        |staged| match state.edit_context {
+                            Some(context) => staged
+                                .in_edit_frame(context.frame)
+                                .map_err(|error| error.to_string()),
+                            None => Ok(staged),
+                        },
+                    )
+                } else {
+                    stage_weld_objects(&graph.0, first.owner, second)
+                        .map_err(|error| error.to_string())
+                };
+                match staged {
                     Ok(staged) => {
                         let lockup = weld_lockup_warning(&graph.0, &staged);
-                        let previous = EditorSnapshot::capture(&graph.0, &state);
+                        let previous = EditorSnapshot::capture(&graph.0, state);
                         graph.0 = staged;
                         history.commit(previous);
                         state.feedback = Some(lockup.map_or_else(
@@ -9579,7 +10567,7 @@ fn handle_build_actions(
                             |warning| format!("Welded the two objects — {warning}"),
                         ));
                     }
-                    Err(error) => state.feedback = Some(error.to_string()),
+                    Err(error) => state.feedback = Some(error),
                 }
             } else {
                 let selected_face = if try_face_geometry_from_ref(hit.face, Some(&graph.0))
@@ -9603,6 +10591,7 @@ fn handle_build_actions(
                 }
             }
         }
+        Tool::LinearBearing => linear_editor::place(&graph.0, state, &mut history),
         Tool::Bearing => {
             let Some(hit) = state.hovered else {
                 state.feedback = Some("Point at a cuboid face".to_owned());
@@ -9640,8 +10629,10 @@ fn handle_build_actions(
                     if duplicate {
                         state.feedback = Some("A bearing is already placed here".to_owned());
                     } else {
-                        let previous = EditorSnapshot::capture(&graph.0, &state);
+                        let previous = EditorSnapshot::capture(&graph.0, state);
                         state.placed_bearings.push(PlacedBearing {
+                            kind: mechanic_core::BearingKind::Rotational,
+                            axis: Vec3::ZERO,
                             source,
                             anchor,
                             dimensions: bearing_settings.dimensions,
@@ -9676,7 +10667,7 @@ fn handle_build_actions(
                 state.feedback = Some("Point at a face or into free Garage space".to_owned());
                 return;
             };
-            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let previous = EditorSnapshot::capture(&graph.0, state);
             let existing = graph.0.parts().map(|(part, _)| part).collect::<Vec<_>>();
             match stage_controller_in_bounds(&graph.0, candidate, state.placement_bounds) {
                 Ok(staged) => {
@@ -9694,7 +10685,7 @@ fn handle_build_actions(
                             .to_owned(),
                     );
                     state.construction_mesh_dirty = true;
-                    clear_hover(&mut state);
+                    clear_hover(state);
                 }
                 Err(error) => state.feedback = Some(error.to_string()),
             }
@@ -9709,14 +10700,14 @@ fn handle_build_actions(
             } else {
                 EngineKind::Electric
             };
-            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let previous = EditorSnapshot::capture(&graph.0, state);
             match stage_engine_in_bounds(&graph.0, candidate, kind, state.placement_bounds) {
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
                     state.feedback = Some(format!("Placed {}", tool.label().to_lowercase()));
                     state.construction_mesh_dirty = true;
-                    clear_hover(&mut state);
+                    clear_hover(state);
                 }
                 Err(error) => state.feedback = Some(error.to_string()),
             }
@@ -9742,7 +10733,7 @@ fn handle_build_actions(
                 Some(PartSpec::Transmission(_)) => graph.0.transmission_kind(parent),
                 _ => None,
             };
-            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let previous = EditorSnapshot::capture(&graph.0, state);
             match stage_transmission(&graph.0, parent, candidate) {
                 Ok(staged) => {
                     graph.0 = staged;
@@ -9756,7 +10747,7 @@ fn handle_build_actions(
                         }
                     ));
                     state.construction_mesh_dirty = true;
-                    clear_hover(&mut state);
+                    clear_hover(state);
                 }
                 Err(error) => state.feedback = Some(error.to_string()),
             }
@@ -9766,7 +10757,7 @@ fn handle_build_actions(
                 state.feedback = Some("Point at a face or into free Garage space".to_owned());
                 return;
             };
-            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let previous = EditorSnapshot::capture(&graph.0, state);
             let staged = match tool {
                 Tool::Servo => stage_servo_in_bounds(&graph.0, candidate, state.placement_bounds),
                 Tool::Seat => stage_seat_in_bounds(&graph.0, candidate, state.placement_bounds),
@@ -9779,7 +10770,7 @@ fn handle_build_actions(
                     history.commit(previous);
                     state.feedback = Some(format!("Placed {}", tool.label()));
                     state.construction_mesh_dirty = true;
-                    clear_hover(&mut state);
+                    clear_hover(state);
                 }
                 Err(error) => state.feedback = Some(error.to_string()),
             }
@@ -9794,14 +10785,14 @@ fn handle_build_actions(
                 return;
             };
             let id = world_runtime.allocate_dimension_link_id();
-            let previous = EditorSnapshot::capture(&graph.0, &state);
+            let previous = EditorSnapshot::capture(&graph.0, state);
             match stage_dimension_link_in_bounds(&graph.0, candidate, id, state.placement_bounds) {
                 Ok(staged) => {
                     graph.0 = staged;
                     history.commit(previous);
                     state.feedback = Some(format!("Placed Dimension Link {}", id.0));
                     state.construction_mesh_dirty = true;
-                    clear_hover(&mut state);
+                    clear_hover(state);
                 }
                 Err(error) => state.feedback = Some(error.to_string()),
             }
@@ -9811,7 +10802,7 @@ fn handle_build_actions(
     }
     refresh_tool_preview_with_cylinder(
         &graph.0,
-        &mut state,
+        state,
         tool,
         cylinder_settings.dimensions,
         bearing_settings.dimensions,
@@ -10007,11 +10998,7 @@ fn wire_end_position(
 ) -> Option<Vec3> {
     match end {
         WireEnd::Controller(part) | WireEnd::Input(part) | WireEnd::Seat(part) => {
-            if simulation.is_running() {
-                simulation.live_part_pose(graph, part).map(|pose| pose.0)
-            } else {
-                Some(graph.part(part)?.pose().translation())
-            }
+            simulation.live_part_pose(graph, part).map(|pose| pose.0)
         }
         WireEnd::Bearing(index) => {
             live_placed_bearing_pose(graph, simulation, *state.placed_bearings.get(index)?)
@@ -10037,7 +11024,11 @@ fn wire_drag_endpoints(
     }
     // No target yet, so the loose end follows the pointer at the depth the
     // wire started from.
-    let (origin, direction) = state.pointer_ray?;
+    let (mut origin, mut direction) = state.pointer_ray?;
+    if let Some(context) = state.edit_context {
+        origin = context.frame_to_world.point(origin);
+        direction = context.frame_to_world.vector(direction);
+    }
     let direction = direction.normalize_or_zero();
     if direction == Vec3::ZERO {
         return None;
@@ -10187,7 +11178,18 @@ fn connect_drive_wire(
     } else {
         bearings
             .iter()
-            .map(|&bearing| BuildCommand::AddDriveLink(DriveLinkSpec::new(controller, bearing)))
+            .map(|&bearing| {
+                BuildCommand::AddDriveLink(
+                    match graph.bearing(bearing).expect("live bearing").kind {
+                        mechanic_core::BearingKind::Rotational => {
+                            DriveLinkSpec::new(controller, bearing)
+                        }
+                        mechanic_core::BearingKind::Linear(rail) => {
+                            DriveLinkSpec::new_linear(controller, bearing, rail.dimensions)
+                        }
+                    },
+                )
+            })
             .collect::<Vec<_>>()
     };
 
@@ -10301,6 +11303,17 @@ fn bearing_uses_socket(bearing: &mechanic_core::BearingSpec, socket: PlacedBeari
     bearing.source == socket.source
         && bearing.shared_anchor.abs_diff_eq(socket.anchor, 1.0e-5)
         && bearing.dimensions == socket.dimensions
+        && match (bearing.kind, socket.kind) {
+            (mechanic_core::BearingKind::Rotational, mechanic_core::BearingKind::Rotational) => {
+                true
+            }
+            (mechanic_core::BearingKind::Linear(a), mechanic_core::BearingKind::Linear(b)) => {
+                a.dimensions == b.dimensions
+                    && a.mount_normal.abs_diff_eq(b.mount_normal, 1.0e-5)
+                    && bearing.axis.abs_diff_eq(socket.axis, 1.0e-5)
+            }
+            _ => false,
+        }
 }
 
 fn bearing_socket_targets(graph: &ConstructionGraph, socket: PlacedBearing) -> Vec<PartId> {
@@ -10325,7 +11338,10 @@ fn stage_part_deletion_preserving_bearings(
 ) -> Result<(ConstructionGraph, Vec<PlacedBearing>, usize), mechanic_core::GraphError> {
     let deleted = deleted_parts.iter().copied().collect::<HashSet<_>>();
     let mut next_bearings = Vec::with_capacity(placed_bearings.len());
-    let mut migrations = Vec::<(PlacedBearing, Vec<mechanic_core::FaceRef>)>::new();
+    let mut migrations = Vec::<(
+        PlacedBearing,
+        Vec<(mechanic_core::FaceRef, mechanic_core::BearingKind)>,
+    )>::new();
     let mut unsupported_target_sets = Vec::<HashSet<PartId>>::new();
 
     for &socket in placed_bearings {
@@ -10344,18 +11360,31 @@ fn stage_part_deletion_preserving_bearings(
                     return None;
                 }
                 match bearing.target.owner {
-                    FaceOwner::Part(part) if !deleted.contains(&part) => Some(bearing.target),
+                    FaceOwner::Part(part) if !deleted.contains(&part) => {
+                        Some((bearing.target, bearing.kind))
+                    }
                     FaceOwner::Part(_) | FaceOwner::Ground => None,
                 }
             })
             .collect::<Vec<_>>();
-        if let Some(source) = bearing_support_face_excluding(
-            graph,
-            socket.source,
-            socket.anchor,
-            socket.dimensions,
-            &deleted,
-        ) {
+        let replacement = match socket.kind {
+            mechanic_core::BearingKind::Rotational => bearing_support_face_excluding(
+                graph,
+                socket.source,
+                socket.anchor,
+                socket.dimensions,
+                &deleted,
+            ),
+            mechanic_core::BearingKind::Linear(rail) => builder::linear_support_face_excluding(
+                graph,
+                socket.source,
+                socket.anchor,
+                rail,
+                socket.axis,
+                &deleted,
+            ),
+        };
+        if let Some(source) = replacement {
             let migrated = PlacedBearing { source, ..socket };
             next_bearings.push(migrated);
             migrations.push((migrated, targets));
@@ -10386,11 +11415,17 @@ fn stage_part_deletion_preserving_bearings(
     let replacement_bearings = migrations
         .into_iter()
         .flat_map(|(socket, targets)| {
-            let axis = face_geometry_from_ref(socket.source, Some(&staged)).normal;
-            targets.into_iter().map(move |target| {
+            let axis = match socket.kind {
+                mechanic_core::BearingKind::Rotational => {
+                    face_geometry_from_ref(socket.source, Some(&staged)).normal
+                }
+                mechanic_core::BearingKind::Linear(_) => socket.axis,
+            };
+            targets.into_iter().map(move |(target, kind)| {
                 BuildCommand::AddBearing(
                     mechanic_core::BearingSpec::new(socket.source, target, socket.anchor, axis)
-                        .with_dimensions(socket.dimensions),
+                        .with_dimensions(socket.dimensions)
+                        .with_kind(kind),
                 )
             })
         })
@@ -10424,7 +11459,19 @@ fn handle_block_actions(
             state.feedback = Some("Point at the platform or a cuboid face".to_owned());
             return;
         };
-        let (attachment, normal) = if let Some(index) = state.attachment_bearing {
+        let (attachment, normal) = if let Some(socket) = state.linear_attachment {
+            if let Some(error) = state.preview_error.as_ref() {
+                state.feedback = Some(error.to_string());
+                return;
+            }
+            let mechanic_core::BearingKind::Linear(rail) = socket.kind else {
+                unreachable!()
+            };
+            (
+                BlockAttachment::Linear { socket },
+                rail.rotation(socket.axis).expect("validated frame") * rail.face.normal(),
+            )
+        } else if let Some(index) = state.attachment_bearing {
             let Some(bearing) = state.placed_bearings.get(index).copied() else {
                 state.feedback = Some("Bearing is no longer available".to_owned());
                 return;
@@ -10539,6 +11586,19 @@ fn handle_block_actions(
     let previous = EditorSnapshot::capture(graph, state);
     let publication_generation = state.construction_publication_generation.wrapping_add(1);
     let staged = match drag.attachment {
+        BlockAttachment::Linear { socket } => {
+            let targets = bearing_socket_targets(graph, socket);
+            builder::stage_linear_block_volume_in_bounds(
+                graph,
+                &state.snap_index,
+                drag.start,
+                drag.volume,
+                linear_editor::attachment(socket, &targets),
+                state.placement_bounds,
+                publication_generation,
+            )
+        }
+
         BlockAttachment::AutoWeld { source } => stage_block_volume_in_bounds(
             graph,
             &state.snap_index,
@@ -10566,6 +11626,8 @@ fn handle_block_actions(
             ..
         } => {
             let socket = PlacedBearing {
+                kind: mechanic_core::BearingKind::Rotational,
+                axis: Vec3::ZERO,
                 source,
                 anchor,
                 dimensions,
@@ -10821,169 +11883,42 @@ fn raycast_simulation(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<SimulationHit> {
+    if !origin.is_finite() || !direction.is_finite() || direction.length_squared() < f32::EPSILON {
+        return None;
+    }
+    let direction = direction.normalize();
+    let mut seen_regions = HashSet::new();
     creation
         .part_to_compound
         .iter()
         .filter_map(|&(part, body_index)| {
+            if let Some(region) = graph.region_of(part)
+                && !seen_regions.insert((body_index, region))
+            {
+                return None;
+            }
             let transform = transforms.get(body_index as usize)?;
             let position = Vec3::from_slice(&transform.position[..3]);
             let rotation = Quat::from_array(transform.rotation);
             let initial = &creation.compounds[body_index as usize];
-            let spec = *graph.part(part)?;
-            let center =
-                position + rotation * (spec.pose().translation() - initial.root_translation);
-            let part_rotation = rotation * spec.pose().rotation.quaternion();
-            let (distance, point) = match spec {
-                PartSpec::Cuboid(_)
-                | PartSpec::Controller(_)
-                | PartSpec::Engine(_)
-                | PartSpec::Transmission(_)
-                | PartSpec::Servo(_)
-                | PartSpec::Seat(_)
-                | PartSpec::Input(_)
-                | PartSpec::DimensionLink(_) => {
-                    let hit = raycast_oriented_cuboid(
-                        origin,
-                        direction,
-                        center,
-                        part_rotation,
-                        spec.size_meters() * 0.5,
-                    )?;
-                    (hit.distance, hit.point)
-                }
-                PartSpec::Cylinder(spec) => {
-                    let distance = raycast_cylinder_shape(
-                        origin,
-                        direction,
-                        center,
-                        part_rotation,
-                        spec.dimensions,
-                    )?;
-                    (distance, origin + direction.normalize() * distance)
-                }
-                PartSpec::PipeBend(_) => {
-                    let hit = creation
-                        .colliders
-                        .iter()
-                        .filter(|collider| collider.source_part == part)
-                        .filter_map(|collider| {
-                            let ColliderShape::Cuboid {
-                                local_rotation,
-                                half_extents,
-                            } = &collider.shape
-                            else {
-                                return None;
-                            };
-                            raycast_oriented_cuboid(
-                                origin,
-                                direction,
-                                position + rotation * collider.local_center,
-                                rotation * *local_rotation,
-                                *half_extents,
-                            )
-                        })
-                        .min_by(|left, right| left.distance.total_cmp(&right.distance))?;
-                    (hit.distance, hit.point)
-                }
-            };
+            // Resolve the ray into authored build space, where the shared exact
+            // picker composes local part frames, regions, and evaluated features.
+            let build_from_world = initial.root_rotation * rotation.inverse();
+            let build_origin = initial.root_translation + build_from_world * (origin - position);
+            let hit = builder::raycast_part_in_construction(
+                graph,
+                part,
+                build_origin,
+                build_from_world * direction,
+            )?;
             Some(SimulationHit {
                 part,
                 body_index,
-                distance,
-                point,
+                distance: hit.distance,
+                point: origin + direction * hit.distance,
             })
         })
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
-}
-
-fn raycast_cylinder_shape(
-    origin: Vec3,
-    direction: Vec3,
-    center: Vec3,
-    rotation: Quat,
-    dimensions: CylinderDimensions,
-) -> Option<f32> {
-    let direction = direction.normalize();
-    let local_origin = rotation.inverse() * (origin - center);
-    let local_direction = rotation.inverse() * direction;
-    let outer_radius = dimensions.outer_diameter() * 0.5;
-    let inner_radius = dimensions.inner_diameter() * 0.5;
-    let half_length = dimensions.axial_length() * 0.5;
-    let mut nearest = f32::INFINITY;
-    if local_direction.y.abs() > f32::EPSILON {
-        for y in [-half_length, half_length] {
-            let distance = (y - local_origin.y) / local_direction.y;
-            let point = local_origin + local_direction * distance;
-            let radius_squared = point.x.mul_add(point.x, point.z * point.z);
-            if distance >= 0.0
-                && radius_squared <= outer_radius * outer_radius
-                && radius_squared >= inner_radius * inner_radius
-                && point_in_cylinder_slice(point.x, point.z, dimensions)
-            {
-                nearest = nearest.min(distance);
-            }
-        }
-    }
-    for radius in [outer_radius, inner_radius] {
-        if radius <= 0.0 {
-            continue;
-        }
-        let a = local_direction
-            .x
-            .mul_add(local_direction.x, local_direction.z * local_direction.z);
-        if a <= f32::EPSILON {
-            continue;
-        }
-        let b = 2.0
-            * local_origin
-                .x
-                .mul_add(local_direction.x, local_origin.z * local_direction.z);
-        let c = local_origin
-            .x
-            .mul_add(local_origin.x, local_origin.z * local_origin.z)
-            - radius * radius;
-        let discriminant = b.mul_add(b, -4.0 * a * c);
-        if discriminant < 0.0 {
-            continue;
-        }
-        let root = discriminant.sqrt();
-        for distance in [(-b - root) / (2.0 * a), (-b + root) / (2.0 * a)] {
-            let y = local_origin.y + local_direction.y * distance;
-            let point = local_origin + local_direction * distance;
-            if distance >= 0.0
-                && y.abs() <= half_length
-                && point_in_cylinder_slice(point.x, point.z, dimensions)
-            {
-                nearest = nearest.min(distance);
-            }
-        }
-    }
-    if dimensions.sweep_angle_degrees() < 360 {
-        let half_sweep = dimensions.sweep_angle_radians() * 0.5;
-        for (angle, outward) in [(-half_sweep, -1.0_f32), (half_sweep, 1.0_f32)] {
-            let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
-            let angular = Vec3::new(-angle.sin(), 0.0, angle.cos()) * outward;
-            let denominator = local_direction.dot(angular);
-            if denominator.abs() <= f32::EPSILON {
-                continue;
-            }
-            let distance = -local_origin.dot(angular) / denominator;
-            if distance < 0.0 {
-                continue;
-            }
-            let point = local_origin + local_direction * distance;
-            let radius = point.dot(radial);
-            if point.y.abs() <= half_length && radius >= inner_radius && radius <= outer_radius {
-                nearest = nearest.min(distance);
-            }
-        }
-    }
-    nearest.is_finite().then_some(nearest)
-}
-
-fn point_in_cylinder_slice(x: f32, z: f32, dimensions: CylinderDimensions) -> bool {
-    dimensions.sweep_angle_degrees() == 360
-        || z.atan2(x).abs() <= dimensions.sweep_angle_radians() * 0.5 + 1.0e-5
 }
 
 fn hovered_part(hit: Option<SurfaceHit>) -> Option<PartId> {
@@ -10999,12 +11934,18 @@ fn raycast_placed_bearings(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<(usize, f32)> {
-    raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
+    let rotational = raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
         Some((
             bearing.anchor,
             face_geometry_from_ref(bearing.source, Some(graph)).normal,
         ))
-    })
+    });
+    rotational
+        .into_iter()
+        .chain(linear_editor::raycast_scene(
+            graph, None, bearings, origin, direction,
+        ))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 fn raycast_live_placed_bearings(
@@ -11017,9 +11958,19 @@ fn raycast_live_placed_bearings(
     if !simulation.is_running() {
         return raycast_placed_bearings(graph, bearings, origin, direction);
     }
-    raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
+    let rotational = raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
         live_placed_bearing_pose(graph, simulation, bearing)
-    })
+    });
+    rotational
+        .into_iter()
+        .chain(linear_editor::raycast_scene(
+            graph,
+            Some(simulation),
+            bearings,
+            origin,
+            direction,
+        ))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 fn raycast_placed_bearings_with_pose(
@@ -11036,6 +11987,9 @@ fn raycast_placed_bearings_with_pose(
         .iter()
         .enumerate()
         .filter_map(|(index, &bearing)| {
+            if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+                return None;
+            }
             let (anchor, axis) = pose(bearing)?;
             let distance =
                 raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)?;
@@ -11053,12 +12007,19 @@ fn raycast_placed_bearing_discs(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<(usize, f32)> {
-    raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
-        Some((
-            bearing.anchor,
-            face_geometry_from_ref(bearing.source, Some(graph)).normal,
+    let rotational =
+        raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
+            Some((
+                bearing.anchor,
+                face_geometry_from_ref(bearing.source, Some(graph)).normal,
+            ))
+        });
+    rotational
+        .into_iter()
+        .chain(linear_editor::raycast_scene(
+            graph, None, bearings, origin, direction,
         ))
-    })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 fn raycast_live_placed_bearing_discs(
@@ -11071,9 +12032,20 @@ fn raycast_live_placed_bearing_discs(
     if !simulation.is_running() {
         return raycast_placed_bearing_discs(graph, bearings, origin, direction);
     }
-    raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
-        live_placed_bearing_pose(graph, simulation, bearing)
-    })
+    let rotational =
+        raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
+            live_placed_bearing_pose(graph, simulation, bearing)
+        });
+    rotational
+        .into_iter()
+        .chain(linear_editor::raycast_scene(
+            graph,
+            Some(simulation),
+            bearings,
+            origin,
+            direction,
+        ))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 fn raycast_placed_bearing_discs_with_pose(
@@ -11090,6 +12062,9 @@ fn raycast_placed_bearing_discs_with_pose(
         .iter()
         .enumerate()
         .filter_map(|(index, &bearing)| {
+            if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+                return None;
+            }
             let (anchor, axis) = pose(bearing)?;
             let axis = axis.normalize();
             let slope = direction.dot(axis);
@@ -11194,11 +12169,17 @@ fn sync_visual_meshes(
         (Without<ConstructionVisual>, Without<BearingVisual>),
     >,
 ) {
-    if !should_sync_editor_visual_meshes(state.construction_mesh_dirty, simulation.is_running()) {
+    // A new static publication takes ownership back from the moving-body meshes.
+    // Even unchanged materials need their meshes and visibility restored.
+    let publication_changed = state.rendered_world_revision != simulation.world_revision;
+    if !should_sync_editor_visual_meshes(
+        state.construction_mesh_dirty || publication_changed,
+        simulation.is_running(),
+    ) {
         return;
     }
     let edit_delta = ConstructionEditDelta::between(&state.rendered_graph, &graph.0);
-    let rebuild_all = edit_delta.is_empty();
+    let rebuild_all = publication_changed || edit_delta.is_empty();
     let affected_parts = edit_delta.affected_parts();
     let mut dirty_materials = affected_parts
         .iter()
@@ -11303,12 +12284,17 @@ fn sync_visual_meshes(
             visible_bearing_count(&graph.0, &state.placed_bearings),
         ) && let Some(mut mesh) = meshes.get_mut(&visuals.joint_xray_mesh)
         {
-            *mesh = rings.clone();
+            *mesh = renderable_mesh(rings.clone());
         }
+        let has_rings = rings.count_vertices() > 0;
         if let Some(mut mesh) = meshes.get_mut(&visuals.bearing_mesh) {
-            *mesh = rings;
+            *mesh = renderable_mesh(rings);
         }
-        **bearing_visibility = Visibility::Visible;
+        **bearing_visibility = if has_rings {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
     if drive_xray_is_visible(selection.active_editor_tool(), control_link_count(&graph.0))
         && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
@@ -11316,6 +12302,7 @@ fn sync_visual_meshes(
         *mesh = combined_drive_xray_mesh(&graph.0, &state.placed_bearings, &sequencer);
     }
     state.rendered_graph = graph.0.clone();
+    state.rendered_world_revision = simulation.world_revision;
     state.construction_mesh_dirty = false;
 }
 
@@ -11432,9 +12419,9 @@ struct ChromaPreviewParams<'w> {
     clippy::too_many_lines
 )]
 fn update_previews(
-    graph: Res<EditorGraph>,
-    state: Res<EditorState>,
-    _simulation: Res<AppSimulation>,
+    mut graph: ResMut<EditorGraph>,
+    mut state: ResMut<EditorState>,
+    simulation: Res<AppSimulation>,
     selected_tool: Res<SelectedTool>,
     mut chroma: ChromaPreviewParams,
     bearing_settings: Res<BearingToolSettings>,
@@ -11485,6 +12472,8 @@ fn update_previews(
         ),
     >,
 ) {
+    let mut view = live_edit::EditorView::new(&mut graph, &mut state);
+    let (graph, state) = view.parts();
     hide_preview(&mut action.2);
     hide_preview(&mut selection.2);
     hide_preview(&mut delete.2);
@@ -11502,17 +12491,16 @@ fn update_previews(
     }
 
     if let Some(drag) = state.delete_drag.as_ref() {
-        if rendered_revisions.delete != state.delete_preview_revision {
-            let specs = drag
-                .parts
-                .iter()
-                .filter_map(|&part| graph.0.part(part).copied())
-                .collect::<Vec<_>>();
-            if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
-                *mesh = delete_preview_mesh(&specs);
-            }
-            rendered_revisions.delete = state.delete_preview_revision;
+        if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
+            *mesh = frame_visuals::parts_preview_mesh(
+                &graph.0,
+                &simulation,
+                &drag.parts,
+                state.edit_context,
+                DELETE_PREVIEW_SCALE,
+            );
         }
+        rendered_revisions.delete = state.delete_preview_revision;
         delete.0.0 = visuals.delete_drag_preview_mesh.clone();
         *delete.1 = Transform::default();
         delete.3.0 = visuals.red_preview_material.clone();
@@ -11541,9 +12529,15 @@ fn update_previews(
                 }
             }
             DeleteTarget::Part(part) => {
-                if let Some(spec) = graph.0.part(part).copied() {
+                if graph.0.part(part).is_some() {
                     if let Some(mut mesh) = meshes.get_mut(&visuals.delete_drag_preview_mesh) {
-                        *mesh = delete_preview_mesh(&[spec]);
+                        *mesh = frame_visuals::parts_preview_mesh(
+                            &graph.0,
+                            &simulation,
+                            &[part],
+                            state.edit_context,
+                            DELETE_PREVIEW_SCALE,
+                        );
                     }
                     delete.0.0 = visuals.delete_drag_preview_mesh.clone();
                     *delete.1 = Transform::default();
@@ -11664,17 +12658,19 @@ fn update_previews(
             }
         }
         (Some(Tool::Weld), pending) => {
-            if let Some(part) = hovered_part(state.hovered) {
-                if *rendered_weld_hover != Some(part) || graph.is_changed() {
-                    let specs = rigid_body_parts(&graph.0, part)
-                        .into_iter()
-                        .filter_map(|member| graph.0.part(member).copied())
-                        .collect::<Vec<_>>();
-                    if let Some(mut mesh) = meshes.get_mut(&visuals.weld_hover_preview_mesh) {
-                        *mesh = combined_parts_mesh_scaled(&specs, 1.018);
-                    }
-                    *rendered_weld_hover = Some(part);
+            if let Some(part) = state
+                .world_hovered_part
+                .or_else(|| hovered_part(state.hovered))
+            {
+                if let Some(mut mesh) = meshes.get_mut(&visuals.weld_hover_preview_mesh) {
+                    *mesh = frame_visuals::weld_preview_mesh(
+                        &graph.0,
+                        &simulation,
+                        part,
+                        state.edit_context,
+                    );
                 }
+                *rendered_weld_hover = Some(part);
                 action.0.0 = visuals.weld_hover_preview_mesh.clone();
                 *action.1 = Transform::default();
                 action.3.0 = action_material.clone();
@@ -11683,16 +12679,15 @@ fn update_previews(
             if let Some(PendingOperation::Weld(first)) = pending
                 && let FaceOwner::Part(part) = first.owner
             {
-                if *rendered_weld_selection != Some(part) || graph.is_changed() {
-                    let specs = rigid_body_parts(&graph.0, part)
-                        .into_iter()
-                        .filter_map(|member| graph.0.part(member).copied())
-                        .collect::<Vec<_>>();
-                    if let Some(mut mesh) = meshes.get_mut(&visuals.weld_selection_preview_mesh) {
-                        *mesh = combined_parts_mesh_scaled(&specs, 1.028);
-                    }
-                    *rendered_weld_selection = Some(part);
+                if let Some(mut mesh) = meshes.get_mut(&visuals.weld_selection_preview_mesh) {
+                    *mesh = frame_visuals::weld_preview_mesh(
+                        &graph.0,
+                        &simulation,
+                        part,
+                        state.edit_context,
+                    );
                 }
+                *rendered_weld_selection = Some(part);
                 selection.0.0 = visuals.weld_selection_preview_mesh.clone();
                 *selection.1 = Transform::default();
                 selection.3.0 = visuals.white_preview_material.clone();
@@ -11777,7 +12772,7 @@ fn update_previews(
                 );
             }
         }
-        (Some(Tool::Hammer | Tool::Connector), _) => {}
+        (Some(Tool::Hammer | Tool::Connector | Tool::LinearBearing), _) => {}
     }
 }
 
@@ -12357,6 +13352,7 @@ fn combined_construction_mesh_filtered(
                 .iter()
                 .all(|dimension| dimension.units() == 1)
             && cuboid.pose.rotation == GridRotation::default()
+            && graph.part_frame(part) == Some(mechanic_core::ConstructionFrame::IDENTITY)
             && !graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part))
         {
             mergeable_blocks.push((rigid_groups[part.index() as usize], cuboid));
@@ -12380,9 +13376,9 @@ fn combined_construction_mesh_filtered(
         } else {
             append_textured_part(
                 *spec,
-                spec.pose().translation(),
-                spec.pose().rotation.quaternion(),
-                BuildTransform::IDENTITY,
+                graph.part_position(part).expect("part exists"),
+                graph.part_rotation(part).expect("part exists"),
+                BuildTransform::IDENTITY.with_frame(graph.part_frame(part).expect("part exists")),
                 texture_offset,
                 pipe_end_faces(part, &welded_pipe_ends),
                 &mut positions,
@@ -12433,7 +13429,7 @@ fn combined_construction_mesh_filtered(
         } else {
             append_region(
                 shown,
-                BuildTransform::IDENTITY,
+                BuildTransform::IDENTITY.with_frame(graph.region_frame(id).expect("region exists")),
                 &mut positions,
                 &mut normals,
                 &mut uvs,
@@ -12724,10 +13720,22 @@ fn pipe_texture_offsets(graph: &ConstructionGraph) -> HashMap<PartId, PipeTextur
             .part(second)
             .copied()
             .expect("welded part remains in graph");
-        let first_frame = pipe_endpoint_texture_frame(first_spec, weld.first.face)
+        let mut first_frame = pipe_endpoint_texture_frame(first_spec, weld.first.face)
             .expect("pipe endpoint exposes a texture frame");
-        let second_frame = pipe_endpoint_texture_frame(second_spec, weld.second.face)
+        let mut second_frame = pipe_endpoint_texture_frame(second_spec, weld.second.face)
             .expect("pipe endpoint exposes a texture frame");
+        let first_rotation = graph
+            .part_frame(first)
+            .expect("welded part has a frame")
+            .rotation();
+        let second_rotation = graph
+            .part_frame(second)
+            .expect("welded part has a frame")
+            .rotation();
+        first_frame.direction = first_rotation * first_frame.direction;
+        first_frame.radial_zero = first_rotation * first_frame.radial_zero;
+        second_frame.direction = second_rotation * second_frame.direction;
+        second_frame.radial_zero = second_rotation * second_frame.radial_zero;
         let v_angle = if first_frame.direction.dot(second_frame.direction) > 1.0 - 1.0e-4 {
             let second_angular = -second_frame.direction.cross(second_frame.radial_zero);
             -first_frame
@@ -12838,7 +13846,7 @@ fn combined_authored_construction_mesh(
     let mut uvs = Vec::new();
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
-    for (_, spec) in graph
+    for (part, spec) in graph
         .parts()
         .filter(|(part, spec)| appearance.matches(graph, *part, **spec, active_dimension_link))
     {
@@ -12846,8 +13854,8 @@ fn combined_authored_construction_mesh(
             .as_cuboid()
             .expect("authored machine appearances have cuboid envelopes");
         append_authored_cuboid(
-            cuboid.pose.translation(),
-            cuboid.pose.rotation.quaternion(),
+            graph.part_position(part).expect("part exists"),
+            graph.part_rotation(part).expect("part exists"),
             cuboid.size_meters(),
             appearance,
             &mut positions,
@@ -12891,6 +13899,7 @@ fn combined_parts_mesh_scaled(specs: &[PartSpec], scale_factor: f32) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+#[cfg(test)]
 fn delete_preview_mesh(specs: &[PartSpec]) -> Mesh {
     combined_parts_mesh_scaled(specs, DELETE_PREVIEW_SCALE)
 }
@@ -13071,7 +14080,7 @@ fn combined_simulation_mesh_filtered(
         let spec = *graph.part(part).expect("compiled source remains in graph");
         let placement = BuildTransform {
             origin: initial.root_translation,
-            rotation: root_rotation,
+            rotation: root_rotation * initial.root_rotation.conjugate(),
             translation: root_translation,
         };
         // A part inside a region is drawn once, as its region.
@@ -13098,7 +14107,7 @@ fn combined_simulation_mesh_filtered(
                 } else {
                     append_region(
                         region,
-                        placement,
+                        placement.with_frame(graph.region_frame(id).expect("region exists")),
                         &mut positions,
                         &mut normals,
                         &mut uvs,
@@ -13113,7 +14122,7 @@ fn combined_simulation_mesh_filtered(
             }
             continue;
         }
-        let local_center = spec.pose().translation() - initial.root_translation;
+        let frame = graph.part_frame(part).expect("part exists");
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
         let first_vertex = positions.len();
         if graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part)) {
@@ -13132,9 +14141,9 @@ fn combined_simulation_mesh_filtered(
         } else {
             append_textured_part(
                 spec,
-                root_translation + root_rotation * local_center,
-                root_rotation * spec.pose().rotation.quaternion(),
-                placement,
+                placement.point(graph.part_position(part).expect("part exists")),
+                placement.rotation * graph.part_rotation(part).expect("part exists"),
+                placement.with_frame(frame),
                 texture_offset,
                 pipe_end_faces(part, &welded_pipe_ends),
                 &mut positions,
@@ -13201,16 +14210,20 @@ fn combined_simulation_authored_mesh_filtered(
     }) {
         let transform = transforms[compound_index as usize];
         let root_translation = Vec3::from_array(transform.position[..3].try_into().unwrap());
-        let root_rotation = Quat::from_array(transform.rotation);
+        let root_rotation = Quat::from_array(transform.rotation)
+            * creation.compounds[compound_index as usize]
+                .root_rotation
+                .conjugate();
         let initial = &creation.compounds[compound_index as usize];
         let spec = *graph.part(part).expect("compiled source remains in graph");
-        let local_center = spec.pose().translation() - initial.root_translation;
+        let local_center =
+            graph.part_position(part).expect("part exists") - initial.root_translation;
         let cuboid = spec
             .as_cuboid()
             .expect("authored machine appearances have cuboid envelopes");
         append_authored_cuboid(
             root_translation + root_rotation * local_center,
-            root_rotation * cuboid.pose.rotation.quaternion(),
+            root_rotation * graph.part_rotation(part).expect("part exists"),
             cuboid.size_meters(),
             appearance,
             &mut positions,
@@ -13238,9 +14251,10 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
     for (_, bearing) in graph.bearings().filter(|(_, bearing)| {
-        !placed_bearings
-            .iter()
-            .any(|&socket| bearing_uses_socket(bearing, socket))
+        matches!(bearing.kind, mechanic_core::BearingKind::Rotational)
+            && !placed_bearings
+                .iter()
+                .any(|&socket| bearing_uses_socket(bearing, socket))
     }) {
         append_bearing_cylinder(
             bearing.shared_anchor,
@@ -13254,6 +14268,9 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
         );
     }
     for bearing in placed_bearings {
+        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            continue;
+        }
         let axis = face_geometry_from_ref(bearing.source, Some(graph)).normal;
         append_bearing_cylinder(
             bearing.anchor,
@@ -13323,6 +14340,9 @@ fn combined_simulation_bearing_mesh_filtered(
         let bearing = graph
             .bearing(compiled.source_bearing)
             .expect("compiled bearing source remains in graph");
+        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            continue;
+        }
         if placed_bearings
             .iter()
             .any(|&socket| bearing_uses_socket(bearing, socket))
@@ -13347,6 +14367,9 @@ fn combined_simulation_bearing_mesh_filtered(
     }
 
     for bearing in placed_bearings {
+        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            continue;
+        }
         let FaceOwner::Part(source_part) = bearing.source.owner else {
             continue;
         };
@@ -13400,13 +14423,17 @@ fn simulation_body_has_bearing(
     placed_bearings: &[PlacedBearing],
 ) -> bool {
     creation.bearings.iter().any(|bearing| {
-        bearing.compound_a == compound
+        matches!(bearing.kind, mechanic_core::BearingKind::Rotational)
+            && bearing.compound_a == compound
             && graph.bearing(bearing.source_bearing).is_some_and(|source| {
                 !placed_bearings
                     .iter()
                     .any(|&socket| bearing_uses_socket(source, socket))
             })
     }) || placed_bearings.iter().any(|bearing| {
+        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            return false;
+        }
         let FaceOwner::Part(source) = bearing.source.owner else {
             return false;
         };
@@ -13415,6 +14442,28 @@ fn simulation_body_has_bearing(
             .iter()
             .any(|&(part, body)| part == source && body == compound)
     })
+}
+
+/// Resolves authored part coordinates through the published body's pose delta.
+fn simulation_part_pose(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    part: PartId,
+) -> Option<(Vec3, Quat)> {
+    let body = creation
+        .part_to_compound
+        .iter()
+        .find_map(|&(candidate, body)| (candidate == part).then_some(body))?
+        as usize;
+    let initial = creation.compounds.get(body)?;
+    let transform = transforms.get(body)?;
+    let rotation = Quat::from_array(transform.rotation) * initial.root_rotation.conjugate();
+    Some((
+        Vec3::from_slice(&transform.position[..3])
+            + rotation * (graph.part_position(part)? - initial.root_translation),
+        rotation * graph.part_rotation(part)?,
+    ))
 }
 
 /// Where one graph bearing sits in simulation space.
@@ -13468,7 +14517,7 @@ fn live_placed_bearing_pose(
     simulation: &AppSimulation,
     bearing: PlacedBearing,
 ) -> Option<(Vec3, Vec3)> {
-    if simulation.is_running() {
+    if simulation.creation.is_some() {
         return simulation_placed_bearing_pose(
             &simulation.published_graph,
             simulation.creation.as_ref()?,
@@ -13491,12 +14540,18 @@ fn raycast_simulation_bearings(
     direction: Vec3,
 ) -> Option<(BearingDimensions, f32)> {
     let graph_bearings = graph.bearings().filter_map(|(_, bearing)| {
+        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            return None;
+        }
         let (anchor, axis) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
         let distance =
             raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)?;
         Some((bearing.dimensions, distance))
     });
     let placed = placed_bearings.iter().filter_map(|&bearing| {
+        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            return None;
+        }
         let (anchor, axis) = simulation_placed_bearing_pose(graph, creation, transforms, bearing)?;
         let distance =
             raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)?;
@@ -14303,8 +15358,8 @@ fn append_drive_indicator(
     let radial = |angle: f32| tangent_u * angle.cos() + tangent_v * angle.sin();
     // The arc sweeps the way the joint is being asked to turn.
     let signed = match state.target() {
-        DriveTarget::Angle(angle) => angle,
-        DriveTarget::Speed(speed) => speed,
+        DriveTarget::Angle(angle) | DriveTarget::LinearPosition(angle) => angle,
+        DriveTarget::Speed(speed) | DriveTarget::LinearSpeed(speed) => speed,
     };
     let winding = if signed.is_sign_negative() { -1.0 } else { 1.0 };
 
@@ -14466,6 +15521,18 @@ fn update_wire_hover_preview(
     };
     let placement = match hovered {
         Some(WireEnd::Bearing(index)) => state.placed_bearings.get(index).and_then(|&socket| {
+            if let mechanic_core::BearingKind::Linear(rail) = socket.kind {
+                let (_, carriage) = linear_render::socket_transforms(&graph.0, &simulation, socket);
+                return Some(carriage.mul_transform(
+                    Transform::from_translation(Vec3::new(0.0, 0.055, 0.0)).with_scale(
+                        Vec3::new(
+                            mechanic_core::LinearBearingDimensions::CARRIAGE_LENGTH,
+                            0.09,
+                            rail.dimensions.carriage_half_width() * 2.0,
+                        ) * WIRE_HOVER_BLOCK_SCALE,
+                    ),
+                ));
+            }
             let (anchor, axis) = live_placed_bearing_pose(&graph.0, &simulation, socket)?;
             Some(
                 Transform::from_translation(anchor)
@@ -14478,11 +15545,7 @@ fn update_wire_hover_preview(
             .part(part)
             .and_then(|spec| spec.as_cuboid())
             .and_then(|block| {
-                let (translation, rotation) = if simulation.is_running() {
-                    simulation.live_part_pose(&graph.0, part)?
-                } else {
-                    (block.pose.translation(), block.pose.rotation.quaternion())
-                };
+                let (translation, rotation) = simulation.live_part_pose(&graph.0, part)?;
                 Some(
                     Transform::from_translation(translation)
                         .with_rotation(rotation)
@@ -14495,18 +15558,22 @@ fn update_wire_hover_preview(
     if *drawn != hovered
         && let Some(mut mesh) = meshes.get_mut(&visuals.wire_hover_mesh)
     {
-        *mesh = match hovered {
-            Some(WireEnd::Bearing(index)) => state
-                .placed_bearings
-                .get(index)
-                .map_or_else(degenerate_overlay_mesh, |socket| {
-                    single_bearing_mesh(socket.dimensions)
-                }),
-            Some(WireEnd::Controller(_) | WireEnd::Input(_) | WireEnd::Seat(_)) => {
-                Cuboid::default().into()
-            }
-            None => degenerate_overlay_mesh(),
-        };
+        *mesh =
+            match hovered {
+                Some(WireEnd::Bearing(index)) => state.placed_bearings.get(index).map_or_else(
+                    degenerate_overlay_mesh,
+                    |socket| match socket.kind {
+                        mechanic_core::BearingKind::Rotational => {
+                            single_bearing_mesh(socket.dimensions)
+                        }
+                        mechanic_core::BearingKind::Linear(_) => Cuboid::default().into(),
+                    },
+                ),
+                Some(WireEnd::Controller(_) | WireEnd::Input(_) | WireEnd::Seat(_)) => {
+                    Cuboid::default().into()
+                }
+                None => degenerate_overlay_mesh(),
+            };
     }
     *drawn = hovered;
     **transform = placement.unwrap_or_default();
@@ -14556,10 +15623,10 @@ fn combined_drive_xray_mesh(
             Some((
                 bearing.shared_anchor,
                 bearing.axis,
-                graph.part(controller)?.pose().translation(),
+                graph.part_position(controller)?,
             ))
         },
-        |part| Some(graph.part(part)?.pose().translation()),
+        |part| graph.part_position(part),
     )
 }
 
@@ -14574,22 +15641,8 @@ fn combined_simulation_drive_xray_mesh(
     placed_bearings: &[PlacedBearing],
     sequencer: &DriveSequencer,
 ) -> Mesh {
-    let compound_of = |part: PartId| {
-        creation
-            .part_to_compound
-            .iter()
-            .find_map(|(candidate, compound)| (*candidate == part).then_some(*compound))
-    };
-    let part_position = |part: PartId| {
-        let compound = compound_of(part)?;
-        let block = *transforms.get(compound as usize)?;
-        Some(
-            Vec3::new(block.position[0], block.position[1], block.position[2])
-                + Quat::from_array(block.rotation)
-                    * (graph.part(part)?.pose().translation()
-                        - creation.compounds[compound as usize].root_translation),
-        )
-    };
+    let part_position =
+        |part: PartId| simulation_part_pose(graph, creation, transforms, part).map(|pose| pose.0);
     drive_xray_mesh(
         graph,
         placed_bearings,
@@ -15111,6 +16164,14 @@ impl BuildTransform {
         translation: Vec3::ZERO,
     };
 
+    fn with_frame(self, frame: mechanic_core::ConstructionFrame) -> Self {
+        Self {
+            origin: Vec3::ZERO,
+            rotation: self.rotation * frame.rotation(),
+            translation: self.point(frame.translation()),
+        }
+    }
+
     fn point(self, point: Vec3) -> Vec3 {
         self.translation + self.rotation * (point - self.origin)
     }
@@ -15220,17 +16281,18 @@ fn append_evaluated_solid(
                 .get(&surface.uv_provenance)
                 .copied()
                 .unwrap_or(surface.normal);
-            let absolute = placement.direction(projection_normal).abs();
+            let absolute = projection_normal.abs();
             let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
-                ([world_position.x, world_position.z], Vec3::X)
+                ([position.x, position.z], Vec3::X)
             } else if absolute.x >= absolute.z {
-                ([world_position.z, world_position.y], Vec3::Z)
+                ([position.z, position.y], Vec3::Z)
             } else {
-                ([world_position.x, world_position.y], Vec3::X)
+                ([position.x, position.y], Vec3::X)
             };
             positions.push(world_position.to_array());
             normals.push(world_normal.to_array());
             uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+            let tangent = placement.direction(tangent);
             tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
         }
         for step in 1..loop_edges.len() - 1 {
@@ -15424,7 +16486,24 @@ fn append_textured_part(
 
     match spec {
         PartSpec::Cuboid(_) => {
-            append_cuboid_texture_coordinates(first, positions, normals, uvs, tangents);
+            let frame_rotation = rotation * spec.pose().rotation.quaternion().conjugate();
+            let frame_translation = translation - frame_rotation * spec.pose().translation();
+            for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
+                let local_position =
+                    frame_rotation.conjugate() * (Vec3::from_array(position) - frame_translation);
+                let local_normal = frame_rotation.conjugate() * Vec3::from_array(normal);
+                let absolute = local_normal.abs();
+                let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
+                    ([local_position.x, local_position.z], Vec3::X)
+                } else if absolute.x >= absolute.z {
+                    ([local_position.z, local_position.y], Vec3::Z)
+                } else {
+                    ([local_position.x, local_position.y], Vec3::X)
+                };
+                uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+                let tangent = frame_rotation * tangent;
+                tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
+            }
         }
         PartSpec::Cylinder(_) => {
             append_cylinder_texture_coordinates(
@@ -15728,6 +16807,154 @@ mod rendering_tests {
         assert!(!should_sync_editor_visual_meshes(true, true));
         assert!(should_sync_editor_visual_meshes(true, false));
         assert!(!should_sync_editor_visual_meshes(false, false));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Keep the rendering transition and its ECS fixture together.
+    fn deleting_last_dimension_link_restores_static_creation_visuals() {
+        use super::{
+            AuthoredPartVisual, BearingVisual, ConstructionVisual, EditorGraph, EditorState,
+            EditorVisuals, SimulationBodyVisualRoot, SimulationVisualCache,
+        };
+        use bevy::prelude::*;
+
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2, 1, 1], BuildPose::default()).unwrap(),
+            ))
+            .unwrap();
+        graph
+            .apply(BuildCommand::SpawnController(
+                mechanic_core::ControllerSpec::new(BuildPose::new(
+                    IVec3::new(4, 0, 0),
+                    GridRotation::default(),
+                )),
+            ))
+            .unwrap();
+        let BuildOutcome::Spawned(link) = graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(7),
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let rendered_graph = graph.clone();
+        graph.apply(BuildCommand::Remove(link)).unwrap();
+        let creation = graph
+            .compile_with_static_parts(graph.parts().map(|(part, _)| part))
+            .unwrap();
+        assert!(!super::creation_requires_live_physics(&creation));
+        let mut meshes = Assets::<Mesh>::default();
+        let visuals = EditorVisuals {
+            construction_meshes: std::array::from_fn(|_| meshes.add(Cuboid::default())),
+            controller_mesh: meshes.add(Cuboid::default()),
+            ..Default::default()
+        };
+        let material = graph
+            .parts()
+            .find_map(|(_, spec)| super::ordinary_material(*spec))
+            .unwrap();
+        let block_mesh = visuals.construction_meshes[super::material_index(material)].clone();
+        let mut app = App::new();
+        let old_root = app
+            .world_mut()
+            .spawn((SimulationBodyVisualRoot(0), Transform::IDENTITY))
+            .id();
+        let block_visual = app
+            .world_mut()
+            .spawn((ConstructionVisual(material), Visibility::Hidden))
+            .id();
+        let controller_visual = app
+            .world_mut()
+            .spawn((
+                AuthoredPartVisual(AuthoredPart::Controller),
+                Visibility::Hidden,
+            ))
+            .id();
+        app.world_mut().spawn((BearingVisual, Visibility::Hidden));
+        app.insert_resource(EditorGraph(graph.clone()))
+            .insert_resource(EditorState {
+                rendered_graph,
+                rendered_world_revision: Some((1, 1)),
+                construction_mesh_dirty: true,
+                ..Default::default()
+            })
+            .insert_resource(super::AppSimulation {
+                creation: Some(creation),
+                published_graph: graph,
+                world_revision: Some((2, 2)),
+                ..Default::default()
+            })
+            .insert_resource(SimulationVisualCache {
+                revision: Some((1, 1)),
+                roots: vec![old_root],
+                ..Default::default()
+            })
+            .insert_resource(visuals)
+            .insert_resource(meshes)
+            .init_resource::<super::world::WorldRuntime>()
+            .init_resource::<super::shape_tool::ShapeMirror>()
+            .init_resource::<super::DriveSequencer>()
+            .init_resource::<super::SelectedTool>()
+            .add_systems(
+                Update,
+                (
+                    super::sync_visual_meshes,
+                    super::sync_simulation_visual_cache,
+                )
+                    .chain(),
+            );
+
+        for _ in 0..2 {
+            app.update();
+            assert_eq!(
+                *app.world().get::<Visibility>(block_visual).unwrap(),
+                Visibility::Visible
+            );
+            assert_eq!(
+                *app.world().get::<Visibility>(controller_visual).unwrap(),
+                Visibility::Visible
+            );
+            assert!(
+                app.world()
+                    .resource::<Assets<Mesh>>()
+                    .get(&block_mesh)
+                    .unwrap()
+                    .count_vertices()
+                    > 0
+            );
+            assert!(app.world().get_entity(old_root).is_err());
+            assert!(
+                app.world()
+                    .resource::<SimulationVisualCache>()
+                    .roots
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn dimension_link_toggles_refresh_world_visuals_without_a_physics_edit() {
+        let revision = (3, 5);
+        let first = Some(DimensionLinkId(7));
+        let second = Some(DimensionLinkId(8));
+        let mut cache = super::SimulationVisualCache {
+            revision: Some(revision),
+            active_dimension_link: first,
+            ..Default::default()
+        };
+        assert!(!cache.needs_rebuild(revision, first));
+        // Turning off, turning on, and switching links all change the texture
+        // without changing the construction or its physics revision.
+        for active in [None, first, second, None] {
+            assert!(cache.needs_rebuild(revision, active));
+            cache.active_dimension_link = active;
+            assert!(!cache.needs_rebuild(revision, active));
+        }
+        assert!(cache.needs_rebuild((4, 5), None));
     }
 
     #[test]
@@ -16577,6 +17804,43 @@ mod rendering_tests {
     }
 
     #[test]
+    fn cuboid_texture_stays_attached_to_its_authored_grid_during_motion() {
+        let spec = PartSpec::Cuboid(CuboidSpec::new([2, 3, 1], BuildPose::default()).unwrap());
+        let make = |translation, rotation| {
+            let mut positions = Vec::new();
+            let mut normals = Vec::new();
+            let mut uvs = Vec::new();
+            let mut tangents = Vec::new();
+            let mut indices = Vec::new();
+            super::append_textured_part(
+                spec,
+                translation,
+                rotation,
+                super::BuildTransform::IDENTITY,
+                super::PipeTextureOffset::default(),
+                super::PipeEndFaces::ALL,
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut tangents,
+                &mut indices,
+            );
+            (uvs, tangents)
+        };
+        let rotation = Quat::from_euler(bevy::math::EulerRot::YXZ, 0.73, -0.4, 0.2);
+        let (original_uvs, original_tangents) = make(Vec3::ZERO, Quat::IDENTITY);
+        let (moved_uvs, moved_tangents) = make(Vec3::new(8.0, 2.0, -3.0), rotation);
+        for (original, moved) in original_uvs.iter().zip(moved_uvs) {
+            assert!((original[0] - moved[0]).abs() < 1.0e-5);
+            assert!((original[1] - moved[1]).abs() < 1.0e-5);
+        }
+        for (original, moved) in original_tangents.iter().zip(moved_tangents) {
+            let expected = rotation * Vec3::new(original[0], original[1], original[2]);
+            assert!(expected.abs_diff_eq(Vec3::new(moved[0], moved[1], moved[2]), 1.0e-5));
+        }
+    }
+
+    #[test]
     fn pipe_uvs_keep_texture_u_lengthwise_through_straights_and_bends() {
         let cylinder_dimensions = CylinderDimensions::new(0.25, 0.10, 1.0).unwrap();
         let mut straight_positions = Vec::new();
@@ -17105,6 +18369,8 @@ mod rendering_tests {
             unreachable!()
         };
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::default(),
@@ -17143,6 +18409,8 @@ mod rendering_tests {
             .unwrap();
         let placed_dimensions = BearingDimensions::new(0.40, 0.0).unwrap();
         let placed = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(parts[1], FaceKind::PositiveY),
             anchor: Vec3::new(1.0, 1.0, 0.0),
             dimensions: placed_dimensions,
@@ -17208,6 +18476,8 @@ mod rendering_tests {
             part
         });
         let socket = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(support, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
@@ -17282,6 +18552,8 @@ mod rendering_tests {
             ))
             .unwrap();
         let placed = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(parts[0], FaceKind::PositiveY),
             anchor: Vec3::new(0.0, 1.0, 0.0),
             dimensions: BearingDimensions::new(0.40, 0.10).unwrap(),
@@ -17752,20 +19024,19 @@ mod interaction_tests {
         HAMMER_CHARGE_SECONDS, HAMMER_MAX_IMPULSE, HAMMER_MIN_IMPULSE, HistoryAction,
         MaterialWheelState, PipeDrag, PipeEditMode, PlacedBearing, PlacementGrid, PlacementPlane,
         PlayerState, PointerSample, SelectedTool, SimulationHit, SurfaceHit, Tool,
-        WorldEditBlocker, active_drag_plane, adjusted_bearing_dimensions,
-        adjusted_cylinder_dimensions, apply_history_action, bearing_attachment_candidate,
-        bearing_attachment_is_highlighted, bearing_offset_from_rays, block_sheet_bounds,
-        candidate_from_hit, choose_region, clear_editor_hover, closer_feature_hit,
-        closest_axis_parameter, connect_control_link, connect_drive_wire,
-        constrained_pipe_bend_radius, cycle_orientation, delete_box_parts, hammer_delivery,
-        hammer_impulse_magnitude, hammer_point_travel, handle_block_actions, handle_build_actions,
-        handle_chroma_actions, handle_feature_shape_actions, handle_tool_change,
-        pipe_pointer_delta, pipe_turn_direction, raycast_construction,
+        active_drag_plane, adjusted_bearing_dimensions, adjusted_cylinder_dimensions,
+        apply_history_action, bearing_attachment_candidate, bearing_attachment_is_highlighted,
+        bearing_offset_from_rays, block_sheet_bounds, candidate_from_hit, choose_region,
+        clear_editor_hover, closer_feature_hit, closest_axis_parameter, connect_control_link,
+        connect_drive_wire, constrained_pipe_bend_radius, cycle_orientation, delete_box_parts,
+        hammer_delivery, hammer_impulse_magnitude, hammer_point_travel, handle_block_actions,
+        handle_build_actions, handle_chroma_actions, handle_feature_shape_actions,
+        handle_tool_change, pipe_pointer_delta, pipe_turn_direction, raycast_construction,
         raycast_placed_bearing_discs, raycast_placed_bearing_discs_with_pose,
         raycast_placed_bearings, raycast_simulation, refresh_bearing_offset_drag,
         refresh_block_drag, refresh_region_drag, refresh_tool_preview,
         requested_bearing_dimension_adjustment, requested_cylinder_dimension_adjustment,
-        rigid_body_parts, simulation_placed_bearing_pose, stage_part_deletion_preserving_bearings,
+        simulation_placed_bearing_pose, stage_part_deletion_preserving_bearings,
         tangent_feature_chain, tool_status_line, weld_connected_shape_owners, wire_drag_step,
         wire_end_under_cursor,
     };
@@ -17796,6 +19067,20 @@ mod interaction_tests {
 
     #[test]
     fn right_click_deletes_a_dimension_link_from_a_moving_construction() {
+        assert_right_click_deletes_dimension_link(SelectedTool::from_editor_tool(
+            Tool::DimensionLink,
+        ));
+    }
+
+    #[test]
+    fn empty_hands_can_delete_a_dimension_link_from_a_moving_construction() {
+        assert_right_click_deletes_dimension_link(SelectedTool {
+            tool: None,
+            ..Default::default()
+        });
+    }
+
+    fn assert_right_click_deletes_dimension_link(selection: SelectedTool) {
         let mut graph = ConstructionGraph::new();
         let BuildOutcome::Spawned(link) = graph
             .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
@@ -17813,7 +19098,6 @@ mod interaction_tests {
                 distance: 1.0,
                 point: Vec3::ZERO,
             }),
-            world_edit_blocker: Some(WorldEditBlocker::MovingConstruction),
             ..Default::default()
         };
         let mut actions = ButtonInput::default();
@@ -17826,7 +19110,7 @@ mod interaction_tests {
             .insert_resource(EditorHistory::default())
             .insert_resource(crate::chroma::ChromaBrush::default())
             .insert_resource(AppSimulation::default())
-            .insert_resource(SelectedTool::from_editor_tool(Tool::DimensionLink))
+            .insert_resource(selection)
             .insert_resource(BearingToolSettings::default())
             .insert_resource(CylinderToolSettings::default())
             .insert_resource(crate::ui::UiInput::default())
@@ -17874,6 +19158,8 @@ mod interaction_tests {
             unreachable!()
         };
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::default(),
@@ -17881,7 +19167,6 @@ mod interaction_tests {
         let state = EditorState {
             hovered_bearing: Some(0),
             placed_bearings: vec![bearing],
-            world_edit_blocker: Some(WorldEditBlocker::MovingConstruction),
             ..Default::default()
         };
         let mut actions = ButtonInput::default();
@@ -18488,6 +19773,120 @@ mod interaction_tests {
     }
 
     #[test]
+    fn moving_frame_raycast_matches_exact_authored_feature_geometry() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([4; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let owner = mechanic_core::SolidOwner::Part(part);
+        let edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(
+                mechanic_core::ShapeFeature::new(
+                    [mechanic_core::EdgeChainRef { owner, edge }],
+                    mechanic_core::EdgeTreatment::Chamfer,
+                    20,
+                ),
+            ))
+            .unwrap();
+        let frame = mechanic_core::ConstructionFrame::new(
+            Vec3::new(3.0, 1.0, -2.0),
+            Quat::from_rotation_z(0.61) * Quat::from_rotation_x(-0.4),
+        )
+        .unwrap();
+        graph.reframe_parts([part], frame).unwrap();
+        let creation = graph.compile().unwrap();
+        let position = Vec3::new(-4.0, 5.0, 8.0);
+        let rotation = Quat::from_rotation_y(0.7) * Quat::from_rotation_x(0.3);
+        let transforms = [GpuTransform {
+            position: position.extend(0.0).to_array(),
+            rotation: rotation.to_array(),
+        }];
+        for x in [-0.49, 0.0, 0.49] {
+            for z in [-0.49, 0.0, 0.49] {
+                let origin = frame.point(Vec3::new(x, 2.0, z));
+                let direction = frame.vector(Vec3::NEG_Y);
+                let authored = crate::builder::raycast_construction_with_ground(
+                    &graph, origin, direction, None,
+                );
+                let world_origin =
+                    position + rotation * (origin - creation.compounds[0].root_translation);
+                let world_direction = rotation * direction;
+                let live = raycast_simulation(
+                    &graph,
+                    &creation,
+                    &transforms,
+                    world_origin,
+                    world_direction,
+                );
+                assert_eq!(authored.is_some(), live.is_some());
+                if let (Some(authored), Some(live)) = (authored, live) {
+                    assert_eq!(live.part, part);
+                    assert!((live.distance - authored.distance).abs() < 1.0e-4);
+                    let expected = position
+                        + rotation * (authored.point - creation.compounds[0].root_translation);
+                    assert!(live.point.abs_diff_eq(expected, 1.0e-4));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn moving_frame_bearing_raycast_uses_composed_anchor_and_axis() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([4; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let frame = mechanic_core::ConstructionFrame::new(
+            Vec3::new(2.0, 3.0, 4.0),
+            Quat::from_rotation_z(0.65),
+        )
+        .unwrap();
+        graph.reframe_parts([part], frame).unwrap();
+        let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: frame.point(Vec3::Y * 0.5),
+            dimensions: BearingDimensions::new(0.5, 0.1).unwrap(),
+        };
+        let creation = graph.compile().unwrap();
+        let position = Vec3::new(-2.0, 4.0, 1.0);
+        let rotation = Quat::from_rotation_x(-0.4);
+        let transforms = [GpuTransform {
+            position: position.extend(0.0).to_array(),
+            rotation: rotation.to_array(),
+        }];
+        let anchor =
+            position + rotation * (bearing.anchor - creation.compounds[0].root_translation);
+        let axis = rotation * frame.vector(Vec3::Y);
+        let origin = anchor + axis * 2.0 + rotation * frame.vector(Vec3::X * 0.15);
+        let expected =
+            super::raycast_bearing_annulus(origin, -axis, anchor, axis, bearing.dimensions)
+                .unwrap();
+        let actual = super::raycast_simulation_bearings(
+            &graph,
+            &creation,
+            &transforms,
+            &[bearing],
+            origin,
+            -axis,
+        )
+        .unwrap();
+        assert!((actual.1 - expected).abs() < 1.0e-5);
+    }
+
+    #[test]
     fn hammer_raycast_uses_the_current_simulated_pose() {
         let mut graph = ConstructionGraph::new();
         let spec = CuboidSpec::new(
@@ -18929,8 +20328,14 @@ mod interaction_tests {
             )))
             .unwrap();
 
-        assert_eq!(rigid_body_parts(&graph, parts[0]), parts[..2]);
-        assert_eq!(rigid_body_parts(&graph, parts[2]), vec![parts[2]]);
+        assert_eq!(
+            crate::builder::rigid_body_parts(&graph, parts[0]),
+            parts[..2]
+        );
+        assert_eq!(
+            crate::builder::rigid_body_parts(&graph, parts[2]),
+            vec![parts[2]]
+        );
     }
 
     #[test]
@@ -19148,6 +20553,8 @@ mod interaction_tests {
             unreachable!()
         };
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::default(),
@@ -19179,6 +20586,8 @@ mod interaction_tests {
             unreachable!()
         };
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::default(),
@@ -19233,6 +20642,8 @@ mod interaction_tests {
             unreachable!()
         };
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::default(),
@@ -19309,6 +20720,8 @@ mod interaction_tests {
             unreachable!()
         };
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
@@ -19367,6 +20780,8 @@ mod interaction_tests {
             unreachable!()
         };
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
@@ -19410,6 +20825,8 @@ mod interaction_tests {
         });
         let center_face = FaceRef::part(parts[0], FaceKind::PositiveY);
         let bearing = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(parts[1], FaceKind::PositiveY),
             anchor: Vec3::new(0.0, 0.25, 0.0),
             dimensions: BearingDimensions::new(0.75, 0.40).unwrap(),
@@ -19494,6 +20911,8 @@ mod interaction_tests {
             unreachable!()
         };
         let socket = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(supports[0], FaceKind::PositiveY),
             anchor: Vec3::new(0.0, 0.25, 0.0),
             dimensions: BearingDimensions::new(0.50, 0.10).unwrap(),
@@ -19535,6 +20954,72 @@ mod interaction_tests {
     }
 
     #[test]
+    fn deleting_linear_support_preserves_occupied_side_and_travel_axis() {
+        use mechanic_core::{BearingKind, CarriageFace, LinearBearing, LinearBearingDimensions};
+        let mut graph = ConstructionGraph::new();
+        let supports = [IVec3::new(0, 1, 0), IVec3::new(1, 1, 0)].map(|center| {
+            let spec =
+                CuboidSpec::new([1; 3], BuildPose::new(center, GridRotation::default())).unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        });
+        let rail = LinearBearing {
+            dimensions: LinearBearingDimensions::new(1.0, 0.4).unwrap(),
+            mount_normal: Vec3::Y,
+            face: CarriageFace::PositiveSide,
+        };
+        let socket = PlacedBearing {
+            source: FaceRef::part(supports[0], FaceKind::PositiveY),
+            anchor: Vec3::new(0.0, 0.375, 0.0),
+            axis: Vec3::X,
+            dimensions: BearingDimensions::default(),
+            kind: BearingKind::Linear(LinearBearing {
+                face: CarriageFace::Top,
+                ..rail
+            }),
+        };
+        let surface =
+            super::builder::linear_carriage_face(socket.anchor, rail, socket.axis).unwrap();
+        let candidate = super::builder::linear_block_candidate(
+            socket.anchor,
+            rail,
+            socket.axis,
+            surface.center,
+            [1; 3],
+            GridRotation::default(),
+        )
+        .unwrap();
+        let graph = super::builder::stage_linear_block_batch_in_bounds(
+            &graph,
+            candidate,
+            &[candidate.spec],
+            super::builder::LinearAttachment {
+                source: socket.source,
+                anchor: socket.anchor,
+                rail,
+                axis: socket.axis,
+                rigid_targets: &[],
+            },
+            super::PlacementBounds::Garage,
+        )
+        .unwrap();
+        let (graph, sockets, migrated) =
+            stage_part_deletion_preserving_bearings(&graph, &[socket], &[supports[0]]).unwrap();
+        assert_eq!(migrated, 1);
+        assert_eq!(
+            sockets[0].source.owner,
+            mechanic_core::FaceOwner::Part(supports[1])
+        );
+        let bearing = graph.bearings().next().unwrap().1;
+        assert_eq!(bearing.kind, BearingKind::Linear(rail));
+        assert_eq!(bearing.axis, Vec3::X);
+        assert_eq!(graph.compile().unwrap().bearings.len(), 1);
+    }
+
+    #[test]
     fn deleting_reusable_socket_removes_all_of_its_joint_attachments() {
         let mut graph = ConstructionGraph::new();
         let support_spec = CuboidSpec::new(
@@ -19561,6 +21046,8 @@ mod interaction_tests {
             target
         });
         let socket = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(support, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::new(0.80, 0.10).unwrap(),
@@ -19624,6 +21111,28 @@ mod interaction_tests {
         assert_eq!(graph.0.bearing_count(), 0);
         assert_eq!(graph.0.rigid_link_count(), 0);
         assert!(state.placed_bearings.is_empty());
+    }
+
+    #[test]
+    fn delete_drag_uses_composed_centers_instead_of_other_frames_local_grid() {
+        let mut graph = ConstructionGraph::new();
+        let start = CuboidSpec::new([1; 3], BuildPose::default()).unwrap();
+        let BuildOutcome::Spawned(local) = graph.apply(BuildCommand::Spawn(start)).unwrap() else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(remote) = graph.apply(BuildCommand::Spawn(start)).unwrap() else {
+            unreachable!()
+        };
+        graph
+            .reframe_parts(
+                [remote],
+                mechanic_core::ConstructionFrame::new(Vec3::X * 10.0, Quat::IDENTITY).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            delete_box_parts(&graph, start, IVec3::ZERO).unwrap(),
+            vec![local]
+        );
     }
 
     #[test]
@@ -19700,6 +21209,8 @@ mod interaction_tests {
             unreachable!()
         };
         let socket = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source,
             anchor,
             dimensions: BearingDimensions::default(),
@@ -19983,6 +21494,8 @@ mod interaction_tests {
         let mut state = EditorState {
             hovered_bearing: Some(0),
             placed_bearings: vec![PlacedBearing {
+                kind: mechanic_core::BearingKind::Rotational,
+                axis: Vec3::ZERO,
                 source: FaceRef::part(block, FaceKind::PositiveX),
                 anchor: Vec3::new(0.5, 0.5, 0.0),
                 dimensions: BearingDimensions::default(),
@@ -20249,7 +21762,6 @@ mod interaction_tests {
                 distance: 1.0,
                 point: Vec3::ZERO,
             }),
-            world_edit_blocker: Some(WorldEditBlocker::MovingConstruction),
             ..Default::default()
         };
         // `update_hover` clears ordinary editor targeting when the live hit is
@@ -20616,6 +22128,8 @@ mod history_tests {
         let mut graph = ConstructionGraph::new();
         let support = spawn_cube(&mut graph, IVec3::new(0, 2, 0));
         let socket = PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(support, FaceKind::PositiveY),
             anchor: Vec3::Y,
             dimensions: BearingDimensions::new(0.70, 0.35).unwrap(),
@@ -20904,6 +22418,88 @@ mod showcase_loading_tests {
         let (position, rotation) = seat_world_pose(&graph, &simulation, seat).unwrap();
         assert!(position.abs_diff_eq(Vec3::ZERO, 1.0e-6));
         assert!(rotation.abs_diff_eq(Quat::IDENTITY, 1.0e-6));
+    }
+
+    #[test]
+    fn framed_seat_pose_matches_authored_and_stopped_published_geometry() {
+        let (mut graph, seat) = graph_with_seat();
+        let frame = mechanic_core::ConstructionFrame::new(
+            Vec3::new(5.0, 3.0, -2.0),
+            Quat::from_rotation_y(0.7) * Quat::from_rotation_z(0.2),
+        )
+        .unwrap();
+        graph.reframe_parts([seat], frame).unwrap();
+        let (position, rotation) =
+            seat_world_pose(&graph, &AppSimulation::default(), seat).unwrap();
+        assert!(position.distance(frame.translation()) < 1.0e-5);
+        assert!(rotation.angle_between(frame.rotation()) < 1.0e-3);
+        let creation = graph.compile().unwrap();
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|body| GpuTransform {
+                position: body.root_translation.extend(0.0).to_array(),
+                rotation: body.root_rotation.to_array(),
+            })
+            .collect();
+        let mut simulation = AppSimulation {
+            creation: Some(creation),
+            transforms,
+            published_graph: graph.clone(),
+            failure: Some("stopped".to_owned()),
+            ..Default::default()
+        };
+        let (published_position, published_rotation) =
+            seat_world_pose(&graph, &simulation, seat).unwrap();
+        assert!(published_position.distance(position) < 1.0e-5);
+        assert!(published_rotation.angle_between(rotation) < 1.0e-3);
+        simulation.transforms[0].position[0] += 2.0;
+        assert!(
+            seat_world_pose(&graph, &simulation, seat)
+                .unwrap()
+                .0
+                .distance(position + Vec3::X * 2.0)
+                < 1.0e-5
+        );
+        assert!(
+            super::wire_end_position(
+                &graph,
+                &EditorState::default(),
+                &simulation,
+                super::WireEnd::Seat(seat)
+            )
+            .unwrap()
+            .distance(position + Vec3::X * 2.0)
+                < 1.0e-5
+        );
+    }
+
+    #[test]
+    fn wire_drag_maps_the_local_pointer_ray_to_world_coordinates() {
+        let (mut graph, seat) = graph_with_seat();
+        let frame = mechanic_core::ConstructionFrame::new(
+            Vec3::new(5.0, 3.0, -2.0),
+            Quat::from_rotation_y(0.7),
+        )
+        .unwrap();
+        graph.reframe_parts([seat], frame).unwrap();
+        let state = EditorState {
+            edit_context: Some(super::live_edit::EditContext {
+                anchor: seat,
+                frame: graph.part_frame_id(seat).unwrap(),
+                frame_to_world: frame,
+            }),
+            wire_drag: Some(super::WireDrag {
+                from: super::WireEnd::Seat(seat),
+                armed: true,
+            }),
+            pointer_ray: Some((Vec3::new(1.0, 0.0, 5.0), Vec3::NEG_Z)),
+            ..Default::default()
+        };
+        let (from, to) =
+            super::wire_drag_endpoints(&graph, &state, &AppSimulation::default()).unwrap();
+        assert!(from.distance(frame.translation()) < 1.0e-5);
+        assert!(to.distance(frame.point(Vec3::X)) < 1.0e-5);
     }
 
     #[test]
@@ -21524,6 +23120,8 @@ mod creation_file_tests {
         let (part, _) = graph.parts().next().expect("the preset has parts");
         let mut state = EditorState::default();
         state.placed_bearings.push(PlacedBearing {
+            kind: mechanic_core::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::new(0.25, 1.5, -0.75),
             dimensions: BearingDimensions::new(0.4, 0.15).expect("the ring is in range"),

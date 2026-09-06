@@ -137,6 +137,8 @@ pub struct RigidLinkSpec {
 /// block can run entirely different programs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DriveLinkSpec {
+    /// Typed linear envelope; required for a linear joint.
+    pub linear_limits: Option<crate::LinearDriveLimits>,
     /// Control-block part this wire belongs to.
     pub controller: PartId,
     /// Bearing driven through this wire.
@@ -161,12 +163,36 @@ impl DriveLinkSpec {
         Self {
             controller,
             bearing,
+            linear_limits: None,
             reversed: false,
             actuator: ActuatorAssignment::Unpowered,
             limits: DriveLimits::default(),
             program: DriveProgram::default(),
             name: DriveName::EMPTY,
         }
+    }
+
+    /// Creates a centred linear program with the rail's full physical travel.
+    ///
+    /// # Panics
+    /// Panics if validated rail dimensions violate the drive envelope invariants.
+    pub fn new_linear(
+        controller: PartId,
+        bearing: BearingId,
+        dimensions: crate::LinearBearingDimensions,
+    ) -> Self {
+        let [minimum, maximum] = dimensions.bounds();
+        let mut link = Self::new(controller, bearing);
+        link.linear_limits = Some(
+            crate::LinearDriveLimits::new(1.0, f32::MAX, minimum, maximum)
+                .expect("validated rail travel"),
+        );
+        link.program = DriveProgram::new(
+            &[crate::DriveState::new(DriveTarget::LinearSpeed(0.0)).expect("zero speed")],
+            false,
+        )
+        .expect("one state");
+        link
     }
 
     /// What this wire asks of its bearing in the given state, with reversal
@@ -256,6 +282,8 @@ impl ActuatorInventory {
 /// control block is wired to it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BearingSpec {
+    /// Permitted motion and physical rail geometry.
+    pub kind: crate::BearingKind,
     /// Face whose outward normal establishes the bearing axis.
     pub source: FaceRef,
     /// Compatible face on the attached side.
@@ -272,6 +300,7 @@ impl BearingSpec {
     /// Creates a bearing specification. Geometry is validated on insertion.
     pub const fn new(source: FaceRef, target: FaceRef, shared_anchor: Vec3, axis: Vec3) -> Self {
         Self {
+            kind: crate::BearingKind::Rotational,
             source,
             target,
             shared_anchor,
@@ -281,6 +310,13 @@ impl BearingSpec {
                 inner_diameter: BearingDimensions::DEFAULT_INNER_DIAMETER,
             },
         }
+    }
+
+    /// Selects the physical bearing variant. Geometry is validated on insertion.
+    #[must_use]
+    pub const fn with_kind(mut self, kind: crate::BearingKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// Applies custom validated visual dimensions.
@@ -367,6 +403,13 @@ pub enum BuildCommand {
     AddBearing(BearingSpec),
     /// Wire a control block to one bearing.
     AddDriveLink(DriveLinkSpec),
+    /// Changes the typed SI-unit envelope of a linear bearing.
+    SetLinearDriveLimits {
+        /// Wire to update.
+        link: DriveLinkId,
+        /// New limits, contained by physical travel.
+        limits: crate::LinearDriveLimits,
+    },
     /// Remove one control-block wire, leaving its endpoints intact.
     RemoveDriveLink(DriveLinkId),
     /// Link one Input block to one Seat.
@@ -506,6 +549,17 @@ pub enum BuildOutcome {
 /// Validation failure. Failed commands leave the graph byte-for-byte equivalent.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum GraphError {
+    /// A rail already has an attachment on a different carriage face.
+    #[error("a linear carriage can only have one occupied attachment face")]
+    LinearCarriageOccupied,
+    /// Program units or programmable travel do not match the physical joint.
+    #[error(
+        "drive targets and limits must match the bearing kind and remain inside physical travel"
+    )]
+    IncompatibleDrive,
+    /// Invalid linear-bearing frame.
+    #[error(transparent)]
+    LinearBearing(#[from] crate::LinearBearingError),
     /// A part handle is stale or unknown.
     #[error("unknown or stale part handle {0:?}")]
     MissingPart(PartId),
@@ -684,6 +738,7 @@ pub enum GraphError {
 #[doc(hidden)]
 #[derive(Clone, Debug, Default)]
 pub struct ConstructionGraphData {
+    pub(crate) construction_frames: crate::frame::ConstructionFrames,
     pub(crate) parts: Arena<PartSpec, PartId>,
     pub(crate) welds: Arena<WeldSpec, WeldId>,
     pub(crate) rigid_links: Arena<RigidLinkSpec, RigidLinkId>,
@@ -783,7 +838,7 @@ impl ConstructionGraphEdit {
     pub fn spawn_cuboids(&mut self, specs: impl IntoIterator<Item = CuboidSpec>) -> Vec<PartId> {
         specs
             .into_iter()
-            .map(|spec| self.graph.parts.insert(spec.into()))
+            .map(|spec| self.graph.insert_edit_part(spec.into()))
             .collect()
     }
 
@@ -841,6 +896,32 @@ impl core::ops::Deref for ConstructionGraphEdit {
 }
 
 impl ConstructionGraph {
+    /// Whether two handles still refer to the same immutable graph revision.
+    pub fn shares_revision(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data)
+    }
+
+    pub(crate) fn transform_bearing_space(&mut self, transform: crate::ConstructionFrame) {
+        let bearings = self
+            .bearings
+            .iter()
+            .map(|(id, bearing)| (id, *bearing))
+            .collect::<Vec<_>>();
+        for (id, mut bearing) in bearings {
+            bearing.shared_anchor = transform.point(bearing.shared_anchor);
+            bearing.axis = transform.vector(bearing.axis);
+            if let crate::BearingKind::Linear(rail) = &mut bearing.kind {
+                rail.mount_normal = transform.vector(rail.mount_normal);
+            }
+            if let Some(destination) = self.bearings.get_mut(id) {
+                *destination = bearing;
+            }
+        }
+        if let Some(PendingOperation::Bearing { anchor, .. }) = &mut self.pending {
+            *anchor = transform.point(*anchor);
+        }
+    }
+
     /// Creates an empty graph in paused build mode.
     pub fn new() -> Self {
         Self::default()
@@ -1064,7 +1145,7 @@ impl ConstructionGraph {
                     )
                 })
             });
-        match owner {
+        let mut solid = match owner {
             SolidOwner::Part(part) => {
                 let spec = self
                     .parts
@@ -1080,7 +1161,9 @@ impl ConstructionGraph {
                     .ok_or(GraphError::MissingRegion(region))?;
                 crate::evaluate_region_solid(shape, features).map_err(GraphError::from)
             }
-        }
+        }?;
+        self.owner_frame(owner).transform_solid(&mut solid);
+        Ok(solid)
     }
 
     /// Whether an owner has any committed parametric feature.
@@ -1097,12 +1180,13 @@ impl ConstructionGraph {
     /// The region covering this part, when one does.
     pub fn region_of(&self, part: PartId) -> Option<RegionId> {
         let spec = self.parts.get(part)?;
+        let frame = self.part_frame_id(part)?;
         let cuboid = spec.as_cuboid()?;
         let cells = crate::part_cells(cuboid);
         let origin = cells.corner_steps(IVec3::ZERO, 0);
-        self.regions
-            .iter()
-            .find_map(|(id, region)| region.covers_cell(origin).then_some(id))
+        self.regions.iter().find_map(|(id, region)| {
+            (self.region_frame_id(id) == Some(frame) && region.covers_cell(origin)).then_some(id)
+        })
     }
 
     /// Retrieves a live construction part.
@@ -1617,6 +1701,14 @@ impl ConstructionGraph {
                         pipe_bend_face(spec, face.face).ok_or(GraphError::InvalidPipeBendFace)
                     }
                 }
+                .map(|mut geometry| {
+                    let frame = self.part_frame(part).expect("face part exists");
+                    geometry.center = frame.point(geometry.center);
+                    geometry.normal = frame.vector(geometry.normal);
+                    geometry.tangent_u = frame.vector(geometry.tangent_u);
+                    geometry.tangent_v = frame.vector(geometry.tangent_v);
+                    geometry
+                })
             }
             FaceOwner::Ground if face.face == FaceKind::PositiveY => Ok(ground_face()),
             FaceOwner::Ground => Err(GraphError::InvalidGroundFace),
@@ -1692,24 +1784,29 @@ impl ConstructionGraph {
     ///
     /// Reports the first rule the area breaks.
     pub fn check_region_area(&self, region: &ShapeRegion) -> Result<(), GraphError> {
-        self.validate_region_area(region)
+        self.validate_region_area(region, self.edit_frame_id())
     }
 
     /// Checks the rules an area must satisfy before it can become a region:
     /// every cell filled, one material, one rigid body, whole blocks only, and
     /// nothing already claiming the space.
-    fn validate_region_area(&self, region: &ShapeRegion) -> Result<(), GraphError> {
-        if let Some((id, _)) = self
-            .regions
-            .iter()
-            .find(|(_, existing)| existing.overlaps(region))
-        {
+    fn validate_region_area(
+        &self,
+        region: &ShapeRegion,
+        frame: crate::ConstructionFrameId,
+    ) -> Result<(), GraphError> {
+        if let Some((id, _)) = self.regions.iter().find(|(id, existing)| {
+            self.region_frame_id(*id) == Some(frame) && existing.overlaps(region)
+        }) {
             return Err(GraphError::RegionOverlaps(id));
         }
 
         let mut occupants: BTreeMap<[i32; 3], (PartId, ConstructionMaterial, MaterialAppearance)> =
             BTreeMap::new();
         for (id, spec) in self.parts.iter() {
+            if self.part_frame_id(id) != Some(frame) {
+                continue;
+            }
             let Some(cuboid) = spec.as_cuboid() else {
                 continue;
             };
@@ -1860,27 +1957,34 @@ impl ConstructionGraph {
         reached
     }
 
+    fn insert_edit_part(&mut self, spec: PartSpec) -> PartId {
+        let id = self.parts.insert(spec);
+        let frame = self.edit_frame_id();
+        self.construction_frames.members.insert(id, frame);
+        id
+    }
+
     #[allow(clippy::too_many_lines)] // One exhaustive command dispatch reads better whole.
     fn apply_validated(&mut self, command: BuildCommand) -> Result<BuildOutcome, GraphError> {
         match command {
             BuildCommand::Spawn(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnCylinder(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnPipeBend(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnController(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnEngine(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::AttachTransmission { parent, spec } => {
@@ -1888,11 +1992,17 @@ impl ConstructionGraph {
                 if spec != expected {
                     return Err(GraphError::InvalidTransmissionPose);
                 }
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 let weld = WeldSpec {
                     first: FaceRef::part(parent, FaceKind::PositiveZ),
                     second: FaceRef::part(id, FaceKind::NegativeZ),
                 };
+                let frame = self
+                    .part_frame_id(parent)
+                    .expect("transmission parent exists");
+                self.construction_frames.members.insert(id, frame);
+                self.set_edit_source(id, parent)
+                    .expect("a new transmission cannot be its own ancestor");
                 self.validate_weld(weld)?;
                 let weld_id = self.welds.insert(weld);
                 self.transmission_parents.insert(id, parent);
@@ -1901,22 +2011,22 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnServo(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnSeat(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnInput(spec) => {
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnDimensionLink(spec) => {
                 if self.dimension_link(spec.id).is_some() {
                     return Err(GraphError::DuplicateDimensionLink(spec.id));
                 }
-                let id = self.parts.insert(spec.into());
+                let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SetAppearance { target, appearance } => {
@@ -2069,6 +2179,7 @@ impl ConstructionGraph {
                     .collect::<BTreeSet<_>>();
                 for region in regions {
                     self.regions.remove(region);
+                    self.construction_frames.region_frames.remove(&region);
                     self.remove_shape_owner(SolidOwner::Region(region));
                 }
                 self.gearbox_configs
@@ -2081,6 +2192,7 @@ impl ConstructionGraph {
                 for part in removed_parts {
                     self.remove_shape_owner(SolidOwner::Part(part));
                     self.parts.remove(part);
+                    self.construction_frames.members.remove(&part);
                 }
                 self.pending = None;
                 Ok(BuildOutcome::Removed)
@@ -2133,8 +2245,19 @@ impl ConstructionGraph {
                 self.pending = None;
                 Ok(BuildOutcome::BearingAdded(id))
             }
+            BuildCommand::SetLinearDriveLimits { link, limits } => {
+                let current = self
+                    .drive_link(link)
+                    .ok_or(GraphError::MissingDriveLink(link))?;
+                self.validate_drive_units(current.bearing, current.program, Some(limits))?;
+                self.drive_links
+                    .get_mut(link)
+                    .expect("validated link")
+                    .linear_limits = Some(limits);
+                Ok(BuildOutcome::DriveUpdated)
+            }
             BuildCommand::AddDriveLink(spec) => {
-                self.validate_drive_link(spec)?;
+                self.validate_drive_link(&spec)?;
                 let id = self.drive_links.insert(spec);
                 self.pending = None;
                 Ok(BuildOutcome::DriveLinked(id))
@@ -2179,6 +2302,10 @@ impl ConstructionGraph {
                 name,
                 actuator,
             } => {
+                let current = self
+                    .drive_link(link)
+                    .ok_or(GraphError::MissingDriveLink(link))?;
+                self.validate_drive_units(current.bearing, program, current.linear_limits)?;
                 let spec = self
                     .drive_links
                     .get_mut(link)
@@ -2237,14 +2364,17 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::GearboxUpdated)
             }
             BuildCommand::AddRegion(region) => {
-                self.validate_region_area(&region)?;
+                let frame = self.edit_frame_id();
+                self.validate_region_area(&region, frame)?;
                 let id = self.regions.insert(region);
+                self.construction_frames.region_frames.insert(id, frame);
                 Ok(BuildOutcome::RegionAdded(id))
             }
             BuildCommand::RemoveRegion(id) => {
                 self.regions
                     .remove(id)
                     .ok_or(GraphError::MissingRegion(id))?;
+                self.construction_frames.region_frames.remove(&id);
                 self.remove_shape_owner(SolidOwner::Region(id));
                 Ok(BuildOutcome::Removed)
             }
@@ -2280,8 +2410,9 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::RegionUpdated)
             }
             BuildCommand::AddShapeFeature(mut feature) => {
-                if let Some((region, edges)) = self.promoted_region_for_feature(&feature) {
+                if let Some((region, edges, frame)) = self.promoted_region_for_feature(&feature) {
                     let region = self.regions.insert(region);
+                    self.construction_frames.region_frames.insert(region, frame);
                     feature.targets = edges
                         .into_iter()
                         .map(|edge| crate::EdgeChainRef {
@@ -2386,6 +2517,7 @@ impl ConstructionGraph {
         }
         if self.regions.is_empty()
             && self.shape_features.is_empty()
+            && self.face_frame(spec.first) == self.face_frame(spec.second)
             && let Some(result) = self.validate_simple_grid_weld(spec)
         {
             return result;
@@ -2485,7 +2617,34 @@ impl ConstructionGraph {
         Ok(())
     }
 
-    fn validate_drive_link(&self, spec: DriveLinkSpec) -> Result<(), GraphError> {
+    fn validate_drive_units(
+        &self,
+        bearing: BearingId,
+        program: DriveProgram,
+        limits: Option<crate::LinearDriveLimits>,
+    ) -> Result<(), GraphError> {
+        let bearing = self
+            .bearing(bearing)
+            .ok_or(GraphError::MissingBearing(bearing))?;
+        let linear = matches!(bearing.kind, crate::BearingKind::Linear(_));
+        if program
+            .states()
+            .iter()
+            .any(|state| state.target().is_linear() != linear)
+            || limits.is_some() != linear
+        {
+            return Err(GraphError::IncompatibleDrive);
+        }
+        if let Some(limits) = limits {
+            let [minimum, maximum] = bearing.kind.bounds();
+            if limits.minimum() < minimum || limits.maximum() > maximum {
+                return Err(GraphError::IncompatibleDrive);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_drive_link(&self, spec: &DriveLinkSpec) -> Result<(), GraphError> {
         self.parts
             .get(spec.controller)
             .copied()
@@ -2495,6 +2654,7 @@ impl ConstructionGraph {
         self.bearings
             .get(spec.bearing)
             .ok_or(GraphError::MissingBearing(spec.bearing))?;
+        self.validate_drive_units(spec.bearing, spec.program, spec.linear_limits)?;
         if self
             .drive_links
             .iter()
@@ -2589,7 +2749,11 @@ impl ConstructionGraph {
     fn promoted_region_for_feature(
         &self,
         feature: &ShapeFeature,
-    ) -> Option<(ShapeRegion, Vec<crate::TopologyKey>)> {
+    ) -> Option<(
+        ShapeRegion,
+        Vec<crate::TopologyKey>,
+        crate::ConstructionFrameId,
+    )> {
         let target_parts = feature
             .targets
             .iter()
@@ -2599,6 +2763,13 @@ impl ConstructionGraph {
             })
             .collect::<Option<BTreeSet<_>>>()?;
         let seed = *target_parts.first()?;
+        let frame = self.part_frame_id(seed)?;
+        if target_parts
+            .iter()
+            .any(|&part| self.part_frame_id(part) != Some(frame))
+        {
+            return None;
+        }
         let seed_spec = self.parts.get(seed)?.as_cuboid()?;
         let material = seed_spec.material;
         let appearance = seed_spec.appearance;
@@ -2611,7 +2782,7 @@ impl ConstructionGraph {
         let mut maximum = IVec3::splat(i32::MIN);
         let mut members = 0_usize;
         for part in welded {
-            if self.region_of(part).is_some() {
+            if self.part_frame_id(part) != Some(frame) || self.region_of(part).is_some() {
                 continue;
             }
             let Some(PartSpec::Cuboid(cuboid)) = self.parts.get(part).copied() else {
@@ -2643,7 +2814,7 @@ impl ConstructionGraph {
         )
         .ok()?
         .with_appearance(appearance);
-        self.validate_region_area(&region).ok()?;
+        self.validate_region_area(&region, frame).ok()?;
 
         let solid = crate::evaluate_region_solid(&region, []).ok()?;
         let edges = feature
@@ -2658,7 +2829,7 @@ impl ConstructionGraph {
         }) {
             return None;
         }
-        Some((region, edges.into_iter().collect()))
+        Some((region, edges.into_iter().collect(), frame))
     }
 
     fn validate_shape_owner_replay(&self, owner: SolidOwner) -> Result<(), GraphError> {
@@ -2741,6 +2912,52 @@ impl ConstructionGraph {
         }
         let source = self.face_geometry(spec.source)?;
         let target = self.face_geometry(spec.target)?;
+        if let crate::BearingKind::Linear(rail) = spec.kind {
+            if self.bearings().any(|(_, existing)| {
+                existing.source == spec.source
+                    && existing.shared_anchor.distance(spec.shared_anchor) < ANCHOR_TOLERANCE_METERS
+                    && matches!(existing.kind, crate::BearingKind::Linear(other) if other != rail)
+            }) {
+                return Err(GraphError::LinearCarriageOccupied);
+            }
+            let rotation = rail.rotation(spec.axis)?;
+            if source.normal.dot(rail.mount_normal) < 1.0 - 1.0e-5
+                || target.normal.dot(rotation * rail.face.normal()) > -1.0 + 1.0e-5
+            {
+                return Err(GraphError::BearingFacesNotOpposed);
+            }
+            let mount = FaceGeometry {
+                center: spec.shared_anchor,
+                normal: rail.mount_normal,
+                tangent_u: spec.axis,
+                tangent_v: spec.axis.cross(rail.mount_normal),
+                profile: FaceProfile::Rectangle {
+                    half_u: rail.dimensions.length() / 2.0,
+                    half_v: rail.dimensions.width() / 2.0,
+                },
+            };
+            let size = rail.face.size(rail.dimensions);
+            let surface = FaceGeometry {
+                center: spec.shared_anchor + rotation * rail.face.origin(rail.dimensions),
+                normal: rotation * rail.face.normal(),
+                tangent_u: spec.axis,
+                tangent_v: spec.axis.cross(rotation * rail.face.normal()),
+                profile: FaceProfile::Rectangle {
+                    half_u: size.x / 2.0,
+                    half_v: size.y / 2.0,
+                },
+            };
+            if !spec.shared_anchor.is_finite()
+                || (source.center - mount.center).dot(source.normal).abs() > ANCHOR_TOLERANCE_METERS
+                || (target.center - surface.center).dot(target.normal).abs()
+                    > ANCHOR_TOLERANCE_METERS
+                || !profiles_overlap(&mount, &source)
+                || !profiles_overlap(&surface, &target)
+            {
+                return Err(GraphError::BearingAnchorOutsideFaces);
+            }
+            return Ok(());
+        }
         if source.normal.dot(target.normal) > -1.0 + axis_cosine_tolerance() {
             return Err(GraphError::BearingFacesNotOpposed);
         }

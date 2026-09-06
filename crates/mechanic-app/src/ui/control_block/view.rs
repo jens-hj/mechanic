@@ -899,8 +899,8 @@ fn capacity_item(model: State<PanelModel>, kind: CapacityKind) -> Element {
 fn legend() -> Element {
     view! {
         row height:min-content align:center gap:18px {
-            (legend_item("hold angle"))
-            (legend_item("spin"))
+            (legend_item("position"))
+            (legend_item("speed"))
             (legend_item("key"))
             (legend_item("time"))
         }
@@ -910,13 +910,13 @@ fn legend() -> Element {
 /// One entry of the legend.
 fn legend_item(label: &'static str) -> Element {
     let tile = match label {
-        "hold angle" => view! {
+        "hold angle" | "position" => view! {
             col width:22px height:22px align:center justify:center radius:6px exponent:1 fill:wash.angle
                 font-color:accent.angle {
                 icon size:14px legend-angle
             }
         },
-        "spin" => view! {
+        "spin" | "speed" => view! {
             col width:22px height:22px align:center justify:center radius:6px exponent:1 fill:wash.speed
                 font-color:accent.speed {
                 icon size:14px legend-spin
@@ -1451,13 +1451,17 @@ fn card_header(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                     fill:{ if angled() { color(wash.mode_angle) } else { Color::TRANSPARENT } }
                     font-color:{ if angled() { color(accent.angle) } else { color(mode.off) } }
                     @click:{ to_angle.edit(id, PanelEdit::SetMode { state: slot, mode: Mode::Angle }) } {
-                    icon size:15px mode-angle
+                    if lane_read(model, id, false, |joint| joint.is_linear) {
+                        text font-size:11px font-weight:700 { "P" }
+                    } else { icon size:15px mode-angle }
                 }
                 col width:26px height:20px align:center justify:center radius:5px exponent:1
                     fill:{ if angled() { Color::TRANSPARENT } else { color(wash.mode_speed) } }
                     font-color:{ if angled() { color(mode.off) } else { color(accent.speed) } }
                     @click:{ to_speed.edit(id, PanelEdit::SetMode { state: slot, mode: Mode::Speed }) } {
-                    icon size:15px mode-speed
+                    if lane_read(model, id, false, |joint| joint.is_linear) {
+                        text font-size:11px font-weight:700 { "V" }
+                    } else { icon size:15px mode-speed }
                 }
                 col width:20px height:20px align:center justify:center radius:5px exponent:1
                     font-color:accent.danger opacity:0.5
@@ -1482,6 +1486,32 @@ struct Dial {
 }
 
 impl Dial {
+    fn linear(self) -> bool {
+        lane_read(self.model, self.id, false, |joint| joint.is_linear)
+    }
+
+    fn linear_bounds(self) -> (f32, f32) {
+        if self.angled() {
+            lane_read(self.model, self.id, (-1.0, 1.0), |joint| {
+                joint.physical_travel.unwrap_or((-1.0, 1.0))
+            })
+        } else {
+            (-self.ceiling(), self.ceiling())
+        }
+    }
+
+    fn linear_x(self, value: f32) -> f32 {
+        let (min, max) = self.linear_bounds();
+        12.0 + ((value - min) / (max - min).max(f32::EPSILON)).clamp(0.0, 1.0) * 108.0
+    }
+
+    fn linear_reading(self, across: f32, fine: bool) -> f32 {
+        let (min, max) = self.linear_bounds();
+        let step = if fine { 0.0025 } else { 0.025 };
+        let value = min + ((across + 54.0) / 108.0).clamp(0.0, 1.0) * (max - min);
+        ((value / step).round() * step).clamp(min, max)
+    }
+
     /// Whether this state holds an angle rather than spinning.
     fn angled(self) -> bool {
         angle_mode(self.model, self.id, self.index)
@@ -1504,6 +1534,9 @@ impl Dial {
     /// Converts the displayed speed back to the degrees-per-second value the
     /// graph-facing edit seam accepts.
     fn stored_speed(self, displayed: f32) -> f32 {
+        if self.linear() {
+            return displayed;
+        }
         match lane_read(self.model, self.id, SpeedUnit::Rpm, |joint| {
             joint.speed_unit
         }) {
@@ -1545,6 +1578,12 @@ impl Dial {
 
     /// Where the handle sits.
     fn head(self) -> (f32, f32) {
+        if self.linear() {
+            return (
+                self.linear_x(state_of(self.model, self.id, self.index).value),
+                92.0,
+            );
+        }
         geometry::polar(geometry::DIAL_RADIUS, self.sweep())
     }
 
@@ -1562,6 +1601,9 @@ impl Dial {
 
     /// Where one travel handle sits.
     fn grip(self, low: bool) -> (f32, f32) {
+        if self.linear() {
+            return (self.linear_x(self.limit(low)), 110.0);
+        }
         geometry::polar(geometry::GRIP_RADIUS, self.limit(low))
     }
 
@@ -1577,6 +1619,7 @@ impl Dial {
 /// the joint would point. A speed reading is a fraction of the joint's own
 /// ceiling drawn as half a turn either way, which keeps a fast joint and a slow
 /// one legible at the same size.
+#[allow(clippy::too_many_lines)] // Joint-kind-specific drag surfaces share one state binding.
 fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let handles = handles.clone();
     let model = handles.model;
@@ -1601,11 +1644,13 @@ fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                 let down = event.position.y - middle.y;
                 // A dead zone at the middle: near the centre the angle is all
                 // but undefined, and the dial would snap wildly.
-                if across.hypot(down) < 14.0 {
+                if !reading.linear() && across.hypot(down) < 14.0 {
                     return;
                 }
                 let degrees = across.atan2(-down).to_degrees();
-                let value = if reading.angled() {
+                let value = if reading.linear() {
+                    reading.linear_reading(across, event.modifiers.shift)
+                } else if reading.angled() {
                     let step = if event.modifiers.shift { 1.0 } else { 5.0 };
                     (degrees / step).round() * step
                 } else {
@@ -1635,6 +1680,24 @@ fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
             // corner — which would slide the dial off the number at its centre
             // by however much the sweep happened to reach.
             canvas width:132px height:132px {
+                if reading.linear() {
+                    line from:(x:12px y:92px) to:(x:120px y:92px)
+                        stroke:(width:10px cap:round color:dial.track)
+                    line from:(x:{ Length::px(reading.linear_x(0.0)) } y:83px)
+                         to:(x:{ Length::px(reading.linear_x(0.0)) } y:101px)
+                        stroke:(width:2px color:dial.tick)
+                    line from:(x:{ Length::px(reading.linear_x(0.0)) } y:92px)
+                         to:(x:{ Length::px(reading.head().0) } y:92px)
+                        stroke:(width:6px cap:round color:{ reading.accent() })
+                    circle at:(x:{ Length::px(reading.head().0) } y:92px)
+                        radius:7px exponent:1 fill:dial.knob stroke:(width:2px color:{ reading.accent() })
+                    if reading.grips() {
+                        circle at:(x:{ Length::px(reading.grip(true).0) } y:110px)
+                            radius:6px exponent:1 fill:dial.knob stroke:(width:2px color:dial.grip)
+                        circle at:(x:{ Length::px(reading.grip(false).0) } y:110px)
+                            radius:6px exponent:1 fill:dial.knob stroke:(width:2px color:dial.grip)
+                    }
+                } else {
                 circle at:(x:66px y:66px) radius:54px exponent:1 stroke:(width:13px color:dial.track)
                 if reading.travel_span().is_some() && reading.angled() {
                     circle at:(x:66px y:66px) radius:54px exponent:1
@@ -1677,6 +1740,7 @@ fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
                               y:{ Length::px(reading.grip(false).1) })
                         radius:6.5px exponent:1 fill:dial.knob stroke:(width:2px color:dial.grip)
                 }
+                }
             }
             (readout)
             if reading.grips() {
@@ -1696,9 +1760,23 @@ fn limit_grip(handles: &Handles, id: DriveLinkId, low: bool, pivot: State<Vector
     let handles = handles.clone();
     let model = handles.model;
     let travel = move || lane_read(model, id, None, |joint| joint.travel);
+    let linear = move || lane_read(model, id, false, |joint| joint.is_linear);
+    let physical = move || {
+        lane_read(model, id, (-1.0, 1.0), |joint| {
+            joint.physical_travel.unwrap_or((-1.0, 1.0))
+        })
+    };
     let at = move || {
         let degrees = travel().map_or(0.0, |(min, max)| if low { min } else { max });
-        geometry::polar(geometry::GRIP_RADIUS, degrees)
+        if linear() {
+            let (min, max) = physical();
+            (
+                12.0 + ((degrees - min) / (max - min)).clamp(0.0, 1.0) * 108.0,
+                110.0,
+            )
+        } else {
+            geometry::polar(geometry::GRIP_RADIUS, degrees)
+        }
     };
     view! {
         col width:18px height:18px
@@ -1710,11 +1788,16 @@ fn limit_grip(handles: &Handles, id: DriveLinkId, low: bool, pivot: State<Vector
                 let middle = pivot.get_untracked();
                 let across = event.position.x - middle.x;
                 let down = event.position.y - middle.y;
-                if across.hypot(down) < 14.0 {
-                    return;
-                }
-                let step = if event.modifiers.shift { 1.0 } else { 5.0 };
-                let degrees = (across.atan2(-down).to_degrees() / step).round() * step;
+                if !linear() && across.hypot(down) < 14.0 { return; }
+                let degrees = if linear() {
+                    let (min, max) = physical();
+                    let step = if event.modifiers.shift { 0.0025 } else { 0.025 };
+                    let value = min + ((across + 54.0) / 108.0).clamp(0.0, 1.0) * (max - min);
+                    (value / step).round() * step
+                } else {
+                    let step = if event.modifiers.shift { 1.0 } else { 5.0 };
+                    (across.atan2(-down).to_degrees() / step).round() * step
+                };
                 let Some((min, max)) = travel() else { return };
                 let edit = if low {
                     PanelEdit::SetTravel { min: degrees, max }
@@ -1735,17 +1818,18 @@ fn dial_readout(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let model = handles.model;
     let angled = move || angle_mode(model, id, index);
     let value = move || state_of(model, id, index).value;
+    let linear = move || lane_read(model, id, false, |joint| joint.is_linear);
     let unit = move || lane_read(model, id, "RPM", LaneModel::speed_unit_text);
     view! {
         col align:center justify:center nohit {
             text font-size:21px font-weight:700
                 font-color:{ if angled() { color(accent.angle) } else { color(accent.speed) } }
                 {
-                if angled() { format!("{:.0}°", value()) } else { format!("{:.0}", value()) }
+                if linear() { format!("{:+.3}", value()) } else if angled() { format!("{:.0}°", value()) } else { format!("{:.0}", value()) }
             }
             text font-size:11px font-color:ink.faint margin:(top:2px)
                 {
-                if angled() { "degrees" } else { unit() }
+                if angled() { if linear() { "metres" } else { "degrees" } } else { unit() }
             }
         }
     }
@@ -2067,7 +2151,11 @@ fn capability_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
     view! {
         row #mechanic.action height:44px align:center gap:6px pad:(horizontal:7px vertical:0px)
             font-color:{ if which == Chip::Speed { color(chip.speed) } else { color(chip.torque) } }
-            @click:{ handles.edit(id, edit.clone()) } {
+            @click:{
+                if which != Chip::Speed || !lane_read(model, id, false, |joint| joint.is_linear) {
+                    handles.edit(id, edit.clone());
+                }
+            } {
             if which == Chip::Speed {
                 icon size:18px chip-speed
             } else {
@@ -2139,12 +2227,26 @@ fn switch_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
                     icon size:20px chip-once
                 }
             }
-            text width:1fr font-size:12px letter-spacing:-0.12px text-wrap:none
-                {
-                if travel {
-                    lane_read(model, id, String::new(), LaneModel::travel_text)
-                } else {
-                    lane_read(model, id, String::new(), |joint| joint.loop_text().to_owned())
+            if travel && on() && lane_read(model, id, false, |joint| joint.is_linear) {
+                col width:1fr height:min-content gap:1px {
+                    text font-size:11px text-wrap:none {
+                        lane_read(model, id, String::new(), |joint| {
+                            joint.travel.map_or_else(String::new, |(low, _)| format!("{low:+.3} m"))
+                        })
+                    }
+                    text font-size:11px text-wrap:none {
+                        lane_read(model, id, String::new(), |joint| {
+                            joint.travel.map_or_else(String::new, |(_, high)| format!("{high:+.3} m"))
+                        })
+                    }
+                }
+            } else {
+                text width:1fr font-size:12px letter-spacing:-0.12px text-wrap:none {
+                    if travel {
+                        lane_read(model, id, String::new(), LaneModel::travel_text)
+                    } else {
+                        lane_read(model, id, String::new(), |joint| joint.loop_text().to_owned())
+                    }
                 }
             }
         }

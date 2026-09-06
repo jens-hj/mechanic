@@ -33,8 +33,8 @@ struct MechanismBody {
 };
 
 struct Coordinate {
-    angle: f32,
-    angular_velocity: f32,
+    position: f32,
+    velocity: f32,
 };
 
 struct LinkState {
@@ -84,10 +84,17 @@ fn prepare_links(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
 
     let bearing = bearings[mechanism.metadata.y];
-    let angle = coordinates[bearing.metadata.z].angle;
+    let angle = coordinates[bearing.metadata.z].position;
     var relative_rotation = mechanism.bind_relative_rotation;
     var relative_position = mechanism.bind_relative_position.xyz;
-    if mechanism.metadata.z == 0u {
+    if bearing.local_axis_a.w == 1.0 {
+        let displacement = clamp(angle, bearing.local_anchor_a.w, bearing.local_anchor_b.w);
+        if mechanism.metadata.z == 0u {
+            relative_position += bearing.local_axis_a.xyz * displacement;
+        } else {
+            relative_position -= bearing.local_axis_b.xyz * displacement;
+        }
+    } else if mechanism.metadata.z == 0u {
         relative_rotation = quat_multiply(
             axis_rotation(bearing.local_axis_a.xyz, angle),
             mechanism.bind_relative_rotation,

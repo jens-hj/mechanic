@@ -259,6 +259,12 @@ mod tests {
         CreationDocument {
             version: CREATION_FORMAT_VERSION,
             name: name.to_owned(),
+            frames: vec![mechanic_core::ConstructionFrameDoc {
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            }],
+            part_frames: vec![0; parts],
+            region_frames: Vec::new(),
             parts: (0..parts)
                 .map(|index| PartDoc::Cuboid {
                     dimensions: [1, 1, 1],

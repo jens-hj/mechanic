@@ -46,6 +46,9 @@ pub(crate) enum GameAction {
     ToolWelder,
     ToolConnector,
     ToolHammer,
+    FreezeCreation,
+    RaiseFrozenCreation,
+    LowerFrozenCreation,
     MatterBlock,
     MatterCylinder,
     MatterItem,
@@ -67,6 +70,14 @@ pub(crate) enum GameAction {
     BearingOuterIncrease,
     BearingInnerDecrease,
     BearingInnerIncrease,
+    LinearLengthDecrease,
+    LinearLengthIncrease,
+    LinearWidthDecrease,
+    LinearWidthIncrease,
+    LinearLengthFineDecrease,
+    LinearLengthFineIncrease,
+    LinearWidthFineDecrease,
+    LinearWidthFineIncrease,
     CylinderOuterDecrease,
     CylinderOuterIncrease,
     CylinderInnerDecrease,
@@ -78,7 +89,7 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 59] = [
+    pub(crate) const ALL: [Self; 70] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -130,6 +141,14 @@ impl GameAction {
         Self::BearingOuterIncrease,
         Self::BearingInnerDecrease,
         Self::BearingInnerIncrease,
+        Self::LinearLengthDecrease,
+        Self::LinearLengthIncrease,
+        Self::LinearWidthDecrease,
+        Self::LinearWidthIncrease,
+        Self::LinearLengthFineDecrease,
+        Self::LinearLengthFineIncrease,
+        Self::LinearWidthFineDecrease,
+        Self::LinearWidthFineIncrease,
         Self::CylinderOuterDecrease,
         Self::CylinderOuterIncrease,
         Self::CylinderInnerDecrease,
@@ -138,6 +157,9 @@ impl GameAction {
         Self::CylinderLengthIncrease,
         Self::CylinderSweepDecrease,
         Self::CylinderSweepIncrease,
+        Self::FreezeCreation,
+        Self::RaiseFrozenCreation,
+        Self::LowerFrozenCreation,
     ];
 
     pub(crate) const TOOL_ACTIONS: [(Self, crate::hotbar::MainTool); 4] = [
@@ -216,6 +238,9 @@ impl GameAction {
             Self::ToolWelder => "Welder",
             Self::ToolConnector => "Connector",
             Self::ToolHammer => "Hammer",
+            Self::FreezeCreation => "Freeze / Release Active Creation",
+            Self::RaiseFrozenCreation => "Raise Frozen Creation",
+            Self::LowerFrozenCreation => "Lower Frozen Creation",
             Self::MatterBlock => "Matter: Block",
             Self::MatterCylinder => "Matter: Cylinder",
             Self::MatterItem => "Matter: Item Placer",
@@ -237,6 +262,15 @@ impl GameAction {
             Self::BearingOuterIncrease => "Bearing Outer +",
             Self::BearingInnerDecrease => "Bearing Inner -",
             Self::BearingInnerIncrease => "Bearing Inner +",
+            Self::LinearLengthDecrease => "Linear Length -",
+            Self::LinearLengthIncrease => "Linear Length +",
+            Self::LinearWidthDecrease => "Linear Width -",
+            Self::LinearWidthIncrease => "Linear Width +",
+            Self::LinearLengthFineDecrease => "Linear Length Fine -",
+            Self::LinearLengthFineIncrease => "Linear Length Fine +",
+            Self::LinearWidthFineDecrease => "Linear Width Fine -",
+            Self::LinearWidthFineIncrease => "Linear Width Fine +",
+
             Self::CylinderOuterDecrease => "Cylinder Outer -",
             Self::CylinderOuterIncrease => "Cylinder Outer +",
             Self::CylinderInnerDecrease => "Cylinder Inner -",
@@ -291,6 +325,9 @@ impl GameAction {
             | Self::MatterTerrain
             | Self::MatterManipulate
             | Self::MatterChroma => "Tools",
+            Self::FreezeCreation | Self::RaiseFrozenCreation | Self::LowerFrozenCreation => {
+                "Hammer"
+            }
             Self::ShapeMirrorX
             | Self::ShapeMirrorZ
             | Self::ShapeSnap
@@ -320,10 +357,24 @@ impl GameAction {
                 | Self::PrecisionPlacement
                 | Self::ToggleObjectSnap
                 | Self::SelectionModifier
+                | Self::RaiseFrozenCreation
+                | Self::LowerFrozenCreation
         )
     }
 
     const fn intentionally_shares_binding_with(self, other: Self) -> bool {
+        if (self.is_hammer_action() && other.is_other_tool_action())
+            || (other.is_hammer_action() && self.is_other_tool_action())
+        {
+            return true;
+        }
+        // Dimension shortcuts belong to the active placeable. Linear fine
+        // chords must not shadow the existing tools' modifier handling.
+        if (self.is_linear_dimension() && other.is_other_dimension_or_nudge())
+            || (other.is_linear_dimension() && self.is_other_dimension_or_nudge())
+        {
+            return true;
+        }
         matches!(
             (self, other),
             (Self::Sprint, Self::FinePlacement | Self::SelectionModifier)
@@ -332,6 +383,80 @@ impl GameAction {
                 | (Self::FreePlacementRangeIncrease, Self::ZoomIn)
                 | (Self::ZoomOut, Self::FreePlacementRangeDecrease)
                 | (Self::FreePlacementRangeDecrease, Self::ZoomOut)
+        )
+    }
+
+    const fn is_hammer_action(self) -> bool {
+        matches!(
+            self,
+            Self::FreezeCreation | Self::RaiseFrozenCreation | Self::LowerFrozenCreation
+        )
+    }
+
+    const fn is_other_tool_action(self) -> bool {
+        self.is_linear_dimension()
+            || self.is_other_dimension_or_nudge()
+            || matches!(
+                self,
+                Self::FinePlacement
+                    | Self::PrecisionPlacement
+                    | Self::ToggleObjectSnap
+                    | Self::ObjectSnapRangeIncrease
+                    | Self::ObjectSnapRangeDecrease
+                    | Self::FreePlacementRangeIncrease
+                    | Self::FreePlacementRangeDecrease
+                    | Self::MaterialWheel
+                    | Self::ClearPipette
+                    | Self::Rotate
+                    | Self::PipeTurn
+                    | Self::ShapeMirrorX
+                    | Self::ShapeMirrorZ
+                    | Self::ShapeSnap
+                    | Self::SelectionModifier
+            )
+    }
+
+    fn available_for_tool(self, tool: Option<crate::hotbar::MainTool>) -> bool {
+        if self.is_hammer_action() {
+            tool == Some(crate::hotbar::MainTool::Hammer)
+        } else {
+            tool != Some(crate::hotbar::MainTool::Hammer) || !self.is_other_tool_action()
+        }
+    }
+
+    const fn is_linear_dimension(self) -> bool {
+        matches!(
+            self,
+            Self::LinearLengthDecrease
+                | Self::LinearLengthIncrease
+                | Self::LinearWidthDecrease
+                | Self::LinearWidthIncrease
+                | Self::LinearLengthFineDecrease
+                | Self::LinearLengthFineIncrease
+                | Self::LinearWidthFineDecrease
+                | Self::LinearWidthFineIncrease
+        )
+    }
+
+    const fn is_other_dimension_or_nudge(self) -> bool {
+        matches!(
+            self,
+            Self::BearingOuterDecrease
+                | Self::BearingOuterIncrease
+                | Self::BearingInnerDecrease
+                | Self::BearingInnerIncrease
+                | Self::CylinderOuterDecrease
+                | Self::CylinderOuterIncrease
+                | Self::CylinderInnerDecrease
+                | Self::CylinderInnerIncrease
+                | Self::CylinderLengthDecrease
+                | Self::CylinderLengthIncrease
+                | Self::CylinderSweepDecrease
+                | Self::CylinderSweepIncrease
+                | Self::NudgeLeft
+                | Self::NudgeRight
+                | Self::NudgeUp
+                | Self::NudgeDown
         )
     }
 }
@@ -620,6 +745,17 @@ impl Default for Controls {
         }
         set(A::ClearPipette, Some(InputChord::key(K::KeyQ)), None);
         set(A::Rotate, Some(InputChord::key(K::KeyR)), None);
+        set(A::FreezeCreation, Some(InputChord::key(K::KeyF)), None);
+        set(
+            A::RaiseFrozenCreation,
+            Some(InputChord::key(K::ArrowUp)),
+            None,
+        );
+        set(
+            A::LowerFrozenCreation,
+            Some(InputChord::key(K::ArrowDown)),
+            None,
+        );
         set(A::PipeTurn, Some(InputChord::key(K::KeyF)), None);
         set(A::ShapeMirrorX, Some(InputChord::key(K::KeyX)), None);
         set(A::ShapeMirrorZ, Some(InputChord::key(K::KeyZ)), None);
@@ -651,6 +787,46 @@ impl Default for Controls {
         set(
             A::BearingInnerIncrease,
             Some(InputChord::key(K::ArrowRight).with_shift()),
+            None,
+        );
+        set(
+            A::LinearLengthDecrease,
+            Some(InputChord::key(K::ArrowLeft)),
+            None,
+        );
+        set(
+            A::LinearLengthIncrease,
+            Some(InputChord::key(K::ArrowRight)),
+            None,
+        );
+        set(
+            A::LinearWidthDecrease,
+            Some(InputChord::key(K::ArrowLeft).with_shift()),
+            None,
+        );
+        set(
+            A::LinearWidthIncrease,
+            Some(InputChord::key(K::ArrowRight).with_shift()),
+            None,
+        );
+        set(
+            A::LinearLengthFineDecrease,
+            Some(InputChord::key(K::ArrowLeft).with_control()),
+            None,
+        );
+        set(
+            A::LinearLengthFineIncrease,
+            Some(InputChord::key(K::ArrowRight).with_control()),
+            None,
+        );
+        set(
+            A::LinearWidthFineDecrease,
+            Some(InputChord::key(K::ArrowLeft).with_shift().with_control()),
+            None,
+        );
+        set(
+            A::LinearWidthFineIncrease,
+            Some(InputChord::key(K::ArrowRight).with_shift().with_control()),
             None,
         );
         set(
@@ -885,7 +1061,32 @@ impl<'a> ActionInput<'a> {
     pub(crate) fn just_released(&self, action: GameAction) -> bool {
         self.matches(action, MatchKind::JustReleased)
     }
+    pub(crate) fn pressed_for_tool(
+        &self,
+        action: GameAction,
+        tool: crate::hotbar::MainTool,
+    ) -> bool {
+        self.matches_for_tool(action, MatchKind::Pressed, Some(tool))
+    }
+    pub(crate) fn just_pressed_for_tool(
+        &self,
+        action: GameAction,
+        tool: crate::hotbar::MainTool,
+    ) -> bool {
+        self.matches_for_tool(action, MatchKind::JustPressed, Some(tool))
+    }
     fn matches(&self, action: GameAction, kind: MatchKind) -> bool {
+        self.matches_for_tool(action, kind, None)
+    }
+    fn matches_for_tool(
+        &self,
+        action: GameAction,
+        kind: MatchKind,
+        tool: Option<crate::hotbar::MainTool>,
+    ) -> bool {
+        if !action.available_for_tool(tool) {
+            return false;
+        }
         self.controls[action].0.into_iter().flatten().any(|chord| {
             let movement_owns_chord = matches!(
                 action,
@@ -912,7 +1113,9 @@ impl<'a> ActionInput<'a> {
             // This keeps Shift+Space from also pausing while still allowing
             // Shift+left mouse and Shift+W when no such chord is configured.
             let shadowed = GameAction::ALL.into_iter().any(|candidate| {
-                if action.intentionally_shares_binding_with(candidate) {
+                if !candidate.available_for_tool(tool)
+                    || action.intentionally_shares_binding_with(candidate)
+                {
                     return false;
                 }
                 self.controls[candidate]
@@ -991,6 +1194,113 @@ impl fmt::Display for WheelDirection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hammer_bindings_only_apply_in_the_hammer_context() {
+        use crate::hotbar::MainTool;
+        let mut controls = Controls::default();
+        let mut keyboard = ButtonInput::default();
+        let mouse = ButtonInput::default();
+        for (action, key) in [
+            (GameAction::FreezeCreation, KeyCode::KeyF),
+            (GameAction::RaiseFrozenCreation, KeyCode::ArrowUp),
+            (GameAction::LowerFrozenCreation, KeyCode::ArrowDown),
+        ] {
+            assert!(GameAction::ALL.contains(&action));
+            assert_eq!(controls.binding(action).0[0], Some(InputChord::key(key)));
+            assert_eq!(action.group(), "Hammer");
+            assert!(!controls.conflicts(action));
+        }
+        keyboard.press(KeyCode::KeyF);
+        keyboard.press(KeyCode::ArrowUp);
+        let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
+        assert!(!controls.conflicts(GameAction::FreezeCreation));
+        assert!(!controls.conflicts(GameAction::RaiseFrozenCreation));
+        assert!(!input.just_pressed(GameAction::FreezeCreation));
+        assert!(input.just_pressed(GameAction::PipeTurn));
+        assert!(input.just_pressed_for_tool(GameAction::FreezeCreation, MainTool::Hammer));
+        assert!(input.pressed_for_tool(GameAction::RaiseFrozenCreation, MainTool::Hammer));
+        assert!(!input.just_pressed_for_tool(GameAction::PipeTurn, MainTool::Hammer));
+        assert!(!input.pressed_for_tool(GameAction::RaiseFrozenCreation, MainTool::Welder));
+
+        controls.set(
+            GameAction::FreezeCreation,
+            0,
+            Some(InputChord::key(KeyCode::KeyF).with_shift()),
+        );
+        keyboard.press(KeyCode::ShiftLeft);
+        let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
+        assert!(input.just_pressed(GameAction::PipeTurn));
+        assert!(input.just_pressed_for_tool(GameAction::FreezeCreation, MainTool::Hammer));
+        assert!(input.pressed_for_tool(GameAction::RaiseFrozenCreation, MainTool::Hammer));
+    }
+
+    #[test]
+    fn linear_dimensions_have_distinct_rebindable_coarse_and_fine_chords() {
+        let controls = Controls::default();
+        let actions = [
+            GameAction::LinearLengthDecrease,
+            GameAction::LinearLengthIncrease,
+            GameAction::LinearWidthDecrease,
+            GameAction::LinearWidthIncrease,
+            GameAction::LinearLengthFineDecrease,
+            GameAction::LinearLengthFineIncrease,
+            GameAction::LinearWidthFineDecrease,
+            GameAction::LinearWidthFineIncrease,
+        ];
+        for (index, expected) in actions.into_iter().enumerate() {
+            let mut keyboard = ButtonInput::default();
+            keyboard.press(if index % 2 == 0 {
+                KeyCode::ArrowLeft
+            } else {
+                KeyCode::ArrowRight
+            });
+            if index % 4 >= 2 {
+                keyboard.press(KeyCode::ShiftLeft);
+            }
+            if index >= 4 {
+                keyboard.press(KeyCode::ControlLeft);
+            }
+            let mouse = ButtonInput::default();
+            let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
+            for action in actions {
+                assert_eq!(
+                    input.just_pressed(action),
+                    action == expected,
+                    "{expected:?} versus {action:?}"
+                );
+            }
+            assert!(GameAction::ALL.contains(&expected));
+            assert_eq!(expected.group(), "Dimensions");
+            assert!(expected.instantaneous());
+        }
+        let mut rebound = controls;
+        rebound.set(
+            GameAction::LinearLengthFineIncrease,
+            0,
+            Some(InputChord::key(KeyCode::KeyL)),
+        );
+        assert_eq!(rebound.label(GameAction::LinearLengthFineIncrease), "L");
+    }
+
+    #[test]
+    fn linear_fine_shortcuts_preserve_other_placeables_control_arrows() {
+        let controls = Controls::default();
+        let mut keyboard = ButtonInput::default();
+        let mouse = ButtonInput::default();
+        keyboard.press(KeyCode::ControlLeft);
+        keyboard.press(KeyCode::ArrowRight);
+        let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
+        assert!(input.just_pressed(GameAction::BearingOuterIncrease));
+        assert!(input.just_pressed(GameAction::CylinderOuterIncrease));
+        assert!(input.just_pressed(GameAction::LinearLengthFineIncrease));
+        keyboard.press(KeyCode::ShiftLeft);
+        let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
+        assert!(input.just_pressed(GameAction::BearingInnerIncrease));
+        assert!(input.just_pressed(GameAction::CylinderInnerIncrease));
+        assert!(input.just_pressed(GameAction::LinearWidthFineIncrease));
+        assert!(!input.just_pressed(GameAction::BearingOuterIncrease));
+    }
 
     #[test]
     fn defaults_use_r_for_rotate_and_q_for_clear_pipette() {

@@ -367,7 +367,7 @@ pub struct KinematicCapsuleConfig {
     pub step_height: f64,
     /// Maximum walkable surface angle in radians.
     pub maximum_slope: f64,
-    /// Peak ballistic jump height.
+    /// Peak ballistic jump height for a tap; holding jump adds up to 50%.
     pub jump_height: f64,
     /// Horizontal walking speed.
     pub walk_speed: f64,
@@ -419,6 +419,8 @@ pub struct KinematicInput {
     pub sprint: bool,
     /// True only on the tick a jump is requested.
     pub jump: bool,
+    /// Whether jump is still held, sustaining lift until release or the apex.
+    pub jump_held: bool,
 }
 
 /// Persistent moving-platform attachment in compound-local coordinates.
@@ -511,6 +513,7 @@ pub struct KinematicCapsule {
     pub config: KinematicCapsuleConfig,
     /// Moving construction supporting the last tick, if any.
     pub support: Option<KinematicSupport>,
+    jump_sustained: bool,
 }
 
 impl KinematicCapsule {
@@ -522,6 +525,7 @@ impl KinematicCapsule {
             grounded: false,
             config: KinematicCapsuleConfig::default(),
             support: None,
+            jump_sustained: false,
         }
     }
 
@@ -558,6 +562,9 @@ impl KinematicCapsule {
                 self.support = None;
                 self.grounded = false;
             }
+        }
+        if self.grounded || !input.jump_held || self.velocity.y <= 0.0 {
+            self.jump_sustained = false;
         }
         let started_grounded = self.grounded;
         let retained_support = self.support;
@@ -599,6 +606,7 @@ impl KinematicCapsule {
             self.support = None;
         }
         if input.jump && self.grounded {
+            self.jump_sustained = input.jump_held;
             self.velocity.x += f64::from(support_velocity.x);
             self.velocity.y = f64::from(support_velocity.y)
                 + (2.0 * self.config.airborne_gravity * self.config.jump_height).sqrt();
@@ -608,7 +616,14 @@ impl KinematicCapsule {
         } else if self.grounded {
             self.velocity.y = 0.0;
         } else {
-            self.velocity.y -= self.config.airborne_gravity * delta_seconds;
+            // With the same launch speed, two-thirds gravity gives 1.5 times
+            // the rise. Release permanently ends the boost for this jump.
+            let gravity = if self.jump_sustained {
+                self.config.airborne_gravity / 1.5
+            } else {
+                self.config.airborne_gravity
+            };
+            self.velocity.y -= gravity * delta_seconds;
         }
 
         let mut displacement = self.velocity * delta_seconds;
@@ -1340,6 +1355,7 @@ mod tests {
                 movement: DVec2::ZERO,
                 sprint: false,
                 jump: true,
+                jump_held: false,
             },
         );
         let mut peak = capsule.position.0.y;
@@ -1360,6 +1376,63 @@ mod tests {
             (28..=32).contains(&airborne_ticks),
             "jump lasted {airborne_ticks} ticks"
         );
+    }
+
+    fn jump_peak(held: impl Fn(usize) -> bool) -> f64 {
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::ZERO));
+        capsule.grounded = true;
+        let mut peak: f64 = 0.0;
+        for tick in 0..120 {
+            tick_terrain(
+                &mut capsule,
+                &Plane,
+                KinematicInput {
+                    jump: tick == 0,
+                    jump_held: held(tick),
+                    ..KinematicInput::default()
+                },
+            );
+            peak = peak.max(capsule.position.0.y);
+            if tick > 60 {
+                assert!(capsule.grounded, "holding jump must not repeat on landing");
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn holding_jump_progressively_increases_height_by_up_to_fifty_percent() {
+        let tap = jump_peak(|_| false);
+        let short_hold = jump_peak(|tick| tick < 6);
+        let long_hold = jump_peak(|tick| tick < 12);
+        let full_hold = jump_peak(|_| true);
+        assert!(tap < short_hold && short_hold < long_hold && long_hold < full_hold);
+        assert!(
+            (full_hold / tap - 1.5).abs() < 0.04,
+            "tap {tap}, held {full_hold}"
+        );
+    }
+
+    #[test]
+    fn pressing_jump_again_in_midair_does_not_restore_extra_lift() {
+        let released = jump_peak(|tick| tick < 6);
+        let pressed_again = jump_peak(|tick| tick != 6);
+        assert!((released - pressed_again).abs() < 1.0e-10);
+    }
+
+    #[test]
+    fn holding_jump_during_a_fall_does_not_slow_gravity() {
+        let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(0.0, 10.0, 0.0)));
+        tick_terrain(
+            &mut capsule,
+            &Plane,
+            KinematicInput {
+                jump: true,
+                jump_held: true,
+                ..KinematicInput::default()
+            },
+        );
+        assert!((capsule.velocity.y + capsule.config.airborne_gravity / 60.0).abs() < 1.0e-10);
     }
 
     #[test]
@@ -1498,6 +1571,7 @@ mod tests {
             movement: DVec2::X,
             sprint: false,
             jump: false,
+            jump_held: false,
         };
         let mut wall_scene = KinematicCollisionScene {
             terrain: &Empty,
@@ -1538,6 +1612,7 @@ mod tests {
                     movement: DVec2::X,
                     sprint: false,
                     jump: false,
+                    jump_held: false,
                 },
             );
             tick_terrain(
@@ -1547,6 +1622,7 @@ mod tests {
                     movement: DVec2::X,
                     sprint: true,
                     jump: false,
+                    jump_held: false,
                 },
             );
         }
@@ -1658,6 +1734,7 @@ mod tests {
                 movement: DVec2::ZERO,
                 sprint: false,
                 jump: true,
+                jump_held: false,
             },
             1.0 / 60.0,
         );
@@ -1723,6 +1800,7 @@ mod tests {
                     movement: DVec2::X,
                     sprint: false,
                     jump: false,
+                    jump_held: false,
                 },
                 1.0 / 60.0,
             );
@@ -1795,6 +1873,7 @@ mod tests {
                 movement: direction,
                 sprint: false,
                 jump: false,
+                jump_held: false,
             },
             1.0 / 60.0,
         );
@@ -1842,6 +1921,7 @@ mod tests {
                     movement: DVec2::X,
                     sprint: false,
                     jump: false,
+                    jump_held: false,
                 },
                 1.0 / 60.0,
             );

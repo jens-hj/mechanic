@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use bevy_math::{IVec3, Vec3};
+use bevy_math::{IVec3, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -30,7 +30,7 @@ use crate::{
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 14;
+pub const CREATION_FORMAT_VERSION: u32 = 16;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -40,6 +40,10 @@ const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 /// machine reloads exactly as it was left.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BearingSocket {
+    /// Physical motion variant and rail frame.
+    pub kind: crate::BearingKind,
+    /// World-space travel axis for a linear socket.
+    pub axis: Vec3,
     /// Face the ring sits on.
     pub source: FaceRef,
     /// World-space point the ring is centred on.
@@ -51,11 +55,29 @@ pub struct BearingSocket {
 /// Reason a creation file could not be turned back into a graph.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum CreationError {
+    /// Invalid saved linear socket frame.
+    #[error(transparent)]
+    LinearBearing(#[from] crate::LinearBearingError),
     /// The file was written by a different format version.
     #[error(
         "creation format version {0} is not supported; this build reads versions {OLDEST_CREATION_FORMAT_VERSION} through {CREATION_FORMAT_VERSION}"
     )]
     UnsupportedVersion(u32),
+    /// Frame transform is not finite and rigid.
+    #[error(transparent)]
+    Frame(#[from] crate::FrameError),
+    /// Membership must provide exactly one frame for each saved part.
+    #[error("construction frame membership count does not match part count")]
+    FrameMembershipCount,
+    /// Membership must provide exactly one frame for each saved shape region.
+    #[error("construction frame membership count does not match region count")]
+    RegionFrameMembershipCount,
+    /// A frame membership names a missing frame row.
+    #[error("creation references construction frame {0}, which the file does not define")]
+    MissingFrame(u32),
+    /// Transmission attachments share their parent's authored grid.
+    #[error("transmission part {0} must share its parent's construction frame")]
+    TransmissionFrame(u32),
     /// A record referenced a part the file does not define.
     #[error("creation references part {0}, which the file does not define")]
     MissingPart(u32),
@@ -323,6 +345,8 @@ pub struct RigidLinkDoc {
 /// One-degree-of-freedom bearing in its serialized form.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BearingDoc {
+    /// Motion kind and complete rail configuration.
+    pub kind: crate::BearingKind,
     /// Face whose outward normal establishes the axis.
     pub source: FaceRefDoc,
     /// Compatible face on the attached side.
@@ -340,6 +364,10 @@ pub struct BearingDoc {
 /// Unattached bearing ring in its serialized form.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BearingSocketDoc {
+    /// Physical motion variant and rail frame.
+    pub kind: crate::BearingKind,
+    /// World-space travel axis for a linear socket.
+    pub axis: [f32; 3],
     /// Face the ring sits on.
     pub source: FaceRefDoc,
     /// World-space point the ring is centred on.
@@ -403,6 +431,8 @@ pub struct DriveProgramDoc {
 /// Wire from a control block to one bearing, in its serialized form.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DriveLinkDoc {
+    /// Typed linear limits in SI units.
+    pub linear_limits: Option<crate::LinearDriveLimits>,
     /// Index of the control-block part this wire belongs to.
     pub controller: u32,
     /// Index of the bearing driven through this wire.
@@ -459,8 +489,16 @@ pub struct GearboxConfigDoc {
     pub gear_down: GearKeyChord,
 }
 
-/// A whole saved creation: everything the editor authors, and nothing it
-/// derives.
+/// Rigid transform of an authored local construction grid.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConstructionFrameDoc {
+    /// Translation from the local grid into build space, in metres.
+    pub translation: [f32; 3],
+    /// Unit quaternion in x/y/z/w order.
+    pub rotation: [f32; 4],
+}
+
+/// Serializable authored construction and its dense relationship rows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CreationDocument {
     /// Format version. See [`CREATION_FORMAT_VERSION`].
@@ -470,6 +508,12 @@ pub struct CreationDocument {
     pub name: String,
     /// Parts, in the order every other record indexes them by.
     pub parts: Vec<PartDoc>,
+    /// Rigid authored grids, indexed by `part_frames`.
+    pub frames: Vec<ConstructionFrameDoc>,
+    /// Exactly one dense frame index per saved part.
+    pub part_frames: Vec<u32>,
+    /// Exactly one dense frame index per saved shape region.
+    pub region_frames: Vec<u32>,
     /// Welds between touching faces.
     #[serde(default)]
     pub welds: Vec<WeldDoc>,
@@ -531,7 +575,15 @@ impl CreationDocument {
     /// # Errors
     ///
     /// Returns [`CreationError::TooManyRows`] if a remapped row index exceeds `u32`.
+    #[allow(clippy::too_many_lines)] // Dense relationship remapping is one transaction.
     pub fn append(&mut self, mut other: Self) -> Result<(), CreationError> {
+        let frame_offset =
+            u32::try_from(self.frames.len()).map_err(|_| CreationError::TooManyRows)?;
+        for frame in other.part_frames.iter_mut().chain(&mut other.region_frames) {
+            *frame = frame
+                .checked_add(frame_offset)
+                .ok_or(CreationError::TooManyRows)?;
+        }
         let part_offset =
             u32::try_from(self.parts.len()).map_err(|_| CreationError::TooManyRows)?;
         let bearing_offset =
@@ -616,6 +668,9 @@ impl CreationDocument {
                 }
             }
         }
+        self.frames.append(&mut other.frames);
+        self.part_frames.append(&mut other.part_frames);
+        self.region_frames.append(&mut other.region_frames);
         self.parts.append(&mut other.parts);
         self.welds.append(&mut other.welds);
         self.rigid_links.append(&mut other.rigid_links);
@@ -658,12 +713,32 @@ impl CreationDocument {
                 .quarter_turns_xyz();
         }
         let translation = translation_half_units.as_vec3() * (crate::GRID_UNIT_METERS * 0.5);
+        let cardinal = GridRotation::new(0, yaw, 0).quaternion();
+        for frame in &mut self.frames {
+            if Vec3::from_array(frame.translation) == Vec3::ZERO
+                && Quat::from_array(frame.rotation) == Quat::IDENTITY
+            {
+                continue;
+            }
+            let rotation = cardinal * Quat::from_array(frame.rotation) * cardinal.conjugate();
+            frame.translation = (cardinal * Vec3::from_array(frame.translation) + translation
+                - rotation * translation)
+                .to_array();
+            frame.rotation = rotation.to_array();
+        }
         for bearing in &mut self.bearings {
             bearing.anchor =
                 (rotate_y_vec3(Vec3::from_array(bearing.anchor), yaw) + translation).to_array();
             bearing.axis = rotate_y_vec3(Vec3::from_array(bearing.axis), yaw).to_array();
+            if let crate::BearingKind::Linear(rail) = &mut bearing.kind {
+                rail.mount_normal = rotate_y_vec3(rail.mount_normal, yaw);
+            }
         }
         for socket in &mut self.sockets {
+            socket.axis = rotate_y_vec3(Vec3::from_array(socket.axis), yaw).to_array();
+            if let crate::BearingKind::Linear(rail) = &mut socket.kind {
+                rail.mount_normal = rotate_y_vec3(rail.mount_normal, yaw);
+            }
             socket.anchor =
                 (rotate_y_vec3(Vec3::from_array(socket.anchor), yaw) + translation).to_array();
         }
@@ -682,6 +757,9 @@ impl CreationDocument {
     /// Never in practice: the arenas already refuse to exceed `u32` indices.
     #[allow(clippy::too_many_lines)] // The document snapshot keeps all index remapping together.
     pub fn from_graph(graph: &ConstructionGraph, name: &str, sockets: &[BearingSocket]) -> Self {
+        let view_to_build = graph.view_to_build();
+        let graph = graph.canonicalized();
+        let frame_indices = index_map(graph.construction_frames().map(|(id, _)| id));
         let part_indices = index_map(graph.parts().map(|(id, _)| id));
         let bearing_indices = index_map(graph.bearings().map(|(id, _)| id));
         let region_indices = index_map(graph.regions().map(|(id, _)| id));
@@ -696,6 +774,27 @@ impl CreationDocument {
         Self {
             version: CREATION_FORMAT_VERSION,
             name: name.to_owned(),
+            region_frames: graph
+                .regions()
+                .map(|(region, _)| {
+                    frame_indices[&graph
+                        .region_frame_id(region)
+                        .expect("live regions have a frame")]
+                })
+                .collect(),
+            frames: graph
+                .construction_frames()
+                .map(|(_, frame)| ConstructionFrameDoc {
+                    translation: frame.translation().to_array(),
+                    rotation: frame.rotation().to_array(),
+                })
+                .collect(),
+            part_frames: graph
+                .parts()
+                .map(|(part, _)| {
+                    frame_indices[&graph.part_frame_id(part).expect("live parts have a frame")]
+                })
+                .collect(),
             parts: graph
                 .parts()
                 .map(|(id, spec)| part_doc(*spec, graph.transmission_parent(id).map(&part)))
@@ -757,6 +856,7 @@ impl CreationDocument {
             bearings: graph
                 .bearings()
                 .map(|(_, bearing)| BearingDoc {
+                    kind: bearing.kind,
                     source: face(bearing.source),
                     target: face(bearing.target),
                     anchor: bearing.shared_anchor.to_array(),
@@ -768,6 +868,7 @@ impl CreationDocument {
             drive_links: graph
                 .drive_links()
                 .map(|(_, link)| DriveLinkDoc {
+                    linear_limits: link.linear_limits,
                     controller: part(link.controller),
                     bearing: *bearing_indices
                         .get(&link.bearing)
@@ -810,7 +911,22 @@ impl CreationDocument {
                 .collect(),
             sockets: sockets
                 .iter()
+                .map(|socket| {
+                    let mut socket = *socket;
+                    // Preserve canonical rows exactly, including floating-point
+                    // bit patterns, instead of applying a nominal identity map.
+                    if view_to_build != crate::ConstructionFrame::IDENTITY {
+                        socket.anchor = view_to_build.point(socket.anchor);
+                        socket.axis = view_to_build.vector(socket.axis);
+                        if let crate::BearingKind::Linear(ref mut rail) = socket.kind {
+                            rail.mount_normal = view_to_build.vector(rail.mount_normal);
+                        }
+                    }
+                    socket
+                })
                 .map(|socket| BearingSocketDoc {
+                    kind: socket.kind,
+                    axis: socket.axis.to_array(),
                     source: face(socket.source),
                     anchor: socket.anchor.to_array(),
                     outer_diameter: socket.dimensions.outer_diameter(),
@@ -836,7 +952,39 @@ impl CreationDocument {
             return Err(CreationError::UnsupportedVersion(self.version));
         }
 
+        if self.part_frames.len() != self.parts.len() {
+            return Err(CreationError::FrameMembershipCount);
+        }
+        if self.region_frames.len() != self.regions.len() {
+            return Err(CreationError::RegionFrameMembershipCount);
+        }
+        let frames = self
+            .frames
+            .iter()
+            .map(|frame| {
+                crate::ConstructionFrame::new(
+                    Vec3::from_array(frame.translation),
+                    Quat::from_array(frame.rotation),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for &frame in self.part_frames.iter().chain(&self.region_frames) {
+            if frame as usize >= frames.len() {
+                return Err(CreationError::MissingFrame(frame));
+            }
+        }
         let mut graph = ConstructionGraph::new();
+        let frame_ids = frames
+            .into_iter()
+            .enumerate()
+            .map(|(index, frame)| {
+                if index == 0 && frame == crate::ConstructionFrame::IDENTITY {
+                    Ok(crate::ConstructionFrameId::default())
+                } else {
+                    graph.add_construction_frame(frame)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut part_ids = vec![None; self.parts.len()];
         let mut transmission_children = vec![Vec::new(); self.parts.len()];
         let mut unresolved_transmissions = 0;
@@ -851,6 +999,11 @@ impl CreationDocument {
             let Some(children) = transmission_children.get_mut(parent as usize) else {
                 return Err(CreationError::MissingPart(parent));
             };
+            if self.part_frames[index] != self.part_frames[parent as usize] {
+                return Err(CreationError::TransmissionFrame(
+                    u32::try_from(index).map_err(|_| CreationError::TooManyRows)?,
+                ));
+            }
             children.push(index);
             unresolved_transmissions += 1;
         }
@@ -920,6 +1073,10 @@ impl CreationDocument {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        for (index, &part) in part_ids.iter().enumerate() {
+            graph.assign_part_frame(part, frame_ids[self.part_frames[index] as usize])?;
+        }
+
         // Primitive welds establish rigid membership before Shape regions are
         // claimed. Connections on generated patches wait until feature replay.
         let mut initial_connections = Vec::with_capacity(self.welds.len() + self.rigid_links.len());
@@ -940,7 +1097,8 @@ impl CreationDocument {
             }));
         }
         graph.apply_batch(initial_connections)?;
-        for document in &self.regions {
+        for (index, document) in self.regions.iter().enumerate() {
+            graph.set_edit_frame(frame_ids[self.region_frames[index] as usize])?;
             let region = ShapeRegion::from_origin_steps(
                 IVec3::from_array(document.origin_steps),
                 IVec3::from_array(document.size_cells),
@@ -1009,6 +1167,7 @@ impl CreationDocument {
                     Vec3::from_array(bearing.anchor),
                     Vec3::from_array(bearing.axis),
                 )
+                .with_kind(bearing.kind)
                 .with_dimensions(BearingDimensions::new(
                     bearing.outer_diameter,
                     bearing.inner_diameter,
@@ -1030,6 +1189,7 @@ impl CreationDocument {
             .iter()
             .map(|link| {
                 Ok(BuildCommand::AddDriveLink(DriveLinkSpec {
+                    linear_limits: link.linear_limits,
                     controller: resolve_part(link.controller, &part_ids)?,
                     bearing: *bearing_ids
                         .get(link.bearing as usize)
@@ -1096,7 +1256,12 @@ impl CreationDocument {
             .sockets
             .iter()
             .map(|socket| {
+                if let crate::BearingKind::Linear(rail) = socket.kind {
+                    rail.rotation(Vec3::from_array(socket.axis))?;
+                }
                 Ok(BearingSocket {
+                    kind: socket.kind,
+                    axis: Vec3::from_array(socket.axis),
                     source: resolve_face(socket.source, &part_ids, &feature_ids)?,
                     anchor: Vec3::from_array(socket.anchor),
                     dimensions: BearingDimensions::new(
@@ -1107,6 +1272,7 @@ impl CreationDocument {
             })
             .collect::<Result<Vec<_>, CreationError>>()?;
 
+        graph.set_edit_frame(crate::ConstructionFrameId::default())?;
         Ok(LoadedCreation {
             name: self.name,
             graph,
@@ -1551,7 +1717,7 @@ fn resolve_program(program: &DriveProgramDoc) -> Result<DriveProgram, CreationEr
 
 #[cfg(test)]
 mod tests {
-    use bevy_math::{IVec3, Vec3};
+    use bevy_math::{IVec3, Quat, Vec3};
 
     use super::{
         BearingSocket, CREATION_FORMAT_VERSION, CreationDocument, CreationError, FaceOwnerDoc,
@@ -1574,6 +1740,114 @@ mod tests {
             .expect("test dimensions are in range")
     }
 
+    #[test]
+    fn tool_view_snapshot_restores_canonical_parts_and_socket_frames() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([4; 3], IVec3::ZERO)))
+                .unwrap(),
+        );
+        graph
+            .apply(BuildCommand::Spawn(cuboid([4; 3], IVec3::new(16, 0, 0))))
+            .unwrap();
+        let frame = crate::ConstructionFrame::new(
+            Vec3::new(2.0, 3.0, -1.0),
+            Quat::from_rotation_z(0.4) * Quat::from_rotation_y(-0.7),
+        )
+        .unwrap();
+        graph.reframe_parts([part], frame).unwrap();
+        let view = graph
+            .in_edit_frame(graph.part_frame_id(part).unwrap())
+            .unwrap();
+        let rail = crate::LinearBearing {
+            dimensions: crate::LinearBearingDimensions::default(),
+            mount_normal: Vec3::Y,
+            face: crate::CarriageFace::Top,
+        };
+        let sockets = [
+            crate::BearingKind::Rotational,
+            crate::BearingKind::Linear(rail),
+        ]
+        .map(|kind| BearingSocket {
+            kind,
+            axis: Vec3::X,
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::Y * 0.5,
+            dimensions: BearingDimensions::default(),
+        });
+        let document = CreationDocument::from_graph(&view, "View snapshot", &sockets);
+        let restored = round_trip(&document).into_graph().unwrap();
+        for ((original, _), (loaded, _)) in graph.parts().zip(restored.graph.parts()) {
+            assert!(
+                graph
+                    .part_position(original)
+                    .unwrap()
+                    .abs_diff_eq(restored.graph.part_position(loaded).unwrap(), 1.0e-5)
+            );
+            assert!(
+                graph
+                    .part_rotation(original)
+                    .unwrap()
+                    .abs_diff_eq(restored.graph.part_rotation(loaded).unwrap(), 1.0e-5)
+            );
+        }
+        assert_eq!(
+            restored.graph.view_to_build(),
+            crate::ConstructionFrame::IDENTITY
+        );
+        for socket in restored.sockets {
+            assert!(
+                socket
+                    .anchor
+                    .abs_diff_eq(frame.point(Vec3::Y * 0.5), 1.0e-5)
+            );
+            assert!(socket.axis.abs_diff_eq(frame.vector(Vec3::X), 1.0e-5));
+            if let crate::BearingKind::Linear(rail) = socket.kind {
+                assert!(rail.mount_normal.abs_diff_eq(frame.vector(Vec3::Y), 1.0e-5));
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_socket_snapshot_preserves_exact_coordinate_bits() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([4; 3], IVec3::ZERO)))
+                .unwrap(),
+        );
+        let normal = Vec3::new(-0.0, 1.0, -0.0);
+        let socket = BearingSocket {
+            kind: crate::BearingKind::Linear(crate::LinearBearing {
+                dimensions: crate::LinearBearingDimensions::default(),
+                mount_normal: normal,
+                face: crate::CarriageFace::Top,
+            }),
+            axis: Vec3::new(1.0, -0.0, -0.0),
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::new(-0.0, 0.1, 0.125),
+            dimensions: BearingDimensions::default(),
+        };
+        let document = CreationDocument::from_graph(&graph, "Canonical", &[socket]);
+        let saved = document.sockets[0];
+        assert_eq!(
+            saved.anchor.map(f32::to_bits),
+            socket.anchor.to_array().map(f32::to_bits)
+        );
+        assert_eq!(
+            saved.axis.map(f32::to_bits),
+            socket.axis.to_array().map(f32::to_bits)
+        );
+        let crate::BearingKind::Linear(rail) = saved.kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            rail.mount_normal.to_array().map(f32::to_bits),
+            normal.to_array().map(f32::to_bits)
+        );
+    }
+
     fn spawned(outcome: BuildOutcome) -> crate::PartId {
         match outcome {
             BuildOutcome::Spawned(part) => part,
@@ -1587,8 +1861,255 @@ mod tests {
         ron::from_str(&text).expect("a serialized creation document parses")
     }
 
+    #[test]
+    fn arbitrary_construction_frame_round_trip_preserves_local_grid_and_world_pose() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([2, 2, 2], IVec3::new(4, 8, -2))))
+                .unwrap(),
+        );
+        let local = graph.part(part).unwrap().pose();
+        let frame =
+            crate::ConstructionFrame::new(Vec3::new(3.0, 5.0, -1.0), Quat::from_rotation_y(0.73))
+                .unwrap();
+        graph.reframe_parts([part], frame).unwrap();
+        let original = CreationDocument::from_graph(&graph, "Reframed", &[]);
+        let restored = round_trip(&original).into_graph().unwrap().graph;
+        let part = restored.parts().next().unwrap().0;
+        assert_eq!(restored.part(part).unwrap().pose(), local);
+        assert!(
+            restored
+                .part_position(part)
+                .unwrap()
+                .abs_diff_eq(frame.point(local.translation()), 1.0e-5)
+        );
+        assert_eq!(
+            CreationDocument::from_graph(&restored, "Reframed", &[]),
+            original
+        );
+    }
+
+    #[test]
+    fn cardinal_transfer_applies_once_to_framed_world_geometry() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([2, 2, 2], IVec3::new(4, 8, -2))))
+                .unwrap(),
+        );
+        graph
+            .reframe_parts(
+                [part],
+                crate::ConstructionFrame::new(
+                    Vec3::new(3.0, 5.0, -1.0),
+                    Quat::from_rotation_x(0.43),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let position = graph.part_position(part).unwrap();
+        let rotation = graph.part_rotation(part).unwrap();
+        let cardinal = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let mut document = CreationDocument::from_graph(&graph, "Transfer", &[]);
+        document.transform_cardinal(1, IVec3::new(8, 16, -24));
+        let restored = document.into_graph().unwrap().graph;
+        let part = restored.parts().next().unwrap().0;
+        assert!(
+            restored
+                .part_position(part)
+                .unwrap()
+                .abs_diff_eq(cardinal * position + Vec3::new(1.0, 2.0, -3.0), 1.0e-5)
+        );
+        assert!(
+            restored
+                .part_rotation(part)
+                .unwrap()
+                .abs_diff_eq(cardinal * rotation, 1.0e-5)
+        );
+    }
+
+    #[test]
+    fn append_remaps_frame_membership_without_moving_either_creation() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([1, 1, 1], IVec3::ZERO)))
+                .unwrap(),
+        );
+        let mut first = CreationDocument::from_graph(&graph, "Combined", &[]);
+        graph
+            .reframe_parts(
+                [part],
+                crate::ConstructionFrame::new(Vec3::X * 5.0, Quat::from_rotation_y(0.61)).unwrap(),
+            )
+            .unwrap();
+        first
+            .append(CreationDocument::from_graph(&graph, "Second", &[]))
+            .unwrap();
+        let restored = first.into_graph().unwrap().graph;
+        let positions = restored
+            .parts()
+            .map(|(id, _)| restored.part_position(id).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(positions, vec![Vec3::ZERO, Vec3::X * 5.0]);
+    }
+
+    #[test]
+    fn appended_overlapping_local_regions_round_trip_in_separate_frames() {
+        let mut graph = ConstructionGraph::new();
+        let spec = CuboidSpec::new(
+            [1, 1, 1],
+            BuildPose::from_half_grid(IVec3::ONE, GridRotation::default()),
+        )
+        .unwrap();
+        let part = spawned(graph.apply(BuildCommand::Spawn(spec)).unwrap());
+        let region =
+            ShapeRegion::from_origin_steps(IVec3::ZERO, IVec3::ONE, spec.material).unwrap();
+        graph.apply(BuildCommand::AddRegion(region)).unwrap();
+        let mut document = CreationDocument::from_graph(&graph, "Two grids", &[]);
+        graph
+            .reframe_parts(
+                [part],
+                crate::ConstructionFrame::new(Vec3::X * 5.0, Quat::IDENTITY).unwrap(),
+            )
+            .unwrap();
+        document
+            .append(CreationDocument::from_graph(&graph, "Translated grid", &[]))
+            .unwrap();
+        let restored = round_trip(&document).into_graph().unwrap().graph;
+        let parts = restored.parts().map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(restored.regions().count(), 2);
+        assert_ne!(restored.region_of(parts[0]), restored.region_of(parts[1]));
+        for &part in &parts {
+            assert_eq!(
+                restored.region_frame_id(restored.region_of(part).unwrap()),
+                restored.part_frame_id(part)
+            );
+        }
+        assert!(
+            restored
+                .part_position(parts[0])
+                .unwrap()
+                .abs_diff_eq(Vec3::splat(0.125), 1.0e-5)
+        );
+        assert!(
+            restored
+                .part_position(parts[1])
+                .unwrap()
+                .abs_diff_eq(Vec3::new(5.125, 0.125, 0.125), 1.0e-5)
+        );
+        assert_eq!(
+            restored.edit_frame_id(),
+            crate::ConstructionFrameId::default()
+        );
+        assert_eq!(restored.compile().unwrap().compounds.len(), 2);
+
+        let mut missing = document.clone();
+        missing.region_frames.pop();
+        assert!(matches!(
+            missing.into_graph(),
+            Err(CreationError::RegionFrameMembershipCount)
+        ));
+        document.region_frames[1] = 99;
+        assert!(matches!(
+            document.into_graph(),
+            Err(CreationError::MissingFrame(99))
+        ));
+    }
+
+    #[test]
+    fn framed_transmissions_replay_locally_and_reject_split_membership() {
+        let mut graph = ConstructionGraph::new();
+        let engine = spawned(
+            graph
+                .apply(BuildCommand::SpawnEngine(EngineSpec::new(
+                    EngineKind::Gas,
+                    BuildPose::default(),
+                )))
+                .unwrap(),
+        );
+        let spec = graph.next_transmission_spec(engine).unwrap();
+        let child = spawned(
+            graph
+                .apply(BuildCommand::AttachTransmission {
+                    parent: engine,
+                    spec,
+                })
+                .unwrap(),
+        );
+        graph
+            .reframe_parts(
+                [engine, child],
+                crate::ConstructionFrame::new(
+                    Vec3::new(3.0, 4.0, 5.0),
+                    Quat::from_rotation_z(0.37),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let document = CreationDocument::from_graph(&graph, "Transmission", &[]);
+        let restored = round_trip(&document).into_graph().unwrap().graph;
+        let restored_child = restored
+            .parts()
+            .find_map(|(id, _)| restored.transmission_parent(id).map(|_| id))
+            .unwrap();
+        assert!(
+            restored
+                .part_position(restored_child)
+                .unwrap()
+                .abs_diff_eq(graph.part_position(child).unwrap(), 1.0e-5)
+        );
+        let mut invalid = document;
+        invalid.part_frames[1] = 0;
+        assert!(matches!(
+            invalid.into_graph(),
+            Err(CreationError::TransmissionFrame(1))
+        ));
+    }
+
+    #[test]
+    fn invalid_frames_and_dense_membership_are_rejected() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(cuboid([1, 1, 1], IVec3::ZERO)))
+            .unwrap();
+        let original = CreationDocument::from_graph(&graph, "Invalid", &[]);
+        let mut invalid = original.clone();
+        invalid.part_frames.clear();
+        assert!(matches!(
+            invalid.into_graph(),
+            Err(CreationError::FrameMembershipCount)
+        ));
+        let mut invalid = original.clone();
+        invalid.part_frames[0] = 9;
+        assert!(matches!(
+            invalid.into_graph(),
+            Err(CreationError::MissingFrame(9))
+        ));
+        for frame in [
+            super::ConstructionFrameDoc {
+                translation: [f32::NAN, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            },
+            super::ConstructionFrameDoc {
+                translation: [0.0; 3],
+                rotation: [0.0; 4],
+            },
+        ] {
+            let mut invalid = original.clone();
+            invalid.frames[0] = frame;
+            assert!(matches!(invalid.into_graph(), Err(CreationError::Frame(_))));
+        }
+        assert!(
+            ron::from_str::<CreationDocument>("(version:16,name:\"Missing frames\",parts:[])")
+                .is_err()
+        );
+    }
+
     /// A short tower welded to the ground, carrying a driven bearing, a
     /// control block, a hollow sliced cylinder, and one loose ring.
+    #[allow(clippy::too_many_lines)] // Shared persistence fixture includes all connection records.
     fn sample() -> (ConstructionGraph, Vec<BearingSocket>) {
         let mut graph = ConstructionGraph::new();
         // A 1.0 x 0.5 x 1.0 m slab resting on the ground plane.
@@ -1677,6 +2198,7 @@ mod tests {
         .expect("the program is valid");
         graph
             .apply(BuildCommand::AddDriveLink(DriveLinkSpec {
+                linear_limits: None,
                 controller,
                 bearing,
                 reversed: true,
@@ -1690,6 +2212,8 @@ mod tests {
 
         // A ring placed on the rotor's top face with nothing attached through it.
         let sockets = vec![BearingSocket {
+            kind: crate::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: FaceRef::part(rotor, FaceKind::PositiveY),
             anchor: Vec3::new(0.0, 1.0, 0.0),
             dimensions: BearingDimensions::new(0.3, 0.05)
@@ -2501,13 +3025,15 @@ mod tests {
         let patch_face = FaceRef::patch(part, FaceKind::PositiveX, patch);
         let patch_geometry = graph.face_geometry(patch_face).unwrap();
         let socket = BearingSocket {
+            kind: crate::BearingKind::Rotational,
+            axis: Vec3::ZERO,
             source: patch_face,
             anchor: patch_geometry.center,
             dimensions: BearingDimensions::default(),
         };
 
         let document = CreationDocument::from_graph(&graph, "Features", &[socket]);
-        assert_eq!(document.version, 14);
+        assert_eq!(document.version, CREATION_FORMAT_VERSION);
         assert_eq!(document.shape_features.len(), 2);
         assert!(matches!(
             document.shape_features[1].targets[0].edge.source,
@@ -2525,7 +3051,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_cylinder_features_round_trip_and_compile_under_format_fourteen() {
+    fn nested_cylinder_features_round_trip_and_compile_under_current_format() {
         let mut graph = ConstructionGraph::new();
         let dimensions = CylinderDimensions::new(0.5, 0.0, 0.5).unwrap();
         let BuildOutcome::Spawned(part) = graph
@@ -2578,7 +3104,7 @@ mod tests {
             .unwrap();
 
         let document = CreationDocument::from_graph(&graph, "Nested cylinder", &[]);
-        assert_eq!(document.version, 14);
+        assert_eq!(document.version, CREATION_FORMAT_VERSION);
         let restored = round_trip(&document).into_graph().unwrap().graph;
         let restored_owner = SolidOwner::Part(restored.parts().next().unwrap().0);
         let solid = restored.evaluated_solid(restored_owner).unwrap();

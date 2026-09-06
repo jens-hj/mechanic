@@ -200,16 +200,16 @@ fn run() -> Result<bool, String> {
             &queue,
             &[
                 GpuMechanismCoordinate {
-                    angle: 0.001,
-                    angular_velocity: 0.0,
+                    position: 0.001,
+                    velocity: 0.0,
                 },
                 GpuMechanismCoordinate {
-                    angle: 0.0,
-                    angular_velocity: 0.0,
+                    position: 0.0,
+                    velocity: 0.0,
                 },
                 GpuMechanismCoordinate {
-                    angle: 0.0,
-                    angular_velocity: 0.0,
+                    position: 0.0,
+                    velocity: 0.0,
                 },
             ],
         )

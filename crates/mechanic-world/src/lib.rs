@@ -36,8 +36,8 @@ pub use mesh::{
     mesh_chunk, mesh_chunk_profiled, mesh_chunk_profiled_prepared,
 };
 pub use persistence::{
-    AUTOSAVE_DEBOUNCE, AUTOSAVE_DIRTY_INTERVAL, AutosaveState, OpenWorldResult, SavedWorld,
-    SavedWorldStatus, WORLD_FORMAT_VERSION, WorldCreationInstanceDoc, WorldDocument,
+    AUTOSAVE_DEBOUNCE, AUTOSAVE_DIRTY_INTERVAL, AutosaveState, FrozenCreationDoc, OpenWorldResult,
+    SavedWorld, SavedWorldStatus, WORLD_FORMAT_VERSION, WorldCreationInstanceDoc, WorldDocument,
     WorldInstanceIndexDoc, WorldPoseDoc, WorldSaveError, WorldStore,
 };
 pub use query::{

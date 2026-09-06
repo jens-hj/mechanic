@@ -301,7 +301,10 @@ impl GridRotation {
         let target = GridRotation::new(0, quarter_turns, 0).quaternion() * self.quaternion();
         (0_u8..4)
             .flat_map(|x| (0_u8..4).flat_map(move |y| (0_u8..4).map(move |z| Self::new(x, y, z))))
-            .find(|candidate| candidate.quaternion().abs_diff_eq(target, 1.0e-5))
+            .find(|candidate| {
+                let rotation = candidate.quaternion();
+                rotation.abs_diff_eq(target, 1.0e-5) || rotation.abs_diff_eq(-target, 1.0e-5)
+            })
             .expect("cardinal rotations are closed under composition")
     }
 }

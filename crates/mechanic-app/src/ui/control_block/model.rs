@@ -14,8 +14,8 @@ use crate::control_panel::SpeedUnit;
 use mechanic_core::{
     ActuatorAssignment, ActuatorInventory, DriveDwell, DriveKey, DriveLimits, DriveLinkId,
     DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind,
-    GearKeyChord, GearboxConfig, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
-    MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES, ShiftMode,
+    GearKeyChord, GearboxConfig, LinearDriveLimits, MAX_DRIVE_DWELL_SECONDS,
+    MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES, ShiftMode,
 };
 
 /// Smallest travel range the grips may close to, in degrees. Two limits that
@@ -132,6 +132,124 @@ pub(crate) enum GearboxEdit {
 /// The joint's whole configuration, as the graph stores it.
 type Wire = (DriveLimits, DriveProgram, DriveName);
 
+/// Applies SI edits while keeping programmable travel within the physical stops.
+#[allow(clippy::too_many_lines)] // Linear target and limit edits share one validation boundary.
+pub(crate) fn apply_linear_edit(
+    limits: DriveLimits,
+    mut linear: LinearDriveLimits,
+    mut program: DriveProgram,
+    name: DriveName,
+    physical: [f32; 2],
+    edit: &PanelEdit,
+) -> Option<(DriveLimits, LinearDriveLimits, DriveProgram, DriveName)> {
+    let bounds = (linear.minimum(), linear.maximum());
+    let clamp_target = |target| match target {
+        DriveTarget::LinearPosition(value) => {
+            DriveTarget::LinearPosition(value.clamp(bounds.0, bounds.1))
+        }
+        DriveTarget::LinearSpeed(value) => {
+            DriveTarget::LinearSpeed(value.clamp(-linear.max_speed(), linear.max_speed()))
+        }
+        other => other,
+    };
+    match edit {
+        PanelEdit::SetTravel { min, max } => {
+            if !min.is_finite() || !max.is_finite() {
+                return None;
+            }
+            let min = min.clamp(physical[0], physical[1] - 0.0025);
+            let max = max.clamp(min + 0.0025, physical[1]);
+            linear =
+                LinearDriveLimits::new(linear.max_speed(), linear.max_force(), min, max).ok()?;
+        }
+        PanelEdit::ToggleTravel => {
+            // A physical stop is never disabled. This resets the programmed envelope.
+            linear = LinearDriveLimits::new(
+                linear.max_speed(),
+                linear.max_force(),
+                physical[0],
+                physical[1],
+            )
+            .ok()?;
+        }
+        PanelEdit::SetMode { state, mode } => {
+            let current = program.state(*state)?;
+            let value = reading(current.target());
+            let target = match mode {
+                Mode::Angle => DriveTarget::LinearPosition(value),
+                Mode::Speed => DriveTarget::LinearSpeed(value),
+            };
+            program = program
+                .with_state(*state, current.with_target(clamp_target(target)).ok()?)
+                .ok()?;
+        }
+        PanelEdit::SetValue { state, value } => {
+            if !value.is_finite() {
+                return None;
+            }
+            let current = program.state(*state)?;
+            let target = match current.target() {
+                DriveTarget::LinearPosition(_) => DriveTarget::LinearPosition(*value),
+                DriveTarget::LinearSpeed(_) => DriveTarget::LinearSpeed(*value),
+                _ => return None,
+            };
+            program = program
+                .with_state(*state, current.with_target(clamp_target(target)).ok()?)
+                .ok()?;
+        }
+        PanelEdit::ApplyPreset(preset) => {
+            let position =
+                |value| DriveState::new(clamp_target(DriveTarget::LinearPosition(value))).ok();
+            let speed = |value| DriveState::new(clamp_target(DriveTarget::LinearSpeed(value))).ok();
+            let keyed = |state: DriveState, key, release| {
+                DriveKey::new(key)
+                    .map(|key| state.with_trigger(Some(DriveTrigger::new(key, release))))
+            };
+            let states = match preset {
+                Preset::Steer => vec![
+                    position(0.0)?,
+                    keyed(position(bounds.0 * 0.7)?, 'A', DriveRelease::RevertTo(0))?,
+                    keyed(position(bounds.1 * 0.7)?, 'D', DriveRelease::RevertTo(0))?,
+                ],
+                Preset::Drive => vec![
+                    speed(0.0)?,
+                    keyed(speed(linear.max_speed())?, 'W', DriveRelease::RevertTo(0))?,
+                    keyed(
+                        speed(-linear.max_speed() * 0.7)?,
+                        'S',
+                        DriveRelease::RevertTo(0),
+                    )?,
+                ],
+                Preset::Spin => vec![
+                    keyed(speed(0.0)?, 'Z', DriveRelease::Latch)?,
+                    keyed(speed(linear.max_speed())?, 'X', DriveRelease::Latch)?,
+                ],
+            };
+            program = DriveProgram::new(&states, false).ok()?;
+        }
+        _ => {
+            let (limits, program, name) = apply_edit(limits, program, name, edit)?;
+            return Some((limits, linear, clamp_linear_program(program, linear), name));
+        }
+    }
+    Some((limits, linear, clamp_linear_program(program, linear), name))
+}
+
+fn clamp_linear_program(program: DriveProgram, limits: LinearDriveLimits) -> DriveProgram {
+    fold_states(&program, |state| {
+        let target = match state.target() {
+            DriveTarget::LinearPosition(value) => {
+                DriveTarget::LinearPosition(value.clamp(limits.minimum(), limits.maximum()))
+            }
+            DriveTarget::LinearSpeed(value) => {
+                DriveTarget::LinearSpeed(value.clamp(-limits.max_speed(), limits.max_speed()))
+            }
+            _ => return None,
+        };
+        state.with_target(target).ok()
+    })
+}
+
 /// Folds one edit into a joint's configuration.
 ///
 /// Returns `None` when the edit cannot apply — an unparseable number, a value
@@ -205,6 +323,8 @@ pub(crate) fn apply_edit(
         PanelEdit::SetValue { state, value } => {
             let current = program.state(*state)?;
             let target = match current.target() {
+                DriveTarget::LinearPosition(_) => DriveTarget::LinearPosition(*value),
+                DriveTarget::LinearSpeed(_) => DriveTarget::LinearSpeed(*value),
                 DriveTarget::Angle(_) => {
                     let radians = value.to_radians();
                     let (low, high) = limits
@@ -332,6 +452,8 @@ pub(crate) fn apply_edit(
             let target = match program.state(last)?.target() {
                 DriveTarget::Angle(_) => DriveTarget::Angle(0.0),
                 DriveTarget::Speed(_) => DriveTarget::Speed(0.0),
+                DriveTarget::LinearPosition(_) => DriveTarget::LinearPosition(0.0),
+                DriveTarget::LinearSpeed(_) => DriveTarget::LinearSpeed(0.0),
             };
             Some((
                 limits,
@@ -351,8 +473,8 @@ pub(crate) fn apply_edit(
 /// The raw number behind a target, whichever unit it is in.
 const fn reading(target: DriveTarget) -> f32 {
     match target {
-        DriveTarget::Angle(angle) => angle,
-        DriveTarget::Speed(speed) => speed,
+        DriveTarget::Angle(angle) | DriveTarget::LinearPosition(angle) => angle,
+        DriveTarget::Speed(speed) | DriveTarget::LinearSpeed(speed) => speed,
     }
 }
 
@@ -403,7 +525,9 @@ fn clamped_angles(program: &DriveProgram, limits: DriveLimits) -> DriveProgram {
         DriveTarget::Angle(angle) => state
             .with_target(DriveTarget::Angle(angle.clamp(low, high)))
             .ok(),
-        DriveTarget::Speed(_) => None,
+        DriveTarget::Speed(_) | DriveTarget::LinearPosition(_) | DriveTarget::LinearSpeed(_) => {
+            None
+        }
     })
 }
 
@@ -535,6 +659,10 @@ impl StateModel {
 /// One joint's lane.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LaneModel {
+    /// Linear lanes read metres, metres per second, and newtons.
+    pub(crate) is_linear: bool,
+    /// Immutable physical rail endpoints in metres.
+    pub(crate) physical_travel: Option<(f32, f32)>,
     /// The wire this lane speaks for, which is what keeps a lane's elements
     /// the same elements when the joints around it change.
     pub(crate) id: DriveLinkId,
@@ -582,10 +710,11 @@ impl LaneModel {
             .iter()
             .map(|state| StateModel {
                 mode: match state.target() {
-                    DriveTarget::Angle(_) => Mode::Angle,
-                    DriveTarget::Speed(_) => Mode::Speed,
+                    DriveTarget::Angle(_) | DriveTarget::LinearPosition(_) => Mode::Angle,
+                    DriveTarget::Speed(_) | DriveTarget::LinearSpeed(_) => Mode::Speed,
                 },
                 value: match state.target() {
+                    DriveTarget::LinearPosition(value) | DriveTarget::LinearSpeed(value) => value,
                     DriveTarget::Angle(angle) => angle.to_degrees(),
                     DriveTarget::Speed(speed) => match speed_unit {
                         SpeedUnit::Rpm => speed * 60.0 / core::f32::consts::TAU,
@@ -606,6 +735,11 @@ impl LaneModel {
             .collect();
 
         Self {
+            is_linear: program
+                .states()
+                .iter()
+                .any(|state| state.target().is_linear()),
+            physical_travel: None,
             id,
             number,
             name: name.as_str().to_owned(),
@@ -626,8 +760,33 @@ impl LaneModel {
         }
     }
 
+    /// Applies the rail's SI envelope after capturing the shared lane state.
+    pub(crate) fn with_linear_limits(
+        mut self,
+        limits: LinearDriveLimits,
+        physical: [f32; 2],
+    ) -> Self {
+        self.is_linear = true;
+        let angular_speed = match self.speed_unit {
+            SpeedUnit::Rpm => self.speed * core::f32::consts::TAU / 60.0,
+            SpeedUnit::DegreesPerSecond => self.speed.to_radians(),
+        };
+        self.speed = limits
+            .max_speed()
+            .min(angular_speed * mechanic_core::LINEAR_METERS_PER_RADIAN);
+        self.torque = limits
+            .max_force()
+            .min(self.torque / mechanic_core::LINEAR_METERS_PER_RADIAN);
+        self.travel = Some((limits.minimum(), limits.maximum()));
+        self.physical_travel = Some((physical[0], physical[1]));
+        self
+    }
+
     /// What the speed chip reads.
     pub(crate) fn speed_text(&self) -> String {
+        if self.is_linear {
+            return format!("{:.3} m/s", self.speed);
+        }
         if matches!(self.actuator, ActuatorAssignment::Motor { .. }) {
             return "GEARED".to_owned();
         }
@@ -639,6 +798,9 @@ impl LaneModel {
 
     /// What the torque chip's heading reads.
     pub(crate) const fn torque_label(&self) -> &'static str {
+        if self.is_linear {
+            return "FORCE";
+        }
         match self.actuator {
             ActuatorAssignment::Unpowered => "ACTUATOR",
             ActuatorAssignment::Servo => "SERVO TORQUE",
@@ -648,6 +810,12 @@ impl LaneModel {
 
     /// What the torque chip reads.
     pub(crate) fn torque_text(&self) -> String {
+        if self.actuator == ActuatorAssignment::Unpowered {
+            return "NONE".to_owned();
+        }
+        if self.is_linear {
+            return format!("{:.0} N", self.torque);
+        }
         match self.actuator {
             ActuatorAssignment::Unpowered => "NONE".to_owned(),
             ActuatorAssignment::Servo => format!("{:.0} N·m", self.torque),
@@ -656,6 +824,9 @@ impl LaneModel {
     }
 
     pub(crate) const fn speed_unit_text(&self) -> &'static str {
+        if self.is_linear {
+            return "m/s";
+        }
         match self.speed_unit {
             SpeedUnit::Rpm => "RPM",
             SpeedUnit::DegreesPerSecond => "°/s",
@@ -673,6 +844,7 @@ impl LaneModel {
     /// What the travel chip reads.
     pub(crate) fn travel_text(&self) -> String {
         match self.travel {
+            Some((low, high)) if self.is_linear => format!("{low:+.3} to {high:+.3} m"),
             Some((low, high)) => format!("{low:.0}° to {high:.0}°"),
             None => "free".to_owned(),
         }
@@ -887,7 +1059,9 @@ impl PanelModel {
 
 #[cfg(test)]
 mod tests {
+    use super::apply_linear_edit;
     use super::{HardwareModel, Mode, PanelEdit, Preset, StateModel, WireKind, apply_edit, wires};
+    use mechanic_core::LinearDriveLimits;
     use mechanic_core::{
         ActuatorInventory, DriveDwell, DriveKey, DriveLimits, DriveName, DriveProgram,
         DriveRelease, DriveState, DriveTarget, DriveTrigger, MAX_DRIVE_SPEED_RAD_S,
@@ -954,6 +1128,95 @@ mod tests {
             DriveProgram::new(&states, false).expect("a valid program"),
             DriveName::EMPTY,
         )
+    }
+
+    fn linear_edit(edit: &PanelEdit) -> (DriveLimits, LinearDriveLimits, DriveProgram, DriveName) {
+        apply_linear_edit(
+            DriveLimits::default(),
+            LinearDriveLimits::new(0.5, 100.0, -0.2, 0.3).unwrap(),
+            DriveProgram::new(
+                &[DriveState::new(DriveTarget::LinearPosition(0.15)).unwrap()],
+                false,
+            )
+            .unwrap(),
+            DriveName::EMPTY,
+            [-0.425, 0.425],
+            edit,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn linear_position_edits_use_metres_and_clamp_to_programmed_travel() {
+        let (_, _, program, _) = linear_edit(&PanelEdit::SetValue {
+            state: 0,
+            value: -0.125,
+        });
+        assert!(
+            matches!(program.state(0).unwrap().target(), DriveTarget::LinearPosition(value) if (value + 0.125).abs() < 1.0e-6)
+        );
+        let (_, _, program, _) = linear_edit(&PanelEdit::SetValue {
+            state: 0,
+            value: 4.0,
+        });
+        assert!(
+            matches!(program.state(0).unwrap().target(), DriveTarget::LinearPosition(value) if (value - 0.3).abs() < 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn linear_travel_edits_cannot_extend_or_disable_physical_stops() {
+        for edit in [
+            PanelEdit::SetTravel {
+                min: -10.0,
+                max: 10.0,
+            },
+            PanelEdit::ToggleTravel,
+        ] {
+            let (_, limits, _, _) = linear_edit(&edit);
+            assert!((limits.minimum() + 0.425).abs() < 1.0e-6);
+            assert!((limits.maximum() - 0.425).abs() < 1.0e-6);
+        }
+        let (_, _, program, _) = linear_edit(&PanelEdit::SetTravel {
+            min: -0.1,
+            max: 0.1,
+        });
+        assert!(
+            matches!(program.state(0).unwrap().target(), DriveTarget::LinearPosition(value) if (value - 0.1).abs() < 1.0e-6)
+        );
+    }
+
+    #[test]
+    fn linear_modes_and_presets_preserve_target_types_and_transitions() {
+        let (_, _, program, _) = linear_edit(&PanelEdit::SetMode {
+            state: 0,
+            mode: Mode::Speed,
+        });
+        assert!(
+            matches!(program.state(0).unwrap().target(), DriveTarget::LinearSpeed(value) if (value - 0.15).abs() < 1.0e-6)
+        );
+        for preset in [Preset::Steer, Preset::Drive, Preset::Spin] {
+            let (_, _, program, _) = linear_edit(&PanelEdit::ApplyPreset(preset));
+            assert!(
+                program
+                    .states()
+                    .iter()
+                    .all(|state| state.target().is_linear())
+            );
+            let active = program.state(1).unwrap();
+            assert_eq!(
+                active.trigger().unwrap().release(),
+                if preset == Preset::Spin {
+                    DriveRelease::Latch
+                } else {
+                    DriveRelease::RevertTo(0)
+                }
+            );
+        }
+        let (_, _, program, _) = linear_edit(&PanelEdit::AddState);
+        assert!(
+            matches!(program.state(1).unwrap().target(), DriveTarget::LinearPosition(value) if value.abs() < 1.0e-6)
+        );
     }
 
     fn apply(

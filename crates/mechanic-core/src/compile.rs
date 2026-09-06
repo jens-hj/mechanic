@@ -114,6 +114,8 @@ pub struct CompiledConvex {
 /// Bearing row connecting two distinct compiled compounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompiledBearing {
+    /// Explicit motion kind and physical travel independent of drive settings.
+    pub kind: crate::BearingKind,
     /// Source editable bearing.
     pub source_bearing: BearingId,
     /// Source compound row.
@@ -557,11 +559,11 @@ fn compile_graph(
                     contact_properties(*spec),
                 );
             } else {
-                append_part_colliders(
-                    &mut colliders,
-                    part,
-                    compound_index,
-                    *spec,
+                let start = colliders.len();
+                append_part_colliders(&mut colliders, part, compound_index, *spec, Vec3::ZERO);
+                compose_raw_colliders(
+                    &mut colliders[start..],
+                    graph.part_frame(part).expect("compiled part has a frame"),
                     mass_properties.center_of_mass,
                 );
             }
@@ -585,13 +587,19 @@ fn compile_graph(
                     region.material().properties(),
                 );
             } else {
+                let start = colliders.len();
                 append_region_colliders(
                     &mut colliders,
                     id,
                     region,
                     compound_index,
-                    mass_properties.center_of_mass,
+                    Vec3::ZERO,
                     source_part,
+                );
+                compose_raw_colliders(
+                    &mut colliders[start..],
+                    graph.owner_frame(crate::SolidOwner::Region(id)),
+                    mass_properties.center_of_mass,
                 );
             }
         }
@@ -663,6 +671,16 @@ fn compile_graph(
             compound_b,
             bearing.shared_anchor.to_array().map(f32::to_bits),
             bearing.axis.to_array().map(f32::to_bits),
+            bearing.kind.bounds().map(f32::to_bits),
+            match bearing.kind {
+                crate::BearingKind::Rotational => (0, 0, [0; 3], 0),
+                crate::BearingKind::Linear(rail) => (
+                    1,
+                    rail.dimensions.width().to_bits(),
+                    rail.mount_normal.to_array().map(f32::to_bits),
+                    rail.face as u8,
+                ),
+            },
         );
         bearing_components.union(compound_a as usize, compound_b as usize);
         suppressed.insert(ordered_pair(compound_a, compound_b));
@@ -735,6 +753,7 @@ fn compile_graph(
         let root_a = compounds[compound_a as usize].root_translation;
         let root_b = compounds[compound_b as usize].root_translation;
         bearings.push(CompiledBearing {
+            kind: bearing.kind,
             source_bearing: bearing_id,
             compound_a,
             compound_b,
@@ -982,8 +1001,11 @@ fn compile_coordinate_axis_inertia(
                 let properties = compound.mass_properties;
                 let offset = properties.center_of_mass - anchor;
                 let radial = offset - axis * offset.dot(axis);
-                total +=
-                    axis.dot(properties.inertia * axis) + properties.mass * radial.length_squared();
+                total += if matches!(bearing.kind, crate::BearingKind::Linear(_)) {
+                    properties.mass
+                } else {
+                    axis.dot(properties.inertia * axis) + properties.mass * radial.length_squared()
+                };
                 stack.extend(children[body].iter().copied());
             }
             if total.is_finite() && total > 0.0 {
@@ -1021,8 +1043,14 @@ fn validate_actuator_programs(graph: &ConstructionGraph) -> Result<(), TopologyE
             matches!(
                 (link.actuator, state.target()),
                 (ActuatorAssignment::Unpowered, _)
-                    | (ActuatorAssignment::Motor { .. }, DriveTarget::Speed(_))
-                    | (ActuatorAssignment::Servo, DriveTarget::Angle(_))
+                    | (
+                        ActuatorAssignment::Motor { .. },
+                        DriveTarget::Speed(_) | DriveTarget::LinearSpeed(_)
+                    )
+                    | (
+                        ActuatorAssignment::Servo,
+                        DriveTarget::Angle(_) | DriveTarget::LinearPosition(_)
+                    )
             )
         });
         if !compatible {
@@ -1169,6 +1197,19 @@ fn resolve_coordinate_actuation(
             }
         }
     }
+    for (coordinate, bearing) in topology.tree_bearings.iter().enumerate() {
+        if graph
+            .bearing(*bearing)
+            .is_some_and(|bearing| matches!(bearing.kind, crate::BearingKind::Linear(_)))
+        {
+            let row = &mut result[coordinate];
+            row.source_a_torque /= crate::LINEAR_METERS_PER_RADIAN;
+            row.source_b_torque /= crate::LINEAR_METERS_PER_RADIAN;
+            row.source_a_no_load_speed *= crate::LINEAR_METERS_PER_RADIAN;
+            row.source_b_no_load_speed *= crate::LINEAR_METERS_PER_RADIAN;
+            row.max_speed *= crate::LINEAR_METERS_PER_RADIAN;
+        }
+    }
     Ok(result)
 }
 
@@ -1186,30 +1227,48 @@ fn resolve_coordinate_drives(
         .iter()
         .enumerate()
         .map(|(coordinate, &bearing)| {
+            let kind = graph.bearing(bearing).expect("compiled bearing").kind;
+            let bounds = kind.bounds();
+            let passive = CoordinateDrive {
+                min_angle: bounds[0],
+                max_angle: bounds[1],
+                ..CoordinateDrive::PASSIVE
+            };
             let Some((_, link)) = graph.bearing_drive_link(bearing) else {
-                return CoordinateDrive::PASSIVE;
+                return passive;
             };
             let inertia = topology
                 .coordinate_axis_inertia
                 .get(coordinate)
                 .copied()
                 .unwrap_or(f32::INFINITY);
-            // A grounded child subtree has no finite inertia about the axis, so
-            // no torque can accelerate it. Report that as passive rather than
-            // as a drive with a zero budget, which would look wired but do
-            // nothing.
             if !inertia.is_finite() {
-                return CoordinateDrive::PASSIVE;
+                return passive;
             }
             let Some(target) = link.resolved_target(0) else {
-                return CoordinateDrive::PASSIVE;
+                return passive;
             };
-            coordinate_drive(
+            let mut drive = coordinate_drive(
                 target,
                 link.limits,
                 inertia,
                 actuation.get(coordinate).copied().unwrap_or_default(),
-            )
+            );
+            if let Some(limits) = link.linear_limits {
+                drive.min_angle = limits.minimum().max(bounds[0]);
+                drive.max_angle = limits.maximum().min(bounds[1]);
+                drive.max_speed = drive.max_speed.min(limits.max_speed());
+                let acceleration = limits.max_force() / inertia;
+                if drive.max_acceleration > acceleration {
+                    let scale = acceleration / drive.max_acceleration;
+                    drive.source_a_max_acceleration *= scale;
+                    drive.source_b_max_acceleration *= scale;
+                    drive.max_acceleration = acceleration;
+                }
+                drive.target_speed = drive.target_speed.clamp(-drive.max_speed, drive.max_speed);
+                drive.target_angle = drive.target_angle.clamp(drive.min_angle, drive.max_angle);
+            }
+            drive
         })
         .collect()
 }
@@ -1226,12 +1285,14 @@ fn coordinate_drive(
     }
     let max_acceleration = (actuation.source_a_torque + actuation.source_b_torque) / axis_inertia;
     let (mode, target_speed, target_angle) = match target {
-        DriveTarget::Speed(speed) => (
+        DriveTarget::Speed(speed) | DriveTarget::LinearSpeed(speed) => (
             DriveMode::Speed,
             speed.clamp(-actuation.max_speed, actuation.max_speed),
             0.0,
         ),
-        DriveTarget::Angle(angle) => (DriveMode::Angle, 0.0, angle),
+        DriveTarget::Angle(angle) | DriveTarget::LinearPosition(angle) => {
+            (DriveMode::Angle, 0.0, angle)
+        }
     };
     CoordinateDrive {
         mode,
@@ -1275,13 +1336,29 @@ impl CompiledCreation {
     /// This is how a running sequencer turns the state a bearing has just
     /// entered into an upload row, without recompiling anything. Returns
     /// [`CoordinateDrive::PASSIVE`] for an unknown coordinate or a grounded
-    /// subtree that no torque can accelerate.
+    /// subtree that no torque can accelerate, or a target with incompatible units.
     pub fn coordinate_drive_row(
         &self,
         coordinate: u32,
         target: DriveTarget,
         limits: DriveLimits,
     ) -> CoordinateDrive {
+        let Some(bearing) = self
+            .bearings
+            .iter()
+            .find(|bearing| bearing.coordinate_index == Some(coordinate))
+        else {
+            return CoordinateDrive::PASSIVE;
+        };
+        let linear = matches!(bearing.kind, crate::BearingKind::Linear(_));
+        if target.is_linear() != linear {
+            let [min_angle, max_angle] = bearing.kind.bounds();
+            return CoordinateDrive {
+                min_angle,
+                max_angle,
+                ..CoordinateDrive::PASSIVE
+            };
+        }
         let inertia = self
             .loop_topology
             .coordinate_axis_inertia
@@ -1296,7 +1373,7 @@ impl CompiledCreation {
             .get(coordinate as usize)
             .copied()
             .unwrap_or_default();
-        coordinate_drive(
+        let mut row = coordinate_drive(
             target,
             limits,
             inertia,
@@ -1307,7 +1384,13 @@ impl CompiledCreation {
                 source_b_no_load_speed: template.source_b_no_load_speed,
                 max_speed: template.max_speed,
             },
-        )
+        );
+        if linear {
+            row.min_angle = template.min_angle;
+            row.max_angle = template.max_angle;
+            row.target_angle = row.target_angle.clamp(row.min_angle, row.max_angle);
+        }
+        row
     }
 }
 
@@ -1335,7 +1418,10 @@ fn calculate_mass_properties<'a>(
                     }),
                 )
             } else {
-                part_world_mass(spec)
+                compose_world_mass(
+                    part_world_mass(spec),
+                    graph.part_frame(id).expect("compiled part has a frame"),
+                )
             }
         })
         .chain(regions.iter().map(|(id, region)| {
@@ -1345,7 +1431,10 @@ fn calculate_mass_properties<'a>(
                     .expect("committed region feature geometry replays");
                 evaluated_world_mass(&solid, region.material().properties().density_kg_m3)
             } else {
-                region_world_mass(region)
+                compose_world_mass(
+                    region_world_mass(region),
+                    graph.owner_frame(crate::SolidOwner::Region(*id)),
+                )
             }
         }))
         .collect::<Vec<_>>();
@@ -1395,6 +1484,18 @@ struct WorldMassProperties {
     mass: f32,
     center: Vec3,
     inertia: Mat3,
+}
+
+fn compose_world_mass(
+    properties: WorldMassProperties,
+    frame: crate::ConstructionFrame,
+) -> WorldMassProperties {
+    let basis = Mat3::from_quat(frame.rotation());
+    WorldMassProperties {
+        center: frame.point(properties.center),
+        inertia: basis * properties.inertia * basis.transpose(),
+        ..properties
+    }
 }
 
 fn part_world_mass(spec: PartSpec) -> WorldMassProperties {
@@ -1845,6 +1946,35 @@ fn contact_properties(spec: PartSpec) -> MaterialProperties {
     }
 }
 
+/// Composes raw grid geometry once, then rebases it onto the compiled root.
+fn compose_raw_colliders(
+    colliders: &mut [LocalCollider],
+    frame: crate::ConstructionFrame,
+    center_of_mass: Vec3,
+) {
+    let translation = frame.translation() - center_of_mass;
+    for collider in colliders {
+        collider.local_center = frame.vector(collider.local_center) + translation;
+        match &mut collider.shape {
+            ColliderShape::Cuboid { local_rotation, .. } => {
+                *local_rotation = frame.rotation() * *local_rotation;
+            }
+            ColliderShape::Convex(convex) => {
+                for vertex in &mut convex.vertices {
+                    *vertex = frame.vector(*vertex) + translation;
+                }
+                for plane in &mut convex.face_planes {
+                    let normal = frame.vector(plane.truncate());
+                    *plane = normal.extend(plane.w + normal.dot(translation));
+                }
+                for direction in &mut convex.edge_directions {
+                    *direction = frame.vector(*direction);
+                }
+            }
+        }
+    }
+}
+
 fn append_part_colliders(
     colliders: &mut Vec<LocalCollider>,
     part: PartId,
@@ -2124,6 +2254,133 @@ mod tests {
 
     fn cube_at(units: IVec3) -> CuboidSpec {
         CuboidSpec::new([4, 4, 4], BuildPose::new(units, GridRotation::default())).unwrap()
+    }
+
+    fn assert_frame_compilation(mut graph: ConstructionGraph) {
+        let original = graph.compile().unwrap();
+        let frame = crate::ConstructionFrame::new(
+            Vec3::new(2.1, -0.8, 1.3),
+            Quat::from_rotation_y(0.61) * Quat::from_rotation_x(-0.37),
+        )
+        .unwrap();
+        let parts = graph.parts().map(|(part, _)| part).collect::<Vec<_>>();
+        graph.reframe_parts(parts, frame).unwrap();
+        let compiled = graph.compile().unwrap();
+        let basis = Mat3::from_quat(frame.rotation());
+        assert_eq!(original.compounds.len(), compiled.compounds.len());
+        for (old, new) in original.compounds.iter().zip(&compiled.compounds) {
+            assert!(
+                new.root_translation
+                    .abs_diff_eq(frame.point(old.root_translation), 1.0e-4)
+            );
+            assert!(
+                (old.mass_properties.mass - new.mass_properties.mass).abs()
+                    < old.mass_properties.mass * 1.0e-4
+            );
+            let expected = basis * old.mass_properties.inertia * basis.transpose();
+            let tolerance = expected
+                .to_cols_array()
+                .into_iter()
+                .map(f32::abs)
+                .fold(1.0, f32::max)
+                * 1.0e-4;
+            assert!(new.mass_properties.inertia.abs_diff_eq(expected, tolerance));
+        }
+        assert_eq!(original.colliders.len(), compiled.colliders.len());
+        for old in &original.colliders {
+            let center = frame.vector(old.local_center);
+            let new = compiled
+                .colliders
+                .iter()
+                .find(|new| new.local_center.abs_diff_eq(center, 1.0e-4))
+                .expect("every original collider retains its transformed centroid");
+            match (&old.shape, &new.shape) {
+                (
+                    ColliderShape::Cuboid {
+                        local_rotation: old_rotation,
+                        half_extents: old_half,
+                    },
+                    ColliderShape::Cuboid {
+                        local_rotation: new_rotation,
+                        half_extents: new_half,
+                    },
+                ) => {
+                    assert!(new_rotation.abs_diff_eq(frame.rotation() * *old_rotation, 1.0e-5));
+                    assert!(new_half.abs_diff_eq(*old_half, 1.0e-6));
+                }
+                (ColliderShape::Convex(old), ColliderShape::Convex(new)) => {
+                    for vertex in &old.vertices {
+                        assert!(
+                            new.vertices
+                                .iter()
+                                .any(|new| new.abs_diff_eq(frame.vector(*vertex), 1.0e-4))
+                        );
+                    }
+                    for plane in &old.face_planes {
+                        let expected = frame.vector(plane.truncate()).extend(plane.w);
+                        assert!(
+                            new.face_planes
+                                .iter()
+                                .any(|new| new.abs_diff_eq(expected, 1.0e-4))
+                        );
+                    }
+                    for direction in &old.edge_directions {
+                        let expected = frame.vector(*direction);
+                        assert!(
+                            new.edge_directions
+                                .iter()
+                                .any(|new| new.abs_diff_eq(expected, 1.0e-4)
+                                    || new.abs_diff_eq(-expected, 1.0e-4))
+                        );
+                    }
+                }
+                _ => panic!("rigid framing must preserve collider shape"),
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_frame_rotates_cuboid_inertia_and_collider() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [2, 4, 6],
+                    BuildPose::new(IVec3::new(4, 8, 12), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        assert_frame_compilation(graph);
+    }
+
+    #[test]
+    fn arbitrary_frame_composes_raw_region_convex_planes_and_mass() {
+        let (mut graph, region) = region_over_one_block();
+        let cell = i16::try_from(crate::STEPS_PER_CELL).unwrap();
+        graph
+            .apply(BuildCommand::SetRegionVertices {
+                region,
+                vertices: vec![([0, 1, 1], [0, -cell, 0]), ([1, 1, 1], [0, -cell, 0])],
+            })
+            .unwrap();
+        assert_frame_compilation(graph);
+    }
+
+    #[test]
+    fn arbitrary_frame_does_not_double_transform_evaluated_geometry() {
+        let mut graph = ConstructionGraph::new();
+        let part = spawn(&mut graph, IVec3::ZERO);
+        let owner = SolidOwner::Part(part);
+        let edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(ShapeFeature::new(
+                [EdgeChainRef { owner, edge }],
+                EdgeTreatment::Chamfer,
+                20,
+            )))
+            .unwrap();
+        assert_frame_compilation(graph);
     }
 
     fn spawn(graph: &mut ConstructionGraph, units: IVec3) -> crate::PartId {

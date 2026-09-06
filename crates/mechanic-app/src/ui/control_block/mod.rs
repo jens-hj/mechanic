@@ -125,6 +125,14 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
         .0
         .actuator_inventory(controller)
         .unwrap_or_default();
+    let mut linear_limits = spec.linear_limits;
+    let physical_bounds = target
+        .graph
+        .0
+        .bearing(spec.bearing)
+        .expect("live joint")
+        .kind
+        .bounds();
     let mut actuator = spec.actuator;
     let edited = match intent.edit {
         PanelEdit::CycleActuator => {
@@ -158,7 +166,24 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
             Some((spec.limits, spec.program, spec.name))
         }
         PanelEdit::ToggleSpeedUnit => unreachable!("handled before locating the row"),
-        _ => apply_edit(spec.limits, spec.program, spec.name, &intent.edit),
+        _ => {
+            if let Some(linear) = linear_limits {
+                model::apply_linear_edit(
+                    spec.limits,
+                    linear,
+                    spec.program,
+                    spec.name,
+                    physical_bounds,
+                    &intent.edit,
+                )
+                .map(|(limits, linear, program, name)| {
+                    linear_limits = Some(linear);
+                    (limits, program, name)
+                })
+            } else {
+                apply_edit(spec.limits, spec.program, spec.name, &intent.edit)
+            }
+        }
     };
     let Some((mut limits, mut program, name)) = edited else {
         return;
@@ -192,6 +217,7 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
     // Presets use the active hardware's actual ceiling, including the 70%
     // reverse speed in the Drive preset.
     if let PanelEdit::ApplyPreset(preset) = intent.edit
+        && linear_limits.is_none()
         && let Some((next_limits, next_program, _)) =
             apply_edit(limits, program, name, &PanelEdit::ApplyPreset(preset))
     {
@@ -199,7 +225,14 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
         program = next_program;
     }
     let program = compatible_program(program, actuator);
-    let commands: Vec<BuildCommand> = set_row_commands(row, limits, program, name, actuator);
+    let mut commands: Vec<BuildCommand> = row
+        .links
+        .iter()
+        .filter_map(|&link| {
+            linear_limits.map(|limits| BuildCommand::SetLinearDriveLimits { link, limits })
+        })
+        .collect();
+    commands.extend(set_row_commands(row, limits, program, name, actuator));
     let previous = EditorSnapshot::capture(&target.graph.0, &target.editor);
     let mut staged = target.graph.0.clone();
     match staged.apply_batch(commands) {
@@ -264,6 +297,12 @@ fn compatible_program(program: DriveProgram, actuator: ActuatorAssignment) -> Dr
             break;
         };
         let replacement = match (actuator, state.target()) {
+            (ActuatorAssignment::Motor { .. }, DriveTarget::LinearPosition(_)) => {
+                Some(DriveTarget::LinearSpeed(0.0))
+            }
+            (ActuatorAssignment::Servo, DriveTarget::LinearSpeed(_)) => {
+                Some(DriveTarget::LinearPosition(0.0))
+            }
             (ActuatorAssignment::Motor { .. }, DriveTarget::Angle(_)) => {
                 Some(DriveTarget::Speed(0.0))
             }
@@ -323,7 +362,7 @@ pub(crate) fn capture(
         .filter_map(|(index, row)| {
             let spec = graph.0.drive_link(row.primary)?;
             let (max_speed, torque) = actuator_capability(spec.actuator, inventory);
-            Some(LaneModel::capture(
+            let lane = LaneModel::capture(
                 row.primary,
                 index + 1,
                 spec.limits,
@@ -333,7 +372,12 @@ pub(crate) fn capture(
                 panel.speed_unit(),
                 max_speed,
                 torque,
-            ))
+            );
+            Some(if let Some(limits) = spec.linear_limits {
+                lane.with_linear_limits(limits, graph.0.bearing(spec.bearing)?.kind.bounds())
+            } else {
+                lane
+            })
         })
         .collect();
     let mut engine_lanes: Vec<EngineLaneModel> = [EngineKind::Electric, EngineKind::Gas]

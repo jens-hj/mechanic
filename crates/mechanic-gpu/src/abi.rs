@@ -170,15 +170,16 @@ pub struct GpuGroundSurface {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct GpuBearing {
-    /// Anchor in source-compound coordinates.
+    /// xyz anchor in source-compound coordinates; w physical lower bound.
     pub local_anchor_a: [f32; 4],
-    /// Anchor in target-compound coordinates.
+    /// xyz anchor in target-compound coordinates; w physical upper bound.
     pub local_anchor_b: [f32; 4],
-    /// Axis in source-compound coordinates.
+    /// xyz axis in source-compound coordinates; w joint kind (0 rotational, 1 linear).
     pub local_axis_a: [f32; 4],
     /// Axis in target-compound coordinates.
     pub local_axis_b: [f32; 4],
     /// compound a, compound b, coordinate index or `u32::MAX`, flags.
+    /// Flag bit 0 marks loop closure; bit 1 suspends the joint while held.
     pub metadata: [u32; 4],
 }
 
@@ -239,10 +240,10 @@ pub struct GpuMechanismBody {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct GpuMechanismCoordinate {
-    /// Permitted angle in radians.
-    pub angle: f32,
-    /// Permitted angular velocity in radians per second.
-    pub angular_velocity: f32,
+    /// Permitted position: radians for rotational joints, metres for linear joints.
+    pub position: f32,
+    /// Permitted velocity: radians/s or metres/s according to the bearing kind.
+    pub velocity: f32,
 }
 
 /// Drive parameters for one tree-bearing coordinate.

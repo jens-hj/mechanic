@@ -129,6 +129,20 @@ pub(crate) struct Sources<'w> {
     app_space: Res<'w, bevy::prelude::State<AppSpace>>,
 }
 
+fn linear_controls(controls: &crate::controls::Controls, rotate: &str) -> String {
+    format!(
+        "{rotate}  Four travel directions · {} / {}  Length 250 mm · {} / {}  Width 25 mm · {} / {}  Fine length 2.5 mm · {} / {}  Fine width 2.5 mm",
+        controls.label(GameAction::LinearLengthDecrease),
+        controls.label(GameAction::LinearLengthIncrease),
+        controls.label(GameAction::LinearWidthDecrease),
+        controls.label(GameAction::LinearWidthIncrease),
+        controls.label(GameAction::LinearLengthFineDecrease),
+        controls.label(GameAction::LinearLengthFineIncrease),
+        controls.label(GameAction::LinearWidthFineDecrease),
+        controls.label(GameAction::LinearWidthFineIncrease),
+    )
+}
+
 /// Reads the editor into what the panel says.
 #[allow(clippy::too_many_lines)] // One line of prose per editor state, in the order they are shown.
 pub(crate) fn capture(sources: &Sources) -> Model {
@@ -146,6 +160,10 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         app_space,
     } = sources;
     let selected_tool = selection.active_editor_tool().unwrap_or(Tool::Block);
+    let linear_attachment = state
+        .attachment_bearing
+        .and_then(|index| state.placed_bearings.get(index))
+        .is_some_and(|socket| matches!(socket.kind, mechanic_core::BearingKind::Linear(_)));
     let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
         && selection.matter_mode == MatterMode::Terrain;
     let item_mode = selection.tool == Some(MainTool::MatterManipulator)
@@ -245,7 +263,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             state.attachment_bearing,
         ) {
             (false, Tool::Block, _, Some(drag), _) => {
-                if matches!(drag.attachment, BlockAttachment::Bearing { .. }) {
+                if matches!(drag.attachment, BlockAttachment::Linear { .. }) {
+                    format!("Release to attach {} block(s) to the carriage on the 25 mm lattice", drag.volume.count())
+                } else if matches!(drag.attachment, BlockAttachment::Bearing { .. }) {
                     format!(
                         "Green bearing attachment active — release to connect {} block(s)",
                         drag.volume.count()
@@ -259,14 +279,19 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 }
             }
             (false, Tool::Block, _, None, Some(_)) => {
-                "Green bearing attachment active — click or drag to connect blocks".to_owned()
+                if linear_attachment {
+                    "Carriage face selected — click or drag to attach blocks on the 25 mm lattice".to_owned()
+                } else { "Green bearing attachment active — click or drag to connect blocks".to_owned() }
             }
             (false, Tool::Cylinder, _, _, Some(_)) => {
-                "Green bearing attachment active — click centres the pipe; hold and drag to offset it"
-                    .to_owned()
+                if linear_attachment {
+                    "Carriage face selected — attach the cylinder on the 25 mm lattice; further attachments use this face".to_owned()
+                } else {
+                    "Green bearing attachment active — click centres the pipe; hold and drag to offset it".to_owned()
+                }
             }
             (true, Tool::Hammer, _, _, _) => {
-                "Hold left mouse on a moving cuboid; release to strike".to_owned()
+                "Hold left mouse on a moving cuboid; release to strike. Freeze controls require an active dimension link".to_owned()
             }
             (true, _, _, _, _) => unreachable!("only the Hammer is a live-only tool"),
             (false, Tool::Block, _, _, _) => {
@@ -282,6 +307,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             }
             (false, Tool::Bearing, _, _, _) => {
                 "Left click places a bearing; use Blocker Placer to attach it".to_owned()
+            }
+            (false, Tool::LinearBearing, _, _, _) => {
+                "Place the rail underside on a flat face; attach blocks or cylinders to one carriage face: top or either side. End faces are unavailable; both rail ends remain physical stops.".to_owned()
             }
             (false, Tool::Hammer, _, _, _) => {
                 "The Hammer is available in the live World".to_owned()
@@ -313,7 +341,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Q cycles all 24 orientations; place Input, then wire it to a Seat".to_owned()
             }
             (false, Tool::DimensionLink, _, _, _) => {
-                "Q rotates; place a Dimension Link, aim at it, then press E to activate"
+                "Q rotates; place a Dimension Link, aim at it, then press E to toggle it on or off"
                     .to_owned()
             }
             (false, Tool::Shape, _, _, _) => {
@@ -386,10 +414,26 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         format!("{rotate}  Cycle plane ({})", drag.plane.label())
     } else if let Some(drag) = state.delete_drag.as_ref() {
         format!("{rotate}  Cycle delete plane ({})", drag.plane.label())
+    } else if selected_tool == Tool::LinearBearing {
+        format!("{rotate}  Rotate travel direction (4 directions)")
     } else {
         format!("{rotate}  Cycle plane while dragging or deleting")
     };
-    let edit_controls = if in_world {
+    let edit_controls = if live_hammer {
+        format!(
+            "{}  Freeze / release active link     {} / {}  Raise / lower 25 cm (hold to repeat)",
+            controls.label(GameAction::FreezeCreation),
+            controls.label(GameAction::RaiseFrozenCreation),
+            controls.label(GameAction::LowerFrozenCreation),
+        )
+    } else if selected_tool == Tool::LinearBearing {
+        let controls = linear_controls(controls, &rotate);
+        if in_world {
+            format!("{controls}     EDIT GROUNDED/STATIC ONLY")
+        } else {
+            controls
+        }
+    } else if in_world {
         format!("{plane_controls}     EDIT GROUNDED/STATIC ONLY     CTRL/CMD+Z  Undo")
     } else {
         format!(
@@ -423,19 +467,30 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         tool: if terrain_mode {
             Line::new("Matter Manipulator · Terrain", Tone::Speed)
         } else {
-            let tool_status = crate::tool_status_line(
-                selection.active_editor_tool(),
-                bearing.dimensions,
-                cylinder.dimensions,
-                selected_wires,
-                material.0,
-            );
+            let tool_status = if selected_tool == Tool::LinearBearing {
+                let dimensions = state.linear.dimensions;
+                format!(
+                    "Linear Bearing · {:.3} m × {:.3} m · {:.3} m usable travel · position measured from centre",
+                    dimensions.length(),
+                    dimensions.width(),
+                    dimensions.travel()
+                )
+            } else {
+                crate::tool_status_line(
+                    selection.active_editor_tool(),
+                    bearing.dimensions,
+                    cylinder.dimensions,
+                    selected_wires,
+                    material.0,
+                )
+            };
             let placement_status = matches!(
                 selection.active_editor_tool(),
                 Some(
                     Tool::Block
                         | Tool::Cylinder
                         | Tool::Bearing
+                        | Tool::LinearBearing
                         | Tool::Controller
                         | Tool::GasEngine
                         | Tool::ElectricEngine
@@ -491,7 +546,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
 /// it is called: positions are amber, speeds cyan, connections teal.
 const fn tool_tone(tool: Option<Tool>) -> Tone {
     match tool {
-        Some(Tool::Bearing | Tool::Hammer | Tool::GasEngine | Tool::Servo) => Tone::Angle,
+        Some(
+            Tool::Bearing | Tool::LinearBearing | Tool::Hammer | Tool::GasEngine | Tool::Servo,
+        ) => Tone::Angle,
         Some(
             Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input | Tool::DimensionLink,
         ) => Tone::Key,
@@ -559,6 +616,28 @@ fn line(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linear_help_reports_steps_and_current_bindings() {
+        let mut controls = crate::controls::Controls::default();
+        controls.set(
+            crate::controls::GameAction::LinearWidthFineIncrease,
+            0,
+            Some(crate::controls::InputChord::key(
+                bevy::prelude::KeyCode::KeyP,
+            )),
+        );
+        let help = super::linear_controls(&controls, "R");
+        for expected in [
+            "Four travel directions",
+            "Length 250 mm",
+            "Width 25 mm",
+            "Fine length 2.5 mm",
+            "Fine width 2.5 mm",
+            " / P ",
+        ] {
+            assert!(help.contains(expected), "missing {expected}: {help}");
+        }
+    }
     use super::{Line, Model, Tone};
     use crate::ui::testing::Overlay;
 

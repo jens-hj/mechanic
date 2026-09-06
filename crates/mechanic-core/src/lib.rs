@@ -5,10 +5,13 @@ mod compile;
 mod creation;
 mod drive;
 mod edit;
+mod frame;
 mod gearbox;
 mod geometry;
 mod graph;
 mod id;
+mod linear;
+mod linear_geometry;
 mod region;
 mod shape;
 mod solid;
@@ -20,16 +23,17 @@ pub use compile::{
     TopologyError,
 };
 pub use creation::{
-    BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, CreationDocument,
-    CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc, DriveStateDoc,
-    DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc, InputSeatLinkDoc,
-    LoadedCreation, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc, SeatControllerLinkDoc,
-    ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc, WeldDoc,
+    BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, ConstructionFrameDoc,
+    CreationDocument, CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc,
+    DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc,
+    InputSeatLinkDoc, LoadedCreation, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc,
+    SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc,
+    WeldDoc,
 };
 pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
     DriveLimitsError, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
-    DriveTarget, DriveTrigger, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
+    DriveTarget, DriveTrigger, LinearDriveLimits, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
     MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
 };
 pub use edit::{
@@ -37,6 +41,7 @@ pub use edit::{
     ConstructionGeometryOwner, ConstructionPageKey, ConstructionRenderDelta,
     ConstructionRenderPage,
 };
+pub use frame::{ConstructionFrame, ConstructionFrameId, FrameError};
 pub use gearbox::{
     GearKey, GearKeyChord, GearboxConfig, GearboxError, MAX_GEAR_RATIO, MAX_GEARS, MIN_GEAR_RATIO,
     ShiftMode,
@@ -60,6 +65,11 @@ pub use graph::{
     MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec,
     SeatControllerLinkSpec, StructuralComponent, WeldSpec,
 };
+pub use linear::{
+    BearingKind, CarriageFace, LINEAR_METERS_PER_RADIAN, LINEAR_METERS_PER_REVOLUTION,
+    LinearBearing, LinearBearingDimensions, LinearBearingError,
+};
+
 pub use id::{
     BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
     ShapeFeatureId, WeldId,
@@ -87,4 +97,8 @@ pub const ANCHOR_TOLERANCE_METERS: f32 = 0.000_01;
 pub const AXIS_TOLERANCE_DEGREES: f32 = 0.001;
 pub use appearance::{
     AppearanceError, MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, MaterialShift,
+};
+
+pub use linear_geometry::{
+    LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,
 };

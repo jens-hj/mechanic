@@ -84,6 +84,16 @@ impl ConstructionEditDelta {
         let previous_parts = previous.parts().map(|(id, spec)| (id, *spec)).collect();
         let current_parts = current.parts().map(|(id, spec)| (id, *spec)).collect();
         let mut delta = Self::between_parts(&previous_parts, &current_parts);
+        for (part, _) in current.parts() {
+            if previous.part(part).is_some()
+                && previous.part_frame(part) != current.part_frame(part)
+            {
+                delta.modified.insert(part);
+                if let Some(region) = current.region_of(part) {
+                    delta.region_owned_geometry.insert(region);
+                }
+            }
+        }
 
         let previous_features = previous
             .shape_features()
@@ -226,6 +236,72 @@ const fn is_pipe(spec: &PartSpec) -> bool {
 mod tests {
     use super::*;
     use crate::{BuildCommand, BuildPose, CuboidSpec};
+
+    #[test]
+    fn reframing_invalidates_only_changed_parts_and_their_owned_regions() {
+        use bevy_math::{IVec3, Quat, Vec3};
+        let mut previous = ConstructionGraph::new();
+        let mut parts = Vec::new();
+        for x in [0, 4, 8] {
+            let crate::BuildOutcome::Spawned(part) = previous
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1; 3],
+                        BuildPose::from_half_grid(
+                            IVec3::new(2 * x + 1, 1, 1),
+                            crate::GridRotation::default(),
+                        ),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            parts.push(part);
+        }
+        let mut regions = Vec::new();
+        for x in [0, 4] {
+            let region = crate::ShapeRegion::new(
+                IVec3::new(2 * x, 0, 0),
+                IVec3::ONE,
+                ConstructionMaterial::Steel,
+            )
+            .unwrap();
+            let crate::BuildOutcome::RegionAdded(region) =
+                previous.apply(BuildCommand::AddRegion(region)).unwrap()
+            else {
+                unreachable!()
+            };
+            regions.push(region);
+        }
+        // Both changed and unchanged geometry already use nondefault frames.
+        for (part, angle) in [(parts[0], 0.3), (parts[1], -0.6), (parts[2], 0.8)] {
+            previous
+                .reframe_parts(
+                    [part],
+                    crate::ConstructionFrame::new(Vec3::ZERO, Quat::from_rotation_y(angle))
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        let mut current = previous.clone();
+        current
+            .reframe_parts(
+                [parts[0], parts[2]],
+                crate::ConstructionFrame::new(Vec3::new(1.0, 2.0, 3.0), Quat::from_rotation_x(0.7))
+                    .unwrap(),
+            )
+            .unwrap();
+        let delta = ConstructionEditDelta::between(&previous, &current);
+        assert_eq!(delta.modified, BTreeSet::from([parts[0], parts[2]]));
+        assert_eq!(delta.affected_parts(), BTreeSet::from([parts[0], parts[2]]));
+        assert_eq!(delta.region_owned_geometry, BTreeSet::from([regions[0]]));
+        assert!(delta.added.is_empty());
+        assert!(delta.removed.is_empty());
+        assert!(delta.topology_dependent.is_empty());
+        assert_eq!(previous.part_frame(parts[1]), current.part_frame(parts[1]));
+    }
 
     #[test]
     fn part_delta_distinguishes_added_removed_and_modified() {

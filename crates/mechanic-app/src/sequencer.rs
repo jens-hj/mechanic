@@ -5,12 +5,13 @@
 //! than frames, so a paused simulation freezes every dwell and a slow frame
 //! never skips one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::prelude::*;
 use mechanic_core::{
-    CompiledCreation, ConstructionGraph, DriveKey, DriveLinkId, DriveProgram, DriveRelease,
-    DriveTarget, EngineKind, GearKey, GearKeyChord, GearSelection, PartSpec, ShiftMode,
+    BearingId, CompiledCreation, ConstructionGraph, DriveKey, DriveLinkId, DriveProgram,
+    DriveRelease, DriveTarget, EngineKind, GearKey, GearKeyChord, GearSelection, PartId, PartSpec,
+    ShiftMode,
 };
 use mechanic_gpu::{DRIVE_MODE_ANGLE, DRIVE_MODE_SPEED, FIXED_DT_SECONDS, GpuMechanismDrive};
 
@@ -180,7 +181,9 @@ pub(crate) struct SequencerRow {
 pub(crate) struct DriveSequencer {
     rows: Vec<SequencerRow>,
     started: bool,
+    last_step_tick: u64,
     publication: Option<(u64, u64)>,
+    programs: BTreeMap<DriveLinkId, mechanic_core::DriveLinkSpec>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -197,11 +200,18 @@ struct GearboxRow {
 pub(crate) struct GearboxRuntime {
     rows: Vec<GearboxRow>,
     started: bool,
+    last_step_tick: u64,
+    configs: Vec<(
+        mechanic_core::PartId,
+        EngineKind,
+        mechanic_core::GearboxConfig,
+    )>,
 }
 
 impl GearboxRuntime {
     pub(crate) fn start(&mut self, graph: &ConstructionGraph, sequencer: &DriveSequencer) {
         self.rows.clear();
+        self.configs.clear();
         for (controller, spec) in graph.parts() {
             if !matches!(spec, PartSpec::Controller(_)) {
                 continue;
@@ -223,6 +233,7 @@ impl GearboxRuntime {
                 } else {
                     initial_gear(&config, kind, requested_sign)
                 };
+                self.configs.push((controller, kind, config));
                 self.rows.push(GearboxRow {
                     controller,
                     kind,
@@ -233,11 +244,41 @@ impl GearboxRuntime {
             }
         }
         self.started = true;
+        self.last_step_tick = 0;
+    }
+
+    /// Rebinds unchanged controller lanes after a live publication.
+    pub(crate) fn sync_publication(
+        &mut self,
+        graph: &ConstructionGraph,
+        sequencer: &DriveSequencer,
+    ) {
+        let last_step_tick = self.last_step_tick;
+        let previous_rows = std::mem::take(&mut self.rows);
+        let previous_configs = std::mem::take(&mut self.configs);
+        self.start(graph, sequencer);
+        self.last_step_tick = last_step_tick;
+        for row in &mut self.rows {
+            let unchanged = previous_configs.iter().any(|previous| {
+                previous.0 == row.controller
+                    && previous.1 == row.kind
+                    && self.configs.iter().any(|current| current == previous)
+            });
+            if unchanged
+                && let Some(previous) = previous_rows.iter().find(|previous| {
+                    previous.controller == row.controller && previous.kind == row.kind
+                })
+            {
+                *row = *previous;
+            }
+        }
     }
 
     pub(crate) fn stop(&mut self) {
         self.rows.clear();
+        self.configs.clear();
         self.started = false;
+        self.last_step_tick = 0;
     }
 
     pub(crate) fn active_gear(
@@ -253,6 +294,7 @@ impl GearboxRuntime {
 
     /// Applies every matching manual binding. Duplicate chords intentionally all fire.
     #[allow(clippy::too_many_arguments)] // Runtime inputs stay explicit at the simulation boundary.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn step(
         &mut self,
         graph: &ConstructionGraph,
@@ -263,8 +305,41 @@ impl GearboxRuntime {
         measured_speeds: &[(mechanic_core::PartId, EngineKind, f32)],
         paused: bool,
     ) -> bool {
+        self.step_with_suspension(
+            graph,
+            sequencer,
+            keyboard,
+            keyboard_controller,
+            tick,
+            measured_speeds,
+            paused,
+            &BTreeSet::new(),
+        )
+    }
+
+    /// Pauses selected controller lanes, including pending shifts and cooldowns.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub(crate) fn step_with_suspension(
+        &mut self,
+        graph: &ConstructionGraph,
+        sequencer: &DriveSequencer,
+        keyboard: &ButtonInput<KeyCode>,
+        keyboard_controller: Option<mechanic_core::PartId>,
+        tick: u64,
+        measured_speeds: &[(mechanic_core::PartId, EngineKind, f32)],
+        paused: bool,
+        suspended_controllers: &BTreeSet<PartId>,
+    ) -> bool {
+        let elapsed = tick.saturating_sub(self.last_step_tick);
+        self.last_step_tick = tick;
         let mut changed = false;
         for row in &mut self.rows {
+            if suspended_controllers.contains(&row.controller) {
+                row.last_shift_tick = row
+                    .last_shift_tick
+                    .saturating_add(elapsed.min(tick.saturating_sub(row.last_shift_tick)));
+                continue;
+            }
             let Ok(config) = graph.gearbox_config(row.controller, row.kind) else {
                 continue;
             };
@@ -485,7 +560,7 @@ fn dominant_request_sign(
             {
                 return None;
             }
-            spec.program.state(row.cursor.active)?.target().speed()
+            target_speed(spec.program.state(row.cursor.active)?.target())
         })
         .max_by(|left, right| left.abs().total_cmp(&right.abs()))
         .unwrap_or(0.0)
@@ -602,18 +677,55 @@ impl DriveSequencer {
             });
         }
         self.rows = by_coordinate.into_values().collect();
+        self.programs = graph.drive_links().map(|(id, spec)| (id, *spec)).collect();
         self.started = true;
+        self.last_step_tick = 0;
         self.publication = publication;
+    }
+
+    /// Preserves unchanged wire cursors while remapping compiled coordinates.
+    /// The caller must retain the simulation tick counter across publication.
+    pub(crate) fn sync_publication(
+        &mut self,
+        creation: &CompiledCreation,
+        graph: &ConstructionGraph,
+        publication: Option<(u64, u64)>,
+        tick: u64,
+    ) {
+        let last_step_tick = self.last_step_tick;
+        let previous_rows = std::mem::take(&mut self.rows);
+        let previous_programs = std::mem::take(&mut self.programs);
+        self.start(creation, graph, publication);
+        self.last_step_tick = last_step_tick;
+        for row in &mut self.rows {
+            row.cursor.entered_tick = tick;
+            let unchanged_program = previous_programs
+                .get(&row.link)
+                .zip(self.programs.get(&row.link))
+                .is_some_and(|(previous, current)| {
+                    previous.program == current.program
+                        && previous.controller == current.controller
+                        && previous.bearing == current.bearing
+                });
+            if unchanged_program
+                && let Some(previous) = previous_rows.iter().find(|old| old.link == row.link)
+            {
+                row.cursor = previous.cursor;
+            }
+        }
     }
 
     /// Clears every row when the simulation ends.
     pub(crate) fn stop(&mut self) {
         self.rows.clear();
         self.started = false;
+        self.last_step_tick = 0;
         self.publication = None;
+        self.programs.clear();
     }
 
     /// Advances every row, reporting whether any of them changed state.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn step(
         &mut self,
         graph: &ConstructionGraph,
@@ -621,12 +733,55 @@ impl DriveSequencer {
         keyboard_controller: Option<mechanic_core::PartId>,
         tick: u64,
     ) -> bool {
+        self.step_with_suspension(graph, keys, keyboard_controller, tick, &BTreeSet::new())
+    }
+
+    /// Holds selected controller programs without consuming keys or dwell time.
+    pub(crate) fn step_with_suspension(
+        &mut self,
+        graph: &ConstructionGraph,
+        keys: &DriveKeyState,
+        keyboard_controller: Option<mechanic_core::PartId>,
+        tick: u64,
+        suspended_controllers: &BTreeSet<PartId>,
+    ) -> bool {
+        self.step_with_held_bearings(
+            graph,
+            keys,
+            keyboard_controller,
+            tick,
+            suspended_controllers,
+            &BTreeSet::new(),
+        )
+    }
+
+    /// Suspends rows whose controller or driven bearing belongs to a held creation.
+    pub(crate) fn step_with_held_bearings(
+        &mut self,
+        graph: &ConstructionGraph,
+        keys: &DriveKeyState,
+        keyboard_controller: Option<PartId>,
+        tick: u64,
+        suspended_controllers: &BTreeSet<PartId>,
+        held_bearings: &BTreeSet<BearingId>,
+    ) -> bool {
+        let elapsed = tick.saturating_sub(self.last_step_tick);
+        self.last_step_tick = tick;
         let mut changed = false;
         let no_keys = DriveKeyState::default();
         for row in &mut self.rows {
             let Some(spec) = graph.drive_link(row.link) else {
                 continue;
             };
+            if suspended_controllers.contains(&spec.controller)
+                || held_bearings.contains(&spec.bearing)
+            {
+                row.cursor.entered_tick = row
+                    .cursor
+                    .entered_tick
+                    .saturating_add(elapsed.min(tick.saturating_sub(row.cursor.entered_tick)));
+                continue;
+            }
             let routed_keys = if keyboard_controller == Some(spec.controller) {
                 keys
             } else {
@@ -730,15 +885,19 @@ pub(crate) fn gpu_drive_rows(
             continue;
         };
         match target {
-            DriveTarget::Speed(speed) => {
+            DriveTarget::Speed(speed) | DriveTarget::LinearSpeed(speed) => {
                 slot.mode = DRIVE_MODE_SPEED;
                 slot.target_speed = speed;
                 slot.target_angle = 0.0;
             }
-            DriveTarget::Angle(angle) => {
+            DriveTarget::Angle(angle) | DriveTarget::LinearPosition(angle) => {
                 slot.mode = DRIVE_MODE_ANGLE;
                 slot.target_speed = 0.0;
-                slot.target_angle = angle;
+                slot.target_angle = if target.is_linear() {
+                    angle.clamp(slot.min_angle, slot.max_angle)
+                } else {
+                    angle
+                };
             }
         }
     }
@@ -770,7 +929,7 @@ pub(crate) fn geared_gpu_drive_rows(
             .program
             .state(row.cursor.active)
             .map(mechanic_core::DriveState::target)
-            .and_then(DriveTarget::speed)
+            .and_then(target_speed)
             .map_or(0, |speed| {
                 if speed > 0.0 {
                     1
@@ -808,17 +967,28 @@ fn apply_live_targets(
             continue;
         };
         match target {
-            DriveTarget::Speed(speed) => {
+            DriveTarget::Speed(speed) | DriveTarget::LinearSpeed(speed) => {
                 slot.mode = DRIVE_MODE_SPEED;
                 slot.target_speed = speed.clamp(-slot.max_speed, slot.max_speed);
                 slot.target_angle = 0.0;
             }
-            DriveTarget::Angle(angle) => {
+            DriveTarget::Angle(angle) | DriveTarget::LinearPosition(angle) => {
                 slot.mode = DRIVE_MODE_ANGLE;
                 slot.target_speed = 0.0;
-                slot.target_angle = angle;
+                slot.target_angle = if target.is_linear() {
+                    angle.clamp(slot.min_angle, slot.max_angle)
+                } else {
+                    angle
+                };
             }
         }
+    }
+}
+
+fn target_speed(target: DriveTarget) -> Option<f32> {
+    match target {
+        DriveTarget::Speed(speed) | DriveTarget::LinearSpeed(speed) => Some(speed),
+        DriveTarget::Angle(_) | DriveTarget::LinearPosition(_) => None,
     }
 }
 
@@ -952,6 +1122,33 @@ mod tests {
         // 4 s is 240 ticks, and S3 names S2, so the pair cycles forever.
         let cycled = stepped_cursor(advanced, &program, &keys(&[], &[]), 460);
         assert_eq!(cycled.active, 1);
+    }
+
+    #[test]
+    fn linear_position_sequence_preserves_signed_targets_and_dwell_reversal() {
+        let forward = DriveState::new(DriveTarget::LinearPosition(0.2))
+            .unwrap()
+            .with_trigger(Some(DriveTrigger::new(key('S'), DriveRelease::Latch)))
+            .with_dwell(Some(DriveDwell::new(1.0, Some(1)).unwrap()));
+        let reverse = DriveState::new(DriveTarget::LinearPosition(-0.2))
+            .unwrap()
+            .with_dwell(Some(DriveDwell::new(1.0, Some(0)).unwrap()));
+        let program = DriveProgram::new(&[forward, reverse], false).unwrap();
+        let started = stepped_cursor(row(), &program, &keys(&['S'], &['S']), 10);
+        let reversed = stepped_cursor(started, &program, &keys(&[], &[]), 70);
+        assert_eq!(reversed.active, 1);
+        assert_eq!(
+            program.states()[reversed.active as usize].target(),
+            DriveTarget::LinearPosition(-0.2)
+        );
+        assert_eq!(
+            stepped_cursor(reversed, &program, &keys(&[], &[]), 130).active,
+            0
+        );
+        assert_eq!(
+            DriveTarget::LinearSpeed(0.125).reversed(),
+            DriveTarget::LinearSpeed(-0.125)
+        );
     }
 
     #[test]
@@ -1170,6 +1367,379 @@ mod tests {
 
         let rows = super::geared_gpu_drive_rows(&creation, &graph, &sequencer, &gearboxes);
         assert!(rows.iter().all(|row| row.source_b_max_acceleration == 0.0));
+    }
+
+    #[test]
+    fn frozen_program_retains_remaining_dwell_while_another_controller_advances() {
+        use bevy::prelude::{IVec3, Vec3};
+        use mechanic_core::{
+            BearingSpec, BuildCommand, BuildOutcome, BuildPose, ControllerSpec, CuboidSpec,
+            DriveLinkSpec, FaceKind, FaceRef, GridRotation,
+        };
+        let program = DriveProgram::new(
+            &[
+                angle_state(0.0).with_dwell(Some(DriveDwell::new(1.0, None).unwrap())),
+                angle_state(45.0)
+                    .with_trigger(Some(DriveTrigger::new(key('W'), DriveRelease::Latch))),
+            ],
+            false,
+        )
+        .unwrap();
+        let (mut graph, _, frozen) = driven_arm(program);
+        let first_bearing = *graph.bearings().next().unwrap().1;
+        let mechanic_core::FaceOwner::Part(base) = first_bearing.source.owner else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(arm) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::new(IVec3::new(0, 2, 4), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::BearingAdded(bearing) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveZ),
+                FaceRef::part(arm, FaceKind::NegativeZ),
+                Vec3::new(0.0, 0.5, 0.5),
+                Vec3::Z,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(other) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::new(0, 50, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut link = DriveLinkSpec::new(other, bearing);
+        link.program = program;
+        graph.apply(BuildCommand::AddDriveLink(link)).unwrap();
+        let creation = graph.compile().unwrap();
+        let mut sequencer = super::DriveSequencer::default();
+        sequencer.start(&creation, &graph, None);
+        assert!(!sequencer.step(&graph, &keys(&[], &[]), None, 20));
+        let suspended = std::collections::BTreeSet::from([frozen]);
+        assert!(sequencer.step_with_suspension(
+            &graph,
+            &keys(&['W'], &['W']),
+            Some(frozen),
+            1020,
+            &suspended
+        ));
+        let frozen_link = graph
+            .drive_links()
+            .find(|(_, spec)| spec.controller == frozen)
+            .unwrap()
+            .0;
+        let other_link = graph
+            .drive_links()
+            .find(|(_, spec)| spec.controller == other)
+            .unwrap()
+            .0;
+        assert_eq!(sequencer.active_state(frozen_link), Some(0));
+        assert_eq!(sequencer.active_state(other_link), Some(1));
+        sequencer.sync_publication(&creation, &graph, Some((2, 1)), 1020);
+        assert!(!sequencer.step_with_suspension(&graph, &keys(&[], &[]), None, 2020, &suspended));
+        assert!(!sequencer.step(&graph, &keys(&[], &[]), None, 2059));
+        assert!(sequencer.step(&graph, &keys(&[], &[]), None, 2060));
+        assert_eq!(sequencer.active_state(frozen_link), Some(1));
+        sequencer.stop();
+        assert_eq!(sequencer.last_step_tick, 0);
+    }
+
+    #[test]
+    fn external_controller_pauses_only_rows_driving_held_bearings() {
+        use bevy::prelude::{IVec3, Vec3};
+        use mechanic_core::{
+            BearingSpec, BuildCommand, BuildOutcome, BuildPose, CuboidSpec, DriveLinkSpec,
+            FaceKind, FaceRef, GridRotation,
+        };
+        let program = DriveProgram::new(
+            &[
+                angle_state(0.0).with_dwell(Some(DriveDwell::new(1.0, None).unwrap())),
+                angle_state(45.0)
+                    .with_trigger(Some(DriveTrigger::new(key('W'), DriveRelease::Latch))),
+            ],
+            false,
+        )
+        .unwrap();
+        let (mut graph, _, controller) = driven_arm(program);
+        let (held, first) = graph
+            .bearings()
+            .next()
+            .map(|(id, spec)| (id, *spec))
+            .unwrap();
+        let mechanic_core::FaceOwner::Part(base) = first.source.owner else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(arm) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::new(IVec3::new(0, 2, 4), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::BearingAdded(other) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveZ),
+                FaceRef::part(arm, FaceKind::NegativeZ),
+                Vec3::new(0.0, 0.5, 0.5),
+                Vec3::Z,
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let mut link = DriveLinkSpec::new(controller, other);
+        link.program = program;
+        graph.apply(BuildCommand::AddDriveLink(link)).unwrap();
+        let creation = graph.compile().unwrap();
+        let mut sequencer = super::DriveSequencer::default();
+        sequencer.start(&creation, &graph, None);
+        let held_link = graph
+            .drive_links()
+            .find(|(_, spec)| spec.bearing == held)
+            .unwrap()
+            .0;
+        let free_link = graph
+            .drive_links()
+            .find(|(_, spec)| spec.bearing == other)
+            .unwrap()
+            .0;
+        assert!(!sequencer.step(&graph, &keys(&[], &[]), Some(controller), 20));
+        let held_bearings = std::collections::BTreeSet::from([held]);
+        let no_controllers = std::collections::BTreeSet::new();
+        assert!(sequencer.step_with_held_bearings(
+            &graph,
+            &keys(&['W'], &['W']),
+            Some(controller),
+            1020,
+            &no_controllers,
+            &held_bearings
+        ));
+        assert_eq!(sequencer.active_state(held_link), Some(0));
+        assert_eq!(sequencer.active_state(free_link), Some(1));
+        sequencer.sync_publication(&creation, &graph, Some((2, 1)), 1020);
+        assert!(!sequencer.step_with_held_bearings(
+            &graph,
+            &keys(&[], &[]),
+            Some(controller),
+            2020,
+            &no_controllers,
+            &held_bearings
+        ));
+        assert!(!sequencer.step(&graph, &keys(&[], &[]), Some(controller), 2059));
+        assert!(sequencer.step(&graph, &keys(&[], &[]), Some(controller), 2060));
+        assert_eq!(sequencer.active_state(held_link), Some(1));
+    }
+
+    #[test]
+    fn frozen_gearbox_preserves_cooldown_across_publication_and_resumes() {
+        let (graph, _, sequencer, mut gearboxes) = gas_drive(2.0, false);
+        let controller = graph
+            .drive_link(sequencer.rows()[0].link)
+            .unwrap()
+            .controller;
+        let keyboard = bevy::input::ButtonInput::default();
+        let speeds = [(controller, EngineKind::Gas, 10.0)];
+        assert!(!gearboxes.step(&graph, &sequencer, &keyboard, None, 10, &speeds, false));
+        let suspended = std::collections::BTreeSet::from([controller]);
+        assert!(!gearboxes.step_with_suspension(
+            &graph, &sequencer, &keyboard, None, 1010, &speeds, false, &suspended
+        ));
+        assert_eq!(gearboxes.active_gear(controller, EngineKind::Gas), Some(1));
+        gearboxes.sync_publication(&graph, &sequencer);
+        assert!(!gearboxes.step_with_suspension(
+            &graph, &sequencer, &keyboard, None, 2010, &speeds, false, &suspended
+        ));
+        assert!(!gearboxes.step(&graph, &sequencer, &keyboard, None, 2020, &speeds, false));
+        assert!(gearboxes.step(&graph, &sequencer, &keyboard, None, 2021, &speeds, false));
+        assert_eq!(gearboxes.active_gear(controller, EngineKind::Gas), Some(2));
+        gearboxes.stop();
+        assert_eq!(gearboxes.last_step_tick, 0);
+    }
+
+    #[test]
+    fn frozen_gearbox_does_not_complete_a_pending_reversal() {
+        let (graph, _, sequencer, mut gearboxes) = gas_drive(2.0, false);
+        let row = gearboxes
+            .rows
+            .iter_mut()
+            .find(|row| row.kind == EngineKind::Gas)
+            .unwrap();
+        row.gear = None;
+        row.pending = Some(0);
+        let controller = row.controller;
+        let keyboard = bevy::input::ButtonInput::default();
+        let suspended = std::collections::BTreeSet::from([controller]);
+        assert!(!gearboxes.step_with_suspension(
+            &graph,
+            &sequencer,
+            &keyboard,
+            None,
+            1000,
+            &[],
+            false,
+            &suspended
+        ));
+        let row = gearboxes
+            .rows
+            .iter()
+            .find(|row| row.kind == EngineKind::Gas)
+            .unwrap();
+        assert_eq!(row.gear, None);
+        assert_eq!(row.pending, Some(0));
+        assert!(gearboxes.step(&graph, &sequencer, &keyboard, None, 1001, &[], false));
+        assert_eq!(gearboxes.active_gear(controller, EngineKind::Gas), Some(0));
+    }
+
+    #[test]
+    fn live_publication_preserves_wire_progress_when_coordinates_change() {
+        let (graph, mut creation, controller) = driven_arm(steering());
+        let mut sequencer = super::DriveSequencer::default();
+        sequencer.start(&creation, &graph, Some((1, 1)));
+        sequencer.step(&graph, &keys(&['A'], &['A']), Some(controller), 37);
+        // Keep a nonzero dwell epoch independently of the program's bindings.
+        sequencer.rows[0].cursor = RowCursor {
+            active: 1,
+            entered_tick: 37,
+        };
+        let old = sequencer.rows[0];
+        for coordinate in creation.loop_topology.bearing_coordinates.values_mut() {
+            *coordinate += 4;
+        }
+        sequencer.sync_publication(&creation, &graph, Some((2, 1)), 50);
+        assert_eq!(sequencer.rows[0].link, old.link);
+        assert_eq!(sequencer.rows[0].cursor, old.cursor);
+        assert_eq!(sequencer.rows[0].coordinate, old.coordinate + 4);
+        assert!(sequencer.is_started_for(Some((2, 1))));
+        sequencer.start(&creation, &graph, Some((2, 1)));
+        assert_eq!(sequencer.rows[0].cursor, RowCursor::default());
+    }
+
+    #[test]
+    fn renaming_and_tuning_a_wire_preserves_its_program_progress() {
+        let (mut graph, creation, _) = driven_arm(steering());
+        let mut sequencer = super::DriveSequencer::default();
+        sequencer.start(&creation, &graph, Some((1, 1)));
+        let cursor = RowCursor {
+            active: 1,
+            entered_tick: 37,
+        };
+        sequencer.rows[0].cursor = cursor;
+        let link = sequencer.rows[0].link;
+        let spec = *graph.drive_link(link).unwrap();
+        graph
+            .apply(mechanic_core::BuildCommand::SetDriveLink {
+                link,
+                limits: mechanic_core::DriveLimits::new(2.0, 12.0, None).unwrap(),
+                program: spec.program,
+                name: mechanic_core::DriveName::new("Front steering"),
+                actuator: spec.actuator,
+            })
+            .unwrap();
+        sequencer.sync_publication(&creation, &graph, Some((2, 1)), 50);
+        assert_eq!(sequencer.rows[0].cursor, cursor);
+    }
+
+    #[test]
+    fn changing_a_wire_program_resets_its_cursor() {
+        let (mut graph, creation, _) = driven_arm(steering());
+        let mut sequencer = super::DriveSequencer::default();
+        sequencer.start(&creation, &graph, Some((1, 1)));
+        sequencer.rows[0].cursor = RowCursor {
+            active: 1,
+            entered_tick: 37,
+        };
+        let link = sequencer.rows[0].link;
+        let spec = *graph.drive_link(link).unwrap();
+        graph
+            .apply(mechanic_core::BuildCommand::SetDriveLink {
+                link,
+                limits: spec.limits,
+                program: DriveProgram::default(),
+                name: spec.name,
+                actuator: spec.actuator,
+            })
+            .unwrap();
+        sequencer.sync_publication(&creation, &graph, Some((2, 1)), 50);
+        assert_eq!(
+            sequencer.rows[0].cursor,
+            RowCursor {
+                active: 0,
+                entered_tick: 50
+            }
+        );
+    }
+
+    #[test]
+    fn live_publication_preserves_gear_and_pending_shift_until_config_changes() {
+        let (mut graph, _, sequencer, mut gearboxes) = gas_drive(2.0, false);
+        let row = gearboxes
+            .rows
+            .iter_mut()
+            .find(|row| row.kind == EngineKind::Gas)
+            .unwrap();
+        row.gear = Some(2);
+        row.pending = Some(1);
+        row.last_shift_tick = 57;
+        let previous = *row;
+        gearboxes.sync_publication(&graph, &sequencer);
+        assert_eq!(
+            *gearboxes
+                .rows
+                .iter()
+                .find(|row| row.kind == EngineKind::Gas)
+                .unwrap(),
+            previous
+        );
+        graph
+            .apply(mechanic_core::BuildCommand::SetGearboxMode {
+                controller: previous.controller,
+                kind: EngineKind::Gas,
+                mode: super::ShiftMode::Manual,
+            })
+            .unwrap();
+        gearboxes.sync_publication(&graph, &sequencer);
+        let row = gearboxes
+            .rows
+            .iter()
+            .find(|row| row.kind == EngineKind::Gas)
+            .unwrap();
+        assert_eq!(row.pending, None);
+        assert_eq!(row.last_shift_tick, 0);
+        assert_eq!(
+            row.gear,
+            Some(usize::from(
+                graph
+                    .gearbox_config(previous.controller, EngineKind::Gas)
+                    .unwrap()
+                    .reverse_gears()
+            ))
+        );
+        gearboxes
+            .rows
+            .iter_mut()
+            .find(|row| row.kind == EngineKind::Gas)
+            .unwrap()
+            .last_shift_tick = 99;
+        gearboxes.start(&graph, &sequencer);
+        assert!(gearboxes.rows.iter().all(|row| row.last_shift_tick == 0));
     }
 
     #[test]

@@ -40,8 +40,8 @@ struct MechanismBody {
 };
 
 struct Coordinate {
-    angle: f32,
-    angular_velocity: f32,
+    position: f32,
+    velocity: f32,
 };
 
 struct Drive {
@@ -139,10 +139,13 @@ fn prepare_drive_constraints(@builtin(global_invocation_id) invocation: vec3<u32
     if index >= config.bearing_count {
         return;
     }
+    if (drive_constraints[index].bearing.metadata.w & 2u) != 0u {
+        return;
+    }
     let coordinate = drive_constraints[index].metadata.w;
     if coordinate != INVALID_INDEX {
         drive_constraints[index].state.y = 0.0;
-        drive_constraints[index].state.z = coordinates[coordinate].angle;
+        drive_constraints[index].state.z = coordinates[coordinate].position;
     }
 }
 
@@ -187,7 +190,14 @@ fn drive_max_impulse(index: u32, measured: f32, desired: f32) -> f32 {
 
 fn project_drive_velocity_row(index: u32) {
     let constraint = drive_constraints[index];
+    if (constraint.bearing.metadata.w & 2u) != 0u {
+        return;
+    }
     if constraint.metadata.w == INVALID_INDEX || constraint.drive.mode == DRIVE_MODE_PASSIVE {
+        return;
+    }
+    if constraint.bearing.local_axis_a.w == 1.0 {
+        project_linear_joint(index, false, true);
         return;
     }
     let child = constraint.metadata.x;
@@ -216,7 +226,14 @@ fn project_drive_velocity_row(index: u32) {
 
 fn project_drive_velocity_row_immediate(index: u32) {
     let constraint = drive_constraints[index];
+    if (constraint.bearing.metadata.w & 2u) != 0u {
+        return;
+    }
     if constraint.metadata.w == INVALID_INDEX || constraint.drive.mode == DRIVE_MODE_PASSIVE {
+        return;
+    }
+    if constraint.bearing.local_axis_a.w == 1.0 {
+        project_linear_joint(index, true, true);
         return;
     }
     let child = constraint.metadata.x;
@@ -354,6 +371,13 @@ fn solve_angular_axis_immediate(
 
 fn project_bearing_velocity_row(index: u32) {
     let bearing = drive_constraints[index].bearing;
+    if (bearing.metadata.w & 2u) != 0u {
+        return;
+    }
+    if bearing.local_axis_a.w == 1.0 {
+        project_linear_joint(index, true, false);
+        return;
+    }
     let body_a = bearing.metadata.x;
     let body_b = bearing.metadata.y;
     let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
@@ -431,6 +455,13 @@ fn project_bearing_velocities(@builtin(global_invocation_id) invocation: vec3<u3
     }
     project_drive_velocity_row(index);
     let bearing = drive_constraints[index].bearing;
+    if (bearing.metadata.w & 2u) != 0u {
+        return;
+    }
+    if bearing.local_axis_a.w == 1.0 {
+        project_linear_joint(index, false, false);
+        return;
+    }
     let body_a = bearing.metadata.x;
     let body_b = bearing.metadata.y;
     let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
@@ -487,7 +518,9 @@ fn project_small_mechanism_velocities(
 ) {
     var iterations = max(config.solver_iterations, 1u);
     for (var row = 0u; row < config.bearing_count; row += 1u) {
-        if drive_constraints[row].drive.mode == DRIVE_MODE_ANGLE {
+        if (drive_constraints[row].bearing.metadata.w & 2u) == 0u
+            && drive_constraints[row].drive.mode == DRIVE_MODE_ANGLE
+        {
             iterations = max(iterations, SMALL_MECHANISM_ANGLE_ITERATIONS);
         }
     }
@@ -500,8 +533,14 @@ fn project_small_mechanism_velocities(
         storageBarrier();
         workgroupBarrier();
 
-        if index < config.bearing_count {
+        // Suspended rows skip work while every invocation still reaches the barriers.
+        if index < config.bearing_count
+            && (drive_constraints[index].bearing.metadata.w & 2u) == 0u
+        {
             let bearing = drive_constraints[index].bearing;
+            if bearing.local_axis_a.w == 1.0 {
+                project_linear_joint(index, false, false);
+            } else {
             let body_a = bearing.metadata.x;
             let body_b = bearing.metadata.y;
             let arm_a = quat_rotate(rotations[body_a], bearing.local_anchor_a.xyz);
@@ -550,6 +589,7 @@ fn project_small_mechanism_velocities(
                 - angular_velocities[body_a].xyz;
             solve_angular_axis(body_a, body_b, relative_angular, tangent_a);
             solve_angular_axis(body_a, body_b, relative_angular, tangent_b);
+            }
         }
         storageBarrier();
         workgroupBarrier();
@@ -606,10 +646,17 @@ fn permitted_speed(body: u32) -> f32 {
     let mechanism = mechanism_bodies[body];
     let parent = mechanism.metadata.x;
     let axis = permitted_axis(body);
+    let bearing = bearings[mechanism.metadata.y];
+    if bearing.local_axis_a.w == 1.0 {
+        let offset = positions[body].xyz - positions[parent].xyz;
+        return dot(linear_velocities[body].xyz - linear_velocities[parent].xyz
+            - cross(angular_velocities[parent].xyz, offset), axis);
+    }
     return dot(angular_velocities[body].xyz - angular_velocities[parent].xyz, axis);
 }
 
 fn stabilized_speed(body: u32, speed: f32) -> f32 {
+    if bearings[mechanism_bodies[body].metadata.y].local_axis_a.w == 1.0 { return speed; }
     let gravity_aligned = abs(permitted_axis(body).y) > 0.999;
     return select(
         speed,
@@ -634,16 +681,18 @@ fn advance_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let measured = permitted_speed(body);
     let drive = drives[coordinate];
     var speed = select(measured, stabilized_speed(body, measured), drive.mode == DRIVE_MODE_PASSIVE);
-    var angle = coordinates[coordinate].angle + speed * config.delta_seconds;
-    if angle < drive.min_angle {
-        angle = drive.min_angle;
+    var angle = coordinates[coordinate].position + speed * config.delta_seconds;
+    let minimum = max(drive.min_angle, bearing.local_anchor_a.w);
+    let maximum = min(drive.max_angle, bearing.local_anchor_b.w);
+    if angle < minimum {
+        angle = minimum;
         speed = 0.0;
-    } else if angle > drive.max_angle {
-        angle = drive.max_angle;
+    } else if angle > maximum {
+        angle = maximum;
         speed = 0.0;
     }
-    coordinates[coordinate].angular_velocity = speed;
-    coordinates[coordinate].angle = angle;
+    coordinates[coordinate].velocity = speed;
+    coordinates[coordinate].position = angle;
 }
 
 @compute @workgroup_size(256)
@@ -656,7 +705,7 @@ fn capture_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if coordinate != INVALID_INDEX {
         // Contact impulses are captured at full strength and receive the normal
         // once-per-tick coordinate damping during the next advance.
-        coordinates[coordinate].angular_velocity = stabilized_speed(body, permitted_speed(body));
+        coordinates[coordinate].velocity = stabilized_speed(body, permitted_speed(body));
     }
 }
 
@@ -678,7 +727,14 @@ fn reconstruct_body_velocities() {
             parent_anchor = quat_rotate(rotations[parent], bearing.local_anchor_b.xyz);
             child_anchor = quat_rotate(rotations[body], bearing.local_anchor_a.xyz);
         }
-        let speed = coordinates[bearing.metadata.z].angular_velocity;
+        let speed = coordinates[bearing.metadata.z].velocity;
+        if bearing.local_axis_a.w == 1.0 {
+            let angular = angular_velocities[parent].xyz;
+            linear_velocities[body] = vec4<f32>(linear_velocities[parent].xyz
+                + cross(angular, positions[body].xyz - positions[parent].xyz) + axis * speed, 0.0);
+            angular_velocities[body] = vec4<f32>(angular, 0.0);
+            continue;
+        }
         let angular = angular_velocities[parent].xyz + axis * speed;
         let anchor_velocity = linear_velocities[parent].xyz
             + cross(angular_velocities[parent].xyz, parent_anchor);
@@ -705,12 +761,96 @@ fn validate_articulated_state(@builtin(global_invocation_id) invocation: vec3<u3
         let coordinate = bearings[mechanism.metadata.y].metadata.z;
         let state = coordinates[coordinate];
         valid = valid
-            && state.angle == state.angle
-            && abs(state.angle) < 3.402823e+38
-            && state.angular_velocity == state.angular_velocity
-            && abs(state.angular_velocity) < 3.402823e+38;
+            && state.position == state.position
+            && abs(state.position) < 3.402823e+38
+            && state.velocity == state.velocity
+            && abs(state.velocity) < 3.402823e+38;
     }
     if !valid {
         atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
+    }
+}
+
+
+// Positive impulse opposes the relative velocity of B at the carriage point.
+fn linear_joint_impulse(a: u32, b: u32, ra: vec3<f32>, rb: vec3<f32>, impulse: vec3<f32>, torque: vec3<f32>, immediate: bool) {
+    let la = impulse * masses[a].inverse_mass.x;
+    let lb = -impulse * masses[b].inverse_mass.x;
+    let wa = world_inverse_inertia(a, cross(ra, impulse) + torque);
+    let wb = world_inverse_inertia(b, -cross(rb, impulse) - torque);
+    if !immediate {
+        add_delta(a, la, wa);
+        add_delta(b, lb, wb);
+        return;
+    }
+    linear_velocities[a] += vec4<f32>(la, 0.0);
+    linear_velocities[b] += vec4<f32>(lb, 0.0);
+    angular_velocities[a] += vec4<f32>(wa, 0.0);
+    angular_velocities[b] += vec4<f32>(wb, 0.0);
+}
+
+fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
+    let constraint = drive_constraints[index];
+    if (constraint.bearing.metadata.w & 2u) != 0u {
+        return;
+    }
+    let bearing = constraint.bearing;
+    let a = bearing.metadata.x;
+    let b = bearing.metadata.y;
+    let axis = normalize(quat_rotate(rotations[a], bearing.local_axis_a.xyz));
+    let base_arm = quat_rotate(rotations[a], bearing.local_anchor_a.xyz);
+    let rb = quat_rotate(rotations[b], bearing.local_anchor_b.xyz);
+    let q = dot(positions[b].xyz + rb - positions[a].xyz - base_arm, axis);
+    let ra = base_arm + axis * q;
+    let helper_axis = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(axis.x) > 0.8);
+    let u = normalize(cross(axis, helper_axis));
+    let v = cross(axis, u);
+    let directions = array<vec3<f32>, 3>(u, v, axis);
+    let relaxation = select(0.5, 1.0, immediate);
+    if !motor {
+        // Lock all three relative rotations, including twist about the rail.
+        for (var i = 0u; i < 3u; i += 1u) {
+            let direction = directions[i];
+            let denominator = dot(direction, world_inverse_inertia(a, direction) + world_inverse_inertia(b, direction));
+            if denominator > 1.0e-12 {
+                let error = dot(angular_velocities[b].xyz - angular_velocities[a].xyz, direction);
+                linear_joint_impulse(a, b, ra, rb, vec3<f32>(0.0), direction * (relaxation * error / denominator), immediate);
+            }
+        }
+    }
+    for (var i = 0u; i < 3u; i += 1u) {
+        if motor && i != 2u { continue; }
+        let direction = directions[i];
+        let ja = cross(ra, direction);
+        let jb = cross(rb, direction);
+        let denominator = masses[a].inverse_mass.x + masses[b].inverse_mass.x
+            + dot(ja, world_inverse_inertia(a, ja)) + dot(jb, world_inverse_inertia(b, jb));
+        if denominator <= 1.0e-12 { continue; }
+        let relative = linear_velocities[b].xyz + cross(angular_velocities[b].xyz, rb)
+            - linear_velocities[a].xyz - cross(angular_velocities[a].xyz, ra);
+        let measured = dot(relative, direction);
+        var desired = 0.0;
+        var impulse = 0.0;
+        if motor {
+            desired = drive_desired_speed(index);
+            let drive = constraint.drive;
+            let requested = desired - measured;
+            let acceleration = drive.source_a_max_acceleration * drive_source_fade(measured, requested, drive.source_a_no_load_speed)
+                + drive.source_b_max_acceleration * drive_source_fade(measured, requested, drive.source_b_no_load_speed);
+            let limit = max(acceleration * constraint.state.x * config.delta_seconds, 0.0);
+            let previous = constraint.state.y;
+            let accumulated = clamp(previous + (desired - measured) / denominator, -limit, limit);
+            drive_constraints[index].state.y = accumulated;
+            impulse = previous - accumulated;
+        } else {
+            if i == 2u {
+                // Predictive, non-bouncing unilateral stops. No motor budget applies.
+                let minimum = (bearing.local_anchor_a.w - q) / config.delta_seconds;
+                let maximum = (bearing.local_anchor_b.w - q) / config.delta_seconds;
+                desired = clamp(measured, minimum, maximum);
+            }
+            impulse = relaxation * (measured - desired) / denominator;
+        }
+        linear_joint_impulse(a, b, ra, rb, direction * impulse, vec3<f32>(0.0), immediate);
     }
 }

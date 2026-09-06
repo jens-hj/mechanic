@@ -1,6 +1,9 @@
 (
-    version: 14,
+    version: 16,
     name: "car2",
+    frames: [(translation: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0, 1.0))],
+    part_frames: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    region_frames: [],
     parts: [
         Cuboid(
             dimensions: (1, 1, 1),
@@ -2587,6 +2590,7 @@
     rigid_links: [],
     bearings: [
         (
+            kind: Rotational,
             source: (
                 owner: Part(57),
                 face: PositiveY,
@@ -2603,6 +2607,7 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
             source: (
                 owner: Part(56),
                 face: PositiveY,
@@ -2619,6 +2624,7 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
             source: (
                 owner: Part(58),
                 face: PositiveY,
@@ -2635,6 +2641,7 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
             source: (
                 owner: Part(59),
                 face: PositiveY,
@@ -2651,6 +2658,7 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
             source: (
                 owner: Part(74),
                 face: PositiveY,
@@ -2667,6 +2675,7 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
             source: (
                 owner: Part(75),
                 face: PositiveY,
@@ -2685,6 +2694,7 @@
     ],
     drive_links: [
         (
+            linear_limits: None,
             controller: 70,
             bearing: 0,
             reversed: false,
@@ -2698,11 +2708,13 @@
                 loops: false,
                 states: [
                     (
+            linear_limits: None,
                         target: Angle(0.0),
                         dwell: None,
                         trigger: None,
                     ),
                     (
+            linear_limits: None,
                         target: Angle(-0.5235988),
                         dwell: None,
                         trigger: Some((
@@ -2711,6 +2723,7 @@
                         )),
                     ),
                     (
+            linear_limits: None,
                         target: Angle(0.5235988),
                         dwell: None,
                         trigger: Some((
@@ -2723,6 +2736,7 @@
             name: "",
         ),
         (
+            linear_limits: None,
             controller: 70,
             bearing: 1,
             reversed: false,
@@ -2736,11 +2750,13 @@
                 loops: false,
                 states: [
                     (
+            linear_limits: None,
                         target: Angle(0.0),
                         dwell: None,
                         trigger: None,
                     ),
                     (
+            linear_limits: None,
                         target: Angle(-0.5235988),
                         dwell: None,
                         trigger: Some((
@@ -2749,6 +2765,7 @@
                         )),
                     ),
                     (
+            linear_limits: None,
                         target: Angle(0.5235988),
                         dwell: None,
                         trigger: Some((
@@ -2761,6 +2778,7 @@
             name: "",
         ),
         (
+            linear_limits: None,
             controller: 70,
             bearing: 3,
             reversed: true,
@@ -2777,11 +2795,13 @@
                 loops: false,
                 states: [
                     (
+            linear_limits: None,
                         target: Speed(0.0),
                         dwell: None,
                         trigger: None,
                     ),
                     (
+            linear_limits: None,
                         target: Speed(3.0),
                         dwell: None,
                         trigger: Some((
@@ -2790,6 +2810,7 @@
                         )),
                     ),
                     (
+            linear_limits: None,
                         target: Speed(-2.1),
                         dwell: None,
                         trigger: Some((
@@ -2802,6 +2823,7 @@
             name: "",
         ),
         (
+            linear_limits: None,
             controller: 70,
             bearing: 4,
             reversed: true,
@@ -2818,11 +2840,13 @@
                 loops: false,
                 states: [
                     (
+            linear_limits: None,
                         target: Speed(0.0),
                         dwell: None,
                         trigger: None,
                     ),
                     (
+            linear_limits: None,
                         target: Speed(3.0),
                         dwell: None,
                         trigger: Some((
@@ -2831,6 +2855,7 @@
                         )),
                     ),
                     (
+            linear_limits: None,
                         target: Speed(-2.1),
                         dwell: None,
                         trigger: Some((
@@ -2843,6 +2868,7 @@
             name: "",
         ),
         (
+            linear_limits: None,
             controller: 70,
             bearing: 2,
             reversed: false,
@@ -2859,11 +2885,13 @@
                 loops: false,
                 states: [
                     (
+            linear_limits: None,
                         target: Speed(0.0),
                         dwell: None,
                         trigger: None,
                     ),
                     (
+            linear_limits: None,
                         target: Speed(3.0),
                         dwell: None,
                         trigger: Some((
@@ -2872,6 +2900,7 @@
                         )),
                     ),
                     (
+            linear_limits: None,
                         target: Speed(-2.1),
                         dwell: None,
                         trigger: Some((
@@ -2884,6 +2913,7 @@
             name: "",
         ),
         (
+            linear_limits: None,
             controller: 70,
             bearing: 5,
             reversed: false,
@@ -2900,11 +2930,13 @@
                 loops: false,
                 states: [
                     (
+            linear_limits: None,
                         target: Speed(0.0),
                         dwell: None,
                         trigger: None,
                     ),
                     (
+            linear_limits: None,
                         target: Speed(3.0),
                         dwell: None,
                         trigger: Some((
@@ -2913,6 +2945,7 @@
                         )),
                     ),
                     (
+            linear_limits: None,
                         target: Speed(-2.1),
                         dwell: None,
                         trigger: Some((
@@ -2942,6 +2975,8 @@
     shape_features: [],
     sockets: [
         (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
             source: (
                 owner: Part(56),
                 face: PositiveY,
@@ -2952,6 +2987,8 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
             source: (
                 owner: Part(57),
                 face: PositiveY,
@@ -2962,6 +2999,8 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
             source: (
                 owner: Part(58),
                 face: PositiveY,
@@ -2972,6 +3011,8 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
             source: (
                 owner: Part(59),
                 face: PositiveY,
@@ -2982,6 +3023,8 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
             source: (
                 owner: Part(75),
                 face: PositiveY,
@@ -2992,6 +3035,8 @@
             inner_diameter: 0.0,
         ),
         (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
             source: (
                 owner: Part(74),
                 face: PositiveY,

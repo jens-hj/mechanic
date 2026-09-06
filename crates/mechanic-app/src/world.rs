@@ -47,7 +47,9 @@ use mechanic_world::{
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
 use crate::{
     AppSimulation, EditorGraph, EditorHistory, EditorState, PlacedBearing,
-    builder::{GROUND_HALF_SIZE, PlacementSnapIndex, part_world_bounds},
+    builder::{
+        GROUND_HALF_SIZE, PlacementSnapIndex, composed_part_world_bounds, part_world_bounds,
+    },
     camera::{MainCamera, PlayerCamera, PlayerState},
     controls::GameAction,
     garage,
@@ -235,6 +237,7 @@ struct TerrainFoundation {
 struct PendingFoundationSync {
     editor_revision: u64,
     parts: BTreeMap<PartId, PartSpec>,
+    frames: BTreeMap<PartId, mechanic_core::ConstructionFrame>,
     replaced_parts: BTreeSet<PartId>,
     new_parts: Vec<PartId>,
     next_part: usize,
@@ -365,6 +368,7 @@ pub(crate) struct WorldRuntime {
     pending_garage_editor: Option<SpaceEditorState>,
     world_editor: Option<SpaceEditorState>,
     known_world_parts: BTreeMap<PartId, PartSpec>,
+    known_world_frames: BTreeMap<PartId, mechanic_core::ConstructionFrame>,
     foundations: Vec<TerrainFoundation>,
     foundation_index: FoundationSpatialIndex,
     // Portable assemblies must never inherit terrain-foundation immobility.
@@ -396,6 +400,9 @@ pub(crate) struct WorldRuntime {
     collision_build: Option<PlayerCollisionBuild>,
     collision_failed_revision: Option<u64>,
     collision_snapshot_tick: u64,
+    collision_pose_revision: u64,
+    /// Last construction revision validated against the frozen target.
+    frozen_editor: Option<(ConstructionGraph, Vec<PlacedBearing>)>,
     collision_poses: Vec<ConstructionBodyPose>,
     controller_accumulator: f64,
     jump_queued: bool,
@@ -405,6 +412,127 @@ pub(crate) struct WorldRuntime {
 }
 
 impl WorldRuntime {
+    pub(crate) const fn frozen_creation(&self) -> Option<mechanic_world::FrozenCreationDoc> {
+        self.document.frozen_creation
+    }
+
+    pub(crate) fn local_to_global(&self, position: Vec3) -> WorldPosition {
+        WorldPosition(self.floating_origin.0 + position.as_dvec3())
+    }
+
+    pub(crate) fn global_to_local(&self, position: WorldPosition) -> Vec3 {
+        position.relative_to(self.floating_origin)
+    }
+
+    pub(crate) fn persist_frozen_creation(
+        &mut self,
+        frozen: Option<mechanic_world::FrozenCreationDoc>,
+        graph: &ConstructionGraph,
+        editor: &EditorState,
+    ) -> Result<(), String> {
+        let previous = self.document.clone();
+        let previous_editor = self.frozen_editor.clone();
+        self.document.frozen_creation = frozen;
+        self.frozen_editor = frozen.map(|_| (graph.clone(), editor.placed_bearings.clone()));
+        if let Err(error) = save_world_instance(self, graph, editor) {
+            self.document = previous;
+            self.frozen_editor = previous_editor;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn accept_frozen_publication(
+        &mut self,
+        graph: &ConstructionGraph,
+        editor: &EditorState,
+    ) {
+        self.frozen_editor = self
+            .document
+            .frozen_creation
+            .map(|_| (graph.clone(), editor.placed_bearings.clone()));
+    }
+
+    pub(crate) fn set_frozen_target(&mut self, mut frozen: mechanic_world::FrozenCreationDoc) {
+        frozen.construction_generation = self.document.construction_generation;
+        self.document.frozen_creation = Some(frozen);
+        self.autosave.mutate(self.clock);
+    }
+
+    pub(crate) fn freeze_sphere_penetration(&self, center: Vec3, radius: f32) -> Option<f32> {
+        if self.active_terrain.is_empty() || !self.player_terrain_ready {
+            return None;
+        }
+        let scene = ActiveTerrainScene {
+            chunks: &self.active_terrain,
+            ready_faces: &self.active_terrain_ready_faces,
+            spatial_index: &self.active_terrain_index,
+        };
+        Some(scene.density(self.local_to_global(center)) + radius)
+    }
+
+    /// Visit only regular collision triangles whose BVH bounds overlap a local
+    /// query box. Uses the same active mesh generations as terrain collision.
+    pub(crate) fn freeze_triangles_clear(
+        &self,
+        low: Vec3,
+        high: Vec3,
+        mut clear: impl FnMut([Vec3; 3]) -> bool,
+    ) -> bool {
+        if self.active_terrain.is_empty() || !self.player_terrain_ready {
+            return false;
+        }
+        let low = self.local_to_global(low).0;
+        let high = self.local_to_global(high).0;
+        let overlaps = |bounds: mechanic_world::WorldBounds| {
+            low.cmple(bounds.maximum.0).all() && high.cmpge(bounds.minimum.0).all()
+        };
+        let regular = mechanic_world::TerrainTriangleGroupMask::REGULAR;
+        let mut stack = Vec::new();
+        for chunk in self.active_terrain.values() {
+            if !overlaps(chunk.triangle_bvh.bounds) {
+                continue;
+            }
+            stack.clear();
+            if !chunk.triangle_bvh.nodes.is_empty() {
+                stack.push(0_usize);
+            }
+            while let Some(index) = stack.pop() {
+                let node = &chunk.triangle_bvh.nodes[index];
+                if !node.group_mask.intersects(regular) || !overlaps(node.bounds) {
+                    continue;
+                }
+                if node.triangle_count == 0 {
+                    stack.extend(
+                        [node.left_child, node.right_child]
+                            .into_iter()
+                            .flatten()
+                            .map(|i| i as usize),
+                    );
+                    continue;
+                }
+                let start = node.first_triangle as usize;
+                for triangle in
+                    &chunk.triangle_bvh.triangles[start..start + node.triangle_count as usize]
+                {
+                    if !triangle.group_mask.intersects(regular) {
+                        continue;
+                    }
+                    let points = triangle.indices.map(|index| {
+                        self.global_to_local(WorldPosition(
+                            chunk.origin.0
+                                + Vec3::from_array(chunk.vertices[index as usize]).as_dvec3(),
+                        ))
+                    });
+                    if !clear(points) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     pub(crate) fn horizontal_origin(&self) -> DVec2 {
         DVec2::new(self.floating_origin.0.x, self.floating_origin.0.z)
     }
@@ -435,11 +563,14 @@ impl WorldRuntime {
             .pending_foundation_sync
             .as_ref()
             .map_or(&self.known_world_parts, |pending| &pending.parts);
+        let frames = self
+            .pending_foundation_sync
+            .as_ref()
+            .map_or(&self.known_world_frames, |pending| &pending.frames);
         let (minimum, maximum) = self
             .foundation_exempt_parts
             .iter()
-            .filter_map(|part| parts.get(part).copied())
-            .map(part_world_bounds)
+            .filter_map(|part| Some(framed_part_bounds(*parts.get(part)?, *frames.get(part)?)))
             .fold(
                 (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
                 |(minimum, maximum), (part_minimum, part_maximum)| {
@@ -560,15 +691,25 @@ impl WorldRuntime {
         self.document.active_dimension_link
     }
 
-    pub(crate) fn activate_dimension_link(
+    pub(crate) fn toggle_dimension_link(
         &mut self,
         space: AppSpace,
         graph: &ConstructionGraph,
         part: PartId,
-    ) -> Result<DimensionLinkId, String> {
+    ) -> Result<Option<DimensionLinkId>, String> {
         let id = graph
             .dimension_link_id(part)
             .ok_or_else(|| "aimed part is not a Dimension Link".to_owned())?;
+        if self.document.active_dimension_link == Some(id) {
+            let previous = self.document.clone();
+            self.document.active_dimension_link = None;
+            self.document.frozen_creation = None;
+            if let Err(error) = self.store.save_world(&self.document) {
+                self.document = previous;
+                return Err(error.to_string());
+            }
+            return Ok(None);
+        }
         if space == AppSpace::World {
             let component = graph
                 .structural_component(part, self.anchored_parts())
@@ -581,8 +722,7 @@ impl WorldRuntime {
             let mut minimum = Vec3::splat(f32::INFINITY);
             let mut maximum = Vec3::splat(f32::NEG_INFINITY);
             for member in component.parts() {
-                if let Some(spec) = graph.part(member).copied() {
-                    let (low, high) = part_world_bounds(spec);
+                if let Some((low, high)) = composed_part_world_bounds(graph, member) {
                     minimum = minimum.min(low);
                     maximum = maximum.max(high);
                 }
@@ -603,22 +743,25 @@ impl WorldRuntime {
                 return Err("Another linked creation already occupies the Garage".to_owned());
             }
         }
-        if self.document.active_dimension_link == Some(id) {
-            return Ok(id);
-        }
-        let previous = self.document.active_dimension_link;
+        let previous = self.document.clone();
         self.document.active_dimension_link = Some(id);
+        self.document.frozen_creation = None;
         if let Err(error) = self.store.save_world(&self.document) {
-            self.document.active_dimension_link = previous;
+            self.document = previous;
             return Err(error.to_string());
         }
-        Ok(id)
+        Ok(Some(id))
     }
 
     pub(crate) fn clear_active_dimension_link_if(&mut self, id: DimensionLinkId) {
         if self.document.active_dimension_link == Some(id) {
+            let previous = self.document.clone();
             self.document.active_dimension_link = None;
-            let _ = self.store.save_world(&self.document);
+            self.document.frozen_creation = None;
+            if let Err(error) = self.store.save_world(&self.document) {
+                self.document = previous;
+                warn!("could not clear active Dimension Link: {error}");
+            }
         }
     }
 }
@@ -634,6 +777,8 @@ fn editor_from_instance(instance: WorldCreationInstanceDoc) -> Result<SpaceEdito
             .sockets
             .into_iter()
             .map(|socket| PlacedBearing {
+                kind: socket.kind,
+                axis: socket.axis,
                 source: socket.source,
                 anchor: socket.anchor,
                 dimensions: socket.dimensions,
@@ -655,6 +800,11 @@ fn load_space_editors(
     };
     let world = editor_from_instance(world)?;
     let garage = editor_from_instance(garage)?;
+    if let Some(frozen) = document.frozen_creation
+        && world.graph.dimension_link(frozen.link).is_none()
+    {
+        return Err("Frozen Dimension Link must belong to the saved World construction".to_owned());
+    }
     let mut ids = BTreeMap::<DimensionLinkId, usize>::new();
     for graph in [&world.graph, &garage.graph] {
         for (_, spec) in graph.parts() {
@@ -720,6 +870,12 @@ impl FromWorld for WorldRuntime {
             };
         let load_error = load_error.or(instance_error);
         let capsule = KinematicCapsule::new(document.player_pose.translation);
+        let frozen_editor = document.frozen_creation.map(|_| {
+            (
+                world_editor.graph.clone(),
+                world_editor.placed_bearings.clone(),
+            )
+        });
         Self {
             store,
             document,
@@ -740,6 +896,7 @@ impl FromWorld for WorldRuntime {
             pending_garage_editor: Some(garage_editor),
             world_editor: Some(world_editor),
             known_world_parts: BTreeMap::new(),
+            known_world_frames: BTreeMap::new(),
             foundations: Vec::new(),
             foundation_index: FoundationSpatialIndex::default(),
             foundation_exempt_parts: BTreeSet::new(),
@@ -770,6 +927,8 @@ impl FromWorld for WorldRuntime {
             collision_build: None,
             collision_failed_revision: None,
             collision_snapshot_tick: 0,
+            collision_pose_revision: 0,
+            frozen_editor,
             collision_poses: Vec::new(),
             controller_accumulator: 0.0,
             jump_queued: false,
@@ -798,7 +957,8 @@ impl Plugin for WorldPrototypePlugin {
                     select_and_size_brush.after(crate::controls::update_action_state),
                     walk_world
                         .after(crate::camera::update_player_camera)
-                        .after(crate::poll_simulation_readbacks),
+                        .after(crate::poll_simulation_readbacks)
+                        .after(crate::freeze::update),
                     use_brush.after(walk_world),
                     coordinate_terrain_edits.after(use_brush),
                     prepare_terrain_texture_mips,
@@ -897,7 +1057,7 @@ fn handle_world_list(
             };
             match runtime.store.open_entry(&entry) {
                 Ok(OpenWorldResult::Opened(document)) => {
-                    match install_world(&mut runtime, document) {
+                    match install_world(&mut runtime, *document) {
                         Ok(()) => {
                             list.phase = WorldListPhase::Loading;
                             list.loading_progress = TerrainReadiness::default();
@@ -974,6 +1134,12 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
         .load_octree(&document.name)
         .map_err(|error| error.to_string())?;
     let (world_editor, garage_editor) = load_space_editors(&runtime.store, &document)?;
+    runtime.frozen_editor = document.frozen_creation.map(|_| {
+        (
+            world_editor.graph.clone(),
+            world_editor.placed_bearings.clone(),
+        )
+    });
     runtime.field = Arc::new(TerrainField::with_version(
         document.seed,
         document.generator_version,
@@ -984,6 +1150,7 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.world_editor = Some(world_editor);
     runtime.pending_garage_editor = Some(garage_editor);
     runtime.known_world_parts.clear();
+    runtime.known_world_frames.clear();
     runtime.foundations.clear();
     runtime.foundation_index = FoundationSpatialIndex::default();
     runtime.foundation_exempt_parts.clear();
@@ -1021,18 +1188,67 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
 fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
     let mut minimum = Vec3::splat(f32::INFINITY);
     let mut maximum = Vec3::splat(f32::NEG_INFINITY);
-    for (_, spec) in graph.parts() {
-        let (low, high) = part_world_bounds(*spec);
+    for (part, _) in graph.parts() {
+        let (low, high) = composed_part_world_bounds(graph, part)?;
         minimum = minimum.min(low);
         maximum = maximum.max(high);
     }
     minimum.is_finite().then_some((minimum, maximum))
 }
 
-fn collision_free(candidate: &ConstructionGraph, destination: &PlacementSnapIndex) -> bool {
-    candidate
+fn collision_free(
+    candidate: &ConstructionGraph,
+    destination: &ConstructionGraph,
+    index: &PlacementSnapIndex,
+) -> bool {
+    let identity = mechanic_core::ConstructionFrame::IDENTITY;
+    if candidate
         .parts()
-        .all(|(_, incoming)| !destination.overlaps(*incoming))
+        .all(|(part, _)| candidate.part_frame(part) == Some(identity))
+        && destination
+            .parts()
+            .all(|(part, _)| destination.part_frame(part) == Some(identity))
+    {
+        return candidate
+            .parts()
+            .all(|(_, incoming)| !index.overlaps(*incoming));
+    }
+    candidate.parts().all(|(part, incoming)| {
+        let frame = candidate
+            .part_frame(part)
+            .expect("candidate part has frame");
+        destination.parts().all(|(other, existing)| {
+            let other_frame = destination
+                .part_frame(other)
+                .expect("destination part has frame");
+            if frame == identity && other_frame == identity {
+                return !crate::builder::parts_overlap(*incoming, *existing);
+            }
+            // Cuboids retain their exact oriented box. Curved/featured parts use
+            // a conservative authored box until transfer shares evaluated overlap.
+            mechanic_gpu::obb_sat(
+                transfer_part_box(*incoming, frame),
+                transfer_part_box(*existing, other_frame),
+            )
+            .is_none_or(|contact| contact.penetration <= 1.0e-4)
+        })
+    })
+}
+
+fn transfer_part_box(spec: PartSpec, frame: mechanic_core::ConstructionFrame) -> mechanic_gpu::Obb {
+    if let Some(cuboid) = spec.as_cuboid() {
+        return mechanic_gpu::Obb {
+            center: frame.point(cuboid.pose.translation()),
+            orientation: frame.rotation() * cuboid.pose.rotation.quaternion(),
+            half_extents: cuboid.size_meters() * 0.5,
+        };
+    }
+    let (low, high) = part_world_bounds(spec);
+    mechanic_gpu::Obb {
+        center: frame.point((low + high) * 0.5),
+        orientation: frame.rotation(),
+        half_extents: (high - low) * 0.5,
+    }
 }
 
 fn terrain_clear(
@@ -1040,8 +1256,9 @@ fn terrain_clear(
     terrain: &impl TerrainDensity,
     floating_origin: FloatingOrigin,
 ) -> bool {
-    candidate.parts().all(|(_, part)| {
-        let (low, high) = part_world_bounds(*part);
+    candidate.parts().all(|(part, _)| {
+        let (low, high) =
+            composed_part_world_bounds(candidate, part).expect("candidate part has frame");
         let inset_low = low + Vec3::splat(0.02);
         let inset_high = high - Vec3::splat(0.02);
         [0.0_f32, 0.5, 1.0].into_iter().all(|x| {
@@ -1060,17 +1277,37 @@ fn foundation_clear(
     terrain: &impl TerrainDensity,
     floating_origin: FloatingOrigin,
 ) -> bool {
-    candidate.parts().all(|(_, part)| {
-        !part_foundation_support(terrain, *part, floating_origin).has_valid_anchor()
+    candidate.parts().all(|(part, _)| {
+        !bounds_foundation_support(
+            terrain,
+            composed_part_world_bounds(candidate, part).expect("candidate part has frame"),
+            floating_origin,
+        )
+        .has_valid_anchor()
     })
 }
 
-fn part_foundation_support(
+fn framed_part_bounds(spec: PartSpec, frame: mechanic_core::ConstructionFrame) -> (Vec3, Vec3) {
+    let (low, high) = part_world_bounds(spec);
+    let mut minimum = Vec3::splat(f32::INFINITY);
+    let mut maximum = Vec3::splat(f32::NEG_INFINITY);
+    for x in [low.x, high.x] {
+        for y in [low.y, high.y] {
+            for z in [low.z, high.z] {
+                let point = frame.point(Vec3::new(x, y, z));
+                minimum = minimum.min(point);
+                maximum = maximum.max(point);
+            }
+        }
+    }
+    (minimum, maximum)
+}
+
+fn bounds_foundation_support(
     terrain: &impl TerrainDensity,
-    part: PartSpec,
+    (minimum, maximum): (Vec3, Vec3),
     floating_origin: FloatingOrigin,
 ) -> FoundationSupport {
-    let (minimum, maximum) = part_world_bounds(part);
     FoundationSupport::rectangular(
         terrain,
         TerrainRayHit {
@@ -1096,8 +1333,9 @@ fn part_foundation_support(
 
 fn player_clear(candidate: &ConstructionGraph, feet: Vec3) -> bool {
     const TRANSFER_CLEARANCE: f32 = 2.0;
-    candidate.parts().all(|(_, part)| {
-        let (low, high) = part_world_bounds(*part);
+    candidate.parts().all(|(part, _)| {
+        let (low, high) =
+            composed_part_world_bounds(candidate, part).expect("candidate part has frame");
         let closest_x = feet.x.clamp(low.x, high.x);
         let closest_z = feet.z.clamp(low.z, high.z);
         Vec2::new(feet.x - closest_x, feet.z - closest_z).length_squared()
@@ -1128,6 +1366,8 @@ fn component_document(
     let sockets = bearings
         .iter()
         .map(|bearing| BearingSocket {
+            kind: bearing.kind,
+            axis: bearing.axis,
             source: bearing.source,
             anchor: bearing.anchor,
             dimensions: bearing.dimensions,
@@ -1231,6 +1471,8 @@ fn merge_document(
             .sockets
             .into_iter()
             .map(|socket| PlacedBearing {
+                kind: socket.kind,
+                axis: socket.axis,
                 source: socket.source,
                 anchor: socket.anchor,
                 dimensions: socket.dimensions,
@@ -1289,7 +1531,7 @@ fn place_in_garage(
                 || high.z > GROUND_HALF_SIZE + 1.0e-4
                 || low.y < garage::BUILD_MIN_Y - 1.0e-4
                 || high.y > garage::BUILD_MAX_Y + 1.0e-4
-                || !collision_free(&loaded.graph, &destination_index)
+                || !collision_free(&loaded.graph, &destination.graph, &destination_index)
             {
                 continue;
             }
@@ -1351,7 +1593,7 @@ fn place_in_world(
                 .clone()
                 .into_graph()
                 .map_err(|error| error.to_string())?;
-            if collision_free(&loaded.graph, &destination_index)
+            if collision_free(&loaded.graph, &destination.graph, &destination_index)
                 && terrain_clear(&loaded.graph, terrain, floating_origin)
                 && foundation_clear(&loaded.graph, terrain, floating_origin)
                 && player_clear(&loaded.graph, target)
@@ -1464,6 +1706,7 @@ fn transfer_active_assembly(
         "Garage construction",
     );
     let previous_document = runtime.document.clone();
+    runtime.document.frozen_creation = None;
     runtime.document.instances = (world_state.graph.part_count() != 0)
         .then(|| WorldInstanceIndexDoc {
             id: 1,
@@ -2072,6 +2315,7 @@ fn walk_world(
                 movement: bevy::math::DVec2::new(f64::from(movement.x), f64::from(movement.z)),
                 sprint: actions.pressed(GameAction::Sprint),
                 jump: tick == 0 && jump_queued,
+                jump_held: actions.pressed(GameAction::Jump),
             },
             CONTROLLER_DT,
         );
@@ -2185,6 +2429,7 @@ fn sync_player_construction_collision(
         return;
     };
     if runtime.collision_snapshot_tick == simulation.snapshot_tick
+        && runtime.collision_pose_revision == simulation.pose_revision
         && runtime.collision_poses.len() == simulation.transforms.len()
     {
         return;
@@ -2219,6 +2464,7 @@ fn sync_player_construction_collision(
     }
     if index.refit_dynamic(&runtime.collision_poses) {
         runtime.collision_snapshot_tick = simulation.snapshot_tick;
+        runtime.collision_pose_revision = simulation.pose_revision;
     }
 }
 
@@ -2291,6 +2537,7 @@ fn install_player_collision(
     runtime.collision_revision = physics_revision;
     runtime.collision_editor_revision = Some(editor_revision);
     runtime.collision_snapshot_tick = 0;
+    runtime.collision_pose_revision = 0;
     runtime.collision_poses.clear();
 }
 
@@ -2301,6 +2548,7 @@ fn reset_player_collision_publication(runtime: &mut WorldRuntime) {
     runtime.collision_build = None;
     runtime.collision_failed_revision = None;
     runtime.collision_snapshot_tick = 0;
+    runtime.collision_pose_revision = 0;
     runtime.collision_poses.clear();
     runtime.pending_player_reactions.clear();
     runtime.capsule.clear_support();
@@ -3225,6 +3473,22 @@ pub(crate) fn sync_world_foundations(
             .collect::<BTreeMap<_, _>>();
         let delta =
             ConstructionEditDelta::between_parts(&runtime.known_world_parts, &current_parts);
+        let current_frames = graph
+            .0
+            .parts()
+            .map(|(part, _)| {
+                (
+                    part,
+                    graph.0.part_frame(part).expect("world part has frame"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let reframed_parts = current_frames
+            .iter()
+            .filter_map(|(part, frame)| {
+                (runtime.known_world_frames.get(part) != Some(frame)).then_some(*part)
+            })
+            .collect::<BTreeSet<_>>();
         let previous_exempt_parts = runtime.foundation_exempt_parts.clone();
         let current_exempt_parts = dimension_link_component_parts(&graph.0);
         let exemption_changes = previous_exempt_parts
@@ -3237,12 +3501,14 @@ pub(crate) fn sync_world_foundations(
             .chain(&delta.modified)
             .copied()
             .chain(exemption_changes.iter().copied())
+            .chain(reframed_parts.iter().copied())
             .collect();
         let new_parts = delta
             .added
             .iter()
             .chain(&delta.modified)
             .copied()
+            .chain(reframed_parts.iter().copied())
             .chain(
                 previous_exempt_parts
                     .difference(&current_exempt_parts)
@@ -3256,6 +3522,7 @@ pub(crate) fn sync_world_foundations(
         runtime.pending_foundation_sync = Some(PendingFoundationSync {
             editor_revision: history.current_revision,
             parts: current_parts,
+            frames: current_frames,
             replaced_parts,
             new_parts,
             next_part: 0,
@@ -3297,7 +3564,12 @@ pub(crate) fn sync_world_foundations(
         let Some(&spec) = pending.parts.get(&part) else {
             continue;
         };
-        let support = part_foundation_support(&scene, spec, runtime.floating_origin);
+        let frame = *pending.frames.get(&part).expect("pending part has frame");
+        let support = bounds_foundation_support(
+            &scene,
+            framed_part_bounds(spec, frame),
+            runtime.floating_origin,
+        );
         diagnostics.foundation_sample_count = diagnostics
             .foundation_sample_count
             .saturating_add(u64::try_from(support.sample_count()).unwrap_or(u64::MAX));
@@ -3331,6 +3603,7 @@ pub(crate) fn sync_world_foundations(
     runtime.foundation_index.append(pending.index);
     runtime.foundations.append(&mut pending.foundations);
     runtime.known_world_parts = pending.parts;
+    runtime.known_world_frames = pending.frames;
     runtime.synced_editor_revision = pending.editor_revision;
     if runtime.foundation_exempt_parts.is_empty()
         && (added || removed_foundation || released_provisional_parts)
@@ -3461,7 +3734,16 @@ fn save_world_instance(
     graph: &ConstructionGraph,
     editor: &EditorState,
 ) -> Result<(), String> {
-    let world = space_instance(graph, &editor.placed_bearings, "World construction");
+    let (graph, bearings) = if runtime.document.frozen_creation.is_some() {
+        let (graph, bearings) = runtime
+            .frozen_editor
+            .as_ref()
+            .ok_or("Frozen construction is waiting for validated publication")?;
+        (graph, bearings.as_slice())
+    } else {
+        (graph, editor.placed_bearings.as_slice())
+    };
+    let world = space_instance(graph, bearings, "World construction");
     let garage = runtime.garage_editor.as_ref().map_or_else(
         || space_instance(&ConstructionGraph::new(), &[], "Garage construction"),
         |garage| {
@@ -3520,6 +3802,8 @@ fn space_instance(
     let sockets = bearings
         .iter()
         .map(|bearing| BearingSocket {
+            kind: bearing.kind,
+            axis: bearing.axis,
             source: bearing.source,
             anchor: bearing.anchor,
             dimensions: bearing.dimensions,
@@ -3743,6 +4027,196 @@ mod tests {
         assert_eq!(
             *app.world().resource::<State<AppSpace>>().get(),
             AppSpace::Garage
+        );
+    }
+
+    #[test]
+    fn transfer_collision_tests_composed_boxes_instead_of_local_overlap() {
+        let spawn = |graph: &mut ConstructionGraph| {
+            let BuildOutcome::Spawned(part) = graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new([4; 3], BuildPose::new(IVec3::ZERO, GridRotation::default()))
+                        .unwrap(),
+                ))
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            part
+        };
+        let mut candidate = ConstructionGraph::new();
+        let part = spawn(&mut candidate);
+        let mut destination = ConstructionGraph::new();
+        let other = spawn(&mut destination);
+        let far = mechanic_core::ConstructionFrame::new(
+            Vec3::new(5.0, 0.0, 0.0),
+            bevy::prelude::Quat::from_rotation_y(0.4),
+        )
+        .unwrap();
+        candidate.reframe_parts([part], far).unwrap();
+        let mut index = crate::builder::PlacementSnapIndex::default();
+        index.rebuild(&destination);
+        assert!(super::collision_free(&candidate, &destination, &index));
+        destination.reframe_parts([other], far).unwrap();
+        index.rebuild(&destination);
+        assert!(!super::collision_free(&candidate, &destination, &index));
+    }
+
+    #[test]
+    fn framed_creation_transfers_preserve_orientation_and_composed_size() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [8, 2, 4],
+                    BuildPose::new(IVec3::new(0, 4, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let frame = mechanic_core::ConstructionFrame::new(
+            Vec3::new(30.0, 4.0, -20.0),
+            bevy::prelude::Quat::from_rotation_z(0.4) * bevy::prelude::Quat::from_rotation_y(0.3),
+        )
+        .unwrap();
+        graph.reframe_parts([part], frame).unwrap();
+        let (low, high) = graph_bounds(&graph).unwrap();
+        let size = high - low;
+        let original_rotation = graph.part_rotation(part).unwrap();
+        let garage = super::place_in_garage(&graph, &[], &SpaceEditorState::default()).unwrap();
+        let (garage_low, garage_high) = graph_bounds(&garage.graph).unwrap();
+        assert!((garage_high - garage_low).distance(size) < 1.0e-4);
+        assert!(garage_low.y >= crate::garage::BUILD_MIN_Y - 1.0e-4);
+        let garage_part = garage.graph.parts().next().unwrap().0;
+        assert!(
+            garage
+                .graph
+                .part_rotation(garage_part)
+                .unwrap()
+                .angle_between(original_rotation)
+                < 1.0e-3
+        );
+        let world = place_in_world(
+            &garage.graph,
+            &[],
+            &SpaceEditorState::default(),
+            Vec3::ZERO,
+            &FlatTerrain(0.0),
+            FloatingOrigin::default(),
+        )
+        .unwrap();
+        let (world_low, world_high) = graph_bounds(&world.graph).unwrap();
+        assert!((world_high - world_low).distance(size) < 1.0e-4);
+        assert!(world_low.y >= 0.125 - 1.0e-4);
+        let world_part = world.graph.parts().next().unwrap().0;
+        assert!(
+            world
+                .graph
+                .part_rotation(world_part)
+                .unwrap()
+                .angle_between(original_rotation)
+                < 1.0e-3
+        );
+    }
+
+    #[test]
+    fn framed_foundation_sampling_uses_global_composed_bottom_bounds() {
+        let spec = mechanic_core::PartSpec::Cuboid(
+            CuboidSpec::new(
+                [4, 2, 2],
+                BuildPose::new(IVec3::ZERO, GridRotation::default()),
+            )
+            .unwrap(),
+        );
+        let frame = mechanic_core::ConstructionFrame::new(
+            Vec3::new(5.0, 0.5, -3.0),
+            bevy::prelude::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        )
+        .unwrap();
+        let bounds = super::framed_part_bounds(spec, frame);
+        let origin = FloatingOrigin(DVec3::new(100.0, 10.0, 200.0));
+        let support = super::bounds_foundation_support(&FlatTerrain(10.0), bounds, origin);
+        assert!(support.has_valid_anchor());
+        assert!(support.samples.iter().all(|sample| {
+            sample.position.0.x > 104.0
+                && sample.position.0.x < 106.0
+                && sample.position.0.z > 196.0
+                && sample.position.0.z < 198.0
+        }));
+        assert!(
+            super::bounds_foundation_support(
+                &FlatTerrain(10.0),
+                crate::builder::part_world_bounds(spec),
+                origin
+            )
+            .samples
+            .iter()
+            .all(|sample| sample.position.0.x < 101.0)
+        );
+    }
+
+    #[test]
+    fn frame_only_edit_invalidates_foundation_cache_with_unchanged_part_spec() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [2; 3],
+                    BuildPose::new(IVec3::new(0, 1, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let original_spec = *graph.part(part).unwrap();
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        app.init_resource::<WorldListState>();
+        app.init_resource::<EditorState>();
+        app.init_resource::<WorldDiagnostics>();
+        {
+            let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+            runtime.known_world_parts.insert(part, original_spec);
+            runtime
+                .known_world_frames
+                .insert(part, mechanic_core::ConstructionFrame::IDENTITY);
+            runtime.synced_editor_revision = 1;
+        }
+        let frame = mechanic_core::ConstructionFrame::new(
+            Vec3::new(5.0, 0.0, 0.0),
+            bevy::prelude::Quat::from_rotation_y(0.4),
+        )
+        .unwrap();
+        graph.reframe_parts([part], frame).unwrap();
+        assert_eq!(*graph.part(part).unwrap(), original_spec);
+        app.insert_resource(EditorGraph(graph));
+        app.insert_resource(EditorHistory {
+            current_revision: 2,
+            next_revision: 2,
+            ..Default::default()
+        });
+        app.world_mut().resource_mut::<WorldListState>().phase = WorldListPhase::Playing;
+        app.add_systems(Update, sync_world_foundations);
+        app.update();
+        let runtime = app.world().resource::<WorldRuntime>();
+        assert_eq!(runtime.known_world_frames.get(&part), Some(&frame));
+        assert!(runtime.foundations_match_editor_revision(2));
+        assert_eq!(
+            app.world()
+                .resource::<WorldDiagnostics>()
+                .foundation_candidate_count,
+            1
+        );
+        assert!(
+            app.world()
+                .resource::<WorldDiagnostics>()
+                .foundation_sample_count
+                > 0
         );
     }
 
@@ -4002,6 +4476,10 @@ mod tests {
         let pending = PendingFoundationSync {
             editor_revision: 8,
             parts: graph.parts().map(|(part, spec)| (part, *spec)).collect(),
+            frames: graph
+                .parts()
+                .map(|(part, _)| (part, graph.part_frame(part).unwrap()))
+                .collect(),
             replaced_parts: BTreeSet::new(),
             new_parts: graph.parts().map(|(part, _)| part).collect(),
             next_part: 32,
@@ -4116,6 +4594,10 @@ mod tests {
         runtime.pending_foundation_sync = Some(PendingFoundationSync {
             editor_revision: 1,
             parts,
+            frames: graph
+                .parts()
+                .map(|(part, _)| (part, graph.part_frame(part).unwrap()))
+                .collect(),
             replaced_parts: BTreeSet::new(),
             new_parts: vec![link],
             next_part: 0,
@@ -4144,6 +4626,10 @@ mod tests {
         let pending = PendingFoundationSync {
             editor_revision: 2,
             parts: graph.parts().map(|(part, spec)| (part, *spec)).collect(),
+            frames: graph
+                .parts()
+                .map(|(part, _)| (part, graph.part_frame(part).unwrap()))
+                .collect(),
             replaced_parts: BTreeSet::new(),
             new_parts: vec![part],
             next_part: 0,
@@ -4240,6 +4726,166 @@ mod tests {
                 .graph
                 .part_count(),
             1
+        );
+    }
+
+    fn frozen_save_fixture() -> (TempWorldStore, App, ConstructionGraph) {
+        let temporary = TempWorldStore::new();
+        let store = WorldStore::new(&temporary.0);
+        let document = store.create_world("Frozen publication", Some(7)).unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(1),
+                BuildPose::new(IVec3::new(0, 4, 0), GridRotation::default()),
+            )))
+            .unwrap();
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        runtime.store = store;
+        install_world(&mut runtime, document).unwrap();
+        runtime.document.active_dimension_link = Some(DimensionLinkId(1));
+        runtime.document.next_dimension_link_id = 2;
+        let construction_generation = runtime.document.construction_generation;
+        runtime
+            .persist_frozen_creation(
+                Some(mechanic_world::FrozenCreationDoc {
+                    link: DimensionLinkId(1),
+                    target: WorldPosition(DVec3::new(20.0, 8.0, 30.0)),
+                    heading: 2,
+                    construction_generation,
+                }),
+                &graph,
+                &EditorState::default(),
+            )
+            .unwrap();
+        (temporary, app, graph)
+    }
+
+    #[test]
+    fn toggling_active_dimension_link_off_clears_and_persists_its_frozen_hold() {
+        let (_temporary, mut app, graph) = frozen_save_fixture();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        let link = graph.dimension_link(DimensionLinkId(1)).unwrap();
+        // Deactivation must work even when activation would reject an occupied Garage.
+        runtime.garage_editor = Some(SpaceEditorState {
+            graph: graph.clone(),
+            ..Default::default()
+        });
+        assert_eq!(
+            runtime.toggle_dimension_link(AppSpace::World, &graph, link),
+            Ok(None)
+        );
+        assert_eq!(runtime.active_dimension_link(), None);
+        assert!(runtime.document.frozen_creation.is_none());
+        let saved = runtime
+            .store
+            .load_world(&runtime.store.directory_for(&runtime.document.name))
+            .unwrap();
+        assert_eq!(saved.active_dimension_link, None);
+        assert!(saved.frozen_creation.is_none());
+        assert_eq!(
+            runtime.toggle_dimension_link(AppSpace::Garage, &graph, link),
+            Ok(Some(DimensionLinkId(1)))
+        );
+        assert_eq!(runtime.active_dimension_link(), Some(DimensionLinkId(1)));
+    }
+
+    fn spawn_unaccepted_frozen_edit(graph: &mut ConstructionGraph) {
+        // This block occupies the held target, so it has not passed freeze clearance.
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::new(IVec3::new(80, 32, 120), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn frozen_save_pairs_target_with_only_the_last_accepted_construction() {
+        let (_temporary, mut app, mut graph) = frozen_save_fixture();
+        let editor = EditorState::default();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        let target = runtime.frozen_creation().unwrap().target;
+        spawn_unaccepted_frozen_edit(&mut graph);
+        super::save_world_instance(&mut runtime, &graph, &editor).unwrap();
+        let saved = runtime
+            .store
+            .load_world(&runtime.store.directory_for(&runtime.document.name))
+            .unwrap();
+        let (world, _) = load_space_editors(&runtime.store, &saved).unwrap();
+        assert_eq!(world.graph.part_count(), 1);
+        assert!(world.graph.dimension_link(DimensionLinkId(1)).is_some());
+        let hold = saved.frozen_creation.unwrap();
+        assert_eq!(hold.target, target);
+        assert_eq!(hold.construction_generation, saved.construction_generation);
+        let previous_generation = saved.construction_generation;
+
+        // Publication acceptance is the explicit gate; save itself never validates geometry.
+        runtime.accept_frozen_publication(&graph, &editor);
+        super::save_world_instance(&mut runtime, &graph, &editor).unwrap();
+        let saved = runtime
+            .store
+            .load_world(&runtime.store.directory_for(&runtime.document.name))
+            .unwrap();
+        let (world, _) = load_space_editors(&runtime.store, &saved).unwrap();
+        assert_eq!(world.graph.part_count(), 2);
+        assert!(saved.construction_generation > previous_generation);
+        let hold = saved.frozen_creation.unwrap();
+        assert_eq!(hold.target, target);
+        assert_eq!(hold.construction_generation, saved.construction_generation);
+    }
+
+    #[test]
+    fn frozen_global_target_survives_origin_change_and_release_saves_current_edits() {
+        let (_temporary, mut app, mut graph) = frozen_save_fixture();
+        let editor = EditorState::default();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        runtime.floating_origin = FloatingOrigin(DVec3::new(1000.0, 0.0, -2000.0));
+        let mut hold = runtime.frozen_creation().unwrap();
+        hold.target = runtime.local_to_global(Vec3::new(3.0, 8.25, -4.0));
+        let target = hold.target;
+        runtime.set_frozen_target(hold);
+        runtime.floating_origin = FloatingOrigin(DVec3::new(-500.0, 0.0, 1000.0));
+        spawn_unaccepted_frozen_edit(&mut graph);
+        super::save_world_instance(&mut runtime, &graph, &editor).unwrap();
+        let saved = runtime
+            .store
+            .load_world(&runtime.store.directory_for(&runtime.document.name))
+            .unwrap();
+        assert_eq!(saved.frozen_creation.unwrap().target, target);
+        assert_eq!(
+            load_space_editors(&runtime.store, &saved)
+                .unwrap()
+                .0
+                .graph
+                .part_count(),
+            1
+        );
+        install_world(&mut runtime, saved).unwrap();
+        assert_eq!(runtime.frozen_creation().unwrap().target, target);
+        assert_eq!(runtime.frozen_editor.as_ref().unwrap().0.part_count(), 1);
+
+        runtime
+            .persist_frozen_creation(None, &graph, &editor)
+            .unwrap();
+        assert!(runtime.frozen_editor.is_none());
+        let saved = runtime
+            .store
+            .load_world(&runtime.store.directory_for(&runtime.document.name))
+            .unwrap();
+        assert!(saved.frozen_creation.is_none());
+        assert_eq!(
+            load_space_editors(&runtime.store, &saved)
+                .unwrap()
+                .0
+                .graph
+                .part_count(),
+            2
         );
     }
 
@@ -4533,6 +5179,10 @@ mod tests {
                 .parts()
                 .map(|(part, spec)| (part, *spec))
                 .collect();
+            runtime.known_world_frames = previous_graph
+                .parts()
+                .map(|(part, _)| (part, previous_graph.part_frame(part).unwrap()))
+                .collect();
             runtime.synced_editor_revision = 1;
             for part in [chassis, unrelated] {
                 let support = valid_support();
@@ -4567,6 +5217,60 @@ mod tests {
         chunk.vertices = vec![[0.0; 3]; 3];
         assert!(!terrain_mesh_is_renderable(&chunk, 0));
         assert!(terrain_mesh_is_renderable(&chunk, 3));
+    }
+
+    #[test]
+    fn freeze_triangle_query_prunes_distant_geometry_and_converts_global_coordinates() {
+        use mechanic_world::{
+            TerrainTriangleGroupMask, TriangleBvh, TriangleBvhNode, TriangleBvhTriangle,
+            WorldBounds,
+        };
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        runtime.floating_origin = FloatingOrigin(DVec3::splat(1000.0));
+        runtime.player_terrain_ready = true;
+        let bounds = WorldBounds {
+            minimum: WorldPosition(DVec3::splat(1000.0)),
+            maximum: WorldPosition(DVec3::splat(1002.0)),
+        };
+        let group_mask = TerrainTriangleGroupMask::REGULAR;
+        let chunk = TerrainMeshChunk {
+            origin: WorldPosition(DVec3::splat(1000.0)),
+            vertices: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 2.0]],
+            triangle_bvh: TriangleBvh {
+                bounds,
+                nodes: vec![TriangleBvhNode {
+                    bounds,
+                    first_triangle: 0,
+                    triangle_count: 1,
+                    group_mask,
+                    ..Default::default()
+                }],
+                triangles: vec![TriangleBvhTriangle {
+                    indices: [0, 1, 2],
+                    group_mask,
+                }],
+            },
+            ..Default::default()
+        };
+        runtime.active_terrain.insert(chunk.node, chunk);
+        let mut visits = 0;
+        assert!(
+            runtime.freeze_triangles_clear(Vec3::ZERO, Vec3::ONE, |points| {
+                visits += 1;
+                assert_eq!(points[0], Vec3::ZERO);
+                assert_eq!(points[1], Vec3::X * 2.0);
+                true
+            })
+        );
+        assert_eq!(visits, 1);
+        assert!(
+            runtime.freeze_triangles_clear(Vec3::splat(20.0), Vec3::splat(21.0), |_| panic!(
+                "distant triangles must be pruned"
+            ))
+        );
+        assert!(!runtime.freeze_triangles_clear(Vec3::ZERO, Vec3::ONE, |_| false));
     }
 
     #[test]

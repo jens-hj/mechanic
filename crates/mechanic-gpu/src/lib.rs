@@ -21,9 +21,10 @@ pub use collision::{
 };
 pub use device::{
     EXTERNAL_IMPULSE_BATCH_CAPACITY, GpuBodyStateError, GpuCompletedTickReadback,
-    GpuExternalImpulse, GpuGroundPlane, GpuGroundPlaneError, GpuImpulseError, GpuKernelTimings,
-    GpuPhysics, GpuPhysicsConfig, GpuPhysicsError, GpuPhysicsPipelines, GpuReadbackError,
-    GpuSolverRoute, GpuSubmissionTimings, GpuTickReadback, GpuTickSubmission, SnapshotBuffers,
+    GpuExternalImpulse, GpuGroundPlane, GpuGroundPlaneError, GpuHoldError, GpuImpulseError,
+    GpuKernelTimings, GpuPhysics, GpuPhysicsConfig, GpuPhysicsError, GpuPhysicsPipelines,
+    GpuReadbackError, GpuSolverRoute, GpuSubmissionTimings, GpuTickReadback, GpuTickSubmission,
+    SnapshotBuffers,
 };
 pub use render::{
     TerrainRenderAcknowledgement, TerrainRenderArena, TerrainRenderArenaLimits, TerrainRenderChunk,

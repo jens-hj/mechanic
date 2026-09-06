@@ -13,6 +13,7 @@ pub(crate) enum Tool {
     Block,
     Cylinder,
     Bearing,
+    LinearBearing,
     Weld,
     Hammer,
     Controller,
@@ -106,6 +107,7 @@ impl MatterMode {
 pub(crate) enum PlaceableItem {
     #[default]
     Bearing,
+    LinearBearing,
     ControlBlock,
     GasEngine,
     ElectricEngine,
@@ -205,8 +207,9 @@ impl WheelContext {
 }
 
 impl PlaceableItem {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Bearing,
+        Self::LinearBearing,
         Self::ControlBlock,
         Self::GasEngine,
         Self::ElectricEngine,
@@ -224,6 +227,7 @@ impl PlaceableItem {
     pub(crate) const fn editor_tool(self) -> Tool {
         match self {
             Self::Bearing => Tool::Bearing,
+            Self::LinearBearing => Tool::LinearBearing,
             Self::ControlBlock => Tool::Controller,
             Self::GasEngine => Tool::GasEngine,
             Self::ElectricEngine => Tool::ElectricEngine,
@@ -238,6 +242,7 @@ impl PlaceableItem {
     pub(crate) const fn from_editor_tool(tool: Tool) -> Option<Self> {
         match tool {
             Tool::Bearing => Some(Self::Bearing),
+            Tool::LinearBearing => Some(Self::LinearBearing),
             Tool::Controller => Some(Self::ControlBlock),
             Tool::GasEngine => Some(Self::GasEngine),
             Tool::ElectricEngine => Some(Self::ElectricEngine),
@@ -257,6 +262,7 @@ impl Tool {
             Self::Block => "Blocker Placer",
             Self::Cylinder => "Pipe / Cylinder",
             Self::Bearing => "Bearing",
+            Self::LinearBearing => "Linear Bearing",
             Self::Weld => "Weld",
             Self::Hammer => "Hammer",
             Self::Controller => "Control Block",
@@ -390,11 +396,12 @@ mod tests {
     }
 
     #[test]
-    fn dimension_link_is_the_ninth_item_choice() {
+    fn linear_bearing_is_the_second_item_and_dimension_link_the_tenth() {
         assert_eq!(
             PlaceableItem::ALL,
             [
                 PlaceableItem::Bearing,
+                PlaceableItem::LinearBearing,
                 PlaceableItem::ControlBlock,
                 PlaceableItem::GasEngine,
                 PlaceableItem::ElectricEngine,

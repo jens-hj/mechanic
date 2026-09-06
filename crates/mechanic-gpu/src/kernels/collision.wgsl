@@ -119,6 +119,7 @@ var<private> bearing_projection_frames: array<BearingProjectionFrame, 64>;
 var<private> bearing_parent_rows: array<u32, 64>;
 
 struct WorldMass {
+    position: vec4<f32>,
     inverse_inertia_x_mass: vec4<f32>,
     inverse_inertia_y: vec4<f32>,
     inverse_inertia_z: vec4<f32>,
@@ -312,6 +313,7 @@ fn update_world_masses(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if body >= config.body_count {
         return;
     }
+    world_masses[body].position = positions[body];
     world_masses[body].inverse_inertia_x_mass = vec4<f32>(
         world_inverse_inertia_column(body, vec3<f32>(1.0, 0.0, 0.0)),
         masses[body].inverse_mass.x,
@@ -1133,6 +1135,16 @@ fn finalize_contacts() {
     indirect_args[5] = 1u;
 }
 
+// Cached impulses depend on which endpoints can respond. Holding or releasing
+// one endpoint changes that response even when the contact geometry is identical.
+fn contact_mass_mode(body_a: u32, body_b: u32) -> u32 {
+    var mode = 1u | select(0u, 2u, world_masses[body_a].inverse_inertia_x_mass.w > 0.0);
+    if body_b != INVALID_MANIFOLD_SLOT {
+        mode |= select(0u, 4u, world_masses[body_b].inverse_inertia_x_mass.w > 0.0);
+    }
+    return mode;
+}
+
 @compute @workgroup_size(256)
 fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let contact_index = invocation.x;
@@ -1181,7 +1193,9 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
         return;
     }
     let cached = persistent_manifolds[manifold_slot];
+    let mass_mode = contact_mass_mode(body_a, body_b);
     let cache_matches = cached.pair_tick.z == config.tick_index - 1u
+        && cached.pair_tick.w == mass_mode
         && dot(cached.normal_penetration.xyz, contact.normal_penetration.xyz)
             >= CACHED_NORMAL_ALIGNMENT
         && distance(cached.point_impulse.xyz, contact.arm_a_impulse.xyz)
@@ -1200,7 +1214,7 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     contacts[contact_index].metadata.w = 1u;
     contacts[contact_index].arm_a_impulse.w = cached_impulse;
     persistent_manifolds[manifold_slot].pair_tick.z = config.tick_index;
-    persistent_manifolds[manifold_slot].pair_tick.w = 1u;
+    persistent_manifolds[manifold_slot].pair_tick.w = mass_mode;
     persistent_manifolds[manifold_slot].normal_penetration = contact.normal_penetration;
     persistent_manifolds[manifold_slot].point_impulse = vec4<f32>(
         contact.arm_a_impulse.xyz,
@@ -1635,9 +1649,16 @@ fn drive_source_fade(measured: f32, requested: f32, no_load_speed: f32) -> f32 {
 
 fn project_drive_velocity_row_immediate(index: u32) {
     let constraint = drive_constraints[index];
+    if (constraint.bearing.metadata.w & 2u) != 0u {
+        return;
+    }
     if constraint.metadata.w == INVALID_MANIFOLD_SLOT
         || constraint.drive.mode == DRIVE_MODE_PASSIVE
     {
+        return;
+    }
+    if drive_constraints[index].bearing.local_axis_a.w == 1.0 {
+        project_linear_joint(index, true, true);
         return;
     }
     project_bearing_velocity_row_immediate(index);
@@ -1682,6 +1703,13 @@ fn project_drive_velocity_row_immediate(index: u32) {
 
 fn project_bearing_velocity_row_immediate(index: u32) {
     let bearing = drive_constraints[index].bearing;
+    if (bearing.metadata.w & 2u) != 0u {
+        return;
+    }
+    if drive_constraints[index].bearing.local_axis_a.w == 1.0 {
+        project_linear_joint(index, true, false);
+        return;
+    }
     let body_a = bearing.metadata.x;
     let body_b = bearing.metadata.y;
     let frame = bearing_projection_frames[index];
@@ -1730,6 +1758,9 @@ fn bearing_linear_response(
 
 fn prepare_bearing_block(index: u32) {
     let bearing = drive_constraints[index].bearing;
+    if (bearing.metadata.w & 2u) != 0u {
+        return;
+    }
     let a = bearing.metadata.x;
     let b = bearing.metadata.y;
     let frame = bearing_projection_frames[index];
@@ -1791,10 +1822,14 @@ fn prepare_bearing_projection_frames() {
     for (var index = 0u; index < config.bearing_count; index += 1u) {
         bearing_parent_rows[index] = INVALID_MANIFOLD_SLOT;
         let constraint = drive_constraints[index];
+        if (constraint.bearing.metadata.w & 2u) != 0u {
+            continue;
+        }
         if constraint.metadata.w != INVALID_MANIFOLD_SLOT {
             for (var parent_row = 0u; parent_row < config.bearing_count; parent_row += 1u) {
                 let parent = drive_constraints[parent_row];
-                if parent.metadata.w != INVALID_MANIFOLD_SLOT
+                if (parent.bearing.metadata.w & 2u) == 0u
+                    && parent.metadata.w != INVALID_MANIFOLD_SLOT
                     && parent.metadata.x == constraint.metadata.y
                 {
                     bearing_parent_rows[index] = parent_row;
@@ -1849,7 +1884,9 @@ fn project_contact_bearing_path(body: u32) {
     var row = INVALID_MANIFOLD_SLOT;
     for (var index = 0u; index < config.bearing_count; index += 1u) {
         let constraint = drive_constraints[index];
-        if constraint.metadata.w != INVALID_MANIFOLD_SLOT && constraint.metadata.x == body {
+        if (constraint.bearing.metadata.w & 2u) == 0u
+            && constraint.metadata.w != INVALID_MANIFOLD_SLOT && constraint.metadata.x == body
+        {
             row = index;
             break;
         }
@@ -1978,10 +2015,89 @@ fn persist_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let contact = contacts[contact_index];
     let slot = contact.metadata.z & ~CONTACT_FLAG_MASK;
     persistent_manifolds[slot].pair_tick.z = config.tick_index;
-    persistent_manifolds[slot].pair_tick.w = contact.metadata.w;
+    // prepare_contacts already recorded the endpoint mass modes for this tick.
     persistent_manifolds[slot].normal_penetration = contact.normal_penetration;
     persistent_manifolds[slot].point_impulse = vec4<f32>(
         contact.arm_a_impulse.xyz,
         contact.arm_a_impulse.w,
     );
+}
+
+
+// Positive impulse opposes the relative velocity of B at the carriage point.
+fn linear_joint_impulse(a: u32, b: u32, ra: vec3<f32>, rb: vec3<f32>, impulse: vec3<f32>, torque: vec3<f32>, immediate: bool) {
+    let la = impulse * world_masses[a].inverse_inertia_x_mass.w;
+    let lb = -impulse * world_masses[b].inverse_inertia_x_mass.w;
+    let wa = inverse_inertia(a, cross(ra, impulse) + torque);
+    let wb = inverse_inertia(b, -cross(rb, impulse) - torque);
+    linear_velocities[a] += vec4<f32>(la, 0.0);
+    linear_velocities[b] += vec4<f32>(lb, 0.0);
+    angular_velocities[a] += vec4<f32>(wa, 0.0);
+    angular_velocities[b] += vec4<f32>(wb, 0.0);
+}
+
+fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
+    let constraint = drive_constraints[index];
+    if (constraint.bearing.metadata.w & 2u) != 0u {
+        return;
+    }
+    let bearing = constraint.bearing;
+    let a = bearing.metadata.x;
+    let b = bearing.metadata.y;
+    let axis = normalize(quat_rotate(rotations[a], bearing.local_axis_a.xyz));
+    let base_arm = quat_rotate(rotations[a], bearing.local_anchor_a.xyz);
+    let rb = quat_rotate(rotations[b], bearing.local_anchor_b.xyz);
+    let q = dot(world_masses[b].position.xyz + rb - world_masses[a].position.xyz - base_arm, axis);
+    let ra = base_arm + axis * q;
+    let helper_axis = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(axis.x) > 0.8);
+    let u = normalize(cross(axis, helper_axis));
+    let v = cross(axis, u);
+    let directions = array<vec3<f32>, 3>(u, v, axis);
+    let relaxation = select(0.5, 1.0, immediate);
+    if !motor {
+        // Lock all three relative rotations, including twist about the rail.
+        for (var i = 0u; i < 3u; i += 1u) {
+            let direction = directions[i];
+            let denominator = dot(direction, inverse_inertia(a, direction) + inverse_inertia(b, direction));
+            if denominator > 1.0e-12 {
+                let error = dot(angular_velocities[b].xyz - angular_velocities[a].xyz, direction);
+                linear_joint_impulse(a, b, ra, rb, vec3<f32>(0.0), direction * (relaxation * error / denominator), immediate);
+            }
+        }
+    }
+    for (var i = 0u; i < 3u; i += 1u) {
+        if motor && i != 2u { continue; }
+        let direction = directions[i];
+        let ja = cross(ra, direction);
+        let jb = cross(rb, direction);
+        let denominator = world_masses[a].inverse_inertia_x_mass.w + world_masses[b].inverse_inertia_x_mass.w
+            + dot(ja, inverse_inertia(a, ja)) + dot(jb, inverse_inertia(b, jb));
+        if denominator <= 1.0e-12 { continue; }
+        let relative = linear_velocities[b].xyz + cross(angular_velocities[b].xyz, rb)
+            - linear_velocities[a].xyz - cross(angular_velocities[a].xyz, ra);
+        let measured = dot(relative, direction);
+        var desired = 0.0;
+        var impulse = 0.0;
+        if motor {
+            desired = drive_desired_speed(constraint);
+            let drive = constraint.drive;
+            let requested = desired - measured;
+            let acceleration = drive.source_a_max_acceleration * drive_source_fade(measured, requested, drive.source_a_no_load_speed)
+                + drive.source_b_max_acceleration * drive_source_fade(measured, requested, drive.source_b_no_load_speed);
+            let limit = max(acceleration * constraint.state.x * config.delta_seconds, 0.0);
+            let previous = constraint.state.y;
+            let accumulated = clamp(previous + (desired - measured) / denominator, -limit, limit);
+            drive_constraints[index].state.y = accumulated;
+            impulse = previous - accumulated;
+        } else {
+            if i == 2u {
+                // Predictive, non-bouncing unilateral stops. No motor budget applies.
+                let minimum = (bearing.local_anchor_a.w - q) / config.delta_seconds;
+                let maximum = (bearing.local_anchor_b.w - q) / config.delta_seconds;
+                desired = clamp(measured, minimum, maximum);
+            }
+            impulse = relaxation * (measured - desired) / denominator;
+        }
+        linear_joint_impulse(a, b, ra, rb, direction * impulse, vec3<f32>(0.0), immediate);
+    }
 }

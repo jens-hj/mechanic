@@ -33,8 +33,8 @@ struct MechanismBody {
 };
 
 struct Coordinate {
-    angle: f32,
-    angular_velocity: f32,
+    position: f32,
+    velocity: f32,
 };
 
 struct LinkState {
@@ -64,6 +64,19 @@ struct ClosureVector {
     axis: vec3<f32>,
 };
 
+// Linear closures have two transverse rows, an active unilateral stop row,
+// and three orientation rows. All residual vectors are in world coordinates.
+struct ClosureFrame {
+    linear: bool,
+    rail_axis: vec3<f32>,
+    separation: vec3<f32>,
+    rotation_error: vec3<f32>,
+    lower: f32,
+    upper: f32,
+};
+
+const BEARING_CLOSURE_FLAG: u32 = 1u;
+const BEARING_SUSPENDED_FLAG: u32 = 2u;
 const INVALID_NUMERIC_FLAG: u32 = 2u;
 const ANCHOR_TOLERANCE_MICROMETERS: u32 = 10u;
 const AXIS_TOLERANCE_MICRODEGREES: u32 = 1000u;
@@ -85,6 +98,78 @@ const MAX_STEP_RADIANS: f32 = 0.2;
 fn quat_rotate(rotation: vec4<f32>, vector: vec3<f32>) -> vec3<f32> {
     let t = 2.0 * cross(rotation.xyz, vector);
     return vector + rotation.w * t + cross(rotation.xyz, t);
+}
+
+fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz),
+        a.w * b.w - dot(a.xyz, b.xyz));
+}
+
+fn rotation_log(a: vec4<f32>, b: vec4<f32>) -> vec3<f32> {
+    var delta = normalize(quat_multiply(a, vec4<f32>(-b.xyz, b.w)));
+    if delta.w < 0.0 {
+        delta = -delta;
+    }
+    let sine = length(delta.xyz);
+    if sine < 1.0e-7 {
+        return 2.0 * delta.xyz;
+    }
+    return delta.xyz * (2.0 * atan2(sine, delta.w) / sine);
+}
+
+fn closure_frame(bearing: Bearing, a: LinkState, b: LinkState,
+    anchor_a: vec3<f32>, anchor_b: vec3<f32>, axis_a: vec3<f32>) -> ClosureFrame {
+    return ClosureFrame(bearing.local_axis_a.w == 1.0, axis_a,
+        anchor_a - anchor_b, rotation_log(a.rotation, b.rotation),
+        -bearing.local_anchor_b.w, -bearing.local_anchor_a.w);
+}
+
+fn closure_position(frame: ClosureFrame) -> vec3<f32> {
+    if !frame.linear {
+        return frame.separation;
+    }
+    // Separation has the opposite sign to the physical displacement coordinate.
+    return frame.separation - frame.rail_axis * clamp(
+        dot(frame.separation, frame.rail_axis), frame.lower, frame.upper);
+}
+
+fn endpoint_derivative(tree_bearing: Bearing, joint_axis: vec3<f32>,
+    joint_anchor: vec3<f32>, endpoint_anchor: vec3<f32>, endpoint_axis: vec3<f32>,
+    residual_sign: f32, frame: ClosureFrame) -> ClosureVector {
+    var velocity = cross(joint_axis, endpoint_anchor - joint_anchor);
+    var angular = joint_axis;
+    if tree_bearing.local_axis_a.w == 1.0 {
+        velocity = joint_axis;
+        angular = vec3<f32>(0.0);
+    }
+    if !frame.linear {
+        return ClosureVector(residual_sign * velocity,
+            residual_sign * cross(angular, endpoint_axis));
+    }
+    let separation_derivative = residual_sign * velocity;
+    var axis_derivative = vec3<f32>(0.0);
+    if residual_sign > 0.0 {
+        axis_derivative = cross(angular, frame.rail_axis);
+    }
+    let along = dot(frame.separation, frame.rail_axis);
+    var position_derivative = separation_derivative
+        - axis_derivative * clamp(along, frame.lower, frame.upper);
+    if along >= frame.lower && along <= frame.upper {
+        position_derivative -= frame.rail_axis * (
+            dot(separation_derivative, frame.rail_axis)
+            + dot(frame.separation, axis_derivative));
+    }
+    // Inverse left/right SO(3) Jacobians differentiate log(Ra * inverse(Rb)).
+    let angle = length(frame.rotation_error);
+    var coefficient = 1.0 / 12.0;
+    if angle > 1.0e-3 {
+        coefficient = (1.0 - 0.5 * angle / tan(0.5 * angle)) / (angle * angle);
+    }
+    let first_cross = cross(frame.rotation_error, angular);
+    let orientation_derivative = residual_sign * (angular
+        - 0.5 * residual_sign * first_cross
+        + coefficient * cross(frame.rotation_error, first_cross));
+    return ClosureVector(position_derivative, orientation_derivative);
 }
 
 fn finite_vector(value: vec3<f32>) -> bool {
@@ -158,6 +243,7 @@ fn accumulate_branch(
     residual_position: vec3<f32>,
     residual_axis: vec3<f32>,
     residual_sign: f32,
+    frame: ClosureFrame,
 ) {
     var body = start_body;
     loop {
@@ -167,6 +253,9 @@ fn accumulate_branch(
         }
         let parent = mechanism.metadata.x;
         let tree_bearing = bearings[mechanism.metadata.y];
+        if (tree_bearing.metadata.w & BEARING_SUSPENDED_FLAG) != 0u {
+            break;
+        }
         let parent_pose = mechanism_links[parent];
         var joint_axis: vec3<f32>;
         var joint_anchor: vec3<f32>;
@@ -179,13 +268,15 @@ fn accumulate_branch(
             joint_anchor = parent_pose.position.xyz
                 + quat_rotate(parent_pose.rotation, tree_bearing.local_anchor_b.xyz);
         }
+        let derivative = endpoint_derivative(tree_bearing, joint_axis, joint_anchor,
+            endpoint_anchor, endpoint_axis, residual_sign, frame);
         accumulate_coordinate(
             tree_bearing.metadata.z,
             residual_position,
             residual_axis,
-            cross(joint_axis, endpoint_anchor - joint_anchor),
-            cross(joint_axis, endpoint_axis),
-            residual_sign,
+            derivative.position,
+            derivative.axis,
+            1.0,
         );
         body = parent;
     }
@@ -196,6 +287,7 @@ fn branch_product(
     endpoint_anchor: vec3<f32>,
     endpoint_axis: vec3<f32>,
     residual_sign: f32,
+    frame: ClosureFrame,
 ) -> ClosureVector {
     var product = ClosureVector(vec3<f32>(0.0), vec3<f32>(0.0));
     var body = start_body;
@@ -206,6 +298,9 @@ fn branch_product(
         }
         let parent = mechanism.metadata.x;
         let tree_bearing = bearings[mechanism.metadata.y];
+        if (tree_bearing.metadata.w & BEARING_SUSPENDED_FLAG) != 0u {
+            break;
+        }
         let parent_pose = mechanism_links[parent];
         var joint_axis: vec3<f32>;
         var joint_anchor: vec3<f32>;
@@ -220,10 +315,10 @@ fn branch_product(
         }
         let coordinate = tree_bearing.metadata.z;
         let direction = pcg_rows[coordinate].direction;
-        product.position += residual_sign
-            * cross(joint_axis, endpoint_anchor - joint_anchor)
-            * direction;
-        product.axis += residual_sign * cross(joint_axis, endpoint_axis) * direction;
+        let derivative = endpoint_derivative(tree_bearing, joint_axis, joint_anchor,
+            endpoint_anchor, endpoint_axis, residual_sign, frame);
+        product.position += derivative.position * direction;
+        product.axis += derivative.axis * direction;
         body = parent;
     }
     return product;
@@ -235,6 +330,7 @@ fn branch_transpose(
     endpoint_axis: vec3<f32>,
     product: ClosureVector,
     residual_sign: f32,
+    frame: ClosureFrame,
 ) {
     var body = start_body;
     loop {
@@ -244,6 +340,9 @@ fn branch_transpose(
         }
         let parent = mechanism.metadata.x;
         let tree_bearing = bearings[mechanism.metadata.y];
+        if (tree_bearing.metadata.w & BEARING_SUSPENDED_FLAG) != 0u {
+            break;
+        }
         let parent_pose = mechanism_links[parent];
         var joint_axis: vec3<f32>;
         var joint_anchor: vec3<f32>;
@@ -256,11 +355,10 @@ fn branch_transpose(
             joint_anchor = parent_pose.position.xyz
                 + quat_rotate(parent_pose.rotation, tree_bearing.local_anchor_b.xyz);
         }
-        let position_derivative = residual_sign
-            * cross(joint_axis, endpoint_anchor - joint_anchor);
-        let axis_derivative = residual_sign * cross(joint_axis, endpoint_axis);
-        pcg_rows[tree_bearing.metadata.z].operator_product += dot(position_derivative, product.position)
-            + AXIS_WEIGHT * dot(axis_derivative, product.axis);
+        let derivative = endpoint_derivative(tree_bearing, joint_axis, joint_anchor,
+            endpoint_anchor, endpoint_axis, residual_sign, frame);
+        pcg_rows[tree_bearing.metadata.z].operator_product += dot(derivative.position, product.position)
+            + AXIS_WEIGHT * dot(derivative.axis, product.axis);
         body = parent;
     }
 }
@@ -272,7 +370,8 @@ fn evaluate_closures(@builtin(global_invocation_id) invocation: vec3<u32>) {
         return;
     }
     let bearing = bearings[index];
-    if bearing.metadata.w == 0u {
+    if (bearing.metadata.w & BEARING_CLOSURE_FLAG) == 0u
+        || (bearing.metadata.w & BEARING_SUSPENDED_FLAG) != 0u {
         return;
     }
     let pose_a = mechanism_links[bearing.metadata.x];
@@ -283,8 +382,9 @@ fn evaluate_closures(@builtin(global_invocation_id) invocation: vec3<u32>) {
         + quat_rotate(pose_b.rotation, bearing.local_anchor_b.xyz);
     let axis_a = normalize(quat_rotate(pose_a.rotation, bearing.local_axis_a.xyz));
     let axis_b = normalize(quat_rotate(pose_b.rotation, bearing.local_axis_b.xyz));
-    let residual_position = anchor_a - anchor_b;
-    let residual_axis = axis_a - axis_b;
+    let frame = closure_frame(bearing, pose_a, pose_b, anchor_a, anchor_b, axis_a);
+    let residual_position = closure_position(frame);
+    let residual_axis = select(axis_a - axis_b, frame.rotation_error, frame.linear);
     if !finite_vector(residual_position) || !finite_vector(residual_axis) {
         atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
         atomicStore(&closure_state[0], 0xffffffffu);
@@ -292,7 +392,8 @@ fn evaluate_closures(@builtin(global_invocation_id) invocation: vec3<u32>) {
         return;
     }
     let anchor_micrometers = u32(round(length(residual_position) * 1000000.0));
-    let axis_degrees = acos(clamp(dot(axis_a, axis_b), -1.0, 1.0)) * 57.295779513;
+    let axis_degrees = select(acos(clamp(dot(axis_a, axis_b), -1.0, 1.0)),
+        length(frame.rotation_error), frame.linear) * 57.295779513;
     let axis_microdegrees = u32(round(axis_degrees * 1000000.0));
     atomicMax(&closure_state[0], anchor_micrometers);
     atomicMax(&closure_state[1], axis_microdegrees);
@@ -307,6 +408,7 @@ fn evaluate_closures(@builtin(global_invocation_id) invocation: vec3<u32>) {
         residual_position,
         residual_axis,
         1.0,
+        frame,
     );
     accumulate_branch(
         bearing.metadata.y,
@@ -315,6 +417,7 @@ fn evaluate_closures(@builtin(global_invocation_id) invocation: vec3<u32>) {
         residual_position,
         residual_axis,
         -1.0,
+        frame,
     );
 }
 
@@ -359,7 +462,8 @@ fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
         }
         for (var index = 0u; index < config.bearing_count; index += 1u) {
             let bearing = bearings[index];
-            if bearing.metadata.w == 0u {
+            if (bearing.metadata.w & BEARING_CLOSURE_FLAG) == 0u
+                || (bearing.metadata.w & BEARING_SUSPENDED_FLAG) != 0u {
                 continue;
             }
             let pose_a = mechanism_links[bearing.metadata.x];
@@ -370,14 +474,15 @@ fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
                 + quat_rotate(pose_b.rotation, bearing.local_anchor_b.xyz);
             let axis_a = normalize(quat_rotate(pose_a.rotation, bearing.local_axis_a.xyz));
             let axis_b = normalize(quat_rotate(pose_b.rotation, bearing.local_axis_b.xyz));
-            let product_a = branch_product(bearing.metadata.x, anchor_a, axis_a, 1.0);
-            let product_b = branch_product(bearing.metadata.y, anchor_b, axis_b, -1.0);
+            let frame = closure_frame(bearing, pose_a, pose_b, anchor_a, anchor_b, axis_a);
+            let product_a = branch_product(bearing.metadata.x, anchor_a, axis_a, 1.0, frame);
+            let product_b = branch_product(bearing.metadata.y, anchor_b, axis_b, -1.0, frame);
             let product = ClosureVector(
                 product_a.position + product_b.position,
                 product_a.axis + product_b.axis,
             );
-            branch_transpose(bearing.metadata.x, anchor_a, axis_a, product, 1.0);
-            branch_transpose(bearing.metadata.y, anchor_b, axis_b, product, -1.0);
+            branch_transpose(bearing.metadata.x, anchor_a, axis_a, product, 1.0, frame);
+            branch_transpose(bearing.metadata.y, anchor_b, axis_b, product, -1.0, frame);
         }
 
         var direction_operator = 0.0;
@@ -412,16 +517,35 @@ fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
         residual_preconditioned = next_residual_preconditioned;
     }
 
-    for (var coordinate = 0u; coordinate < config.reserved_b; coordinate += 1u) {
+    for (var index = 0u; index < config.bearing_count; index += 1u) {
+        let bearing = bearings[index];
+        if bearing.metadata.w != 0u { continue; }
+        let coordinate = bearing.metadata.z;
+        // Translation is affine in its coordinate. Apply the full correction;
+        // rotational coordinates retain damping for their nonlinear kinematics.
+        let scale = select(STEP_SCALE, 1.0, bearing.local_axis_a.w == 1.0);
         let step = clamp(
-            STEP_SCALE * pcg_rows[coordinate].solution,
+            scale * pcg_rows[coordinate].solution,
             -MAX_STEP_RADIANS,
             MAX_STEP_RADIANS,
         );
         if step == step {
-            coordinates[coordinate].angle += step;
+            coordinates[coordinate].position += step;
         } else {
             atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
+        }
+    }
+    for (var index = 0u; index < config.bearing_count; index += 1u) {
+        let bearing = bearings[index];
+        if bearing.metadata.w == 0u && bearing.local_axis_a.w == 1.0 {
+            let coordinate = bearing.metadata.z;
+            let lower = bearing.local_anchor_a.w;
+            let upper = bearing.local_anchor_b.w;
+            coordinates[coordinate].position = clamp(coordinates[coordinate].position, lower, upper);
+            if (coordinates[coordinate].position <= lower && coordinates[coordinate].velocity < 0.0)
+                || (coordinates[coordinate].position >= upper && coordinates[coordinate].velocity > 0.0) {
+                coordinates[coordinate].velocity = 0.0;
+            }
         }
     }
 }

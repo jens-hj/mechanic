@@ -161,6 +161,10 @@ pub enum DriveProgramError {
 pub enum DriveTarget {
     /// Hold a joint angle, in radians, measured from the built pose.
     Angle(f32),
+    /// Seek a signed carriage displacement in metres.
+    LinearPosition(f32),
+    /// Translate at a signed speed in metres per second.
+    LinearSpeed(f32),
     /// Spin at a signed speed, in radians per second.
     Speed(f32),
 }
@@ -174,13 +178,21 @@ impl DriveTarget {
     /// angle exceeds one full turn or a speed exceeds [`MAX_DRIVE_SPEED_RAD_S`].
     pub fn validated(self) -> Result<Self, DriveProgramError> {
         let value = match self {
-            Self::Angle(angle) => angle,
-            Self::Speed(speed) => speed,
+            Self::Angle(angle) | Self::LinearPosition(angle) => angle,
+            Self::Speed(speed) | Self::LinearSpeed(speed) => speed,
         };
         if !value.is_finite() {
             return Err(DriveProgramError::NonFiniteTarget);
         }
         match self {
+            Self::LinearPosition(position) if position.abs() > 3.925 => {
+                Err(DriveProgramError::AngleOutOfRange)
+            }
+            Self::LinearSpeed(speed)
+                if speed.abs() > MAX_DRIVE_SPEED_RAD_S * crate::LINEAR_METERS_PER_RADIAN =>
+            {
+                Err(DriveProgramError::SpeedOutOfRange)
+            }
             Self::Angle(angle) if angle.abs() > MAX_DRIVE_LIMIT_RADIANS => {
                 Err(DriveProgramError::AngleOutOfRange)
             }
@@ -195,16 +207,23 @@ impl DriveTarget {
     #[must_use]
     pub const fn reversed(self) -> Self {
         match self {
+            Self::LinearPosition(position) => Self::LinearPosition(-position),
+            Self::LinearSpeed(speed) => Self::LinearSpeed(-speed),
             Self::Angle(angle) => Self::Angle(-angle),
             Self::Speed(speed) => Self::Speed(-speed),
         }
+    }
+
+    /// Whether this target uses metres rather than radians.
+    pub const fn is_linear(self) -> bool {
+        matches!(self, Self::LinearPosition(_) | Self::LinearSpeed(_))
     }
 
     /// Target angle in radians, when this state holds a position.
     pub const fn angle(self) -> Option<f32> {
         match self {
             Self::Angle(angle) => Some(angle),
-            Self::Speed(_) => None,
+            Self::Speed(_) | Self::LinearPosition(_) | Self::LinearSpeed(_) => None,
         }
     }
 
@@ -212,7 +231,7 @@ impl DriveTarget {
     pub const fn speed(self) -> Option<f32> {
         match self {
             Self::Speed(speed) => Some(speed),
-            Self::Angle(_) => None,
+            Self::Angle(_) | Self::LinearPosition(_) | Self::LinearSpeed(_) => None,
         }
     }
 }
@@ -1118,5 +1137,82 @@ mod name_tests {
     fn a_name_that_exactly_fills_the_buffer_keeps_every_byte() {
         let full = "j".repeat(MAX_DRIVE_NAME_BYTES);
         assert_eq!(DriveName::new(&full).as_str(), full);
+    }
+}
+
+/// Typed programmable envelope for a linear bearing, in SI units.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "[f32; 4]", into = "[f32; 4]")]
+pub struct LinearDriveLimits {
+    max_speed: f32,
+    max_force: f32,
+    minimum: f32,
+    maximum: f32,
+}
+
+impl LinearDriveLimits {
+    /// Creates a linear envelope. Graph insertion also checks physical rail travel.
+    ///
+    /// # Errors
+    /// Rejects non-finite or non-positive speed/force and unordered displacement limits.
+    pub fn new(
+        max_speed: f32,
+        max_force: f32,
+        minimum: f32,
+        maximum: f32,
+    ) -> Result<Self, DriveLimitsError> {
+        if !max_speed.is_finite()
+            || max_speed <= 0.0
+            || max_speed > MAX_DRIVE_SPEED_RAD_S * crate::LINEAR_METERS_PER_RADIAN
+        {
+            return Err(DriveLimitsError::SpeedOutOfRange);
+        }
+        if !max_force.is_finite() || max_force <= 0.0 {
+            return Err(DriveLimitsError::NonPositiveTorque);
+        }
+        if !minimum.is_finite() || !maximum.is_finite() || minimum < -3.925 || maximum > 3.925 {
+            return Err(DriveLimitsError::LimitOutOfRange);
+        }
+        if minimum >= maximum {
+            return Err(DriveLimitsError::InvertedLimits);
+        }
+        Ok(Self {
+            max_speed,
+            max_force,
+            minimum,
+            maximum,
+        })
+    }
+    /// Maximum carriage speed in metres per second.
+    pub const fn max_speed(self) -> f32 {
+        self.max_speed
+    }
+    /// Maximum force in newtons, further limited by installed hardware.
+    pub const fn max_force(self) -> f32 {
+        self.max_force
+    }
+    /// Minimum signed carriage displacement in metres.
+    pub const fn minimum(self) -> f32 {
+        self.minimum
+    }
+    /// Maximum signed carriage displacement in metres.
+    pub const fn maximum(self) -> f32 {
+        self.maximum
+    }
+}
+impl TryFrom<[f32; 4]> for LinearDriveLimits {
+    type Error = DriveLimitsError;
+    fn try_from(values: [f32; 4]) -> Result<Self, Self::Error> {
+        Self::new(values[0], values[1], values[2], values[3])
+    }
+}
+impl From<LinearDriveLimits> for [f32; 4] {
+    fn from(limits: LinearDriveLimits) -> Self {
+        [
+            limits.max_speed,
+            limits.max_force,
+            limits.minimum,
+            limits.maximum,
+        ]
     }
 }

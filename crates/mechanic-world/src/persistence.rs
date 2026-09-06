@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// World document version written by this build.
-pub const WORLD_FORMAT_VERSION: u32 = 4;
+pub const WORLD_FORMAT_VERSION: u32 = 5;
 /// Delay after the last mutation before an ordinary autosave.
 pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 /// Maximum time dirty data waits even while mutations continue.
@@ -62,6 +62,19 @@ pub struct WorldCreationInstanceDoc {
     pub joint_coordinates: Vec<f32>,
 }
 
+/// Frozen creation target, restored before physics begins.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FrozenCreationDoc {
+    /// Active Dimension Link identifying the held structural creation.
+    pub link: DimensionLinkId,
+    /// Validated global link-center target in metres, independent of animation.
+    pub target: WorldPosition,
+    /// Cardinal heading in quarter turns, from zero through three.
+    pub heading: u8,
+    /// Published construction generation containing this creation.
+    pub construction_generation: u64,
+}
+
 /// Top-level metadata and player state for one finite world.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorldDocument {
@@ -83,6 +96,8 @@ pub struct WorldDocument {
     pub construction_generation: u64,
     /// Sole active Dimension Link across this world's paired spaces.
     pub active_dimension_link: Option<DimensionLinkId>,
+    /// Optional held creation and its final alignment target.
+    pub frozen_creation: Option<FrozenCreationDoc>,
     /// Next stable Dimension Link identity allocated in this world.
     pub next_dimension_link_id: u64,
     /// Independently saved placed creations.
@@ -105,6 +120,7 @@ impl WorldDocument {
             return_anchor: None,
             construction_generation: 0,
             active_dimension_link: None,
+            frozen_creation: None,
             next_dimension_link_id: 1,
             instances: Vec::new(),
         }
@@ -146,7 +162,7 @@ pub enum SavedWorldStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub enum OpenWorldResult {
     /// Current world ready to play.
-    Opened(WorldDocument),
+    Opened(Box<WorldDocument>),
     /// Incompatible direct-child directory was removed as requested by policy.
     OutdatedRemoved {
         /// Exact removed directory.
@@ -208,6 +224,7 @@ impl WorldStore {
     /// Reports the exact target file on encoding or I/O failure.
     pub fn save_world(&self, world: &WorldDocument) -> Result<PathBuf, WorldSaveError> {
         let path = self.directory_for(&world.name).join("world.ron");
+        validate_frozen_creation(world, &path)?;
         let text = ron::ser::to_string_pretty(world, ron::ser::PrettyConfig::default()).map_err(
             |source| WorldSaveError::Encode {
                 path: path.clone(),
@@ -262,9 +279,14 @@ impl WorldStore {
         Self::save_generation_space(&directory.join("world.ron"), world_space)?;
         Self::save_generation_space(&directory.join("garage.ron"), garage_space)?;
         let previous = world.construction_generation;
+        let previous_frozen = world.frozen_creation;
         world.construction_generation = generation;
+        if let Some(frozen) = &mut world.frozen_creation {
+            frozen.construction_generation = generation;
+        }
         if let Err(error) = self.save_world(world) {
             world.construction_generation = previous;
+            world.frozen_creation = previous_frozen;
             return Err(error);
         }
         Ok(())
@@ -341,6 +363,7 @@ impl WorldStore {
         {
             return Err(WorldSaveError::UnsupportedVersion { path });
         }
+        validate_frozen_creation(&world, &path)?;
         Ok(world)
     }
 
@@ -521,7 +544,10 @@ impl WorldStore {
     /// untouched. Outdated deletion validates the direct-child target again.
     pub fn open_entry(&self, entry: &SavedWorld) -> Result<OpenWorldResult, WorldSaveError> {
         match &entry.status {
-            SavedWorldStatus::Current => self.load_world(&entry.path).map(OpenWorldResult::Opened),
+            SavedWorldStatus::Current => self
+                .load_world(&entry.path)
+                .map(Box::new)
+                .map(OpenWorldResult::Opened),
             SavedWorldStatus::Outdated => {
                 self.delete_world(&entry.path)?;
                 Ok(OpenWorldResult::OutdatedRemoved {
@@ -637,6 +663,14 @@ pub enum WorldSaveError {
         /// Exact unsupported path.
         path: PathBuf,
     },
+    /// Frozen state does not match the published creation or a valid target.
+    #[error("world file {path} has invalid frozen creation state: {message}", path = path.display())]
+    InvalidFrozenCreation {
+        /// Exact affected manifest.
+        path: PathBuf,
+        /// Invalid frozen-state invariant.
+        message: &'static str,
+    },
     /// Deletion target was not a direct child of this store.
     #[error("refusing world path outside the store: {path}", path = path.display())]
     OutsideStore {
@@ -651,6 +685,31 @@ pub enum WorldSaveError {
         /// Original inspection detail.
         message: String,
     },
+}
+
+fn validate_frozen_creation(world: &WorldDocument, path: &Path) -> Result<(), WorldSaveError> {
+    let Some(frozen) = world.frozen_creation else {
+        return Ok(());
+    };
+    let message = if !frozen.target.0.is_finite() {
+        Some("target must be finite")
+    } else if frozen.heading >= 4 {
+        Some("heading must be a cardinal quarter turn")
+    } else if world.active_dimension_link != Some(frozen.link) {
+        Some("link must match the active Dimension Link")
+    } else if world.construction_generation == 0
+        || frozen.construction_generation != world.construction_generation
+    {
+        Some("generation must match the nonzero published construction generation")
+    } else {
+        None
+    };
+    message.map_or(Ok(()), |message| {
+        Err(WorldSaveError::InvalidFrozenCreation {
+            path: path.to_owned(),
+            message,
+        })
+    })
 }
 
 #[derive(Deserialize)]
@@ -745,10 +804,10 @@ mod tests {
         time::Duration,
     };
 
-    use mechanic_core::{CREATION_FORMAT_VERSION, CreationDocument};
+    use mechanic_core::{CREATION_FORMAT_VERSION, CreationDocument, DimensionLinkId};
 
     use super::{
-        AutosaveState, OpenWorldResult, SavedWorldStatus, WORLD_FORMAT_VERSION,
+        AutosaveState, FrozenCreationDoc, OpenWorldResult, SavedWorldStatus, WORLD_FORMAT_VERSION,
         WorldCreationInstanceDoc, WorldDocument, WorldPoseDoc, WorldSaveError, WorldStore,
     };
     use crate::{TerrainField, TerrainOctree, WorldPosition, WorldSeed};
@@ -776,6 +835,12 @@ mod tests {
         CreationDocument {
             version: CREATION_FORMAT_VERSION,
             name: "Anchor".to_owned(),
+            frames: vec![mechanic_core::ConstructionFrameDoc {
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            }],
+            part_frames: Vec::new(),
+            region_frames: Vec::new(),
             parts: Vec::new(),
             welds: Vec::new(),
             rigid_links: Vec::new(),
@@ -853,6 +918,107 @@ mod tests {
             store.load_space_pair(&published).unwrap(),
             Some((world_space, garage_space))
         );
+    }
+
+    fn frozen_world() -> WorldDocument {
+        let mut world = WorldDocument::new("Frozen", WorldSeed(42), WorldPosition::default());
+        world.active_dimension_link = Some(DimensionLinkId(3));
+        world.construction_generation = 7;
+        world.frozen_creation = Some(FrozenCreationDoc {
+            link: DimensionLinkId(3),
+            target: WorldPosition(bevy_math::DVec3::new(10_000.0, 1.25, -20_000.0)),
+            heading: 3,
+            construction_generation: 7,
+        });
+        world
+    }
+
+    #[test]
+    fn frozen_target_round_trips_with_matching_published_generation() {
+        let temporary = TempDir::new();
+        let store = WorldStore::new(&temporary.0);
+        let mut world = frozen_world();
+        let space = WorldCreationInstanceDoc {
+            id: 1,
+            creation: empty_creation(),
+            root_pose: WorldPoseDoc::default(),
+            joint_coordinates: Vec::new(),
+        };
+        let original = world.frozen_creation.unwrap();
+        store.save_space_pair(&mut world, &space, &space).unwrap();
+        assert_eq!(world.construction_generation, 8);
+        assert_eq!(
+            world.frozen_creation.unwrap(),
+            FrozenCreationDoc {
+                construction_generation: 8,
+                ..original
+            }
+        );
+        assert_eq!(
+            store.load_world(&store.directory_for(&world.name)).unwrap(),
+            world
+        );
+    }
+
+    #[test]
+    fn invalid_frozen_state_is_rejected_on_save_and_load() {
+        let temporary = TempDir::new();
+        let store = WorldStore::new(&temporary.0);
+        for case in 0..5 {
+            let mut world = frozen_world();
+            match case {
+                0 => {
+                    world
+                        .frozen_creation
+                        .as_mut()
+                        .unwrap()
+                        .construction_generation = 6;
+                }
+                1 => {
+                    world.construction_generation = 0;
+                    world
+                        .frozen_creation
+                        .as_mut()
+                        .unwrap()
+                        .construction_generation = 0;
+                }
+                2 => world.frozen_creation.as_mut().unwrap().heading = 4,
+                3 => world.active_dimension_link = None,
+                _ => world.frozen_creation.as_mut().unwrap().target.0.x = f64::INFINITY,
+            }
+            assert!(matches!(
+                store.save_world(&world),
+                Err(WorldSaveError::InvalidFrozenCreation { .. })
+            ));
+            let directory = store.directory_for(&world.name);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("world.ron"), ron::to_string(&world).unwrap()).unwrap();
+            assert!(matches!(
+                store.load_world(&directory),
+                Err(WorldSaveError::InvalidFrozenCreation { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn failed_manifest_publication_restores_frozen_and_construction_generations() {
+        let temporary = TempDir::new();
+        let store = WorldStore::new(&temporary.0);
+        let mut world = frozen_world();
+        let original = world.clone();
+        let space = WorldCreationInstanceDoc {
+            id: 1,
+            creation: empty_creation(),
+            root_pose: WorldPoseDoc::default(),
+            joint_coordinates: Vec::new(),
+        };
+        // A directory at the manifest path forces the final atomic rename to fail.
+        fs::create_dir_all(store.directory_for(&world.name).join("world.ron")).unwrap();
+        assert!(matches!(
+            store.save_space_pair(&mut world, &space, &space),
+            Err(WorldSaveError::Io { .. })
+        ));
+        assert_eq!(world, original);
     }
 
     #[test]

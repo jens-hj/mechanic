@@ -532,6 +532,18 @@ pub(super) fn icon(tool: Tool) -> Element {
                 circle at:(x:20px y:20px) radius:12.5px exponent:1 stroke:(width:7px color:accent.angle)
             }
         },
+        Tool::LinearBearing => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                line from:(x:6px y:20px) to:(x:34px y:20px)
+                    stroke:(width:8px cap:round color:ink.muted)
+                line from:(x:6px y:12px) to:(x:6px y:28px)
+                    stroke:(width:3px color:ink.fg)
+                line from:(x:34px y:12px) to:(x:34px y:28px)
+                    stroke:(width:3px color:ink.fg)
+                rect at:(x:14px y:11px) size:(w:12px h:18px) radius:2px exponent:1
+                    fill:accent.speed stroke:(width:2px color:ink.fg)
+            }
+        },
         Tool::Weld => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
                 line from:(x:10.58px y:26.1px) to:(x:29.42px y:12.9px)
