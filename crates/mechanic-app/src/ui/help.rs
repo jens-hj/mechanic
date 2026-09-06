@@ -254,6 +254,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         } else {
             "Release to place pipe run — R cycles dimensions, F adds bends".to_owned()
         }
+    } else if selected_tool == Tool::Weld {
+        if state.weld.busy() { "Press a destination feature, drag, and release to weld; R rotates 15°, Shift snaps 5 cm".to_owned() }
+        else { "Select a source face, straight edge, or corner".to_owned() }
     } else {
         match (
             live_hammer,

@@ -495,3 +495,102 @@ fn triangle_clearance_replaces_dense_queries_for_a_wide_plate() {
     ];
     assert!(!triangle_clear(&geometry, mound, 0.05));
 }
+
+#[test]
+fn weld_destination_decides_the_hold_and_dimension_links_survive() {
+    for (source_held, destination_held) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let mut graph = ConstructionGraph::new();
+        let mut parts = Vec::new();
+        for (id, x) in [(1, 0), (2, 8)] {
+            let mechanic_core::BuildOutcome::Spawned(part) = graph
+                .apply(BuildCommand::SpawnDimensionLink(
+                    mechanic_core::DimensionLinkSpec::new(
+                        DimensionLinkId(id),
+                        BuildPose::new(IVec3::new(x, 28, 0), GridRotation::default()),
+                    ),
+                ))
+                .unwrap()
+            else {
+                panic!("spawn expected")
+            };
+            parts.push(part);
+        }
+        let creation = graph.compile().unwrap();
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|b| pose(b.root_translation, b.root_rotation))
+            .collect::<Vec<_>>();
+        let previous = AppSimulation {
+            creation: Some(creation),
+            published_graph: graph.clone(),
+            transforms: transforms.clone(),
+            world_revision: Some((0, 0)),
+            ..default()
+        };
+        let held = previous
+            .creation
+            .as_ref()
+            .unwrap()
+            .compounds
+            .iter()
+            .map(|body| {
+                if body.source_parts.contains(&parts[0]) {
+                    source_held
+                } else {
+                    destination_held
+                }
+            })
+            .collect();
+        let frozen = DimensionFreeze {
+            record: (source_held || destination_held).then_some(FrozenCreationDoc {
+                link: DimensionLinkId(if destination_held { 2 } else { 1 }),
+                target: mechanic_world::WorldPosition::default(),
+                heading: 0,
+                construction_generation: 0,
+            }),
+            held,
+            poses: transforms,
+            revision: previous.world_revision,
+            ..default()
+        };
+        graph
+            .apply(BuildCommand::RigidLink(mechanic_core::RigidLinkSpec {
+                first: parts[0],
+                second: parts[1],
+            }))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|b| pose(b.root_translation, b.root_rotation))
+            .collect();
+        let replacement = AppSimulation {
+            creation: Some(creation),
+            published_graph: graph,
+            transforms,
+            world_revision: Some((1, 0)),
+            ..default()
+        };
+        let result = frozen.for_weld(&previous, &replacement, parts[1], &[parts[0]]);
+        assert_eq!(result.record.is_some(), destination_held);
+        if destination_held {
+            assert_eq!(result.held, vec![true]);
+        }
+        assert!(
+            replacement
+                .published_graph
+                .dimension_link(DimensionLinkId(1))
+                .is_some()
+        );
+        assert!(
+            replacement
+                .published_graph
+                .dimension_link(DimensionLinkId(2))
+                .is_some()
+        );
+    }
+}

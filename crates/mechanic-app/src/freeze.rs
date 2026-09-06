@@ -79,6 +79,74 @@ impl DimensionFreeze {
         *self = Self::default();
     }
 
+    pub(crate) fn for_weld(
+        &self,
+        previous: &AppSimulation,
+        replacement: &AppSimulation,
+        destination: PartId,
+        source: &[PartId],
+    ) -> Self {
+        let destination_held = previous
+            .creation
+            .as_ref()
+            .and_then(|creation| {
+                creation
+                    .part_to_compound
+                    .iter()
+                    .find(|(part, _)| *part == destination)
+            })
+            .is_some_and(|(_, body)| self.held.get(*body as usize) == Some(&true));
+        let source_held = previous.creation.as_ref().is_some_and(|creation| {
+            creation.part_to_compound.iter().any(|(part, body)| {
+                source.contains(part) && self.held.get(*body as usize) == Some(&true)
+            })
+        });
+        if !destination_held && source_held {
+            return Self::default();
+        }
+        let Some(record) = self.record else {
+            return Self::default();
+        };
+        let Some((held, _)) = replacement
+            .creation
+            .as_ref()
+            .and_then(|creation| component(creation, &replacement.published_graph, record.link))
+        else {
+            return Self::default();
+        };
+        Self {
+            record: Some(record),
+            held,
+            poses: replacement.transforms.clone(),
+            revision: replacement.world_revision,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn restored_for_weld(&self, replacement: &AppSimulation) -> Self {
+        let Some(record) = self.record else {
+            return Self::default();
+        };
+        let Some((held, _)) = replacement
+            .creation
+            .as_ref()
+            .and_then(|creation| component(creation, &replacement.published_graph, record.link))
+        else {
+            return Self::default();
+        };
+        Self {
+            held,
+            poses: replacement.transforms.clone(),
+            revision: replacement.world_revision,
+            waypoints: VecDeque::new(),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) const fn saved_record(&self) -> Option<FrozenCreationDoc> {
+        self.record
+    }
+
     /// Validate a replacement without changing the published hold or GPU scene.
     pub(crate) fn prepare_publication(
         &self,
@@ -1136,3 +1204,11 @@ fn plan(
 #[cfg(test)]
 #[path = "freeze_tests.rs"]
 mod tests;
+
+pub(crate) fn weld_terrain_clear(
+    world: &WorldRuntime,
+    collider: &LocalCollider,
+    pose: GpuTransform,
+) -> bool {
+    TerrainProbe::collider_clear(world, collider, pose, -0.001)
+}

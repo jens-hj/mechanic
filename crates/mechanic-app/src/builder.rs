@@ -11,8 +11,8 @@ use mechanic_core::{
     DimensionLinkId, DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
     GridDimension, GridRotation, InputSpec, LinearBearing, LinearBearingDimensions,
     POSITION_TICK_METERS, POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId,
-    PartPiece, PartSpec, PendingOperation, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
-    SeatSpec, ServoSpec, ShapeRegion, TransmissionSpec, WeldSpec,
+    PartPiece, PartSpec, PipeBendDimensions, PipeBendSpec, RigidLinkSpec, SeatSpec, ServoSpec,
+    ShapeRegion, TransmissionSpec, WeldSpec,
 };
 use mechanic_world::WORLD_HALF_EXTENT_METERS;
 
@@ -1300,7 +1300,9 @@ impl fmt::Display for PlacementError {
                 formatter.write_str("the bearing anchor lies outside this face")
             }
             Self::SameObject => formatter.write_str("select two different objects"),
-            Self::ObjectsDoNotTouch => formatter.write_str("the selected objects do not touch"),
+            Self::ObjectsDoNotTouch => {
+                formatter.write_str("weld contact must contain a continuous 5 × 5 cm square")
+            }
             Self::CurvedSurface => {
                 formatter.write_str("curved cylinder walls are not connection faces")
             }
@@ -1350,8 +1352,8 @@ pub(crate) struct PipeRunPiece {
 pub(crate) struct FaceGeometry {
     pub(crate) center: Vec3,
     pub(crate) normal: Vec3,
-    tangent_u: Vec3,
-    tangent_v: Vec3,
+    pub(crate) tangent_u: Vec3,
+    pub(crate) tangent_v: Vec3,
     profile: FaceProfile,
 }
 
@@ -3627,12 +3629,15 @@ fn rounded_div(value: i32, divisor: i32) -> i32 {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn begin_weld(
     graph: &mut ConstructionGraph,
     face: FaceRef,
 ) -> Result<(), PlacementError> {
     graph
-        .apply(BuildCommand::BeginPending(PendingOperation::Weld(face)))
+        .apply(BuildCommand::BeginPending(
+            mechanic_core::PendingOperation::Weld(face),
+        ))
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
     Ok(())
 }
@@ -3663,13 +3668,30 @@ fn touching_weld_face_pair(
     first: FaceOwner,
     second: FaceOwner,
 ) -> Option<(FaceRef, FaceRef)> {
-    // The tool highlights whole rigid bodies, so it has to weld whole rigid
-    // bodies: contact anywhere between the two counts, not just between the one
-    // part that was clicked and the one under the pointer.
-    weld_body_owners(graph, first).into_iter().find_map(|left| {
-        weld_body_owners(graph, second)
-            .into_iter()
-            .find_map(|right| touching_face_pair(graph, left, right))
+    let source = weld_body_owners(graph, first)
+        .into_iter()
+        .flat_map(|owner| owner_faces(graph, owner))
+        .collect::<Vec<_>>();
+    let destination = weld_body_owners(graph, second)
+        .into_iter()
+        .flat_map(|owner| owner_faces(graph, owner))
+        .collect::<Vec<_>>();
+    source.iter().find_map(|&first_face| {
+        destination.iter().find_map(|&second_face| {
+            overlap_center(
+                &face_geometry_from_ref(first_face, Some(graph)),
+                &face_geometry_from_ref(second_face, Some(graph)),
+            )?;
+            let mut mating = vec![second_face];
+            mating.extend(
+                destination
+                    .iter()
+                    .copied()
+                    .filter(|face| *face != second_face),
+            );
+            graph.weld_contact_square(&source, &mating).ok()?;
+            Some((first_face, second_face))
+        })
     })
 }
 
@@ -4207,7 +4229,10 @@ fn try_face_geometries_from_ref(
     }
 }
 
-const fn primitive_surface_patch(spec: PartSpec, face: FaceKind) -> mechanic_core::SurfacePatchKey {
+pub(crate) const fn primitive_surface_patch(
+    spec: PartSpec,
+    face: FaceKind,
+) -> mechanic_core::SurfacePatchKey {
     let local = match spec {
         PartSpec::Cylinder(_) => match face {
             FaceKind::NegativeY => 0,
@@ -4697,7 +4722,7 @@ fn raycast_evaluated_solid(
         })
 }
 
-fn raycast_evaluated_surface(
+pub(crate) fn raycast_evaluated_surface(
     origin: Vec3,
     direction: Vec3,
     solid: &mechanic_core::EvaluatedSolid,

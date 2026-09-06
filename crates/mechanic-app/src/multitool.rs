@@ -1647,10 +1647,12 @@ fn update_accent_lighting(
     }
 }
 
+pub(crate) const WELDER_COLOR: Color = Color::srgb_u8(226, 86, 90);
+
 fn accent_color(tool: MultitoolKind) -> Color {
     match tool {
         MultitoolKind::Matter => Color::srgb_u8(47, 216, 180),
-        MultitoolKind::Welder => Color::srgb_u8(226, 86, 90),
+        MultitoolKind::Welder => WELDER_COLOR,
         MultitoolKind::Connector => Color::srgb_u8(47, 168, 216),
         MultitoolKind::Sledge => Color::srgb_u8(201, 138, 52),
     }

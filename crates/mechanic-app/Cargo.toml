@@ -44,6 +44,7 @@ wgpu.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
+wgpu = { workspace = true, features = ["noop"] }
 
 [lints]
 workspace = true

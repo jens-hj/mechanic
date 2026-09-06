@@ -400,6 +400,52 @@ pub(super) fn sync_linear_bearing_visuals(
     cache.live = live;
 }
 
+/// Default joint geometry shared by the weld ghost and the normal rail renderer.
+pub(crate) fn weld_preview_mesh(
+    graph: &ConstructionGraph,
+    parts: &[mechanic_core::PartId],
+    sockets: &[PlacedBearing],
+) -> Mesh {
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    for spec in visual_specs(graph, sockets, None)
+        .into_iter()
+        .filter(|spec| matches!(spec.source.owner, FaceOwner::Part(part) if parts.contains(&part)))
+    {
+        if graph.bearings().any(|(_, joint)| {
+            joint.source == spec.source
+                && !matches!(joint.target.owner, FaceOwner::Part(part) if parts.contains(&part))
+        }) {
+            continue;
+        }
+        for chunk in linear_bearing_meshes(spec.rail.dimensions) {
+            let frame = visual_transform(spec, chunk.owner, &AppSimulation::default(), false);
+            let offset = u32::try_from(positions.len()).expect("joint preview fits u32 indices");
+            positions.extend(
+                chunk
+                    .positions
+                    .iter()
+                    .map(|&p| frame.transform_point(Vec3::from_array(p)).to_array()),
+            );
+            normals.extend(
+                chunk
+                    .normals
+                    .iter()
+                    .map(|&n| (frame.rotation * Vec3::from_array(n)).to_array()),
+            );
+            indices.extend(chunk.indices.iter().map(|index| index + offset));
+        }
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

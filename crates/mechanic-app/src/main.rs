@@ -44,6 +44,8 @@ mod settings;
 mod shape_tool;
 mod showcase;
 mod ui;
+mod weld_publication;
+mod weld_tool;
 mod world;
 
 use bevy::{
@@ -76,7 +78,7 @@ use builder::{
     PlacementPlane, PlacementSnapIndex, PlacementSupport, SmartGuide, SurfaceHit,
     bearing_anchor_from_hit_with_grid, bearing_attachment_candidate, bearing_overlaps_candidate,
     bearing_overlaps_cylinder_candidate, bearing_support_face, bearing_support_face_excluding,
-    begin_weld, block_box_bounds, block_box_specs, block_span_from_rays,
+    block_box_bounds, block_box_specs, block_span_from_rays,
     candidate_from_hit_with_grid_and_supports, center_cylinder_candidate_on_bearing,
     cylinder_candidate_from_hit_with_grid, face_geometry_from_ref, free_cuboid_candidate,
     free_cylinder_candidate, oriented_cuboid_candidate_from_hit_with_grid, part_world_bounds,
@@ -413,6 +415,7 @@ struct WorldPhysicsPublication {
     ready: Option<(WorldPhysicsRevision, PreparedWorldPhysics)>,
     failed_revision: Option<WorldPhysicsRevision>,
     accepted_editor: Option<(EditorSnapshot, EditorHistory)>,
+    placement: Option<weld_publication::Publication>,
 }
 
 impl Default for WorldPhysicsPublication {
@@ -423,6 +426,7 @@ impl Default for WorldPhysicsPublication {
             ready: None,
             failed_revision: None,
             accepted_editor: None,
+            placement: None,
         }
     }
 }
@@ -770,6 +774,7 @@ struct BearingOffsetDrag {
 
 #[derive(Clone, Debug)]
 struct EditorSnapshot {
+    weld_restore: Option<weld_publication::Restore>,
     graph: Arc<ConstructionGraph>,
     placed_bearings: Vec<PlacedBearing>,
     revision: u64,
@@ -793,6 +798,7 @@ impl EditorSnapshot {
                 .expect("captured pending editor operation can be cancelled");
         }
         Self {
+            weld_restore: None,
             graph: Arc::new(graph),
             placed_bearings: state
                 .placed_bearings
@@ -932,6 +938,7 @@ fn handle_pause_escape(
         || state.pipe_drag.is_some()
         || state.delete_drag.is_some()
         || graph.0.pending().is_some()
+        || state.weld.busy()
         || state.wire_drag.is_some()
         || shape_tool_is_busy(selection.active_editor_tool(), &state);
     let target = escape_target(
@@ -959,6 +966,11 @@ fn handle_pause_escape(
 }
 
 fn cancel_one_world_escape_owner(graph: &mut ConstructionGraph, state: &mut EditorState) {
+    if state.weld.busy() {
+        state.weld.cancel();
+        state.feedback = Some("Weld cancelled".to_owned());
+        return;
+    }
     if state.block_drag.take().is_some() {
         clear_hover(state);
         state.feedback = Some("Block drag cancelled".to_owned());
@@ -1128,6 +1140,7 @@ fn maintain_space_simulation(
 ) {
     if *space.get() == world::AppSpace::Garage {
         frozen.reset();
+        publication.placement = None;
         publication.accepted_editor = None;
         publication.pending = None;
         publication.ready = None;
@@ -1142,12 +1155,27 @@ fn maintain_space_simulation(
     }
     if worlds.is_open() {
         frozen.reset();
+        publication.placement = None;
         publication.accepted_editor = None;
         publication.pending = None;
         publication.ready = None;
         publication.failed_revision = None;
         simulation.gpu = None;
         simulation.world_revision = None;
+        return;
+    }
+
+    if weld_publication::maintain(
+        &mut graph,
+        &mut state,
+        &mut history,
+        &mut simulation,
+        &mut frozen,
+        &mut runtime,
+        &mut publication,
+        &render_device,
+        &render_queue,
+    ) {
         return;
     }
 
@@ -1167,6 +1195,7 @@ fn maintain_space_simulation(
                 Ok(prepared) => publication.ready = Some((revision, prepared)),
                 Err(error) => {
                     publication.failed_revision = Some(revision);
+                    state.weld_restore = None;
                     state.feedback = Some(format!("Cannot update live world physics: {error}"));
                 }
             }
@@ -1189,16 +1218,34 @@ fn maintain_space_simulation(
             return;
         }
         let (_, prepared) = publication.ready.take().expect("ready scene exists");
-        let replacement = replacement_simulation(prepared, &simulation, revision, &render_queue)
-            .and_then(|mut replacement| {
-                let candidate = frozen.prepare_publication(&replacement, &runtime)?;
-                candidate.install_publication(&mut replacement, &render_queue)?;
-                Ok((replacement, candidate))
-            });
+        let replacement = if state.weld_restore.is_some() {
+            replacement_simulation_with_transfer(
+                prepared,
+                &simulation,
+                revision,
+                &render_queue,
+                None,
+                state.weld_restore.as_ref(),
+            )
+        } else {
+            replacement_simulation(prepared, &simulation, revision, &render_queue)
+        }
+        .and_then(|mut replacement| {
+            let candidate = if let Some(restore) = &state.weld_restore {
+                restore.hold(&replacement, &frozen)
+            } else {
+                frozen.prepare_publication(&replacement, &runtime)?
+            };
+            candidate.install_publication(&mut replacement, &render_queue)?;
+            Ok((replacement, candidate))
+        });
         match replacement {
             Ok((replacement, candidate)) => {
                 *simulation = replacement;
                 *frozen = candidate;
+                if state.weld_restore.take().is_some() {
+                    runtime.accept_weld_freeze(frozen.saved_record(), &graph.0, &state);
+                }
                 runtime.accept_frozen_publication(&graph.0, &state);
                 publication.accepted_editor =
                     Some((EditorSnapshot::capture(&graph.0, &state), history.clone()));
@@ -1207,6 +1254,7 @@ fn maintain_space_simulation(
             }
             Err(error) => {
                 publication.failed_revision = Some(revision);
+                state.weld_restore = None;
                 state.feedback = Some(format!("Cannot update live world physics: {error}"));
                 if let Some((snapshot, accepted_history)) = &publication.accepted_editor
                     && history.current_revision != accepted_history.current_revision
@@ -1324,14 +1372,50 @@ fn replacement_simulation(
     revision: WorldPhysicsRevision,
     render_queue: &RenderQueue,
 ) -> Result<AppSimulation, String> {
+    replacement_simulation_for_weld(prepared, previous, revision, render_queue, None)
+}
+
+fn replacement_simulation_for_weld(
+    prepared: PreparedWorldPhysics,
+    previous: &AppSimulation,
+    revision: WorldPhysicsRevision,
+    render_queue: &RenderQueue,
+    placement: Option<&weld_publication::Intent>,
+) -> Result<AppSimulation, String> {
+    replacement_simulation_with_transfer(
+        prepared,
+        previous,
+        revision,
+        render_queue,
+        placement,
+        None,
+    )
+}
+
+fn replacement_simulation_with_transfer(
+    prepared: PreparedWorldPhysics,
+    previous: &AppSimulation,
+    revision: WorldPhysicsRevision,
+    render_queue: &RenderQueue,
+    placement: Option<&weld_publication::Intent>,
+    restore: Option<&weld_publication::Restore>,
+) -> Result<AppSimulation, String> {
     let PreparedWorldPhysics {
         graph,
         creation,
         gpu,
     } = prepared;
-    validate_merged_body_poses(&creation, &graph, previous)?;
-    let (transforms, velocities) = rebuilt_body_states(&creation, &graph, previous);
-    let coordinates = rebuilt_mechanism_coordinates(&creation, previous, &transforms, &velocities);
+    let (transforms, velocities, coordinates) = if let Some(restore) = restore {
+        restore.states(&creation, &graph, previous)?
+    } else if let Some(placement) = placement {
+        placement.states(&creation, &graph, previous)?
+    } else {
+        validate_merged_body_poses(&creation, &graph, previous)?;
+        let (transforms, velocities) = rebuilt_body_states(&creation, &graph, previous);
+        let coordinates =
+            rebuilt_mechanism_coordinates(&creation, previous, &transforms, &velocities);
+        (transforms, velocities, coordinates)
+    };
     let next_tick = previous.next_tick.max(1);
     let live_state = Some(LivePhysicsState {
         tick: next_tick.saturating_sub(1),
@@ -2845,6 +2929,7 @@ fn adopt_loaded_creation(
     placed_bearings: Vec<PlacedBearing>,
 ) {
     clear_hover(state);
+    state.weld.cancel();
     state.block_drag = None;
     state.pipe_drag = None;
     state.delete_drag = None;
@@ -3285,7 +3370,11 @@ fn advance_simulation(
             next_tick,
             tick_backlog,
             time.delta(),
-            publication.ready.is_some(),
+            publication.ready.is_some()
+                || publication
+                    .placement
+                    .as_ref()
+                    .is_some_and(weld_publication::Publication::ready),
             u64::try_from(available).unwrap_or(u64::MAX),
         )
     };
@@ -3513,6 +3602,9 @@ impl AppSimulation {
 
 #[derive(Resource, Default)]
 struct EditorState {
+    weld: weld_tool::WeldTool,
+    weld_restore: Option<weld_publication::Restore>,
+    history_capture: Option<weld_publication::Restore>,
     edit_context: Option<live_edit::EditContext>,
     world_hovered_part: Option<PartId>,
     linear: linear_editor::LinearToolState,
@@ -4363,6 +4455,7 @@ fn main() {
             )
                 .chain(),
         )
+        .add_systems(Update, weld_tool::draw_features)
         .run();
 }
 
@@ -5324,6 +5417,8 @@ fn handle_history_shortcut(
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
     overlay: Res<ui::UiInput>,
+    simulation: Res<AppSimulation>,
+    frozen: Res<freeze::DimensionFreeze>,
 ) {
     if overlay.blocks_keyboard() {
         return;
@@ -5331,6 +5426,12 @@ fn handle_history_shortcut(
     let Some(action) = requested_history_action(&actions) else {
         return;
     };
+    state.history_capture = match action {
+        HistoryAction::Undo => history.undo.back(),
+        HistoryAction::Redo => history.redo.back(),
+    }
+    .and_then(|snapshot| snapshot.weld_restore.as_ref())
+    .and_then(|restore| restore.recapture(&graph.0, &simulation, &frozen));
     apply_history_action(action, &mut graph.0, &mut state, &mut history);
 }
 
@@ -5340,7 +5441,8 @@ fn apply_history_action(
     state: &mut EditorState,
     history: &mut EditorHistory,
 ) -> bool {
-    let current = EditorSnapshot::capture(graph, state);
+    let mut current = EditorSnapshot::capture(graph, state);
+    current.weld_restore = state.history_capture.take();
     let restored = match action {
         HistoryAction::Undo => history.undo(current),
         HistoryAction::Redo => history.redo(current),
@@ -5355,6 +5457,7 @@ fn apply_history_action(
 
     *graph = Arc::unwrap_or_clone(restored.graph);
     state.placed_bearings = restored.placed_bearings;
+    state.weld_restore = restored.weld_restore;
     cancel_transient_editor_state(graph, state);
     state.construction_mesh_dirty = true;
     state.feedback = Some(match action {
@@ -5468,6 +5571,7 @@ fn handle_shortcuts(
     }
     if actions.just_pressed(GameAction::Rotate)
         && let Some(tool) = selection.active_editor_tool()
+        && tool != Tool::Weld
     {
         state.feedback = Some(cycle_orientation(&mut state, tool));
     }
@@ -6092,6 +6196,18 @@ fn update_hover(
         }
         return;
     };
+    if selection.active_editor_tool() == Some(Tool::Weld) {
+        weld_tool::hover(
+            &graph.0,
+            &simulation,
+            &mut state,
+            ray,
+            &actions,
+            &world_runtime,
+        );
+        return;
+    }
+    state.weld.cancel();
     state.pointer_position = Some(cursor);
     let ray_direction = ray.direction.as_vec3();
     let terrain_ground = placement_bounds
@@ -10008,6 +10124,17 @@ fn handle_build_actions(
     wheel: Res<MaterialWheelState>,
     mut world_runtime: Option<ResMut<world::WorldRuntime>>,
 ) {
+    if selection.active_editor_tool() == Some(Tool::Weld) {
+        weld_tool::actions(
+            &mut graph.0,
+            &simulation,
+            &mut state,
+            &mut history,
+            &actions,
+            overlay.blocks_pointer() || !player.world_input_active() || wheel.open,
+        );
+        return;
+    }
     let mut view = live_edit::EditorView::new(&mut graph, &mut state);
     let (graph, state) = view.parts();
     if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
@@ -10524,73 +10651,7 @@ fn handle_build_actions(
         Tool::Shape => unreachable!("shape actions are handled by handle_shape_actions"),
         Tool::Block => unreachable!("block actions are handled before this match"),
         Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),
-        Tool::Weld => {
-            let hit = state.hovered.or_else(|| {
-                state.world_hovered_part.map(|part| SurfaceHit {
-                    face: FaceRef::part(part, FaceKind::PositiveY),
-                    point: Vec3::ZERO,
-                    distance: 0.0,
-                })
-            });
-            let Some(hit) = hit else {
-                state.feedback = Some("Select an object".to_owned());
-                return;
-            };
-            if let Some(PendingOperation::Weld(first)) = graph.0.pending() {
-                let second = state
-                    .world_hovered_part
-                    .map_or(hit.face.owner, FaceOwner::Part);
-                let staged = if simulation.world_revision.is_some()
-                    && let (Some(_), FaceOwner::Part(first), FaceOwner::Part(second)) =
-                        (&simulation.creation, first.owner, second)
-                {
-                    live_weld::stage(&graph.0.canonicalized(), &simulation, first, second).and_then(
-                        |staged| match state.edit_context {
-                            Some(context) => staged
-                                .in_edit_frame(context.frame)
-                                .map_err(|error| error.to_string()),
-                            None => Ok(staged),
-                        },
-                    )
-                } else {
-                    stage_weld_objects(&graph.0, first.owner, second)
-                        .map_err(|error| error.to_string())
-                };
-                match staged {
-                    Ok(staged) => {
-                        let lockup = weld_lockup_warning(&graph.0, &staged);
-                        let previous = EditorSnapshot::capture(&graph.0, state);
-                        graph.0 = staged;
-                        history.commit(previous);
-                        state.feedback = Some(lockup.map_or_else(
-                            || "Welded the two objects".to_owned(),
-                            |warning| format!("Welded the two objects — {warning}"),
-                        ));
-                    }
-                    Err(error) => state.feedback = Some(error),
-                }
-            } else {
-                let selected_face = if try_face_geometry_from_ref(hit.face, Some(&graph.0))
-                    .is_some()
-                {
-                    hit.face
-                } else {
-                    match hit.face.owner {
-                        FaceOwner::Part(part) => {
-                            mechanic_core::FaceRef::part(part, mechanic_core::FaceKind::PositiveY)
-                        }
-                        FaceOwner::Ground => hit.face,
-                    }
-                };
-                match begin_weld(&mut graph.0, selected_face) {
-                    Ok(()) => {
-                        state.feedback =
-                            Some("First object selected; choose a touching object".to_owned());
-                    }
-                    Err(error) => state.feedback = Some(error.to_string()),
-                }
-            }
-        }
+        Tool::Weld => unreachable!("weld actions are handled by weld_tool"),
         Tool::LinearBearing => linear_editor::place(&graph.0, state, &mut history),
         Tool::Bearing => {
             let Some(hit) = state.hovered else {
@@ -12472,6 +12533,26 @@ fn update_previews(
         ),
     >,
 ) {
+    if selected_tool.active_editor_tool() == Some(Tool::Weld) {
+        hide_preview(&mut action.2);
+        hide_preview(&mut selection.2);
+        hide_preview(&mut delete.2);
+        if let Some((preview_graph, parts, frame)) = &state.weld.preview {
+            if let Some(mut mesh) = meshes.get_mut(&visuals.weld_hover_preview_mesh) {
+                *mesh = weld_tool::preview_mesh(preview_graph, parts, &state.placed_bearings);
+            }
+            action.0.0 = visuals.weld_hover_preview_mesh.clone();
+            *action.1 =
+                Transform::from_translation(frame.translation()).with_rotation(frame.rotation());
+            action.3.0 = if state.weld.error.is_some() {
+                visuals.red_preview_material.clone()
+            } else {
+                visuals.green_preview_material.clone()
+            };
+            *action.2 = Visibility::Visible;
+        }
+        return;
+    }
     let mut view = live_edit::EditorView::new(&mut graph, &mut state);
     let (graph, state) = view.parts();
     hide_preview(&mut action.2);
@@ -21705,7 +21786,7 @@ mod interaction_tests {
         else {
             unreachable!()
         };
-        super::begin_weld(&mut graph, FaceRef::part(part, FaceKind::PositiveY)).unwrap();
+        crate::builder::begin_weld(&mut graph, FaceRef::part(part, FaceKind::PositiveY)).unwrap();
         let mut state = EditorState::default();
         let mut selection = SelectedTool::from_editor_tool(Tool::Weld);
         let mut hammer = super::HammerInteraction {

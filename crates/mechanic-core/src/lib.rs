@@ -15,6 +15,12 @@ mod linear_geometry;
 mod region;
 mod shape;
 mod solid;
+mod weld;
+
+pub use weld::{
+    WeldAlignment, WeldCollider, WeldConstraint, WeldFeature, WeldFeatureRef, WeldMaterialPatch,
+    WeldPick, WeldPlacement, WeldRejection, WeldSelection, WeldSnap, weld_contact_square,
+};
 
 pub use compile::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,

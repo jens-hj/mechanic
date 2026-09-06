@@ -442,6 +442,17 @@ impl WorldRuntime {
         Ok(())
     }
 
+    pub(crate) fn accept_weld_freeze(
+        &mut self,
+        record: Option<mechanic_world::FrozenCreationDoc>,
+        graph: &ConstructionGraph,
+        editor: &EditorState,
+    ) {
+        self.document.frozen_creation = record;
+        self.accept_frozen_publication(graph, editor);
+        self.autosave.mutate(self.clock);
+    }
+
     pub(crate) fn accept_frozen_publication(
         &mut self,
         graph: &ConstructionGraph,

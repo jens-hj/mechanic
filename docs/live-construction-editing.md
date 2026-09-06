@@ -36,11 +36,11 @@ features directly. Surrounding construction still blocks obstructed steps.
   New/replacement parts retain source identity through publication and splits.
   Deleted anchors cancel attached gestures; delete selections use composed centers
   and stay on their starting body. No-op views preserve graph change detection.
-- Live welds validate actual convex contact and reframe the second structural
-  creation while preserving internal joint defaults. Invalid combined defaults
-  are rejected. Publication preserves visible arrangements and merged momentum;
-  if source arrangements have changed during preparation, the weld is rejected
-  with retry feedback rather than moving either source unexpectedly.
+- Feature welds move the first structural creation in its authored default pose
+  onto the second creation's current pose. Picking, constrained dragging, and
+  ghost rendering live in `weld_tool`; core topology, alignment, contact-square,
+  and default-construction validation live in `mechanic_core::weld`.
+  See [feature weld placement](feature-weld-placement.md) for transaction semantics.
 - GPU readbacks capture transforms, velocities, and rotational/linear coordinates
   from one completed tick. Publication drains old submissions, rejects stale
   generations, remaps stable identities, and retains surviving joint state,
