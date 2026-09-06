@@ -594,3 +594,34 @@ fn weld_destination_decides_the_hold_and_dimension_links_survive() {
         );
     }
 }
+
+#[test]
+fn visual_snapshot_contains_only_held_bodies_and_tracks_prescribed_pose() {
+    let creation = creation();
+    let poses = vec![pose(Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY); 3];
+    let simulation = AppSimulation {
+        creation: Some(creation),
+        world_revision: Some((1, 2)),
+        ..default()
+    };
+    let mut hold = DimensionFreeze {
+        record: Some(FrozenCreationDoc {
+            link: DimensionLinkId(1),
+            target: mechanic_world::WorldPosition(DVec3::ZERO),
+            heading: 0,
+            construction_generation: 0,
+        }),
+        revision: Some((1, 2)),
+        held: vec![true, false, false],
+        poses,
+        ..default()
+    };
+    let first = hold.visual_snapshot(&simulation).unwrap();
+    assert_eq!(first.link, DimensionLinkId(1));
+    assert!((first.max - first.min).abs_diff_eq(Vec3::splat(0.25), 1e-5));
+    hold.poses[0].position[1] += 0.125;
+    let second = hold.visual_snapshot(&simulation).unwrap();
+    assert!((second.min - first.min).abs_diff_eq(Vec3::Y * 0.125, 1e-5));
+    hold.reset();
+    assert!(hold.visual_snapshot(&simulation).is_none());
+}

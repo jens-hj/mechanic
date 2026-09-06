@@ -43,6 +43,7 @@ mod sequencer;
 mod settings;
 mod shape_tool;
 mod showcase;
+mod tool_fx;
 mod ui;
 mod weld_publication;
 mod weld_tool;
@@ -441,6 +442,7 @@ struct HammerInteraction {
 struct HammerCharge {
     body_index: u32,
     local_point: Vec3,
+    local_normal: Vec3,
     direction: Vec3,
     elapsed_seconds: f32,
 }
@@ -459,6 +461,7 @@ struct SimulationHit {
     body_index: u32,
     distance: f32,
     point: Vec3,
+    normal: Vec3,
 }
 
 #[derive(Clone, Debug)]
@@ -700,8 +703,10 @@ fn free_placement_point_on_miss(
     range: f32,
     secondary_pressed: bool,
 ) -> Option<Vec3> {
-    (bounds == PlacementBounds::GarageBuild
-        && tool_supports_free_placement(tool)
+    (matches!(
+        bounds,
+        PlacementBounds::GarageBuild | PlacementBounds::GarageBuildFrame { .. }
+    ) && tool_supports_free_placement(tool)
         && !secondary_pressed)
         .then_some(origin + direction * range)
 }
@@ -1160,8 +1165,7 @@ fn maintain_space_simulation(
         publication.pending = None;
         publication.ready = None;
         publication.failed_revision = None;
-        simulation.gpu = None;
-        simulation.world_revision = None;
+        *simulation = AppSimulation::default();
         return;
     }
 
@@ -1295,10 +1299,7 @@ fn maintain_space_simulation(
     let ground_plane = runtime.active_assembly_ground_plane();
     let physics_config = GpuPhysicsConfig {
         ground_plane_enabled: ground_plane.is_some(),
-        mechanism_self_collisions: world_mechanism_self_collisions(
-            &graph,
-            runtime.active_dimension_link(),
-        ),
+        mechanism_self_collisions: world_mechanism_self_collisions(&graph),
         ..GpuPhysicsConfig::default()
     };
     let device = render_device.clone();
@@ -1497,14 +1498,17 @@ mod world_physics_publication_tests {
     }
 
     #[test]
-    fn linked_vehicle_disables_internal_mechanism_contacts() {
-        let graph = ConstructionGraph::new();
+    fn linked_vehicle_preserves_internal_mechanism_contacts() {
+        let mut graph = ConstructionGraph::new();
 
-        assert!(!world_mechanism_self_collisions(
-            &graph,
-            Some(DimensionLinkId(1))
-        ));
-        assert!(world_mechanism_self_collisions(&graph, None));
+        assert!(world_mechanism_self_collisions(&graph));
+        graph
+            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
+                DimensionLinkId(1),
+                BuildPose::default(),
+            )))
+            .unwrap();
+        assert!(world_mechanism_self_collisions(&graph));
     }
 
     #[test]
@@ -1953,11 +1957,10 @@ fn creation_requires_live_physics(creation: &CompiledCreation) -> bool {
         .any(|compound| !compound.is_static)
 }
 
-fn world_mechanism_self_collisions(
-    graph: &ConstructionGraph,
-    active_dimension_link: Option<DimensionLinkId>,
-) -> bool {
-    active_dimension_link.is_none() && !showcase::uses_reduced_collision_mode(graph)
+fn world_mechanism_self_collisions(graph: &ConstructionGraph) -> bool {
+    // Dimension-link activation must preserve contacts between moving parts of
+    // one mechanism. Compilation already excludes directly jointed bodies.
+    !showcase::uses_reduced_collision_mode(graph)
 }
 
 fn rebuilt_body_states(
@@ -3165,14 +3168,16 @@ fn sync_simulation_visual_cache(
             creation.compounds.len()
         ];
         for (body_index, compound) in creation.compounds.iter().enumerate() {
-            if compound.is_static {
-                continue;
-            }
             let body = u32::try_from(body_index).unwrap_or(u32::MAX);
+            // Static construction materials use the shared world mesh, but
+            // authored blocks and bearings need body visuals even when grounded.
             let ordinary = ConstructionMaterial::ALL
                 .into_iter()
                 .filter(|&material| {
-                    simulation_material_is_present_for_compound(graph, creation, body, material)
+                    !compound.is_static
+                        && simulation_material_is_present_for_compound(
+                            graph, creation, body, material,
+                        )
                 })
                 .map(|material| {
                     let mesh = local_simulation_material_mesh(
@@ -3226,6 +3231,9 @@ fn sync_simulation_visual_cache(
                         ))
                     },
                 );
+            if ordinary.is_empty() && authored.is_empty() && bearing.is_none() {
+                continue;
+            }
             let transform = simulation
                 .transforms
                 .get(body_index)
@@ -3332,7 +3340,7 @@ fn advance_simulation(
         }
     }
 
-    if world_runtime.active_dimension_link().is_some() {
+    {
         let ground_planes = terrain_ground_planes(
             &world_runtime,
             &published_graph,
@@ -4286,7 +4294,7 @@ fn main() {
         .add_plugins(
             DefaultPlugins
                 .set(bevy::winit::WinitPlugin {
-                    prevent_activation: automation::enabled(),
+                    prevent_activation: automation::enabled() || tool_fx::capture_active(),
                     ..default()
                 })
                 .set(WindowPlugin {
@@ -4298,7 +4306,7 @@ fn main() {
                         } else {
                             (1280, 720).into()
                         },
-                        focused: !automation::enabled(),
+                        focused: !automation::enabled() && !tool_fx::capture_active(),
                         ..default()
                     }),
                     ..Default::default()
@@ -4350,6 +4358,7 @@ fn main() {
         .init_resource::<ButtonInput<GameAction>>()
         .add_plugins(world::WorldPrototypePlugin)
         .add_plugins(multitool::MultitoolPlugin)
+        .add_plugins(tool_fx::ToolFxPlugin)
         // A dim base fill keeps occluded construction readable without
         // overpowering the garage's authored lighting.
         .insert_resource(GlobalAmbientLight {
@@ -4415,7 +4424,9 @@ fn main() {
                             handle_tool_change,
                             rebuild_placement_snap_index,
                             update_hover,
+                            tool_fx::capture_gesture,
                             handle_build_actions,
+                            tool_fx::finish_gesture,
                             handle_shape_actions,
                             ui::push_dimensions,
                             handle_hammer_actions,
@@ -4934,6 +4945,8 @@ fn setup(
     commands
         .spawn((
             Name::new("Player camera"),
+            tool_fx::bloom(),
+            tool_fx::FxCamera,
             Camera3d::default(),
             render_experiments::current().msaa(),
             projection.clone(),
@@ -4965,6 +4978,12 @@ fn setup(
                 Camera {
                     order: 2,
                     clear_color: ClearColorConfig::None,
+                    output_mode: bevy::camera::CameraOutputMode::Write {
+                        blend_state: Some(
+                            bevy::render::render_resource::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                        ),
+                        clear_color: ClearColorConfig::None,
+                    },
                     ..default()
                 },
                 Tonemapping::None,
@@ -6299,13 +6318,9 @@ fn update_hover(
     } else {
         terrain_ground
     };
-    let placement_bounds = if context.is_some() && placement_bounds.is_world() {
-        PlacementBounds::World {
-            origin: bevy::math::DVec2::ZERO,
-        }
-    } else {
-        placement_bounds
-    };
+    let placement_bounds = context.map_or(placement_bounds, |context| {
+        placement_bounds.in_edit_frame(context.frame_to_world)
+    });
     state.placement_bounds = placement_bounds;
     let accepts_part = |part| {
         context.map_or_else(
@@ -9485,7 +9500,9 @@ fn sync_edit_overlay_transforms(
 #[allow(clippy::cast_possible_truncation)]
 fn placement_origin_meters(bounds: PlacementBounds) -> Vec3 {
     match bounds {
-        PlacementBounds::Garage | PlacementBounds::GarageBuild => Vec3::ZERO,
+        PlacementBounds::Garage
+        | PlacementBounds::GarageBuild
+        | PlacementBounds::GarageBuildFrame { .. } => Vec3::ZERO,
         PlacementBounds::World { origin } => Vec3::new(origin.x as f32, 0.0, origin.y as f32),
     }
 }
@@ -11742,13 +11759,14 @@ fn handle_hammer_actions(
     overlay: Res<ui::UiInput>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
+    mut fx: Option<ResMut<tool_fx::ToolFx>>,
 ) {
     if !simulation.is_running() {
         hammer.charging = None;
         hammer.pending = None;
         return;
     }
-    if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
+    if !window.focused || overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
         hammer.charging = None;
         hammer.pending = None;
         return;
@@ -11800,6 +11818,7 @@ fn handle_hammer_actions(
                     hammer.charging = Some(HammerCharge {
                         body_index: hit.body_index,
                         local_point: rotation.inverse() * (hit.point - position),
+                        local_normal: rotation.inverse() * hit.normal,
                         direction: direction.normalize(),
                         elapsed_seconds: 0.0,
                     });
@@ -11824,7 +11843,9 @@ fn handle_hammer_actions(
     let Some(charge) = hammer.charging.take() else {
         return;
     };
-    let transform = simulation.transforms[charge.body_index as usize];
+    let Some(&transform) = simulation.transforms.get(charge.body_index as usize) else {
+        return;
+    };
     let magnitude = hammer_impulse_magnitude(charge.elapsed_seconds);
     let impulse = charge.direction * magnitude;
     let (delivery_ticks, impulse_per_tick) = hammer_delivery(
@@ -11843,6 +11864,13 @@ fn handle_hammer_actions(
         impulse_per_tick,
         remaining_ticks: delivery_ticks,
     });
+    if let Some(fx) = fx.as_deref_mut() {
+        fx.push(tool_fx::Request::Sledge {
+            hit: Vec3::from_slice(&transform.position[..3])
+                + Quat::from_array(transform.rotation) * charge.local_point,
+            normal: Quat::from_array(transform.rotation) * charge.local_normal,
+        });
+    }
     let delivered_magnitude = impulse_per_tick.length() * f32::from(delivery_ticks);
     state.feedback = Some(if delivered_magnitude + f32::EPSILON < magnitude {
         format!("Hammer strike: {delivered_magnitude:.0} N·s (stability limited)")
@@ -11977,6 +12005,10 @@ fn raycast_simulation(
                 body_index,
                 distance: hit.distance,
                 point: origin + direction * hit.distance,
+                // Curved walls are valid strike targets without a flat mounting
+                // face. Orient their impact effect back along the incoming ray.
+                normal: builder::try_face_geometry_from_ref(hit.face, Some(graph))
+                    .map_or(-direction, |face| build_from_world.inverse() * face.normal),
             })
         })
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
@@ -17018,6 +17050,113 @@ mod rendering_tests {
     }
 
     #[test]
+    #[ignore = "requires a real GPU adapter"]
+    #[allow(clippy::too_many_lines)] // Keep the publication regression and its ECS fixture together.
+    fn grounded_functional_blocks_keep_visuals_during_live_publication() {
+        use bevy::prelude::*;
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("real GPU adapter required");
+        eprintln!("Visual publication adapter: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::default(),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::new(IVec3::new(8, 8, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile_with_static_parts([controller]).unwrap();
+        let controller_body = creation
+            .part_to_compound
+            .iter()
+            .find(|(part, _)| *part == controller)
+            .unwrap()
+            .1;
+        assert!(creation.compounds[controller_body as usize].is_static);
+        assert!(super::creation_requires_live_physics(&creation));
+        let gpu = mechanic_gpu::GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &creation,
+            super::GpuPhysicsConfig::default(),
+        )
+        .unwrap();
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|body| GpuTransform {
+                position: body.root_translation.extend(0.0).to_array(),
+                rotation: body.root_rotation.to_array(),
+            })
+            .collect();
+        let mut app = App::new();
+        app.insert_resource(super::AppSimulation {
+            gpu: Some(gpu),
+            creation: Some(creation),
+            published_graph: graph,
+            transforms,
+            world_revision: Some((1, 1)),
+            ..Default::default()
+        })
+        .init_resource::<super::SimulationVisualCache>()
+        .init_resource::<super::EditorVisuals>()
+        .init_resource::<super::EditorState>()
+        .init_resource::<super::world::WorldRuntime>()
+        .init_resource::<Assets<Mesh>>()
+        .add_systems(Update, super::sync_simulation_visual_cache);
+        let legacy = app
+            .world_mut()
+            .spawn((
+                super::AuthoredPartVisual(AuthoredPart::Controller),
+                Visibility::Visible,
+            ))
+            .id();
+        for revision in [(1, 1), (2, 1)] {
+            app.world_mut()
+                .resource_mut::<super::AppSimulation>()
+                .world_revision = Some(revision);
+            app.update();
+            assert_eq!(
+                app.world().get::<Visibility>(legacy),
+                Some(&Visibility::Hidden)
+            );
+            let mut roots = app
+                .world_mut()
+                .query::<(&super::SimulationBodyVisualRoot, &Children)>();
+            let children = roots
+                .iter(app.world())
+                .find(|(root, _)| root.0 == controller_body)
+                .expect("grounded controller must have a replacement visual")
+                .1;
+            assert_eq!(children.len(), 1);
+            let mesh = app.world().get::<Mesh3d>(children[0]).unwrap();
+            assert!(
+                app.world()
+                    .resource::<Assets<Mesh>>()
+                    .get(&mesh.0)
+                    .unwrap()
+                    .count_vertices()
+                    > 0
+            );
+        }
+    }
+
+    #[test]
     fn dimension_link_toggles_refresh_world_visuals_without_a_physics_edit() {
         let revision = (3, 5);
         let first = Some(DimensionLinkId(7));
@@ -19178,6 +19317,7 @@ mod interaction_tests {
                 body_index: 0,
                 distance: 1.0,
                 point: Vec3::ZERO,
+                normal: Vec3::Y,
             }),
             ..Default::default()
         };
@@ -19298,6 +19438,7 @@ mod interaction_tests {
                 body_index: 0,
                 distance: 1.0,
                 point: Vec3::ZERO,
+                normal: Vec3::Y,
             }),
             ..Default::default()
         };
@@ -20004,6 +20145,66 @@ mod interaction_tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn hammer_hits_pipe_walls_before_through_and_after_a_bend() {
+        let pieces = crate::builder::pipe_run_pieces(
+            &[Vec3::Y, Vec3::new(1.0, 1.0, 0.0), Vec3::new(1.0, 2.0, 0.0)],
+            &[0.25],
+            CylinderDimensions::new(0.25, 0.0, 1.0).unwrap(),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        let graph = crate::builder::stage_pipe_run(
+            &ConstructionGraph::new(),
+            &pieces,
+            crate::builder::PipeRunAttachment::Free,
+        )
+        .unwrap();
+        let creation = graph.compile().unwrap();
+        assert_eq!(creation.compounds.len(), 1);
+        let root = &creation.compounds[0];
+        for (position, rotation) in [
+            (root.root_translation, root.root_rotation),
+            (Vec3::new(3.0, 4.0, -2.0), Quat::from_rotation_y(0.7)),
+        ] {
+            let transforms = [GpuTransform {
+                position: position.extend(0.0).to_array(),
+                rotation: rotation.to_array(),
+            }];
+            let world_from_build = rotation * root.root_rotation.inverse();
+            for point in [
+                Vec3::new(0.375, 0.0, 0.0),
+                Vec3::new(
+                    0.75 + 0.25 / 2.0_f32.sqrt(),
+                    0.25 - 0.25 / 2.0_f32.sqrt(),
+                    0.0,
+                ),
+                Vec3::new(1.0, 0.625, 0.0),
+            ] {
+                let build_origin = point + Vec3::Y + Vec3::Z;
+                let authored = crate::builder::raycast_construction_with_ground(
+                    &graph,
+                    build_origin,
+                    Vec3::NEG_Z,
+                    None,
+                )
+                .expect("pipe wall must be visible");
+                let direction = world_from_build * Vec3::NEG_Z;
+                let hit = raycast_simulation(
+                    &graph,
+                    &creation,
+                    &transforms,
+                    position + world_from_build * (build_origin - root.root_translation),
+                    direction,
+                )
+                .expect("hammer must accept curved pipe walls");
+                assert_eq!(hit.body_index, 0);
+                assert!((hit.distance - authored.distance).abs() < 1.0e-5);
+                assert!(hit.normal.abs_diff_eq(-direction, 1.0e-5));
+            }
+        }
     }
 
     #[test]
@@ -21795,6 +21996,7 @@ mod interaction_tests {
                 local_point: Vec3::ZERO,
                 direction: Vec3::Y,
                 elapsed_seconds: 1.0,
+                local_normal: Vec3::Y,
             }),
             pending: None,
         };
@@ -21842,6 +22044,7 @@ mod interaction_tests {
                 body_index: 0,
                 distance: 1.0,
                 point: Vec3::ZERO,
+                normal: Vec3::Y,
             }),
             ..Default::default()
         };
@@ -21919,6 +22122,7 @@ mod interaction_tests {
                 body_index: 0,
                 distance: 1.0,
                 point: Vec3::ZERO,
+                normal: Vec3::Y,
             });
             app.world_mut().resource_mut::<PlayerState>().seat = seated.then_some(seat);
             app.update();

@@ -29,9 +29,65 @@ pub(crate) struct DimensionFreeze {
     waypoints: VecDeque<Vec<GpuTransform>>,
     release_requested: bool,
     repeat: HeightRepeat,
+    vertical_movement: f32,
 }
 
 impl DimensionFreeze {
+    /// Current held geometry in world space; callers cache by construction and pose revision.
+    pub(crate) fn visual_snapshot(&self, simulation: &AppSimulation) -> Option<VisualSnapshot> {
+        let record = self.record?;
+        if self.revision != simulation.world_revision {
+            return None;
+        }
+        let creation = simulation.creation.as_ref()?;
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for collider in &creation.colliders {
+            let body = collider.compound_index as usize;
+            if self.held.get(body) != Some(&true) {
+                continue;
+            }
+            let pose = self.poses.get(body)?;
+            let rotation = Quat::from_array(pose.rotation);
+            let mut include = |v: Vec3| {
+                let p = position(*pose) + rotation * v;
+                min = min.min(p);
+                max = max.max(p);
+            };
+            match &collider.shape {
+                ColliderShape::Cuboid {
+                    local_rotation,
+                    half_extents,
+                } => {
+                    for x in [-1.0, 1.0] {
+                        for y in [-1.0, 1.0] {
+                            for z in [-1.0, 1.0] {
+                                include(
+                                    collider.local_center
+                                        + *local_rotation * (*half_extents * Vec3::new(x, y, z)),
+                                );
+                            }
+                        }
+                    }
+                }
+                ColliderShape::Convex(shape) => {
+                    for &v in &shape.vertices {
+                        include(v);
+                    }
+                }
+            }
+        }
+        min.is_finite().then_some(VisualSnapshot {
+            link: record.link,
+            min,
+            max,
+        })
+    }
+
+    pub(crate) const fn vertical_movement(&self) -> f32 {
+        self.vertical_movement
+    }
+
     pub(crate) fn suspended_bearings(
         &self,
         simulation: &AppSimulation,
@@ -294,6 +350,13 @@ impl DimensionFreeze {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VisualSnapshot {
+    pub link: DimensionLinkId,
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
 #[derive(SystemParam)]
 pub(crate) struct FreezeInput<'w, 's> {
     keyboard: Res<'w, ButtonInput<KeyCode>>,
@@ -318,7 +381,9 @@ pub(crate) fn update(
     mut editor: ResMut<EditorState>,
     queue: Res<RenderQueue>,
     input: FreezeInput,
+    mut fx: Option<ResMut<crate::tool_fx::ToolFx>>,
 ) {
+    frozen.vertical_movement = 0.0;
     if !simulation.is_running() {
         frozen.repeat.reset();
         return;
@@ -361,6 +426,15 @@ pub(crate) fn update(
                 &editor,
                 &queue,
             );
+            if result.is_ok()
+                && let Some(snapshot) = frozen.visual_snapshot(&simulation)
+                && let Some(fx) = fx.as_deref_mut()
+            {
+                fx.push(crate::tool_fx::Request::Freeze {
+                    center: (snapshot.min + snapshot.max) * 0.5,
+                    radius: (snapshot.max - snapshot.min).length() * 0.5,
+                });
+            }
             editor.feedback = Some(result.map_or_else(
                 |error| error,
                 |()| "Linked creation frozen — arrows adjust height".to_owned(),
@@ -415,6 +489,10 @@ pub(crate) fn update(
                 {
                     editor.feedback = Some(error.to_string());
                     return;
+                }
+                if let Some(body) = frozen.held.iter().position(|held| *held) {
+                    frozen.vertical_movement =
+                        next[body].position[1] - frozen.poses[body].position[1];
                 }
                 frozen.poses = next;
                 if settled {

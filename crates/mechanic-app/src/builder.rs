@@ -81,12 +81,28 @@ pub(crate) enum PlacementBounds {
     #[default]
     Garage,
     GarageBuild,
+    /// Candidates use a creation's local grid; limits remain in garage space.
+    GarageBuildFrame {
+        to_garage: mechanic_core::ConstructionFrame,
+    },
     World {
         origin: DVec2,
     },
 }
 
 impl PlacementBounds {
+    pub(crate) fn in_edit_frame(self, to_build: mechanic_core::ConstructionFrame) -> Self {
+        match self {
+            Self::GarageBuild => Self::GarageBuildFrame {
+                to_garage: to_build,
+            },
+            Self::World { .. } => Self::World {
+                origin: DVec2::ZERO,
+            },
+            _ => self,
+        }
+    }
+
     pub(crate) const fn is_world(self) -> bool {
         matches!(self, Self::World { .. })
     }
@@ -3596,7 +3612,9 @@ fn snap_global_center_ticks(
 
 fn placement_origin_ticks(bounds: PlacementBounds) -> IVec3 {
     match bounds {
-        PlacementBounds::Garage | PlacementBounds::GarageBuild => IVec3::ZERO,
+        PlacementBounds::Garage
+        | PlacementBounds::GarageBuild
+        | PlacementBounds::GarageBuildFrame { .. } => IVec3::ZERO,
         PlacementBounds::World { origin } => IVec3::new(
             rounded_position_tick_f64(origin.x),
             0,
@@ -4505,6 +4523,17 @@ pub(crate) fn validate_world_bounds(
     bounds: PlacementBounds,
 ) -> Result<(), PlacementError> {
     let outside = match bounds {
+        PlacementBounds::GarageBuildFrame { to_garage } => {
+            for x in [minimum.x, maximum.x] {
+                for y in [minimum.y, maximum.y] {
+                    for z in [minimum.z, maximum.z] {
+                        let point = to_garage.point(Vec3::new(x, y, z));
+                        validate_world_bounds(point, point, PlacementBounds::GarageBuild)?;
+                    }
+                }
+            }
+            false
+        }
         PlacementBounds::Garage => {
             minimum.x < -GROUND_HALF_SIZE - CONTACT_EPSILON
                 || maximum.x > GROUND_HALF_SIZE + CONTACT_EPSILON
@@ -7435,6 +7464,58 @@ mod tests {
             assert_eq!(attached.bearing_count(), 1);
             assert_eq!(attached.weld_count(), 1);
         }
+    }
+
+    #[test]
+    fn framed_garage_bounds_check_every_transformed_corner() {
+        use super::GROUND_HALF_SIZE;
+        let local_min = Vec3::splat(-0.25);
+        let local_max = Vec3::splat(0.25);
+        let rotation = bevy::math::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
+        let middle_y = (crate::garage::BUILD_MIN_Y + crate::garage::BUILD_MAX_Y) * 0.5;
+        let bounds_at = |translation| {
+            PlacementBounds::GarageBuild.in_edit_frame(
+                mechanic_core::ConstructionFrame::new(translation, rotation).unwrap(),
+            )
+        };
+        assert!(
+            super::validate_world_bounds(
+                local_min,
+                local_max,
+                bounds_at(Vec3::new(0.0, middle_y, 0.0)),
+            )
+            .is_ok()
+        );
+        for center in [
+            Vec3::new(-GROUND_HALF_SIZE + 0.3, middle_y, 0.0),
+            Vec3::new(GROUND_HALF_SIZE - 0.3, middle_y, 0.0),
+            Vec3::new(0.0, crate::garage::BUILD_MIN_Y + 0.3, 0.0),
+            Vec3::new(0.0, crate::garage::BUILD_MAX_Y - 0.3, 0.0),
+            Vec3::new(0.0, middle_y, -GROUND_HALF_SIZE + 0.2),
+            Vec3::new(0.0, middle_y, GROUND_HALF_SIZE - 0.2),
+        ] {
+            assert_eq!(
+                super::validate_world_bounds(local_min, local_max, bounds_at(center)),
+                Err(PlacementError::OutsidePlatform),
+                "center {center:?}",
+            );
+        }
+        // Local coordinates can look valid while their world position is outside.
+        let offset = mechanic_core::ConstructionFrame::new(
+            Vec3::new(0.0, crate::garage::BUILD_MAX_Y, 0.0),
+            bevy::math::Quat::IDENTITY,
+        )
+        .unwrap();
+        let point = Vec3::new(0.0, middle_y, 0.0);
+        assert!(super::validate_world_bounds(point, point, PlacementBounds::GarageBuild).is_ok());
+        assert_eq!(
+            super::validate_world_bounds(
+                point,
+                point,
+                PlacementBounds::GarageBuild.in_edit_frame(offset)
+            ),
+            Err(PlacementError::OutsidePlatform),
+        );
     }
 
     #[test]

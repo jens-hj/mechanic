@@ -7,10 +7,14 @@ use mechanic_core::{
     WeldConstraint, WeldFeature, WeldPick, WeldSelection, WeldSnap,
 };
 
+#[path = "weld_socket.rs"]
+pub(crate) mod socket;
+
 #[derive(Clone, Debug)]
 pub(crate) struct Pick {
     pub(crate) part: PartId,
     pub(crate) face: FaceRef,
+    pub(crate) socket: Option<crate::PlacedBearing>,
     pub(crate) selection: WeldSelection,
 }
 
@@ -45,6 +49,18 @@ pub(crate) struct WeldTool {
 }
 
 impl WeldTool {
+    pub(crate) fn effects_target(&self, simulation: &AppSimulation) -> Option<(Vec3, Vec3)> {
+        if self.candidate.is_none() || self.request.is_some() || self.publishing.is_some() {
+            return None;
+        }
+        let pick = &self.drag.as_ref()?.destination;
+        let frame = motion(simulation, pick.part, false).ok()?;
+        Some((
+            frame.point(pick.selection.point),
+            frame.vector(pick.selection.normal),
+        ))
+    }
+
     pub(crate) fn busy(&self) -> bool {
         self.source.is_some() || self.request.is_some()
     }
@@ -163,6 +179,7 @@ fn pick(graph: &ConstructionGraph, simulation: &AppSimulation, ray: Ray3d) -> Op
             selected.map(|selection| Pick {
                 part,
                 face: hit.face,
+                socket: None,
                 selection,
             }),
         ));
@@ -203,7 +220,11 @@ pub(crate) fn hover(
         state.feedback = Some("Weld selection changed; select the source again".to_owned());
     }
     let mut weld = std::mem::take(&mut state.weld);
-    weld.hovered = pick(graph, simulation, ray);
+    weld.hovered = if weld.source.is_some() {
+        socket::pick(graph, simulation, &state.placed_bearings, ray)
+    } else {
+        pick(graph, simulation, ray)
+    };
     state.hovered = weld.hovered.as_ref().map(|pick| builder::SurfaceHit {
         face: pick.face,
         point: pick.selection.point,
@@ -299,6 +320,9 @@ fn build_candidate(
             .structural_component(source.pick.part, [])
             .map_err(|e| e.to_string())?;
         if component.contains(destination.part) {
+            if destination.socket.is_some() {
+                return Err("Select a separate assembly to attach to this bearing".to_owned());
+            }
             return weld_publication::Intent::in_place(
                 graph,
                 simulation,
@@ -418,6 +442,9 @@ fn initial_displacement(
     alignment: WeldAlignment,
     fine: bool,
 ) -> Vec3 {
+    if destination.socket.is_some() {
+        return Vec3::ZERO;
+    }
     let (u, v) = axes(alignment, destination.selection);
     let offset =
         alignment.initial().point(grid_origin(graph, source)) - grid_origin(graph, destination);
@@ -688,6 +715,10 @@ fn feature_geometry(
             continue;
         };
         let selection = pick.selection;
+        if let Some(socket) = pick.socket {
+            socket::append_outline(socket, frame, &mut geometry);
+            continue;
+        }
         let owner = graph
             .region_of(pick.part)
             .map_or(SolidOwner::Part(pick.part), SolidOwner::Region);

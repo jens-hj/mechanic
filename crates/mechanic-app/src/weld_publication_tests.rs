@@ -21,12 +21,115 @@ fn face(graph: &ConstructionGraph, part: PartId, kind: FaceKind) -> Pick {
     Pick {
         part,
         face,
+        socket: None,
         selection: WeldSelection {
             feature: WeldFeature::Face,
             point: geometry.center,
             normal: geometry.normal,
             tangent: geometry.tangent_u,
         },
+    }
+}
+
+#[test]
+fn socket_picking_and_publication_follow_the_live_destination_frame() {
+    for kind in [
+        mechanic_core::BearingKind::Rotational,
+        mechanic_core::BearingKind::Linear(mechanic_core::LinearBearing {
+            dimensions: mechanic_core::LinearBearingDimensions::default(),
+            mount_normal: Vec3::Y,
+            face: mechanic_core::CarriageFace::Top,
+        }),
+    ] {
+        let mut graph = ConstructionGraph::new();
+        let source = spawn(&mut graph, IVec3::new(0, 28, 0));
+        let support = spawn(&mut graph, IVec3::new(8, 28, 0));
+        let mount = face(&graph, support, FaceKind::PositiveY);
+        let socket = crate::PlacedBearing {
+            source: mount.face,
+            anchor: mount.selection.point,
+            axis: if matches!(kind, mechanic_core::BearingKind::Rotational) {
+                Vec3::Y
+            } else {
+                Vec3::X
+            },
+            dimensions: mechanic_core::BearingDimensions::default(),
+            kind,
+        };
+        let destination_motion =
+            ConstructionFrame::new(Vec3::new(0.3, 0.0, 0.2), Quat::from_rotation_y(0.7)).unwrap();
+        let creation = graph.compile().unwrap();
+        let transforms: Vec<_> = creation
+            .compounds
+            .iter()
+            .map(|body| {
+                let authored =
+                    ConstructionFrame::new(body.root_translation, body.root_rotation).unwrap();
+                pose(if body.source_parts.contains(&support) {
+                    destination_motion.compose(authored)
+                } else {
+                    authored
+                })
+            })
+            .collect();
+        let simulation = AppSimulation {
+            published_graph: graph.clone(),
+            creation: Some(creation),
+            transforms: transforms.clone(),
+            live_state: Some(crate::LivePhysicsState {
+                tick: 0,
+                transforms,
+                velocities: vec![
+                    GpuVelocity {
+                        linear: [0.0; 4],
+                        angular: [0.0; 4]
+                    };
+                    2
+                ],
+                coordinates: vec![],
+            }),
+            world_revision: Some((0, 0)),
+            ..default()
+        };
+        let ray_point = socket.anchor
+            + Vec3::Y
+            + if matches!(kind, mechanic_core::BearingKind::Rotational) {
+                Vec3::X * 0.08
+            } else {
+                Vec3::ZERO
+            };
+        let target = crate::weld_tool::socket::pick(
+            &graph,
+            &simulation,
+            &[socket],
+            Ray3d::new(
+                destination_motion.point(ray_point),
+                Dir3::new(destination_motion.vector(Vec3::NEG_Y)).unwrap(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(target.part, support);
+        assert!(target.socket.is_some());
+        let source_pick = face(&graph, source, FaceKind::PositiveY);
+        let alignment =
+            mechanic_core::WeldAlignment::new(source_pick.selection, target.selection).unwrap();
+        let intent = Intent::relocation(&graph, &source_pick, &target, alignment.initial());
+        let world = WorldRuntime::from_world(&mut World::new());
+        intent
+            .validate(&graph, &simulation, &world, PlacementBounds::GarageBuild)
+            .unwrap();
+        let staged = intent.stage(&graph, []).unwrap();
+        let compiled = staged.compile().unwrap();
+        let (poses, _, coordinates) = intent.states(&compiled, &staged, &simulation).unwrap();
+        assert_eq!(compiled.compounds.len(), 2);
+        assert_eq!(coordinates.len(), 1);
+        assert!(coordinates[0].position.abs() < 1.0e-5);
+        for (index, body) in compiled.compounds.iter().enumerate() {
+            assert!(
+                Vec3::from_slice(&poses[index].position[..3])
+                    .abs_diff_eq(destination_motion.point(body.root_translation), 1.0e-5,)
+            );
+        }
     }
 }
 

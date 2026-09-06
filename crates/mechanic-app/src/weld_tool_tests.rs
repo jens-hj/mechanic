@@ -73,6 +73,7 @@ fn garage_press_drag_release_commits_one_default_pose_placement() {
     );
     input.clear();
     hover(&graph, &simulation, &mut state, ray(2.0), &input, &world);
+    assert!(state.weld.effects_target(&simulation).is_some());
     input.release(GameAction::Primary);
     actions(
         &mut graph,
@@ -82,6 +83,7 @@ fn garage_press_drag_release_commits_one_default_pose_placement() {
         &input,
         false,
     );
+    assert!(state.weld.effects_target(&simulation).is_none());
     assert_eq!(graph.weld_count(), 1, "{:?}", state.feedback);
     assert_eq!(history.undo.len(), 1);
     assert!(!state.weld.busy());
@@ -155,6 +157,7 @@ fn invalid_release_retains_source_and_escape_or_secondary_cancels_without_editin
         input.clear();
         hover(&graph, &simulation, &mut state, ray(4.0), &input, &world);
         assert!(state.weld.error.is_some());
+        assert!(state.weld.effects_target(&simulation).is_none());
         assert!(state.weld.preview.is_some());
         input.release(GameAction::Primary);
         actions(
@@ -436,4 +439,144 @@ fn hover_matches_face_grids_on_independently_rotated_and_offset_parts() {
         let correspondence = source_axis.dot(destination_axis).abs();
         assert!(correspondence < 1.0e-5 || (correspondence - 1.0).abs() < 1.0e-5);
     }
+}
+
+#[allow(clippy::too_many_lines)] // Complete pointer gesture and history round trip.
+fn socket_gesture(kind: mechanic_core::BearingKind) {
+    let (mut graph, source, destination) = scene();
+    let simulation = AppSimulation::default();
+    let world = crate::world::WorldRuntime::from_world(&mut World::new());
+    let mut state = EditorState {
+        placement_bounds: builder::PlacementBounds::GarageBuild,
+        ..default()
+    };
+    let face = FaceRef::part(destination, mechanic_core::FaceKind::PositiveY);
+    let socket = crate::PlacedBearing {
+        source: face,
+        anchor: builder::face_geometry_from_ref(face, Some(&graph)).center,
+        axis: if matches!(kind, mechanic_core::BearingKind::Rotational) {
+            Vec3::Y
+        } else {
+            Vec3::X
+        },
+        dimensions: mechanic_core::BearingDimensions::default(),
+        kind,
+    };
+    state.placed_bearings.push(socket);
+    let destination_ray = if matches!(kind, mechanic_core::BearingKind::Rotational) {
+        ray(2.08)
+    } else {
+        ray(2.0)
+    };
+    let mut history = crate::EditorHistory::default();
+    let mut input = ButtonInput::default();
+    hover(&graph, &simulation, &mut state, ray(0.0), &input, &world);
+    input.press(GameAction::Primary);
+    actions(
+        &mut graph,
+        &simulation,
+        &mut state,
+        &mut history,
+        &input,
+        false,
+    );
+    input.clear();
+    input.release(GameAction::Primary);
+    actions(
+        &mut graph,
+        &simulation,
+        &mut state,
+        &mut history,
+        &input,
+        false,
+    );
+    assert!(state.weld.busy());
+    assert_eq!(graph.weld_count(), 0);
+    input.clear();
+    hover(
+        &graph,
+        &simulation,
+        &mut state,
+        destination_ray,
+        &input,
+        &world,
+    );
+    assert!(state.weld.hovered.as_ref().unwrap().socket.is_some());
+    assert!(state.weld.preview.is_some());
+    assert!(state.weld.error.is_none(), "{:?}", state.weld.error);
+    input.press(GameAction::Primary);
+    actions(
+        &mut graph,
+        &simulation,
+        &mut state,
+        &mut history,
+        &input,
+        false,
+    );
+    input.clear();
+    hover(
+        &graph,
+        &simulation,
+        &mut state,
+        destination_ray,
+        &input,
+        &world,
+    );
+    assert!(state.weld.effects_target(&simulation).is_some());
+    input.release(GameAction::Primary);
+    actions(
+        &mut graph,
+        &simulation,
+        &mut state,
+        &mut history,
+        &input,
+        false,
+    );
+    assert!(state.weld.effects_target(&simulation).is_none());
+    assert_eq!(graph.bearing_count(), 1, "{:?}", state.feedback);
+    assert_eq!(history.undo.len(), 1);
+    assert!(!state.weld.busy());
+    let compiled = graph.compile().unwrap();
+    assert_eq!(
+        compiled.compounds.len(),
+        2,
+        "attachment must preserve a moving body"
+    );
+    assert_eq!(compiled.bearings.len(), 1);
+    assert_eq!(graph.bearings().next().unwrap().1.kind, kind);
+    assert!(crate::apply_history_action(
+        crate::HistoryAction::Undo,
+        &mut graph,
+        &mut state,
+        &mut history
+    ));
+    assert!(
+        graph
+            .part_position(source)
+            .unwrap()
+            .abs_diff_eq(Vec3::Y * 7.0, 1.0e-5)
+    );
+    assert!(crate::apply_history_action(
+        crate::HistoryAction::Redo,
+        &mut graph,
+        &mut state,
+        &mut history
+    ));
+    assert_eq!(graph.bearing_count(), 1);
+}
+
+#[test]
+fn weld_gesture_attaches_to_rotational_bearing_and_undoes() {
+    socket_gesture(mechanic_core::BearingKind::Rotational);
+}
+
+#[test]
+fn weld_gesture_attaches_to_linear_carriage_and_undoes() {
+    socket_gesture(mechanic_core::BearingKind::Linear(
+        mechanic_core::LinearBearing {
+            dimensions: mechanic_core::LinearBearingDimensions::default(),
+            mount_normal: Vec3::Y,
+            face: mechanic_core::CarriageFace::Top,
+        },
+    ));
 }

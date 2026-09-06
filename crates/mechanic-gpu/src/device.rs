@@ -527,6 +527,8 @@ struct CollisionResources {
     select_active_bind_group: wgpu::BindGroup,
     finalize_active_pipeline: wgpu::ComputePipeline,
     finalize_active_bind_group: wgpu::BindGroup,
+    count_body_contacts_pipeline: wgpu::ComputePipeline,
+    count_body_contacts_bind_group: wgpu::BindGroup,
     warm_start_pipeline: wgpu::ComputePipeline,
     warm_start_bind_group: wgpu::BindGroup,
     solve_accumulate_pipeline: wgpu::ComputePipeline,
@@ -939,7 +941,10 @@ impl GpuPhysics {
         let diagnostics = create_buffer(
             device,
             "mechanic diagnostics",
-            &[GpuDiagnostics::zeroed()],
+            // The fixed readback header is followed by per-body contact counts.
+            // Sharing this atomic scratch buffer keeps collision passes within
+            // the baseline limit of eight storage-buffer bindings.
+            &vec![0_u32; size_of::<GpuDiagnostics>() / size_of::<u32>() + body_count as usize],
             wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -1540,7 +1545,7 @@ impl GpuPhysics {
         // Error flags are a persistent GPU failure latch. Per-tick counters are
         // cleared independently, so a delayed CPU readback can never erase a
         // terminal failure reported by an earlier submission.
-        encoder.clear_buffer(&self.diagnostics, 4, Some(28));
+        encoder.clear_buffer(&self.diagnostics, 4, None);
         let run_collisions = self.pipeline_config.collisions_enabled && self.collider_count > 0;
         let run_bearings = self.bearing_count > 0;
         if run_collisions {
@@ -2134,6 +2139,17 @@ impl GpuPhysics {
             1,
             None,
         );
+        if self.solver_route() == GpuSolverRoute::General {
+            indirect_compute_pass(
+                encoder,
+                "mechanic count body contacts",
+                &collision.count_body_contacts_pipeline,
+                &collision.count_body_contacts_bind_group,
+                &collision.indirect_args,
+                24,
+                None,
+            );
+        }
         indirect_compute_pass(
             encoder,
             "mechanic contact warm start",
@@ -3916,6 +3932,25 @@ fn create_collision_resources(
             entry(16, &active_contacts),
         ],
     );
+    let count_body_contacts_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic count body contacts",
+        &shader,
+        "count_body_contacts",
+    );
+    let count_body_contacts_bind_group = bind_group(
+        device,
+        "mechanic body contact count bindings",
+        &count_body_contacts_pipeline,
+        &[
+            entry(0, config),
+            entry(5, diagnostics),
+            entry(10, &contacts),
+            entry(16, &active_contacts),
+            entry(26, &world_masses),
+        ],
+    );
     let warm_start_pipeline = compute_pipeline(
         pipelines,
         device,
@@ -4046,6 +4081,8 @@ fn create_collision_resources(
         select_active_bind_group,
         finalize_active_pipeline,
         finalize_active_bind_group,
+        count_body_contacts_pipeline,
+        count_body_contacts_bind_group,
         warm_start_pipeline,
         warm_start_bind_group,
         solve_accumulate_pipeline,
@@ -6117,6 +6154,223 @@ mod tests {
             ..Default::default()
         }))
         .ok()
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn colliding_pipe_mechanism(grounded: bool) -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        let pose =
+            |ticks, rotation| BuildPose::from_position_ticks(IVec3::from_array(ticks), rotation);
+        let base = spawned_part(
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new([16, 1, 16], pose([0, -50, 0], GridRotation::default()))
+                        .unwrap(),
+                ))
+                .unwrap(),
+        );
+        let carriage = spawned_part(
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new([1, 1, 1], pose([0, 90, 0], GridRotation::default()))
+                        .unwrap()
+                        .with_material(ConstructionMaterial::Aluminium),
+                ))
+                .unwrap(),
+        );
+        let mut stems = Vec::new();
+        for (points, bend_rotation, tip_rotation, length, material) in [
+            (
+                [[0, 190, 0], [0, 340, 0], [-250, 340, 0]],
+                GridRotation::new(0, 0, 1),
+                GridRotation::new(0, 0, 1),
+                0.25,
+                ConstructionMaterial::Aluminium,
+            ),
+            (
+                [[500, 100, 450], [500, 300, 450], [750, 300, 450]],
+                GridRotation::new(0, 2, 1),
+                GridRotation::new(0, 0, 3),
+                0.5,
+                ConstructionMaterial::Steel,
+            ),
+        ] {
+            let stem = spawned_part(
+                graph
+                    .apply(BuildCommand::SpawnCylinder(
+                        CylinderSpec::new(
+                            CylinderDimensions::new(0.25, 0.0, length).unwrap(),
+                            pose(points[0], GridRotation::default()),
+                        )
+                        .with_material(material),
+                    ))
+                    .unwrap(),
+            );
+            let bend = spawned_part(
+                graph
+                    .apply(BuildCommand::SpawnPipeBend(
+                        PipeBendSpec::new(
+                            PipeBendDimensions::new(0.25, 0.0, 0.25).unwrap(),
+                            pose(points[1], bend_rotation),
+                        )
+                        .with_material(material),
+                    ))
+                    .unwrap(),
+            );
+            let tip = spawned_part(
+                graph
+                    .apply(BuildCommand::SpawnCylinder(
+                        CylinderSpec::new(
+                            CylinderDimensions::new(0.25, 0.0, 0.75).unwrap(),
+                            pose(points[2], tip_rotation),
+                        )
+                        .with_material(material),
+                    ))
+                    .unwrap(),
+            );
+            for second in [bend, tip] {
+                graph
+                    .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                        first: stem,
+                        second,
+                    }))
+                    .unwrap();
+            }
+            stems.push(stem);
+        }
+        graph
+            .apply(BuildCommand::AddBearing(
+                BearingSpec::new(
+                    FaceRef::part(base, FaceKind::PositiveY),
+                    FaceRef::part(carriage, FaceKind::NegativeY),
+                    Vec3::ZERO,
+                    Vec3::X,
+                )
+                .with_kind(mechanic_core::BearingKind::Linear(
+                    mechanic_core::LinearBearing {
+                        dimensions: mechanic_core::LinearBearingDimensions::new(1.75, 0.4).unwrap(),
+                        mount_normal: Vec3::Y,
+                        face: mechanic_core::CarriageFace::Top,
+                    },
+                )),
+            ))
+            .unwrap();
+        for (parent, child, anchor) in [
+            (carriage, stems[0], Vec3::new(0.0, 0.35, 0.0)),
+            (base, stems[1], Vec3::new(1.25, 0.0, 1.125)),
+        ] {
+            graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(parent, FaceKind::PositiveY),
+                    FaceRef::part(child, FaceKind::NegativeY),
+                    anchor,
+                    Vec3::Y,
+                )))
+                .unwrap();
+        }
+        let creation = graph
+            .compile_with_static_parts(grounded.then_some(base))
+            .unwrap();
+        let pipe_bodies = stems
+            .iter()
+            .map(|part| {
+                creation
+                    .part_to_compound
+                    .iter()
+                    .find(|(p, _)| p == part)
+                    .unwrap()
+                    .1
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(creation.loop_topology.mechanism_components.len(), 1);
+        assert!(
+            !creation
+                .collision_suppression
+                .contains(&[pipe_bodies[0], pipe_bodies[1]])
+        );
+        creation
+    }
+
+    #[test]
+    fn dense_pipe_contacts_on_bearings_and_a_rail_remain_bounded() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        for grounded in [true, false] {
+            for rail_position in [0.4, 0.5] {
+                let creation = colliding_pipe_mechanism(grounded);
+                let gpu = GpuPhysics::new_with_config(
+                    &device,
+                    &queue,
+                    &creation,
+                    GpuPhysicsConfig {
+                        ground_plane_enabled: false,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                gpu.dispatch_tick(&device, &queue, 1);
+                let coordinates = [
+                    GpuMechanismCoordinate {
+                        position: rail_position,
+                        velocity: 0.3,
+                    },
+                    GpuMechanismCoordinate {
+                        position: 3.0 * std::f32::consts::FRAC_PI_4,
+                        velocity: 0.0,
+                    },
+                    GpuMechanismCoordinate {
+                        position: std::f32::consts::FRAC_PI_2,
+                        velocity: 0.0,
+                    },
+                ];
+                gpu.initialize_mechanism_coordinates(&queue, &coordinates)
+                    .unwrap();
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                gpu.encode_mechanism_forward_kinematics(&mut encoder, false, 0);
+                super::direct_compute_pass(
+                    &mut encoder,
+                    "initialize pipe motion",
+                    &gpu.mechanism.reconstruct_velocities_pipeline,
+                    &gpu.mechanism.reconstruct_velocities_bind_group,
+                    1,
+                    None,
+                );
+                queue.submit([encoder.finish()]);
+                let mut maximum_contacts = 0;
+                let mut maximum_speed = 0.0_f32;
+                for tick in 2..=600 {
+                    gpu.dispatch_tick(&device, &queue, tick);
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let state = copy_state_rows::<GpuMechanismCoordinate>(
+                        &device,
+                        &queue,
+                        &gpu.mechanism.coordinates,
+                        gpu.mechanism.coordinate_count,
+                    );
+                    let diagnostics = gpu.read_last_tick(&device).unwrap();
+                    assert_eq!(diagnostics.error_flags, 0);
+                    maximum_contacts = maximum_contacts.max(diagnostics.active_contact_count);
+                    for coordinate in state {
+                        maximum_speed = maximum_speed.max(coordinate.velocity.abs());
+                        assert!(
+                            coordinate.position.is_finite()
+                                && coordinate.velocity.is_finite()
+                                && coordinate.velocity.abs() < 3.0,
+                            "grounded={grounded} rail={rail_position} tick={tick}: {coordinate:?}"
+                        );
+                    }
+                }
+                eprintln!(
+                    "pipe contacts: grounded={grounded} rail={rail_position} max_contacts={maximum_contacts} max_joint_speed={maximum_speed}"
+                );
+                assert!(
+                    maximum_contacts > 8,
+                    "fixture must exercise dense internal contacts"
+                );
+            }
+        }
     }
 
     struct ArticulatedCarFixture {

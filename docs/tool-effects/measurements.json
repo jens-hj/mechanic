@@ -1,0 +1,139 @@
+{
+  "adapter": "Apple M1 Pro",
+  "backend": "Metal",
+  "resolution": [
+    2560,
+    1440
+  ],
+  "fov_degrees": 75,
+  "build": "dev optimized with debug info",
+  "vsync": false,
+  "samples": [
+    {
+      "background": "bright",
+      "bloom_passes": 0,
+      "effect": "baseline",
+      "frames": 209,
+      "mean_ms": 9.64652156829834,
+      "p95_ms": 16.395999908447266,
+      "particle_draws": 0
+    },
+    {
+      "background": "dark",
+      "bloom_passes": 0,
+      "effect": "baseline",
+      "frames": 214,
+      "mean_ms": 9.409972190856934,
+      "p95_ms": 17.12741470336914,
+      "particle_draws": 0
+    },
+    {
+      "background": "bright",
+      "bloom_passes": 16,
+      "effect": "connector",
+      "frames": 206,
+      "mean_ms": 9.730459213256836,
+      "p95_ms": 12.007040977478027,
+      "particle_draws": 1
+    },
+    {
+      "background": "dark",
+      "bloom_passes": 16,
+      "effect": "connector",
+      "frames": 215,
+      "mean_ms": 9.359566688537598,
+      "p95_ms": 12.479000091552734,
+      "particle_draws": 1
+    },
+    {
+      "background": "bright",
+      "bloom_passes": 16,
+      "effect": "freeze",
+      "frames": 205,
+      "mean_ms": 9.807194709777832,
+      "p95_ms": 13.502792358398438,
+      "particle_draws": 3
+    },
+    {
+      "background": "dark",
+      "bloom_passes": 16,
+      "effect": "freeze",
+      "frames": 207,
+      "mean_ms": 9.673996925354004,
+      "p95_ms": 11.54529094696045,
+      "particle_draws": 3
+    },
+    {
+      "background": "bright",
+      "bloom_passes": 16,
+      "effect": "lift_edit",
+      "frames": 192,
+      "mean_ms": 10.462503433227539,
+      "p95_ms": 12.796459197998047,
+      "particle_draws": 3
+    },
+    {
+      "background": "dark",
+      "bloom_passes": 16,
+      "effect": "lift_edit",
+      "frames": 204,
+      "mean_ms": 9.845699310302734,
+      "p95_ms": 11.637584686279297,
+      "particle_draws": 3
+    },
+    {
+      "background": "bright",
+      "bloom_passes": 16,
+      "effect": "matter",
+      "frames": 201,
+      "mean_ms": 10.010950088500977,
+      "p95_ms": 11.585540771484375,
+      "particle_draws": 2
+    },
+    {
+      "background": "dark",
+      "bloom_passes": 16,
+      "effect": "matter",
+      "frames": 175,
+      "mean_ms": 11.47419548034668,
+      "p95_ms": 16.39870834350586,
+      "particle_draws": 2
+    },
+    {
+      "background": "bright",
+      "bloom_passes": 16,
+      "effect": "sledge",
+      "frames": 212,
+      "mean_ms": 9.495044708251953,
+      "p95_ms": 12.82179069519043,
+      "particle_draws": 2
+    },
+    {
+      "background": "dark",
+      "bloom_passes": 16,
+      "effect": "sledge",
+      "frames": 211,
+      "mean_ms": 9.605626106262207,
+      "p95_ms": 13.043292045593262,
+      "particle_draws": 2
+    },
+    {
+      "background": "bright",
+      "bloom_passes": 16,
+      "effect": "welder",
+      "frames": 206,
+      "mean_ms": 9.746036529541016,
+      "p95_ms": 12.908291816711426,
+      "particle_draws": 2
+    },
+    {
+      "background": "dark",
+      "bloom_passes": 16,
+      "effect": "welder",
+      "frames": 211,
+      "mean_ms": 9.512931823730469,
+      "p95_ms": 12.048541069030762,
+      "particle_draws": 2
+    }
+  ]
+}

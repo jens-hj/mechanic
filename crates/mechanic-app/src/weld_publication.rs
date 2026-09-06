@@ -100,6 +100,15 @@ impl Intent {
         if !graph.shares_revision(&self.baseline) {
             return Err("The construction changed during weld placement".to_owned());
         }
+        if let Some(socket) = self.destination.socket {
+            return crate::weld_tool::socket::stage(
+                graph,
+                &self.source,
+                socket,
+                self.transform,
+                anchored,
+            );
+        }
         if self.in_place {
             graph
                 .weld_contact_square(
@@ -153,42 +162,48 @@ impl Intent {
             motion(simulation, self.destination.part, true)?.compose(self.transform)
         };
         let destination_motion = motion(simulation, self.destination.part, true)?;
-        let source_faces = graph
-            .weld_mating_faces(self.source.face)
-            .map_err(|e| e.to_string())?;
-        let destination_faces = graph
-            .weld_mating_faces(self.destination.face)
-            .map_err(|e| e.to_string())?;
-        if !self.in_place {
-            if matches!(
-                self.destination.selection.feature,
-                mechanic_core::WeldFeature::Face
-            ) && !graph.weld_feature_on_faces(
-                &destination_faces,
-                self.source.selection.feature,
-                self.transform,
-            ) {
-                return Err("Selected source feature leaves the destination material".to_owned());
+        if self.destination.socket.is_none() {
+            let source_faces = graph
+                .weld_mating_faces(self.source.face)
+                .map_err(|e| e.to_string())?;
+            let destination_faces = graph
+                .weld_mating_faces(self.destination.face)
+                .map_err(|e| e.to_string())?;
+            if !self.in_place {
+                if matches!(
+                    self.destination.selection.feature,
+                    mechanic_core::WeldFeature::Face
+                ) && !graph.weld_feature_on_faces(
+                    &destination_faces,
+                    self.source.selection.feature,
+                    self.transform,
+                ) {
+                    return Err(
+                        "Selected source feature leaves the destination material".to_owned()
+                    );
+                }
+                if matches!(
+                    self.source.selection.feature,
+                    mechanic_core::WeldFeature::Face
+                ) && !graph.weld_feature_on_faces(
+                    &source_faces,
+                    self.destination.selection.feature,
+                    self.transform.inverse(),
+                ) {
+                    return Err(
+                        "Selected destination feature leaves the source material".to_owned()
+                    );
+                }
             }
-            if matches!(
-                self.source.selection.feature,
-                mechanic_core::WeldFeature::Face
-            ) && !graph.weld_feature_on_faces(
-                &source_faces,
-                self.destination.selection.feature,
-                self.transform.inverse(),
-            ) {
-                return Err("Selected destination feature leaves the source material".to_owned());
-            }
+            graph
+                .weld_contact_square_transformed(
+                    &source_faces,
+                    &destination_faces,
+                    source_motion,
+                    destination_motion,
+                )
+                .map_err(|e| e.to_string())?;
         }
-        graph
-            .weld_contact_square_transformed(
-                &source_faces,
-                &destination_faces,
-                source_motion,
-                destination_motion,
-            )
-            .map_err(|e| e.to_string())?;
         for collider in creation
             .colliders
             .iter()
@@ -360,10 +375,7 @@ pub(crate) fn maintain(
                 let ground = world.active_assembly_ground_plane();
                 let config = crate::GpuPhysicsConfig {
                     ground_plane_enabled: ground.is_some(),
-                    mechanism_self_collisions: crate::world_mechanism_self_collisions(
-                        &staged,
-                        world.active_dimension_link(),
-                    ),
+                    mechanism_self_collisions: crate::world_mechanism_self_collisions(&staged),
                     ..default()
                 };
                 let device = device.clone();

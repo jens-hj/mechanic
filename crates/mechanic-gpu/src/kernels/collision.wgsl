@@ -136,6 +136,8 @@ const MANIFOLD_OVERFLOW_FLAG: u32 = 8u;
 const MAX_HASH_PROBES: u32 = 96u;
 const EMPTY_HASH_KEY: u32 = 0u;
 const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
+// Per-body counts follow the eight-u32 GpuDiagnostics readback header.
+const BODY_CONTACT_COUNT_OFFSET: u32 = 8u;
 const PROJECTED_RELAXATION: f32 = 0.125;
 const WARM_START_SCALE: f32 = 0.5;
 const MAX_ROLLING_RESISTANCE: f32 = 0.04;
@@ -1231,6 +1233,25 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
 }
 
+@compute @workgroup_size(256)
+fn count_body_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let active_index = invocation.x;
+    if active_index >= min(atomicLoad(&diagnostics[5]), config.pair_capacity) {
+        return;
+    }
+    let contact = contacts[active_contacts[active_index]];
+    let body_a = contact.metadata.x;
+    let body_b = contact.metadata.y;
+    if world_masses[body_a].inverse_inertia_x_mass.w > 0.0 {
+        atomicAdd(&diagnostics[BODY_CONTACT_COUNT_OFFSET + body_a], 1u);
+    }
+    if body_b != INVALID_MANIFOLD_SLOT
+        && world_masses[body_b].inverse_inertia_x_mass.w > 0.0
+    {
+        atomicAdd(&diagnostics[BODY_CONTACT_COUNT_OFFSET + body_b], 1u);
+    }
+}
+
 @compute @workgroup_size(1)
 fn finalize_active_contacts() {
     let active_count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
@@ -1478,6 +1499,19 @@ fn parallel_contact_relaxation(contact: Contact) -> f32 {
         * select(1.0, CYLINDER_FACE_RELAXATION_SCALE, is_cylinder_face_pair(contact));
 }
 
+fn distributed_contact_relaxation(contact: Contact) -> f32 {
+    let shape_scale = select(1.0, CYLINDER_FACE_RELAXATION_SCALE, is_cylinder_face_pair(contact));
+    // Every Jacobi row reads the same body velocity. Split the response among
+    // incident contacts so tessellated surfaces cannot multiply one correction
+    // by their number of overlapping collider pieces.
+    var count = atomicLoad(&diagnostics[BODY_CONTACT_COUNT_OFFSET + contact.metadata.x]);
+    if contact.metadata.y != INVALID_MANIFOLD_SLOT {
+        count = max(count, atomicLoad(&diagnostics[BODY_CONTACT_COUNT_OFFSET + contact.metadata.y]));
+    }
+    return min(PROJECTED_RELAXATION, 0.5 / f32(max(count, 1u)))
+        * shape_scale;
+}
+
 @compute @workgroup_size(256)
 fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let active_index = invocation.x;
@@ -1491,7 +1525,7 @@ fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body_b = contact.metadata.y;
     let arm_a = contact.arm_a_impulse.xyz;
     let arm_b = contact.arm_b.xyz;
-    let impulse = project_contact(contact_index, parallel_contact_relaxation(contact));
+    let impulse = project_contact(contact_index, distributed_contact_relaxation(contact));
     add_velocity_delta(
         body_a,
         -impulse.linear * world_masses[body_a].inverse_inertia_x_mass.w,

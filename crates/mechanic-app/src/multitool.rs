@@ -563,9 +563,13 @@ fn spawn(
             Camera3d::default(),
             Camera {
                 order: 1,
-                clear_color: ClearColorConfig::None,
+                // World bloom finishes first. Build the later overlays in a separate
+                // transparent LDR target and let the final x-ray/UI camera composite it.
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                output_mode: bevy::camera::CameraOutputMode::Skip,
                 ..default()
             },
+            crate::render_experiments::current().msaa(),
             viewmodel_projection,
             garage::EXPOSURE,
             Tonemapping::SomewhatBoringDisplayTransform,
@@ -755,17 +759,21 @@ fn spawn_shaft(
     ));
 }
 
+fn end_transform(end: usize) -> Transform {
+    if end == 0 {
+        Transform::from_xyz(0.0, PRISM_ROOT, 0.0)
+    } else {
+        Transform::from_xyz(0.0, -PRISM_ROOT, 0.0).with_rotation(Quat::from_rotation_x(PI))
+    }
+}
+
 fn spawn_end(
     parent: &mut ChildSpawnerCommands,
     end_index: usize,
     meshes: &MultitoolMeshes,
     materials: &MultitoolMaterials,
 ) {
-    let transform = if end_index == 0 {
-        Transform::from_xyz(0.0, PRISM_ROOT, 0.0)
-    } else {
-        Transform::from_xyz(0.0, -PRISM_ROOT, 0.0).with_rotation(Quat::from_rotation_x(PI))
-    };
+    let transform = end_transform(end_index);
     parent
         .spawn((
             Name::new(format!("Multitool end {end_index}")),
@@ -1234,7 +1242,7 @@ fn spawn_tip(
                 Transform::from_xyz(0.0, 0.066, 0.0),
             ));
             for tool in [MultitoolKind::Matter, MultitoolKind::Connector] {
-                tip.spawn((
+                let mut lamp = tip.spawn((
                     mesh_part(
                         format!("{tool:?} tip emitter"),
                         meshes.sphere.clone(),
@@ -1247,6 +1255,9 @@ fn spawn_tip(
                         decoration: Decoration::Accent(tool),
                     },
                 ));
+                if tool == MultitoolKind::Connector {
+                    lamp.insert(crate::tool_fx::ConnectorPlateEmitter { end, panel });
+                }
             }
         });
 }
@@ -1387,6 +1398,7 @@ fn update(
     mut materials: ResMut<Assets<StandardMaterial>>,
     camera: Single<&PlayerCamera, With<MainCamera>>,
     mut state: ResMut<MultitoolState>,
+    mut emitter: ResMut<crate::tool_fx::ToolEmitter>,
     mut root: Single<(&mut Visibility, &mut Transform), With<MultitoolRoot>>,
     mut pivot: Single<&mut Transform, (With<MultitoolPivot>, Without<MultitoolRoot>)>,
     mut cores: Query<(&ToolCore, &mut Visibility), Without<MultitoolRoot>>,
@@ -1409,6 +1421,22 @@ fn update(
     };
     *root.1 = viewmodel_transform(&state);
     pivot.rotation = Quat::from_rotation_z(state.spin);
+    emitter.deployed = selected.is_some()
+        && state.progress[state.active_end] > 0.96
+        && *root.0 != Visibility::Hidden;
+    let emitter_base = root
+        .1
+        .mul_transform(**pivot)
+        .mul_transform(end_transform(state.active_end));
+    let tip = match state.tools[state.active_end] {
+        MultitoolKind::Matter => 0.335,
+        MultitoolKind::Welder => 0.300,
+        MultitoolKind::Connector => 0.312,
+        MultitoolKind::Sledge => 0.280,
+    };
+    emitter.local = emitter_base.mul_transform(Transform::from_translation(Vec3::Y * tip));
+    emitter.connector_phase = state.connector_wind[state.active_end];
+    emitter.active_end = state.active_end;
 
     for (core, mut visibility) in &mut cores {
         let run_down = deployment_beats(state.progress[core.end]).1;
@@ -1447,6 +1475,9 @@ fn update(
                 let fold = deployment_beats(state.progress[end]).2;
                 transform.rotate_y(time.delta_secs() * 0.4);
                 transform.scale = Vec3::splat(fold.max(0.001));
+                if end == state.active_end && selected == Some(MultitoolKind::Matter) {
+                    emitter.local = emitter_base.mul_transform(*transform);
+                }
             }
             CoreAnimation::WelderArc(end) => {
                 let fold = deployment_beats(state.progress[end]).2;

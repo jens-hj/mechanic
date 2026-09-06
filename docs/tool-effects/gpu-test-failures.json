@@ -1,0 +1,19 @@
+{
+  "baseline_log": "/tmp/mechanic-weld-workspace-final.log",
+  "current_log": "/tmp/mechanic-fx-workspace-metal.log",
+  "adapter": "Apple M1 Pro / Metal",
+  "same_failure_set": true,
+  "failed_tests": [
+    "device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration",
+    "device::tests::flat_disc_landing_on_another_disc_does_not_gain_energy",
+    "device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion",
+    "device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion",
+    "device::tests::lower_modulus_allows_more_transient_penetration_without_failure",
+    "device::tests::plastic_rebounds_more_than_concrete",
+    "device::tests::production_servos_hold_steering_under_first_gear_gas_drive",
+    "device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding",
+    "device::tests::steering_servos_reach_angle_without_overshooting",
+    "device::tests::struck_articulated_wheel_recovers_without_crossing_ground",
+    "device::tests::tall_single_and_double_pendulums_dissipate_energy"
+  ]
+}

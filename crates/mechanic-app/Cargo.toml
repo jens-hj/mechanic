@@ -16,6 +16,7 @@ profiling-tracy = ["bevy/trace_tracy"]
 bevy = { workspace = true, features = [
     "bevy_gizmos_render",
     "bevy_pbr",
+    "bevy_post_process",
     "bevy_winit",
     "default_app",
     "keyboard",
@@ -27,6 +28,7 @@ bevy = { workspace = true, features = [
     "wayland",
     "x11",
 ] }
+bytemuck.workspace = true
 bevy_mosaic = { path = "../bevy_mosaic" }
 mechanic-core = { path = "../mechanic-core" }
 mechanic-gpu = { path = "../mechanic-gpu" }
