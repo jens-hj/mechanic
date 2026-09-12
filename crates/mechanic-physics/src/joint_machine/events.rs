@@ -157,11 +157,25 @@ pub(super) fn advance_interval_cached<const REUSE: bool>(
             // endpoint root against this already clear prefix.
             diagnostics.event_refinements += 1;
             diagnostics.event_prefix_commits += 1;
+            let hit = *hit;
             let prefix = clear_prefix.take().ok_or(PhysicsError::InvalidDynamics)?;
             candidate = prefix.state;
             trial_duration = prefix.duration;
+            // The prefix is accepted because the event lies at or before its end,
+            // so its endpoint is where the contact is. Dropping the arrival here
+            // leaves the pair touching, excluded from the next trial's new-impact
+            // search as an initial support, and never resolved at all.
+            let arrived = activate_clear_endpoint(
+                creation,
+                drives,
+                &mut candidate,
+                terrain.ok_or(PhysicsError::InvalidCollision)?,
+                hit,
+                settings,
+                diagnostics,
+            )?;
             outcome = TrialOutcome::Complete {
-                arrived: false,
+                arrived,
                 drive_impulses: prefix.drive_impulses,
             };
             impact_bracket = None;
