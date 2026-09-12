@@ -451,6 +451,17 @@ cargo run -p mechanic-bench --release -- --scenario player_collision --seconds 3
 cargo run -p mechanic-bench --release -- --scenario test2_car --seconds 30 --warmup 5
 ```
 
+`MECHANIC_PHYSICS=cpu cargo run -p mechanic-app` runs published ticks on the
+experimental CPU solver instead of the GPU runtime. The GPU scene stays resident
+and keeps owning terrain preparation, drive resolution and every buffer the
+renderer reads; only the tick changes. The route refuses a creation it cannot
+run — closed mechanism loops, for now — with a message naming the flag, and a
+tick it cannot complete stops the simulation and prints the failing stage,
+substep policy, residual, contact counts and per-attempt history rather than
+publishing anything. It is not a substitute for the GPU route: wheeled creations
+still stall within a few seconds of touching ground, and `docs/cpu-solver-repair.md`
+lists the states that fail. Anything other than `cpu` selects the GPU runtime.
+
 Benchmark output is machine-readable JSONL. The four-bar cases prove correction
 and explicit rejection but do not unlock editor work. A scale gate only passes
 when the requested scene has its exact required body count, complete production

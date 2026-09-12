@@ -507,6 +507,37 @@ localize, so:
   covered by `a_manifold_above_the_dense_bound_solves_implicitly`: the long body's
   240 rows solve with zero response storage and a 9e-12 residual.
 
+### The application route
+
+`MECHANIC_PHYSICS=cpu` runs the app's published ticks on the CPU solver
+(`crates/mechanic-app/src/cpu_physics.rs`). The GPU scene stays resident and keeps
+owning terrain preparation, drive resolution and every renderer buffer; the route
+replaces only the tick. It steps `CpuJointMachine::step_with_terrain` — newly
+public, alongside `TerrainSubstep` and `TerrainIntegration` — against the same
+accepted terrain cut the GPU receives, publishing the same body transforms, body
+velocities and joint coordinates a readback would, so the renderer, world walking
+and the editor read state from one place.
+
+- Terrain is republished to the CPU scene wherever the cut is accepted, from the
+  same meshes at the same origin, so the two routes cannot diverge on geometry.
+- Drives come back from the uploaded rows through `CoordinateDrive::from`, so the
+  CPU solver runs exactly the resolved drives the GPU route uploads.
+- Generalized state is seeded from the live publication: a root body's six
+  velocity rows from its body velocity, every other row from its joint rate.
+- An unsupported creation is refused before it publishes, naming the flag and the
+  way back. Closed mechanism loops are the only such class today.
+- A failed tick publishes nothing: the simulation stops with the failing stage,
+  substep policy, residual, contact counts and per-attempt history.
+
+Building it measured one more defect. The route uses `EventResolved` because the
+endpoint policy never activates a support for a box dropped 2 mm: the deferred
+collider is carried by split recovery, which by design leaves generalized velocity
+untouched, so gravity accumulates while the pose looks settled, and by tick 19 the
+path certificate rejects every substep policy.
+`a_settled_box_is_also_at_rest_under_the_endpoint_policy` is retained as a failing
+input. The endpoint policy is the one that carries the saved-car drops furthest
+(ticks 72 and 91), so that progress is bounded by the same gap.
+
 ### Event search: one fix, two rejected controls
 
 Fixed: committing a clear prefix discarded the arrival that justified the commit.
