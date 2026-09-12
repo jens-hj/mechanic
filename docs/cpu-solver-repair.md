@@ -453,10 +453,59 @@ trials, because pivoting onto a notched corner chatters exactly as a shared seam
 does. Reverted.
 
 The conclusion is a design decision, not a tolerance: the compiled collider must
-say that a solid cylinder is a cylinder, and both solvers must take its ground
-contact analytically. The GPU's pattern match on sixteen boxes then becomes a
-property of the data, and the CPU stops rolling on facets. That is the next
-implementation step for the remaining drop.
+say that a solid cylinder is a cylinder.
+
+### The compiled cylinder primitive
+
+`CompiledCreation::cylinders` now carries a `CompiledCylinder` for every solid full
+cylinder — axis pose, outer radius, half length, and the first of the sixteen
+collider rows it describes — and `CompiledCylinder::hull` returns the exact
+circumscribed prism, every corner computed once so the two faces meeting there
+share one vertex. The sixteen tangent boxes stay in `colliders`, so the GPU's
+analytic ground path and its ABI are untouched; `MachineCollisionGeometry` takes
+the hull instead, collapsing each wheel to one collider. Hollow cylinders and
+sectors have no analytic description and keep their boxes.
+
+Results on Apple M1 Pro / Metal, against the baseline at the start of this work:
+
+| | Baseline | Exact hull |
+| --- | --- | --- |
+| `a_rolling_wheel_only_loses_energy_on_its_facets` | 512 trials exhausted on tick 1 | **passes** 60 ticks, energy monotone, 1.0 → 0.65 m/s |
+| `event_policy_tick17_search_completes_from_captured_state` | 513 trials | **passes** in one trial |
+| `endpoint_contact_cold_drop_with_eight_fixed_substeps` | tick 11 (impact) | tick 91 (impact) |
+| `endpoint_contact_car_cold_drop_remains_bounded_through_settling` | tick 115 (impact) | tick 72 (terrain path) |
+| `saved_car_cold_drop_remains_bounded_through_settling` | tick 17 (event search) | tick 8 (finite step) |
+| `mechanic-physics` | 9 failed | 7 failed |
+| serial native GPU tests | 11 failed | 11 failed |
+
+The event-search chase is gone from every fixture: no remaining failure is in
+`EventSearch`. The three drops now fail in the impact algebra, the terrain path,
+and the finite step — the same three walls the captured-impact fixtures describe,
+and exactly where the failure moves is state-dependent luck, not a gain or loss.
+
+Tests whose recorded inputs described the duplicated geometry were replaced, not
+relaxed silently. With one contact edge per wheel the car no longer produces a
+refining correction path, a multi-pass recovery, or a release the search must
+localize, so:
+
+- `car_contact_reversal_uses_bounded_trials_and_agrees_with_finer_integration`
+  became `a_reversing_support_is_localized_in_bounded_trials_and_agrees_with_finer_steps`
+  in the analytic suite: the twelve-cube body turning at 0.05 rad/s lifts its far
+  end, which localizes a release in 32 trials and converges to 9.5e-7 m/s of the
+  32-step reference.
+- `car_recovery_refreshes_contacts_encountered_by_the_correction` became
+  `car_recovery_clears_a_sunk_car_by_requerying_geometry_as_it_moves`: the car is
+  sunk three millimetres deliberately, and the pass must re-query geometry as it
+  moves rather than certify itself against the manifold it started from.
+- `split_recovery_clears_recorded_car_penetration_without_changing_generalized_velocity`
+  keeps its shape with a re-recorded penetrating state.
+- Every car penetration assertion now measures the shapes the solver collides
+  (`collision_shapes`), not `creation.colliders`, whose sixteen boxes sit about
+  1e-8 m below the prism.
+- The car's full surface manifold is 80 rows over four blocks, not above the
+  128-row dense bound, so `mechanic-bench` asserts that and the implicit path is
+  covered by `a_manifold_above_the_dense_bound_solves_implicitly`: the long body's
+  240 rows solve with zero response storage and a 9e-12 residual.
 
 ### Event search: one fix, two rejected controls
 
