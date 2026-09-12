@@ -347,6 +347,65 @@ captured velocity states (mixed sliding, support and impact in one solve). The
 60 nm resting gap and the three unsolved impacts live there, not in impact
 handling, suspension coupling, or row count alone.
 
+### The rolling wheel reproduces the event-search chase
+
+`a_rolling_wheel_only_loses_speed_on_its_facets` is the last of the structural
+fixtures and the first to fail. One free solid cylinder (0.95 m diameter, 0.25 m
+long, steel), seated on the floor and released at its no-slip speed (1 m/s
+forward, 2.105 rad/s), exhausts all 512 event trials on tick 1 with
+`failure_stage: EventSearch`, residuals at 1e-9 and only 0.98 ms of the 16.7 ms
+tick accepted. That is the tick-17 signature, in one body and six coordinates,
+without suspension, drives or captured state, in 0.2 s instead of 1.5 s.
+
+The mechanism, measured with the new test-only `MECHANIC_TRACE_EVENTS` trial
+trace and a collider-level probe:
+
+- A cylinder compiles to sixteen cuboid colliders whose outer faces circumscribe
+  the circle, so the contact shape is a sixteen-sided hull. Rolling pivots from
+  one face onto the next edge. The first pivot is a genuine impact: two corners
+  close at 0.199 m/s, are stopped, and the two trailing corners leave at
+  0.387 m/s. That is correct rigid-body behaviour for a polygon.
+- Every later impact in the tick closes at 1e-6 to 1e-5 m/s — gravity over the
+  trial, not physics. Each one loads one corner of the pivot edge and ejects the
+  other at 1e-7 to 2e-6 m/s, 10 to 30 percent of the closing speed. The ejection
+  is not a convergence failure: the solve reports residuals of 1e-10 to 1e-12
+  with the ejected corner's impulse exactly zero, which is complementarity-feasible
+  and, for a positive-definite manifold response, the unique solution. Stopping
+  one corner of an edge genuinely throws the other up.
+- The ejected corner then travels 1e-11 to 1e-10 m in one substep, which is ten
+  to a hundred times the 1e-12 m activation window, so it stops being a support.
+  Gravity closes it again within 0.1 ms and the search must localize a fresh
+  arrival, about six trials each. Two hundred such arrivals per tick cannot fit
+  in 128 trials.
+
+The loop is therefore self-sustaining at the solver's own precision, and no
+impact-algebra change can end it: the window is smaller than the displacement
+the solve's own admissible solutions produce in one substep. Neighbouring wheel
+colliders make this worse — adjacent pieces are generated from independently
+rounded f32 trigonometry, so their shared edge sits 1.3e-8 m apart, far outside
+the window and far inside any physical scale.
+
+Rejected control: sizing the activation window to that displacement instead. The
+three variants measure as follows, against a baseline of event policy tick 17,
+endpoint policy tick 115, fixed-eight tick 11:
+
+| Window | Analytic semantics | Drops |
+| --- | --- | --- |
+| 1e-9 m | all 8 pass | unchanged; five previously passing tests fail (three `rolling_edge`, one `first_impacts`, `car_contact_reversal`, `car_recovery`) |
+| 1e-8 m | all 8 pass; wheel still holds 3 of 4 attempts | chase cured (event policy reaches tick 41 in the finite step, `terrain_impact_holds: 0`), but endpoint policy regresses 115 → 32 and fixed-eight 11 → 27; `car_contact_reversal` and `car_recovery` fail |
+| 1e-7 m | the sprung wheel no longer settles | not measured further |
+
+So a wider window moves the failure from the search into the force loop without
+a net gain, and 1e-12 remains. The conclusion is sharper than the earlier skin
+rejections: the event-resolved policy cannot integrate faceted rolling contact
+under a bounded trial budget, because the arrivals it must localize are created
+by the impacts it just resolved. The endpoint policy already defers slow contacts
+(`SlowContactMotion`, bounded by `restitution_threshold * dt`) and gets furthest
+of the three drops. The next step is to make that deferral available under the
+event policy with its threshold set by the impact solve's measured velocity noise
+rather than the restitution threshold, so event trials are spent only on arrivals
+whose timing changes the physics.
+
 Captures: `/private/tmp/cpu-fix-tick37-state.ron`, `cpu-fix-tick17-state.ron`,
 `cpu-fix-endpoint-next-{impact,force,state}.ron` (tick 94) and
 `cpu-fix-endpoint-r12-{impact,force,state}.ron` (tick 61 under the rejected
