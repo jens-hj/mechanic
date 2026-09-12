@@ -98,6 +98,11 @@ pub struct MachineCollisionGeometry {
 
 impl MachineCollisionGeometry {
     /// Retains the exact box/convex decomposition and material of every collider.
+    /// A solid full cylinder is taken from its own analytic description instead:
+    /// its sixteen tangent boxes describe the same prism, but each shared corner
+    /// twice, rounded once per box. Two copies of one contact edge about 1e-8 m
+    /// apart are two separate arrivals to the event search, and it then spends
+    /// every trial localizing contacts the solve already carries.
     ///
     /// # Errors
     /// Rejects invalid compiled geometry or body references.
@@ -105,30 +110,39 @@ impl MachineCollisionGeometry {
         creation: &CompiledCreation,
         topology_generation: u64,
     ) -> Result<Self, PhysicsError> {
-        let colliders = creation
-            .colliders
-            .iter()
-            .map(|source| {
-                let body = source.compound_index as usize;
-                let compound = creation
-                    .compounds
-                    .get(body)
-                    .ok_or(PhysicsError::InvalidCollision)?;
-                let local = ContactPolytope::from_collider(source)
-                    .map_err(|_| PhysicsError::InvalidCollision)?;
-                let radius = local
-                    .conservative_radius()
-                    .map_err(|_| PhysicsError::InvalidCollision)?;
-                Ok(Collider {
-                    body,
-                    center: source.local_center.as_dvec3(),
-                    material: source.material_properties,
-                    local,
-                    moving: !compound.is_static,
-                    radius,
-                })
-            })
-            .collect::<Result<_, PhysicsError>>()?;
+        let mut colliders = Vec::with_capacity(creation.colliders.len());
+        let mut row = 0;
+        while row < creation.colliders.len() {
+            let source = &creation.colliders[row];
+            let cylinder = creation
+                .cylinders
+                .iter()
+                .find(|cylinder| cylinder.first_collider as usize == row);
+            let local = match cylinder {
+                Some(cylinder) => ContactPolytope::from_convex(&cylinder.hull()),
+                None => ContactPolytope::from_collider(source),
+            }
+            .map_err(|_| PhysicsError::InvalidCollision)?;
+            let body = source.compound_index as usize;
+            let compound = creation
+                .compounds
+                .get(body)
+                .ok_or(PhysicsError::InvalidCollision)?;
+            let radius = local
+                .conservative_radius()
+                .map_err(|_| PhysicsError::InvalidCollision)?;
+            colliders.push(Collider {
+                body,
+                center: cylinder
+                    .map_or(source.local_center, |cylinder| cylinder.local_center)
+                    .as_dvec3(),
+                material: source.material_properties,
+                local,
+                moving: !compound.is_static,
+                radius,
+            });
+            row += cylinder.map_or(1, |_| mechanic_core::CYLINDER_COLLIDER_COUNT);
+        }
         Ok(Self {
             generation: topology_generation,
             bodies: creation.compounds.len(),
