@@ -325,9 +325,27 @@ Restitution applies only above the policy's 1 m/s threshold. All five cases pass
 An earlier draft of these tests asserted zero restitution — it took the terrain
 surface value and overlooked the block material — and reported the correct 0.2
 rebound as a defect. There is no such defect. Single-box contact semantics,
-including both sides of the restitution threshold, are sound, so the car's
-remaining failures belong to its multi-contact and suspension specifics: the
-60 nm resting gap and the 240-row impacts, not basic impact handling.
+including both sides of the restitution threshold, are sound.
+
+Two larger fixtures extend the same approach through the complete tick path, and
+both pass:
+
+- A sprung wheel (two bodies, spring and shock, one manifold) dropped from 2 mm
+  settles to its authored `mg/k` equilibrium within 1e-3 m, rests within 1e-9 m of
+  the surface, and never exhausts its event trials over 120 ticks. Suspension
+  coupling is therefore not the cause.
+- Twelve rigid-linked cubes resting flat form one body with 48 contact points and
+  240 constraint rows over six coordinates — the same shape as the car's failing
+  impacts — and settle in 0.04 s with no penetration and no trial exhaustion.
+  Rigid links are required: welding coplanar cubes merges them into a single box
+  collider with one manifold. Contact redundancy at the car's scale is therefore
+  not the cause either.
+
+What remains specific to the car is the combination the fixtures still lack:
+rolling contacts on curved wheel colliders, authored drives, and the particular
+captured velocity states (mixed sliding, support and impact in one solve). The
+60 nm resting gap and the three unsolved impacts live there, not in impact
+handling, suspension coupling, or row count alone.
 
 Captures: `/private/tmp/cpu-fix-tick37-state.ron`, `cpu-fix-tick17-state.ron`,
 `cpu-fix-endpoint-next-{impact,force,state}.ron` (tick 94) and

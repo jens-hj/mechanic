@@ -186,6 +186,170 @@ fn a_settled_box_stays_within_the_activation_window() {
     }
 }
 
+// One sprung wheel is the smallest fixture with the car's suspension coupling.
+// Unlike the direct-substep suspension test, this drives the complete tick path,
+// so the event search and support activation participate.
+#[test]
+fn a_sprung_wheel_settles_on_the_floor_at_its_spring_equilibrium() {
+    use mechanic_core::{ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec};
+    let spring = SpringSpec::default();
+    let shock = ShockSpec::new(0.5, 0.1, ShockBodyEnd::Source, 0.0, 20.0, 20.0).unwrap();
+    let spec = SuspensionSpec::new(Some(spring), Some(shock), None).unwrap();
+    let creation = super::super::suspension(spec, false);
+    let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
+    let scene = scene();
+    let terrain = context(&scene, &geometry, 7);
+    let mut initial = MachineState::at_rest(&creation);
+    for pose in &mut initial.poses {
+        // The lowest collider point starts 2 mm clear, so the wheel drops,
+        // impacts and then settles on its spring.
+        pose.position.y += 0.502;
+    }
+    initial.poses =
+        MachineDynamics::reconstruct_poses(&creation, &initial.poses, &initial.coordinates)
+            .unwrap();
+    let mass = f64::from(creation.compounds[1].mass_properties.mass);
+    let equilibrium = -mass * 9.81 / f64::from(spring.rate());
+    let mut machine = CpuJointMachine::new(creation.clone(), 7, initial).unwrap();
+    for tick in 1..=120 {
+        let result = machine
+            .step_candidate(
+                -DVec3::Y * 9.81,
+                JointTickSettings::default(),
+                &[],
+                &[],
+                Some(&terrain),
+            )
+            .map(|_| ());
+        assert!(
+            result.is_ok(),
+            "tick={tick} result={result:?} diagnostics={:?}",
+            machine.diagnostics()
+        );
+        assert_eq!(
+            machine.diagnostics().terrain_impact_holds,
+            0,
+            "tick={tick} event search exhausted its trials"
+        );
+        let clearance = clearance(&creation, &machine.snapshot().state);
+        assert!(
+            clearance >= -1e-6,
+            "tick={tick} penetration clearance={clearance:e}"
+        );
+    }
+    let state = &machine.snapshot().state;
+    let resting = clearance(&creation, state);
+    println!(
+        "sprung wheel clearance={resting:e} coordinate={:e} equilibrium={equilibrium:e}",
+        state.coordinates[0]
+    );
+    // The sprung mass hangs at mg/k once the wheel rests on the surface.
+    assert!(
+        (state.coordinates[0] - equilibrium).abs() <= 1e-3,
+        "coordinate={:e} equilibrium={equilibrium:e}",
+        state.coordinates[0]
+    );
+    assert!(resting.abs() <= 1e-9, "resting clearance={resting:e}");
+}
+
+// Twelve welded cubes resting flat give one rigid body about 240 contact rows
+// over six degrees of freedom: the car's failing impacts have the same shape
+// (48 points, 240 rows, 16 coordinates) without its suspension or wheels.
+#[test]
+fn a_long_multi_collider_body_settles_on_a_redundant_manifold() {
+    use crate::terrain_contacts::tests::terrain as terrain_chunk;
+    use mechanic_core::{BuildCommand, ConstructionGraph, RigidLinkSpec};
+    use mechanic_world::TerrainMaterial;
+    use std::sync::Arc;
+    // Rigid links share one body between separated parts, so each cube keeps its
+    // own collider instead of merging into a single box as welding would.
+    let mut graph = ConstructionGraph::new();
+    let parts = (0..12)
+        .map(|index| super::super::spawn(&mut graph, IVec3::X * (600 * index), [4, 4, 4]))
+        .collect::<Vec<_>>();
+    for pair in parts.windows(2) {
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: pair[0],
+                second: pair[1],
+            }))
+            .unwrap();
+    }
+    let creation = graph.compile().unwrap();
+    assert_eq!(
+        creation.colliders.len(),
+        12,
+        "each cube must keep its own collider"
+    );
+    assert_eq!(
+        creation.compounds.len(),
+        1,
+        "the welded cubes must form one rigid body"
+    );
+    let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
+
+    // The authored floor spans two metres; widen it to hold the whole body.
+    let mut chunk = terrain_chunk([TerrainMaterial::Rock; 2]);
+    let expanded = Arc::make_mut(&mut chunk);
+    for vertex in &mut expanded.vertices {
+        vertex[0] *= 64.0;
+        vertex[2] *= 64.0;
+    }
+    expanded.bounds.minimum.0 *= 64.0;
+    expanded.bounds.maximum.0 *= 64.0;
+    expanded.triangle_bvh.bounds = expanded.bounds;
+    expanded.triangle_bvh.nodes[0].bounds = expanded.bounds;
+    let mut scene = TerrainContactScene::default();
+    scene.publish(1, &[chunk], &[]).unwrap();
+    let terrain = context(&scene, &geometry, 7);
+
+    let mut initial = MachineState::at_rest(&creation);
+    for pose in &mut initial.poses {
+        pose.position.y += 0.502;
+    }
+    let mut machine = CpuJointMachine::new(creation.clone(), 7, initial).unwrap();
+    for tick in 1..=30 {
+        let result = machine
+            .step_candidate(
+                -DVec3::Y * 9.81,
+                JointTickSettings::default(),
+                &[],
+                &[],
+                Some(&terrain),
+            )
+            .map(|_| ());
+        assert!(
+            result.is_ok(),
+            "tick={tick} result={result:?} diagnostics={:?}",
+            machine.diagnostics()
+        );
+        assert_eq!(
+            machine.diagnostics().terrain_impact_holds,
+            0,
+            "tick={tick} event search exhausted its trials"
+        );
+        let clearance = clearance(&creation, &machine.snapshot().state);
+        assert!(
+            clearance >= -1e-6,
+            "tick={tick} penetration clearance={clearance:e}"
+        );
+    }
+    let diagnostics = machine.diagnostics();
+    println!(
+        "redundant manifold surface_points={} impact_rows={} constraint_rows={} clearance={:e}",
+        diagnostics.surface_points,
+        diagnostics.impact_rows_prepared,
+        diagnostics.constraint_rows_prepared,
+        clearance(&creation, &machine.snapshot().state)
+    );
+    let state = &machine.snapshot().state;
+    assert!(
+        state.velocities[1].abs() <= 1e-6,
+        "resting velocity={:e}",
+        state.velocities[1]
+    );
+}
+
 #[test]
 fn a_separating_box_leaves_without_a_contact_impulse() {
     let (creation, geometry, initial) = box_on_floor(0.0, 0.5);
