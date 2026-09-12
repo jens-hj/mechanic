@@ -2925,8 +2925,11 @@ dependencies = [
  "bevy_math",
  "mechanic-core",
  "mechanic-gpu",
+ "mechanic-physics",
  "mechanic-world",
  "pollster",
+ "ron",
+ "serde_json",
  "wgpu",
 ]
 
@@ -2953,6 +2956,17 @@ dependencies = [
  "ron",
  "thiserror 2.0.20",
  "wgpu",
+]
+
+[[package]]
+name = "mechanic-physics"
+version = "0.1.0"
+dependencies = [
+ "bevy_math",
+ "mechanic-core",
+ "mechanic-world",
+ "ron",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

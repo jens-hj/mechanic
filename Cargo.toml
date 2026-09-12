@@ -2,6 +2,7 @@
 members = [
     "crates/bevy_mosaic",
     "crates/mechanic-core",
+    "crates/mechanic-physics",
     "crates/mechanic-world",
     "crates/mechanic-gpu",
     "crates/mechanic-bench",

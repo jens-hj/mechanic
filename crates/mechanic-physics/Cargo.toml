@@ -1,0 +1,18 @@
+[package]
+name = "mechanic-physics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bevy_math.workspace = true
+mechanic-core = { path = "../mechanic-core" }
+mechanic-world = { path = "../mechanic-world" }
+thiserror.workspace = true
+
+[dev-dependencies]
+ron.workspace = true
+
+[lints]
+workspace = true
