@@ -16,7 +16,7 @@ mod terrain_contacts;
 pub use free_motion::{CpuFreeMotion, CpuSnapshot, ExternalImpulse, MachineState, TICK_SECONDS};
 pub use joint_machine::{
     CpuJointMachine, DriveCommand, JointAttemptFailure, JointFailureStage, JointTickDiagnostics,
-    JointTickSettings,
+    JointTickSettings, TerrainIntegration, TerrainSubstep,
 };
 pub use machine::{BodyPose, MachineDynamics, SpatialMotion};
 pub use motion_path::{MachineMotion, MotionBound};

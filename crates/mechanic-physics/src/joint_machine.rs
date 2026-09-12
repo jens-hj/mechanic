@@ -395,8 +395,28 @@ impl CpuJointMachine {
         self.step_candidate(gravity, settings, impulses, commands, None)
     }
 
-    // Terrain experiment remains private until split terrain recovery, full
-    // impact coverage and complete collision/publication semantics are implemented.
+    /// Advances one external tick against a published terrain scene.
+    ///
+    /// Experimental. Split terrain recovery, impact coverage and cross-backend
+    /// publication semantics are incomplete, so some states still fail. A failed
+    /// tick changes nothing: the caller must keep the previous snapshot, surface
+    /// [`Self::diagnostics`], and never publish the attempt as a completed tick.
+    ///
+    /// # Errors
+    /// Rejects wrong tick/generation, duplicate drive coordinates, invalid
+    /// settings, invalid drives/impulses, terrain publications that disagree with
+    /// the geometry's generation, and unconverged final attempts.
+    pub fn step_with_terrain(
+        &mut self,
+        gravity: DVec3,
+        settings: JointTickSettings,
+        impulses: &[ExternalImpulse],
+        commands: &[DriveCommand],
+        terrain: &TerrainSubstep<'_>,
+    ) -> Result<&CpuSnapshot, PhysicsError> {
+        self.step_candidate(gravity, settings, impulses, commands, Some(terrain))
+    }
+
     #[allow(clippy::too_many_lines)] // Keep command validation, bounded retries, and the sole commit point together.
     fn step_candidate(
         &mut self,
@@ -558,25 +578,42 @@ struct SubstepContacts<'a> {
     stiction_threshold: f64,
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum TerrainIntegration {
+/// How a tick resolves the terrain contacts it meets inside a substep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TerrainIntegration {
+    /// Split every substep at each arrival and resolve it there. Strictest, and
+    /// the policy whose trial budget a chattering contact can still exhaust.
     #[default]
     EventResolved,
+    /// Defer contacts whose collider moves slowly to the substep endpoint. The
+    /// endpoint impulse is bounded by the same independent depth certificate.
     SlowContactsAtEndpoint,
 }
 
-// The same immutable terrain publication is held through all unpublished retries.
-struct TerrainSubstep<'a> {
-    integration: TerrainIntegration,
-    scene: &'a crate::TerrainContactScene,
-    geometry: &'a crate::MachineCollisionGeometry,
-    topology_generation: u64,
-    origin: DVec3,
-    maximum_depth: f64,
-    maximum_evaluations: usize,
-    maximum_event_trials: usize,
-    restitution_threshold: f64,
-    stiction_threshold: f64,
+/// One immutable terrain publication, held through all of a tick's unpublished
+/// retries. Generations, origin and policy bounds cannot change within a tick.
+#[derive(Clone, Copy)]
+pub struct TerrainSubstep<'a> {
+    /// Contact event policy for this tick.
+    pub integration: TerrainIntegration,
+    /// Published collision scene; its generation must not change within a tick.
+    pub scene: &'a crate::TerrainContactScene,
+    /// Immutable collider geometry compiled for `topology_generation`.
+    pub geometry: &'a crate::MachineCollisionGeometry,
+    /// Construction generation the geometry and state belong to.
+    pub topology_generation: u64,
+    /// Floating-origin offset applied to published terrain, in metres.
+    pub origin: DVec3,
+    /// Largest certified penetration an accepted path may reach, in metres.
+    pub maximum_depth: f64,
+    /// Bound on separating-axis advancement evaluations per triangle.
+    pub maximum_evaluations: usize,
+    /// Bound on event-localization trials per interval.
+    pub maximum_event_trials: usize,
+    /// Impact speed above which material restitution applies, in metres/second.
+    pub restitution_threshold: f64,
+    /// Tangential speed below which a contact is treated as sticking.
+    pub stiction_threshold: f64,
 }
 
 impl TerrainSubstep<'_> {
