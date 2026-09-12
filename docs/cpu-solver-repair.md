@@ -278,8 +278,26 @@ impact-semantics tests (first-impact restitution timing, separating-support
 release, return-and-impact within one tick, car contact reversal, car recovery,
 supported ticks). Making those rows speculative instead, with a `gap/dt` closing
 allowance, regresses the drops further (event policy tick 3, endpoint tick 70) and
-fails ten tests. Aligning support retention with a velocity criterion and the
-sweep's exclusion set remains the open continuation.
+fails ten tests.
+
+Rejected control (third variant): velocity-aware retention with identity
+exclusion. A skin contact is retained as a support only when it cannot cross the
+surface within its step (`-speed <= gap/dt`), and the new-impact sweep excludes
+exactly the pairs the solver already accounts for — retained supports plus
+released separating points — instead of testing geometry itself. This removes the
+chase: the tick-17 replay passes in one trial, against 513 before. The drops still
+regress: default tick 17 (a different state, reached through changed earlier
+ticks), endpoint tick 19, fixed-eight tick 14, with six failing semantic tests
+(the four first-impact cases, car contact reversal, supported ticks).
+
+All three variants cure the search and none preserves first-impact semantics. The
+four `first_impacts` tests, `car_contact_reversal` and `supported_ticks` encode the
+1e-12 activation model itself: restitution timing, separating-support release, and
+return-and-impact within one tick. A support skin therefore needs a contact-model
+decision with its own physical validation, not a search fix. Without one, the
+intermediate diagnosis stands: the chase is caused by settled supports sitting
+tens of nanometres outside the activation window, and any fix must keep impact
+activation unchanged while retaining those supports.
 
 `event_policy_tick17_search_completes_from_captured_state` is retained as a
 failing regression input: it reproduces the tick-17 search in 1.5 s.
