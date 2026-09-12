@@ -11,10 +11,10 @@ use std::{
 
 use bevy_math::{IVec3, Vec3};
 use mechanic_core::{
-    BearingSpec, BuildCommand, BuildOutcome, BuildPose, CompiledCreation, ConstructionGraph,
-    ConstructionMaterial, CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveMode,
-    FaceKind, FaceRef, GridRotation, PartId, PipeBendDimensions, PipeBendSpec, RigidLinkSpec,
-    ShapeRegion,
+    BearingKind, BearingSpec, BuildCommand, BuildOutcome, BuildPose, CompiledCreation,
+    ConstructionGraph, ConstructionMaterial, CoordinateDrive, CuboidSpec, CylinderDimensions,
+    CylinderSpec, DriveMode, FaceKind, FaceRef, GridRotation, PartId, PipeBendDimensions,
+    PipeBendSpec, RigidLinkSpec, ShapeRegion, SpringSpec, SuspensionSpec, WeldSpec,
 };
 use mechanic_gpu::{
     CONSTRAINT_NON_CONVERGENCE_FLAG, DRIVE_MODE_ANGLE, DRIVE_MODE_PASSIVE, DRIVE_MODE_SPEED,
@@ -29,6 +29,9 @@ use mechanic_world::{
     terrain_worker_count,
 };
 
+mod scenarios;
+use scenarios::build_bearing_chain;
+
 const SCALE_BODY_COUNT: usize = 100_000;
 const PLAYER_STATIC_COLLIDER_COUNT: usize = 131_072;
 const PLAYER_DYNAMIC_BODY_COUNT: usize = 20_000;
@@ -37,6 +40,7 @@ const PLAYER_DYNAMIC_BODY_COUNT: usize = 20_000;
 enum Scenario {
     Smoke,
     OpenBearing,
+    SuspensionOne,
     FourBearingContact,
     Bearings16,
     Bearings64,
@@ -57,6 +61,7 @@ impl Scenario {
         match value {
             "smoke" => Some(Self::Smoke),
             "open_bearing" | "bearings_1" => Some(Self::OpenBearing),
+            "suspension_1" => Some(Self::SuspensionOne),
             "four_bearing_contact" | "bearings_4" => Some(Self::FourBearingContact),
             "bearings_16" => Some(Self::Bearings16),
             "bearings_64" => Some(Self::Bearings64),
@@ -78,6 +83,7 @@ impl Scenario {
         match self {
             Self::Smoke => "smoke",
             Self::OpenBearing => "open_bearing",
+            Self::SuspensionOne => "suspension_1",
             Self::FourBearingContact => "four_bearing_contact",
             Self::Bearings16 => "bearings_16",
             Self::Bearings64 => "bearings_64",
@@ -151,6 +157,7 @@ fn run() -> Result<bool, String> {
         | Scenario::Bearings64
         | Scenario::Bearings65
         | Scenario::Bearings256) => scenario.bearing_count().unwrap_or_default() + 1,
+        Scenario::SuspensionOne => 2,
         Scenario::FourBar | Scenario::InvalidLoop => 4,
         Scenario::Dense100k | Scenario::Loops100k => SCALE_BODY_COUNT,
         Scenario::Test2Car => 9,
@@ -187,9 +194,12 @@ fn run() -> Result<bool, String> {
         GpuPhysicsConfig {
             collisions_enabled: matches!(
                 options.scenario,
-                Scenario::Smoke | Scenario::Dense100k | Scenario::Test2Car
+                Scenario::Smoke
+                    | Scenario::SuspensionOne
+                    | Scenario::Dense100k
+                    | Scenario::Test2Car
             ) || options.scenario.bearing_count().is_some(),
-            ground_plane_enabled: true,
+            ground_plane_enabled: options.scenario != Scenario::SuspensionOne,
             mechanism_self_collisions: options.scenario != Scenario::Test2Car,
             solver_iterations: 8,
         },
@@ -233,6 +243,10 @@ fn run() -> Result<bool, String> {
     let mut gpu_tick_costs_ms = Vec::with_capacity(measured_capacity);
     let mut kernel_costs_ms: [Vec<f64>; 7] =
         core::array::from_fn(|_| Vec::with_capacity(measured_capacity));
+    let mut observed_stage_mask = u32::MAX;
+    let mut minimum_integrated_bodies = u32::MAX;
+    let mut minimum_published_bodies = u32::MAX;
+    let mut minimum_validated_bearings = u32::MAX;
     let mut error_flags = 0_u32;
     let mut pair_count = 0_u32;
     let mut contact_count = 0_u32;
@@ -295,6 +309,13 @@ fn run() -> Result<bool, String> {
         let readback = gpu
             .read_last_tick(&device)
             .map_err(|error| format!("tick diagnostic readback failed: {error}"))?;
+        observed_stage_mask &= readback.execution.stage_mask;
+        minimum_integrated_bodies =
+            minimum_integrated_bodies.min(readback.execution.integrated_bodies);
+        minimum_published_bodies =
+            minimum_published_bodies.min(readback.execution.published_bodies);
+        minimum_validated_bearings =
+            minimum_validated_bearings.min(readback.execution.validated_bearings);
         error_flags |= readback.error_flags;
         pair_count = pair_count.max(readback.pair_count);
         contact_count = contact_count.max(readback.contact_count);
@@ -339,7 +360,7 @@ fn run() -> Result<bool, String> {
     let blocking_wait_p95_ms = percentile_95(&blocking_wait_costs_ms);
     let encoding_p95_ms = percentile_95(&encoding_costs_ms);
     let diagnostics_bytes_per_tick = core::mem::size_of::<mechanic_gpu::GpuDiagnostics>()
-        + usize::from(gpu.has_gpu_timestamps()) * 14 * core::mem::size_of::<u64>();
+        + usize::from(gpu.has_gpu_timestamps()) * 28 * core::mem::size_of::<u64>();
     let mapped_bytes = measured_capacity.saturating_mul(diagnostics_bytes_per_tick);
     let achieved_tps = 1000.0 / engine_mean_ms;
     let timing_source = if gpu.has_gpu_timestamps() {
@@ -353,13 +374,10 @@ fn run() -> Result<bool, String> {
         "[]"
     };
 
-    // The smoke kernel proves shared-buffer integration and publication. The
-    // scale scenarios remain hard-failed until all declared collision or
-    // articulation passes are dispatched and timestamped.
-    let kernel_coverage_complete = matches!(
-        options.scenario,
-        Scenario::Smoke | Scenario::FourBar | Scenario::InvalidLoop | Scenario::Test2Car
-    ) || options.scenario.bearing_count().is_some();
+    // Observed stage entry is evidence, but does not prove all internal kernels
+    // executed. Keep full coverage unproven until every required kernel has a
+    // device-written marker; a scenario allowlist must never open a scale gate.
+    let kernel_coverage_complete = false;
     let expected_constraint_failure = options.scenario == Scenario::InvalidLoop;
     let base_correctness_passed = if expected_constraint_failure {
         error_flags & CONSTRAINT_NON_CONVERGENCE_FLAG != 0
@@ -417,6 +435,9 @@ fn run() -> Result<bool, String> {
             "\"anchor_residual_m\":{:.8},",
             "\"axis_residual_deg\":{:.8},\"error_flags\":{},",
             "\"timing_source\":\"{}\",",
+            "\"observed_stage_mask_every_tick\":{},",
+            "\"minimum_integrated_bodies\":{},\"minimum_published_bodies\":{},",
+            "\"minimum_validated_bearings\":{},",
             "\"kernel_coverage_complete\":{},\"correctness_passed\":{},",
             "\"budget_passed\":{},",
             "\"gate_passed\":{}}}"
@@ -469,6 +490,10 @@ fn run() -> Result<bool, String> {
         axis_residual_degrees,
         error_flags,
         timing_source,
+        observed_stage_mask,
+        minimum_integrated_bodies,
+        minimum_published_bodies,
+        minimum_validated_bearings,
         kernel_coverage_complete,
         correctness_passed,
         budget_passed,
@@ -498,7 +523,7 @@ fn parse_options() -> Result<Options, String> {
                 scenario = args.get(index).and_then(|value| Scenario::parse(value));
                 if scenario.is_none() {
                     return Err(
-                        "--scenario must be smoke, open_bearing, four_bearing_contact, bearings_16, bearings_64, bearings_65, bearings_256, four_bar, invalid_loop, dense_100k, loops_100k, terrain_stream, terrain_dig, player_collision, or test2_car"
+                        "--scenario must be smoke, open_bearing, suspension_1, four_bearing_contact, bearings_16, bearings_64, bearings_65, bearings_256, four_bar, invalid_loop, dense_100k, loops_100k, terrain_stream, terrain_dig, player_collision, or test2_car"
                             .to_owned(),
                     );
                 }
@@ -513,7 +538,7 @@ fn parse_options() -> Result<Options, String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "usage: mechanic-bench --scenario smoke|open_bearing|four_bearing_contact|bearings_16|bearings_64|bearings_65|bearings_256|four_bar|invalid_loop|dense_100k|loops_100k|terrain_stream|terrain_dig|player_collision|test2_car [--seconds N] [--warmup N]"
+                    "usage: mechanic-bench --scenario smoke|open_bearing|suspension_1|four_bearing_contact|bearings_16|bearings_64|bearings_65|bearings_256|four_bar|invalid_loop|dense_100k|loops_100k|terrain_stream|terrain_dig|player_collision|test2_car [--seconds N] [--warmup N]"
                         .to_owned(),
                 );
             }
@@ -586,6 +611,7 @@ fn parse_nonnegative(value: Option<&String>, flag: &str) -> Result<u64, String> 
 fn build_scenario(scenario: Scenario) -> Result<CompiledCreation, String> {
     match scenario {
         Scenario::Smoke => build_dense(1_024),
+        Scenario::SuspensionOne => build_suspension_one(),
         scenario @ (Scenario::OpenBearing
         | Scenario::FourBearingContact
         | Scenario::Bearings16
@@ -610,6 +636,58 @@ fn spawned_part(outcome: BuildOutcome) -> Result<PartId, String> {
         BuildOutcome::Spawned(part) => Ok(part),
         other => Err(format!("expected spawned part, got {other:?}")),
     }
+}
+
+fn build_suspension_one() -> Result<CompiledCreation, String> {
+    let mut graph = ConstructionGraph::new();
+    let spring = SpringSpec::default();
+    let suspension =
+        SuspensionSpec::new(Some(spring), None, None).map_err(|error| error.to_string())?;
+    #[allow(clippy::cast_possible_truncation)]
+    let spacing_ticks = ((suspension.initial_length() + 0.625) / 0.0025).round() as i32;
+    let base = spawned_part(
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::from_position_ticks(IVec3::new(0, 200, 0), GridRotation::default()),
+                )
+                .map_err(|error| error.to_string())?,
+            ))
+            .map_err(|error| error.to_string())?,
+    )?;
+    let load = spawned_part(
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1, 1, 1],
+                    BuildPose::from_position_ticks(
+                        IVec3::new(0, 200 + spacing_ticks, 0),
+                        GridRotation::default(),
+                    ),
+                )
+                .map_err(|error| error.to_string())?,
+            ))
+            .map_err(|error| error.to_string())?,
+    )?;
+    graph
+        .apply(BuildCommand::Weld(WeldSpec {
+            first: FaceRef::part(base, FaceKind::NegativeY),
+            second: FaceRef::ground(),
+        }))
+        .map_err(|error| error.to_string())?;
+    graph
+        .apply(BuildCommand::AddBearing(
+            BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveY),
+                FaceRef::part(load, FaceKind::NegativeY),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::Y,
+            )
+            .with_kind(BearingKind::Suspension(suspension)),
+        ))
+        .map_err(|error| error.to_string())?;
+    graph.compile().map_err(|error| error.to_string())
 }
 
 /// Repository-owned reproduction of the TEST2 vehicle's expensive topology.
@@ -1586,36 +1664,6 @@ fn build_four_bar(invalid: bool) -> Result<CompiledCreation, String> {
     Ok(creation)
 }
 
-fn build_bearing_chain(bearing_count: usize) -> Result<CompiledCreation, String> {
-    let mut graph = ConstructionGraph::new();
-    let outcomes = graph
-        .apply_batch((0..=bearing_count).map(|index| {
-            let x = i32::try_from(index.saturating_mul(4)).expect("chain coordinate fits i32");
-            BuildCommand::Spawn(unit_cube(IVec3::new(x, 2, 0)))
-        }))
-        .map_err(|error| format!("bearing-chain part generation failed: {error}"))?;
-    let parts = outcomes
-        .into_iter()
-        .map(|outcome| match outcome {
-            BuildOutcome::Spawned(part) => part,
-            _ => unreachable!("batch contains only spawn commands"),
-        })
-        .collect::<Vec<_>>();
-    graph
-        .apply_batch((0..bearing_count).map(|index| {
-            bearing_command(
-                parts[index],
-                FaceKind::PositiveX,
-                parts[index + 1],
-                FaceKind::NegativeX,
-                Vec3::new(grid_f32(index) + 0.5, 0.5, 0.0),
-                Vec3::X,
-            )
-        }))
-        .map_err(|error| format!("bearing-chain joint generation failed: {error}"))?;
-    graph.compile().map_err(|error| error.to_string())
-}
-
 fn build_dense(count: usize) -> Result<CompiledCreation, String> {
     let mut graph = ConstructionGraph::new();
     let commands = (0..count).map(|index| {
@@ -1757,6 +1805,23 @@ mod tests {
         assert_eq!(creation.compounds.len(), 1_024);
         assert_eq!(creation.colliders.len(), 1_024);
         assert!(creation.bearings.is_empty());
+    }
+
+    #[test]
+    fn single_suspension_scene_has_one_grounded_mechanism() {
+        let creation = build_scenario(Scenario::SuspensionOne).unwrap();
+        assert_eq!(creation.compounds.len(), 2);
+        assert_eq!(
+            creation
+                .compounds
+                .iter()
+                .filter(|body| body.is_static)
+                .count(),
+            1
+        );
+        assert_eq!(creation.bearings.len(), 1);
+        assert_eq!(creation.loop_topology.tree_bearings.len(), 1);
+        assert!(creation.loop_topology.closure_bearings.is_empty());
     }
 
     #[test]
