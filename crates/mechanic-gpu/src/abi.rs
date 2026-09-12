@@ -70,6 +70,14 @@ pub struct GpuDiagnostics {
     pub planned_solver_sweeps: u32,
     /// Contact/bearing sweeps actually executed by the selected solver route.
     pub executed_solver_sweeps: u32,
+    /// Observed GPU stage bits; see `GpuExecutionEvidence`. Not full kernel coverage.
+    pub executed_stage_mask: u32,
+    /// Body rows admitted past integration's initial bounds/failure checks.
+    pub integrated_bodies: u32,
+    /// Body invocations that wrote a validated snapshot this tick.
+    pub published_bodies: u32,
+    /// Bearing rows visited by closure validation this tick.
+    pub validated_bearings: u32,
 }
 
 /// Position and unit quaternion stored as two aligned vectors.
@@ -149,7 +157,8 @@ pub struct GpuCollider {
     /// Nominal block compliance, Young's modulus, and two reserved lanes.
     pub surface_elasticity: [f32; 4],
     /// shape kind, offset into the convex-shape buffer, packed element counts,
-    /// and one reserved lane. A box ignores every lane but the kind.
+    /// and nonzero when the owning body can never move. A box ignores every
+    /// lane but the kind and that flag.
     pub shape: [u32; 4],
 }
 
@@ -178,6 +187,10 @@ pub struct GpuBearing {
     pub local_axis_a: [f32; 4],
     /// Axis in target-compound coordinates.
     pub local_axis_b: [f32; 4],
+    /// Passive spring stiffness, build compression, compression/rebound damping.
+    pub suspension: [f32; 4],
+    /// Rubber stiffness, length, contact compression, initial compression.
+    pub bump_stop: [f32; 4],
     /// compound a, compound b, coordinate index or `u32::MAX`, flags.
     /// Flag bit 0 marks loop closure; bit 1 suspends the joint while held.
     pub metadata: [u32; 4],
@@ -349,14 +362,14 @@ pub struct GpuContractionNode {
 
 const _: () = {
     assert!(size_of::<GpuTickConfig>() == 64);
-    assert!(size_of::<GpuDiagnostics>() == 32);
+    assert!(size_of::<GpuDiagnostics>() == 48);
     assert!(size_of::<GpuTransform>() == 32);
     assert!(size_of::<GpuVelocity>() == 32);
     assert!(size_of::<GpuMass>() == 64);
     assert!(size_of::<GpuSpatialInertia>() == 64);
     assert!(size_of::<GpuCollider>() == 112);
     assert!(size_of::<GpuGroundSurface>() == 48);
-    assert!(size_of::<GpuBearing>() == 80);
+    assert!(size_of::<GpuBearing>() == 112);
     assert!(size_of::<GpuPair>() == 8);
     assert!(size_of::<GpuContact>() == 64);
     assert!(size_of::<GpuPersistentManifold>() == 64);

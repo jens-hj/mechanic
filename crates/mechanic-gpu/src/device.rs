@@ -1,11 +1,16 @@
 mod hold;
+mod terrain;
 pub use hold::GpuHoldError;
+pub use terrain::{
+    GpuTerrainError, PreparedTerrainUpdate, TerrainPreparationCache, TerrainPreparationRequest,
+    TerrainResidency, TerrainUploadStats,
+};
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::Instant;
@@ -28,7 +33,7 @@ use crate::{
 const FUSED_VELOCITY_BEARING_LIMIT: u32 = 64;
 const FUSED_GROUND_CONTACT_BEARING_LIMIT: u32 = 64;
 const FUSED_STREAMED_CONTACT_BEARING_LIMIT: u32 = 64;
-const ASYNC_READBACK_RING_SIZE: usize = 3;
+const ASYNC_READBACK_RING_SIZE: usize = 12;
 
 /// Number of external impulses staged and applied by one serial GPU pass.
 pub const EXTERNAL_IMPULSE_BATCH_CAPACITY: usize = 64;
@@ -136,6 +141,8 @@ impl SnapshotBuffers {
 /// Submitted tick identity. Completion is asynchronous on the shared queue.
 #[derive(Debug)]
 pub struct GpuTickSubmission {
+    /// Contiguous submission ordinal, independent of scheduler tick gaps.
+    pub submission_sequence: u64,
     /// Tick encoded into the submission.
     pub tick_index: u64,
     /// Snapshot ring destination written by that tick.
@@ -164,6 +171,8 @@ pub struct GpuSubmissionTimings {
 /// Validation values copied back after a tick without reading body state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpuTickReadback {
+    /// Evidence written by the executing shaders, independent of scenario labels.
+    pub execution: GpuExecutionEvidence,
     /// Timestamp-query duration, or `None` if the shared device lacks support.
     pub gpu_tick_ms: Option<f64>,
     /// Per-stage timestamp durations, or `None` without timestamp-query support.
@@ -186,6 +195,23 @@ pub struct GpuTickReadback {
     pub axis_residual_degrees: f32,
 }
 
+/// Device-written execution evidence. Stage markers prove entry, not every kernel
+/// or physical correctness. Body counters exclude early returns after a failure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GpuExecutionEvidence {
+    /// Integration=1, articulated validation=2, broadphase=4, narrowphase=8,
+    /// general/serial contact accumulator=16, bearing validation=32, publication=64,
+    /// terrain=128. The fused contact kernel has no spare portable storage binding
+    /// for diagnostics and is deliberately unmarked.
+    pub stage_mask: u32,
+    /// Body rows admitted past integration's initial bounds/failure checks.
+    pub integrated_bodies: u32,
+    /// Body rows copied to the validated snapshot.
+    pub published_bodies: u32,
+    /// Bearing rows visited by validation.
+    pub validated_bearings: u32,
+}
+
 /// One asynchronously completed tick and its prototype-render snapshot.
 ///
 /// The body rows are staged with the fixed-size diagnostics so application
@@ -193,6 +219,8 @@ pub struct GpuTickReadback {
 /// renderers should continue to bind [`SnapshotBuffers`] directly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GpuCompletedTickReadback {
+    /// Contiguous submission ordinal, independent of scheduler tick gaps.
+    pub submission_sequence: u64,
     /// Monotonic tick encoded into the submission.
     pub tick_index: u64,
     /// Snapshot-ring slot written by the completed tick.
@@ -221,6 +249,14 @@ pub struct GpuCompletedTickReadback {
 pub struct GpuKernelTimings {
     /// Body gravity/damping and root-pose integration.
     pub integration_ms: f64,
+    /// Exact terrain BVH traversal and contact generation (part of narrowphase).
+    pub terrain_traversal_ms: f64,
+    /// Conservative rotational CCD.
+    pub rotational_sweep_ms: f64,
+    /// Split positional recovery, including its mechanism projection.
+    pub terrain_recovery_ms: f64,
+    /// Mechanism projection inside the three recovery rounds.
+    pub recovery_projection_ms: f64,
     /// Reduced-coordinate projection, closure factorization, and forward kinematics.
     pub mechanism_ms: f64,
     /// Spatial broadphase and candidate generation.
@@ -460,7 +496,8 @@ pub struct GpuPhysics {
     snapshot_rotations_readback: wgpu::Buffer,
     masses: wgpu::Buffer,
     _spatial_inertias: wgpu::Buffer,
-    _colliders: wgpu::Buffer,
+    colliders: wgpu::Buffer,
+    convex_shapes: wgpu::Buffer,
     bearings: wgpu::Buffer,
     external_impulse: wgpu::Buffer,
     external_impulse_pipeline: wgpu::ComputePipeline,
@@ -470,11 +507,16 @@ pub struct GpuPhysics {
     integration_pipeline: wgpu::ComputePipeline,
     mechanism: MechanismResources,
     collision: CollisionResources,
+    terrain_recovery: Option<terrain::PositionRecovery>,
+    terrain_scene: terrain::TerrainGpuScene,
+    terrain_free_bodies: wgpu::Buffer,
+    terrain_has_free_bodies: bool,
     bearing_pipeline: wgpu::ComputePipeline,
     bearing_bind_group: wgpu::BindGroup,
     snapshot_pipeline: wgpu::ComputePipeline,
     snapshot_bind_groups: Vec<wgpu::BindGroup>,
     timestamps: Option<TimestampResources>,
+    submission_sequence: AtomicU64,
     async_readback_enabled: AtomicBool,
     readback_timing_enabled: AtomicBool,
     async_readbacks: Mutex<Vec<AsyncReadbackSlot>>,
@@ -494,6 +536,7 @@ struct AsyncReadbackSlot {
 
 #[derive(Debug)]
 struct PendingAsyncReadback {
+    submission_sequence: u64,
     tick_index: u64,
     snapshot_slot: u8,
     receiver: mpsc::Receiver<(Result<(), String>, Option<Instant>)>,
@@ -505,22 +548,26 @@ struct PendingAsyncReadback {
 #[derive(Debug)]
 struct CollisionResources {
     lbvh: LbvhResources,
-    _body_components: wgpu::Buffer,
+    body_components: wgpu::Buffer,
     _pairs: wgpu::Buffer,
-    _contacts: wgpu::Buffer,
-    _manifold_keys: wgpu::Buffer,
-    _persistent_manifolds: wgpu::Buffer,
+    contacts: wgpu::Buffer,
+    manifold_keys: wgpu::Buffer,
+    persistent_manifolds: wgpu::Buffer,
     ground_surfaces: wgpu::Buffer,
-    _active_contacts: wgpu::Buffer,
+    active_contacts: wgpu::Buffer,
     indirect_args: wgpu::Buffer,
     velocity_deltas: wgpu::Buffer,
-    _world_masses: wgpu::Buffer,
+    world_masses: wgpu::Buffer,
     update_world_masses_pipeline: wgpu::ComputePipeline,
     update_world_masses_bind_group: wgpu::BindGroup,
     narrowphase_pipeline: wgpu::ComputePipeline,
     narrowphase_bind_group: wgpu::BindGroup,
     ground_contacts_pipeline: wgpu::ComputePipeline,
     ground_contacts_bind_group: wgpu::BindGroup,
+    terrain_pipeline: wgpu::ComputePipeline,
+    terrain_bind_group: Option<wgpu::BindGroup>,
+    terrain_geometry_bind_group: Option<wgpu::BindGroup>,
+    terrain_triangle_count: usize,
     finalize_contacts_pipeline: wgpu::ComputePipeline,
     finalize_contacts_bind_group: wgpu::BindGroup,
     select_active_pipeline: wgpu::ComputePipeline,
@@ -639,6 +686,8 @@ struct MechanismResources {
 
 #[derive(Debug)]
 struct TimestampResources {
+    boundary: wgpu::ComputePipeline,
+    boundary_bindings: wgpu::BindGroup,
     query_set: wgpu::QuerySet,
     resolve: wgpu::Buffer,
     readback: wgpu::Buffer,
@@ -815,7 +864,7 @@ impl GpuPhysics {
             .iter()
             .zip(cylinder_ground_data)
             .map(|(collider, ground)| {
-                let (local_rotation, half_extents, shape) = match &collider.shape {
+                let (local_rotation, half_extents, mut shape) = match &collider.shape {
                     ColliderShape::Cuboid {
                         local_rotation,
                         half_extents,
@@ -855,6 +904,16 @@ impl GpuPhysics {
                         )
                     }
                 };
+                // Terrain contacts name no second body, so the solver discards
+                // every one belonging to an immovable body. Marking the row lets
+                // the contact kernel skip a full BVH descent that can only
+                // produce discarded contacts.
+                shape[3] = u32::from(
+                    creation.compounds[collider.compound_index as usize]
+                        .mass_properties
+                        .inverse_mass
+                        <= 0.0,
+                );
                 GpuCollider {
                     local_center: vec4(collider.local_center, ground.center_radius),
                     local_rotation,
@@ -899,13 +958,21 @@ impl GpuPhysics {
                 local_anchor_b: vec4(bearing.local_anchor_b, bearing.kind.bounds()[1]),
                 local_axis_a: vec4(
                     bearing.local_axis_a,
-                    if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+                    if bearing.kind.is_translational() {
                         1.0
                     } else {
                         0.0
                     },
                 ),
                 local_axis_b: vec4(bearing.local_axis_b, 0.0),
+                suspension: match bearing.kind {
+                    mechanic_core::BearingKind::Suspension(s) => s.passive_rows()[0],
+                    _ => [0.0; 4],
+                },
+                bump_stop: match bearing.kind {
+                    mechanic_core::BearingKind::Suspension(s) => s.passive_rows()[1],
+                    _ => [0.0; 4],
+                },
                 metadata: [
                     bearing.compound_a,
                     bearing.compound_b,
@@ -1054,25 +1121,32 @@ impl GpuPhysics {
         let timestamps = device
             .features()
             .contains(wgpu::Features::TIMESTAMP_QUERY)
-            .then(|| TimestampResources {
+            .then(|| {
+                let boundary = compute_pipeline(pipelines, device, "mechanic timestamp boundary", &shader_module(pipelines, device, "mechanic timestamp boundary",
+                    "@group(0) @binding(0) var<storage, read_write> positions: array<atomic<u32>>; @compute @workgroup_size(1) fn boundary() { atomicOr(&positions[0], 0u); }"), "boundary");
+                let boundary_bindings = bind_group(device, "mechanic ordered timestamp boundary", &boundary, &[entry(0, &positions_buffer)]);
+                TimestampResources {
+                    boundary,
+                    boundary_bindings,
                 query_set: device.create_query_set(&wgpu::QuerySetDescriptor {
                     label: Some("mechanic physics timestamps"),
                     ty: wgpu::QueryType::Timestamp,
-                    count: 14,
+                    count: 28,
                 }),
                 resolve: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("mechanic timestamp resolve"),
-                    size: 112,
+                    size: 224,
                     usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: false,
                 }),
                 readback: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("mechanic timestamp readback"),
-                    size: 112,
+                    size: 224,
                     usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                     mapped_at_creation: false,
                 }),
                 period_nanoseconds: f64::from(queue.get_timestamp_period()),
+                }
             });
         let mut snapshots = Vec::with_capacity(SNAPSHOT_RING_SIZE);
         let mut bind_groups = Vec::with_capacity(SNAPSHOT_RING_SIZE);
@@ -1194,6 +1268,22 @@ impl GpuPhysics {
             )
         };
 
+        let mut free_bodies: Vec<u32> = creation
+            .compounds
+            .iter()
+            .map(|body| u32::from(!body.is_static))
+            .collect();
+        for bearing in &creation.bearings {
+            free_bodies[bearing.compound_a as usize] = 0;
+            free_bodies[bearing.compound_b as usize] = 0;
+        }
+        free_bodies.resize(free_bodies.len().max(1), 0);
+        let terrain_free_bodies = create_readonly_storage_buffer(
+            device,
+            "mechanic unjointed terrain sweep bodies",
+            &free_bodies,
+        );
+
         // Make the upload boundary explicit before the first fixed tick.
         queue.write_buffer(&diagnostics, 0, bytes_of(&GpuDiagnostics::zeroed()));
         Ok(Self {
@@ -1216,7 +1306,8 @@ impl GpuPhysics {
             snapshot_rotations_readback,
             masses,
             _spatial_inertias: spatial_inertias,
-            _colliders: colliders,
+            colliders,
+            convex_shapes,
             bearings,
             external_impulse,
             external_impulse_pipeline,
@@ -1226,11 +1317,16 @@ impl GpuPhysics {
             integration_pipeline,
             mechanism,
             collision,
+            terrain_recovery: None,
+            terrain_scene: terrain::TerrainGpuScene::default(),
+            terrain_has_free_bodies: free_bodies.contains(&1),
+            terrain_free_bodies,
             bearing_pipeline,
             bearing_bind_group,
             snapshot_pipeline,
             snapshot_bind_groups,
             timestamps,
+            submission_sequence: AtomicU64::new(0),
             async_readback_enabled: AtomicBool::new(false),
             readback_timing_enabled: AtomicBool::new(false),
             async_readbacks: Mutex::new(Vec::new()),
@@ -1517,6 +1613,7 @@ impl GpuPhysics {
         queue: &wgpu::Queue,
         tick_index: u64,
     ) -> GpuTickSubmission {
+        let submission_sequence = self.submission_sequence.fetch_add(1, Ordering::Relaxed) + 1;
         let encoding_started = Instant::now();
         let snapshot_slot = u8::try_from(tick_index % 3).unwrap_or(0);
         let config = GpuTickConfig {
@@ -1556,6 +1653,12 @@ impl GpuPhysics {
         if self.mechanism.active {
             encoder.clear_buffer(&self.mechanism.velocity_deltas, 0, None);
         }
+        if run_collisions
+            && self.collision.terrain_triangle_count > 0
+            && let Some(recovery) = &self.terrain_recovery
+        {
+            recovery.capture(self, &mut encoder);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("mechanic integrate pass"),
@@ -1568,11 +1671,29 @@ impl GpuPhysics {
         if self.mechanism.active {
             self.encode_mechanism_passes(&mut encoder);
         }
+        if run_collisions
+            && self.collision.terrain_triangle_count > 0
+            && let Some(recovery) = &self.terrain_recovery
+        {
+            self.encode_terrain_timestamp(&mut encoder, 16);
+            if self.terrain_has_free_bodies {
+                recovery.sweep.encode(self, &mut encoder);
+            }
+            self.encode_terrain_timestamp(&mut encoder, 17);
+        }
         if run_collisions {
             self.encode_collision_passes(&mut encoder);
         }
         if self.mechanism.active && run_collisions {
             self.encode_post_contact_mechanism(&mut encoder);
+        }
+        if run_collisions
+            && self.collision.terrain_triangle_count > 0
+            && let Some(recovery) = &self.terrain_recovery
+        {
+            self.encode_terrain_timestamp(&mut encoder, 18);
+            recovery.encode(self, &mut encoder);
+            self.encode_terrain_timestamp(&mut encoder, 19);
         }
         if self.mechanism.active {
             direct_compute_pass(
@@ -1609,8 +1730,8 @@ impl GpuPhysics {
             u64::try_from(size_of::<GpuDiagnostics>()).unwrap_or(32),
         );
         if let Some(timestamps) = &self.timestamps {
-            encoder.resolve_query_set(&timestamps.query_set, 0..14, &timestamps.resolve, 0);
-            encoder.copy_buffer_to_buffer(&timestamps.resolve, 0, &timestamps.readback, 0, 112);
+            encoder.resolve_query_set(&timestamps.query_set, 0..28, &timestamps.resolve, 0);
+            encoder.copy_buffer_to_buffer(&timestamps.resolve, 0, &timestamps.readback, 0, 224);
         }
         let mut async_readbacks = self
             .async_readback_enabled
@@ -1648,7 +1769,7 @@ impl GpuPhysics {
             );
             if let (Some(timestamps), Some(readback)) = (&self.timestamps, slot.timestamps.as_ref())
             {
-                encoder.copy_buffer_to_buffer(&timestamps.resolve, 0, readback, 0, 112);
+                encoder.copy_buffer_to_buffer(&timestamps.resolve, 0, readback, 0, 224);
             }
             let snapshot = &self.snapshots[usize::from(snapshot_slot)];
             encoder.copy_buffer_to_buffer(
@@ -1705,6 +1826,7 @@ impl GpuPhysics {
         if let (Some(slots), Some(index)) = (&mut async_readbacks, async_slot_index) {
             begin_async_mapping(
                 &mut slots[index],
+                submission_sequence,
                 tick_index,
                 snapshot_slot,
                 submission_finished,
@@ -1713,6 +1835,7 @@ impl GpuPhysics {
         }
         let readback_setup_ms = readback_setup_started.elapsed().as_secs_f64() * 1_000.0;
         GpuTickSubmission {
+            submission_sequence,
             tick_index,
             snapshot_slot,
             submission_index,
@@ -1745,13 +1868,69 @@ impl GpuPhysics {
             workgroups,
             None,
         );
-        self.encode_mechanism_forward_kinematics(encoder, false, 0);
+        self.encode_mechanism_pose_projection(encoder);
+        direct_compute_pass(
+            encoder,
+            "mechanic reconstruct body velocities",
+            &mechanism.reconstruct_velocities_pipeline,
+            &mechanism.reconstruct_velocities_bind_group,
+            1,
+            timestamp_writes(self.timestamps.as_ref(), None, Some(3)),
+        );
+    }
+
+    // Metal drops timestamps on empty passes. A bit-preserving atomic access
+    // orders markers against pose readers/writers, including zero-work dispatches.
+    fn encode_terrain_timestamp(&self, encoder: &mut wgpu::CommandEncoder, index: u32) {
+        if let Some(timestamps) = &self.timestamps {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mechanic terrain stage boundary"),
+                timestamp_writes: timestamp_writes(self.timestamps.as_ref(), Some(index), None),
+            });
+            pass.set_pipeline(&timestamps.boundary);
+            pass.set_bind_group(0, &timestamps.boundary_bindings, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+    }
+
+    fn encode_recovery_pose_projection(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        gate: &wgpu::Buffer,
+    ) {
+        self.encode_mechanism_pose_projection_gated(encoder, Some(gate));
+    }
+
+    fn encode_mechanism_pose_projection(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.encode_mechanism_pose_projection_gated(encoder, None);
+    }
+
+    fn encode_mechanism_pose_projection_gated(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        gate: Option<&wgpu::Buffer>,
+    ) {
+        let mechanism = &self.mechanism;
+        let workgroups = self.body_count.div_ceil(256);
+        self.encode_mechanism_forward_kinematics(encoder, gate, 0);
         if mechanism.closure_count > 0 {
             const CLOSURE_CORRECTION_STEPS: u32 = 12;
             for step in 0..CLOSURE_CORRECTION_STEPS {
                 encoder.clear_buffer(&mechanism.closure_accumulators, 0, None);
                 encoder.clear_buffer(&mechanism.closure_state, 0, None);
-                if step == 0 {
+                if step == 0
+                    && let Some(gate) = gate
+                {
+                    indirect_compute_pass(
+                        encoder,
+                        "mechanic evaluate recovery closures",
+                        &mechanism.evaluate_closures_pipeline,
+                        &mechanism.evaluate_closures_bind_group,
+                        gate,
+                        32,
+                        None,
+                    );
+                } else if step == 0 {
                     direct_compute_pass(
                         encoder,
                         "mechanic evaluate closures",
@@ -1788,7 +1967,11 @@ impl GpuPhysics {
                     12,
                     None,
                 );
-                self.encode_mechanism_forward_kinematics(encoder, true, 12);
+                self.encode_mechanism_forward_kinematics(
+                    encoder,
+                    Some(&mechanism.closure_indirect_args),
+                    12,
+                );
             }
         }
         let (pipeline, bindings) = if mechanism.final_is_a {
@@ -1802,6 +1985,18 @@ impl GpuPhysics {
                 &mechanism.publish_b_bind_group,
             )
         };
+        if let Some(gate) = gate {
+            indirect_compute_pass(
+                encoder,
+                "mechanic publish recovered mechanism poses",
+                pipeline,
+                bindings,
+                gate,
+                0,
+                None,
+            );
+            return;
+        }
         direct_compute_pass(
             encoder,
             "mechanic publish mechanism poses",
@@ -1809,14 +2004,6 @@ impl GpuPhysics {
             bindings,
             workgroups,
             None,
-        );
-        direct_compute_pass(
-            encoder,
-            "mechanic reconstruct body velocities",
-            &mechanism.reconstruct_velocities_pipeline,
-            &mechanism.reconstruct_velocities_bind_group,
-            1,
-            timestamp_writes(self.timestamps.as_ref(), None, Some(3)),
         );
     }
 
@@ -1945,7 +2132,7 @@ impl GpuPhysics {
     fn encode_mechanism_forward_kinematics(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        indirect: bool,
+        indirect: Option<&wgpu::Buffer>,
         indirect_offset: u64,
     ) {
         let mechanism = &self.mechanism;
@@ -1954,13 +2141,13 @@ impl GpuPhysics {
                             pipeline: &wgpu::ComputePipeline,
                             bindings: &wgpu::BindGroup,
                             timestamp_writes| {
-            if indirect {
+            if let Some(indirect) = indirect {
                 indirect_compute_pass(
                     encoder,
                     label,
                     pipeline,
                     bindings,
-                    &mechanism.closure_indirect_args,
+                    indirect,
                     indirect_offset,
                     timestamp_writes,
                 );
@@ -2114,6 +2301,18 @@ impl GpuPhysics {
                 None,
             );
         }
+        if let Some(bindings) = &collision.terrain_bind_group
+            && collision.terrain_triangle_count > 0
+        {
+            direct_compute_pass(
+                encoder,
+                "mechanic terrain BVH contacts",
+                &collision.terrain_pipeline,
+                bindings,
+                self.collider_count.div_ceil(256),
+                timestamp_writes(self.timestamps.as_ref(), Some(14), Some(15)),
+            );
+        }
         direct_compute_pass(
             encoder,
             "mechanic finalize contacts",
@@ -2139,7 +2338,14 @@ impl GpuPhysics {
             1,
             None,
         );
-        if self.solver_route() == GpuSolverRoute::General {
+        if self.mechanism.active
+            && !self.mechanism.has_dynamic_root
+            && uses_fused_velocity_schedule(self.bearing_count, self.body_count)
+        {
+            self.encode_grounded_contact_solver_pass(encoder);
+            return;
+        }
+        if self.solver_route() == GpuSolverRoute::General || collision.terrain_triangle_count > 0 {
             indirect_compute_pass(
                 encoder,
                 "mechanic count body contacts",
@@ -2227,6 +2433,88 @@ impl GpuPhysics {
         );
     }
 
+    /// Records the small grounded mechanism's contact reconciliation in one
+    /// Metal compute pass. Dispatch order and iteration count match the general
+    /// schedule; eliminating empty pass boundaries matters when no contacts exist.
+    fn encode_grounded_contact_solver_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+        let collision = &self.collision;
+        let mechanism = &self.mechanism;
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("mechanic grounded contact solver"),
+            timestamp_writes: timestamp_writes(self.timestamps.as_ref(), None, Some(9)),
+        });
+        indirect_dispatch_in_pass(
+            &mut pass,
+            &collision.count_body_contacts_pipeline,
+            &collision.count_body_contacts_bind_group,
+            &collision.indirect_args,
+            24,
+        );
+        indirect_dispatch_in_pass(
+            &mut pass,
+            &collision.warm_start_pipeline,
+            &collision.warm_start_bind_group,
+            &collision.indirect_args,
+            24,
+        );
+        indirect_dispatch_in_pass(
+            &mut pass,
+            &collision.solve_apply_pipeline,
+            &collision.solve_apply_bind_group,
+            &collision.indirect_args,
+            36,
+        );
+        for _ in 1..self.pipeline_config.solver_iterations.max(1) {
+            indirect_dispatch_in_pass(
+                &mut pass,
+                &collision.solve_accumulate_pipeline,
+                &collision.solve_accumulate_bind_group,
+                &collision.indirect_args,
+                24,
+            );
+            indirect_dispatch_in_pass(
+                &mut pass,
+                &collision.solve_apply_pipeline,
+                &collision.solve_apply_bind_group,
+                &collision.indirect_args,
+                36,
+            );
+        }
+        indirect_dispatch_in_pass(
+            &mut pass,
+            &collision.persist_contacts_pipeline,
+            &collision.persist_contacts_bind_group,
+            &collision.indirect_args,
+            24,
+        );
+        indirect_dispatch_in_pass(
+            &mut pass,
+            &mechanism.project_small_velocity_pipeline,
+            &mechanism.project_small_velocity_bind_group,
+            &collision.indirect_args,
+            48,
+        );
+        indirect_dispatch_in_pass(
+            &mut pass,
+            &mechanism.capture_coordinates_pipeline,
+            &mechanism.capture_coordinates_bind_group,
+            &collision.indirect_args,
+            36,
+        );
+        indirect_dispatch_in_pass(
+            &mut pass,
+            &mechanism.reconstruct_velocities_pipeline,
+            &mechanism.reconstruct_velocities_bind_group,
+            &collision.indirect_args,
+            48,
+        );
+        if let Some(timestamps) = &self.timestamps {
+            pass.set_pipeline(&timestamps.boundary);
+            pass.set_bind_group(0, &timestamps.boundary_bindings, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+    }
+
     /// Polls asynchronous telemetry and prototype-render staging without
     /// waiting for queue completion.
     ///
@@ -2279,15 +2567,15 @@ impl GpuPhysics {
             }
         }
 
-        let Some(slot_index) = slots
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| {
+        let Some(slot_index) =
+            oldest_completed_readback(slots.iter().enumerate().filter_map(|(index, slot)| {
                 let pending = slot.pending.as_ref()?;
-                (pending.remaining_callbacks == 0).then_some((index, pending.tick_index))
-            })
-            .min_by_key(|&(_, tick)| tick)
-            .map(|(index, _)| index)
+                Some((
+                    index,
+                    pending.submission_sequence,
+                    pending.remaining_callbacks,
+                ))
+            }))
         else {
             return Ok(None);
         };
@@ -2302,7 +2590,7 @@ impl GpuPhysics {
             bytemuck::pod_read_unaligned::<GpuDiagnostics>(&bytes)
         };
         let timestamp_values = slot.timestamps.as_ref().map(|buffer| {
-            bytemuck::pod_read_unaligned::<[u64; 14]>(&buffer.get_mapped_range(0..112))
+            bytemuck::pod_read_unaligned::<[u64; 28]>(&buffer.get_mapped_range(0..224))
         });
         let positions = mapped_rows::<[f32; 4]>(&slot.positions, self.body_count);
         let rotations = mapped_rows::<[f32; 4]>(&slot.rotations, self.body_count);
@@ -2315,6 +2603,7 @@ impl GpuPhysics {
         unmap_async_slot(slot);
 
         Ok(Some(GpuCompletedTickReadback {
+            submission_sequence: pending.submission_sequence,
             tick_index: pending.tick_index,
             snapshot_slot: pending.snapshot_slot,
             submission_to_readback_ms: pending.submitted_at.elapsed().as_secs_f64() * 1_000.0,
@@ -2344,7 +2633,7 @@ impl GpuPhysics {
     fn decode_tick_readback(
         &self,
         diagnostics: GpuDiagnostics,
-        timestamp_values: Option<[u64; 14]>,
+        timestamp_values: Option<[u64; 28]>,
     ) -> GpuTickReadback {
         let timestamp_readback =
             timestamp_values
@@ -2359,6 +2648,35 @@ impl GpuPhysics {
                     };
                     let timings = GpuKernelTimings {
                         integration_ms: elapsed(0, 1),
+                        terrain_traversal_ms: if self.pipeline_config.collisions_enabled
+                            && self.collision.terrain_triangle_count > 0
+                        {
+                            elapsed(14, 15)
+                        } else {
+                            0.0
+                        },
+                        rotational_sweep_ms: if self.pipeline_config.collisions_enabled
+                            && self.collision.terrain_triangle_count > 0
+                        {
+                            elapsed(16, 17)
+                        } else {
+                            0.0
+                        },
+                        terrain_recovery_ms: if self.pipeline_config.collisions_enabled
+                            && self.collision.terrain_triangle_count > 0
+                        {
+                            elapsed(18, 19)
+                        } else {
+                            0.0
+                        },
+                        recovery_projection_ms: if self.pipeline_config.collisions_enabled
+                            && self.collision.terrain_triangle_count > 0
+                            && self.mechanism.active
+                        {
+                            elapsed(20, 21) + elapsed(22, 23) + elapsed(24, 25)
+                        } else {
+                            0.0
+                        },
                         mechanism_ms: if self.mechanism.active {
                             elapsed(2, 3)
                         } else {
@@ -2386,7 +2704,9 @@ impl GpuPhysics {
                         },
                         snapshot_ms: elapsed(12, 13),
                     };
-                    let total = timings.integration_ms
+                    let total = timings.rotational_sweep_ms
+                        + timings.terrain_recovery_ms
+                        + timings.integration_ms
                         + timings.mechanism_ms
                         + timings.broadphase_ms
                         + timings.narrowphase_ms
@@ -2396,6 +2716,12 @@ impl GpuPhysics {
                     (total, timings)
                 });
         GpuTickReadback {
+            execution: GpuExecutionEvidence {
+                stage_mask: diagnostics.executed_stage_mask,
+                integrated_bodies: diagnostics.integrated_bodies,
+                published_bodies: diagnostics.published_bodies,
+                validated_bearings: diagnostics.validated_bearings,
+            },
             gpu_tick_ms: timestamp_readback.map(|(total, _)| total),
             kernel_timings: timestamp_readback.map(|(_, timings)| timings),
             error_flags: diagnostics.error_flags,
@@ -2428,80 +2754,19 @@ impl GpuPhysics {
         };
         self.diagnostics_readback.unmap();
 
-        let timestamp_readback = self
+        let timestamp_values = self
             .timestamps
             .as_ref()
             .map(|timestamps| {
                 map_for_read(device, &timestamps.readback)?;
-                let values = {
-                    let bytes = timestamps.readback.get_mapped_range(0..112);
-                    let mut values = [0_u64; 14];
-                    for (index, chunk) in bytes.chunks_exact(8).enumerate() {
-                        let mut raw = [0_u8; 8];
-                        raw.copy_from_slice(chunk);
-                        values[index] = u64::from_ne_bytes(raw);
-                    }
-                    values
-                };
+                let values = bytemuck::pod_read_unaligned::<[u64; 28]>(
+                    &timestamps.readback.get_mapped_range(0..224),
+                );
                 timestamps.readback.unmap();
-                let elapsed = |start, end| {
-                    timestamp_milliseconds(
-                        values[start],
-                        values[end],
-                        timestamps.period_nanoseconds,
-                    )
-                };
-                let timings = GpuKernelTimings {
-                    integration_ms: elapsed(0, 1),
-                    mechanism_ms: if self.mechanism.active {
-                        elapsed(2, 3)
-                    } else {
-                        0.0
-                    },
-                    broadphase_ms: if self.pipeline_config.collisions_enabled {
-                        elapsed(4, 5)
-                    } else {
-                        0.0
-                    },
-                    narrowphase_ms: if self.pipeline_config.collisions_enabled {
-                        elapsed(6, 7)
-                    } else {
-                        0.0
-                    },
-                    contact_solver_ms: if self.pipeline_config.collisions_enabled {
-                        elapsed(8, 9)
-                    } else {
-                        0.0
-                    },
-                    bearings_ms: if self.bearing_count > 0 {
-                        elapsed(10, 11)
-                    } else {
-                        0.0
-                    },
-                    snapshot_ms: elapsed(12, 13),
-                };
-                let total = timings.integration_ms
-                    + timings.mechanism_ms
-                    + timings.broadphase_ms
-                    + timings.narrowphase_ms
-                    + timings.contact_solver_ms
-                    + timings.bearings_ms
-                    + timings.snapshot_ms;
-                Ok((total, timings))
+                Ok::<_, GpuReadbackError>(values)
             })
             .transpose()?;
-        Ok(GpuTickReadback {
-            gpu_tick_ms: timestamp_readback.map(|(total, _)| total),
-            kernel_timings: timestamp_readback.map(|(_, timings)| timings),
-            error_flags: diagnostics.error_flags,
-            pair_count: diagnostics.pair_count,
-            contact_count: diagnostics.contact_count,
-            active_contact_count: diagnostics.active_contact_count,
-            planned_solver_sweeps: diagnostics.planned_solver_sweeps,
-            executed_solver_sweeps: diagnostics.executed_solver_sweeps,
-            anchor_residual_meters: diagnostic_units(diagnostics.max_anchor_micrometers),
-            axis_residual_degrees: diagnostic_units(diagnostics.max_axis_microdegrees),
-        })
+        Ok(self.decode_tick_readback(diagnostics, timestamp_values))
     }
 
     /// Copies one published snapshot to CPU memory for prototype renderers.
@@ -2878,13 +3143,21 @@ fn create_mechanism_resources(
                     local_anchor_b: vec4(bearing.local_anchor_b, bearing.kind.bounds()[1]),
                     local_axis_a: vec4(
                         bearing.local_axis_a,
-                        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+                        if bearing.kind.is_translational() {
                             1.0
                         } else {
                             0.0
                         },
                     ),
                     local_axis_b: vec4(bearing.local_axis_b, 0.0),
+                    suspension: match bearing.kind {
+                        mechanic_core::BearingKind::Suspension(s) => s.passive_rows()[0],
+                        _ => [0.0; 4],
+                    },
+                    bump_stop: match bearing.kind {
+                        mechanic_core::BearingKind::Suspension(s) => s.passive_rows()[1],
+                        _ => [0.0; 4],
+                    },
                     metadata: [
                         bearing.compound_a,
                         bearing.compound_b,
@@ -3728,13 +4001,13 @@ fn create_collision_resources(
         device,
         "mechanic persistent manifold keys",
         pair_capacity * size_of::<u32>(),
-        wgpu::BufferUsages::STORAGE,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     );
     let persistent_manifolds = create_sized_buffer(
         device,
         "mechanic persistent manifolds",
         pair_capacity * size_of::<GpuPersistentManifold>(),
-        wgpu::BufferUsages::STORAGE,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     );
     let concrete = ConstructionMaterial::Concrete.properties();
     let ground_surface = GpuGroundSurface {
@@ -3858,6 +4131,13 @@ fn create_collision_resources(
         "mechanic ground contacts",
         &shader,
         "generate_ground_contacts",
+    );
+    let terrain_pipeline = compute_pipeline(
+        pipelines,
+        device,
+        "mechanic terrain BVH contacts",
+        &shader,
+        "generate_terrain_contacts",
     );
     let ground_contacts_bind_group = bind_group(
         device,
@@ -4059,22 +4339,26 @@ fn create_collision_resources(
     );
     CollisionResources {
         lbvh,
-        _body_components: body_components,
+        body_components,
         _pairs: pairs,
-        _contacts: contacts,
-        _manifold_keys: manifold_keys,
-        _persistent_manifolds: persistent_manifolds,
+        contacts,
+        manifold_keys,
+        persistent_manifolds,
         ground_surfaces,
-        _active_contacts: active_contacts,
+        active_contacts,
         indirect_args,
         velocity_deltas,
-        _world_masses: world_masses,
+        world_masses,
         update_world_masses_pipeline,
         update_world_masses_bind_group,
         narrowphase_pipeline,
         narrowphase_bind_group,
         ground_contacts_pipeline,
         ground_contacts_bind_group,
+        terrain_pipeline,
+        terrain_bind_group: None,
+        terrain_geometry_bind_group: None,
+        terrain_triangle_count: 0,
         finalize_contacts_pipeline,
         finalize_contacts_bind_group,
         select_active_pipeline,
@@ -4215,6 +4499,18 @@ fn indirect_compute_pass(
         label: Some(label),
         timestamp_writes,
     });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bindings, &[]);
+    pass.dispatch_workgroups_indirect(indirect_args, indirect_offset);
+}
+
+fn indirect_dispatch_in_pass<'a>(
+    pass: &mut wgpu::ComputePass<'a>,
+    pipeline: &'a wgpu::ComputePipeline,
+    bindings: &'a wgpu::BindGroup,
+    indirect_args: &'a wgpu::Buffer,
+    indirect_offset: u64,
+) {
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bindings, &[]);
     pass.dispatch_workgroups_indirect(indirect_args, indirect_offset);
@@ -4420,7 +4716,7 @@ fn create_async_readback_slot(
             u64::try_from(size_of::<GpuDiagnostics>()).unwrap_or(32),
         ),
         timestamps: timestamps_enabled
-            .then(|| readback_buffer(format!("mechanic async timestamps {index}"), 112)),
+            .then(|| readback_buffer(format!("mechanic async timestamps {index}"), 224)),
         positions: readback_buffer(
             format!("mechanic async snapshot positions {index}"),
             snapshot_size,
@@ -4456,8 +4752,16 @@ fn mapped_rows<T: Pod>(buffer: &wgpu::Buffer, count: u32) -> Vec<T> {
         .collect()
 }
 
+// A later mapping callback must not overtake an earlier incomplete snapshot.
+fn oldest_completed_readback(pending: impl Iterator<Item = (usize, u64, u8)>) -> Option<usize> {
+    pending
+        .min_by_key(|&(_, sequence, _)| sequence)
+        .and_then(|(index, _, remaining)| (remaining == 0).then_some(index))
+}
+
 fn begin_async_mapping(
     slot: &mut AsyncReadbackSlot,
+    submission_sequence: u64,
     tick_index: u64,
     snapshot_slot: u8,
     submitted_at: Instant,
@@ -4482,6 +4786,7 @@ fn begin_async_mapping(
     map(&slot.angular_velocities, sender.clone());
     map(&slot.coordinates, sender);
     slot.pending = Some(PendingAsyncReadback {
+        submission_sequence,
         tick_index,
         snapshot_slot,
         receiver,
@@ -4519,6 +4824,7 @@ fn read_vec4_buffer(
 
 #[cfg(test)]
 mod tests {
+    use super::ASYNC_READBACK_RING_SIZE;
     use bevy_math::{IVec3, Vec3};
     use mechanic_core::{
         BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
@@ -4621,6 +4927,49 @@ mod tests {
             )
             .validate(&module)
             .unwrap_or_else(|error| panic!("{name} WGSL validates: {error:#?}"));
+        }
+    }
+
+    #[test]
+    fn gated_recovery_timestamps_remain_ordered() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .unwrap();
+        if !adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return;
+        }
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::TIMESTAMP_QUERY,
+            ..Default::default()
+        }))
+        .unwrap();
+        let mut gpu = GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &pendulum_creation(false),
+            GpuPhysicsConfig {
+                ground_plane_enabled: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut chunk = super::terrain::tests::rigid_chunk();
+        chunk.origin.0.y -= 100.0;
+        gpu.write_terrain_chunks(&device, &queue, [&chunk], bevy_math::DVec3::ZERO)
+            .unwrap();
+        for tick in 1..=30 {
+            gpu.dispatch_tick(&device, &queue, tick);
+            let result = gpu.read_last_tick(&device).unwrap();
+            assert_eq!(result.error_flags, 0);
+            assert_eq!(result.contact_count, 0);
+            let stages = result.kernel_timings.unwrap();
+            assert!(stages.terrain_recovery_ms > 0.0);
+            assert!(
+                stages.recovery_projection_ms <= stages.terrain_recovery_ms,
+                "invalid nested span: {stages:?}"
+            );
+            assert!(stages.terrain_recovery_ms <= result.gpu_tick_ms.unwrap());
         }
     }
 
@@ -5619,7 +5968,8 @@ mod tests {
                 - qa * bearing.local_anchor_a;
             let axis = qa * bearing.local_axis_a;
             let (position_error, rotation_error) = match bearing.kind {
-                mechanic_core::BearingKind::Linear(_) => {
+                mechanic_core::BearingKind::Linear(_)
+                | mechanic_core::BearingKind::Suspension(_) => {
                     let displacement = delta.dot(axis);
                     let [lower, upper] = bearing.kind.bounds();
                     let residual = delta - axis * displacement.clamp(lower, upper);
@@ -5732,7 +6082,7 @@ mod tests {
                 copies == 1
             );
             for bearing in &creation.bearings {
-                if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_))
+                if bearing.kind.is_translational()
                     && let Some(coordinate) = bearing.coordinate_index
                 {
                     creation.coordinate_drives[coordinate as usize] = linear_speed_drive(0.5);
@@ -6140,6 +6490,468 @@ mod tests {
         );
     }
 
+    fn suspension_test_creation(
+        spec: mechanic_core::SuspensionSpec,
+        vertical: bool,
+        copies: i32,
+    ) -> mechanic_core::CompiledCreation {
+        suspension_test_creation_with_anchor(spec, vertical, copies, true)
+    }
+
+    fn suspension_test_creation_with_anchor(
+        spec: mechanic_core::SuspensionSpec,
+        vertical: bool,
+        copies: i32,
+        grounded: bool,
+    ) -> mechanic_core::CompiledCreation {
+        let mut graph = ConstructionGraph::new();
+        let axis = if vertical { Vec3::Y } else { Vec3::X };
+        let source_face = if vertical {
+            FaceKind::PositiveY
+        } else {
+            FaceKind::PositiveX
+        };
+        let target_face = if vertical {
+            FaceKind::NegativeY
+        } else {
+            FaceKind::NegativeX
+        };
+        for copy in 0..copies {
+            let base_ticks = IVec3::new(0, 200, copy * 1600);
+            #[allow(clippy::cast_possible_truncation)]
+            let spacing_ticks = ((spec.initial_length() + 0.625) / 0.0025).round() as i32;
+            let offset = if vertical { IVec3::Y } else { IVec3::X } * spacing_ticks;
+            let mut spawn = |ticks, dimensions| {
+                spawned_part(
+                    graph
+                        .apply(BuildCommand::Spawn(
+                            CuboidSpec::new(
+                                dimensions,
+                                BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                            )
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+            };
+            let base = spawn(base_ticks, [4, 4, 4]);
+            let tip = spawn(base_ticks + offset, [1, 1, 1]);
+            if grounded {
+                graph
+                    .apply(BuildCommand::Weld(WeldSpec {
+                        first: FaceRef::part(base, FaceKind::NegativeY),
+                        second: FaceRef::ground(),
+                    }))
+                    .unwrap();
+            }
+            graph
+                .apply(BuildCommand::AddBearing(
+                    BearingSpec::new(
+                        FaceRef::part(base, source_face),
+                        FaceRef::part(tip, target_face),
+                        base_ticks.as_vec3() * 0.0025 + axis * 0.5,
+                        axis,
+                    )
+                    .with_kind(mechanic_core::BearingKind::Suspension(spec)),
+                ))
+                .unwrap();
+        }
+        graph.compile().unwrap()
+    }
+
+    fn suspension_test_gpu(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        creation: &mechanic_core::CompiledCreation,
+    ) -> GpuPhysics {
+        GpuPhysics::new_with_config(
+            device,
+            queue,
+            creation,
+            GpuPhysicsConfig {
+                collisions_enabled: false,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn suspension_loaded_spring_equilibrium_in_small_and_parallel_routes() {
+        use mechanic_core::{ShockSpec, SpringSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let spring = SpringSpec::default();
+        let spec = SuspensionSpec::new(Some(spring), Some(ShockSpec::default()), None).unwrap();
+        for copies in [1, 65] {
+            let creation = suspension_test_creation(spec, true, copies);
+            assert_eq!(
+                uses_fused_velocity_schedule(
+                    u32::try_from(creation.bearings.len()).unwrap(),
+                    u32::try_from(creation.compounds.len()).unwrap()
+                ),
+                copies == 1
+            );
+            let bearing = creation.bearings[0];
+            let expected = creation.compounds[bearing.compound_b as usize]
+                .mass_properties
+                .mass
+                * 9.81
+                / spring.rate();
+            let gpu = suspension_test_gpu(&device, &queue, &creation);
+            for tick in 1..=360 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let (displacement, _) = linear_test_snapshot(&gpu, &device, &queue, &creation, 360);
+            assert!(
+                (-displacement - expected).abs() < expected * 0.1 + 0.0001,
+                "copies {copies}: compression {}, equilibrium {expected}",
+                -displacement
+            );
+            assert_mixed_linear_constraints(&gpu, &device, &queue, &creation, 360);
+            eprintln!(
+                "suspension copies {copies}: {:?}",
+                gpu.read_last_tick(&device).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn suspension_damper_starting_stroke_is_force_free_and_rebound_is_stronger() {
+        use mechanic_core::{ShockBodyEnd, ShockSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let spec = SuspensionSpec::new(
+            None,
+            Some(ShockSpec::new(0.5, 0.1, ShockBodyEnd::Source, 0.075, 1.0, 1.6).unwrap()),
+            None,
+        )
+        .unwrap();
+        let creation = suspension_test_creation(spec, false, 1);
+        let mut distances = Vec::new();
+        for speed in [0.0_f32, -0.1, 0.1] {
+            let gpu = suspension_test_gpu(&device, &queue, &creation);
+            let bearing = creation.bearings[0];
+            let body = &creation.compounds[bearing.compound_b as usize];
+            if speed != 0.0 {
+                gpu.apply_impulse(
+                    &device,
+                    &queue,
+                    bearing.compound_b,
+                    body.root_translation,
+                    Vec3::X * speed * body.mass_properties.mass,
+                )
+                .unwrap();
+            }
+            for tick in 1..=60 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let (position, _) = linear_test_snapshot(&gpu, &device, &queue, &creation, 60);
+            distances.push(position.abs());
+            if speed == 0.0 {
+                assert!(
+                    position.abs() < 0.00001,
+                    "stationary damper moved {position}"
+                );
+            } else {
+                assert!(
+                    position * speed > 0.0
+                        && position.abs() < speed.abs() * 60.0 * crate::FIXED_DT_SECONDS * 0.9,
+                    "damper failed to decay: speed {speed}, travel {position}"
+                );
+            }
+        }
+        assert!(
+            distances[2] < distances[1] * 0.9,
+            "compression/rebound travel {distances:?}"
+        );
+    }
+
+    #[test]
+    fn suspension_spring_oscillates_and_preload_reduces_loaded_compression() {
+        use mechanic_core::{SpringSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let mut compressions = Vec::new();
+        for preload in [0.0, 0.025] {
+            let spring = SpringSpec::new(0.5, 0.16, 0.12, 6, preload).unwrap();
+            let spec = SuspensionSpec::new(Some(spring), None, None).unwrap();
+            let creation = suspension_test_creation(spec, true, 1);
+            let gpu = suspension_test_gpu(&device, &queue, &creation);
+            let mut samples = Vec::new();
+            for tick in 1..=60 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                samples.push(-linear_test_snapshot(&gpu, &device, &queue, &creation, tick).0);
+            }
+            if preload == 0.0 {
+                assert!(samples.windows(2).any(|s| s[1] > s[0] + 0.00001));
+                assert!(
+                    samples.windows(2).any(|s| s[1] < s[0] - 0.00001),
+                    "no spring rebound: {samples:?}"
+                );
+            }
+            compressions.push(samples.iter().copied().fold(0.0_f32, f32::max));
+        }
+        assert!(
+            compressions[1] < compressions[0] * 0.1,
+            "preload had no effect: {compressions:?}"
+        );
+    }
+
+    #[test]
+    fn suspension_shock_bottoms_and_rubber_supports_load_in_both_body_orientations() {
+        use mechanic_core::{BumpStopSpec, ShockBodyEnd, ShockSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let mut masses = Vec::new();
+        for body_end in [ShockBodyEnd::Source, ShockBodyEnd::Opposite] {
+            for with_stop in [false, true] {
+                let shock = ShockSpec::new(0.5, 0.1, body_end, 0.0, 1.0, 1.6).unwrap();
+                let stop = with_stop.then(|| BumpStopSpec::new(0.05, 0.06).unwrap());
+                let spec = SuspensionSpec::new(None, Some(shock), stop).unwrap();
+                let creation = suspension_test_creation(spec, true, 1);
+                let bearing = creation.bearings[0];
+                let mass = creation.compounds[bearing.compound_b as usize]
+                    .mass_properties
+                    .mass;
+                if !with_stop {
+                    masses.push(mass);
+                }
+                let gpu = suspension_test_gpu(&device, &queue, &creation);
+                for tick in 1..=360 {
+                    gpu.dispatch_tick(&device, &queue, tick);
+                }
+                let (position, _) = linear_test_snapshot(&gpu, &device, &queue, &creation, 360);
+                let compression = -position;
+                if with_stop {
+                    assert!(
+                        compression > spec.bump_contact().unwrap(),
+                        "rubber never contacted: {compression}"
+                    );
+                    assert!(
+                        compression < spec.compression_limit().0,
+                        "rubber reached crush limit under small load"
+                    );
+                    let force = spec.elastic_force(compression);
+                    assert!(
+                        (force - mass * 9.81).abs() < mass * 9.81 * 0.15,
+                        "rubber load mismatch: force {force}, load {}",
+                        mass * 9.81
+                    );
+                } else {
+                    assert!(
+                        (compression - spec.compression_limit().0).abs() < 0.0001,
+                        "shock failed to bottom: {compression}, limit {}",
+                        spec.compression_limit().0
+                    );
+                }
+            }
+        }
+        assert!(
+            masses[1] > masses[0],
+            "body-end reversal did not move body mass: {masses:?}"
+        );
+    }
+
+    #[test]
+    fn suspension_passive_forces_preserve_mixed_loop_closures_in_both_routes() {
+        use mechanic_core::{BearingKind, ShockSpec, SpringSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let spec = SuspensionSpec::new(
+            Some(SpringSpec::default()),
+            Some(ShockSpec::default()),
+            None,
+        )
+        .unwrap();
+        for copies in [1, 22] {
+            // Reuse compiled mixed-loop topology to isolate the passive solver.
+            // Graph placement and suspension mass ownership have separate fixtures.
+            let mut creation = mixed_linear_creation(copies, true);
+            for bearing in &mut creation.bearings {
+                if bearing.kind.is_translational() {
+                    bearing.kind = BearingKind::Suspension(spec);
+                }
+            }
+            assert_eq!(
+                creation.loop_topology.closure_bearings.len(),
+                usize::try_from(copies).unwrap()
+            );
+            let gpu = suspension_test_gpu(&device, &queue, &creation);
+            let bearing = creation.bearings[0];
+            let body = &creation.compounds[bearing.compound_b as usize];
+            gpu.apply_impulse(
+                &device,
+                &queue,
+                bearing.compound_b,
+                body.root_translation,
+                Vec3::NEG_Z * body.mass_properties.mass,
+            )
+            .unwrap();
+            let mut minimum = 0.0_f32;
+            for tick in 1..=90 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                if tick % 5 == 0 {
+                    assert_mixed_linear_constraints(&gpu, &device, &queue, &creation, tick);
+                    minimum =
+                        minimum.min(linear_test_snapshot(&gpu, &device, &queue, &creation, tick).0);
+                }
+            }
+            assert!(
+                minimum < -0.001,
+                "loop suspension failed to compress: {minimum}"
+            );
+        }
+    }
+
+    #[test]
+    fn suspension_floating_mount_receives_bottom_out_reaction() {
+        use mechanic_core::{ShockBodyEnd, ShockSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let spec = SuspensionSpec::new(
+            None,
+            Some(ShockSpec::new(0.5, 0.1, ShockBodyEnd::Source, 0.075, 0.0, 0.0).unwrap()),
+            None,
+        )
+        .unwrap();
+        for copies in [1, 65] {
+            let creation = suspension_test_creation_with_anchor(spec, false, copies, false);
+            let gpu = suspension_test_gpu(&device, &queue, &creation);
+            let bearing = creation.bearings[0];
+            let tip = &creation.compounds[bearing.compound_b as usize];
+            let base = &creation.compounds[bearing.compound_a as usize];
+            gpu.apply_impulse(
+                &device,
+                &queue,
+                bearing.compound_b,
+                tip.root_translation,
+                Vec3::NEG_X * 20.0 * tip.mass_properties.mass,
+            )
+            .unwrap();
+            for tick in 1..=15 {
+                gpu.dispatch_tick(&device, &queue, tick);
+            }
+            let (position, snapshot) = linear_test_snapshot(&gpu, &device, &queue, &creation, 15);
+            assert!(
+                (position - spec.bounds()[0]).abs() < 0.0001,
+                "floating shock did not bottom: {position}"
+            );
+            let movement =
+                transform_position(snapshot[bearing.compound_a as usize]) - base.root_translation;
+            assert!(
+                movement.x < -0.0001,
+                "floating mount received no reaction: {movement:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // Held velocities must be exactly zero.
+    fn suspension_holds_suppress_passive_forces_and_release_restores_spring_motion() {
+        use mechanic_core::{ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let spec = SuspensionSpec::new(
+            Some(SpringSpec::default()),
+            Some(ShockSpec::new(0.5, 0.1, ShockBodyEnd::Source, 0.05, 1.0, 1.6).unwrap()),
+            None,
+        )
+        .unwrap();
+        for copies in [1, 65] {
+            let creation = suspension_test_creation_with_anchor(spec, false, copies, false);
+            let gpu = suspension_test_gpu(&device, &queue, &creation);
+            gpu.enable_async_readback();
+            let poses = creation
+                .compounds
+                .iter()
+                .map(|body| crate::GpuTransform {
+                    position: body.root_translation.extend(0.0).to_array(),
+                    rotation: body.root_rotation.to_array(),
+                })
+                .collect::<Vec<_>>();
+            let mut holds = vec![true; poses.len()];
+            gpu.set_body_holds(&queue, &holds).unwrap();
+            gpu.prescribe_held_poses(&queue, &poses).unwrap();
+            for tick in 1..=3 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let state = gpu.poll_tick_readback(&device).unwrap().unwrap();
+                assert_eq!(state.diagnostics.error_flags, 0);
+                assert_eq!(state.transforms, poses);
+                assert!(
+                    state
+                        .velocities
+                        .iter()
+                        .all(|v| v.linear == [0.0; 4] && v.angular == [0.0; 4])
+                );
+            }
+            let bearing = creation.bearings[0];
+            holds[bearing.compound_a as usize] = false;
+            holds[bearing.compound_b as usize] = false;
+            gpu.set_body_holds(&queue, &holds).unwrap();
+            let mut last = None;
+            for tick in 4..=33 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let state = gpu.poll_tick_readback(&device).unwrap().unwrap();
+                assert_eq!(state.diagnostics.error_flags, 0);
+                for (index, held) in holds.iter().enumerate() {
+                    if *held {
+                        assert_eq!(state.transforms[index], poses[index]);
+                    }
+                }
+                last = Some(state);
+            }
+            let state = last.unwrap();
+            let base = bearing.compound_a as usize;
+            assert!(
+                state.transforms[base].position[0] < poses[base].position[0] - 0.00001,
+                "released mount received no spring reaction"
+            );
+            let tip = bearing.compound_b as usize;
+            assert!(
+                state.transforms[tip].position[0] > poses[tip].position[0] + 0.02,
+                "released spring did not extend from initial compression"
+            );
+        }
+    }
+
+    #[test]
+    fn suspension_rubber_crush_limit_resists_sustained_overload_in_both_routes() {
+        use mechanic_core::{BumpStopSpec, ShockSpec, SuspensionSpec};
+        let (device, queue) = test_device().expect("suspension regression requires a GPU");
+        let spec = SuspensionSpec::new(
+            None,
+            Some(ShockSpec::default()),
+            Some(BumpStopSpec::new(0.05, 0.06).unwrap()),
+        )
+        .unwrap();
+        let force = spec.elastic_force(spec.compression_limit().0) * 4.0;
+        for copies in [1, 65] {
+            let creation = suspension_test_creation(spec, false, copies);
+            let gpu = suspension_test_gpu(&device, &queue, &creation);
+            let bearing = creation.bearings[0];
+            let body = &creation.compounds[bearing.compound_b as usize];
+            let mut contact_point = body.root_translation;
+            let mut position = 0.0;
+            for tick in 1..=60 {
+                gpu.apply_impulse(
+                    &device,
+                    &queue,
+                    bearing.compound_b,
+                    contact_point,
+                    Vec3::NEG_X * force * crate::FIXED_DT_SECONDS,
+                )
+                .unwrap();
+                gpu.dispatch_tick(&device, &queue, tick);
+                let (displacement, snapshot) =
+                    linear_test_snapshot(&gpu, &device, &queue, &creation, tick);
+                position = displacement;
+                contact_point = transform_position(snapshot[bearing.compound_b as usize]);
+            }
+            assert!(
+                (-position - spec.compression_limit().0).abs() < 0.0001,
+                "rubber failed to stop at 55% crush: {} vs {}",
+                -position,
+                spec.compression_limit().0
+            );
+        }
+    }
+
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -6328,7 +7140,7 @@ mod tests {
                     .unwrap();
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-                gpu.encode_mechanism_forward_kinematics(&mut encoder, false, 0);
+                gpu.encode_mechanism_forward_kinematics(&mut encoder, None, 0);
                 super::direct_compute_pass(
                     &mut encoder,
                     "initialize pipe motion",
@@ -6938,6 +7750,67 @@ mod tests {
     }
 
     #[test]
+    fn late_mapping_callbacks_cannot_reorder_publication() {
+        assert_eq!(
+            super::oldest_completed_readback([(2, 7, 1), (0, 8, 0)].into_iter()),
+            None
+        );
+        assert_eq!(
+            super::oldest_completed_readback([(2, 7, 0), (0, 8, 0)].into_iter()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn submission_sequence_and_execution_evidence_survive_scheduler_gaps() {
+        let (device, queue) =
+            test_device().expect("execution evidence requires a real GPU adapter");
+        let creation = pendulum_creation(false);
+        let gpu = GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &creation,
+            GpuPhysicsConfig {
+                collisions_enabled: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        gpu.enable_async_readback();
+        for (sequence, tick) in [(1, 4), (2, 22)] {
+            let submission = gpu.dispatch_tick(&device, &queue, tick);
+            assert_eq!(submission.submission_sequence, sequence);
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let completed = gpu.poll_tick_readback(&device).unwrap().unwrap();
+            assert_eq!(completed.submission_sequence, sequence);
+            assert_eq!(completed.tick_index, tick);
+            assert_eq!(completed.diagnostics.error_flags, 0);
+            let evidence = completed.diagnostics.execution;
+            assert_eq!(
+                evidence.integrated_bodies as usize,
+                creation.compounds.len()
+            );
+            assert_eq!(evidence.published_bodies as usize, creation.compounds.len());
+            assert_eq!(
+                evidence.validated_bearings as usize,
+                creation.bearings.len()
+            );
+            assert_eq!(evidence.stage_mask, 1 | 2 | 32 | 64);
+        }
+        queue.write_buffer(
+            &gpu.diagnostics,
+            0,
+            bytemuck::bytes_of(&crate::INVALID_NUMERIC_FLAG),
+        );
+        gpu.dispatch_tick(&device, &queue, 23);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let completed = gpu.poll_tick_readback(&device).unwrap().unwrap();
+        assert_ne!(completed.diagnostics.error_flags, 0);
+        assert_eq!(completed.diagnostics.execution.integrated_bodies, 0);
+        assert_eq!(completed.diagnostics.execution.published_bodies, 0);
+    }
+
+    #[test]
     fn callback_timing_distinguishes_servicing_from_later_consumption() {
         let Some((device, queue)) = test_device() else {
             return;
@@ -6957,7 +7830,10 @@ mod tests {
         assert!(callback.elapsed() >= std::time::Duration::from_millis(5));
         assert!(readback.submission_to_callbacks_ms.unwrap() <= readback.submission_to_readback_ms);
         assert_eq!(readback.diagnostics.error_flags, 0);
-        assert_eq!(gpu.async_readback_slots_available(), 3);
+        assert_eq!(
+            gpu.async_readback_slots_available(),
+            ASYNC_READBACK_RING_SIZE
+        );
     }
 
     #[test]
@@ -6968,7 +7844,8 @@ mod tests {
         let creation = pendulum_creation(false);
         let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
         gpu.enable_async_readback();
-        for tick in 1..=3 {
+        let ring = u64::try_from(ASYNC_READBACK_RING_SIZE).unwrap();
+        for tick in 1..=ring {
             let started = std::time::Instant::now();
             let submission = gpu.dispatch_tick(&device, &queue, tick);
             let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
@@ -6987,6 +7864,8 @@ mod tests {
             assert!(stages.iter().sum::<f64>() <= elapsed_ms);
             assert_eq!(submission.tick_index, tick);
         }
+        // A full ring is the app's submission budget: the backlog waits on the
+        // CPU rather than growing an unbounded GPU queue.
         assert_eq!(gpu.async_readback_slots_available(), 0);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
@@ -6999,12 +7878,19 @@ mod tests {
             assert_eq!(readback.transforms.len(), creation.compounds.len());
             completed.push(readback.tick_index);
         }
-        assert_eq!(gpu.async_readback_slots_available(), 3);
-        gpu.dispatch_tick(&device, &queue, 4);
+        assert_eq!(
+            gpu.async_readback_slots_available(),
+            ASYNC_READBACK_RING_SIZE
+        );
+        gpu.dispatch_tick(&device, &queue, ring + 1);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let readback = gpu.poll_tick_readback(&device).unwrap().unwrap();
         completed.push(readback.tick_index);
-        assert_eq!(completed, vec![1, 2, 3, 4]);
+        assert_eq!(
+            completed,
+            (1..=ring + 1).collect::<Vec<_>>(),
+            "every submitted tick is read back once, in order"
+        );
     }
 
     fn copy_state_rows<T: bytemuck::Pod>(
@@ -8610,6 +9496,342 @@ mod tests {
             .read_snapshot_transforms(&device, &queue, (ticks % 3) as u8)
             .ok()?;
         Some((snapshot, readback))
+    }
+
+    #[test]
+    fn terrain_triangles_contact_cuboids_convex_parts_and_cylinders_on_slopes_and_walls() {
+        let (device, queue) =
+            test_device().expect("terrain collider regression requires an adapter");
+        let mut cylinder = ConstructionGraph::new();
+        cylinder
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                CylinderDimensions::new(1.0, 0.0, 1.0).unwrap(),
+                BuildPose::from_half_grid(IVec3::new(0, 3, 0), GridRotation::default()),
+            )))
+            .unwrap();
+        let shapes = [
+            material_cube(ConstructionMaterial::Steel, 3),
+            shaped_wedge(3),
+            cylinder.compile().unwrap(),
+        ];
+        for (shape, creation) in shapes.iter().enumerate() {
+            for angle in [
+                0.0,
+                std::f32::consts::FRAC_PI_4,
+                std::f32::consts::FRAC_PI_2,
+            ] {
+                let mut terrain = super::terrain::tests::chunk();
+                let rotation = bevy_math::Quat::from_rotation_z(angle);
+                for vertex in &mut terrain.vertices {
+                    *vertex = (rotation * Vec3::from_array(*vertex)).to_array();
+                }
+                let mut gpu = GpuPhysics::new_with_config(
+                    &device,
+                    &queue,
+                    creation,
+                    GpuPhysicsConfig {
+                        ground_plane_enabled: false,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                gpu.write_terrain_chunks(&device, &queue, [&terrain], bevy_math::DVec3::ZERO)
+                    .unwrap();
+                gpu.dispatch_tick(&device, &queue, 1);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let readback = gpu.read_last_tick(&device).unwrap();
+                assert_eq!(readback.error_flags, 0, "shape {shape}, angle {angle}");
+                assert!(
+                    readback.active_contact_count > 0,
+                    "shape {shape}, angle {angle}: {readback:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_contacts_enter_the_fused_articulated_solver() {
+        let (device, queue) =
+            test_device().expect("terrain articulated regression requires an adapter");
+        let fixture = articulated_car_fixture();
+        let mut gpu = GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &fixture.creation,
+            GpuPhysicsConfig {
+                ground_plane_enabled: false,
+                mechanism_self_collisions: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            gpu.solver_route(),
+            super::GpuSolverRoute::FusedSmallMechanism
+        );
+        let mut terrain = super::terrain::tests::chunk();
+        terrain.origin = mechanic_world::WorldPosition(bevy_math::DVec3::Y * 0.3);
+        gpu.write_terrain_chunks(&device, &queue, [&terrain], bevy_math::DVec3::ZERO)
+            .unwrap();
+        gpu.dispatch_tick(&device, &queue, 1);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let readback = gpu.read_last_tick(&device).unwrap();
+        assert_eq!(readback.error_flags, 0, "{readback:?}");
+        assert!(readback.active_contact_count > 0, "{readback:?}");
+        assert!(readback.executed_solver_sweeps > 0, "{readback:?}");
+    }
+
+    #[test]
+    fn rigid_terrain_impact_bounds_hold_for_convex_parts_and_cylinders() {
+        let (device, queue) = test_device().expect("terrain impact regression requires an adapter");
+        let mut cylinder = ConstructionGraph::new();
+        cylinder
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                CylinderDimensions::new(1.0, 0.0, 1.0).unwrap(),
+                BuildPose::from_half_grid(IVec3::new(0, 5, 0), GridRotation::default()),
+            )))
+            .unwrap();
+        for (shape, mut creation) in [shaped_wedge(5), cylinder.compile().unwrap()]
+            .into_iter()
+            .enumerate()
+        {
+            for collider in &mut creation.colliders {
+                collider.material_properties.restitution = 0.0;
+                collider.material_properties.youngs_modulus_pa = 200.0e9;
+            }
+            for speed in [1.0, 5.0, 20.0] {
+                let mut gpu = GpuPhysics::new_with_config(
+                    &device,
+                    &queue,
+                    &creation,
+                    GpuPhysicsConfig {
+                        ground_plane_enabled: false,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                gpu.write_terrain_chunks(
+                    &device,
+                    &queue,
+                    [&super::terrain::tests::rigid_chunk()],
+                    bevy_math::DVec3::ZERO,
+                )
+                .unwrap();
+                gpu.enable_async_readback();
+                gpu.apply_impulse(
+                    &device,
+                    &queue,
+                    0,
+                    creation.compounds[0].root_translation,
+                    Vec3::NEG_Y * speed * creation.compounds[0].mass_properties.mass,
+                )
+                .unwrap();
+                for tick in 1..=120 {
+                    gpu.dispatch_tick(&device, &queue, tick);
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let sample = gpu.poll_tick_readback(&device).unwrap().unwrap();
+                    assert_eq!(
+                        sample.diagnostics.error_flags, 0,
+                        "shape {shape}, speed {speed}, tick {tick}"
+                    );
+                    for collider in &creation.colliders {
+                        let pose = sample.transforms[collider.compound_index as usize];
+                        let rotation = bevy_math::Quat::from_array(pose.rotation);
+                        let minimum = match &collider.shape {
+                            mechanic_core::ColliderShape::Cuboid {
+                                local_rotation,
+                                half_extents,
+                            } => {
+                                let center = Vec3::from_slice(&pose.position[..3])
+                                    + rotation * collider.local_center;
+                                center.y
+                                    - ((rotation * *local_rotation).inverse() * Vec3::Y)
+                                        .abs()
+                                        .dot(*half_extents)
+                            }
+                            mechanic_core::ColliderShape::Convex(convex) => convex
+                                .vertices
+                                .iter()
+                                .map(|vertex| pose.position[1] + (rotation * *vertex).y)
+                                .fold(f32::INFINITY, f32::min),
+                        };
+                        let limit = if tick > 100 { 0.002 } else { 0.005 };
+                        assert!(
+                            minimum >= -limit,
+                            "shape {shape}, speed {speed}, tick {tick}: bottom {minimum}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_recovery_preserves_articulated_and_suspension_constraints() {
+        use mechanic_core::{ShockSpec, SpringSpec, SuspensionSpec};
+        let (device, queue) =
+            test_device().expect("articulated terrain regression requires an adapter");
+        let suspension = SuspensionSpec::new(
+            Some(SpringSpec::default()),
+            Some(ShockSpec::default()),
+            None,
+        )
+        .unwrap();
+        let scenes = [
+            articulated_car_fixture().creation,
+            suspension_test_creation_with_anchor(suspension, true, 1, false),
+            suspension_test_creation_with_anchor(suspension, true, 65, false),
+        ];
+        for (scene, mut creation) in scenes.into_iter().enumerate() {
+            for collider in &mut creation.colliders {
+                collider.material_properties.restitution = 0.0;
+                collider.material_properties.youngs_modulus_pa = 200.0e9;
+            }
+            let mut gpu = GpuPhysics::new_with_config(
+                &device,
+                &queue,
+                &creation,
+                GpuPhysicsConfig {
+                    ground_plane_enabled: false,
+                    mechanism_self_collisions: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                gpu.solver_route(),
+                if scene == 2 {
+                    super::GpuSolverRoute::General
+                } else {
+                    super::GpuSolverRoute::FusedSmallMechanism
+                }
+            );
+            let mut terrain = super::terrain::tests::rigid_chunk();
+            for vertex in &mut terrain.vertices {
+                vertex[0] *= 100.0;
+                vertex[2] *= 100.0;
+            }
+            gpu.write_terrain_chunks(&device, &queue, [&terrain], bevy_math::DVec3::ZERO)
+                .unwrap();
+            gpu.enable_async_readback();
+            for (body, compound) in creation.compounds.iter().enumerate() {
+                if compound.is_static {
+                    continue;
+                }
+                gpu.apply_impulse(
+                    &device,
+                    &queue,
+                    u32::try_from(body).unwrap(),
+                    compound.root_translation,
+                    Vec3::NEG_Y * 20.0 * compound.mass_properties.mass,
+                )
+                .unwrap();
+            }
+            for tick in 1..=120 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let sample = gpu.poll_tick_readback(&device).unwrap().unwrap();
+                assert_eq!(
+                    sample.diagnostics.error_flags, 0,
+                    "scene {scene}, tick {tick}: {:?}",
+                    sample.diagnostics
+                );
+                let minimum = minimum_dynamic_collider_height(&creation, &sample.transforms);
+                assert!(
+                    minimum >= -if tick > 100 { 0.002 } else { 0.005 },
+                    "scene {scene}, tick {tick}: bottom {minimum}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_position_recovery_preserves_intentional_restitution() {
+        let (device, queue) =
+            test_device().expect("terrain restitution regression requires an adapter");
+        let mut peaks = Vec::new();
+        for restitution in [0.0, 0.8] {
+            let mut creation = material_cube(ConstructionMaterial::Steel, 5);
+            for collider in &mut creation.colliders {
+                collider.material_properties.restitution = restitution;
+            }
+            let mut gpu = GpuPhysics::new_with_config(
+                &device,
+                &queue,
+                &creation,
+                GpuPhysicsConfig {
+                    ground_plane_enabled: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            gpu.write_terrain_chunks(
+                &device,
+                &queue,
+                [&super::terrain::tests::rigid_chunk()],
+                bevy_math::DVec3::ZERO,
+            )
+            .unwrap();
+            gpu.enable_async_readback();
+            gpu.apply_impulse(
+                &device,
+                &queue,
+                0,
+                creation.compounds[0].root_translation,
+                Vec3::NEG_Y * 5.0 * creation.compounds[0].mass_properties.mass,
+            )
+            .unwrap();
+            let mut peak = f32::NEG_INFINITY;
+            for tick in 1..=30 {
+                gpu.dispatch_tick(&device, &queue, tick);
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let sample = gpu.poll_tick_readback(&device).unwrap().unwrap();
+                assert_eq!(sample.diagnostics.error_flags, 0);
+                peak = peak.max(sample.velocities[0].linear[1]);
+            }
+            peaks.push(peak);
+        }
+        assert!(
+            peaks[0] < 0.001,
+            "inelastic terrain contact rebounded: {peaks:?}"
+        );
+        assert!(
+            peaks[1] > 1.0,
+            "intentional restitution disappeared: {peaks:?}"
+        );
+    }
+
+    fn minimum_dynamic_collider_height(
+        creation: &mechanic_core::CompiledCreation,
+        transforms: &[crate::GpuTransform],
+    ) -> f32 {
+        creation
+            .colliders
+            .iter()
+            .filter(|collider| !creation.compounds[collider.compound_index as usize].is_static)
+            .map(|collider| {
+                let pose = transforms[collider.compound_index as usize];
+                let rotation = bevy_math::Quat::from_array(pose.rotation);
+                match &collider.shape {
+                    mechanic_core::ColliderShape::Cuboid {
+                        local_rotation,
+                        half_extents,
+                    } => {
+                        let center = Vec3::from_slice(&pose.position[..3])
+                            + rotation * collider.local_center;
+                        center.y
+                            - ((rotation * *local_rotation).inverse() * Vec3::Y)
+                                .abs()
+                                .dot(*half_extents)
+                    }
+                    mechanic_core::ColliderShape::Convex(convex) => convex
+                        .vertices
+                        .iter()
+                        .map(|vertex| pose.position[1] + (rotation * *vertex).y)
+                        .fold(f32::INFINITY, f32::min),
+                }
+            })
+            .fold(f32::INFINITY, f32::min)
     }
 
     fn material_cube(

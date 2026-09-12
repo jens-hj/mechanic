@@ -24,7 +24,8 @@ struct Collider {
     metadata: vec4<u32>,
     surface_response: vec4<f32>,
     surface_elasticity: vec4<f32>,
-    // shape kind, convex-buffer offset, packed element counts, reserved.
+    // shape kind, convex-buffer offset, packed element counts, and
+    // nonzero when the owning body can never move.
     shape: vec4<u32>,
 };
 
@@ -75,6 +76,8 @@ struct Bearing {
     local_anchor_b: vec4<f32>,
     local_axis_a: vec4<f32>,
     local_axis_b: vec4<f32>,
+    suspension: vec4<f32>,
+    bump_stop: vec4<f32>,
     metadata: vec4<u32>,
 };
 
@@ -137,7 +140,7 @@ const MAX_HASH_PROBES: u32 = 96u;
 const EMPTY_HASH_KEY: u32 = 0u;
 const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 // Per-body counts follow the eight-u32 GpuDiagnostics readback header.
-const BODY_CONTACT_COUNT_OFFSET: u32 = 8u;
+const BODY_CONTACT_COUNT_OFFSET: u32 = 12u;
 const PROJECTED_RELAXATION: f32 = 0.125;
 const WARM_START_SCALE: f32 = 0.5;
 const MAX_ROLLING_RESISTANCE: f32 = 0.04;
@@ -155,7 +158,8 @@ const INVALID_MANIFOLD_SLOT: u32 = 0xffffffffu;
 const MAX_MANIFOLD_PROBES: u32 = 256u;
 const ANALYTIC_CYLINDER_FLAG: u32 = 0x80000000u;
 const CYLINDER_FACE_PAIR_FLAG: u32 = 0x40000000u;
-const CONTACT_FLAG_MASK: u32 = ANALYTIC_CYLINDER_FLAG | CYLINDER_FACE_PAIR_FLAG;
+const TERRAIN_CONTACT_FLAG: u32 = 0x20000000u;
+const CONTACT_FLAG_MASK: u32 = ANALYTIC_CYLINDER_FLAG | CYLINDER_FACE_PAIR_FLAG | TERRAIN_CONTACT_FLAG;
 const DRIVE_MODE_PASSIVE: u32 = 0u;
 const DRIVE_MODE_ANGLE: u32 = 2u;
 const DRIVE_ANGLE_POSITION_GAIN: f32 = 6.0;
@@ -239,8 +243,8 @@ fn tangent_basis(normal: vec3<f32>) -> TangentBasis {
 }
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
-@group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read> rotations: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> positions: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> rotations: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> linear_velocities: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read_write> diagnostics: array<atomic<u32>>;
 @group(0) @binding(6) var<storage, read> colliders: array<Collider>;
@@ -261,6 +265,503 @@ fn tangent_basis(normal: vec3<f32>) -> TangentBasis {
 @group(0) @binding(28) var<storage, read> convex_shapes: array<vec4<f32>>;
 @group(0) @binding(29) var<storage, read> ground_surfaces: array<GroundSurface>;
 @group(0) @binding(30) var<storage, read_write> drive_constraints: array<DriveConstraint>;
+
+struct TerrainRow {
+    minimum: vec4<f32>,
+    maximum: vec4<f32>,
+    first: vec4<f32>,
+    second: vec4<f32>,
+    third: vec4<f32>,
+    response: vec4<f32>,
+    metadata: vec4<u32>,
+};
+
+@group(0) @binding(31) var<storage, read> terrain_rows: array<TerrainRow>;
+
+struct TerrainPreviousPose {
+    position: vec4<f32>,
+    rotation: vec4<f32>,
+};
+@group(0) @binding(32) var<storage, read_write> terrain_previous_poses: array<TerrainPreviousPose>;
+
+@group(0) @binding(33) var<storage, read_write> terrain_sweep_fractions: array<atomic<u32>>;
+@group(0) @binding(34) var<storage, read> terrain_free_bodies: array<u32>;
+@group(0) @binding(35) var<storage, read_write> terrain_recovery_dispatch: array<u32>;
+@group(0) @binding(36) var<storage, read> recovery_contacts: array<u32>;
+
+@compute @workgroup_size(256)
+fn capture_terrain_poses(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let body = invocation.x;
+    if body >= config.body_count { return; }
+    terrain_previous_poses[body] = TerrainPreviousPose(positions[body], rotations[body]);
+    atomicStore(&terrain_sweep_fractions[body], bitcast<u32>(1.0));
+}
+
+// Reconstruct the isolated root's normalized Euler rotation at fractional time.
+// Rescaling the endpoint removes its normalization before interpolation; simple
+// nlerp would change rotation timing relative to simultaneous translation.
+fn terrain_rotation_at(body: u32, fraction: f32) -> vec4<f32> {
+    let previous = terrain_previous_poses[body].rotation;
+    let current = select(rotations[body], -rotations[body], dot(previous, rotations[body]) < 0.0);
+    let cosine = max(dot(previous, current), 1.0e-12);
+    return normalize(mix(previous, current / cosine, fraction));
+}
+
+fn terrain_gap_axis(collider: u32, triangle: TerrainRow, raw_axis: vec3<f32>, previous: vec4<f32>) -> vec4<f32> {
+    let squared = dot(raw_axis, raw_axis);
+    if squared < 1.0e-12 { return previous; }
+    let axis = raw_axis * inverseSqrt(squared);
+    let interval = project_collider(collider, axis);
+    let a = dot(axis, triangle.first.xyz);
+    let b = dot(axis, triangle.second.xyz);
+    let c = dot(axis, triangle.third.xyz);
+    let gap = max(min(a, min(b, c)) - interval.maximum, interval.minimum - max(a, max(b, c)));
+    if gap > previous.w { return vec4<f32>(axis, gap); }
+    return previous;
+}
+
+// Evaluate full finite-triangle SAT at a candidate pose by transforming the
+// triangle into the predicted collider frame, reusing all collider families.
+fn terrain_gap_at(collider: u32, triangle: TerrainRow, fraction: f32) -> vec4<f32> {
+    let body = colliders[collider].metadata.x;
+    let rotation = terrain_rotation_at(body, fraction);
+    let transform = quat_multiply(rotations[body], vec4<f32>(-rotation.xyz, rotation.w));
+    let position = mix(terrain_previous_poses[body].position.xyz, positions[body].xyz, fraction);
+    var local = triangle;
+    local.first = vec4<f32>(positions[body].xyz + quat_rotate(transform, triangle.first.xyz - position), 0.0);
+    local.second = vec4<f32>(positions[body].xyz + quat_rotate(transform, triangle.second.xyz - position), 0.0);
+    local.third = vec4<f32>(positions[body].xyz + quat_rotate(transform, triangle.third.xyz - position), 0.0);
+    let edges = array<vec3<f32>, 3>(local.second.xyz - local.first.xyz,
+        local.third.xyz - local.second.xyz, local.first.xyz - local.third.xyz);
+    var gap = terrain_gap_axis(collider, local, cross(edges[0], edges[1]), vec4<f32>(0.0, 0.0, 0.0, -1.0e30));
+    for (var face = 0u; face < collider_face_axis_count(collider); face += 1u) {
+        gap = terrain_gap_axis(collider, local, collider_face_axis(collider, face), gap);
+    }
+    for (var edge = 0u; edge < collider_edge_axis_count(collider); edge += 1u) {
+        for (var side = 0u; side < 3u; side += 1u) {
+            gap = terrain_gap_axis(collider, local, cross(collider_edge_axis(collider, edge), edges[side]), gap);
+        }
+    }
+    return vec4<f32>(quat_rotate(vec4<f32>(-transform.xyz, transform.w), gap.xyz), gap.w);
+}
+
+fn terrain_rotational_toi(collider: u32, triangle: TerrainRow, motion: vec3<f32>,
+    spin_axis: vec3<f32>, angular_bound: f32, radius: f32) -> f32 {
+    // Endpoint intersections already enter the discrete manifold and split
+    // recovery. Search here only for crossings that path would otherwise miss.
+    if terrain_gap_at(collider, triangle, 1.0).w <= 1.0e-6 { return 1.0; }
+    var fraction = 0.0;
+    var gap = terrain_gap_at(collider, triangle, fraction);
+    // Existing overlaps remain the responsibility of split positional recovery.
+    // Clamping those would prevent supported rolling and ordinary contact motion.
+    if gap.w <= 1.0e-6 { return 1.0; }
+    let total_bound = length(motion) + angular_bound * radius;
+    for (var iteration = 0u; iteration < 256u; iteration += 1u) {
+        if gap.w <= 2.0e-7 {
+            return min(1.0, fraction + 1.0e-5 / max(total_bound, 1.0e-8));
+        }
+        // This separating axis is held fixed for the bound. Rotation around a
+        // parallel axis cannot close its gap (important for spinning cylinders).
+        let projection = dot(spin_axis, gap.xyz);
+        let speed = abs(dot(motion, gap.xyz))
+            + angular_bound * radius * sqrt(max(1.0 - projection * projection, 0.0));
+        if speed <= 1.0e-10 { return 1.0; }
+        let next = fraction + max(gap.w - 1.0e-7, 0.0) / speed;
+        if next >= 1.0 { return 1.0; }
+        if next <= fraction { return fraction; }
+        fraction = next;
+        gap = terrain_gap_at(collider, triangle, fraction);
+    }
+    // A bounded search may conservatively shorten motion, but must never turn
+    // an unresolved interval into permission to cross the surface.
+    return fraction;
+}
+
+// Triangle BVHs stay chunk-local across floating-origin shifts. Only the
+// placement row changes; cached triangle identities remain stable allocations.
+fn terrain_row(index: u32) -> TerrainRow {
+    var row = terrain_rows[index];
+    let shift = terrain_rows[row.metadata.z].first.xyz;
+    row.minimum = vec4<f32>(row.minimum.xyz + shift, row.minimum.w);
+    row.maximum = vec4<f32>(row.maximum.xyz + shift, row.maximum.w);
+    row.first = vec4<f32>(row.first.xyz + shift, row.first.w);
+    row.second = vec4<f32>(row.second.xyz + shift, row.second.w);
+    row.third = vec4<f32>(row.third.xyz + shift, row.third.w);
+    return row;
+}
+
+// Stackless top-level traversal returns the next intersecting chunk's range.
+fn next_terrain_chunk(minimum: vec3<f32>, maximum: vec3<f32>, start: u32) -> vec3<u32> {
+    var row = start;
+    let end = terrain_rows[0].metadata.y;
+    while row < end {
+        let node = terrain_rows[row];
+        if any(maximum < node.minimum.xyz) || any(minimum > node.maximum.xyz) {
+            row = node.metadata.x;
+            continue;
+        }
+        row += 1u;
+        if node.metadata.y == 2u { return vec3<u32>(row, node.metadata.zw); }
+    }
+    return vec3<u32>(end, 0u, 0u);
+}
+
+@compute @workgroup_size(256)
+fn sweep_rotating_terrain_colliders(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let collider = invocation.x;
+    if collider >= config.collider_count { return; }
+    let body = colliders[collider].metadata.x;
+    if terrain_free_bodies[body] == 0u { return; }
+    let previous = terrain_previous_poses[body];
+    let current = select(rotations[body], -rotations[body], dot(previous.rotation, rotations[body]) < 0.0);
+    let cosine = max(dot(previous.rotation, current), 1.0e-12);
+    let angular_bound = 2.0 * length(current - previous.rotation * cosine) / cosine;
+    var radius = length(colliders[collider].local_center.xyz) + length(colliders[collider].half_extents.xyz);
+    if collider_is_convex(collider) {
+        radius = 0.0;
+        for (var vertex = 0u; vertex < convex_vertex_count(collider); vertex += 1u) {
+            radius = max(radius, distance(convex_vertex(collider, vertex), positions[body].xyz));
+        }
+    }
+    if angular_bound * radius < 1.0e-4 { return; }
+    let delta = quat_multiply(current, vec4<f32>(-previous.rotation.xyz, previous.rotation.w));
+    let spin_axis = normalize(delta.xyz);
+    let motion = positions[body].xyz - previous.position.xyz;
+    let sphere_minimum = min(previous.position.xyz, positions[body].xyz) - vec3<f32>(radius);
+    let sphere_maximum = max(previous.position.xyz, positions[body].xyz) + vec3<f32>(radius);
+    let x = project_collider(collider, vec3<f32>(1.0, 0.0, 0.0));
+    let y = project_collider(collider, vec3<f32>(0.0, 1.0, 0.0));
+    let z = project_collider(collider, vec3<f32>(0.0, 0.0, 1.0));
+    let low = vec3<f32>(x.minimum, y.minimum, z.minimum);
+    let high = vec3<f32>(x.maximum, y.maximum, z.maximum);
+    // Both bounds enclose the complete sweep. Intersect them so ordinary small
+    // rotations do not visit the full circumscribed sphere's triangle set.
+    let angular_margin = vec3<f32>(angular_bound * radius);
+    let minimum = max(sphere_minimum, min(low, low - motion) - angular_margin);
+    let maximum = min(sphere_maximum, max(high, high - motion) + angular_margin);
+    var row = 0u;
+    var fraction = 1.0;
+    var next_chunk = terrain_rows[0].metadata.x;
+    var chunk_end = 0u;
+    loop {
+        if row >= chunk_end {
+            let chunk = next_terrain_chunk(minimum, maximum, next_chunk);
+            next_chunk = chunk.x;
+            row = chunk.y;
+            chunk_end = chunk.z;
+            if chunk_end == 0u { break; }
+        }
+        let triangle = terrain_row(row);
+        if any(maximum < triangle.minimum.xyz) || any(minimum > triangle.maximum.xyz) {
+            row = triangle.metadata.x;
+            continue;
+        }
+        row += 1u;
+        if triangle.metadata.y == 0u { continue; }
+        let normal = cross(triangle.second.xyz - triangle.first.xyz, triangle.third.xyz - triangle.first.xyz);
+        if dot(normal, normal) < 1.0e-12 { continue; }
+        fraction = min(fraction, terrain_rotational_toi(collider, triangle, motion, spin_axis, angular_bound, radius));
+    }
+    atomicMin(&terrain_sweep_fractions[body], bitcast<u32>(fraction));
+}
+
+@compute @workgroup_size(256)
+fn apply_terrain_sweep(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let body = invocation.x;
+    if body >= config.body_count { return; }
+    let fraction = bitcast<f32>(atomicLoad(&terrain_sweep_fractions[body]));
+    if fraction >= 1.0 { return; }
+    rotations[body] = terrain_rotation_at(body, fraction);
+    positions[body] = vec4<f32>(mix(terrain_previous_poses[body].position.xyz, positions[body].xyz, fraction), positions[body].w);
+}
+
+// Continuous SAT for translation. All axes use the current collider rotation;
+// Angular sweep is not yet covered by this translational TOI.
+fn terrain_sweep_axis(collider: u32, triangle: TerrainRow, raw_axis: vec3<f32>, motion: vec3<f32>, window: vec2<f32>) -> vec2<f32> {
+    let length_squared = dot(raw_axis, raw_axis);
+    if length_squared < 1.0e-12 { return window; }
+    let axis = raw_axis * inverseSqrt(length_squared);
+    let interval = project_collider(collider, axis);
+    let speed = dot(axis, motion);
+    let a = dot(axis, triangle.first.xyz);
+    let b = dot(axis, triangle.second.xyz);
+    let c = dot(axis, triangle.third.xyz);
+    let low = min(a, min(b, c)) - (interval.maximum - speed);
+    let high = max(a, max(b, c)) - (interval.minimum - speed);
+    if abs(speed) < 1.0e-9 {
+        if low > 1.0e-6 || high < -1.0e-6 { return vec2<f32>(2.0, -1.0); }
+        return window;
+    }
+    let first = low / speed;
+    let last = high / speed;
+    return vec2<f32>(max(window.x, min(first, last)), min(window.y, max(first, last)));
+}
+
+fn terrain_translation_toi(collider: u32, triangle: TerrainRow, motion: vec3<f32>) -> vec2<f32> {
+    let edges = array<vec3<f32>, 3>(triangle.second.xyz - triangle.first.xyz,
+        triangle.third.xyz - triangle.second.xyz, triangle.first.xyz - triangle.third.xyz);
+    var window = terrain_sweep_axis(collider, triangle, cross(edges[0], edges[1]), motion, vec2<f32>(0.0, 1.0));
+    for (var face = 0u; face < collider_face_axis_count(collider); face += 1u) {
+        if window.x > window.y { return window; }
+        window = terrain_sweep_axis(collider, triangle, collider_face_axis(collider, face), motion, window);
+    }
+    for (var edge = 0u; edge < collider_edge_axis_count(collider); edge += 1u) {
+        for (var triangle_edge = 0u; triangle_edge < 3u; triangle_edge += 1u) {
+            if window.x > window.y { return window; }
+            window = terrain_sweep_axis(collider, triangle, cross(collider_edge_axis(collider, edge), edges[triangle_edge]), motion, window);
+        }
+    }
+    return window;
+}
+
+// Clip the finite triangle to the collider. A plane support test alone invents
+// contacts beyond triangle edges, especially for long thin boxes.
+struct TerrainPatch {
+    points: array<vec3<f32>, 4>,
+    count: u32,
+};
+
+fn terrain_contact_polygon(collider: u32, triangle: TerrainRow, shift: vec3<f32>) -> TerrainPatch {
+    var manifold: TerrainPatch;
+    var polygon: array<vec3<f32>, 32>;
+    var scratch: array<vec3<f32>, 32>;
+    polygon[0] = triangle.first.xyz;
+    polygon[1] = triangle.second.xyz;
+    polygon[2] = triangle.third.xyz;
+    var count = 3u;
+    let plane_count = select(6u, convex_face_count(collider), collider_is_convex(collider));
+    for (var face = 0u; face < plane_count; face += 1u) {
+        var plane: vec4<f32>;
+        if collider_is_convex(collider) {
+            plane = convex_face_plane(collider, face);
+        } else {
+            let axis = collider_face_axis(collider, face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u);
+            plane = vec4<f32>(axis, project_collider(collider, axis).maximum);
+        }
+        plane.w += dot(plane.xyz, shift) + 1.0e-6;
+        var output = 0u;
+        for (var vertex = 0u; vertex < count; vertex += 1u) {
+            let first = polygon[vertex];
+            let second = polygon[(vertex + 1u) % count];
+            let a = dot(plane.xyz, first) - plane.w;
+            let b = dot(plane.xyz, second) - plane.w;
+            if a <= 0.0 {
+                if output >= 32u {
+                    atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
+                    return manifold;
+                }
+                scratch[output] = first;
+                output += 1u;
+            }
+            if (a < 0.0 && b > 0.0) || (a > 0.0 && b < 0.0) {
+                if output >= 32u {
+                    atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
+                    return manifold;
+                }
+                scratch[output] = mix(first, second, a / (a - b));
+                output += 1u;
+            }
+        }
+        count = output;
+        if count == 0u { return manifold; }
+        for (var vertex = 0u; vertex < count; vertex += 1u) {
+            polygon[vertex] = scratch[vertex];
+        }
+    }
+    let raw_normal = cross(triangle.second.xyz - triangle.first.xyz, triangle.third.xyz - triangle.first.xyz);
+    if dot(raw_normal, raw_normal) < 1.0e-12 { return manifold; }
+    let basis = tangent_basis(normalize(raw_normal));
+    let directions = array<vec3<f32>, 4>(basis.u + basis.v, basis.u - basis.v, -basis.u - basis.v, -basis.u + basis.v);
+    for (var corner = 0u; corner < 4u; corner += 1u) {
+        var selected = polygon[0];
+        var score = dot(selected, directions[corner]);
+        for (var vertex = 1u; vertex < count; vertex += 1u) {
+            let candidate = dot(polygon[vertex], directions[corner]);
+            if candidate > score { selected = polygon[vertex]; score = candidate; }
+        }
+        var unique = true;
+        for (var previous = 0u; previous < manifold.count; previous += 1u) {
+            if distance(selected, manifold.points[previous]) < 1.0e-5 { unique = false; }
+        }
+        if unique { manifold.points[manifold.count] = selected; manifold.count += 1u; }
+    }
+    return manifold;
+}
+
+// Each retained point keeps its source triangle and corner for geometry refresh.
+struct TerrainSupport {
+    point: vec3<f32>,
+    identity: u32,
+    shift: vec3<f32>,
+};
+
+struct TerrainSupportPlane {
+    plane: vec4<f32>,
+    response: vec4<f32>,
+    supports: array<TerrainSupport, 5>,
+    curved: u32,
+};
+
+// Measure separation at the retained finite point against the opposing collider
+// face. Whole-hull support against each triangle's infinite plane overestimates
+// depth on curved terrain, lifting a resting body above the real surface.
+fn terrain_opposing_plane(collider: u32, normal: vec3<f32>) -> vec4<f32> {
+    let count = select(6u, convex_face_count(collider), collider_is_convex(collider));
+    var alignment = 0.0;
+    var selected = vec4<f32>(0.0);
+    for (var face = 0u; face < count; face += 1u) {
+        var plane: vec4<f32>;
+        if collider_is_convex(collider) {
+            plane = convex_face_plane(collider, face);
+        } else {
+            let axis = collider_face_axis(collider, face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u);
+            plane = vec4<f32>(axis, project_collider(collider, axis).maximum);
+        }
+        let candidate = dot(plane.xyz, normal);
+        if candidate < alignment {
+            alignment = candidate;
+            selected = plane;
+        }
+    }
+    return selected;
+}
+
+fn terrain_point_depth(collider: u32, point: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let plane = terrain_opposing_plane(collider, normal);
+    return max((dot(plane.xyz, point) - plane.w) / dot(plane.xyz, normal), 0.0);
+}
+
+fn emit_terrain_support(collider_index: u32, normal: vec3<f32>,
+    response: vec4<f32>, support: TerrainSupport) {
+    let depth = terrain_point_depth(collider_index, support.point, normal);
+    let output = atomicAdd(&diagnostics[2], 1u);
+    if output >= config.pair_capacity {
+        atomicOr(&diagnostics[0], PAIR_OVERFLOW_FLAG);
+        return;
+    }
+    let collider = colliders[collider_index];
+    contacts[output].metadata = vec4<u32>(collider.metadata.x, INVALID_MANIFOLD_SLOT,
+        collider_index | TERRAIN_CONTACT_FLAG, support.identity | 0x80000000u);
+    contacts[output].normal_penetration = vec4<f32>(-normal, depth);
+    contacts[output].arm_a_impulse = vec4<f32>(support.point - positions[collider.metadata.x].xyz - support.shift, collider.surface_elasticity.x);
+    contacts[output].arm_b = vec4<f32>(depth, 0.0, 0.0, pack_raw_surface_response(response));
+}
+
+@compute @workgroup_size(256)
+fn generate_terrain_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    if invocation.x == 0u { atomicOr(&diagnostics[8], 128u); }
+    let collider_index = invocation.x;
+    if collider_index >= config.collider_count { return; }
+    let collider = colliders[collider_index];
+    // A terrain contact carries no second body, so prepare_contacts discards
+    // every one whose own body cannot move. Generating them buys nothing and
+    // costs a full BVH descent plus a contact slot that can overflow the buffer.
+    if collider.shape.w != 0u { return; }
+    let x = project_collider(collider_index, vec3<f32>(1.0, 0.0, 0.0));
+    let y = project_collider(collider_index, vec3<f32>(0.0, 1.0, 0.0));
+    let z = project_collider(collider_index, vec3<f32>(0.0, 0.0, 1.0));
+    let motion = positions[collider.metadata.x].xyz - terrain_previous_poses[collider.metadata.x].position.xyz;
+    let current_minimum = vec3<f32>(x.minimum, y.minimum, z.minimum);
+    let current_maximum = vec3<f32>(x.maximum, y.maximum, z.maximum);
+    let minimum = min(current_minimum, current_minimum - motion);
+    let maximum = max(current_maximum, current_maximum - motion);
+    // Reduce nearby equal-response surface normals while retaining the crown
+    // and four outer supports. Each support uses its original triangle normal.
+    // Extra groups use the unreduced path, never silent geometry truncation.
+    var planes: array<TerrainSupportPlane, 16>;
+    var plane_count = 0u;
+    var row_index = 0u;
+    var next_chunk = terrain_rows[0].metadata.x;
+    var chunk_end = 0u;
+    loop {
+        if row_index >= chunk_end {
+            let chunk = next_terrain_chunk(minimum, maximum, next_chunk);
+            next_chunk = chunk.x;
+            row_index = chunk.y;
+            chunk_end = chunk.z;
+            if chunk_end == 0u { break; }
+        }
+        let triangle = terrain_row(row_index);
+        if any(maximum < triangle.minimum.xyz) || any(minimum > triangle.maximum.xyz) {
+            row_index = triangle.metadata.x;
+            continue;
+        }
+        let identity = row_index;
+        row_index += 1u;
+        if triangle.metadata.y == 0u { continue; }
+        var shift = vec3<f32>(0.0);
+        var manifold = terrain_contact_polygon(collider_index, triangle, shift);
+        if manifold.count == 0u {
+            let window = terrain_translation_toi(collider_index, triangle, motion);
+            if window.x > window.y { continue; }
+            shift = motion * (window.x - 1.0);
+            manifold = terrain_contact_polygon(collider_index, triangle, shift);
+        }
+        if manifold.count == 0u { continue; }
+        let raw_normal = cross(triangle.second.xyz - triangle.first.xyz, triangle.third.xyz - triangle.first.xyz);
+        if dot(raw_normal, raw_normal) < 1.0e-12 { continue; }
+        let normal = normalize(raw_normal);
+        let depth = dot(normal, triangle.first.xyz) - project_collider(collider_index, normal).minimum;
+        if depth < 0.0 { continue; }
+        let first = collider.surface_response;
+        let second = triangle.response;
+        let response = vec4<f32>(sqrt(first.x * second.x), sqrt(first.y * second.y), max(first.z, second.z), sqrt(first.w * second.w));
+        let plane_distance = dot(normal, triangle.first.xyz);
+        var group = plane_count;
+        for (var candidate = 0u; candidate < plane_count; candidate += 1u) {
+            let reference = planes[candidate].plane;
+            let parallel = all(abs(reference.xyz - normal) < vec3<f32>(1.0e-6));
+            let separation = abs(dot(normal - reference.xyz, collider_center(collider_index))
+                - plane_distance + reference.w);
+            let nearby = !parallel && dot(reference.xyz, normal) > 0.995 && separation < 0.025;
+            if ((parallel && abs(reference.w - plane_distance) < 1.0e-5) || nearby)
+                && all(planes[candidate].response == response) {
+                if nearby { planes[candidate].curved = 1u; }
+                group = candidate;
+                break;
+            }
+        }
+        let new_group = group == plane_count;
+        if new_group && group < 16u {
+            planes[group].plane = vec4<f32>(normal, plane_distance);
+            planes[group].response = response;
+            plane_count += 1u;
+        }
+        let group_normal = select(normal, planes[min(group, 15u)].plane.xyz, group < 16u);
+        let basis = tangent_basis(group_normal);
+        let directions = array<vec3<f32>, 5>(basis.u + basis.v, basis.u - basis.v, -basis.u - basis.v, -basis.u + basis.v, -terrain_opposing_plane(collider_index, group_normal).xyz);
+        for (var point_index = 0u; point_index < manifold.count; point_index += 1u) {
+            let support = TerrainSupport(manifold.points[point_index], (identity << 2u) | point_index, shift);
+            if group >= 16u {
+                emit_terrain_support(collider_index, normal, response, support);
+                continue;
+            }
+            for (var corner = 0u; corner < 5u; corner += 1u) {
+                if (new_group && point_index == 0u)
+                    || dot(support.point, directions[corner]) > dot(planes[group].supports[corner].point, directions[corner]) {
+                    planes[group].supports[corner] = support;
+                }
+            }
+        }
+    }
+    for (var group = 0u; group < plane_count; group += 1u) {
+        let surface = planes[group];
+        let count = select(4u, 5u, surface.curved != 0u);
+        for (var corner = 0u; corner < count; corner += 1u) {
+            var unique = true;
+            for (var previous = 0u; previous < corner; previous += 1u) {
+                if distance(surface.supports[corner].point, surface.supports[previous].point) < 1.0e-5 {
+                    unique = false;
+                }
+            }
+            if unique {
+                let triangle = terrain_row(surface.supports[corner].identity >> 2u);
+                let normal = normalize(cross(triangle.second.xyz - triangle.first.xyz, triangle.third.xyz - triangle.first.xyz));
+                emit_terrain_support(collider_index, normal, surface.response, surface.supports[corner]);
+            }
+        }
+    }
+}
 
 fn quat_multiply(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(
@@ -1131,6 +1632,7 @@ fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>
 
 @compute @workgroup_size(1)
 fn finalize_contacts() {
+    { atomicOr(&diagnostics[8], 8u); }
     let contact_count = min(atomicLoad(&diagnostics[2]), config.pair_capacity);
     indirect_args[3] = (contact_count + 255u) / 256u;
     indirect_args[4] = 1u;
@@ -1184,7 +1686,8 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let gamma = contact.arm_a_impulse.w / (config.delta_seconds * config.delta_seconds);
     contacts[contact_index].arm_b.w = pack_prepared_surface_response(raw_response, gamma);
     contacts[contact_index].normal_penetration.w =
-        penetration_bias(penetration, analytic) + bounce_speed;
+        select(penetration_bias(penetration, analytic), 0.0,
+            (contact.metadata.z & TERRAIN_CONTACT_FLAG) != 0u) + bounce_speed;
     if penetration <= 1.0e-6 && normal_speed >= 0.0 {
         contacts[contact_index].metadata.z = INVALID_MANIFOLD_SLOT;
         contacts[contact_index].metadata.w = 0u;
@@ -1339,14 +1842,27 @@ fn warm_start(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
     let warm_start_scale = select(WARM_START_SCALE, 1.0, is_analytic_cylinder(contact));
     let warmed_impulse = contact.arm_a_impulse.w * warm_start_scale;
-    let warmed_surface = cached * warm_start_scale;
-    let accumulated_impulse = max(
+    var warmed_surface = cached * warm_start_scale;
+    var accumulated_impulse = max(
         warmed_impulse
             + parallel_contact_relaxation(contact)
                 * (-normal_speed + contact_target_speed(contact) - response.w * warmed_impulse)
                 / denominator,
         0.0,
     );
+    if (contact.metadata.z & TERRAIN_CONTACT_FLAG) != 0u {
+        // Cached impact impulses can exceed the next tick's support impulse.
+        // Bound their parallel application by the current closing speed and
+        // incident row count so warm starting cannot manufacture a rebound.
+        let count = max(atomicLoad(&diagnostics[BODY_CONTACT_COUNT_OFFSET + body_a]), 1u);
+        let stopping_impulse = max(-normal_speed + contact_target_speed(contact), 0.0)
+            / (denominator * f32(count));
+        accumulated_impulse = min(accumulated_impulse, stopping_impulse);
+        let rolling_limit = response.z * accumulated_impulse * max(length(arm_a), 1.0e-3);
+        warmed_surface = vec4<f32>(
+            clamp_surface_impulse(warmed_surface.xy, response.x * accumulated_impulse, response.y * accumulated_impulse),
+            clamp_surface_impulse(warmed_surface.zw, rolling_limit, rolling_limit));
+    }
     contacts[contact_index].arm_a_impulse.w = accumulated_impulse;
     persistent_manifolds[slot].tangent_rolling_impulses = warmed_surface;
     let basis = tangent_basis(normal);
@@ -1495,11 +2011,17 @@ fn project_contact(contact_index: u32, relaxation: f32) -> ContactImpulse {
 }
 
 fn parallel_contact_relaxation(contact: Contact) -> f32 {
+    if (contact.metadata.z & TERRAIN_CONTACT_FLAG) != 0u {
+        return 1.0 / f32(max(atomicLoad(&diagnostics[BODY_CONTACT_COUNT_OFFSET + contact.metadata.x]), 1u));
+    }
     return PROJECTED_RELAXATION
         * select(1.0, CYLINDER_FACE_RELAXATION_SCALE, is_cylinder_face_pair(contact));
 }
 
 fn distributed_contact_relaxation(contact: Contact) -> f32 {
+    if (contact.metadata.z & TERRAIN_CONTACT_FLAG) != 0u {
+        return parallel_contact_relaxation(contact);
+    }
     let shape_scale = select(1.0, CYLINDER_FACE_RELAXATION_SCALE, is_cylinder_face_pair(contact));
     // Every Jacobi row reads the same body velocity. Split the response among
     // incident contacts so tessellated surfaces cannot multiply one correction
@@ -1514,6 +2036,7 @@ fn distributed_contact_relaxation(contact: Contact) -> f32 {
 
 @compute @workgroup_size(256)
 fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    if invocation.x == 0u { atomicOr(&diagnostics[8], 16u); }
     let active_index = invocation.x;
     let active_count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
     if active_index >= active_count {
@@ -1642,6 +2165,7 @@ fn solve_contacts_serial(active_count: u32) {
 
 @compute @workgroup_size(1)
 fn solve_accumulate_serial() {
+    { atomicOr(&diagnostics[8], 16u); }
     solve_contacts_serial(min(atomicLoad(&diagnostics[5]), config.pair_capacity));
 }
 
@@ -2109,7 +2633,7 @@ fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
         if denominator <= 1.0e-12 { continue; }
         let relative = linear_velocities[b].xyz + cross(angular_velocities[b].xyz, rb)
             - linear_velocities[a].xyz - cross(angular_velocities[a].xyz, ra);
-        let measured = dot(relative, direction);
+        var measured = dot(relative, direction);
         var desired = 0.0;
         var impulse = 0.0;
         if motor {
@@ -2125,6 +2649,63 @@ fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
             impulse = previous - accumulated;
         } else {
             if i == 2u {
+                // Passive force uses its own accumulated impulse, independent of motor budgets.
+                let spring = bearing.suspension;
+                let stop = bearing.bump_stop;
+                if spring.x > 0.0 || spring.z > 0.0 || spring.w > 0.0 || stop.x > 0.0 {
+                    let dt = config.delta_seconds;
+                    let previous = drive_constraints[index].state.w;
+                    var accumulated = previous;
+                    var solved_linear = false;
+                    let damping_candidates = array<f32, 2>(spring.z, spring.w);
+                    for (var damping_index = 0u; damping_index < 2u; damping_index += 1u) {
+                        let damping = damping_candidates[damping_index];
+                        for (var spring_active = 0u; spring_active < 2u; spring_active += 1u) {
+                            let stiffness = select(0.0, spring.x, spring_active != 0u);
+                            let constant_force = stiffness
+                                    * (spring.y - q - dt * measured + dt * denominator * previous)
+                                - damping * (measured - denominator * previous);
+                            let candidate = dt * constant_force
+                                / (1.0 + dt * denominator * (dt * stiffness + damping));
+                            let velocity = measured + denominator * (candidate - previous);
+                            let spring_compression = spring.y - q - dt * velocity;
+                            let raw_crush = stop.w - q - dt * velocity - stop.z;
+                            let damping_matches = (damping_index == 0u && velocity < 0.0)
+                                || (damping_index == 1u && velocity >= 0.0);
+                            let spring_matches = (spring_active != 0u && spring_compression > 0.0)
+                                || (spring_active == 0u && spring_compression <= 0.0);
+                            if !solved_linear && damping_matches && spring_matches
+                                && (stop.x <= 0.0 || raw_crush <= 0.0)
+                            {
+                                accumulated = candidate;
+                                solved_linear = true;
+                            }
+                        }
+                    }
+                    // Backward Euler: evaluate rubber at predicted end-of-step
+                    // separation, so contact crossed this tick resists immediately.
+                    if !solved_linear {
+                        for (var iteration = 0u; iteration < 8u; iteration += 1u) {
+                            let velocity = measured + denominator * (accumulated - previous);
+                            let spring_compression = spring.y - q - dt * velocity;
+                            let raw_crush = stop.w - q - dt * velocity - stop.z;
+                            let crush = clamp(raw_crush, 0.0, 0.55 * stop.y);
+                            let ratio = crush / max(stop.y, 0.000001);
+                            let force = spring.x * max(spring_compression, 0.0)
+                                + stop.x * crush * (1.0 + (12.8 / 3.0) * ratio * ratio);
+                            let stiffness = select(0.0, spring.x, spring_compression > 0.0)
+                                + select(0.0, stop.x * (1.0 + 12.8 * ratio * ratio), raw_crush > 0.0 && raw_crush < 0.55 * stop.y);
+                            let damping = select(spring.w, spring.z, velocity < 0.0);
+                            let residual = accumulated - dt * (force - damping * velocity);
+                            let derivative = 1.0 + dt * (damping + dt * stiffness) * denominator;
+                            accumulated -= residual / derivative;
+                        }
+                    }
+                    let delta = relaxation * (accumulated - previous);
+                    drive_constraints[index].state.w = previous + delta;
+                    linear_joint_impulse(a, b, ra, rb, -direction * delta, vec3<f32>(0.0), immediate);
+                    measured += denominator * delta;
+                }
                 // Predictive, non-bouncing unilateral stops. No motor budget applies.
                 let minimum = (bearing.local_anchor_a.w - q) / config.delta_seconds;
                 let maximum = (bearing.local_anchor_b.w - q) / config.delta_seconds;
@@ -2134,4 +2715,200 @@ fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
         }
         linear_joint_impulse(a, b, ra, rb, direction * impulse, vec3<f32>(0.0), immediate);
     }
+}
+
+// This entry is bound to scratch velocities, never the authoritative velocity
+// buffers. It applies no restitution, friction, drive, spring, or damping force.
+fn position_pair_impulse(a: u32, b: u32, ra: vec3<f32>, rb: vec3<f32>, impulse: vec3<f32>) {
+    linear_velocities[a] -= vec4<f32>(impulse * world_masses[a].inverse_inertia_x_mass.w, 0.0);
+    angular_velocities[a] -= vec4<f32>(inverse_inertia(a, cross(ra, impulse)), 0.0);
+    if b != INVALID_MANIFOLD_SLOT {
+        linear_velocities[b] += vec4<f32>(impulse * world_masses[b].inverse_inertia_x_mass.w, 0.0);
+        angular_velocities[b] += vec4<f32>(inverse_inertia(b, cross(rb, impulse)), 0.0);
+    }
+}
+
+fn position_joint(index: u32) -> bool {
+    var changed = false;
+    let bearing = drive_constraints[index].bearing;
+    if (bearing.metadata.w & 2u) != 0u { return false; }
+    let a = bearing.metadata.x;
+    let b = bearing.metadata.y;
+    let linear_joint = bearing.local_axis_a.w == 1.0;
+    let axis = normalize(quat_rotate(rotations[a], bearing.local_axis_a.xyz));
+    let basis = tangent_basis(axis);
+    var ra = quat_rotate(rotations[a], bearing.local_anchor_a.xyz);
+    let rb = quat_rotate(rotations[b], bearing.local_anchor_b.xyz);
+    let separation = dot(world_masses[b].position.xyz + rb - world_masses[a].position.xyz - ra, axis);
+    if linear_joint { ra += axis * separation; }
+    let directions = array<vec3<f32>, 3>(basis.u, basis.v, axis);
+    for (var row = 0u; row < select(2u, 3u, linear_joint); row += 1u) {
+        let direction = directions[row];
+        let denominator = angular_impulse_denominator(a, b, direction);
+        if denominator > 1.0e-12 {
+            let error = dot(angular_velocities[b].xyz - angular_velocities[a].xyz, direction);
+            let torque = direction * (-error / denominator);
+            changed = changed || any(torque != vec3<f32>(0.0));
+            angular_velocities[a] -= vec4<f32>(inverse_inertia(a, torque), 0.0);
+            angular_velocities[b] += vec4<f32>(inverse_inertia(b, torque), 0.0);
+        }
+    }
+    for (var row = 0u; row < 3u; row += 1u) {
+        let direction = directions[row];
+        let denominator = impulse_denominator(a, b, ra, rb, direction);
+        if denominator <= 1.0e-12 { continue; }
+        let speed = dot(contact_velocity(b, rb) - contact_velocity(a, ra), direction);
+        var target_speed = 0.0;
+        if linear_joint && row == 2u {
+            target_speed = clamp(speed,
+                (bearing.local_anchor_a.w - separation) / config.delta_seconds,
+                (bearing.local_anchor_b.w - separation) / config.delta_seconds);
+        }
+        let impulse = direction * ((target_speed - speed) / denominator);
+        changed = changed || any(impulse != vec3<f32>(0.0));
+        position_pair_impulse(a, b, ra, rb, impulse);
+    }
+    return changed;
+}
+
+@compute @workgroup_size(1)
+fn prepare_terrain_recovery() {
+    terrain_recovery_dispatch[0] = 0u;
+    terrain_recovery_dispatch[1] = 1u;
+    terrain_recovery_dispatch[2] = 1u;
+    terrain_recovery_dispatch[3] = 0u;
+    terrain_recovery_dispatch[4] = 1u;
+    terrain_recovery_dispatch[5] = 1u;
+    terrain_recovery_dispatch[8] = 0u;
+    terrain_recovery_dispatch[9] = 1u;
+    terrain_recovery_dispatch[10] = 1u;
+    let count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
+    if count == 0u || atomicLoad(&diagnostics[0]) != 0u { return; }
+    let component_offset = 12u + config.pair_capacity + config.bearing_count;
+    for (var body = 0u; body < config.body_count; body += 1u) {
+        terrain_recovery_dispatch[component_offset + body] = 0u;
+    }
+    var needed = false;
+    for (var row = 0u; row < count; row += 1u) {
+        let contact = contacts[active_contacts[row]];
+        if (contact.metadata.z & TERRAIN_CONTACT_FLAG) == 0u { continue; }
+        let response = unpack_prepared_surface_response(contact.arm_b.w);
+        let elastic_depth = response.w * contact.arm_a_impulse.w * config.delta_seconds;
+        if contact.arm_b.z >= 0.0 && contact.arm_b.x > PENETRATION_SLOP + elastic_depth + 1.0e-6 {
+            needed = true;
+            terrain_recovery_dispatch[component_offset + body_components[contact.metadata.x]] = 1u;
+        }
+    }
+    if !needed { return; }
+    // Joint-connected components are precompiled. Close over touching components
+    // so a correction cannot move through an omitted body/contact constraint.
+    loop {
+        var expanded = false;
+        for (var row = 0u; row < count; row += 1u) {
+            let contact = contacts[active_contacts[row]];
+            if contact.metadata.y == INVALID_MANIFOLD_SLOT { continue; }
+            let a = component_offset + body_components[contact.metadata.x];
+            let b = component_offset + body_components[contact.metadata.y];
+            if terrain_recovery_dispatch[a] != terrain_recovery_dispatch[b] {
+                terrain_recovery_dispatch[a] = 1u;
+                terrain_recovery_dispatch[b] = 1u;
+                expanded = true;
+            }
+        }
+        if !expanded { break; }
+    }
+    var contact_count = 0u;
+    for (var row = 0u; row < count; row += 1u) {
+        let index = active_contacts[row];
+        if terrain_recovery_dispatch[component_offset + body_components[contacts[index].metadata.x]] != 0u {
+            terrain_recovery_dispatch[12u + contact_count] = index;
+            contact_count += 1u;
+        }
+    }
+    var joint_count = 0u;
+    for (var joint = 0u; joint < config.bearing_count; joint += 1u) {
+        let body = drive_constraints[joint].bearing.metadata.x;
+        if terrain_recovery_dispatch[component_offset + body_components[body]] != 0u {
+            terrain_recovery_dispatch[12u + config.pair_capacity + joint_count] = joint;
+            joint_count += 1u;
+        }
+    }
+    terrain_recovery_dispatch[6] = contact_count;
+    terrain_recovery_dispatch[7] = joint_count;
+    terrain_recovery_dispatch[0] = (config.body_count + 255u) / 256u;
+    terrain_recovery_dispatch[3] = 1u;
+    terrain_recovery_dispatch[8] = (config.bearing_count + 255u) / 256u;
+}
+
+@compute @workgroup_size(1)
+fn solve_terrain_positions() {
+    if atomicLoad(&diagnostics[0]) != 0u { return; }
+    let count = recovery_contacts[6];
+    let joint_count = recovery_contacts[7];
+    for (var iteration = 0u; iteration < 32u; iteration += 1u) {
+        var changed = false;
+        for (var row = 0u; row < count; row += 1u) {
+            let index = recovery_contacts[12u + row];
+            let contact = contacts[index];
+            let a = contact.metadata.x;
+            let b = contact.metadata.y;
+            let normal = contact.normal_penetration.xyz;
+            let terrain = (contact.metadata.z & TERRAIN_CONTACT_FLAG) != 0u;
+            if terrain && contact.arm_b.z < 0.0 { continue; }
+            let denominator = impulse_denominator(a, b, contact.arm_a_impulse.xyz, contact.arm_b.xyz, normal);
+            if denominator <= 1.0e-12 { continue; }
+            var relative = -contact_velocity(a, contact.arm_a_impulse.xyz);
+            if b != INVALID_MANIFOLD_SLOT { relative += contact_velocity(b, contact.arm_b.xyz); }
+            var target_speed = 0.0;
+            var previous = 0.0;
+            if terrain {
+                let response = unpack_prepared_surface_response(contact.arm_b.w);
+                let elastic_depth = response.w * contact.arm_a_impulse.w * config.delta_seconds;
+                target_speed = max(contact.arm_b.x - PENETRATION_SLOP - elastic_depth, 0.0) / config.delta_seconds;
+                previous = contacts[index].arm_b.y;
+            }
+            let accumulated = max(previous + (target_speed - dot(relative, normal)) / denominator, 0.0);
+            if terrain { contacts[index].arm_b.y = accumulated; }
+            changed = changed || accumulated != previous;
+            position_pair_impulse(a, b, contact.arm_a_impulse.xyz, contact.arm_b.xyz, normal * (accumulated - previous));
+        }
+        for (var joint = 0u; joint < joint_count; joint += 1u) {
+            let applied = position_joint(recovery_contacts[12u + config.pair_capacity + joint]);
+            changed = changed || applied;
+        }
+        for (var joint = joint_count; joint > 0u; joint -= 1u) {
+            let applied = position_joint(recovery_contacts[12u + config.pair_capacity + joint - 1u]);
+            changed = changed || applied;
+        }
+        // Exact fixed points are stricter than the existing correction tolerance.
+        // Never terminate with an unresolved contact or joint impulse.
+        if !changed { break; }
+    }
+}
+
+// Re-linearize geometry after a split correction. Physical impulses and cached
+// manifolds stay untouched; the next position solve sees the corrected pose.
+@compute @workgroup_size(256)
+fn update_terrain_position_geometry(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let index = invocation.x;
+    if index >= min(atomicLoad(&diagnostics[2]), config.pair_capacity)
+        || atomicLoad(&diagnostics[0]) != 0u { return; }
+    let contact = contacts[index];
+    if contact.metadata.w != 1u || (contact.metadata.z & TERRAIN_CONTACT_FLAG) == 0u { return; }
+    let slot = contact.metadata.z & ~CONTACT_FLAG_MASK;
+    let identity = persistent_manifolds[slot].pair_tick.xy;
+    let collider = identity.x;
+    let triangle = terrain_row((identity.y & 0x7fffffffu) >> 2u);
+    let point_index = identity.y & 3u;
+    let normal = -contact.normal_penetration.xyz;
+    let manifold = terrain_contact_polygon(collider, triangle, vec3<f32>(0.0));
+    contacts[index].arm_b.y = 0.0;
+    if point_index >= manifold.count {
+        contacts[index].arm_b.x = 0.0;
+        contacts[index].arm_b.z = -1.0;
+        return;
+    }
+    contacts[index].arm_b.z = 0.0;
+    contacts[index].arm_b.x = terrain_point_depth(collider, manifold.points[point_index], normal);
+    contacts[index].arm_a_impulse = vec4<f32>(manifold.points[point_index] - positions[contact.metadata.x].xyz, contact.arm_a_impulse.w);
 }

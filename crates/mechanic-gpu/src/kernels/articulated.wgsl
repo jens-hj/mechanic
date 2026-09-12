@@ -29,6 +29,8 @@ struct Bearing {
     local_anchor_b: vec4<f32>,
     local_axis_a: vec4<f32>,
     local_axis_b: vec4<f32>,
+    suspension: vec4<f32>,
+    bump_stop: vec4<f32>,
     metadata: vec4<u32>,
 };
 
@@ -142,6 +144,7 @@ fn prepare_drive_constraints(@builtin(global_invocation_id) invocation: vec3<u32
     if (drive_constraints[index].bearing.metadata.w & 2u) != 0u {
         return;
     }
+    drive_constraints[index].state.w = 0.0;
     let coordinate = drive_constraints[index].metadata.w;
     if coordinate != INVALID_INDEX {
         drive_constraints[index].state.y = 0.0;
@@ -745,6 +748,7 @@ fn reconstruct_body_velocities() {
 
 @compute @workgroup_size(256)
 fn validate_articulated_state(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    if invocation.x == 0u { atomicOr(&diagnostics[8], 2u); }
     let body = invocation.x;
     if body >= config.body_count {
         return;
@@ -828,7 +832,7 @@ fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
         if denominator <= 1.0e-12 { continue; }
         let relative = linear_velocities[b].xyz + cross(angular_velocities[b].xyz, rb)
             - linear_velocities[a].xyz - cross(angular_velocities[a].xyz, ra);
-        let measured = dot(relative, direction);
+        var measured = dot(relative, direction);
         var desired = 0.0;
         var impulse = 0.0;
         if motor {
@@ -844,6 +848,35 @@ fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
             impulse = previous - accumulated;
         } else {
             if i == 2u {
+                // Passive force uses its own accumulated impulse, independent of motor budgets.
+                let spring = bearing.suspension;
+                let stop = bearing.bump_stop;
+                if spring.x > 0.0 || spring.z > 0.0 || spring.w > 0.0 || stop.x > 0.0 {
+                    let dt = config.delta_seconds;
+                    let previous = drive_constraints[index].state.w;
+                    var accumulated = previous;
+                    // Backward Euler: evaluate rubber at predicted end-of-step
+                    // separation, so contact crossed this tick resists immediately.
+                    for (var iteration = 0u; iteration < 8u; iteration += 1u) {
+                        let velocity = measured + denominator * (accumulated - previous);
+                        let spring_compression = spring.y - q - dt * velocity;
+                        let raw_crush = stop.w - q - dt * velocity - stop.z;
+                        let crush = clamp(raw_crush, 0.0, 0.55 * stop.y);
+                        let ratio = crush / max(stop.y, 0.000001);
+                        let force = spring.x * max(spring_compression, 0.0)
+                            + stop.x * crush * (1.0 + (12.8 / 3.0) * ratio * ratio);
+                        let stiffness = select(0.0, spring.x, spring_compression > 0.0)
+                            + select(0.0, stop.x * (1.0 + 12.8 * ratio * ratio), raw_crush > 0.0 && raw_crush < 0.55 * stop.y);
+                        let damping = select(spring.w, spring.z, velocity < 0.0);
+                        let residual = accumulated - dt * (force - damping * velocity);
+                        let derivative = 1.0 + dt * (damping + dt * stiffness) * denominator;
+                        accumulated -= residual / derivative;
+                    }
+                    let delta = relaxation * (accumulated - previous);
+                    drive_constraints[index].state.w = previous + delta;
+                    linear_joint_impulse(a, b, ra, rb, -direction * delta, vec3<f32>(0.0), immediate);
+                    measured += denominator * delta;
+                }
                 // Predictive, non-bouncing unilateral stops. No motor budget applies.
                 let minimum = (bearing.local_anchor_a.w - q) / config.delta_seconds;
                 let maximum = (bearing.local_anchor_b.w - q) / config.delta_seconds;
@@ -853,4 +886,19 @@ fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
         }
         linear_joint_impulse(a, b, ra, rb, direction * impulse, vec3<f32>(0.0), immediate);
     }
+}
+
+// Advance only joint position with scratch correction velocities. Leave the
+// physical generalized velocity and all drive/passive force budgets intact.
+@compute @workgroup_size(256)
+fn correct_coordinate_positions(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let body = invocation.x;
+    if body >= config.body_count || mechanism_bodies[body].metadata.w != 0u { return; }
+    let bearing = bearings[mechanism_bodies[body].metadata.y];
+    let coordinate = bearing.metadata.z;
+    if coordinate == INVALID_INDEX { return; }
+    coordinates[coordinate].position = clamp(
+        coordinates[coordinate].position + permitted_speed(body) * config.delta_seconds,
+        max(drives[coordinate].min_angle, bearing.local_anchor_a.w),
+        min(drives[coordinate].max_angle, bearing.local_anchor_b.w));
 }

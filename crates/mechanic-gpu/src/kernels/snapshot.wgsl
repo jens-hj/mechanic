@@ -6,6 +6,7 @@
 
 @compute @workgroup_size(256)
 fn publish_snapshot(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    if invocation.x == 0u { atomicOr(&diagnostics[8], 64u); }
     if atomicLoad(&diagnostics[0]) != 0u {
         return;
     }
@@ -13,6 +14,7 @@ fn publish_snapshot(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if body >= arrayLength(&positions) {
         return;
     }
+    atomicAdd(&diagnostics[10], 1u);
     snapshot_positions[body] = positions[body];
     snapshot_rotations[body] = rotations[body];
 }

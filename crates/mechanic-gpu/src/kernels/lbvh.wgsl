@@ -423,6 +423,7 @@ fn traverse(@builtin(global_invocation_id) invocation: vec3<u32>) {
 
 @compute @workgroup_size(1)
 fn finalize_pairs() {
+    { atomicOr(&diagnostics[8], 4u); }
     let pair_count = min(atomicLoad(&diagnostics[1]), config.pair_capacity);
     indirect_args[0] = (pair_count + 255u) / 256u;
     indirect_args[1] = 1u;

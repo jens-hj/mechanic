@@ -45,7 +45,7 @@ const POWERED_ANGULAR_DAMPING: f32 = 0.9999;
 @group(0) @binding(3) var<storage, read_write> linear_velocities: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> angular_velocities: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read> inverse_masses: array<f32>;
-@group(0) @binding(6) var<storage, read_write> error_flags: atomic<u32>;
+@group(0) @binding(6) var<storage, read_write> diagnostics: array<atomic<u32>>;
 @group(0) @binding(7) var<storage, read> masses: array<Mass>;
 @group(0) @binding(8) var<uniform> external_impulses: ExternalImpulseBatch;
 @group(0) @binding(9) var<storage, read> mechanism_roots: array<u32>;
@@ -102,13 +102,15 @@ fn apply_external_impulse() {
 
 @compute @workgroup_size(256)
 fn integrate(@builtin(global_invocation_id) invocation: vec3<u32>) {
-    if atomicLoad(&error_flags) != 0u {
+    if invocation.x == 0u { atomicOr(&diagnostics[8], 1u); }
+    if atomicLoad(&diagnostics[0]) != 0u {
         return;
     }
     let index = invocation.x;
     if index >= config.body_count {
         return;
     }
+    atomicAdd(&diagnostics[9], 1u);
 
     var position = positions[index];
     var rotation = rotations[index];
@@ -134,17 +136,44 @@ fn integrate(@builtin(global_invocation_id) invocation: vec3<u32>) {
                 rotation *= inverseSqrt(norm_squared);
             } else {
                 rotation = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-                atomicOr(&error_flags, INVALID_NUMERIC_FLAG);
+                atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
             }
         }
     }
 
     if !(finite4(position) && finite4(rotation) && finite4(linear) && finite4(angular)) {
-        atomicOr(&error_flags, INVALID_NUMERIC_FLAG);
+        atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
         return;
     }
     positions[index] = position;
     rotations[index] = rotation;
     linear_velocities[index] = linear;
     angular_velocities[index] = angular;
+}
+
+@compute @workgroup_size(256)
+fn clear_position_corrections(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let body = invocation.x;
+    if body >= config.body_count { return; }
+    linear_velocities[body] = vec4<f32>(0.0);
+    angular_velocities[body] = vec4<f32>(0.0);
+}
+
+@compute @workgroup_size(256)
+fn apply_position_correction(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    let body = invocation.x;
+    if body >= config.body_count || inverse_masses[body] <= 0.0
+        || (mechanism_roots[body] & 1u) == 0u || atomicLoad(&diagnostics[0]) != 0u { return; }
+    let position = positions[body] + vec4<f32>(linear_velocities[body].xyz * config.delta_seconds, 0.0);
+    let spin = angular_velocities[body].xyz * config.delta_seconds;
+    let angle = length(spin);
+    var delta = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    if angle > 1.0e-8 { delta = vec4<f32>(spin * (sin(angle * 0.5) / angle), cos(angle * 0.5)); }
+    let rotation = normalize(quat_multiply(delta, rotations[body]));
+    if !(finite4(position) && finite4(rotation)) {
+        atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
+        return;
+    }
+    positions[body] = position;
+    rotations[body] = rotation;
 }

@@ -22,6 +22,8 @@ struct Bearing {
     local_anchor_b: vec4<f32>,
     local_axis_a: vec4<f32>,
     local_axis_b: vec4<f32>,
+    suspension: vec4<f32>,
+    bump_stop: vec4<f32>,
     metadata: vec4<u32>,
 };
 
@@ -82,10 +84,12 @@ fn record_residual(
 
 @compute @workgroup_size(256)
 fn validate_bearings(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    if invocation.x == 0u { atomicOr(&diagnostics[8], 32u); }
     let index = invocation.x;
     if index >= config.bearing_count {
         return;
     }
+    atomicAdd(&diagnostics[11], 1u);
     let bearing = bearings[index];
     if (bearing.metadata.w & BEARING_SUSPENDED_FLAG) != 0u {
         return;
@@ -103,10 +107,12 @@ fn validate_bearings(@builtin(global_invocation_id) invocation: vec3<u32>) {
 
 @compute @workgroup_size(256)
 fn validate_mechanism_bearings(@builtin(global_invocation_id) invocation: vec3<u32>) {
+    if invocation.x == 0u { atomicOr(&diagnostics[8], 32u); }
     let index = invocation.x;
     if index >= config.bearing_count {
         return;
     }
+    atomicAdd(&diagnostics[11], 1u);
     let bearing = bearings[index];
     if (bearing.metadata.w & BEARING_SUSPENDED_FLAG) != 0u {
         return;

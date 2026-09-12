@@ -84,7 +84,17 @@ impl TerrainPhysicsScene {
     }
 
     /// Queues a generated chunk for atomic replacement at the next safe tick boundary.
+    /// Results at or below the active or pending generation are ignored.
     pub fn queue_replacement(&mut self, id: TerrainNodeId, chunk: TerrainCollisionChunk) {
+        if self
+            .active
+            .get(&id)
+            .into_iter()
+            .chain(self.pending.get(&id))
+            .any(|current| current.generation >= chunk.generation)
+        {
+            return;
+        }
         self.pending.insert(id, chunk);
         self.metrics.streaming_backlog = u32::try_from(self.pending.len()).unwrap_or(u32::MAX);
     }
@@ -124,12 +134,20 @@ impl TerrainPhysicsScene {
             .sum();
     }
 
-    /// Removes an unpinned streamed chunk. Overlapped chunks remain resident.
+    /// Removes an unpinned streamed chunk and cancels its pending replacement.
+    /// Overlapped chunks remain resident. Removed contact generations are invalidated.
     pub fn unload(&mut self, id: TerrainNodeId) -> bool {
         if self.pinned.contains(&id) {
             return false;
         }
-        self.active.remove(&id).is_some()
+        self.pending.remove(&id);
+        self.metrics.streaming_backlog = u32::try_from(self.pending.len()).unwrap_or(u32::MAX);
+        if let Some(previous) = self.active.remove(&id) {
+            self.invalidated_generations.push((id, previous.generation));
+            true
+        } else {
+            false
+        }
     }
 
     /// Active chunk, if resident.
@@ -277,7 +295,7 @@ pub fn terrain_contacts(
         if signed_distance < 0.0 {
             normal = -normal;
         }
-        let support = support_distance(shape, rotation, normal);
+        let support = support_distance(shape, rotation, -normal);
         if signed_distance.abs() >= support {
             continue;
         }
@@ -423,8 +441,8 @@ fn support_distance(shape: &TerrainContactShape, rotation: Quat, normal: Vec3) -
         }
         TerrainContactShape::Convex { vertices } => vertices
             .iter()
-            .map(|vertex| (rotation * *vertex).dot(normal).abs())
-            .fold(0.0, f32::max),
+            .map(|vertex| (rotation * *vertex).dot(normal))
+            .fold(f32::NEG_INFINITY, f32::max),
     }
 }
 
@@ -568,5 +586,61 @@ mod tests {
         assert!(scene.metrics().overflowed);
         assert_eq!(scene.metrics().streaming_backlog, 1);
         assert!(scene.take_invalidated_generations().is_empty());
+    }
+
+    #[test]
+    fn asymmetric_convex_uses_support_toward_terrain() {
+        let shape = TerrainContactShape::Convex {
+            vertices: vec![
+                Vec3::new(-0.5, -0.25, -0.5),
+                Vec3::new(0.5, -0.25, -0.5),
+                Vec3::new(0.0, -0.25, 0.5),
+                Vec3::Y,
+            ],
+        };
+        let chunk = flat_chunk(1);
+        assert!(terrain_contacts(&shape, Vec3::Y * 0.4, Quat::IDENTITY, &chunk, 4).is_empty());
+        let contacts = terrain_contacts(&shape, Vec3::Y * 0.2, Quat::IDENTITY, &chunk, 4);
+        assert_eq!(contacts.len(), 1);
+        assert!((contacts[0].penetration - 0.05).abs() < 1.0e-6);
+        let contacts = terrain_contacts(
+            &shape,
+            Vec3::Y * 0.9,
+            Quat::from_rotation_x(std::f32::consts::PI),
+            &chunk,
+            4,
+        );
+        assert_eq!(contacts.len(), 1);
+        assert!((contacts[0].penetration - 0.1).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn late_worker_results_cannot_replace_newer_pending_or_active_chunks() {
+        let id = TerrainNodeId::default();
+        let mut scene = TerrainPhysicsScene::default();
+        scene.queue_replacement(id, flat_chunk(3));
+        scene.queue_replacement(id, flat_chunk(2));
+        scene.begin_tick([]);
+        assert_eq!(scene.chunk(id).unwrap().generation, 3);
+        scene.queue_replacement(id, flat_chunk(1));
+        scene.queue_replacement(id, flat_chunk(3));
+        scene.begin_tick([]);
+        assert_eq!(scene.chunk(id).unwrap().generation, 3);
+        assert_eq!(scene.metrics().remesh_count, 0);
+        assert!(scene.take_invalidated_generations().is_empty());
+    }
+
+    #[test]
+    fn unloading_invalidates_contacts_and_cancels_pending_replacement() {
+        let id = TerrainNodeId::default();
+        let mut scene = TerrainPhysicsScene::default();
+        scene.queue_replacement(id, flat_chunk(1));
+        scene.begin_tick([]);
+        scene.queue_replacement(id, flat_chunk(2));
+        assert!(scene.unload(id));
+        assert_eq!(scene.take_invalidated_generations(), vec![(id, 1)]);
+        assert_eq!(scene.metrics().streaming_backlog, 0);
+        scene.begin_tick([]);
+        assert!(scene.chunk(id).is_none());
     }
 }
