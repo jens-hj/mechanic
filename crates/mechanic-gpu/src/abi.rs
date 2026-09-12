@@ -313,6 +313,30 @@ impl From<mechanic_core::CoordinateDrive> for GpuMechanismDrive {
     }
 }
 
+impl From<GpuMechanismDrive> for mechanic_core::CoordinateDrive {
+    /// Reads a uploaded row back, so the CPU solver can run the same resolved
+    /// drives the GPU route uploads. An unknown mode code reads as passive.
+    fn from(drive: GpuMechanismDrive) -> Self {
+        Self {
+            mode: match drive.mode {
+                DRIVE_MODE_SPEED => mechanic_core::DriveMode::Speed,
+                DRIVE_MODE_ANGLE => mechanic_core::DriveMode::Angle,
+                _ => mechanic_core::DriveMode::Passive,
+            },
+            target_speed: drive.target_speed,
+            target_angle: drive.target_angle,
+            max_speed: drive.max_speed,
+            max_acceleration: drive.max_acceleration,
+            source_a_max_acceleration: drive.source_a_max_acceleration,
+            source_a_no_load_speed: drive.source_a_no_load_speed,
+            source_b_max_acceleration: drive.source_b_max_acceleration,
+            source_b_no_load_speed: drive.source_b_no_load_speed,
+            min_angle: drive.min_angle,
+            max_angle: drive.max_angle,
+        }
+    }
+}
+
 /// Coordinate mode for a joint no control block drives.
 pub const DRIVE_MODE_PASSIVE: u32 = 0;
 
