@@ -2906,6 +2906,7 @@ dependencies = [
  "bytemuck",
  "mechanic-core",
  "mechanic-gpu",
+ "mechanic-physics",
  "mechanic-world",
  "mosaic-core",
  "mosaic-macros",

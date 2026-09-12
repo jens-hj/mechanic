@@ -18,6 +18,7 @@ mod camera;
 mod chroma;
 mod control_panel;
 mod controls;
+mod cpu_physics;
 mod creation_menu;
 mod creation_store;
 mod frame_visuals;
@@ -345,6 +346,9 @@ mod debug_frame_freeze_tests {
 #[derive(Resource, Default)]
 struct AppSimulation {
     gpu: Option<GpuPhysics>,
+    /// Experimental CPU solver, present only under `MECHANIC_PHYSICS=cpu`. The
+    /// GPU scene stays resident; this replaces only the tick that publishes state.
+    cpu: Option<Box<cpu_physics::CpuRoute>>,
     creation: Option<CompiledCreation>,
     /// Exact graph snapshot represented by `creation` and the live GPU scene.
     published_graph: ConstructionGraph,
@@ -1511,8 +1515,21 @@ fn replacement_simulation_with_transfer(
         velocities: velocities.clone(),
         coordinates: coordinates.clone(),
     });
+    let cpu = if cpu_physics::selected() {
+        Some(Box::new(cpu_physics::CpuRoute::new(
+            &creation,
+            revision.0,
+            next_tick.saturating_sub(1),
+            &transforms,
+            &velocities,
+            &coordinates,
+        )?))
+    } else {
+        None
+    };
     let Some(gpu) = gpu else {
         return Ok(AppSimulation {
+            cpu,
             creation: Some(creation),
             published_graph: graph,
             live_state,
@@ -1536,6 +1553,7 @@ fn replacement_simulation_with_transfer(
     Ok(AppSimulation {
         live_state,
         gpu: Some(gpu),
+        cpu,
         creation: Some(creation),
         published_graph: graph,
         scheduler: FixedStepScheduler::new(),
@@ -3152,7 +3170,8 @@ fn poll_simulation_readbacks(
     mut state: ResMut<EditorState>,
     render_device: Res<RenderDevice>,
 ) {
-    if !simulation.is_running() {
+    if !simulation.is_running() || simulation.cpu.is_some() {
+        // The CPU route publishes each tick as it completes it; there is no queue.
         return;
     }
     loop {
@@ -3530,12 +3549,16 @@ fn advance_simulation(
     }
 
     let ticks = {
-        let available = simulation
-            .gpu
-            .as_ref()
-            .expect("running simulation has GPU state")
-            .async_readback_slots_available()
-            .min(MAXIMUM_TICKS_PER_FRAME);
+        let available = if simulation.cpu.is_some() {
+            MAXIMUM_TICKS_PER_FRAME
+        } else {
+            simulation
+                .gpu
+                .as_ref()
+                .expect("running simulation has GPU state")
+                .async_readback_slots_available()
+                .min(MAXIMUM_TICKS_PER_FRAME)
+        };
         let AppSimulation {
             scheduler,
             next_tick,
@@ -3580,6 +3603,10 @@ fn advance_simulation(
             usize::try_from(ticks.end.saturating_sub(ticks.start)).unwrap_or(usize::MAX);
         let physics_started = std::time::Instant::now();
         let mut cpu_timings = mechanic_gpu::GpuSubmissionTimings::default();
+        // The experimental route owns the tick itself. Taking it out of the
+        // resource keeps the published state, drives and impulses borrowable while
+        // it steps; it is restored before returning, including on failure.
+        let mut cpu_route = simulation.cpu.take();
         for tick in ticks {
             if let Some((keys, seat)) = automation::drive_input(&simulation, &mut automated, tick) {
                 let controller = published_graph.seat_controller(seat);
@@ -3628,6 +3655,35 @@ fn advance_simulation(
                     return;
                 }
             }
+            if let Some(cpu) = cpu_route.as_mut() {
+                if !cpu.is_ready() {
+                    // No terrain cut reached the CPU scene yet, so a tick would
+                    // drop every body through the world.
+                    break;
+                }
+                let creation = simulation
+                    .creation
+                    .as_ref()
+                    .expect("running simulation has creation");
+                let drive_rows =
+                    geared_gpu_drive_rows(creation, &published_graph, &sequencer, &gearboxes);
+                let stepped = cpu.step(
+                    tick,
+                    cpu_physics::gravity(),
+                    &drive_rows,
+                    world_runtime.pending_player_reactions(),
+                );
+                world_runtime.clear_player_reactions();
+                match stepped {
+                    Ok(completed) => simulation.publish_cpu_tick(tick, completed),
+                    Err(message) => {
+                        simulation.cpu = cpu_route;
+                        stop_failed_simulation(&mut simulation, &mut state, message);
+                        return;
+                    }
+                }
+                continue;
+            }
             let dispatch = simulation
                 .gpu
                 .as_ref()
@@ -3656,6 +3712,7 @@ fn advance_simulation(
             cpu_timings.readback_setup_ms += submission.cpu_timings.readback_setup_ms;
             world_runtime.clear_player_reactions();
         }
+        simulation.cpu = cpu_route;
         simulation.record_performance(physics_started.elapsed(), tick_count, cpu_timings, None);
     }
     simulation.in_flight_tick_count = simulation.gpu.as_ref().map_or(0, |gpu| {
@@ -3838,6 +3895,37 @@ impl AppSimulation {
             return Some((graph.part_position(part)?, graph.part_rotation(part)?));
         };
         simulation_part_pose(&self.published_graph, creation, &self.transforms, part)
+    }
+
+    /// Publishes one completed CPU tick exactly as a GPU readback would, so the
+    /// renderer, world walking and the editor read state from one place.
+    fn publish_cpu_tick(&mut self, tick: u64, completed: cpu_physics::Completed) {
+        self.completed_tick = tick;
+        performance_capture::record("physics_publication", || {
+            serde_json::json!({
+                "tick": tick,
+                "state_hash": performance_capture::state_hash(
+                    &completed.transforms,
+                    &completed.velocities,
+                    &completed.coordinates,
+                ),
+                "route": "cpu",
+            })
+        });
+        self.live_state = Some(LivePhysicsState {
+            tick,
+            transforms: completed.transforms.clone(),
+            velocities: completed.velocities,
+            coordinates: completed.coordinates,
+        });
+        if visual_snapshot_is_due(self.snapshot_tick, tick) {
+            self.previous_transforms =
+                core::mem::replace(&mut self.transforms, completed.transforms);
+            self.previous_snapshot_tick = self.snapshot_tick;
+            self.snapshot_tick = tick;
+            self.pose_revision = self.pose_revision.wrapping_add(1);
+            self.render_dirty = true;
+        }
     }
 
     fn record_performance(

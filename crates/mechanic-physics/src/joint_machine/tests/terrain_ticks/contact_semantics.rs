@@ -661,3 +661,64 @@ fn a_manifold_above_the_dense_bound_solves_implicitly() {
     let repeat = crate::solve_constraints(&factor, &contacts.blocks, 256, 1e-8).unwrap();
     assert_eq!(solution.impulses, repeat.impulses);
 }
+
+// A settled body must be at rest in velocity, not merely held in place. Split
+// recovery is a position projection that leaves generalized velocity untouched by
+// design, so a policy that lets it carry the support instead of an impulse keeps
+// accumulating gravity: the pose looks settled while the state is not, and the
+// stored speed appears the moment the contact releases.
+fn settles_at_rest(integration: TerrainIntegration, ticks: u64) -> (f64, f64) {
+    let (creation, geometry, initial) = box_on_floor(0.002, 0.0);
+    let scene = scene();
+    let mut terrain = context(&scene, &geometry, 7);
+    terrain.integration = integration;
+    let mut machine = CpuJointMachine::new(creation.clone(), 7, initial).unwrap();
+    for tick in 1..=ticks {
+        let result = machine
+            .step_candidate(
+                -DVec3::Y * 9.81,
+                JointTickSettings::default(),
+                &[],
+                &[],
+                Some(&terrain),
+            )
+            .map(|_| ());
+        assert!(
+            result.is_ok(),
+            "{integration:?} tick={tick} result={result:?} stage={:?} impacts={} recovery={}",
+            machine.diagnostics().failure_stage,
+            machine.diagnostics().impact_events,
+            machine.diagnostics().terrain_recovery_passes
+        );
+    }
+    let state = &machine.snapshot().state;
+    (clearance(&creation, state), state.velocities[1])
+}
+
+#[test]
+fn a_settled_box_is_at_rest_in_velocity_when_every_arrival_is_resolved() {
+    let (clearance, vertical) = settles_at_rest(TerrainIntegration::EventResolved, 30);
+
+    assert!(clearance.abs() <= 1e-6, "clearance={clearance:e}");
+    assert!(
+        vertical.abs() <= 1e-6,
+        "resting vertical velocity={vertical:e}"
+    );
+}
+
+// Retained failing input. Under the endpoint policy this box never receives a
+// contact impulse at all: the deferred collider is held only by split recovery,
+// which by design leaves velocity alone, so gravity accumulates until the path
+// certificate rejects every substep policy at tick 19. The endpoint policy is the
+// one that carries the saved-car drops furthest, so its progress there is bounded
+// by the same gap. `docs/cpu-solver-repair.md` records the measurement.
+#[test]
+fn a_settled_box_is_also_at_rest_under_the_endpoint_policy() {
+    let (clearance, vertical) = settles_at_rest(TerrainIntegration::SlowContactsAtEndpoint, 30);
+
+    assert!(clearance.abs() <= 1e-6, "clearance={clearance:e}");
+    assert!(
+        vertical.abs() <= 1e-6,
+        "resting vertical velocity={vertical:e}"
+    );
+}

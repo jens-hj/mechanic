@@ -313,6 +313,11 @@ pub(crate) fn publish(
             });
             publication.accepted = Some(key);
             publication.accepted_positions = positions;
+            // Both routes must see one cut. The CPU solver holds its own scene, so
+            // it is republished here, from the same meshes, at the same origin.
+            if let Some(cpu) = simulation.cpu.as_mut() {
+                cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
+            }
             return Ok(streaming_ready);
         }
         // A stale result never writes the GPU, consumes an impulse, or advances a tick.
