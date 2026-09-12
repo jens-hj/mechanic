@@ -308,19 +308,26 @@ failing regression input: it reproduces the tick-17 search in 1.5 s.
 physics for one free box on the flat floor, independent of the saved car. Both the
 block material and Rock have zero restitution, so the expectations are exact.
 
-Three cases pass. A settled box stays within 1e-9 m of the surface for 30 ticks
-and never exhausts its event trials, so the car's 60 nm resting gap is not a
-general integration defect and the drift hypothesis does not hold for a single
-box. A separating box keeps ballistic motion to within 1e-9. A box that returns
-inside one tick stops on the surface.
+The box is the default steel block, whose restitution is 0.2; Rock's surface
+restitution is zero and a contact mixes them by taking the larger value.
+Restitution applies only above the policy's 1 m/s threshold. All five cases pass:
 
-The fourth case fails and pins a new defect. A box dropped from 2 mm at 1 m/s ends
-its first tick moving **upward** at 5.98e-2 m/s — about 6% rebound where
-restitution is zero — identically at 1, 2, 4 and 8 substeps; it then settles by
-tick 3. Gravity is the only force, so outgoing upward motion is unphysical.
-Spurious impact energy of this size would keep a settling car re-impacting, which
-is the shape of the tick-17 event-search failure, and it reproduces in 0.03 s on
-one box instead of 17 ticks of the car.
+- An impact above the threshold rebounds at exactly 0.2 of its incoming speed
+  (0.2039 m/s from 1.0194 m/s), and the rest of the tick is ballistic.
+- An impact below the threshold stops dead at 1, 2, 4 and 8 substeps, never
+  rebounding and never penetrating beyond 1e-6 m.
+- A settled box stays within 1e-9 m of the surface for 30 ticks and never
+  exhausts its event trials, so the car's 60 nm resting gap is not a general
+  integration defect; the drift hypothesis does not hold for a single box.
+- A separating box keeps ballistic motion to within 1e-9.
+- A box that returns inside one tick stops on the surface.
+
+An earlier draft of these tests asserted zero restitution — it took the terrain
+surface value and overlooked the block material — and reported the correct 0.2
+rebound as a defect. There is no such defect. Single-box contact semantics,
+including both sides of the restitution threshold, are sound, so the car's
+remaining failures belong to its multi-contact and suspension specifics: the
+60 nm resting gap and the 240-row impacts, not basic impact handling.
 
 Captures: `/private/tmp/cpu-fix-tick37-state.ron`, `cpu-fix-tick17-state.ron`,
 `cpu-fix-endpoint-next-{impact,force,state}.ron` (tick 94) and
