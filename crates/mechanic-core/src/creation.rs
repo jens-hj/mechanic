@@ -30,7 +30,7 @@ use crate::{
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 16;
+pub const CREATION_FORMAT_VERSION: u32 = 17;
 const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
@@ -1259,7 +1259,7 @@ impl CreationDocument {
                 if let crate::BearingKind::Linear(rail) = socket.kind {
                     rail.rotation(Vec3::from_array(socket.axis))?;
                 }
-                Ok(BearingSocket {
+                let socket = BearingSocket {
                     kind: socket.kind,
                     axis: Vec3::from_array(socket.axis),
                     source: resolve_face(socket.source, &part_ids, &feature_ids)?,
@@ -1268,7 +1268,9 @@ impl CreationDocument {
                         socket.outer_diameter,
                         socket.inner_diameter,
                     )?,
-                })
+                };
+                graph.validate_suspension_socket(socket)?;
+                Ok(socket)
             })
             .collect::<Result<Vec<_>, CreationError>>()?;
 
@@ -1734,6 +1736,119 @@ mod tests {
         RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeFeature, ShapeRegion,
         ShiftMode, SolidOwner, TopologySource, WeldSpec,
     };
+
+    fn suspension_document() -> CreationDocument {
+        let mut graph = ConstructionGraph::new();
+        let source = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([4; 3], IVec3::new(0, 2, 0))))
+                .unwrap(),
+        );
+        let target = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([4; 3], IVec3::new(6, 2, 0))))
+                .unwrap(),
+        );
+        let spec = crate::SuspensionSpec::new(
+            Some(crate::SpringSpec::default()),
+            Some(crate::ShockSpec::default()),
+            Some(crate::BumpStopSpec::new(0.05, 0.06).unwrap()),
+        )
+        .unwrap();
+        graph
+            .apply(BuildCommand::AddBearing(
+                BearingSpec::new(
+                    FaceRef::part(source, FaceKind::PositiveX),
+                    FaceRef::part(target, FaceKind::NegativeX),
+                    Vec3::new(0.5, 0.5, 0.0),
+                    Vec3::X,
+                )
+                .with_kind(crate::BearingKind::Suspension(spec)),
+            ))
+            .unwrap();
+        let socket = BearingSocket {
+            kind: crate::BearingKind::Suspension(spec),
+            axis: Vec3::Y,
+            source: FaceRef::part(source, FaceKind::PositiveY),
+            anchor: Vec3::Y,
+            dimensions: BearingDimensions::default(),
+        };
+        CreationDocument::from_graph(&graph, "Suspension", &[socket])
+    }
+
+    #[test]
+    fn suspension_round_trip_and_cardinal_placement_preserve_attached_and_socket_mass() {
+        let document = suspension_document();
+        let original = round_trip(&document).into_graph().unwrap();
+        let original_compiled = original
+            .graph
+            .compile_with_suspension_sockets([], &original.sockets)
+            .unwrap();
+        let mut transformed = round_trip(&document);
+        transformed.transform_cardinal(1, IVec3::new(8, 0, 4));
+        let loaded = round_trip(&transformed).into_graph().unwrap();
+        assert_eq!(loaded.graph.bearing_count(), 1);
+        assert_eq!(loaded.sockets.len(), 1);
+        assert_eq!(loaded.sockets[0].kind, original.sockets[0].kind);
+        assert!(
+            loaded.sockets[0]
+                .anchor
+                .abs_diff_eq(Vec3::new(1.0, 1.0, 0.5), 1.0e-6)
+        );
+        assert!(loaded.sockets[0].axis.abs_diff_eq(Vec3::Y, 1.0e-6));
+        let bearing = loaded.graph.bearings().next().unwrap().1;
+        assert!(bearing.axis.abs_diff_eq(Vec3::NEG_Z, 1.0e-6));
+        let compiled = loaded
+            .graph
+            .compile_with_suspension_sockets([], &loaded.sockets)
+            .unwrap();
+        for (before, after) in original_compiled.compounds.iter().zip(&compiled.compounds) {
+            assert!((before.mass_properties.mass - after.mass_properties.mass).abs() < 0.001);
+            let center = before.mass_properties.center_of_mass;
+            let expected = Vec3::new(center.z + 1.0, center.y, -center.x + 0.5);
+            assert!(
+                after
+                    .mass_properties
+                    .center_of_mass
+                    .abs_diff_eq(expected, 1.0e-5)
+            );
+        }
+    }
+
+    #[test]
+    fn suspension_socket_loading_rejects_invalid_axis_anchor_and_support() {
+        let document = suspension_document();
+        for axis in [
+            [0.0; 3],
+            [0.0, 2.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [f32::NAN; 3],
+            [f32::INFINITY; 3],
+        ] {
+            let mut invalid = document.clone();
+            invalid.sockets[0].axis = axis;
+            assert!(matches!(
+                invalid.into_graph(),
+                Err(CreationError::Graph(crate::GraphError::InvalidBearingAxis))
+            ));
+        }
+        for anchor in [[0.0, 1.1, 0.0], [9.0, 1.0, 0.0], [f32::NAN; 3]] {
+            let mut invalid = document.clone();
+            invalid.sockets[0].anchor = anchor;
+            assert!(matches!(
+                invalid.into_graph(),
+                Err(CreationError::Graph(
+                    crate::GraphError::BearingAnchorOutsideFaces
+                ))
+            ));
+        }
+        let mut ground = document.clone();
+        ground.sockets[0].source.owner = FaceOwnerDoc::Ground;
+        assert!(matches!(
+            ground.into_graph(),
+            Err(CreationError::Graph(crate::GraphError::BearingOnGround))
+        ));
+    }
 
     fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
         CuboidSpec::new(dimensions, BuildPose::new(units, GridRotation::default()))

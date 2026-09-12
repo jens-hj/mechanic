@@ -401,6 +401,13 @@ pub enum BuildCommand {
     SpawnDimensionLink(DimensionLinkSpec),
     /// Add a passive bearing.
     AddBearing(BearingSpec),
+    /// Updates all attachments sharing one suspension without changing bearing IDs.
+    SetSuspension {
+        /// Representative bearing in the mounting assembly.
+        bearing: BearingId,
+        /// Validated replacement, preserving attached mount spacing.
+        spec: crate::SuspensionSpec,
+    },
     /// Wire a control block to one bearing.
     AddDriveLink(DriveLinkSpec),
     /// Changes the typed SI-unit envelope of a linear bearing.
@@ -560,6 +567,9 @@ pub enum GraphError {
     /// Invalid linear-bearing frame.
     #[error(transparent)]
     LinearBearing(#[from] crate::LinearBearingError),
+    /// Invalid suspension geometry or attempted powered suspension.
+    #[error(transparent)]
+    Suspension(#[from] crate::SuspensionError),
     /// A part handle is stale or unknown.
     #[error("unknown or stale part handle {0:?}")]
     MissingPart(PartId),
@@ -2510,6 +2520,40 @@ impl ConstructionGraph {
                 self.pending = None;
                 Ok(BuildOutcome::BearingAdded(id))
             }
+            BuildCommand::SetSuspension { bearing, spec } => {
+                let current = *self
+                    .bearing(bearing)
+                    .ok_or(GraphError::MissingBearing(bearing))?;
+                let crate::BearingKind::Suspension(old) = current.kind else {
+                    return Err(GraphError::IncompatibleDrive);
+                };
+                old.validate_edit(spec, true)?;
+                let ids = self
+                    .bearings()
+                    .filter(|(_, b)| {
+                        matches!(b.kind, crate::BearingKind::Suspension(_))
+                            && b.source == current.source
+                            && b.shared_anchor == current.shared_anchor
+                            && b.axis == current.axis
+                    })
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>();
+                let mut candidate = self.clone();
+                for &id in &ids {
+                    candidate
+                        .bearings
+                        .get_mut(id)
+                        .expect("existing attachment")
+                        .kind = crate::BearingKind::Suspension(spec);
+                }
+                for id in ids {
+                    candidate
+                        .validate_bearing(*candidate.bearing(id).expect("existing attachment"))?;
+                }
+                self.bearings = candidate.bearings.clone();
+                self.pending = None;
+                Ok(BuildOutcome::BearingAdded(bearing))
+            }
             BuildCommand::SetLinearDriveLimits { link, limits } => {
                 let current = self
                     .drive_link(link)
@@ -2923,6 +2967,9 @@ impl ConstructionGraph {
         let bearing = self
             .bearing(bearing)
             .ok_or(GraphError::MissingBearing(bearing))?;
+        if matches!(bearing.kind, crate::BearingKind::Suspension(_)) {
+            return Err(GraphError::IncompatibleDrive);
+        }
         let linear = matches!(bearing.kind, crate::BearingKind::Linear(_));
         if program
             .states()
@@ -3198,6 +3245,43 @@ impl ConstructionGraph {
         }
     }
 
+    pub(crate) fn validate_suspension_socket(
+        &self,
+        socket: crate::BearingSocket,
+    ) -> Result<(), GraphError> {
+        let crate::BearingKind::Suspension(spec) = socket.kind else {
+            return Ok(());
+        };
+        if matches!(socket.source.owner, FaceOwner::Ground) {
+            return Err(GraphError::BearingOnGround);
+        }
+        let source = self.face_geometry(socket.source)?;
+        if !socket.axis.is_finite()
+            || (socket.axis.length_squared() - 1.0).abs() > 1.0e-5
+            || socket.axis.dot(source.normal) < 1.0 - axis_cosine_tolerance()
+        {
+            return Err(GraphError::InvalidBearingAxis);
+        }
+        let mount = FaceGeometry {
+            center: socket.anchor,
+            normal: source.normal,
+            tangent_u: source.tangent_u,
+            tangent_v: source.tangent_v,
+            profile: FaceProfile::Annulus {
+                inner_radius: 0.0,
+                outer_radius: spec.plates().diameter / 2.0,
+            },
+        };
+        if !socket.anchor.is_finite()
+            || (source.center - socket.anchor).dot(socket.axis).abs() > ANCHOR_TOLERANCE_METERS
+            || !profiles_overlap(&mount, &source)
+        {
+            return Err(GraphError::BearingAnchorOutsideFaces);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn validate_bearing(&self, spec: BearingSpec) -> Result<(), GraphError> {
         if spec.source == spec.target {
             return Err(GraphError::SameFace);
@@ -3209,6 +3293,51 @@ impl ConstructionGraph {
         }
         let source = self.face_geometry(spec.source)?;
         let target = self.face_geometry(spec.target)?;
+        if let crate::BearingKind::Suspension(suspension) = spec.kind {
+            if self.bearings().any(|(_, existing)| {
+                existing.source == spec.source
+                    && existing.shared_anchor.distance(spec.shared_anchor) < ANCHOR_TOLERANCE_METERS
+                    && existing.kind != spec.kind
+            }) {
+                return Err(GraphError::Suspension(crate::SuspensionError::SharedMounts));
+            }
+
+            if !spec.axis.is_finite()
+                || (spec.axis.length_squared() - 1.0).abs() > 1.0e-5
+                || spec.axis.dot(source.normal) < 1.0 - axis_cosine_tolerance()
+            {
+                return Err(GraphError::InvalidBearingAxis);
+            }
+            if source.normal.dot(target.normal) > -1.0 + axis_cosine_tolerance() {
+                return Err(GraphError::BearingFacesNotOpposed);
+            }
+            let opposite = spec.shared_anchor + spec.axis * suspension.initial_length();
+            let radius = suspension.plates().diameter / 2.0;
+            let mount = FaceGeometry {
+                center: spec.shared_anchor,
+                normal: source.normal,
+                tangent_u: source.tangent_u,
+                tangent_v: source.tangent_v,
+                profile: FaceProfile::Annulus {
+                    inner_radius: 0.0,
+                    outer_radius: radius,
+                },
+            };
+            let other = FaceGeometry {
+                center: opposite,
+                ..mount.clone()
+            };
+            if !spec.shared_anchor.is_finite()
+                || (source.center - spec.shared_anchor).dot(spec.axis).abs()
+                    > ANCHOR_TOLERANCE_METERS
+                || (target.center - opposite).dot(spec.axis).abs() > ANCHOR_TOLERANCE_METERS
+                || !profiles_overlap(&mount, &source)
+                || !profiles_overlap(&other, &target)
+            {
+                return Err(GraphError::BearingAnchorOutsideFaces);
+            }
+            return Ok(());
+        }
         if let crate::BearingKind::Linear(rail) = spec.kind {
             if self.bearings().any(|(_, existing)| {
                 existing.source == spec.source
@@ -3704,6 +3833,182 @@ mod tests {
         MaterialDye, MaterialFinish, PartId, PartSpec, RegionError, RegionId,
         SeatControllerLinkSpec, SeatSpec, ShapeRegion, ShiftMode, TransmissionSpec,
     };
+
+    fn suspension_fixture() -> (ConstructionGraph, [BearingSpec; 2]) {
+        let mut graph = ConstructionGraph::new();
+        let source = spawn(&mut graph, cube_at(0));
+        let targets = [150, 250].map(|y| {
+            spawn(
+                &mut graph,
+                CuboidSpec::new(
+                    [1; 3],
+                    BuildPose::from_position_ticks(IVec3::new(450, y, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            )
+        });
+        // The bearing attachment workflow groups construction on the opposite plate.
+        graph
+            .apply(BuildCommand::RigidLink(RigidLinkSpec {
+                first: targets[0],
+                second: targets[1],
+            }))
+            .unwrap();
+        let spec = crate::SuspensionSpec::new(
+            Some(crate::SpringSpec::default()),
+            Some(crate::ShockSpec::default()),
+            None,
+        )
+        .unwrap();
+        let bearings = targets.map(|target| {
+            BearingSpec::new(
+                FaceRef::part(source, FaceKind::PositiveX),
+                FaceRef::part(target, FaceKind::NegativeX),
+                Vec3::new(0.5, 0.5, 0.0),
+                Vec3::X,
+            )
+            .with_kind(crate::BearingKind::Suspension(spec))
+        });
+        (graph, bearings)
+    }
+
+    #[test]
+    fn suspension_shared_mounts_compile_once_and_live_edits_preserve_attachment_ids() {
+        let (mut graph, bearings) = suspension_fixture();
+        let ids = bearings.map(|spec| {
+            let BuildOutcome::BearingAdded(id) =
+                graph.apply(BuildCommand::AddBearing(spec)).unwrap()
+            else {
+                unreachable!()
+            };
+            id
+        });
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.bearings.len(), 1);
+        assert_eq!(compiled.compounds.len(), 2);
+        let changed = crate::SuspensionSpec::new(
+            Some(crate::SpringSpec::new(0.5, 0.16, 0.12, 6, 0.025).unwrap()),
+            Some(
+                crate::ShockSpec::new(0.5, 0.1, crate::ShockBodyEnd::Opposite, 0.0, 2.0, 3.0)
+                    .unwrap(),
+            ),
+            None,
+        )
+        .unwrap();
+        graph
+            .apply(BuildCommand::SetSuspension {
+                bearing: ids[0],
+                spec: changed,
+            })
+            .unwrap();
+        assert_eq!(graph.bearing_count(), 2);
+        for id in ids {
+            assert_eq!(
+                graph.bearing(id).unwrap().kind,
+                crate::BearingKind::Suspension(changed)
+            );
+        }
+        assert_eq!(graph.compile().unwrap().bearings.len(), 1);
+        let moved = crate::SuspensionSpec::new(
+            changed.spring(),
+            Some(
+                crate::ShockSpec::new(0.5, 0.1, crate::ShockBodyEnd::Opposite, 0.025, 2.0, 3.0)
+                    .unwrap(),
+            ),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            graph.apply(BuildCommand::SetSuspension {
+                bearing: ids[0],
+                spec: moved
+            }),
+            Err(GraphError::Suspension(
+                crate::SuspensionError::AttachedSpacing
+            ))
+        );
+        for id in ids {
+            assert_eq!(
+                graph.bearing(id).unwrap().kind,
+                crate::BearingKind::Suspension(changed)
+            );
+        }
+    }
+
+    #[test]
+    fn suspension_attachment_rejects_bad_axes_support_spacing_and_conflicting_specs() {
+        let (mut graph, bearings) = suspension_fixture();
+        for axis in [Vec3::ZERO, Vec3::X * 2.0, Vec3::Y, Vec3::splat(f32::NAN)] {
+            let mut bad = bearings[0];
+            bad.axis = axis;
+            assert_eq!(
+                graph.apply(BuildCommand::AddBearing(bad)),
+                Err(GraphError::InvalidBearingAxis)
+            );
+        }
+        for anchor in [
+            Vec3::new(0.6, 0.5, 0.0),
+            Vec3::new(0.5, 9.0, 0.0),
+            Vec3::splat(f32::NAN),
+        ] {
+            let mut bad = bearings[0];
+            bad.shared_anchor = anchor;
+            assert_eq!(
+                graph.apply(BuildCommand::AddBearing(bad)),
+                Err(GraphError::BearingAnchorOutsideFaces)
+            );
+        }
+        let mut wrong_spacing = bearings[0];
+        wrong_spacing.kind = crate::BearingKind::Suspension(
+            crate::SuspensionSpec::new(
+                Some(crate::SpringSpec::default()),
+                Some(
+                    crate::ShockSpec::new(0.5, 0.1, crate::ShockBodyEnd::Source, 0.025, 1.0, 1.6)
+                        .unwrap(),
+                ),
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            graph.apply(BuildCommand::AddBearing(wrong_spacing)),
+            Err(GraphError::BearingAnchorOutsideFaces)
+        );
+        graph.apply(BuildCommand::AddBearing(bearings[0])).unwrap();
+        let mut bad = bearings[1];
+        bad.kind = crate::BearingKind::Suspension(
+            crate::SuspensionSpec::new(Some(crate::SpringSpec::default()), None, None).unwrap(),
+        );
+        assert_eq!(
+            graph.apply(BuildCommand::AddBearing(bad)),
+            Err(GraphError::Suspension(crate::SuspensionError::SharedMounts))
+        );
+        assert_eq!(graph.bearing_count(), 1);
+    }
+
+    #[test]
+    fn suspension_cannot_receive_a_controller_motor_assignment() {
+        let (mut graph, bearings) = suspension_fixture();
+        let BuildOutcome::BearingAdded(bearing) =
+            graph.apply(BuildCommand::AddBearing(bearings[0])).unwrap()
+        else {
+            unreachable!()
+        };
+        let BuildOutcome::Spawned(controller) = graph
+            .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                BuildPose::new(IVec3::new(20, 2, 0), GridRotation::default()),
+            )))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            graph.apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing
+            ))),
+            Err(GraphError::IncompatibleDrive)
+        );
+    }
 
     fn cube_at(x: i32) -> CuboidSpec {
         CuboidSpec::new(

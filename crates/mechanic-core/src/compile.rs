@@ -183,6 +183,8 @@ pub struct LoopTopology {
 /// Complete, immutable upload image for the GPU runtime.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompiledCreation {
+    /// Backend-independent symbolic dynamics schedules and body-frame inertias.
+    pub dynamics: crate::CompiledDynamics,
     /// Compound bodies.
     pub compounds: Vec<CompiledCompound>,
     /// Cuboid collider rows.
@@ -380,7 +382,7 @@ impl ConstructionGraph {
     /// Returns [`TopologyError`] when the graph is empty, a bearing collapses
     /// into a weld group, or derived mass properties are invalid.
     pub fn compile(&self) -> Result<CompiledCreation, TopologyError> {
-        compile_graph(self, &BTreeSet::new())
+        self.compile_with_suspension_sockets([], &[])
     }
 
     /// Compiles the graph while treating compounds containing any supplied part as static.
@@ -395,8 +397,23 @@ impl ConstructionGraph {
         &self,
         static_parts: impl IntoIterator<Item = PartId>,
     ) -> Result<CompiledCreation, TopologyError> {
+        self.compile_with_suspension_sockets(static_parts, &[])
+    }
+
+    /// Compiles suspension sockets as carried mass on their source compounds.
+    ///
+    /// An unattached socket contributes its entire assembly mass and inertia.
+    /// Sockets already represented by an attached suspension bearing are ignored.
+    ///
+    /// # Errors
+    /// Returns the same topology and capacity errors as [`Self::compile`].
+    pub fn compile_with_suspension_sockets(
+        &self,
+        static_parts: impl IntoIterator<Item = PartId>,
+        sockets: &[crate::BearingSocket],
+    ) -> Result<CompiledCreation, TopologyError> {
         let static_parts = static_parts.into_iter().collect::<BTreeSet<_>>();
-        compile_graph(self, &static_parts)
+        compile_graph(self, &static_parts, sockets)
     }
 }
 
@@ -404,6 +421,7 @@ impl ConstructionGraph {
 fn compile_graph(
     graph: &ConstructionGraph,
     externally_static_parts: &BTreeSet<PartId>,
+    sockets: &[crate::BearingSocket],
 ) -> Result<CompiledCreation, TopologyError> {
     if graph.parts.is_empty() {
         return Err(TopologyError::EmptyConstruction);
@@ -538,6 +556,7 @@ fn compile_graph(
             &covered,
             &region_shapes,
             graph,
+            sockets,
         )?;
         let collider_start = u32::try_from(colliders.len()).expect("collider count fits u32");
         for &row in member_rows {
@@ -674,6 +693,7 @@ fn compile_graph(
             bearing.kind.bounds().map(f32::to_bits),
             match bearing.kind {
                 crate::BearingKind::Rotational => (0, 0, [0; 3], 0),
+                crate::BearingKind::Suspension(_) => (2, 0, [0; 3], 0),
                 crate::BearingKind::Linear(rail) => (
                     1,
                     rail.dimensions.width().to_bits(),
@@ -793,7 +813,9 @@ fn compile_graph(
     let actuation = resolve_coordinate_actuation(&topology, graph, &[])?;
     let coordinate_drives = resolve_coordinate_drives(&topology, graph, &actuation);
 
+    let dynamics = crate::CompiledDynamics::compile(&compounds, &bearings, &topology);
     Ok(CompiledCreation {
+        dynamics,
         compounds,
         colliders,
         bearings,
@@ -1001,7 +1023,7 @@ fn compile_coordinate_axis_inertia(
                 let properties = compound.mass_properties;
                 let offset = properties.center_of_mass - anchor;
                 let radial = offset - axis * offset.dot(axis);
-                total += if matches!(bearing.kind, crate::BearingKind::Linear(_)) {
+                total += if bearing.kind.is_translational() {
                     properties.mass
                 } else {
                     axis.dot(properties.inertia * axis) + properties.mass * radial.length_squared()
@@ -1200,7 +1222,7 @@ fn resolve_coordinate_actuation(
     for (coordinate, bearing) in topology.tree_bearings.iter().enumerate() {
         if graph
             .bearing(*bearing)
-            .is_some_and(|bearing| matches!(bearing.kind, crate::BearingKind::Linear(_)))
+            .is_some_and(|bearing| bearing.kind.is_translational())
         {
             let row = &mut result[coordinate];
             row.source_a_torque /= crate::LINEAR_METERS_PER_RADIAN;
@@ -1350,8 +1372,9 @@ impl CompiledCreation {
         else {
             return CoordinateDrive::PASSIVE;
         };
-        let linear = matches!(bearing.kind, crate::BearingKind::Linear(_));
-        if target.is_linear() != linear {
+        let linear = bearing.kind.is_translational();
+        if target.is_linear() != linear || matches!(bearing.kind, crate::BearingKind::Suspension(_))
+        {
             let [min_angle, max_angle] = bearing.kind.bounds();
             return CoordinateDrive {
                 min_angle,
@@ -1394,13 +1417,98 @@ impl CompiledCreation {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn calculate_mass_properties<'a>(
     parts: impl Iterator<Item = (PartId, PartSpec)> + Clone + 'a,
     is_static: bool,
     covered: &BTreeSet<PartId>,
     regions: &[(RegionId, &ShapeRegion)],
     graph: &ConstructionGraph,
+    sockets: &[crate::BearingSocket],
 ) -> Result<MassProperties, TopologyError> {
+    let member_parts = parts.clone().map(|(id, _)| id).collect::<BTreeSet<_>>();
+    let mut suspension_masses = Vec::new();
+    let mut seen_mounts = Vec::new();
+    for (_, bearing) in graph.bearings() {
+        let crate::BearingKind::Suspension(spec) = bearing.kind else {
+            continue;
+        };
+        let key = (
+            bearing.source,
+            bearing.shared_anchor.to_array().map(f32::to_bits),
+        );
+        for element in spec.mass_elements() {
+            let owner = if element.opposite {
+                bearing.target.owner
+            } else {
+                bearing.source.owner
+            };
+            let FaceOwner::Part(owner) = owner else {
+                continue;
+            };
+            if !member_parts.contains(&owner) {
+                continue;
+            }
+            // A shared mounting assembly can have several attached parts.
+            let endpoint_key = (key, element.opposite);
+            if seen_mounts.contains(&endpoint_key) {
+                continue;
+            }
+            let axis = bearing.axis;
+            let outer = Mat3::from_cols(axis * axis.x, axis * axis.y, axis * axis.z);
+            suspension_masses.push(WorldMassProperties {
+                mass: element.mass,
+                center: bearing.shared_anchor + axis * element.center,
+                inertia: Mat3::IDENTITY * element.transverse_inertia
+                    + outer * (element.axial_inertia - element.transverse_inertia),
+            });
+        }
+        for opposite in [false, true] {
+            let owner = if opposite {
+                bearing.target.owner
+            } else {
+                bearing.source.owner
+            };
+            if let FaceOwner::Part(owner) = owner
+                && member_parts.contains(&owner)
+            {
+                seen_mounts.push((key, opposite));
+            }
+        }
+    }
+    let mut seen_sockets = Vec::new();
+    for socket in sockets {
+        let crate::BearingKind::Suspension(spec) = socket.kind else {
+            continue;
+        };
+        let FaceOwner::Part(owner) = socket.source.owner else {
+            continue;
+        };
+        if !member_parts.contains(&owner) {
+            continue;
+        }
+        let key = (socket.source, socket.anchor.to_array().map(f32::to_bits));
+        if seen_sockets.contains(&key)
+            || graph.bearings().any(|(_, bearing)| {
+                matches!(bearing.kind, crate::BearingKind::Suspension(_))
+                    && bearing.source == socket.source
+                    && bearing.shared_anchor == socket.anchor
+            })
+        {
+            continue;
+        }
+        seen_sockets.push(key);
+        let axis = socket.axis;
+        let outer = Mat3::from_cols(axis * axis.x, axis * axis.y, axis * axis.z);
+        suspension_masses.extend(spec.mass_elements().into_iter().map(|element| {
+            WorldMassProperties {
+                mass: element.mass,
+                center: socket.anchor + axis * element.center,
+                inertia: Mat3::IDENTITY * element.transverse_inertia
+                    + outer * (element.axial_inertia - element.transverse_inertia),
+            }
+        }));
+    }
     let identifying_part = parts.clone().next().expect("weld groups are non-empty").0;
     // A part inside a region has no mass of its own: the region owns its
     // geometry, so counting both would weigh the build twice.
@@ -1439,6 +1547,10 @@ fn calculate_mass_properties<'a>(
         }))
         .collect::<Vec<_>>();
 
+    let contributions = contributions
+        .into_iter()
+        .chain(suspension_masses)
+        .collect::<Vec<_>>();
     let total_mass = contributions.iter().map(|body| body.mass).sum::<f32>();
     let center_of_mass = contributions
         .iter()
@@ -2251,6 +2363,122 @@ mod tests {
         TopologyError, WeldSpec,
     };
     use bevy_math::{Mat3, Quat};
+
+    #[test]
+    fn unattached_suspension_socket_adds_carried_mass_center_and_inertia_once() {
+        let mut graph = ConstructionGraph::new();
+        let source = spawn(&mut graph, IVec3::new(0, 2, 0));
+        let spec = crate::SuspensionSpec::new(
+            Some(crate::SpringSpec::default()),
+            Some(crate::ShockSpec::default()),
+            None,
+        )
+        .unwrap();
+        let socket = crate::BearingSocket {
+            kind: crate::BearingKind::Suspension(spec),
+            axis: Vec3::X,
+            source: FaceRef::part(source, FaceKind::PositiveX),
+            anchor: Vec3::new(0.5, 0.5, 0.0),
+            dimensions: BearingDimensions::default(),
+        };
+        let bare = graph.compile().unwrap().compounds[0].mass_properties;
+        let compiled = graph
+            .compile_with_suspension_sockets([], &[socket])
+            .unwrap();
+        let actual = compiled.compounds[0].mass_properties;
+        let elements = spec.mass_elements();
+        let added_mass: f32 = elements.iter().map(|element| element.mass).sum();
+        let total_mass = bare.mass + added_mass;
+        let expected_center = (bare.center_of_mass * bare.mass
+            + elements
+                .iter()
+                .map(|element| (socket.anchor + socket.axis * element.center) * element.mass)
+                .sum::<Vec3>())
+            / total_mass;
+        assert!((actual.mass - total_mass).abs() < 0.001);
+        assert!(actual.center_of_mass.abs_diff_eq(expected_center, 1.0e-6));
+        let shift = bare.center_of_mass - expected_center;
+        let mut expected_inertia = bare.inertia
+            + bare.mass * (Mat3::IDENTITY * shift.length_squared() - outer_product(shift, shift));
+        for element in elements {
+            let offset = socket.anchor + socket.axis * element.center - expected_center;
+            expected_inertia += Mat3::from_diagonal(Vec3::new(
+                element.axial_inertia,
+                element.transverse_inertia,
+                element.transverse_inertia,
+            )) + element.mass
+                * (Mat3::IDENTITY * offset.length_squared() - outer_product(offset, offset));
+        }
+        assert!(actual.inertia.abs_diff_eq(expected_inertia, 0.001));
+        assert_eq!(
+            compiled,
+            graph
+                .compile_with_suspension_sockets([], &[socket, socket])
+                .unwrap()
+        );
+        let anchored = graph
+            .compile_with_suspension_sockets([source], &[socket])
+            .unwrap();
+        assert!(anchored.compounds[0].is_static);
+        assert!(anchored.compounds[0].mass_properties.inverse_mass.abs() < f32::EPSILON);
+        assert!((anchored.compounds[0].mass_properties.mass - total_mass).abs() < 0.001);
+    }
+
+    #[test]
+    fn attached_suspension_socket_does_not_duplicate_either_endpoint_mass() {
+        let mut graph = ConstructionGraph::new();
+        let source = spawn(&mut graph, IVec3::new(0, 2, 0));
+        let target = spawn(&mut graph, IVec3::new(6, 2, 0));
+        let bare_mass: f32 = graph
+            .compile()
+            .unwrap()
+            .compounds
+            .iter()
+            .map(|body| body.mass_properties.mass)
+            .sum();
+        let spec = crate::SuspensionSpec::new(
+            Some(crate::SpringSpec::default()),
+            Some(crate::ShockSpec::default()),
+            None,
+        )
+        .unwrap();
+        let socket = crate::BearingSocket {
+            kind: crate::BearingKind::Suspension(spec),
+            axis: Vec3::X,
+            source: FaceRef::part(source, FaceKind::PositiveX),
+            anchor: Vec3::new(0.5, 0.5, 0.0),
+            dimensions: BearingDimensions::default(),
+        };
+        graph
+            .apply(BuildCommand::AddBearing(
+                BearingSpec::new(
+                    socket.source,
+                    FaceRef::part(target, FaceKind::NegativeX),
+                    socket.anchor,
+                    socket.axis,
+                )
+                .with_kind(socket.kind),
+            ))
+            .unwrap();
+        let attached = graph.compile().unwrap();
+        assert_eq!(
+            attached,
+            graph
+                .compile_with_suspension_sockets([], &[socket])
+                .unwrap()
+        );
+        let total_mass: f32 = attached
+            .compounds
+            .iter()
+            .map(|body| body.mass_properties.mass)
+            .sum();
+        let added_mass: f32 = spec
+            .mass_elements()
+            .iter()
+            .map(|element| element.mass)
+            .sum();
+        assert!((total_mass - bare_mass - added_mass).abs() < 0.001);
+    }
 
     fn cube_at(units: IVec3) -> CuboidSpec {
         CuboidSpec::new([4, 4, 4], BuildPose::new(units, GridRotation::default())).unwrap()

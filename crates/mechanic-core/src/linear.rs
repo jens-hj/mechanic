@@ -202,14 +202,22 @@ pub enum BearingKind {
     Rotational,
     /// Bounded translation along the rail.
     Linear(LinearBearing),
+    /// Passive axial suspension with rigid mount orientations.
+    Suspension(crate::SuspensionSpec),
 }
 
 impl BearingKind {
+    /// Whether the physical coordinate is translation, in metres.
+    pub const fn is_translational(self) -> bool {
+        !matches!(self, Self::Rotational)
+    }
+
     /// Physical coordinate bounds independent of drive programming.
     pub fn bounds(self) -> [f32; 2] {
         match self {
             Self::Rotational => [f32::NEG_INFINITY, f32::INFINITY],
             Self::Linear(rail) => rail.dimensions.bounds(),
+            Self::Suspension(spec) => spec.bounds(),
         }
     }
 }

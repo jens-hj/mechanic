@@ -2,8 +2,10 @@
 
 mod appearance;
 mod compile;
+mod contact_geometry;
 mod creation;
 mod drive;
+mod dynamics;
 mod edit;
 mod frame;
 mod gearbox;
@@ -15,6 +17,8 @@ mod linear_geometry;
 mod region;
 mod shape;
 mod solid;
+mod suspension;
+mod suspension_geometry;
 mod weld;
 
 pub use weld::{
@@ -28,6 +32,10 @@ pub use compile::{
     MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology, PIPE_BEND_COLLIDER_COUNT,
     TopologyError,
 };
+pub use contact_geometry::{
+    ContactGeometryError, ContactPolytope, ContactVelocity, RigidContactSweep, SweepOutcome,
+    TriangleContactPoint,
+};
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, ConstructionFrameDoc,
     CreationDocument, CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc,
@@ -36,6 +44,8 @@ pub use creation::{
     SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc,
     WeldDoc,
 };
+pub use dynamics::{CompiledDynamics, DynamicsComponent, LoopConstraintPattern, SpatialInertia};
+
 pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
     DriveLimitsError, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
@@ -107,4 +117,14 @@ pub use appearance::{
 
 pub use linear_geometry::{
     LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,
+};
+
+pub use suspension::{
+    BumpStopSpec, CompressionLimit, MountPlates, ShockBodyEnd, ShockGeometry, ShockSpec,
+    SpringSpec, SuspensionError, SuspensionMassElement, SuspensionSpec,
+};
+
+pub use suspension_geometry::{
+    SUSPENSION_FINISHES, SuspensionFinish, SuspensionMeshChunk, SuspensionMeshOwner,
+    suspension_meshes,
 };
