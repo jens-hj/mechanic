@@ -56,6 +56,7 @@ fn activate_candidate(
     if !closing && !stops::closing(creation, drives, state, settings.tolerance) {
         return Ok(false);
     }
+    trace_normals("incoming", contacts, &state.velocities, None);
     let mut blocks = contacts.blocks.clone();
     // Finite actuator/passive forces have zero impulse at zero elapsed time.
     // Active hard stops must still prevent contact from driving through a limit.
@@ -123,9 +124,53 @@ fn activate_candidate(
         .map(|(old, change)| old + change)
         .collect::<Vec<_>>();
     model.body_motions(&outgoing)?;
+    trace_normals(
+        "outgoing",
+        contacts,
+        &outgoing,
+        Some((solution.residual, &solution.impulses)),
+    );
     state.velocities = outgoing;
     diagnostics.impact_events += 1;
     Ok(true)
+}
+
+// Normal closing speeds of one impact's contact points, gated like
+// `MECHANIC_TRACE_CONTINUATION`. Tracing both ends of the solve measures how much
+// of an incoming manifold an admissible solution ejects from the activation
+// window, which is what leaves a rolling support re-arriving every substep.
+fn trace_normals(
+    label: &str,
+    contacts: &TerrainImpactConstraints,
+    velocities: &[f64],
+    solved: Option<(f64, &[f64])>,
+) {
+    if std::env::var_os("MECHANIC_TRACE_EVENTS").is_none() {
+        return;
+    }
+    let mut normals = Vec::new();
+    for block in &contacts.blocks {
+        let mut first = 0;
+        for point in &block.contacts {
+            normals.push(
+                block.jacobian[first]
+                    .iter()
+                    .zip(velocities)
+                    .map(|(j, v)| j * v)
+                    .sum::<f64>(),
+            );
+            first += if point.rolling_length.is_some() { 5 } else { 3 };
+        }
+    }
+    match solved {
+        None => println!(
+            "event impact {label} blocks={} normals={normals:?}",
+            contacts.blocks.len()
+        ),
+        Some((residual, impulses)) => println!(
+            "event impact {label} normals={normals:?} residual={residual:e} impulses={impulses:?}"
+        ),
+    }
 }
 
 #[cfg(test)]

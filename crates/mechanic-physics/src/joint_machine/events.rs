@@ -167,6 +167,19 @@ pub(super) fn advance_interval_cached<const REUSE: bool>(
             impact_bracket = None;
             release_bracket = None;
         }
+        trace_trial(
+            diagnostics.event_trials,
+            elapsed,
+            trial_duration,
+            &outcome,
+            impact_bracket
+                .as_ref()
+                .map(|(lower, upper, _)| (*lower, *upper)),
+            release_bracket
+                .as_ref()
+                .map(|(lower, upper, _)| (*lower, *upper)),
+            clear_prefix.as_ref().map(|prefix| prefix.duration),
+        );
         match outcome {
             TrialOutcome::Complete {
                 arrived,
@@ -342,6 +355,40 @@ pub(super) fn advance_interval_cached<const REUSE: bool>(
     diagnostics.terrain_impact_holds += 1;
     diagnostics.failure_stage = Some(super::JointFailureStage::EventSearch);
     Err(PhysicsError::NotConverged)
+}
+
+// Per-trial trace for diagnosing a search that never localizes an event, gated
+// like `MECHANIC_TRACE_CONTINUATION`. Brackets are the state entering the trial.
+#[allow(clippy::too_many_arguments)] // One line per trial needs the whole search state.
+fn trace_trial(
+    trial: usize,
+    elapsed: f64,
+    duration: f64,
+    outcome: &TrialOutcome,
+    impact: Option<(f64, f64)>,
+    release: Option<(f64, f64)>,
+    prefix: Option<f64>,
+) {
+    if std::env::var_os("MECHANIC_TRACE_EVENTS").is_none() {
+        return;
+    }
+    let kind = match outcome {
+        TrialOutcome::Complete { arrived, .. } => format!("complete arrived={arrived}"),
+        TrialOutcome::Refine(hit) => format!(
+            "refine fraction={:e} collider={} triangle={} separation={:e}",
+            hit.fraction, hit.collider, hit.triangle, hit.separation
+        ),
+        TrialOutcome::Release(hit) => format!("release fraction={:e}", hit.fraction),
+        TrialOutcome::JointStop(hit) => {
+            format!(
+                "stop coordinate={} fraction={:e}",
+                hit.coordinate, hit.fraction
+            )
+        }
+    };
+    println!(
+        "event trial={trial} elapsed={elapsed:e} duration={duration:e} {kind} impact={impact:?} release={release:?} prefix={prefix:?}"
+    );
 }
 
 #[allow(clippy::too_many_arguments)] // Preserve the operation boundary in failure diagnostics.
