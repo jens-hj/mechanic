@@ -73,6 +73,20 @@ pub enum SweepOutcome {
 }
 
 impl ContactPolytope {
+    /// Caches a compiled convex hull in compound-local coordinates, such as the
+    /// exact prism behind a compiled cylinder.
+    ///
+    /// # Errors
+    /// Rejects invalid, empty, or degenerate compiled geometry.
+    pub fn from_convex(hull: &crate::CompiledConvex) -> Result<Self, ContactGeometryError> {
+        Self {
+            vertices: hull.vertices.iter().map(|v| v.as_dvec3()).collect(),
+            planes: hull.face_planes.iter().map(|v| v.as_dvec4()).collect(),
+            edges: hull.edge_directions.iter().map(|v| v.as_dvec3()).collect(),
+        }
+        .validated()
+    }
+
     /// Caches a compiled collider in compound-local coordinates.
     ///
     /// # Errors
@@ -124,22 +138,27 @@ impl ContactPolytope {
                 edges: hull.edge_directions.iter().map(|v| v.as_dvec3()).collect(),
             },
         };
-        if result.vertices.len() < 4
-            || result.planes.len() < 4
-            || result.edges.len() < 3
-            || result.vertices.iter().any(|v| !v.is_finite())
-            || result
+        result.validated()
+    }
+
+    // Rejects geometry that cannot describe a closed convex solid.
+    fn validated(self) -> Result<Self, ContactGeometryError> {
+        if self.vertices.len() < 4
+            || self.planes.len() < 4
+            || self.edges.len() < 3
+            || self.vertices.iter().any(|v| !v.is_finite())
+            || self
                 .planes
                 .iter()
                 .any(|v| !v.is_finite() || v.truncate().length_squared() < 1e-20)
-            || result
+            || self
                 .edges
                 .iter()
                 .any(|v| !v.is_finite() || v.length_squared() < 1e-20)
         {
             return Err(ContactGeometryError);
         }
-        Ok(result)
+        Ok(self)
     }
 
     /// Transforms cached local geometry into a scene-relative query frame.

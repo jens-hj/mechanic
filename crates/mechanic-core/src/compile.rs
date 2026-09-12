@@ -199,6 +199,86 @@ pub struct CompiledCreation {
     pub part_to_compound: Vec<(PartId, u32)>,
     /// Resolved drive rows, one per tree bearing, in coordinate-index order.
     pub coordinate_drives: Vec<CoordinateDrive>,
+    /// Analytic description of every solid full cylinder, alongside the tangent
+    /// boxes that represent it in `colliders`. A solver that can take a cylinder's
+    /// contact exactly uses this instead of pattern-matching the box run.
+    pub cylinders: Vec<CompiledCylinder>,
+}
+
+/// One compiled solid full cylinder, in compound-local coordinates.
+///
+/// The sixteen tangent boxes in `colliders` circumscribe this cylinder: each box
+/// face touches `outer_radius` at its midpoint and the shared corners reach
+/// `outer_radius / cos(pi / 16)`. Their union is exactly [`Self::hull`], except
+/// that every shared corner appears twice there, rounded once per box, which is
+/// why a solver should take its geometry from here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompiledCylinder {
+    /// Source editable part.
+    pub source_part: PartId,
+    /// Owning compound row.
+    pub compound_index: u32,
+    /// First of the [`CYLINDER_COLLIDER_COUNT`] collider rows this replaces.
+    pub first_collider: u32,
+    /// Axis midpoint in compound-local coordinates.
+    pub local_center: Vec3,
+    /// Orientation relative to the compound root; the axis is `rotation * Y`.
+    pub local_rotation: Quat,
+    /// Authored outer radius in metres, at each facet midpoint.
+    pub outer_radius: f32,
+    /// Half the axial length in metres.
+    pub half_length: f32,
+}
+
+impl CompiledCylinder {
+    /// Exact circumscribed prism, with each corner computed once so the two faces
+    /// meeting there share the same vertex. Sixteen radial faces plus two ends.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the compiled facet count stops fitting a `u16`.
+    #[must_use]
+    pub fn hull(&self) -> CompiledConvex {
+        let facets = CYLINDER_COLLIDER_COUNT;
+        let count = u16::try_from(facets).expect("the facet count is sixteen");
+        let segment = core::f32::consts::TAU / f32::from(count);
+        let corner_radius = self.outer_radius / (segment * 0.5).cos();
+        let corners = (0..count)
+            .map(|corner| {
+                let angle = segment * (f32::from(corner) - 0.5);
+                Vec3::new(angle.cos(), 0.0, angle.sin()) * corner_radius
+            })
+            .collect::<Vec<_>>();
+        let mut vertices = Vec::with_capacity(2 * facets);
+        let mut edge_directions = vec![self.local_rotation * Vec3::Y];
+        for (index, &corner) in corners.iter().enumerate() {
+            for sign in [-1.0, 1.0] {
+                vertices.push(
+                    self.local_center
+                        + self.local_rotation * (corner + Vec3::Y * (self.half_length * sign)),
+                );
+            }
+            let next = corners[(index + 1) % facets];
+            if let Some(direction) = (self.local_rotation * (next - corner)).try_normalize() {
+                edge_directions.push(direction);
+            }
+        }
+        let mut face_planes = Vec::with_capacity(facets + 2);
+        for face in 0..count {
+            let angle = segment * f32::from(face);
+            let normal = self.local_rotation * Vec3::new(angle.cos(), 0.0, angle.sin());
+            face_planes.push(normal.extend(normal.dot(self.local_center) + self.outer_radius));
+        }
+        for sign in [-1.0, 1.0] {
+            let normal = self.local_rotation * (Vec3::Y * sign);
+            face_planes.push(normal.extend(normal.dot(self.local_center) + self.half_length));
+        }
+        CompiledConvex {
+            vertices,
+            face_planes,
+            edge_directions,
+        }
+    }
 }
 
 /// How the solver drives one mechanism coordinate.
@@ -514,6 +594,7 @@ fn compile_graph(
         });
     }
     let mut colliders = Vec::with_capacity(collider_capacity);
+    let mut cylinders = Vec::new();
     let mut compound_by_dense_part = vec![0_u32; part_rows.len()];
 
     // A part inside a region hands its geometry over to that region, so it must
@@ -585,6 +666,13 @@ fn compile_graph(
                     graph.part_frame(part).expect("compiled part has a frame"),
                     mass_properties.center_of_mass,
                 );
+                cylinders.extend(solid_full_cylinder(
+                    *spec,
+                    part,
+                    compound_index,
+                    start,
+                    &colliders[start..],
+                ));
             }
         }
         for &(id, region) in &region_shapes {
@@ -823,6 +911,7 @@ fn compile_graph(
         collision_suppression: suppressed.into_iter().collect(),
         part_to_compound,
         coordinate_drives,
+        cylinders,
     })
 }
 
@@ -2087,6 +2176,45 @@ fn compose_raw_colliders(
     }
 }
 
+// Recovers the analytic cylinder behind a freshly emitted and rebased box run.
+// The first box faces the cylinder's own zero angle, so its rotation is the
+// cylinder's, its half-extents carry the radius and axial length, and its centre
+// is one radius out along the radial axis. Shaped or hollow cylinders and sectors
+// have no such description and are left to their boxes.
+fn solid_full_cylinder(
+    spec: PartSpec,
+    part: PartId,
+    compound_index: u32,
+    first_collider: usize,
+    run: &[LocalCollider],
+) -> Option<CompiledCylinder> {
+    let PartSpec::Cylinder(cylinder) = spec else {
+        return None;
+    };
+    if cylinder.dimensions.inner_diameter() != 0.0
+        || cylinder.dimensions.sweep_angle_degrees() != 360
+        || run.len() != CYLINDER_COLLIDER_COUNT
+    {
+        return None;
+    }
+    let ColliderShape::Cuboid {
+        local_rotation,
+        half_extents,
+    } = run[0].shape
+    else {
+        return None;
+    };
+    Some(CompiledCylinder {
+        source_part: part,
+        compound_index,
+        first_collider: u32::try_from(first_collider).expect("collider rows fit u32"),
+        local_center: run[0].local_center - (local_rotation * Vec3::X) * half_extents.x,
+        local_rotation,
+        outer_radius: half_extents.x * 2.0,
+        half_length: half_extents.y,
+    })
+}
+
 fn append_part_colliders(
     colliders: &mut Vec<LocalCollider>,
     part: PartId,
@@ -2626,6 +2754,67 @@ mod tests {
                 second: FaceRef::ground(),
             }))
             .unwrap();
+    }
+
+    #[test]
+    fn a_solid_cylinder_also_compiles_an_exact_hull_sharing_every_corner() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                CylinderDimensions::new(0.95, 0.0, 0.25).unwrap(),
+                BuildPose::from_position_ticks(IVec3::Y * 300, GridRotation::new(1, 0, 0)),
+            )))
+            .unwrap();
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.colliders.len(), super::CYLINDER_COLLIDER_COUNT);
+        assert_eq!(compiled.cylinders.len(), 1);
+        let cylinder = compiled.cylinders[0];
+        assert_eq!(cylinder.first_collider, 0);
+        assert!((cylinder.outer_radius - 0.475).abs() < 1.0e-6);
+        assert!((cylinder.half_length - 0.125).abs() < 1.0e-6);
+
+        // The hull is the union of the boxes, so every box corner lies on or
+        // inside it and the facet midpoints sit at the authored radius.
+        let hull = cylinder.hull();
+        assert_eq!(hull.vertices.len(), 2 * super::CYLINDER_COLLIDER_COUNT);
+        assert_eq!(hull.face_planes.len(), super::CYLINDER_COLLIDER_COUNT + 2);
+        for plane in &hull.face_planes {
+            for vertex in &hull.vertices {
+                assert!(plane.truncate().dot(*vertex) <= plane.w + 1.0e-5);
+            }
+        }
+        // Each corner is one vertex, so the two faces meeting there agree exactly,
+        // which sixteen independently rounded boxes cannot do.
+        for vertex in &hull.vertices {
+            let touching = hull
+                .face_planes
+                .iter()
+                .filter(|plane| (plane.truncate().dot(*vertex) - plane.w).abs() < 1.0e-6)
+                .count();
+            assert_eq!(touching, 3, "a prism corner meets two sides and one end");
+        }
+    }
+
+    #[test]
+    fn a_hollow_cylinder_or_sector_has_no_analytic_description() {
+        for dimensions in [
+            CylinderDimensions::new(1.0, 0.5, 0.25).unwrap(),
+            CylinderDimensions::new(1.0, 0.0, 0.25)
+                .unwrap()
+                .with_sweep_angle_degrees(255)
+                .unwrap(),
+        ] {
+            let mut graph = ConstructionGraph::new();
+            graph
+                .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+                    dimensions,
+                    BuildPose::default(),
+                )))
+                .unwrap();
+            let compiled = graph.compile().unwrap();
+            assert_eq!(compiled.colliders.len(), super::CYLINDER_COLLIDER_COUNT);
+            assert!(compiled.cylinders.is_empty());
+        }
     }
 
     #[test]

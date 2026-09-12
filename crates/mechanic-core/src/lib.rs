@@ -28,9 +28,9 @@ pub use weld::{
 
 pub use compile::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
-    CompiledCreation, CoordinateDrive, DriveMode, GearSelection, LocalCollider, LoopTopology,
-    MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology, PIPE_BEND_COLLIDER_COUNT,
-    TopologyError,
+    CompiledCreation, CompiledCylinder, CoordinateDrive, DriveMode, GearSelection, LocalCollider,
+    LoopTopology, MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology,
+    PIPE_BEND_COLLIDER_COUNT, TopologyError,
 };
 pub use contact_geometry::{
     ContactGeometryError, ContactPolytope, ContactVelocity, RigidContactSweep, SweepOutcome,
