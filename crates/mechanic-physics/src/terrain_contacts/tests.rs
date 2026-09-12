@@ -24,6 +24,30 @@ pub(crate) fn cube() -> (CompiledCreation, MachineCollisionGeometry, Vec<BodyPos
     )
 }
 
+// The exact shapes the solver collides, paired with their bodies. A test that
+// measures penetration from `creation.colliders` instead would read a solid
+// cylinder's sixteen boxes, whose shared corners sit about 1e-8 m below the prism
+// the solver actually uses.
+pub(crate) fn collision_shapes(creation: &CompiledCreation) -> Vec<(usize, ContactPolytope)> {
+    let mut shapes = Vec::new();
+    let mut row = 0;
+    while row < creation.colliders.len() {
+        let source = &creation.colliders[row];
+        let cylinder = creation
+            .cylinders
+            .iter()
+            .find(|cylinder| cylinder.first_collider as usize == row);
+        let shape = match cylinder {
+            Some(cylinder) => ContactPolytope::from_convex(&cylinder.hull()),
+            None => ContactPolytope::from_collider(source),
+        }
+        .expect("compiled collision geometry is valid");
+        shapes.push((source.compound_index as usize, shape));
+        row += cylinder.map_or(1, |_| mechanic_core::CYLINDER_COLLIDER_COUNT);
+    }
+    shapes
+}
+
 pub(crate) fn terrain(materials: [TerrainMaterial; 2]) -> Arc<TerrainCollisionChunk> {
     let bounds = WorldBounds {
         minimum: WorldPosition(DVec3::new(-1.0, 0.0, -1.0)),

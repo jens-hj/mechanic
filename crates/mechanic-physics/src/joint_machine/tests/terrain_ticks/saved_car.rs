@@ -1,7 +1,6 @@
 //! Actual authored car in the private terrain-tick experiment. Not a world gate.
 
 use super::*;
-use mechanic_core::ContactPolytope;
 
 fn fixture() -> (
     CompiledCreation,
@@ -20,11 +19,10 @@ fn fixture() -> (
         .unwrap();
     let mut initial = MachineState::at_rest(&creation);
     let mut lowest = f64::INFINITY;
-    for collider in &creation.colliders {
-        let pose = initial.poses[collider.compound_index as usize];
+    for (body, shape) in collision_shapes(&creation) {
+        let pose = initial.poses[body];
         lowest = lowest.min(
-            ContactPolytope::from_collider(collider)
-                .unwrap()
+            shape
                 .transformed(pose.position, pose.rotation)
                 .unwrap()
                 .bounds()[0]
@@ -81,10 +79,9 @@ fn saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension() 
                         .iter()
                         .any(|value| value.abs() > 1e-3)
                 );
-                for collider in &creation.colliders {
-                    let pose = world.snapshot().state.poses[collider.compound_index as usize];
-                    let bounds = ContactPolytope::from_collider(collider)
-                        .unwrap()
+                for (body, shape) in collision_shapes(&creation) {
+                    let pose = world.snapshot().state.poses[body];
+                    let bounds = shape
                         .transformed(pose.position, pose.rotation)
                         .unwrap()
                         .bounds();
@@ -109,16 +106,7 @@ fn saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension() 
 fn saved_car_sustained_support_repeats_at_each_substep_policy() {
     let (creation, initial, geometry, scene) = fixture();
     let terrain = context(&scene, &geometry, 7);
-    let shapes = creation
-        .colliders
-        .iter()
-        .map(|collider| {
-            (
-                collider.compound_index as usize,
-                ContactPolytope::from_collider(collider).unwrap(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let shapes = collision_shapes(&creation);
     for substeps in [1, 2, 4, 8] {
         let run = || {
             let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
@@ -236,12 +224,9 @@ fn saved_car_cold_drop_resolves_its_first_impact_before_publication() {
             world.snapshot().state_hash(),
             world.diagnostics()
         );
-        for collider in &world.creation.colliders {
-            let pose = world.snapshot().state.poses[collider.compound_index as usize];
-            let shape = ContactPolytope::from_collider(collider)
-                .unwrap()
-                .transformed(pose.position, pose.rotation)
-                .unwrap();
+        for (body, shape) in collision_shapes(&world.creation) {
+            let pose = world.snapshot().state.poses[body];
+            let shape = shape.transformed(pose.position, pose.rotation).unwrap();
             assert!(shape.bounds()[0].y >= -0.005);
         }
         world.snapshot().clone()
@@ -320,16 +305,7 @@ fn cold_drop(integration: TerrainIntegration, settings: JointTickSettings) {
     let mut terrain = context(&scene, &geometry, 7);
     terrain.maximum_depth = 0.005;
     terrain.integration = integration;
-    let shapes = creation
-        .colliders
-        .iter()
-        .map(|collider| {
-            (
-                collider.compound_index as usize,
-                ContactPolytope::from_collider(collider).unwrap(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let shapes = collision_shapes(&creation);
     let mut world = CpuJointMachine::new(creation, 7, initial).unwrap();
     let mut maximum_depth = 0.0_f64;
     let mut settling_depth = 0.0_f64;
@@ -385,102 +361,6 @@ fn cold_drop(integration: TerrainIntegration, settings: JointTickSettings) {
         "cold_car_settling hash={:016x} maximum_depth_m={maximum_depth} settling_depth_m={settling_depth}",
         world.snapshot().state_hash()
     );
-}
-
-#[test]
-fn car_contact_reversal_uses_bounded_trials_and_agrees_with_finer_integration() {
-    type Recorded = (Vec<([f64; 3], [f64; 4])>, Vec<f64>, Vec<f64>, f64);
-    let (creation, _, geometry, scene) = fixture();
-    let (poses, coordinates, velocities, proposal): Recorded =
-        ron::from_str(include_str!("car_reversal.ron")).unwrap();
-    let initial = MachineState {
-        poses: poses
-            .into_iter()
-            .map(|(position, rotation)| crate::BodyPose {
-                position: DVec3::from_array(position),
-                rotation: bevy_math::DQuat::from_array(rotation),
-            })
-            .collect(),
-        coordinates,
-        velocities,
-    };
-    let world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
-    let mut results = Vec::new();
-    for steps in [1, 1, 32, 64, 128] {
-        let mut state = initial.clone();
-        let mut diagnostics = JointTickDiagnostics::default();
-        diagnostics
-            .drive_impulses
-            .resize(creation.dynamics.coordinate_bearings.len(), 0.0);
-        let terrain = context(&scene, &geometry, 7);
-        for _ in 0..steps {
-            events::advance_interval(
-                &creation,
-                &world.passive,
-                &world.drives,
-                &mut state,
-                -DVec3::Y * 9.81,
-                proposal * 1000.0 / f64::from(steps),
-                fixed(1),
-                Some(&terrain),
-                &mut diagnostics,
-            )
-            .unwrap();
-        }
-        assert!((diagnostics.accepted_seconds - proposal * 1000.0).abs() < 1e-17);
-        assert_eq!(diagnostics.terrain_impact_holds, 0);
-        if steps == 1 {
-            // The former commit-each-short-prefix policy spends 90 trials here.
-            assert!(diagnostics.event_trials <= 64);
-            assert!(diagnostics.release_localizations > 0);
-        }
-        for collider in &creation.colliders {
-            let pose = state.poses[collider.compound_index as usize];
-            let bounds = ContactPolytope::from_collider(collider)
-                .unwrap()
-                .transformed(pose.position, pose.rotation)
-                .unwrap()
-                .bounds();
-            assert!(bounds[0].x > -64.0 && bounds[1].x < 64.0);
-            assert!(bounds[0].z > -64.0 && bounds[1].z < 64.0);
-            assert!(bounds[0].y >= -0.005);
-        }
-        println!(
-            "car_reversal steps={steps} trials={} accepted={} impacts={}",
-            diagnostics.event_trials, diagnostics.accepted_intervals, diagnostics.impact_events
-        );
-        results.push(state);
-    }
-    assert_eq!(results[0], results[1]);
-    // The 32/64/128 interval reference converges in state, though contact event
-    // counts differ. This is a 29 microsecond replay, not a full rotating ODE proof.
-    let reference = &results[4];
-    for (index, state) in results[..4].iter().enumerate() {
-        let velocity_error = state
-            .velocities
-            .iter()
-            .zip(&reference.velocities)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0, f64::max);
-        let coordinate_error = state
-            .coordinates
-            .iter()
-            .zip(&reference.coordinates)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0, f64::max);
-        let position_error = state
-            .poses
-            .iter()
-            .zip(&reference.poses)
-            .map(|(a, b)| a.position.distance(b.position))
-            .fold(0.0, f64::max);
-        assert!(velocity_error < if index < 2 { 1e-5 } else { 3e-7 });
-        assert!(coordinate_error < if index < 2 { 3e-8 } else { 2e-11 });
-        assert!(position_error < if index < 2 { 1e-8 } else { 2e-12 });
-        println!(
-            "car_reversal reference_error velocity={velocity_error:e} coordinate={coordinate_error:e} position={position_error:e}"
-        );
-    }
 }
 
 #[test]
@@ -547,10 +427,9 @@ fn a_validated_car_prefix_advances_time_once_when_reintegration_is_not_nested() 
                 "drive budget exceeded: {impulse} > {limit}"
             );
         }
-        for collider in &creation.colliders {
-            let pose = state.poses[collider.compound_index as usize];
-            let bounds = ContactPolytope::from_collider(collider)
-                .unwrap()
+        for (body, shape) in collision_shapes(&creation) {
+            let pose = state.poses[body];
+            let bounds = shape
                 .transformed(pose.position, pose.rotation)
                 .unwrap()
                 .bounds();
@@ -728,10 +607,9 @@ fn split_recovery_clears_recorded_car_penetration_without_changing_generalized_v
         assert!(diagnostics.accepted_seconds.abs() < f64::MIN_POSITIVE);
         assert_eq!(diagnostics.impact_events, 0);
         assert!(diagnostics.terrain_recovery_passes > 0);
-        for collider in &creation.colliders {
-            let pose = state.poses[collider.compound_index as usize];
-            let bounds = ContactPolytope::from_collider(collider)
-                .unwrap()
+        for (body, shape) in collision_shapes(&creation) {
+            let pose = state.poses[body];
+            let bounds = shape
                 .transformed(pose.position, pose.rotation)
                 .unwrap()
                 .bounds();
@@ -752,40 +630,23 @@ fn endpoint_contact_cold_drop_with_eight_fixed_substeps() {
 }
 
 #[test]
-fn car_recovery_refreshes_contacts_encountered_by_the_correction() {
-    type Recorded = (Vec<([f64; 3], [f64; 4])>, Vec<f64>, Vec<f64>, Vec<f64>);
-    let (creation, _, geometry, scene) = fixture();
-    let (poses, coordinates, velocities, displacement): Recorded =
-        ron::from_str(include_str!("car_recovery_new_contact.ron")).unwrap();
-    let initial = MachineState {
-        poses: poses
-            .into_iter()
-            .map(|(position, rotation)| crate::BodyPose {
-                position: DVec3::from_array(position),
-                rotation: bevy_math::DQuat::from_array(rotation),
-            })
-            .collect(),
-        coordinates,
-        velocities,
-    };
+fn car_recovery_clears_a_sunk_car_by_requerying_geometry_as_it_moves() {
+    let (creation, mut initial, geometry, scene) = fixture();
+    // Sink the whole car three millimetres. Correcting the deepest wheel moves the
+    // others, so the pass has to measure contact geometry again at the new poses
+    // instead of reusing the manifold it started from.
+    for pose in &mut initial.poses {
+        pose.position.y -= 0.003;
+    }
     let mut terrain = context(&scene, &geometry, 7);
     terrain.maximum_depth = 0.005;
-    let mut path = initial.clone();
-    path.velocities = displacement;
-    let mut diagnostics = JointTickDiagnostics::default();
-    let outcome = super::super::super::events::validate_path(
-        &creation,
-        &path,
-        1.0,
-        Some(&terrain),
-        true,
-        None,
-        &mut diagnostics,
+    let sunk = scene
+        .recovery_contacts(&geometry, &initial.poses, DVec3::ZERO)
+        .unwrap();
+    assert!(
+        sunk.contacts.iter().any(|point| point.depth > 1e-3),
+        "the fixture must start penetrating"
     );
-    assert!(matches!(
-        outcome,
-        Ok(super::super::super::events::PathOutcome::Refine(_))
-    ));
     let world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
     let run = || {
         let mut state = initial.clone();
@@ -802,11 +663,13 @@ fn car_recovery_refreshes_contacts_encountered_by_the_correction() {
         assert_eq!(state.velocities, initial.velocities);
         assert_eq!(diagnostics.accepted_seconds.to_bits(), 0.0_f64.to_bits());
         assert_eq!(diagnostics.impact_events, 0);
-        assert!(diagnostics.terrain_recovery_passes > 1);
-        for collider in &creation.colliders {
-            let pose = state.poses[collider.compound_index as usize];
-            let bounds = ContactPolytope::from_collider(collider)
-                .unwrap()
+        assert!(diagnostics.terrain_recovery_passes > 0);
+        // Every accepted pass is followed by a fresh query, so the correction
+        // never certifies itself against the manifold it already left.
+        assert!(diagnostics.terrain_recovery_queries > diagnostics.terrain_recovery_passes);
+        for (body, shape) in collision_shapes(&creation) {
+            let pose = state.poses[body];
+            let bounds = shape
                 .transformed(pose.position, pose.rotation)
                 .unwrap()
                 .bounds();

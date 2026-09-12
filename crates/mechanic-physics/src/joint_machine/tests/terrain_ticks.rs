@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     MachineCollisionGeometry, TerrainContactScene,
-    terrain_contacts::tests::{cube, terrain},
+    terrain_contacts::tests::{collision_shapes, cube, terrain},
 };
 use mechanic_world::TerrainMaterial;
 

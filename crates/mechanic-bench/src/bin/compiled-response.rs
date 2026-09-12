@@ -110,7 +110,9 @@ mod tests {
             .validate_penetration(&geometry, &motion, DVec3::ZERO, 0.002, 128)
             .unwrap();
         assert_eq!(query.outcome, TerrainPathOutcome::Bounded);
-        assert!(query.triangle_candidates >= 24);
+        // One candidate per collider that reaches the floor: the four wheels are
+        // one prism each now, not sixteen tangent boxes each.
+        assert!(query.triangle_candidates >= 16);
         assert!(query.certified_intervals >= query.triangle_candidates);
         let repeat = scene
             .validate_penetration(&geometry, &motion, DVec3::ZERO, 0.002, 128)
@@ -449,11 +451,13 @@ mod tests {
         assert_eq!(rich.velocity_change, repeated.velocity_change);
         assert_eq!(rich.sliding, repeated.sliding);
         validate_surface_impulses(&creation, &model, &query, &contacts, &incoming, &rich);
-        assert!(rich.impulses.len() > mechanic_physics::DENSE_CONTACT_ROWS);
-        assert_eq!(
-            rich.response_storage, 0,
-            "large contact response must remain implicit"
-        );
+        // Five rows for each of the four wheels' twenty support points. A solid
+        // cylinder contacts the floor as one prism, so this manifold no longer
+        // carries sixteen rounded copies of every wheel's contact edge. The
+        // implicit path above the dense bound is covered by the long rigid body in
+        // `mechanic-physics`, whose manifold really exceeds it.
+        assert_eq!(rich.impulses.len(), 80);
+        assert!(rich.impulses.len() < mechanic_physics::DENSE_CONTACT_ROWS);
         assert_eq!(first.impulses, second.impulses);
         assert_eq!(first.velocity_change, second.velocity_change);
         for block in &blocks {
