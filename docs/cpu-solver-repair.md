@@ -401,10 +401,90 @@ rejections: the event-resolved policy cannot integrate faceted rolling contact
 under a bounded trial budget, because the arrivals it must localize are created
 by the impacts it just resolved. The endpoint policy already defers slow contacts
 (`SlowContactMotion`, bounded by `restitution_threshold * dt`) and gets furthest
-of the three drops. The next step is to make that deferral available under the
-event policy with its threshold set by the impact solve's measured velocity noise
-rather than the restitution threshold, so event trials are spent only on arrivals
-whose timing changes the physics.
+of the three drops.
+
+### The GPU already avoids faceted wheels; the CPU does not
+
+A cylinder compiles to sixteen tangent cuboid colliders
+(`CYLINDER_COLLIDER_COUNT`), so the CPU's contact geometry for a wheel is a
+sixteen-sided prism. The GPU does not use that shape for ground contact:
+`full_cylinder_ground_data` in `mechanic-gpu/src/device.rs` recognizes a run of
+sixteen cuboid colliders belonging to one cylinder part, recovers the axis,
+centre, centre radius and outer radius, and substitutes analytic ground contacts
+(`full_cylinder_ground_contacts_match_visual_wheel_radius` asserts four primary
+and sixty secondary roles at an exact 0.5 m outer radius). The shipping solver
+therefore rolls on a circle. The CPU solver rolls on a polygon, and every CPU
+drop failure involves wheels.
+
+Measured with an exact hull (one `ColliderShape::Convex` per solid full cylinder,
+sixteen faces sharing each corner vertex once, which is the same circumscribed
+prism the sixteen boxes already union to):
+
+| | Baseline | Exact hull |
+| --- | --- | --- |
+| `endpoint_contact_car_cold_drop_remains_bounded_through_settling` | tick 115 | **passes**, settling depth 0 |
+| `endpoint_contact_cold_drop_with_eight_fixed_substeps` | tick 11 | **passes**, settling depth 0 |
+| `saved_car_cold_drop_remains_bounded_through_settling` | tick 17 | tick 8 |
+| `event_policy_tick17_search_completes_from_captured_state` | fails | **passes** |
+| rolling wheel tick 1 | 512 trials exhausted | 1 trial |
+| serial native GPU tests (Apple M1 Pro, Metal) | 11 failed | 18 failed |
+
+So exact wheel geometry is what the CPU drops were missing, and it cannot be
+bought by deleting the sixteen-box decomposition: that is the pattern the GPU's
+analytic path keys on, and removing it costs seven GPU tests
+(`curved_suspension_car_lands_without_contact_correction_launch`,
+`dense_pipe_contacts_on_bearings_and_a_rail_remain_bounded`,
+`flat_cylinder_face_stays_supported_above_ground`,
+`front_steered_car_turns_through_ground_friction`,
+`full_cylinder_ground_contacts_match_visual_wheel_radius`,
+`high_speed_steering_returns_to_center_after_release`,
+`sustained_gas_drive_stays_forward_with_bounded_longitudinal_slip`). Reverted.
+
+Rejected control: excluding a swept pair whose near-contact point duplicates a
+sibling collider's active support on the same triangle, within 1e-6 m. Two pieces
+of one decomposed part clip their contact polygons against the same terrain
+triangle slightly differently, so the witness points differ by about 1.1e-6 m and
+the test never fires; a tolerance large enough to fire would merge features that
+are genuinely distinct. Reverted.
+
+Rejected control: shrinking each facet box tangentially by 5e-4 so neighbouring
+seams stop coinciding. The wheel's tick 1 then passes and tick 2 exhausts 683
+trials, because pivoting onto a notched corner chatters exactly as a shared seam
+does. Reverted.
+
+The conclusion is a design decision, not a tolerance: the compiled collider must
+say that a solid cylinder is a cylinder, and both solvers must take its ground
+contact analytically. The GPU's pattern match on sixteen boxes then becomes a
+property of the data, and the CPU stops rolling on facets. That is the next
+implementation step for the remaining drop.
+
+### Event search: one fix, two rejected controls
+
+Fixed: committing a clear prefix discarded the arrival that justified the commit.
+The trial was rewritten to `Complete { arrived: false }` with both brackets
+cleared, so the pending contact was never activated; the next trial then saw the
+pair touching, excluded it from the new-impact search as an initial support, and
+never resolved it at all. With exact wheel geometry this left the rolling wheel
+1.1 mm inside the surface with no impulse applied. The commit now activates at the
+prefix endpoint, which is by construction where the event lies. Every existing
+test is unchanged, including all three drops and their failing ticks.
+
+Rejected control: accepting an arrival by the hit pair's depth at the path
+endpoint (at most 1e-9 m) instead of bounding the collider's travel after the
+predicted hit by the activation window. This is the right quantity in principle —
+a rolling support travels far after a hit its own manifold already carries, and a
+shortened force reintegration misses a fixed arrival time by the second-order
+`a * dt^2` term, so no bounded number of trials lands a force-consistent path
+within a picometre of contact. Measured on top of the exact hull it moved the
+event policy from tick 8 to tick 65 and kept the fixed-eight drop passing, but
+regressed the endpoint policy from passing all 120 ticks to tick 53
+(`TerrainPath`). Reverted.
+
+Rejected control: running split position recovery under the event policy as well,
+to remove the penetration a missed within-tick landing leaves behind. With the
+depth acceptance above and no recovery the event policy completed all 120 ticks
+but settled 4.19 mm deep against a 2 mm bound; with recovery it failed at tick 65
+instead. Reverted.
 
 Captures: `/private/tmp/cpu-fix-tick37-state.ron`, `cpu-fix-tick17-state.ron`,
 `cpu-fix-endpoint-next-{impact,force,state}.ron` (tick 94) and
