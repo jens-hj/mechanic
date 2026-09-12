@@ -311,6 +311,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::Bearing, _, _, _) => {
                 "Left click places a bearing; use Blocker Placer to attach it".to_owned()
             }
+            (false, Tool::Spring | Tool::Shock, _, _, _) => "Hold left-click and move to size; R cycles dimensions; release to place. Equip Connector to adjust placed suspension.".to_owned(),
             (false, Tool::LinearBearing, _, _, _) => {
                 "Place the rail underside on a flat face; attach blocks or cylinders to one carriage face: top or either side. End faces are unavailable; both rail ends remain physical stops.".to_owned()
             }
@@ -470,7 +471,19 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         tool: if terrain_mode {
             Line::new("Matter Manipulator · Terrain", Tone::Speed)
         } else {
-            let tool_status = if selected_tool == Tool::LinearBearing {
+            let tool_status = if selected_tool == Tool::Cylinder
+                && material.0 == mechanic_core::ConstructionMaterial::Rubber
+                && state.suspension.insertion.is_some()
+            {
+                let stop = state.suspension.stop;
+                format!(
+                    "Bump Stop · {:.1} mm long × {:.1} mm OD · hold to size · R cycles length/OD · release to place · bore follows shaft",
+                    stop.length() * 1000.0,
+                    stop.od() * 1000.0
+                )
+            } else if matches!(selected_tool, Tool::Spring | Tool::Shock) {
+                state.suspension.preview.and_then(|s| if let mechanic_core::BearingKind::Suspension(spec) = s.kind { Some(spec) } else { None }).map_or_else(|| "Suspension · choose a flat construction face or compatible shared mounts".into(), |spec| format!("Suspension · {:.1} mm extended · {:.1} mm travel · limited by {:?} · Connector to adjust", spec.extended_length()*1000.0, spec.compression_limit().0*1000.0, spec.compression_limit().1))
+            } else if selected_tool == Tool::LinearBearing {
                 let dimensions = state.linear.dimensions;
                 format!(
                     "Linear Bearing · {:.3} m × {:.3} m · {:.3} m usable travel · position measured from centre",
@@ -494,6 +507,8 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                         | Tool::Cylinder
                         | Tool::Bearing
                         | Tool::LinearBearing
+                        | Tool::Spring
+                        | Tool::Shock
                         | Tool::Controller
                         | Tool::GasEngine
                         | Tool::ElectricEngine
@@ -550,7 +565,13 @@ pub(crate) fn capture(sources: &Sources) -> Model {
 const fn tool_tone(tool: Option<Tool>) -> Tone {
     match tool {
         Some(
-            Tool::Bearing | Tool::LinearBearing | Tool::Hammer | Tool::GasEngine | Tool::Servo,
+            Tool::Bearing
+            | Tool::LinearBearing
+            | Tool::Spring
+            | Tool::Shock
+            | Tool::Hammer
+            | Tool::GasEngine
+            | Tool::Servo,
         ) => Tone::Angle,
         Some(
             Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input | Tool::DimensionLink,

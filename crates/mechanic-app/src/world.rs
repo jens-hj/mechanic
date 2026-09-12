@@ -38,10 +38,10 @@ use mechanic_world::{
     SavedWorldStatus, TerrainBoundsCache, TerrainDensity, TerrainEditBatch, TerrainEditOutcome,
     TerrainField, TerrainMaterial, TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest,
     TerrainNodeId, TerrainOctree, TerrainRayHit, TerrainReadiness, TerrainScene, TerrainSelection,
-    TerrainSpatialIndex, TerrainStreamer, TerrainTransitionMask, WorldCreationInstanceDoc,
-    WorldDocument, WorldInstanceIndexDoc, WorldPoseDoc, WorldPosition, WorldSeed, WorldStore,
-    mesh_chunk_profiled, raycast_density, select_active_nodes_cached, terrain_loading_worker_count,
-    terrain_worker_count,
+    TerrainSpatialIndex, TerrainStreamer, TerrainTransitionMask, WorldBounds,
+    WorldCreationInstanceDoc, WorldDocument, WorldInstanceIndexDoc, WorldPoseDoc, WorldPosition,
+    WorldSeed, WorldStore, mesh_chunk_profiled, raycast_density, select_active_nodes_cached,
+    terrain_loading_worker_count, terrain_worker_count,
 };
 
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
@@ -309,6 +309,22 @@ impl FromWorld for WorldListState {
 }
 
 impl WorldListState {
+    #[cfg(test)]
+    pub(crate) fn empty_capture_garage() -> Self {
+        Self {
+            phase: WorldListPhase::Playing,
+            entries: Vec::new(),
+            notice: None,
+            loading_progress: TerrainReadiness::default(),
+            confirming_delete: None,
+            requested: None,
+        }
+    }
+
+    pub(crate) fn enter_capture_garage(&mut self) {
+        self.phase = WorldListPhase::Playing;
+    }
+
     pub(crate) const fn is_open(&self) -> bool {
         !matches!(self.phase, WorldListPhase::Playing)
     }
@@ -566,83 +582,31 @@ impl WorldRuntime {
         ))
     }
 
-    /// Local tangent plane beneath the construction, used by mechanism
-    /// physics until streamed terrain triangles can participate directly.
-    pub(crate) fn active_assembly_ground_plane(&self) -> Option<(Vec3, f32)> {
-        let parts = self
-            .pending_foundation_sync
-            .as_ref()
-            .map_or(&self.known_world_parts, |pending| &pending.parts);
-        let frames = self
-            .pending_foundation_sync
-            .as_ref()
-            .map_or(&self.known_world_frames, |pending| &pending.frames);
-        let (minimum, maximum) = parts
-            .keys()
-            .filter_map(|part| Some(framed_part_bounds(*parts.get(part)?, *frames.get(part)?)))
-            .fold(
-                (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
-                |(minimum, maximum), (part_minimum, part_maximum)| {
-                    (minimum.min(part_minimum), maximum.max(part_maximum))
-                },
-            );
-        if !minimum.is_finite() {
-            return None;
-        }
-        self.ground_plane_beneath(Vec3::new(
-            (minimum.x + maximum.x) * 0.5,
-            maximum.y,
-            (minimum.z + maximum.z) * 0.5,
-        ))
+    /// Collision meshes owned by the published spatial cut. Hidden replacement
+    /// meshes remain excluded until their previous owners have retired.
+    /// Active terrain chunks overlapping any region physics can reach.
+    ///
+    /// Publishing the whole resident cut hands the contact kernel every chunk out
+    /// to the render horizon, which is orders of magnitude more geometry than the
+    /// simulated bodies can touch.
+    pub(crate) fn physics_terrain_near<'a>(
+        &'a self,
+        interest: &'a [WorldBounds],
+    ) -> impl Iterator<Item = &'a TerrainMeshChunk> {
+        self.active_terrain.iter().filter_map(move |(id, chunk)| {
+            (self.active_terrain_index.contains(*id)
+                && interest
+                    .iter()
+                    .any(|region| region.intersects(chunk.bounds)))
+            .then_some(chunk)
+        })
     }
 
-    pub(crate) fn ground_plane_beneath(&self, local_position: Vec3) -> Option<(Vec3, f32)> {
-        let local_probe = local_position + Vec3::Y * 64.0;
-        let scene = TerrainScene {
-            field: &self.field,
-            edits: &self.edits,
-        };
-        let hit = raycast_density(
-            &scene,
-            WorldPosition(self.floating_origin.0 + local_probe.as_dvec3()),
-            DVec3::NEG_Y,
-            256.0,
-        )?;
-        let local_hit = hit.position.relative_to(self.floating_origin);
-        // A changing tilted infinite plane injects angular and vertical energy
-        // as a vehicle crosses terrain samples. Track only terrain elevation;
-        // the explicit plane remains horizontal and stable.
-        Some((Vec3::Y, local_hit.y))
-    }
-
-    /// Exact streamed-terrain tangent plane beneath one moving construction part.
-    pub(crate) fn terrain_plane_beneath(&self, local_position: Vec3) -> Option<(Vec3, f32)> {
-        let local_probe = local_position + Vec3::Y * 64.0;
-        let global_probe = WorldPosition(self.floating_origin.0 + local_probe.as_dvec3());
-        let active = ActiveTerrainScene {
-            chunks: &self.active_terrain,
-            ready_faces: &self.active_terrain_ready_faces,
-            spatial_index: &self.active_terrain_index,
-        };
-        let hit = active
-            .raycast(global_probe, DVec3::NEG_Y, 256.0)
-            .or_else(|| {
-                raycast_density(
-                    &TerrainScene {
-                        field: &self.field,
-                        edits: &self.edits,
-                    },
-                    global_probe,
-                    DVec3::NEG_Y,
-                    256.0,
-                )
-            })?;
-        let local_hit = hit.position.relative_to(self.floating_origin);
-        let mut normal = hit.normal.normalize_or(Vec3::Y);
-        if normal.y < 0.0 {
-            normal = -normal;
-        }
-        Some((normal, normal.dot(local_hit)))
+    /// True once the terrain nodes around the current walking or driving focus
+    /// have active current-generation meshes.
+    pub(crate) fn physics_terrain_ready(&self) -> bool {
+        let readiness = self.terrain_streamer.local_readiness();
+        readiness.total > 0 && readiness.is_complete()
     }
 
     pub(crate) fn anchored_parts(&self) -> impl Iterator<Item = PartId> + '_ {
@@ -844,9 +808,16 @@ fn load_space_editors(
     Ok((world, garage))
 }
 
+fn application_world_store() -> WorldStore {
+    crate::automation::world_store().map_or_else(
+        || WorldStore::platform_default().unwrap_or_else(|| WorldStore::new("worlds")),
+        WorldStore::new,
+    )
+}
+
 impl FromWorld for WorldRuntime {
     fn from_world(_world: &mut World) -> Self {
-        let store = WorldStore::platform_default().unwrap_or_else(|| WorldStore::new("worlds"));
+        let store = application_world_store();
         let loaded = store
             .list()
             .into_iter()
@@ -1473,12 +1444,37 @@ fn merge_document(
     })
 }
 
+/// Saved creations use the same editable volume as Dimension Link transfers.
+pub(crate) fn place_loaded_creation_in_garage(
+    loaded: mechanic_core::LoadedCreation,
+) -> Result<mechanic_core::LoadedCreation, String> {
+    if loaded.graph.part_count() == 0 {
+        return Ok(loaded);
+    }
+    let bearings = loaded
+        .sockets
+        .into_iter()
+        .map(|socket| PlacedBearing {
+            kind: socket.kind,
+            axis: socket.axis,
+            source: socket.source,
+            anchor: socket.anchor,
+            dimensions: socket.dimensions,
+        })
+        .collect::<Vec<_>>();
+    let placed = place_in_garage(&loaded.graph, &bearings, &SpaceEditorState::default())?;
+    component_document(&placed.graph, &placed.placed_bearings, &loaded.name)
+        .into_graph()
+        .map_err(|error| error.to_string())
+}
+
 fn place_in_garage(
     component: &ConstructionGraph,
     bearings: &[PlacedBearing],
     destination: &SpaceEditorState,
 ) -> Result<SpaceEditorState, String> {
-    let original = component_document(component, bearings, "Transferred construction");
+    let mut original = component_document(component, bearings, "Transferred construction");
+    detach_authored_ground(&mut original);
     let mut destination_index = PlacementSnapIndex::default();
     destination_index.rebuild(&destination.graph);
     let offsets = deterministic_offsets(40);
@@ -2864,10 +2860,11 @@ fn update_terrain_selection(
                     return;
                 }
                 let cut = result.selection.nodes;
-                let capsule = runtime.capsule;
-                let critical = startup_region_nodes(&cut, capsule.position).collect::<Vec<_>>();
+                let mut focus_capsule = runtime.capsule;
+                focus_capsule.position = result.focus;
+                let critical = startup_region_nodes(&cut, result.focus).collect::<Vec<_>>();
                 runtime.terrain_streamer.set_pinned(
-                    player_collision_nodes(&cut, &capsule).chain(critical.iter().copied()),
+                    player_collision_nodes(&cut, &focus_capsule).chain(critical.iter().copied()),
                 );
                 runtime
                     .terrain_streamer
@@ -2909,12 +2906,13 @@ fn update_terrain_selection(
 fn schedule_terrain_remeshes(
     mut commands: Commands,
     mut runtime: ResMut<WorldRuntime>,
-    player: Res<PlayerState>,
+    focus_sources: (Res<PlayerState>, Res<EditorGraph>, Res<AppSimulation>),
     list: Res<WorldListState>,
     tasks: Query<&TerrainMeshTask>,
     mut diagnostics: ResMut<WorldDiagnostics>,
 ) {
-    let focus = WorldPosition(runtime.floating_origin.0 + player.position.as_dvec3());
+    let (player, graph, simulation) = focus_sources;
+    let focus = terrain_streaming_focus(&player, &graph.0, &simulation, runtime.floating_origin);
     // A selection taken between two queued stroke batches is guaranteed to be
     // obsolete. Let the existing cut keep rendering/colliding and reconcile
     // once the ordered edit queue reaches a stable revision.
@@ -2981,6 +2979,24 @@ fn schedule_terrain_remeshes(
     .unwrap_or(u32::MAX);
     diagnostics.oldest_queue_age_ms =
         runtime.terrain_streamer.oldest_queue_age().as_secs_f64() * 1_000.0;
+}
+
+/// Terrain selection follows the occupied seat while driving.
+///
+/// `PlayerState::position` remains at the point where the player entered a
+/// seat, while the seat and camera move with physics. Selecting around that
+/// stale point eventually leaves a vehicle outside the resident terrain cut.
+pub(crate) fn terrain_streaming_focus(
+    player: &PlayerState,
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    origin: FloatingOrigin,
+) -> WorldPosition {
+    let local = player
+        .seat
+        .and_then(|seat| crate::seat_world_pose(graph, simulation, seat))
+        .map_or(player.position, |(position, _)| position);
+    WorldPosition(origin.0 + local.as_dvec3())
 }
 
 fn startup_region_nodes(
@@ -3892,6 +3908,43 @@ mod tests {
     use super::{PendingFoundationSync, TerrainFoundation};
     use crate::{EditorGraph, EditorHistory, EditorState, garage, showcase};
 
+    #[test]
+    fn saved_floor_creation_is_centered_in_editable_garage_and_detached_from_ground() {
+        let mut graph = mechanic_core::ConstructionGraph::new();
+        let mechanic_core::BuildOutcome::Spawned(part) = graph
+            .apply(mechanic_core::BuildCommand::Spawn(
+                mechanic_core::CuboidSpec::new(
+                    [4, 1, 4],
+                    mechanic_core::BuildPose::from_half_grid(
+                        IVec3::new(32, 1, -24),
+                        mechanic_core::GridRotation::default(),
+                    ),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        graph
+            .apply(mechanic_core::BuildCommand::Weld(mechanic_core::WeldSpec {
+                first: mechanic_core::FaceRef::ground(),
+                second: mechanic_core::FaceRef::part(part, mechanic_core::FaceKind::NegativeY),
+            }))
+            .unwrap();
+        let loaded = mechanic_core::CreationDocument::from_graph(&graph, "Floor example", &[])
+            .into_graph()
+            .unwrap();
+        let placed = super::place_loaded_creation_in_garage(loaded).unwrap();
+        let (low, high) = super::graph_bounds(&placed.graph).unwrap();
+        assert!((low.y - garage::BUILD_MIN_Y).abs() < 1.0e-5);
+        assert!((low.x + high.x).abs() < 1.0e-5);
+        assert!((low.z + high.z).abs() < 1.0e-5);
+        assert_eq!(placed.name, "Floor example");
+        assert_eq!(placed.graph.weld_count(), 0);
+        placed.graph.compile().unwrap();
+    }
+
     struct TempWorldStore(std::path::PathBuf);
 
     static NEXT_TEMP_WORLD_STORE: AtomicUsize = AtomicUsize::new(0);
@@ -4660,43 +4713,213 @@ mod tests {
     }
 
     #[test]
-    fn linked_creation_gets_ground_plane_from_pending_world_snapshot() {
-        let mut graph = ConstructionGraph::new();
-        let BuildOutcome::Spawned(link) = graph
-            .apply(BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(
-                DimensionLinkId(12),
-                BuildPose::default(),
-            )))
-            .unwrap()
-        else {
-            unreachable!()
-        };
-        let parts = graph.parts().map(|(part, spec)| (part, *spec)).collect();
-
+    #[ignore = "requires a real GPU adapter"]
+    #[allow(clippy::too_many_lines)] // Exercise the app owner and GPU publication together.
+    fn real_gpu_terrain_publication_preserves_motion_and_rejects_failed_replacements() {
+        use mechanic_world::{TerrainTriangleGroupMask, TriangleBvh, TriangleBvhTriangle};
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("terrain publication requires a real adapter");
+        eprintln!("Terrain publication adapter: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let mut app = App::new();
         app.init_resource::<WorldRuntime>();
         let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
-        let spawn = runtime.field.safe_spawn();
-        runtime.floating_origin.0 = spawn.0.round();
-        runtime.pending_foundation_sync = Some(PendingFoundationSync {
-            editor_revision: 1,
-            parts,
-            frames: graph
-                .parts()
-                .map(|(part, _)| (part, graph.part_frame(part).unwrap()))
-                .collect(),
-            replaced_parts: BTreeSet::new(),
-            new_parts: vec![link],
-            next_part: 0,
-            foundations: Vec::new(),
-            index: FoundationSpatialIndex::default(),
-        });
+        runtime.floating_origin = FloatingOrigin(DVec3::splat(1000.0));
+        let mut weights = [0.0; TerrainMaterial::COUNT];
+        weights[usize::from(TerrainMaterial::Rock.code())] = 1.0;
+        let mut chunk = TerrainMeshChunk {
+            origin: WorldPosition(runtime.floating_origin.0),
+            generation: 1,
+            vertices: vec![[-5.0, 0.0, -5.0], [0.0, 0.0, 5.0], [5.0, 0.0, -5.0]],
+            material_weights: vec![weights; 3],
+            triangle_bvh: TriangleBvh {
+                triangles: vec![TriangleBvhTriangle {
+                    indices: [0, 1, 2],
+                    group_mask: TerrainTriangleGroupMask::REGULAR,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        chunk.index_groups.regular = vec![0, 1, 2];
+        let node = chunk.node;
+        runtime.active_terrain_index.insert(node);
+        runtime.active_terrain.insert(node, chunk);
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4; 3],
+                    BuildPose::from_half_grid(IVec3::new(0, 5, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let mut creation = graph.compile().unwrap();
+        for collider in &mut creation.colliders {
+            collider.material_properties.restitution = 0.0;
+            collider.material_properties.youngs_modulus_pa = 200.0e9;
+        }
+        let gpu = crate::GpuPhysics::new_with_config(
+            &device,
+            &queue,
+            &creation,
+            crate::GpuPhysicsConfig {
+                ground_plane_enabled: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        gpu.enable_async_readback();
+        gpu.apply_impulse(
+            &device,
+            &queue,
+            0,
+            creation.compounds[0].root_translation,
+            Vec3::NEG_Y * 20.0 * creation.compounds[0].mass_properties.mass,
+        )
+        .unwrap();
+        let mut simulation = crate::AppSimulation {
+            gpu: Some(gpu),
+            ..Default::default()
+        };
+        let publish = |simulation: &mut crate::AppSimulation, runtime: &WorldRuntime| {
+            crate::terrain_publication::publish(simulation, runtime, &device, &queue)
+        };
+        assert!(publish(&mut simulation, &runtime).unwrap());
+        assert!(!publish(&mut simulation, &runtime).unwrap());
+        let gpu = simulation.gpu.as_ref().unwrap();
+        gpu.dispatch_tick(&device, &queue, 1);
+        // Replace the scene before waiting for the submitted tick. Its captured
+        // buffers and readback must still represent the previously accepted cut.
 
-        let (normal, offset) = runtime
-            .active_assembly_ground_plane()
-            .expect("pending linked construction still receives terrain support");
-        assert_eq!(normal, Vec3::Y);
-        assert!(offset.is_finite());
+        let chunk = runtime.active_terrain.get_mut(&node).unwrap();
+        chunk.generation = 2;
+        chunk.triangle_bvh.triangles[0].indices[0] = u32::MAX;
+        assert!(publish(&mut simulation, &runtime).is_err());
+        let chunk = runtime.active_terrain.get_mut(&node).unwrap();
+        chunk.generation = 1;
+        chunk.triangle_bvh.triangles[0].indices[0] = 0;
+        assert!(!publish(&mut simulation, &runtime).unwrap());
+
+        // Retirement removes contacts without rebuilding or resetting bodies.
+        runtime.active_terrain_index.remove(node);
+        assert!(publish(&mut simulation, &runtime).unwrap());
+        let gpu = simulation.gpu.as_ref().unwrap();
+        gpu.dispatch_tick(&device, &queue, 2);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let first = gpu.poll_tick_readback(&device).unwrap().unwrap();
+        assert_eq!(first.diagnostics.error_flags, 0);
+        assert_eq!(first.diagnostics.contact_count, 4);
+        assert!((first.transforms[0].position[1] - 0.5).abs() <= 0.005);
+        assert!(first.velocities[0].linear[1] <= 0.001);
+        let retired = gpu.poll_tick_readback(&device).unwrap().unwrap();
+        assert_eq!(retired.diagnostics.error_flags, 0);
+        assert_eq!(retired.diagnostics.contact_count, 0);
+        assert!(retired.transforms[0].position[1] < first.transforms[0].position[1]);
+        assert!(retired.velocities[0].linear[1] < first.velocities[0].linear[1]);
+
+        // The same chunk generation must be re-uploaded in a new local frame.
+        runtime.active_terrain_index.insert(node);
+        runtime.floating_origin.0 += DVec3::X * 20.0;
+        assert!(publish(&mut simulation, &runtime).unwrap());
+        let gpu = simulation.gpu.as_ref().unwrap();
+        gpu.dispatch_tick(&device, &queue, 3);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let shifted = gpu.poll_tick_readback(&device).unwrap().unwrap();
+        assert_eq!(shifted.diagnostics.error_flags, 0);
+        assert_eq!(shifted.diagnostics.contact_count, 0);
+        runtime.floating_origin.0 -= DVec3::X * 20.0;
+        assert!(publish(&mut simulation, &runtime).unwrap());
+        let gpu = simulation.gpu.as_ref().unwrap();
+        gpu.dispatch_tick(&device, &queue, 4);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let restored = gpu.poll_tick_readback(&device).unwrap().unwrap();
+        assert_eq!(restored.diagnostics.error_flags, 0);
+        assert_eq!(restored.diagnostics.contact_count, 4);
+    }
+
+    #[test]
+    fn physics_terrain_excludes_hidden_replacements_and_tracks_retirement() {
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        let parent = TerrainNodeId::ROOT;
+        let child = parent.children().unwrap()[0];
+        for (node, generation) in [(parent, 1), (child, 2)] {
+            runtime.active_terrain.insert(
+                node,
+                TerrainMeshChunk {
+                    node,
+                    generation,
+                    ..Default::default()
+                },
+            );
+        }
+        let everywhere = [WorldBounds {
+            minimum: WorldPosition(DVec3::splat(-1.0e9)),
+            maximum: WorldPosition(DVec3::splat(1.0e9)),
+        }];
+        runtime.active_terrain_index.insert(parent);
+        assert_eq!(
+            runtime
+                .physics_terrain_near(&everywhere)
+                .map(|chunk| chunk.node)
+                .collect::<Vec<_>>(),
+            vec![parent]
+        );
+        runtime.active_terrain_index.remove(parent);
+        runtime.active_terrain_index.insert(child);
+        assert_eq!(
+            runtime
+                .physics_terrain_near(&everywhere)
+                .map(|chunk| (chunk.node, chunk.generation))
+                .collect::<Vec<_>>(),
+            vec![(child, 2)]
+        );
+        runtime.active_terrain_index.remove(child);
+        assert_eq!(runtime.physics_terrain_near(&everywhere).count(), 0);
+
+        // A region that no chunk reaches publishes nothing at all.
+        runtime.active_terrain_index.insert(child);
+        let elsewhere = [WorldBounds {
+            minimum: WorldPosition(DVec3::splat(1.0e8)),
+            maximum: WorldPosition(DVec3::splat(1.0e8 + 1.0)),
+        }];
+        assert_eq!(runtime.physics_terrain_near(&elsewhere).count(), 0);
+    }
+
+    #[test]
+    fn physics_waits_until_local_terrain_is_current() {
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        let id = TerrainNodeId::default();
+        let node = ActiveTerrainNode {
+            id,
+            generation: 1,
+            transition_mask: TerrainTransitionMask::NONE,
+        };
+        assert!(
+            !runtime.physics_terrain_ready(),
+            "no selected region is unsafe"
+        );
+        runtime.terrain_streamer.set_critical_nodes([id]);
+        runtime.terrain_streamer.set_desired([node]);
+        assert!(
+            !runtime.physics_terrain_ready(),
+            "pending terrain is unsafe"
+        );
+        runtime.terrain_streamer.mark_started(node);
+        assert!(runtime.terrain_streamer.stage(node));
+        assert_eq!(runtime.terrain_streamer.activate(id), vec![node]);
+        assert!(
+            runtime.physics_terrain_ready(),
+            "active current terrain is safe"
+        );
     }
 
     #[test]

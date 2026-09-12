@@ -470,7 +470,10 @@ pub(crate) fn update_player_camera(
 
     let (view, transform, global) = &mut *camera;
     let world_active = player.input_captured && !wheel.open;
-    if world_active {
+    if world_active
+        && editor.suspension.controls.gesture.is_none()
+        && !(editor.suspension.controls.aim.is_some() && actions.just_pressed(GameAction::Primary))
+    {
         view.yaw -= motion.delta.x * MOUSE_SENSITIVITY;
         view.pitch = (view.pitch - motion.delta.y * MOUSE_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
         let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)

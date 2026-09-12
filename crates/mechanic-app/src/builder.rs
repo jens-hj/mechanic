@@ -5732,6 +5732,94 @@ fn snap_cardinal(vector: Vec3) -> Vec3 {
     Vec3::new(vector.x.round(), vector.y.round(), vector.z.round())
 }
 
+pub(crate) fn suspension_block_candidate(
+    socket: crate::PlacedBearing,
+) -> Result<PlacementCandidate, PlacementError> {
+    let BearingKind::Suspension(spec) = socket.kind else {
+        return Err(PlacementError::BearingOutsideFace);
+    };
+    let center = socket.anchor + socket.axis * (spec.initial_length() + 0.125);
+    Ok(PlacementCandidate {
+        spec: CuboidSpec::new(
+            [1; 3],
+            BuildPose::from_position_ticks(
+                snap_world_to_position_ticks(center),
+                GridRotation::default(),
+            ),
+        )
+        .map_err(|e| PlacementError::Graph(e.to_string()))?,
+        attached_face: face_for_normal(-socket.axis),
+        anchor: Some(socket.anchor + socket.axis * spec.initial_length()),
+        support: PlacementSupport::Bearing,
+    })
+}
+pub(crate) fn suspension_cylinder_candidate(
+    socket: crate::PlacedBearing,
+    dimensions: CylinderDimensions,
+) -> Result<CylinderPlacementCandidate, PlacementError> {
+    let BearingKind::Suspension(spec) = socket.kind else {
+        return Err(PlacementError::BearingOutsideFace);
+    };
+    let center =
+        socket.anchor + socket.axis * (spec.initial_length() + dimensions.axial_length() / 2.0);
+    Ok(CylinderPlacementCandidate {
+        spec: CylinderSpec::new(
+            dimensions,
+            BuildPose::from_position_ticks(
+                snap_world_to_position_ticks(center),
+                rotation_y_to_normal(socket.axis),
+            ),
+        ),
+        attached_face: FaceKind::NegativeY,
+        anchor: Some(socket.anchor + socket.axis * spec.initial_length()),
+        support: PlacementSupport::Bearing,
+    })
+}
+fn suspension_attachment(
+    socket: crate::PlacedBearing,
+    targets: &[PartId],
+) -> BearingAttachment<'_> {
+    BearingAttachment {
+        source: socket.source,
+        anchor: socket.anchor,
+        dimensions: socket.dimensions,
+        kind: socket.kind,
+        axis: socket.axis,
+        rigid_targets: targets,
+    }
+}
+pub(crate) fn stage_suspension_block(
+    graph: &ConstructionGraph,
+    socket: crate::PlacedBearing,
+    candidate: PlacementCandidate,
+    targets: &[PartId],
+    bounds: PlacementBounds,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_block_batch(
+        graph,
+        candidate,
+        &[candidate.spec],
+        Some(suspension_attachment(socket, targets)),
+        None,
+        bounds,
+    )
+}
+pub(crate) fn stage_suspension_cylinder(
+    graph: &ConstructionGraph,
+    socket: crate::PlacedBearing,
+    candidate: CylinderPlacementCandidate,
+    targets: &[PartId],
+    bounds: PlacementBounds,
+) -> Result<ConstructionGraph, PlacementError> {
+    stage_connected_cylinder(
+        graph,
+        candidate,
+        Some(suspension_attachment(socket, targets)),
+        None,
+        bounds,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;

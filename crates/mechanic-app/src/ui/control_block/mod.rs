@@ -38,9 +38,9 @@ pub(crate) struct LocatedJoint(pub(crate) Option<DriveLinkId>);
 /// The construction the panel edits, and everything one edit touches.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct EditTarget<'w> {
-    graph: ResMut<'w, EditorGraph>,
-    editor: ResMut<'w, EditorState>,
-    history: ResMut<'w, EditorHistory>,
+    pub(super) graph: ResMut<'w, EditorGraph>,
+    pub(super) editor: ResMut<'w, EditorState>,
+    pub(super) history: ResMut<'w, EditorHistory>,
     simulation: Res<'w, AppSimulation>,
 }
 

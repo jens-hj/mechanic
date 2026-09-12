@@ -26,6 +26,7 @@ mod pause;
 mod performance;
 mod reticle;
 mod styles;
+mod suspension;
 #[cfg(test)]
 mod testing;
 pub(crate) mod theme;
@@ -76,6 +77,7 @@ use reticle::{WorldReticle, WorldReticleProps};
 #[allow(unused_imports, clippy::wildcard_imports)]
 // Style constants are consumed by `view!` expansion.
 use styles::*;
+use suspension::{SuspensionOverlay, SuspensionOverlayProps};
 use worlds::{WorldList, WorldListProps};
 
 /// What the overlay is asking the world to do.
@@ -198,6 +200,8 @@ pub(crate) struct Handles {
     pause_fov: MosaicState<f32>,
     /// The control block's own state.
     block: control_block::Handles,
+    suspension: MosaicState<suspension::Model>,
+    suspension_layout: suspension::Layout,
     /// Opt-in frame, renderer, and physics diagnostics.
     performance: MosaicState<performance::Model>,
     /// Speed and transmission instruments for the occupied vehicle.
@@ -240,6 +244,8 @@ impl Handles {
                 gearbox_capturing: MosaicState::new(None),
                 intents: Rc::clone(&intents),
             },
+            suspension: MosaicState::new(suspension::Model::default()),
+            suspension_layout: Rc::default(),
             intents,
         }
     }
@@ -362,6 +368,7 @@ pub(crate) fn mount(world: &mut World) {
 #[component]
 pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let block_open = handles.block.model;
+    let suspension_overlay = handles.clone();
     let creations_open = handles.creations;
     let material_wheel_model = handles.material_wheel;
     let help_open = handles.help_open;
@@ -420,6 +427,7 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
                 && !worlds_model.with(|model| model.open) {
                 ControlPanel handles:(block_panel.block.clone())
             }
+            SuspensionOverlay handles:(suspension_overlay.clone())
             if driving_model.with(|model| model.open)
                 && !worlds_model.with(|model| model.open)
                 && !pause_model.with(|model| model.open)
@@ -815,6 +823,58 @@ fn escape_is_consumed(mosaic_keyboard: bool, menu_open: bool, capturing: bool) -
     // An open control panel owns ordinary keys, but Escape is its way out.
     // Only an active field, modal, or key capture gets the first Escape.
     mosaic_keyboard || menu_open || capturing
+}
+
+/// Resolves reticle controls against the native Mosaic layout from the last frame.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn push_suspension(
+    ui: Option<NonSend<AppUi>>,
+    mut state: ResMut<EditorState>,
+    graph: Res<EditorGraph>,
+    simulation: Res<AppSimulation>,
+    selection: Res<SelectedTool>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+) {
+    let controls = &mut state.suspension.controls;
+    if selection.active_editor_tool() != Some(crate::Tool::Connector) && controls.selected.is_some()
+    {
+        controls.dismiss();
+    }
+    if controls
+        .selected
+        .is_some_and(|t| t.resolve(&state).is_none())
+    {
+        state.suspension.controls.dismiss();
+    }
+    let Some(ui) = ui else {
+        return;
+    };
+    let old = ui.handles.suspension.get_untracked();
+    let centre = camera
+        .0
+        .logical_viewport_rect()
+        .map_or(bevy::math::Vec2::ZERO, |r| r.center());
+    let aimed = suspension::aim(&old, &ui.handles.suspension_layout, centre);
+    if selection.active_editor_tool() == Some(crate::Tool::Connector)
+        && state.suspension.controls.gesture.is_none()
+        && aimed.is_none()
+    {
+        if let Some((index, component)) = state.suspension.picked_component {
+            let socket = state.placed_bearings[index];
+            if state.suspension.controls.dismissed
+                != Some(crate::suspension_controls::Target(socket))
+            {
+                state.suspension.controls.select(socket, component);
+            }
+        } else {
+            state.suspension.controls.dismissed = None;
+        }
+    }
+    let next = suspension::capture(&state, &graph.0, &simulation, &camera);
+    state.suspension.controls.aim = suspension::aim(&next, &ui.handles.suspension_layout, centre);
+    if old != next {
+        ui.handles.suspension.set(next);
+    }
 }
 
 #[cfg(test)]

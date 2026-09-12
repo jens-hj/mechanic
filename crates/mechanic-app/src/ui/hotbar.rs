@@ -532,6 +532,24 @@ pub(super) fn icon(tool: Tool) -> Element {
                 circle at:(x:20px y:20px) radius:12.5px exponent:1 stroke:(width:7px color:accent.angle)
             }
         },
+        Tool::Spring => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                line from:(x:10px y:5px) to:(x:30px y:5px) stroke:(width:3px color:ink.fg)
+                line from:(x:10px y:35px) to:(x:30px y:35px) stroke:(width:3px color:ink.fg)
+                line from:(x:13px y:7px) to:(x:27px y:13px) stroke:(width:3px color:accent.speed)
+                line from:(x:27px y:13px) to:(x:13px y:19px) stroke:(width:3px color:accent.speed)
+                line from:(x:13px y:19px) to:(x:27px y:25px) stroke:(width:3px color:accent.speed)
+                line from:(x:27px y:25px) to:(x:13px y:33px) stroke:(width:3px color:accent.speed)
+            }
+        },
+        Tool::Shock => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                line from:(x:10px y:5px) to:(x:30px y:5px) stroke:(width:3px color:ink.fg)
+                line from:(x:20px y:5px) to:(x:20px y:20px) stroke:(width:4px color:ink.fg)
+                rect at:(x:13px y:18px) size:(w:14px h:15px) radius:2px exponent:1 fill:accent.speed
+                line from:(x:10px y:35px) to:(x:30px y:35px) stroke:(width:3px color:ink.fg)
+            }
+        },
         Tool::LinearBearing => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
                 line from:(x:6px y:20px) to:(x:34px y:20px)

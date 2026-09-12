@@ -23,6 +23,21 @@ pub(crate) struct DriveKeyState {
 }
 
 impl DriveKeyState {
+    /// Constructs application-level scripted input without synthesizing OS events.
+    pub(crate) fn scripted(held: &[char], previous: &[char]) -> Self {
+        Self {
+            held: held
+                .iter()
+                .filter_map(|symbol| DriveKey::new(*symbol))
+                .collect(),
+            pressed: held
+                .iter()
+                .filter(|symbol| !previous.contains(symbol))
+                .filter_map(|symbol| DriveKey::new(*symbol))
+                .collect(),
+        }
+    }
+
     /// Reads the bound keys from the keyboard.
     ///
     /// Returns an empty state while another system owns the keyboard, so

@@ -168,6 +168,7 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
                 30.0,
             ),
             count_u64_row("Physics backlog", snapshot.tick_backlog),
+            count_u64_row("Physics ticks dropped", snapshot.dropped_ticks),
             timing_row("Physics CPU", snapshot.physics_cpu_ms, 8.0, 16.7),
             timing_row(
                 "CPU encoding",

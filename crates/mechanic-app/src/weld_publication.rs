@@ -372,9 +372,9 @@ pub(crate) fn maintain(
                 return true;
             }
             Ok(staged) => {
-                let ground = world.active_assembly_ground_plane();
+                let suspension_sockets = crate::suspension_editor::sockets(&state.placed_bearings);
                 let config = crate::GpuPhysicsConfig {
-                    ground_plane_enabled: ground.is_some(),
+                    ground_plane_enabled: false,
                     mechanism_self_collisions: crate::world_mechanism_self_collisions(&staged),
                     ..default()
                 };
@@ -388,9 +388,9 @@ pub(crate) fn maintain(
                     task: Some(AsyncComputeTaskPool::get().spawn(async move {
                         crate::prepare_world_physics(
                             staged,
+                            suspension_sockets,
                             anchored.unwrap_or_default(),
                             config,
-                            ground,
                             device,
                             queue,
                             pipelines,
@@ -460,7 +460,8 @@ pub(crate) fn maintain(
             state.weld.finish_publication();
             state.feedback = Some(format!("Weld rejected: {error}"));
         }
-        Ok((replacement, hold)) => {
+        Ok((mut replacement, hold)) => {
+            crate::inherit_terrain_residency(simulation, &mut replacement, device);
             let mut previous = EditorSnapshot::capture(&graph.0, state);
             let mut affected = transaction.intent.parts.clone();
             if let Ok(component) = graph

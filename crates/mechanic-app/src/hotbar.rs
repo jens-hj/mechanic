@@ -14,6 +14,8 @@ pub(crate) enum Tool {
     Cylinder,
     Bearing,
     LinearBearing,
+    Spring,
+    Shock,
     Weld,
     Hammer,
     Controller,
@@ -108,6 +110,8 @@ pub(crate) enum PlaceableItem {
     #[default]
     Bearing,
     LinearBearing,
+    Spring,
+    Shock,
     ControlBlock,
     GasEngine,
     ElectricEngine,
@@ -207,9 +211,11 @@ impl WheelContext {
 }
 
 impl PlaceableItem {
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Bearing,
         Self::LinearBearing,
+        Self::Spring,
+        Self::Shock,
         Self::ControlBlock,
         Self::GasEngine,
         Self::ElectricEngine,
@@ -228,6 +234,8 @@ impl PlaceableItem {
         match self {
             Self::Bearing => Tool::Bearing,
             Self::LinearBearing => Tool::LinearBearing,
+            Self::Spring => Tool::Spring,
+            Self::Shock => Tool::Shock,
             Self::ControlBlock => Tool::Controller,
             Self::GasEngine => Tool::GasEngine,
             Self::ElectricEngine => Tool::ElectricEngine,
@@ -243,6 +251,8 @@ impl PlaceableItem {
         match tool {
             Tool::Bearing => Some(Self::Bearing),
             Tool::LinearBearing => Some(Self::LinearBearing),
+            Tool::Spring => Some(Self::Spring),
+            Tool::Shock => Some(Self::Shock),
             Tool::Controller => Some(Self::ControlBlock),
             Tool::GasEngine => Some(Self::GasEngine),
             Tool::ElectricEngine => Some(Self::ElectricEngine),
@@ -263,6 +273,8 @@ impl Tool {
             Self::Cylinder => "Pipe / Cylinder",
             Self::Bearing => "Bearing",
             Self::LinearBearing => "Linear Bearing",
+            Self::Spring => "Spring",
+            Self::Shock => "Shock",
             Self::Weld => "Weld",
             Self::Hammer => "Hammer",
             Self::Controller => "Control Block",
@@ -402,6 +414,8 @@ mod tests {
             [
                 PlaceableItem::Bearing,
                 PlaceableItem::LinearBearing,
+                PlaceableItem::Spring,
+                PlaceableItem::Shock,
                 PlaceableItem::ControlBlock,
                 PlaceableItem::GasEngine,
                 PlaceableItem::ElectricEngine,

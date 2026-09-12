@@ -43,6 +43,11 @@ mod sequencer;
 mod settings;
 mod shape_tool;
 mod showcase;
+mod suspension_capture;
+mod suspension_controls;
+mod suspension_editor;
+mod suspension_render;
+mod terrain_publication;
 mod tool_fx;
 mod ui;
 mod weld_publication;
@@ -124,8 +129,8 @@ use mechanic_core::{
     face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
-    FIXED_DT_SECONDS, FixedStepScheduler, GpuExternalImpulse, GpuGroundPlane, GpuPhysics,
-    GpuPhysicsConfig, GpuPhysicsPipelines, GpuTickReadback, GpuTransform, GpuVelocity,
+    FIXED_DT_SECONDS, FixedStepScheduler, GpuExternalImpulse, GpuPhysics, GpuPhysicsConfig,
+    GpuPhysicsPipelines, GpuTickReadback, GpuTransform, GpuVelocity,
 };
 use pause_menu::{PauseMenuState, PauseRequest};
 use performance::PerformanceMetrics;
@@ -346,6 +351,8 @@ struct AppSimulation {
     scheduler: FixedStepScheduler,
     next_tick: u64,
     tick_backlog: u64,
+    /// Ticks skipped because simulated time fell too far behind wall time.
+    dropped_ticks: u64,
     completed_tick: u64,
     previous_transforms: Vec<GpuTransform>,
     transforms: Vec<GpuTransform>,
@@ -365,6 +372,7 @@ struct AppSimulation {
     last_tick_readback: Option<GpuTickReadback>,
     failure: Option<String>,
     world_revision: Option<(u64, u64)>,
+    terrain_publication: terrain_publication::TerrainPublication,
 }
 
 #[derive(Clone, Debug)]
@@ -935,6 +943,13 @@ fn handle_pause_escape(
     if worlds.is_open() || !keyboard.just_pressed(KeyCode::Escape) {
         return;
     }
+    if state.suspension.controls.selected.is_some() || state.suspension.drag.is_some() {
+        state.suspension.controls.dismiss();
+        state.suspension.drag = None;
+        state.suspension.preview = None;
+        pause.consume_frame();
+        return;
+    }
     if pause.binding_capture().is_some() {
         pause.cancel_binding_capture();
         return;
@@ -1221,6 +1236,7 @@ fn maintain_space_simulation(
             // polling continues until the final old tick is authoritative.
             return;
         }
+        let install_started = std::time::Instant::now();
         let (_, prepared) = publication.ready.take().expect("ready scene exists");
         let replacement = if state.weld_restore.is_some() {
             replacement_simulation_with_transfer(
@@ -1244,7 +1260,8 @@ fn maintain_space_simulation(
             Ok((replacement, candidate))
         });
         match replacement {
-            Ok((replacement, candidate)) => {
+            Ok((mut replacement, candidate)) => {
+                inherit_terrain_residency(&mut simulation, &mut replacement, &render_device);
                 *simulation = replacement;
                 *frozen = candidate;
                 if state.weld_restore.take().is_some() {
@@ -1255,6 +1272,27 @@ fn maintain_space_simulation(
                     Some((EditorSnapshot::capture(&graph.0, &state), history.clone()));
                 publication.failed_revision = None;
                 *hammer = HammerInteraction::default();
+                performance_capture::record("world_physics_install", || {
+                    let creation = simulation.creation.as_ref();
+                    serde_json::json!({
+                        "graph_revision": revision.0,
+                        "foundation_revision": revision.1,
+                        "install_ms": install_started.elapsed().as_secs_f64() * 1000.0,
+                        "bodies": creation.map(|c| c.compounds.len()),
+                        "static_bodies": creation
+                            .map(|c| c.compounds.iter().filter(|body| body.is_static).count()),
+                        "colliders": creation.map(|c| c.colliders.len()),
+                        "static_colliders": creation.map(|c| {
+                            c.compounds
+                                .iter()
+                                .filter(|body| body.is_static)
+                                .map(|body| body.collider_range.len())
+                                .sum::<usize>()
+                        }),
+                        "bearings": creation.map(|c| c.bearings.len()),
+                        "closures": creation.map(|c| c.loop_topology.closure_bearings.len()),
+                    })
+                });
             }
             Err(error) => {
                 publication.failed_revision = Some(revision);
@@ -1296,30 +1334,61 @@ fn maintain_space_simulation(
     }
 
     let graph = graph.0.clone();
-    let ground_plane = runtime.active_assembly_ground_plane();
+    let suspension_sockets = suspension_editor::sockets(&state.placed_bearings);
     let physics_config = GpuPhysicsConfig {
-        ground_plane_enabled: ground_plane.is_some(),
+        ground_plane_enabled: false,
         mechanism_self_collisions: world_mechanism_self_collisions(&graph),
         ..GpuPhysicsConfig::default()
     };
     let device = render_device.clone();
     let queue = render_queue.clone();
     let pipelines = Arc::clone(&publication.pipelines);
+    performance_capture::record("world_physics_request", || {
+        serde_json::json!({
+            "graph_revision": revision.0,
+            "foundation_revision": revision.1,
+            "part_count": graph.part_count(),
+        })
+    });
     publication.failed_revision = None;
     publication.pending = Some(WorldPhysicsTask {
         revision,
         task: AsyncComputeTaskPool::get().spawn(async move {
             prepare_world_physics(
                 graph,
+                suspension_sockets,
                 static_parts,
                 physics_config,
-                ground_plane,
                 device,
                 queue,
                 pipelines,
             )
         }),
     });
+}
+
+/// Moves terrain collision geometry from a retired scene to its replacement.
+///
+/// Only the construction changes when a block is placed, so the packed chunks
+/// and their uploaded device buffer stay valid. Without this the replacement
+/// scene re-packs and re-uploads the whole terrain cut, which stalls the main
+/// thread for seconds after every edit.
+pub(crate) fn inherit_terrain_residency(
+    previous: &mut AppSimulation,
+    replacement: &mut AppSimulation,
+    render_device: &RenderDevice,
+) {
+    let mut resident = false;
+    if let (Some(retired), Some(gpu)) = (previous.gpu.as_mut(), replacement.gpu.as_mut()) {
+        gpu.adopt_terrain_residency(
+            render_device.wgpu_device(),
+            retired.take_terrain_residency(),
+        );
+        resident = true;
+    }
+    replacement
+        .terrain_publication
+        .inherit(&mut previous.terrain_publication, resident);
 }
 
 const fn world_physics_result_is_current(
@@ -1329,22 +1398,26 @@ const fn world_physics_result_is_current(
     completed.0 == desired.0 && completed.1 == desired.1
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_world_physics(
     graph: ConstructionGraph,
+    suspension_sockets: Vec<BearingSocket>,
     anchored: Vec<PartId>,
     physics_config: GpuPhysicsConfig,
-    ground_plane: Option<(Vec3, f32)>,
     render_device: RenderDevice,
     render_queue: RenderQueue,
     pipelines: Arc<GpuPhysicsPipelines>,
 ) -> Result<PreparedWorldPhysics, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let compile_started = std::time::Instant::now();
         let creation = graph
-            .compile_with_static_parts(anchored)
+            .compile_with_suspension_sockets(anchored, &suspension_sockets)
             .map_err(|error| error.to_string())?;
+        let compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
+        let scene_started = std::time::Instant::now();
         let gpu = creation_requires_live_physics(&creation)
             .then(|| {
-                let gpu = GpuPhysics::new_with_pipelines(
+                let mut gpu = GpuPhysics::new_with_pipelines(
                     render_device.wgpu_device(),
                     &render_queue,
                     &creation,
@@ -1352,12 +1425,26 @@ fn prepare_world_physics(
                     &pipelines,
                 )
                 .map_err(|error| error.to_string())?;
-                if let Some((normal, offset)) = ground_plane {
-                    gpu.write_ground_plane(&render_queue, normal, offset);
-                }
+                // Compile recovery pipelines and allocate their scratch state on
+                // the worker, before the first terrain upload on the main thread.
+                gpu.write_terrain_chunks(
+                    render_device.wgpu_device(),
+                    &render_queue,
+                    [],
+                    bevy::math::DVec3::ZERO,
+                )
+                .map_err(|error| error.to_string())?;
                 Ok::<_, String>(gpu)
             })
             .transpose()?;
+        performance_capture::record("world_physics_prepare", || {
+            serde_json::json!({
+                "compile_ms": compile_ms,
+                "scene_ms": scene_started.elapsed().as_secs_f64() * 1000.0,
+                "body_count": creation.compounds.len(),
+                "collider_count": creation.colliders.len(),
+            })
+        });
         Ok(PreparedWorldPhysics {
             graph,
             creation,
@@ -1454,6 +1541,7 @@ fn replacement_simulation_with_transfer(
         scheduler: FixedStepScheduler::new(),
         next_tick,
         tick_backlog: 0,
+        dropped_ticks: previous.dropped_ticks,
         completed_tick: next_tick.saturating_sub(1),
         previous_transforms: transforms.clone(),
         transforms,
@@ -1471,6 +1559,7 @@ fn replacement_simulation_with_transfer(
         last_tick_readback: None,
         failure: None,
         world_revision: Some(revision),
+        terrain_publication: terrain_publication::TerrainPublication::default(),
     })
 }
 
@@ -2248,7 +2337,7 @@ fn coordinate_from_body_states(
                 - std::f32::consts::PI;
             (position, (angular_b - angular_a).dot(axis))
         }
-        mechanic_core::BearingKind::Linear(_) => {
+        mechanic_core::BearingKind::Linear(_) | mechanic_core::BearingKind::Suspension(_) => {
             let arm_a = rotation_a * bearing.local_anchor_a;
             let arm_b = rotation_b * bearing.local_anchor_b;
             let separation = Vec3::from_slice(&pose_b.position[..3]) + arm_b
@@ -2372,6 +2461,7 @@ fn handle_dimension_link_interaction(
 fn handle_control_panel_shortcut(
     actions: Res<ButtonInput<GameAction>>,
     menu: Res<CreationMenuState>,
+    selection: Res<SelectedTool>,
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
     mut panel: ResMut<ControlPanelState>,
@@ -2390,6 +2480,22 @@ fn handle_control_panel_shortcut(
         || player.seat.is_some()
         || wheel.open
     {
+        return;
+    }
+    if let Some(index) = state.hovered_bearing
+        && state
+            .placed_bearings
+            .get(index)
+            .is_some_and(|s| matches!(s.kind, mechanic_core::BearingKind::Suspension(_)))
+    {
+        if selection.active_editor_tool() == Some(Tool::Connector) {
+            let socket = state.placed_bearings[index];
+            let component = state.suspension.picked_component.map_or(0, |(_, c)| c);
+            state.suspension.controls.dismissed = None;
+            state.suspension.controls.select(socket, component);
+        } else {
+            state.feedback = Some("Equip Connector to adjust suspension".into());
+        }
         return;
     }
     if hovered_part(state.hovered).is_some_and(|part| graph.0.dimension_link_id(part).is_some())
@@ -2568,7 +2674,7 @@ fn run_drive_sequencer(
     mut sequencer: ResMut<DriveSequencer>,
     mut gearboxes: ResMut<GearboxRuntime>,
     mut state: ResMut<EditorState>,
-    player: Res<PlayerState>,
+    mut player: ResMut<PlayerState>,
 ) {
     if !simulation.is_running() {
         if sequencer.is_started() {
@@ -2599,30 +2705,61 @@ fn run_drive_sequencer(
         }
         state.drive_rows_dirty = true;
     }
+    if automation::driving_enabled() {
+        player.seat = automation::driving_seat(&simulation);
+        return; // Scripted programs advance at each dispatched tick below.
+    }
     let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
     let keyboard_controller = player
         .seat
         .filter(|seat| simulation.published_graph.seat_input(*seat).is_some())
         .and_then(|seat| simulation.published_graph.seat_controller(seat));
-    let suspended = frozen.suspended_controllers(&simulation);
-    let sequencer_changed = sequencer.step_with_held_bearings(
-        &simulation.published_graph,
+    step_drive_programs(
+        &simulation,
+        &frozen,
+        &mut sequencer,
+        &mut gearboxes,
+        &mut state,
+        &keyboard,
         &keys,
         keyboard_controller,
-        simulation.next_tick,
-        &suspended,
-        &frozen.suspended_bearings(&simulation),
-    );
-    let measured_speeds =
-        measured_engine_speeds(&simulation.published_graph, &simulation, &sequencer);
-    let gearbox_changed = gearboxes.step_with_suspension(
-        &simulation.published_graph,
-        &sequencer,
-        &keyboard,
         (!overlay.blocks_keyboard())
             .then_some(keyboard_controller)
             .flatten(),
         simulation.next_tick,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_drive_programs(
+    simulation: &AppSimulation,
+    frozen: &freeze::DimensionFreeze,
+    sequencer: &mut DriveSequencer,
+    gearboxes: &mut GearboxRuntime,
+    state: &mut EditorState,
+    keyboard: &ButtonInput<KeyCode>,
+    keys: &DriveKeyState,
+    keyboard_controller: Option<PartId>,
+    gearbox_keyboard_controller: Option<PartId>,
+    tick: u64,
+) {
+    let suspended = frozen.suspended_controllers(simulation);
+    let sequencer_changed = sequencer.step_with_held_bearings(
+        &simulation.published_graph,
+        keys,
+        keyboard_controller,
+        tick,
+        &suspended,
+        &frozen.suspended_bearings(simulation),
+    );
+    let measured_speeds =
+        measured_engine_speeds(&simulation.published_graph, simulation, sequencer);
+    let gearbox_changed = gearboxes.step_with_suspension(
+        &simulation.published_graph,
+        sequencer,
+        keyboard,
+        gearbox_keyboard_controller,
+        tick,
         &measured_speeds,
         false,
         &suspended,
@@ -2671,7 +2808,7 @@ fn measured_engine_speeds(
         ) else {
             continue;
         };
-        let speed = if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+        let speed = if bearing.kind.is_translational() {
             let displacement = |a: &GpuTransform, b: &GpuTransform| {
                 let rotation_a = Quat::from_array(a.rotation);
                 let rotation_b = Quat::from_array(b.rotation);
@@ -2905,7 +3042,7 @@ fn load_creation_remapped(
 ) -> Result<LoadedCreation, Box<dyn Error>> {
     let mut document = creation_store::read_document(path)?;
     runtime.remap_imported_dimension_links(&mut document);
-    let loaded = document.into_graph()?;
+    let loaded = world::place_loaded_creation_in_garage(document.into_graph()?)?;
     match loaded.graph.compile() {
         Ok(creation) => {
             *current = loaded.graph;
@@ -2933,6 +3070,8 @@ fn adopt_loaded_creation(
 ) {
     clear_hover(state);
     state.weld.cancel();
+    state.suspension.controls.dismiss();
+    state.suspension.drag = None;
     state.block_drag = None;
     state.pipe_drag = None;
     state.delete_drag = None;
@@ -2977,6 +3116,16 @@ fn graph_bounds(graph: &ConstructionGraph, sockets: &[PlacedBearing]) -> Option<
                 .map(|socket| (socket.kind, socket.anchor, socket.axis)),
         )
     {
+        if let mechanic_core::BearingKind::Suspension(spec) = kind {
+            let rotation = Quat::from_rotation_arc(Vec3::Y, axis);
+            for mesh in mechanic_core::suspension_meshes(spec, spec.starting_compression()) {
+                for point in mesh.positions {
+                    let point = anchor + rotation * Vec3::from_array(point);
+                    minimum = minimum.min(point);
+                    maximum = maximum.max(point);
+                }
+            }
+        }
         if let mechanic_core::BearingKind::Linear(rail) = kind
             && let Ok(rotation) = rail.rotation(axis)
         {
@@ -2996,6 +3145,7 @@ fn graph_bounds(graph: &ConstructionGraph, sockets: &[PlacedBearing]) -> Option<
 ///
 /// World walking runs after this system, so collision and rendered machinery consume
 /// the same newest valid transform publication.
+#[allow(clippy::too_many_lines)] // Keep capture and validated publication in visible order.
 fn poll_simulation_readbacks(
     mut simulation: ResMut<AppSimulation>,
     frozen: Res<freeze::DimensionFreeze>,
@@ -3006,7 +3156,7 @@ fn poll_simulation_readbacks(
         return;
     }
     loop {
-        let poll_started = performance_capture::is_active().then(std::time::Instant::now);
+        let poll_started = performance_capture::is_recording().then(std::time::Instant::now);
         let completed = simulation
             .gpu
             .as_ref()
@@ -3021,10 +3171,33 @@ fn poll_simulation_readbacks(
             });
         }
         if let Ok(Some(completed)) = &completed {
-            performance_capture::record(
-                "physics_readback",
-                || serde_json::json!({"tick":completed.tick_index, "latency_ms":completed.submission_to_readback_ms, "submission_to_callbacks_ms":completed.submission_to_callbacks_ms, "callbacks_during_poll":completed.callbacks_during_poll, "gpu_tick_ms":completed.diagnostics.gpu_tick_ms, "error_flags":completed.diagnostics.error_flags}),
-            );
+            performance_capture::record("physics_readback", || {
+                let stages = completed.diagnostics.kernel_timings;
+                serde_json::json!({"tick":completed.tick_index, "sequence":completed.submission_sequence, "latency_ms":completed.submission_to_readback_ms, "submission_to_callbacks_ms":completed.submission_to_callbacks_ms, "callbacks_during_poll":completed.callbacks_during_poll, "gpu_tick_ms":completed.diagnostics.gpu_tick_ms, "error_flags":completed.diagnostics.error_flags,
+                    "terrain_ms": stages.map(|s| s.terrain_traversal_ms),
+                    "rotational_sweep_ms": stages.map(|s| s.rotational_sweep_ms),
+                    "terrain_recovery_ms": stages.map(|s| s.terrain_recovery_ms),
+                    "recovery_projection_ms": stages.map(|s| s.recovery_projection_ms),
+                    "integration_ms": stages.map(|s| s.integration_ms),
+                    "mechanism_ms": stages.map(|s| s.mechanism_ms),
+                    "broadphase_ms": stages.map(|s| s.broadphase_ms),
+                    "narrowphase_ms": stages.map(|s| s.narrowphase_ms),
+                    "contact_solver_ms": stages.map(|s| s.contact_solver_ms),
+                    "bearings_ms": stages.map(|s| s.bearings_ms),
+                    "snapshot_ms": stages.map(|s| s.snapshot_ms),
+                    "contacts": completed.diagnostics.contact_count,
+                    "active_contacts": completed.diagnostics.active_contact_count,
+                    "executed_stage_mask": completed.diagnostics.execution.stage_mask,
+                    "integrated_bodies": completed.diagnostics.execution.integrated_bodies,
+                    "published_bodies": completed.diagnostics.execution.published_bodies,
+                    "validated_bearings": completed.diagnostics.execution.validated_bearings,
+                    "planned_solver_sweeps": completed.diagnostics.planned_solver_sweeps,
+                    "executed_solver_sweeps": completed.diagnostics.executed_solver_sweeps,
+                    "anchor_residual_m": completed.diagnostics.anchor_residual_meters,
+                    "axis_residual_deg": completed.diagnostics.axis_residual_degrees,
+                    "solver_route": simulation.gpu.as_ref().map(|gpu| format!("{:?}", gpu.solver_route())),
+                })
+            });
         }
         match completed {
             Ok(Some(completed)) if completed.diagnostics.error_flags == 0 => {
@@ -3040,6 +3213,7 @@ fn poll_simulation_readbacks(
                 performance_capture::record("physics_publication", || {
                     serde_json::json!({
                         "tick":completed.tick_index,
+                        "state_hash":performance_capture::state_hash(&completed.transforms, &completed.velocities, &completed.coordinates),
                         "callback_to_publication_ms":completed.callbacks_completed_at.map(|at| at.elapsed().as_secs_f64()*1000.0)
                     })
                 });
@@ -3079,46 +3253,6 @@ fn poll_simulation_readbacks(
         }
     }
     frozen.overlay(&mut simulation);
-}
-
-fn terrain_ground_planes(
-    world: &world::WorldRuntime,
-    graph: &ConstructionGraph,
-    creation: &CompiledCreation,
-    transforms: &[GpuTransform],
-) -> Vec<GpuGroundPlane> {
-    let mut part_planes = HashMap::<PartId, GpuGroundPlane>::new();
-    creation
-        .colliders
-        .iter()
-        .map(|collider| {
-            let body_index = collider.compound_index as usize;
-            let Some(compound) = creation.compounds.get(body_index) else {
-                return GpuGroundPlane::DISABLED;
-            };
-            if compound.is_static {
-                return GpuGroundPlane::DISABLED;
-            }
-            *part_planes.entry(collider.source_part).or_insert_with(|| {
-                let Some(authored_position) = graph.part_position(collider.source_part) else {
-                    return GpuGroundPlane::DISABLED;
-                };
-                let Some(transform) = transforms.get(body_index) else {
-                    return GpuGroundPlane::DISABLED;
-                };
-                let root_position = Vec3::from_slice(&transform.position[..3]);
-                let root_rotation = Quat::from_array(transform.rotation).normalize()
-                    * compound.root_rotation.conjugate();
-                let part_position =
-                    root_position + root_rotation * (authored_position - compound.root_translation);
-                world
-                    .terrain_plane_beneath(part_position)
-                    .map_or(GpuGroundPlane::DISABLED, |(normal, offset)| {
-                        GpuGroundPlane { normal, offset }
-                    })
-            })
-        })
-        .collect()
 }
 
 #[allow(
@@ -3250,25 +3384,19 @@ fn sync_simulation_visual_cache(
                     for (mesh, material, kind) in ordinary {
                         root.spawn((
                             Name::new(format!("{} local simulation mesh", kind.label())),
-                            Mesh3d(mesh),
-                            MeshMaterial3d(material),
-                            NoFrustumCulling,
+                            simulation_body_mesh(mesh, material),
                         ));
                     }
                     for (mesh, material, appearance) in authored {
                         root.spawn((
                             Name::new(format!("{appearance:?} local simulation mesh")),
-                            Mesh3d(mesh),
-                            MeshMaterial3d(material),
-                            NoFrustumCulling,
+                            simulation_body_mesh(mesh, material),
                         ));
                     }
                     if let Some(mesh) = bearing {
                         root.spawn((
                             Name::new("Local bearing mesh"),
-                            Mesh3d(mesh),
-                            MeshMaterial3d(visuals.bearing_material.clone()),
-                            NoFrustumCulling,
+                            simulation_body_mesh(mesh, visuals.bearing_material.clone()),
                         ));
                     }
                 })
@@ -3292,6 +3420,12 @@ fn sync_simulation_visual_cache(
     simulation.record_visual_update(started.elapsed());
 }
 
+// Body-local geometry is immutable between scene revisions. Bevy can calculate
+// its AABB once and cull using the current propagated compound transform.
+fn simulation_body_mesh<M: Material>(mesh: Handle<Mesh>, material: Handle<M>) -> impl Bundle {
+    (Mesh3d(mesh), MeshMaterial3d(material))
+}
+
 fn transform_from_gpu(transform: GpuTransform) -> Transform {
     Transform {
         translation: Vec3::from_slice(&transform.position[..3]),
@@ -3306,11 +3440,13 @@ fn transform_from_gpu(transform: GpuTransform) -> Transform {
     clippy::type_complexity
 )]
 fn advance_simulation(
-    time: Res<Time>,
+    time: (Res<Time>, Res<Time<Real>>),
     mut world_runtime: ResMut<world::WorldRuntime>,
     publication: Res<WorldPhysicsPublication>,
-    sequencer: Res<DriveSequencer>,
-    gearboxes: Res<GearboxRuntime>,
+    mut sequencer: ResMut<DriveSequencer>,
+    mut gearboxes: ResMut<GearboxRuntime>,
+    frozen: Res<freeze::DimensionFreeze>,
+    mut automated: Local<automation::Driving>,
     selection: Res<SelectedTool>,
     mut state: ResMut<EditorState>,
     mut simulation: ResMut<AppSimulation>,
@@ -3340,25 +3476,57 @@ fn advance_simulation(
         }
     }
 
-    {
-        let ground_planes = terrain_ground_planes(
-            &world_runtime,
-            &published_graph,
-            simulation
-                .creation
-                .as_ref()
-                .expect("running simulation has compiled creation"),
-            &simulation.transforms,
-        );
-        if let Err(error) = simulation
-            .gpu
-            .as_ref()
-            .expect("running simulation has GPU state")
-            .write_ground_planes(&render_queue, &ground_planes)
-        {
-            stop_failed_simulation(&mut simulation, &mut state, error.to_string());
+    // Construction visuals follow the published scene, never the terrain cut.
+    // The gate below now only holds ticks before the first cut and across a
+    // floating-origin rebase, but returning there still must not leave a newly
+    // published ground-welded block solid but undrawn until the Garage rebuilt
+    // the editor meshes.
+    refresh_published_construction_visuals(
+        &mut simulation,
+        &published_graph,
+        &state,
+        *selection,
+        &sequencer,
+        &visuals,
+        &mut meshes,
+        &mut construction_visuals,
+    );
+
+    if performance_capture::is_draining() {
+        return;
+    }
+    let replay_end = performance_capture::replay_end_tick();
+    if performance_capture::is_active() && replay_end.is_some() {
+        // Count time even when terrain readiness prevents this frame's submissions.
+        let due = simulation.scheduler.advance(time.1.delta()).count();
+        simulation.tick_backlog = simulation.tick_backlog.saturating_add(due);
+    }
+
+    match terrain_publication::publish(
+        &mut simulation,
+        &world_runtime,
+        render_device.wgpu_device(),
+        &render_queue,
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            performance_capture::record(
+                "physics_terrain_hold",
+                || serde_json::json!({"tick":simulation.next_tick}),
+            );
             return;
         }
+        Err(error) => {
+            stop_failed_simulation(&mut simulation, &mut state, error);
+            return;
+        }
+    }
+
+    // A foreground comparison starts from the loaded state, independent of
+    // shader compilation and terrain preparation wall time. Warm-up renders
+    // without advancing physics; capture readiness still requires a running scene.
+    if automation::foreground() && !performance_capture::is_active() {
+        return;
     }
 
     let ticks = {
@@ -3366,25 +3534,46 @@ fn advance_simulation(
             .gpu
             .as_ref()
             .expect("running simulation has GPU state")
-            .async_readback_slots_available();
+            .async_readback_slots_available()
+            .min(MAXIMUM_TICKS_PER_FRAME);
         let AppSimulation {
             scheduler,
             next_tick,
             tick_backlog,
+            dropped_ticks,
             ..
         } = &mut *simulation;
-        next_simulation_ticks(
-            scheduler,
-            next_tick,
-            tick_backlog,
-            time.delta(),
-            publication.ready.is_some()
+        if let Some(end) = replay_end {
+            let paused = publication.ready.is_some()
                 || publication
                     .placement
                     .as_ref()
-                    .is_some_and(weld_publication::Publication::ready),
-            u64::try_from(available).unwrap_or(u64::MAX),
-        )
+                    .is_some_and(weld_publication::Publication::ready);
+            performance_capture::replay_batch(
+                next_tick,
+                tick_backlog,
+                if paused {
+                    0
+                } else {
+                    u64::try_from(available).unwrap_or(0)
+                },
+                end,
+            )
+        } else {
+            next_simulation_ticks(
+                scheduler,
+                next_tick,
+                tick_backlog,
+                dropped_ticks,
+                time.0.delta(),
+                publication.ready.is_some()
+                    || publication
+                        .placement
+                        .as_ref()
+                        .is_some_and(weld_publication::Publication::ready),
+                u64::try_from(available).unwrap_or(u64::MAX),
+            )
+        }
     };
     if !ticks.is_empty() {
         let tick_count =
@@ -3392,6 +3581,44 @@ fn advance_simulation(
         let physics_started = std::time::Instant::now();
         let mut cpu_timings = mechanic_gpu::GpuSubmissionTimings::default();
         for tick in ticks {
+            if let Some((keys, seat)) = automation::drive_input(&simulation, &mut automated, tick) {
+                let controller = published_graph.seat_controller(seat);
+                step_drive_programs(
+                    &simulation,
+                    &frozen,
+                    &mut sequencer,
+                    &mut gearboxes,
+                    &mut state,
+                    &ButtonInput::default(),
+                    &keys,
+                    controller,
+                    None,
+                    tick,
+                );
+                let creation = simulation
+                    .creation
+                    .as_ref()
+                    .expect("running simulation has creation");
+                let drive_rows =
+                    geared_gpu_drive_rows(creation, &published_graph, &sequencer, &gearboxes);
+                performance_capture::record("physics_drive_rows", || {
+                    use std::hash::{DefaultHasher, Hash, Hasher};
+                    let mut hash = DefaultHasher::new();
+                    bytemuck::cast_slice::<_, u8>(&drive_rows).hash(&mut hash);
+                    serde_json::json!({"tick":tick, "hash":format!("{:016x}",hash.finish()), "rows":drive_rows.len()})
+                });
+                if state.drive_rows_dirty {
+                    let gpu = simulation
+                        .gpu
+                        .as_ref()
+                        .expect("running simulation has GPU state");
+                    if let Err(error) = gpu.write_mechanism_drives(&render_queue, &drive_rows) {
+                        stop_failed_simulation(&mut simulation, &mut state, error.to_string());
+                        return;
+                    }
+                    state.drive_rows_dirty = false;
+                }
+            }
             match pending_hammer_impulse(&simulation, &mut hammer) {
                 Ok(Some(impulse)) => world_runtime.queue_player_reaction(impulse),
                 Ok(None) => {}
@@ -3421,7 +3648,7 @@ fn advance_simulation(
             };
             performance_capture::record(
                 "physics_submit",
-                || serde_json::json!({"tick":tick, "encoding_ms":submission.cpu_timings.encoding_ms, "finalization_ms":submission.cpu_timings.finalization_ms, "submission_ms":submission.cpu_timings.submission_ms, "readback_setup_ms":submission.cpu_timings.readback_setup_ms}),
+                || serde_json::json!({"tick":tick, "sequence":submission.submission_sequence, "encoding_ms":submission.cpu_timings.encoding_ms, "finalization_ms":submission.cpu_timings.finalization_ms, "submission_ms":submission.cpu_timings.submission_ms, "readback_setup_ms":submission.cpu_timings.readback_setup_ms}),
             );
             cpu_timings.encoding_ms += submission.cpu_timings.encoding_ms;
             cpu_timings.finalization_ms += submission.cpu_timings.finalization_ms;
@@ -3434,7 +3661,27 @@ fn advance_simulation(
     simulation.in_flight_tick_count = simulation.gpu.as_ref().map_or(0, |gpu| {
         u32::try_from(gpu.in_flight_tick_count()).unwrap_or(u32::MAX)
     });
+}
 
+/// Rebuilds the shared meshes that draw a published scene's static construction
+/// and its x-ray overlays.
+///
+/// This owns no terrain state on purpose: static blocks are drawn only from
+/// here, so a pending terrain collision publication must never delay them.
+#[allow(clippy::too_many_arguments)]
+fn refresh_published_construction_visuals(
+    simulation: &mut AppSimulation,
+    published_graph: &ConstructionGraph,
+    state: &EditorState,
+    selection: SelectedTool,
+    sequencer: &DriveSequencer,
+    visuals: &EditorVisuals,
+    meshes: &mut Assets<Mesh>,
+    construction_visuals: &mut Query<
+        (&ConstructionVisual, &mut Visibility),
+        Without<BearingVisual>,
+    >,
+) {
     let visual_started = std::time::Instant::now();
 
     if simulation.static_mesh_dirty {
@@ -3444,7 +3691,7 @@ fn advance_simulation(
             .expect("running simulation has compiled creation");
         for material in ConstructionMaterial::ALL {
             let visible = simulation_material_is_present(
-                &published_graph,
+                published_graph,
                 creation,
                 SimulationMeshKind::Static,
                 material,
@@ -3454,14 +3701,14 @@ fn advance_simulation(
                     meshes.get_mut(&visuals.construction_meshes[material_index(material)])
             {
                 *asset = renderable_mesh(combined_simulation_material_mesh(
-                    &published_graph,
+                    published_graph,
                     creation,
                     &simulation.transforms,
                     SimulationMeshKind::Static,
                     material,
                 ));
             }
-            for (visual, mut visibility) in &mut construction_visuals {
+            for (visual, mut visibility) in construction_visuals.iter_mut() {
                 if visual.0 == material {
                     *visibility = if visible {
                         Visibility::Visible
@@ -3472,6 +3719,16 @@ fn advance_simulation(
             }
         }
         simulation.static_mesh_dirty = false;
+        performance_capture::record("static_mesh_rebuild", || {
+            serde_json::json!({
+                "rebuild_ms": visual_started.elapsed().as_secs_f64() * 1000.0,
+                "static_parts": simulation.creation.as_ref().map(|creation| creation
+                    .part_to_compound
+                    .iter()
+                    .filter(|(_, body)| creation.compounds[*body as usize].is_static)
+                    .count()),
+            })
+        });
     }
 
     if !simulation.render_dirty {
@@ -3485,11 +3742,11 @@ fn advance_simulation(
     if bearings_visible
         && joint_xray_is_visible(
             selection.active_editor_tool(),
-            visible_bearing_count(&published_graph, &state.placed_bearings),
+            visible_bearing_count(published_graph, &state.placed_bearings),
         )
     {
         let rings = combined_simulation_bearing_mesh(
-            &published_graph,
+            published_graph,
             creation,
             &simulation.transforms,
             &state.placed_bearings,
@@ -3504,25 +3761,35 @@ fn advance_simulation(
     // wastes the rebuild and makes the renderer log a use-after-free.
     if drive_xray_is_visible(
         selection.active_editor_tool(),
-        control_link_count(&published_graph),
+        control_link_count(published_graph),
     ) && let Some(mut mesh) = meshes.get_mut(&visuals.drive_xray_mesh)
     {
         *mesh = combined_simulation_drive_xray_mesh(
-            &published_graph,
+            published_graph,
             creation,
             &simulation.transforms,
             &state.placed_bearings,
-            &sequencer,
+            sequencer,
         );
     }
     simulation.render_dirty = false;
     simulation.record_visual_update(visual_started.elapsed());
 }
 
+/// Simulated time a scene may fall behind wall time before ticks are dropped.
+///
+/// An uncapped backlog never recovers: a scene that once fell behind keeps a
+/// full batch due on every later frame, so the simulation stays in slow motion
+/// permanently instead of catching up. Dropping the excess only changes how far
+/// simulated time lags; every tick that does run is unchanged.
+const MAXIMUM_TICK_BACKLOG: u64 = 30;
+const MAXIMUM_TICKS_PER_FRAME: usize = 3;
+
 fn next_simulation_ticks(
     scheduler: &mut FixedStepScheduler,
     next_tick: &mut u64,
     tick_backlog: &mut u64,
+    dropped_ticks: &mut u64,
     elapsed: std::time::Duration,
     paused: bool,
     maximum_batch: u64,
@@ -3531,6 +3798,16 @@ fn next_simulation_ticks(
         return *next_tick..*next_tick;
     }
     *tick_backlog = tick_backlog.saturating_add(scheduler.advance(elapsed).count());
+    let dropped = tick_backlog.saturating_sub(MAXIMUM_TICK_BACKLOG);
+    *tick_backlog -= dropped;
+    if dropped != 0 {
+        performance_capture::record(
+            "physics_drop",
+            || serde_json::json!({"first_tick": *next_tick, "count": dropped}),
+        );
+    }
+    *next_tick = next_tick.saturating_add(dropped);
+    *dropped_ticks = dropped_ticks.saturating_add(dropped);
     let first = *next_tick;
     let batch = (*tick_backlog).min(maximum_batch);
     *tick_backlog -= batch;
@@ -3616,6 +3893,7 @@ struct EditorState {
     edit_context: Option<live_edit::EditContext>,
     world_hovered_part: Option<PartId>,
     linear: linear_editor::LinearToolState,
+    suspension: suspension_editor::SuspensionToolState,
     linear_attachment: Option<PlacedBearing>,
     placement_bounds: PlacementBounds,
     hovered: Option<SurfaceHit>,
@@ -3706,7 +3984,8 @@ impl EditorState {
     /// the contextual hold-Tab selector. A Shape focus by itself is retained
     /// across mode changes and therefore does not block the selector.
     pub(crate) fn contextual_selector_blocked(&self) -> bool {
-        self.block_drag.is_some()
+        self.suspension.drag.is_some()
+            || self.block_drag.is_some()
             || self.pipe_drag.is_some()
             || self.delete_drag.is_some()
             || self.delete_target.is_some()
@@ -4294,7 +4573,7 @@ fn main() {
         .add_plugins(
             DefaultPlugins
                 .set(bevy::winit::WinitPlugin {
-                    prevent_activation: automation::enabled() || tool_fx::capture_active(),
+                    prevent_activation: automation::background() || tool_fx::capture_active(),
                     ..default()
                 })
                 .set(WindowPlugin {
@@ -4306,7 +4585,7 @@ fn main() {
                         } else {
                             (1280, 720).into()
                         },
-                        focused: !automation::enabled() && !tool_fx::capture_active(),
+                        focused: !automation::background() && !tool_fx::capture_active(),
                         ..default()
                     }),
                     ..Default::default()
@@ -4335,6 +4614,7 @@ fn main() {
         .init_resource::<PerformanceMetrics>()
         .init_resource::<performance_capture::Recorder>()
         .add_plugins(automation::AutomationPlugin)
+        .add_plugins(suspension_capture::SuspensionCapturePlugin)
         .init_resource::<AppSettings>()
         .init_resource::<AppSimulation>()
         .init_resource::<SimulationVisualCache>()
@@ -4425,6 +4705,7 @@ fn main() {
                             rebuild_placement_snap_index,
                             update_hover,
                             tool_fx::capture_gesture,
+                            ui::push_suspension,
                             handle_build_actions,
                             tool_fx::finish_gesture,
                             handle_shape_actions,
@@ -4447,6 +4728,7 @@ fn main() {
                         maintain_space_simulation.after(world::sync_world_foundations),
                         sync_simulation_visual_cache,
                         linear_render::sync_linear_bearing_visuals,
+                        suspension_render::sync_suspension_visuals,
                         run_drive_sequencer,
                         advance_simulation.run_if(world::world_playing),
                         sync_player_avatar,
@@ -5492,6 +5774,8 @@ fn cancel_transient_editor_state(graph: &mut ConstructionGraph, state: &mut Edit
             .apply(BuildCommand::CancelPending)
             .expect("restored pending editor operation can be cancelled");
     }
+    state.suspension.controls.dismiss();
+    state.suspension.drag = None;
     state.block_drag = None;
     state.pipe_drag = None;
     state.delete_drag = None;
@@ -5548,6 +5832,11 @@ fn handle_shortcuts(
     }
     if actions.just_pressed(GameAction::ClearPipette) {
         if selection.active_editor_tool() == Some(Tool::Chroma) {
+            if let Some(appearance) = suspension_editor::sample_appearance(&graph.0, &state) {
+                chroma_brush.appearance = appearance;
+                state.feedback = Some("Sampled suspension appearance".into());
+                return;
+            }
             match appearance_target(&graph.0, &state)
                 .and_then(|target| target_appearance(&graph.0, target))
             {
@@ -5606,6 +5895,7 @@ enum PipetteSetup {
     Ground,
     Bearing(BearingDimensions),
     Linear(mechanic_core::LinearBearing, Vec3),
+    Suspension(mechanic_core::SuspensionSpec, usize),
     Part(PartId),
 }
 
@@ -5613,6 +5903,9 @@ fn pipette_socket(socket: PlacedBearing) -> PipetteSetup {
     match socket.kind {
         mechanic_core::BearingKind::Rotational => PipetteSetup::Bearing(socket.dimensions),
         mechanic_core::BearingKind::Linear(rail) => PipetteSetup::Linear(rail, socket.axis),
+        mechanic_core::BearingKind::Suspension(spec) => {
+            PipetteSetup::Suspension(spec, usize::from(spec.spring().is_none()))
+        }
     }
 }
 
@@ -5654,6 +5947,21 @@ fn pipette_at_ray(
             origin,
             direction,
         );
+        if let Some((index, distance, owner)) = suspension_render::raycast_scene_component(
+            graph,
+            Some(simulation),
+            &state.placed_bearings,
+            origin,
+            direction,
+        ) && part.is_none_or(|part| distance < part.distance)
+            && bearing.is_none_or(|(_, ring_distance)| distance < ring_distance)
+            && let mechanic_core::BearingKind::Suspension(spec) = state.placed_bearings[index].kind
+        {
+            return Some(PipetteSetup::Suspension(
+                spec,
+                suspension_editor::component_index(spec, owner),
+            ));
+        }
         if let Some((index, distance)) = linear_editor::raycast_scene(
             graph,
             Some(simulation),
@@ -5677,6 +5985,21 @@ fn pipette_at_ray(
     let part = raycast_construction(graph, origin, direction);
     let bearing = raycast_placed_bearings(graph, &state.placed_bearings, origin, direction)
         .and_then(|(index, distance)| Some((*state.placed_bearings.get(index)?, distance)));
+    if let Some((index, distance, owner)) = suspension_render::raycast_scene_component(
+        graph,
+        None,
+        &state.placed_bearings,
+        origin,
+        direction,
+    ) && part.is_none_or(|part| distance < part.distance)
+        && bearing.is_none_or(|(_, ring_distance)| distance <= ring_distance + 1.0e-6)
+        && let mechanic_core::BearingKind::Suspension(spec) = state.placed_bearings[index].kind
+    {
+        return Some(PipetteSetup::Suspension(
+            spec,
+            suspension_editor::component_index(spec, owner),
+        ));
+    }
     match (part, bearing) {
         (Some(hit), Some((dimensions, distance))) if distance < hit.distance => {
             Some(pipette_socket(dimensions))
@@ -5711,6 +6034,21 @@ fn apply_pipette_setup(
     state.active_region = None;
     let tool = match setup {
         PipetteSetup::Ground => Tool::Block,
+        PipetteSetup::Suspension(spec, component) => {
+            state.suspension.spring = spec.spring().unwrap_or_default();
+            state.suspension.shock = spec.shock().unwrap_or_default();
+            match component {
+                0 => Tool::Spring,
+                2 => {
+                    if let Some(stop) = spec.bump_stop() {
+                        state.suspension.stop = stop;
+                        material.0 = ConstructionMaterial::Rubber;
+                    }
+                    Tool::Cylinder
+                }
+                _ => Tool::Shock,
+            }
+        }
         PipetteSetup::Linear(rail, axis) => {
             state.linear.dimensions = rail.dimensions;
             let (u, v) = axis_tangents(rail.mount_normal);
@@ -5786,6 +6124,9 @@ fn apply_pipette_setup(
 /// What Rotate does: rotate whichever drag plane or vertex axis is open, or step
 /// an authored part's orientation, reporting what to say about it.
 fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
+    if let Some(message) = suspension_editor::cycle_drag(state, tool) {
+        return message;
+    }
     let sample = state.pointer_position.zip(state.pointer_ray).map(
         |(cursor, (ray_origin, ray_direction))| PointerSample {
             cursor,
@@ -6110,10 +6451,14 @@ fn handle_cylinder_dimension_shortcuts(
     actions: Res<ButtonInput<GameAction>>,
     selection: Res<SelectedTool>,
     menu: Res<CreationMenuState>,
+    material: Option<Res<SelectedMaterial>>,
     mut settings: ResMut<CylinderToolSettings>,
     mut state: ResMut<EditorState>,
 ) {
-    if state.pipe_drag.is_some() {
+    if state.pipe_drag.is_some()
+        || state.suspension.drag.is_some()
+        || state.suspension.controls.gesture.is_some()
+    {
         return;
     }
     let Some((target, direction)) = requested_cylinder_dimension_adjustment(
@@ -6123,6 +6468,25 @@ fn handle_cylinder_dimension_shortcuts(
     ) else {
         return;
     };
+    if material.is_some_and(|material| material.0 == ConstructionMaterial::Rubber)
+        && state.hovered_bearing.and_then(|index| state.placed_bearings.get(index))
+            .is_some_and(|s| matches!(s.kind, mechanic_core::BearingKind::Suspension(spec) if spec.shock().is_some())) {
+        let stop = state.suspension.stop;
+        let increment = f32::from(direction) * 0.0025;
+        let (length, od) = match target {
+            CylinderDimensionTarget::Length => ((stop.length() + increment).max(0.01), stop.od()),
+            CylinderDimensionTarget::Outer => (stop.length(), (stop.od() + increment).max(0.01)),
+            CylinderDimensionTarget::Inner | CylinderDimensionTarget::Sweep => {
+                state.feedback = Some("Bump-stop bore and orientation follow the shock shaft".into());
+                return;
+            }
+        };
+        match mechanic_core::BumpStopSpec::new(length, od) {
+            Ok(stop) => state.suspension.stop = stop,
+            Err(e) => state.feedback = Some(e.to_string()),
+        }
+        return;
+    }
     settings.dimensions = adjusted_cylinder_dimensions(settings.dimensions, target, direction);
     state.feedback = Some(format!(
         "Cylinder outer {:.2} m, inner {:.2} m, length {:.2} m, sweep {}°",
@@ -6169,6 +6533,7 @@ fn update_hover(
     space: Res<State<world::AppSpace>>,
     world_runtime: Res<world::WorldRuntime>,
 ) {
+    suspension_editor::sync_sockets(&graph.0, &mut state);
     let placement_bounds = match space.get() {
         world::AppSpace::Garage => PlacementBounds::GarageBuild,
         world::AppSpace::World => PlacementBounds::World {
@@ -6228,6 +6593,19 @@ fn update_hover(
     }
     state.weld.cancel();
     state.pointer_position = Some(cursor);
+    let suspension_pick = suspension_render::raycast_scene_component(
+        &graph.0,
+        Some(&simulation),
+        &state.placed_bearings,
+        ray.origin,
+        ray.direction.as_vec3(),
+    );
+    state.suspension.picked_component = suspension_pick.and_then(|(index, _, owner)| {
+        let mechanic_core::BearingKind::Suspension(spec) = state.placed_bearings[index].kind else {
+            return None;
+        };
+        Some((index, suspension_editor::component_index(spec, owner)))
+    });
     let ray_direction = ray.direction.as_vec3();
     let terrain_ground = placement_bounds
         .is_world()
@@ -6274,7 +6652,8 @@ fn update_hover(
     } else {
         hovered_part(nearest_editable)
     };
-    let attached_gesture = state.block_drag.is_some()
+    let attached_gesture = state.suspension.drag.is_some()
+        || state.block_drag.is_some()
         || state.pipe_drag.is_some()
         || state.delete_drag.is_some()
         || state.region_drag.is_some()
@@ -6287,6 +6666,32 @@ fn update_hover(
         .map(|context| (context.anchor, context.frame));
     let anchor = if attached_gesture && state.edit_context.is_some() {
         state.edit_context.map(|context| context.anchor)
+    } else if let Some((index, distance, _)) = suspension_pick
+        && nearest_editable.is_none_or(|hit| distance <= hit.distance)
+        && moving_hit.is_none_or(|hit| distance <= hit.distance)
+    {
+        let socket = state.placed_bearings[index];
+        let rubber_stop = selection.active_editor_tool() == Some(Tool::Cylinder)
+            && selected_material
+                .as_deref()
+                .is_some_and(|m| m.0 == ConstructionMaterial::Rubber)
+            && matches!(socket.kind, mechanic_core::BearingKind::Suspension(spec) if spec.shock().is_some());
+        let opposite = matches!(
+            selection.active_editor_tool(),
+            Some(Tool::Block | Tool::Cylinder)
+        ) && !rubber_stop;
+        let source = match socket.source.owner {
+            FaceOwner::Part(part) => Some(part),
+            FaceOwner::Ground => None,
+        };
+        if opposite {
+            bearing_socket_targets(&graph.0, socket)
+                .first()
+                .copied()
+                .or(source)
+        } else {
+            source
+        }
     } else if moving_hit
         .is_some_and(|moving| nearest_editable.is_none_or(|hit| moving.distance <= hit.distance))
     {
@@ -6409,10 +6814,23 @@ fn update_hover(
         );
         return;
     }
+    let geometric_bearing_hit =
+        raycast_placed_bearings_with_pose(&state.placed_bearings, ray.origin, ray_direction, |s| {
+            Some((s.anchor, s.axis))
+        })
+        .into_iter()
+        .chain(linear_editor::raycast_scene(
+            &graph.0,
+            None,
+            &state.placed_bearings,
+            ray.origin,
+            ray_direction,
+        ))
+        .chain(suspension_pick.map(|(index, distance, _)| (index, distance)))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
     let Some(tool) = selection.active_editor_tool() else {
         let construction_hit = raycast_surface(None);
-        let bearing_hit =
-            raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction);
+        let bearing_hit = geometric_bearing_hit;
         if let Some((bearing, distance)) = bearing_hit
             && construction_hit.is_none_or(|hit| distance <= hit.distance)
         {
@@ -6439,6 +6857,8 @@ fn update_hover(
                 cylinder_settings.dimensions.outer_diameter(),
             ))),
             Tool::LinearBearing
+            | Tool::Spring
+            | Tool::Shock
             | Tool::Block
             | Tool::Weld
             | Tool::Hammer
@@ -6491,9 +6911,12 @@ fn update_hover(
                 world_ray.direction.as_vec3(),
             )
         })
-    } else if matches!(tool, Tool::Block | Tool::Cylinder) || actions.pressed(GameAction::Secondary)
+    } else if matches!(
+        tool,
+        Tool::Block | Tool::Cylinder | Tool::Spring | Tool::Shock | Tool::Chroma
+    ) || actions.pressed(GameAction::Secondary)
     {
-        raycast_placed_bearings(&graph.0, &state.placed_bearings, ray.origin, ray_direction)
+        geometric_bearing_hit
     } else {
         None
     };
@@ -7147,6 +7570,10 @@ fn weld_lockup_warning(before: &ConstructionGraph, after: &ConstructionGraph) ->
 }
 
 fn clear_hover(state: &mut EditorState) {
+    state.suspension.preview = None;
+    state.suspension.picked_component = None;
+    state.suspension.attachment = None;
+    state.suspension.insertion = None;
     state.hovered = None;
     state.hovered_simulation = None;
     state.world_hovered_part = None;
@@ -7189,6 +7616,9 @@ fn refresh_tool_preview_with_cylinder(
     state.linear_attachment = None;
     state.preview_warning = None;
     state.smart_guides.clear();
+    if suspension_editor::refresh(graph, state, tool, material, cylinder_dimensions) {
+        return;
+    }
     // A shaped face is no longer an axis-aligned rectangle, so nothing can sit
     // flush on it until it is flattened back onto the grid.
     if let Some(hit) = state.hovered
@@ -7712,7 +8142,16 @@ fn refresh_tool_preview_with_cylinder(
         }
         // Shaping edits the grid rather than placing anything, so like these
         // it has no placement ghost of its own.
-        (Tool::Weld | Tool::Hammer | Tool::Connector | Tool::Shape | Tool::Chroma, _) => None,
+        (
+            Tool::Weld
+            | Tool::Hammer
+            | Tool::Connector
+            | Tool::Shape
+            | Tool::Chroma
+            | Tool::Spring
+            | Tool::Shock,
+            _,
+        ) => None,
         (Tool::LinearBearing, _) => {
             linear_editor::refresh(graph, state);
             state.preview_error.clone()
@@ -10071,6 +10510,9 @@ fn handle_chroma_actions(
     history: &mut EditorHistory,
     brush: MaterialAppearance,
 ) {
+    if suspension_editor::paint(graph, state, history, brush, actions) {
+        return;
+    }
     let started_remove = actions.just_pressed(GameAction::Secondary);
     if actions.just_pressed(GameAction::Primary) || started_remove {
         state.chroma_stroke = Some(ChromaStroke {
@@ -10126,6 +10568,7 @@ fn handle_chroma_actions(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 // Tool-specific input flows remain readable together.
 fn handle_build_actions(
+    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
     actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
@@ -10141,6 +10584,17 @@ fn handle_build_actions(
     wheel: Res<MaterialWheelState>,
     mut world_runtime: Option<ResMut<world::WorldRuntime>>,
 ) {
+    if suspension_controls::actions(
+        &mut graph,
+        &mut state,
+        &mut history,
+        &actions,
+        motion.delta,
+        selection.active_editor_tool(),
+        overlay.blocks_pointer() || !player.world_input_active() || wheel.open,
+    ) {
+        return;
+    }
     if selection.active_editor_tool() == Some(Tool::Weld) {
         weld_tool::actions(
             &mut graph.0,
@@ -10155,6 +10609,10 @@ fn handle_build_actions(
     let mut view = live_edit::EditorView::new(&mut graph, &mut state);
     let (graph, state) = view.parts();
     if overlay.blocks_pointer() || !player.world_input_active() || wheel.open {
+        if actions.just_released(GameAction::Primary) && state.suspension.drag.take().is_some() {
+            clear_hover(state);
+            state.feedback = Some("Suspension drag cancelled over interface".to_owned());
+        }
         if actions.just_released(GameAction::Primary) && state.block_drag.take().is_some() {
             clear_hover(state);
             state.feedback = Some("Block drag cancelled over hotbar".to_owned());
@@ -10193,6 +10651,12 @@ fn handle_build_actions(
             &mut history,
             chroma_brush.appearance,
         );
+        return;
+    }
+    if actions.just_pressed(GameAction::Secondary) && state.suspension.drag.take().is_some() {
+        state.suspension.controls.consume_until_release = true;
+        clear_hover(state);
+        state.feedback = Some("Suspension drag cancelled".to_owned());
         return;
     }
     if actions.just_pressed(GameAction::Secondary) && state.block_drag.take().is_some() {
@@ -10328,6 +10792,10 @@ fn handle_build_actions(
         if let Some(target) = state.delete_target.take() {
             match target {
                 DeleteTarget::PlacedBearing(index) => {
+                    if suspension_editor::remove_component(&mut graph.0, state, &mut history, index)
+                    {
+                        return;
+                    }
                     if let Some(socket) = state.placed_bearings.get(index).copied() {
                         let previous = EditorSnapshot::capture(&graph.0, state);
                         let attached = graph
@@ -10441,6 +10909,21 @@ fn handle_build_actions(
     }
     if tool == Tool::Connector {
         handle_connector_actions(&actions, &mut graph.0, state, &mut history);
+        return;
+    }
+    if matches!(tool, Tool::Block | Tool::Cylinder)
+        && suspension_editor::attach(&mut graph.0, state, &mut history, tool, &actions)
+    {
+        return;
+    }
+    if matches!(tool, Tool::Spring | Tool::Shock) {
+        suspension_editor::drag_actions(&mut graph.0, state, &mut history, &actions);
+        return;
+    }
+    if tool == Tool::Cylinder
+        && (state.suspension.insertion.is_some() || state.suspension.drag.is_some())
+    {
+        suspension_editor::drag_actions(&mut graph.0, state, &mut history, &actions);
         return;
     }
     if tool == Tool::Block {
@@ -10670,6 +11153,7 @@ fn handle_build_actions(
         Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),
         Tool::Weld => unreachable!("weld actions are handled by weld_tool"),
         Tool::LinearBearing => linear_editor::place(&graph.0, state, &mut history),
+        Tool::Spring | Tool::Shock => suspension_editor::place(&mut graph.0, state, &mut history),
         Tool::Bearing => {
             let Some(hit) = state.hovered else {
                 state.feedback = Some("Point at a cuboid face".to_owned());
@@ -11259,7 +11743,8 @@ fn connect_drive_wire(
             .map(|&bearing| {
                 BuildCommand::AddDriveLink(
                     match graph.bearing(bearing).expect("live bearing").kind {
-                        mechanic_core::BearingKind::Rotational => {
+                        mechanic_core::BearingKind::Rotational
+                        | mechanic_core::BearingKind::Suspension(_) => {
                             DriveLinkSpec::new(controller, bearing)
                         }
                         mechanic_core::BearingKind::Linear(rail) => {
@@ -11385,6 +11870,10 @@ fn bearing_uses_socket(bearing: &mechanic_core::BearingSpec, socket: PlacedBeari
             (mechanic_core::BearingKind::Rotational, mechanic_core::BearingKind::Rotational) => {
                 true
             }
+            (
+                mechanic_core::BearingKind::Suspension(a),
+                mechanic_core::BearingKind::Suspension(b),
+            ) => a == b,
             (mechanic_core::BearingKind::Linear(a), mechanic_core::BearingKind::Linear(b)) => {
                 a.dimensions == b.dimensions
                     && a.mount_normal.abs_diff_eq(b.mount_normal, 1.0e-5)
@@ -11446,13 +11935,15 @@ fn stage_part_deletion_preserving_bearings(
             })
             .collect::<Vec<_>>();
         let replacement = match socket.kind {
-            mechanic_core::BearingKind::Rotational => bearing_support_face_excluding(
-                graph,
-                socket.source,
-                socket.anchor,
-                socket.dimensions,
-                &deleted,
-            ),
+            mechanic_core::BearingKind::Rotational | mechanic_core::BearingKind::Suspension(_) => {
+                bearing_support_face_excluding(
+                    graph,
+                    socket.source,
+                    socket.anchor,
+                    socket.dimensions,
+                    &deleted,
+                )
+            }
             mechanic_core::BearingKind::Linear(rail) => builder::linear_support_face_excluding(
                 graph,
                 socket.source,
@@ -11497,7 +11988,8 @@ fn stage_part_deletion_preserving_bearings(
                 mechanic_core::BearingKind::Rotational => {
                     face_geometry_from_ref(socket.source, Some(&staged)).normal
                 }
-                mechanic_core::BearingKind::Linear(_) => socket.axis,
+                mechanic_core::BearingKind::Linear(_)
+                | mechanic_core::BearingKind::Suspension(_) => socket.axis,
             };
             targets.into_iter().map(move |(target, kind)| {
                 BuildCommand::AddBearing(
@@ -12038,6 +12530,9 @@ fn raycast_placed_bearings(
         .chain(linear_editor::raycast_scene(
             graph, None, bearings, origin, direction,
         ))
+        .chain(suspension_render::raycast_scene(
+            graph, None, bearings, origin, direction,
+        ))
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
@@ -12063,6 +12558,13 @@ fn raycast_live_placed_bearings(
             origin,
             direction,
         ))
+        .chain(suspension_render::raycast_scene(
+            graph,
+            Some(simulation),
+            bearings,
+            origin,
+            direction,
+        ))
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
@@ -12080,7 +12582,7 @@ fn raycast_placed_bearings_with_pose(
         .iter()
         .enumerate()
         .filter_map(|(index, &bearing)| {
-            if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            if bearing.kind.is_translational() {
                 return None;
             }
             let (anchor, axis) = pose(bearing)?;
@@ -12155,7 +12657,7 @@ fn raycast_placed_bearing_discs_with_pose(
         .iter()
         .enumerate()
         .filter_map(|(index, &bearing)| {
-            if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+            if bearing.kind.is_translational() {
                 return None;
             }
             let (anchor, axis) = pose(bearing)?;
@@ -12271,6 +12773,7 @@ fn sync_visual_meshes(
     ) {
         return;
     }
+    let sync_started = std::time::Instant::now();
     let edit_delta = ConstructionEditDelta::between(&state.rendered_graph, &graph.0);
     let rebuild_all = publication_changed || edit_delta.is_empty();
     let affected_parts = edit_delta.affected_parts();
@@ -12397,6 +12900,13 @@ fn sync_visual_meshes(
     state.rendered_graph = graph.0.clone();
     state.rendered_world_revision = simulation.world_revision;
     state.construction_mesh_dirty = false;
+    performance_capture::record("visual_mesh_sync", || {
+        serde_json::json!({
+            "rebuild_all": rebuild_all,
+            "dirty_materials": dirty_materials.len(),
+            "sync_ms": sync_started.elapsed().as_secs_f64() * 1000.0,
+        })
+    });
 }
 
 const fn should_sync_editor_visual_meshes(dirty: bool, simulation_running: bool) -> bool {
@@ -12885,7 +13395,10 @@ fn update_previews(
                 );
             }
         }
-        (Some(Tool::Hammer | Tool::Connector | Tool::LinearBearing), _) => {}
+        (
+            Some(Tool::Hammer | Tool::Connector | Tool::LinearBearing | Tool::Spring | Tool::Shock),
+            _,
+        ) => {}
     }
 }
 
@@ -12993,7 +13506,7 @@ fn tool_status_line(
     };
     match tool {
         Tool::Connector => format!(
-            "Tool: Connector    Drag a block to a bearing, or a bearing to a block    {}    Right click a wired bearing changes its default direction",
+            "Tool: Connector    Aim at suspension to adjust; drag a block to a motor bearing    {}    Right click a wired bearing changes its default direction",
             selected_wires.map_or_else(
                 || "No block selected".to_owned(),
                 |wires| format!(
@@ -14381,7 +14894,7 @@ fn combined_bearing_mesh(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
         );
     }
     for bearing in placed_bearings {
-        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+        if bearing.kind.is_translational() {
             continue;
         }
         let axis = face_geometry_from_ref(bearing.source, Some(graph)).normal;
@@ -14453,7 +14966,7 @@ fn combined_simulation_bearing_mesh_filtered(
         let bearing = graph
             .bearing(compiled.source_bearing)
             .expect("compiled bearing source remains in graph");
-        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+        if bearing.kind.is_translational() {
             continue;
         }
         if placed_bearings
@@ -14480,7 +14993,7 @@ fn combined_simulation_bearing_mesh_filtered(
     }
 
     for bearing in placed_bearings {
-        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+        if bearing.kind.is_translational() {
             continue;
         }
         let FaceOwner::Part(source_part) = bearing.source.owner else {
@@ -14544,7 +15057,7 @@ fn simulation_body_has_bearing(
                     .any(|&socket| bearing_uses_socket(source, socket))
             })
     }) || placed_bearings.iter().any(|bearing| {
-        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+        if bearing.kind.is_translational() {
             return false;
         }
         let FaceOwner::Part(source) = bearing.source.owner else {
@@ -14653,7 +15166,7 @@ fn raycast_simulation_bearings(
     direction: Vec3,
 ) -> Option<(BearingDimensions, f32)> {
     let graph_bearings = graph.bearings().filter_map(|(_, bearing)| {
-        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+        if bearing.kind.is_translational() {
             return None;
         }
         let (anchor, axis) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
@@ -14662,7 +15175,7 @@ fn raycast_simulation_bearings(
         Some((bearing.dimensions, distance))
     });
     let placed = placed_bearings.iter().filter_map(|&bearing| {
-        if matches!(bearing.kind, mechanic_core::BearingKind::Linear(_)) {
+        if bearing.kind.is_translational() {
             return None;
         }
         let (anchor, axis) = simulation_placed_bearing_pose(graph, creation, transforms, bearing)?;
@@ -15634,6 +16147,9 @@ fn update_wire_hover_preview(
     };
     let placement = match hovered {
         Some(WireEnd::Bearing(index)) => state.placed_bearings.get(index).and_then(|&socket| {
+            if matches!(socket.kind, mechanic_core::BearingKind::Suspension(_)) {
+                return None;
+            }
             if let mechanic_core::BearingKind::Linear(rail) = socket.kind {
                 let (_, carriage) = linear_render::socket_transforms(&graph.0, &simulation, socket);
                 return Some(carriage.mul_transform(
@@ -15679,7 +16195,8 @@ fn update_wire_hover_preview(
                         mechanic_core::BearingKind::Rotational => {
                             single_bearing_mesh(socket.dimensions)
                         }
-                        mechanic_core::BearingKind::Linear(_) => Cuboid::default().into(),
+                        mechanic_core::BearingKind::Linear(_)
+                        | mechanic_core::BearingKind::Suspension(_) => Cuboid::default().into(),
                     },
                 ),
                 Some(WireEnd::Controller(_) | WireEnd::Input(_) | WireEnd::Seat(_)) => {
@@ -17049,6 +17566,139 @@ mod rendering_tests {
         }
     }
 
+    /// A ground-anchored block is drawn only by the shared static mesh, and that
+    /// mesh is rebuilt from the published scene alone. Terrain collision
+    /// readiness must never be part of that path: while terrain streams, a
+    /// pending cut once left new static blocks solid but invisible.
+    #[test]
+    #[allow(clippy::too_many_lines)] // Keep the publication regression and its ECS fixture together.
+    fn newly_published_static_blocks_reach_the_shared_construction_mesh() {
+        use super::{
+            AppSimulation, BearingVisual, ConstructionVisual, EditorState, EditorVisuals,
+            SelectedTool,
+        };
+        use bevy::prelude::*;
+
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([2, 2, 2], BuildPose::default()).unwrap(),
+            ))
+            .unwrap();
+        let material = graph
+            .parts()
+            .find_map(|(_, spec)| super::ordinary_material(*spec))
+            .unwrap();
+        let publish = |graph: &ConstructionGraph| {
+            let creation = graph
+                .compile_with_static_parts(graph.parts().map(|(part, _)| part))
+                .unwrap();
+            assert!(
+                creation.compounds.iter().all(|compound| compound.is_static),
+                "an anchored construction publishes only static bodies"
+            );
+            let transforms = creation
+                .compounds
+                .iter()
+                .map(|compound| GpuTransform {
+                    position: compound.root_translation.extend(0.0).to_array(),
+                    rotation: compound.root_rotation.to_array(),
+                })
+                .collect::<Vec<_>>();
+            (creation, transforms)
+        };
+        let (creation, transforms) = publish(&graph);
+
+        let mut meshes = Assets::<Mesh>::default();
+        let visuals = EditorVisuals {
+            construction_meshes: std::array::from_fn(|_| meshes.add(Cuboid::default())),
+            ..Default::default()
+        };
+        let block_mesh = visuals.construction_meshes[super::material_index(material)].clone();
+        let mut app = App::new();
+        let block_visual = app
+            .world_mut()
+            .spawn((ConstructionVisual(material), Visibility::Hidden))
+            .id();
+        app.insert_resource(AppSimulation {
+            creation: Some(creation),
+            published_graph: graph.clone(),
+            transforms,
+            static_mesh_dirty: true,
+            ..Default::default()
+        })
+        .insert_resource(visuals)
+        .insert_resource(meshes)
+        .init_resource::<EditorState>()
+        .init_resource::<SelectedTool>()
+        .init_resource::<DriveSequencer>()
+        .add_systems(
+            Update,
+            |mut simulation: ResMut<AppSimulation>,
+             state: Res<EditorState>,
+             selection: Res<SelectedTool>,
+             sequencer: Res<DriveSequencer>,
+             visuals: Res<EditorVisuals>,
+             mut meshes: ResMut<Assets<Mesh>>,
+             mut construction_visuals: Query<
+                (&ConstructionVisual, &mut Visibility),
+                Without<BearingVisual>,
+            >| {
+                let published = simulation.published_graph.clone();
+                super::refresh_published_construction_visuals(
+                    &mut simulation,
+                    &published,
+                    &state,
+                    *selection,
+                    &sequencer,
+                    &visuals,
+                    &mut meshes,
+                    &mut construction_visuals,
+                );
+            },
+        );
+
+        let vertices = |app: &App| {
+            app.world()
+                .resource::<Assets<Mesh>>()
+                .get(&block_mesh)
+                .unwrap()
+                .count_vertices()
+        };
+        app.update();
+        let first = vertices(&app);
+        assert!(first > 0, "the published block is drawn");
+        assert_eq!(
+            *app.world().get::<Visibility>(block_visual).unwrap(),
+            Visibility::Visible
+        );
+        assert!(!app.world().resource::<AppSimulation>().static_mesh_dirty);
+
+        // A second anchored block, published exactly as a ground placement is.
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [2, 2, 2],
+                    BuildPose::new(IVec3::new(0, 2, 0), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let (creation, transforms) = publish(&graph);
+        {
+            let mut simulation = app.world_mut().resource_mut::<AppSimulation>();
+            simulation.creation = Some(creation);
+            simulation.published_graph = graph.clone();
+            simulation.transforms = transforms;
+            simulation.static_mesh_dirty = true;
+        }
+        app.update();
+        assert!(
+            vertices(&app) > first,
+            "the newly published static block joins the shared mesh"
+        );
+    }
+
     #[test]
     #[ignore = "requires a real GPU adapter"]
     #[allow(clippy::too_many_lines)] // Keep the publication regression and its ECS fixture together.
@@ -17219,6 +17869,104 @@ mod rendering_tests {
             .collect::<Vec<_>>();
         for (actual, expected) in transformed.into_iter().zip(positions(&world)) {
             assert!(actual.abs_diff_eq(expected, 1.0e-5));
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Exercise the actual body bundle through Bevy visibility and transform propagation.
+    fn immutable_body_meshes_cull_offscreen_and_follow_motion_and_origin_rebases() {
+        use bevy::camera::{
+            CameraProjection,
+            primitives::Aabb,
+            visibility::{VisibilityPlugin, VisibleEntities},
+        };
+        use bevy::prelude::*;
+        use std::any::TypeId;
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            TransformPlugin,
+            VisibilityPlugin,
+        ));
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([3, 2, 1], BuildPose::default()).unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let mesh = local_simulation_material_mesh(
+            &graph,
+            &creation,
+            &[GpuTransform {
+                position: [0.0; 4],
+                rotation: Quat::IDENTITY.to_array(),
+            }],
+            0,
+            ConstructionMaterial::Steel,
+        );
+        let original_positions = positions(&mesh);
+        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+        let root = app
+            .world_mut()
+            .spawn((Transform::IDENTITY, Visibility::Inherited))
+            .id();
+        let body = app
+            .world_mut()
+            .spawn((
+                super::simulation_body_mesh(handle.clone(), Handle::<StandardMaterial>::default()),
+                ChildOf(root),
+            ))
+            .id();
+        let projection = PerspectiveProjection {
+            fov: std::f32::consts::FRAC_PI_2,
+            aspect_ratio: 1.0,
+            ..default()
+        };
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera::default(),
+                VisibleEntities::default(),
+                projection.compute_frustum(&GlobalTransform::IDENTITY),
+            ))
+            .id();
+        for rebase in [Vec3::ZERO, Vec3::new(1024.0, -512.0, 2048.0)] {
+            let camera_pose = GlobalTransform::from_translation(-rebase);
+            app.world_mut()
+                .entity_mut(camera)
+                .insert(projection.compute_frustum(&camera_pose));
+            for (position, visible) in [
+                (Vec3::new(0.0, 0.0, -5.0), true),
+                (Vec3::new(100.0, 0.0, -5.0), false),
+                (Vec3::new(0.0, 0.0, 5.0), false),
+                (Vec3::new(4.9, 0.0, -5.0), true),
+                (Vec3::new(0.0, 0.0, -5.0), true),
+            ] {
+                app.world_mut().entity_mut(root).insert(Transform {
+                    translation: position - rebase,
+                    rotation: Quat::from_rotation_y(0.7),
+                    ..default()
+                });
+                app.update();
+                assert_eq!(
+                    app.world()
+                        .get::<VisibleEntities>(camera)
+                        .unwrap()
+                        .get(TypeId::of::<Mesh3d>())
+                        .contains(&body),
+                    visible,
+                    "position={position} rebase={rebase}"
+                );
+                assert!(app.world().get::<Aabb>(body).is_some());
+                assert_eq!(
+                    positions(app.world().resource::<Assets<Mesh>>().get(&handle).unwrap()),
+                    original_positions
+                );
+            }
         }
     }
 
@@ -19340,6 +20088,7 @@ mod interaction_tests {
                 input_captured: true,
                 ..Default::default()
             })
+            .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -19408,6 +20157,7 @@ mod interaction_tests {
                 input_captured: true,
                 ..Default::default()
             })
+            .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -21146,6 +21896,7 @@ mod interaction_tests {
                 input_captured: true,
                 ..Default::default()
             })
+            .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -21377,6 +22128,7 @@ mod interaction_tests {
                 input_captured: true,
                 ..Default::default()
             })
+            .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -21727,6 +22479,7 @@ mod interaction_tests {
                 input_captured: true,
                 ..Default::default()
             })
+            .init_resource::<bevy::input::mouse::AccumulatedMouseMotion>()
             .add_systems(Update, handle_build_actions);
 
         app.update();
@@ -22069,6 +22822,7 @@ mod interaction_tests {
             })
             .insert_resource(MaterialWheelState::default())
             .insert_resource(crate::pause_menu::PauseMenuState::default())
+            .init_resource::<SelectedTool>()
             .add_systems(Update, super::handle_control_panel_shortcut);
 
         app.update();
@@ -22112,6 +22866,7 @@ mod interaction_tests {
             })
             .insert_resource(MaterialWheelState::default())
             .insert_resource(crate::pause_menu::PauseMenuState::default())
+            .init_resource::<SelectedTool>()
             .add_systems(Update, super::handle_control_panel_shortcut);
 
         for (aimed, seated) in [(None, false), (Some(seat), false), (Some(controller), true)] {
@@ -22746,6 +23501,37 @@ mod showcase_loading_tests {
                 .distance(position + Vec3::X * 2.0)
                 < 1.0e-5
         );
+        let streaming_focus = crate::world::terrain_streaming_focus(
+            &crate::camera::PlayerState {
+                position: Vec3::new(-100.0, 0.0, -100.0),
+                seat: Some(seat),
+                input_captured: true,
+            },
+            &graph,
+            &simulation,
+            mechanic_world::FloatingOrigin::default(),
+        );
+        assert!(
+            streaming_focus
+                .0
+                .distance((position + Vec3::X * 2.0).as_dvec3())
+                < 1.0e-5,
+            "terrain follows the moving seat instead of its entry point",
+        );
+        let standing = crate::camera::PlayerState {
+            position: Vec3::new(7.0, 2.0, -3.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::world::terrain_streaming_focus(
+                &standing,
+                &graph,
+                &simulation,
+                mechanic_world::FloatingOrigin::default(),
+            ),
+            mechanic_world::WorldPosition(standing.position.as_dvec3()),
+            "walking terrain still follows player position",
+        );
         assert!(
             super::wire_end_position(
                 &graph,
@@ -22801,48 +23587,78 @@ mod showcase_loading_tests {
     }
 
     #[test]
-    fn app_simulation_stages_catch_up_ticks_without_dropping_backlog() {
+    fn app_simulation_stages_catch_up_ticks_up_to_the_backlog_cap() {
         let mut scheduler = FixedStepScheduler::new();
         let mut next_tick = 1;
         let mut backlog = 0;
+        let mut dropped = 0;
 
+        // A one-second hitch owes sixty ticks. Only the cap is kept, and the
+        // discarded ticks advance the index so simulated time stays a fixed
+        // distance behind wall time instead of an ever-growing one.
         assert_eq!(
             next_simulation_ticks(
                 &mut scheduler,
                 &mut next_tick,
                 &mut backlog,
+                &mut dropped,
                 Duration::from_secs(1),
                 false,
                 3,
             ),
-            1..4
+            31..34
         );
         assert_eq!(scheduler.next_tick(), 61);
-        assert_eq!(backlog, 57);
+        assert_eq!(dropped, 30);
+        assert_eq!(backlog, 27);
         assert_eq!(
             next_simulation_ticks(
                 &mut scheduler,
                 &mut next_tick,
                 &mut backlog,
+                &mut dropped,
                 Duration::from_millis(17),
                 false,
                 3,
             ),
-            4..7
+            34..37
         );
-        assert_eq!(backlog, 55);
+        assert_eq!(backlog, 25);
         assert_eq!(
             next_simulation_ticks(
                 &mut scheduler,
                 &mut next_tick,
                 &mut backlog,
+                &mut dropped,
                 Duration::ZERO,
                 false,
                 u64::MAX,
             ),
-            7..62
+            37..62
         );
         assert_eq!(next_tick, 62);
+        assert_eq!(backlog, 0);
+        assert_eq!(dropped, 30, "nothing is dropped once the batch keeps up");
+    }
+
+    #[test]
+    fn a_simulation_that_keeps_up_drops_no_ticks() {
+        let mut scheduler = FixedStepScheduler::new();
+        let mut next_tick = 1;
+        let mut backlog = 0;
+        let mut dropped = 0;
+        for _ in 0..600 {
+            next_simulation_ticks(
+                &mut scheduler,
+                &mut next_tick,
+                &mut backlog,
+                &mut dropped,
+                Duration::from_millis(16),
+                false,
+                u64::MAX,
+            );
+        }
+        assert_eq!(dropped, 0);
         assert_eq!(backlog, 0);
     }
 
@@ -22851,6 +23667,7 @@ mod showcase_loading_tests {
         let mut scheduler = FixedStepScheduler::new();
         let mut next_tick = 7;
         let mut backlog = 5;
+        let mut dropped = 0;
         let scheduler_tick = scheduler.next_tick();
 
         assert_eq!(
@@ -22858,6 +23675,7 @@ mod showcase_loading_tests {
                 &mut scheduler,
                 &mut next_tick,
                 &mut backlog,
+                &mut dropped,
                 Duration::from_secs(10),
                 true,
                 3,
@@ -22866,6 +23684,7 @@ mod showcase_loading_tests {
         );
         assert_eq!(next_tick, 7);
         assert_eq!(backlog, 5);
+        assert_eq!(dropped, 0);
         assert_eq!(scheduler.next_tick(), scheduler_tick);
     }
 

@@ -1,0 +1,1024 @@
+//! Procedural suspension rendering and triangle picking share cached core meshes.
+use super::{
+    AppSimulation, ConstructionRenderMaterial, EditorGraph, EditorState, EditorVisuals,
+    PlacedBearing, material_index, transform_from_gpu,
+};
+use bevy::{
+    asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
+};
+use mechanic_core::{
+    BearingKind, CompiledCreation, ConstructionFrame, ConstructionGraph, FaceOwner,
+    SUSPENSION_FINISHES, SuspensionMeshChunk, SuspensionMeshOwner, SuspensionSpec,
+    suspension_meshes,
+};
+use std::cell::RefCell;
+
+static GEOMETRY_BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) fn geometry_builds() -> u64 {
+    GEOMETRY_BUILDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Per-frame counters for the work this module repeats while springs move.
+///
+/// Only read by the performance capture, which takes and clears them once per
+/// frame, so a counter left unread never accumulates across a whole session.
+static DEFORMATION_REBUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TANGENT_GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MATERIAL_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PICK_TRIANGLES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Deformation rebuilds, tangent generations, material writes and picked
+/// triangles since the previous call, clearing each counter.
+pub(crate) fn take_visual_work() -> [u64; 4] {
+    use std::sync::atomic::Ordering::Relaxed;
+    [
+        DEFORMATION_REBUILDS.swap(0, Relaxed),
+        TANGENT_GENERATIONS.swap(0, Relaxed),
+        MATERIAL_WRITES.swap(0, Relaxed),
+        PICK_TRIANGLES.swap(0, Relaxed),
+    ]
+}
+fn cached_meshes(spec: SuspensionSpec, compression: f32) -> Vec<SuspensionMeshChunk> {
+    GEOMETRY_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    suspension_meshes(spec, compression)
+}
+
+/// A free opposite mount previews its new spacing; attached mounts retain live separation.
+pub(crate) fn draft_compression(
+    original: SuspensionSpec,
+    draft: SuspensionSpec,
+    current: f32,
+    attached: bool,
+) -> f32 {
+    if attached {
+        (draft.extended_length() - (original.extended_length() - current))
+            .clamp(0.0, draft.compression_limit().0)
+    } else {
+        draft.starting_compression()
+    }
+}
+
+/// Damping belongs to the solver; changing it cannot invalidate mesh topology.
+fn same_geometry(a: SuspensionSpec, b: SuspensionSpec) -> bool {
+    let shape = |s: mechanic_core::ShockSpec| (s.length(), s.od(), s.body_end());
+    a.spring() == b.spring()
+        && a.shock().map(shape) == b.shock().map(shape)
+        && a.bump_stop() == b.bump_stop()
+        && a.plates() == b.plates()
+        && a.appearances() == b.appearances()
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct VisualSpec {
+    socket: PlacedBearing,
+    source_body: Option<u32>,
+    joint: Option<usize>,
+    preview_valid: Option<bool>,
+    preview_host: Option<SuspensionSpec>,
+}
+impl VisualSpec {
+    fn same_geometry(self, other: Self) -> bool {
+        same_geometry(self.suspension(), other.suspension())
+    }
+    fn same_mount(self, other: Self) -> bool {
+        self.socket.source == other.socket.source
+            && self.socket.anchor.distance_squared(other.socket.anchor) < 1e-10
+            && self.socket.axis.distance_squared(other.socket.axis) < 1e-10
+    }
+    fn suspension(self) -> SuspensionSpec {
+        let BearingKind::Suspension(spec) = self.socket.kind else {
+            unreachable!("suspension visual")
+        };
+        spec
+    }
+}
+fn visual_specs(
+    graph: &ConstructionGraph,
+    sockets: &[PlacedBearing],
+    creation: Option<&CompiledCreation>,
+) -> Vec<VisualSpec> {
+    let mut specs = Vec::new();
+    for (id, bearing) in graph.bearings() {
+        if !matches!(bearing.kind, BearingKind::Suspension(_)) {
+            continue;
+        }
+        let joint =
+            creation.and_then(|c| c.bearings.iter().position(|row| row.source_bearing == id));
+        if creation.is_some() && joint.is_none() {
+            continue;
+        }
+        let spec = VisualSpec {
+            socket: PlacedBearing {
+                source: bearing.source,
+                anchor: bearing.shared_anchor,
+                axis: bearing.axis,
+                dimensions: bearing.dimensions,
+                kind: bearing.kind,
+            },
+            source_body: joint.and_then(|i| creation.map(|c| c.bearings[i].compound_a)),
+            joint,
+            preview_valid: None,
+            preview_host: None,
+        };
+        if !specs.iter().any(|s: &VisualSpec| s.same_mount(spec)) {
+            specs.push(spec);
+        }
+    }
+    for &socket in sockets {
+        if !matches!(socket.kind, BearingKind::Suspension(_)) {
+            continue;
+        }
+        let source_body = creation.and_then(|c| {
+            let FaceOwner::Part(part) = socket.source.owner else {
+                return None;
+            };
+            c.part_to_compound
+                .iter()
+                .find_map(|&(p, body)| (p == part).then_some(body))
+        });
+        let spec = VisualSpec {
+            socket,
+            source_body,
+            joint: None,
+            preview_valid: None,
+            preview_host: None,
+        };
+        if !specs.iter().any(|s| s.same_mount(spec)) {
+            specs.push(spec);
+        }
+    }
+    specs
+}
+fn pose(spec: &VisualSpec, simulation: Option<&AppSimulation>) -> (Transform, f32) {
+    if let Some(simulation) = simulation.filter(|s| s.is_running() && spec.preview_valid.is_none())
+        && let Some(creation) = simulation.creation.as_ref()
+    {
+        return snapshot_pose(spec, creation, &simulation.transforms);
+    }
+    build_pose(spec)
+}
+fn build_pose(spec: &VisualSpec) -> (Transform, f32) {
+    (
+        Transform::from_translation(spec.socket.anchor)
+            .with_rotation(Quat::from_rotation_arc(Vec3::Y, spec.socket.axis)),
+        spec.suspension().starting_compression(),
+    )
+}
+fn snapshot_pose(
+    spec: &VisualSpec,
+    creation: &CompiledCreation,
+    transforms: &[mechanic_gpu::GpuTransform],
+) -> (Transform, f32) {
+    let suspension = spec.suspension();
+    let (build, _) = build_pose(spec);
+    let rotation = build.rotation;
+    let Some(body) = spec.source_body.map(|b| b as usize) else {
+        return (build, suspension.starting_compression());
+    };
+    let Some(initial) = creation.compounds.get(body) else {
+        return (build, suspension.starting_compression());
+    };
+    let Some(current) = transforms.get(body).copied() else {
+        return (build, suspension.starting_compression());
+    };
+    let current = transform_from_gpu(current);
+    let delta = current.rotation * initial.root_rotation.inverse();
+    let transform = Transform::from_translation(
+        current.translation + delta * (spec.socket.anchor - initial.root_translation),
+    )
+    .with_rotation(delta * rotation);
+    let q = spec
+        .joint
+        .and_then(|index| {
+            let row = creation.bearings.get(index)?;
+            let a = transform_from_gpu(*transforms.get(row.compound_a as usize)?);
+            let b = transform_from_gpu(*transforms.get(row.compound_b as usize)?);
+            Some(
+                (b.transform_point(row.local_anchor_b) - a.transform_point(row.local_anchor_a))
+                    .dot(a.rotation * row.local_axis_a),
+            )
+        })
+        .unwrap_or(0.0);
+    (
+        transform,
+        (suspension.starting_compression() - q).clamp(0.0, suspension.compression_limit().0),
+    )
+}
+// EditorView leaves previews in its local tool frame, but restores committed
+// sockets to authored build coordinates. Keep preview identity in build space
+// and its moving world transform separate, so motion does not rebuild topology.
+fn preview_spec(
+    socket: PlacedBearing,
+    valid: bool,
+    authored: Option<ConstructionFrame>,
+) -> VisualSpec {
+    VisualSpec {
+        socket: authored.map_or(socket, |frame| {
+            super::live_edit::transform_bearing(socket, frame)
+        }),
+        source_body: None,
+        joint: None,
+        preview_valid: Some(valid),
+        preview_host: None,
+    }
+}
+fn insertion_pose(
+    preview: &VisualSpec,
+    host: SuspensionSpec,
+    host_pose: (Transform, f32),
+) -> (Transform, f32) {
+    let actual_length = host.extended_length() - host_pose.1;
+    let replacement = preview.suspension();
+    (
+        host_pose.0,
+        (replacement.extended_length() - actual_length)
+            .clamp(0.0, replacement.compression_limit().0),
+    )
+}
+fn render_pose(
+    spec: &VisualSpec,
+    simulation: Option<&AppSimulation>,
+    preview_build_to_world: Option<ConstructionFrame>,
+) -> (Transform, f32) {
+    let (mut transform, compression) = if let Some(host) = spec.preview_host {
+        let host_spec = VisualSpec {
+            socket: PlacedBearing {
+                kind: BearingKind::Suspension(host),
+                ..spec.socket
+            },
+            preview_valid: None,
+            preview_host: None,
+            ..*spec
+        };
+        let host_pose = pose(&host_spec, simulation);
+        let insertion = insertion_pose(spec, host, host_pose);
+        if spec.source_body.is_some()
+            && simulation.is_some_and(|s| s.is_running() && s.creation.is_some())
+        {
+            // The host source frame is already in world space, including live
+            // translation and rotation. Do not apply the edit frame twice.
+            return insertion;
+        }
+        insertion
+    } else {
+        pose(spec, simulation)
+    };
+    if spec.preview_valid.is_some()
+        && let Some(frame) = preview_build_to_world
+    {
+        transform.translation = frame.point(transform.translation);
+        transform.rotation = frame.rotation() * transform.rotation;
+    }
+    (transform, compression)
+}
+/// Source frame and physical compression used by rendering and live picking.
+pub(super) fn socket_pose(
+    graph: &ConstructionGraph,
+    simulation: Option<&AppSimulation>,
+    socket: PlacedBearing,
+) -> (Transform, f32) {
+    let live = simulation.filter(|s| s.is_running() && s.creation.is_some());
+    let graph = live.map_or(graph, |s| &s.published_graph);
+    let specs = visual_specs(graph, &[socket], live.and_then(|s| s.creation.as_ref()));
+    let reference = VisualSpec {
+        socket,
+        source_body: None,
+        joint: None,
+        preview_valid: None,
+        preview_host: None,
+    };
+    pose(
+        &specs
+            .into_iter()
+            .find(|s| s.same_mount(reference))
+            .unwrap_or(reference),
+        live,
+    )
+}
+
+struct RenderChunk {
+    entity: Entity,
+    mesh: Handle<Mesh>,
+    geometry: SuspensionMeshChunk,
+}
+struct AssemblyVisual {
+    chunks: Vec<RenderChunk>,
+    compression: f32,
+    preview: bool,
+}
+/// System-local topology, GPU handles, and shared guide finish materials.
+#[derive(Default)]
+pub(super) struct SuspensionRenderCache {
+    specs: Vec<VisualSpec>,
+    assemblies: Vec<AssemblyVisual>,
+    materials: Vec<Handle<ConstructionRenderMaterial>>,
+}
+pub(super) fn render_mesh(
+    chunk: &SuspensionMeshChunk,
+    appearance: Option<mechanic_core::MaterialAppearance>,
+) -> Mesh {
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, chunk.positions.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, chunk.normals.clone())
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, chunk.uvs.clone())
+    .with_inserted_indices(Indices::U32(chunk.indices.clone()));
+    if let Some(appearance) = appearance {
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            vec![super::chroma::encode_appearance(appearance); chunk.positions.len()],
+        );
+    }
+    let _ = mesh.generate_tangents();
+    mesh
+}
+/// Maps the construction texture's representative colour to the guide finish,
+/// retaining its texture variation instead of multiplying two dark base colours.
+/// Captures reuse this same material path as interactive suspension rendering.
+pub(super) fn finish_material(
+    base: &ConstructionRenderMaterial,
+    finish: mechanic_core::SuspensionFinish,
+) -> ConstructionRenderMaterial {
+    let mut material = base.clone();
+    let representative = super::chroma::material_profile(finish.material).representative_srgb;
+    let baked = Color::srgb_u8(representative[0], representative[1], representative[2]).to_linear();
+    let target_color = Color::srgb_u8(finish.color[0], finish.color[1], finish.color[2]);
+    let target = target_color.to_linear();
+    material.base.base_color = Color::linear_rgb(
+        target.red / baked.red,
+        target.green / baked.green,
+        target.blue / baked.blue,
+    );
+    material.base.perceptual_roughness = finish.roughness;
+    material.base.metallic = finish.metalness;
+    material.extension.base_lightness.x = bevy::color::Oklaba::from(target_color).lightness;
+    material
+}
+
+/// A chunk has one render-material component, including when cached geometry changes role.
+fn set_chunk_material(
+    commands: &mut Commands,
+    entity: Entity,
+    preview: Option<Handle<StandardMaterial>>,
+    authored: Handle<ConstructionRenderMaterial>,
+) {
+    let mut entity = commands.entity(entity);
+    if let Some(preview) = preview {
+        entity
+            .remove::<MeshMaterial3d<ConstructionRenderMaterial>>()
+            .insert(MeshMaterial3d(preview));
+    } else {
+        entity
+            .remove::<MeshMaterial3d<StandardMaterial>>()
+            .insert(MeshMaterial3d(authored));
+    }
+}
+
+/// Synchronizes cached suspension visuals after the simulation snapshot updates.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(super) fn sync_suspension_visuals(
+    mut commands: Commands,
+    graph: Res<EditorGraph>,
+    state: Res<EditorState>,
+    simulation: Res<AppSimulation>,
+    visuals: Res<EditorVisuals>,
+    mut construction_materials: ResMut<Assets<ConstructionRenderMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut cache: Local<SuspensionRenderCache>,
+) {
+    let live = simulation.is_running() && simulation.creation.is_some();
+    let preview_frames = state.edit_context.and_then(|context| {
+        graph
+            .0
+            .part_frame(context.anchor)
+            .map(|authored| (authored, context.frame_to_world.compose(authored.inverse())))
+    });
+    let preview_build_to_world = preview_frames.map(|(_, world)| world);
+    let graph = if live {
+        &simulation.published_graph
+    } else {
+        &graph.0
+    };
+    let mut specs = visual_specs(
+        graph,
+        &state.placed_bearings,
+        if live {
+            simulation.creation.as_ref()
+        } else {
+            None
+        },
+    );
+    if let Some(socket) = state
+        .suspension
+        .preview
+        .filter(|socket| matches!(socket.kind, BearingKind::Suspension(_)))
+    {
+        let mut preview = preview_spec(
+            socket,
+            state.preview_error.is_none(),
+            preview_frames.map(|(authored, _)| authored),
+        );
+        if let Some(host) = specs.iter().find(|host| host.same_mount(preview)) {
+            preview.preview_host = Some(host.suspension());
+            preview.source_body = host.source_body;
+            preview.joint = host.joint;
+        }
+        // Insertion previews replace the existing assembly, including resized plates.
+        specs.retain(|spec| !spec.same_mount(preview));
+        specs.push(preview);
+    }
+    if let Some(gesture) = state.suspension.controls.gesture.as_ref()
+        && let Some(spec) = specs
+            .iter_mut()
+            .find(|s| crate::suspension_controls::Target(s.socket) == gesture.target)
+    {
+        spec.socket.kind = BearingKind::Suspension(gesture.draft);
+        spec.preview_valid = Some(gesture.error.is_none());
+        spec.preview_host = Some(gesture.original);
+    }
+    if cache.materials.is_empty() {
+        if SUSPENSION_FINISHES.iter().any(|finish| {
+            construction_materials
+                .get(&visuals.construction_materials[material_index(finish.material)])
+                .is_none()
+        }) {
+            return;
+        }
+        for finish in SUSPENSION_FINISHES {
+            let Some(base) = construction_materials
+                .get(&visuals.construction_materials[material_index(finish.material)])
+            else {
+                return;
+            };
+            let material = finish_material(base, finish);
+            cache.materials.push(construction_materials.add(material));
+        }
+    }
+    let pose_for = |spec: &VisualSpec| {
+        if let Some(gesture) = state
+            .suspension
+            .controls
+            .gesture
+            .as_ref()
+            .filter(|g| g.target == crate::suspension_controls::Target(spec.socket))
+        {
+            let (transform, compression) =
+                socket_pose(graph, live.then_some(&simulation), gesture.target.0);
+            let attached = !crate::bearing_socket_targets(graph, gesture.target.0).is_empty();
+            return (
+                transform,
+                draft_compression(gesture.original, gesture.draft, compression, attached),
+            );
+        }
+        render_pose(spec, live.then_some(&simulation), preview_build_to_world)
+    };
+    let finish_materials = cache.materials.clone();
+    let old_specs = std::mem::take(&mut cache.specs);
+    let mut old = old_specs
+        .into_iter()
+        .zip(std::mem::take(&mut cache.assemblies))
+        .collect::<Vec<_>>();
+    for &spec in &specs {
+        if let Some(index) = old
+            .iter()
+            .position(|(previous, _)| previous.same_geometry(spec))
+        {
+            cache.assemblies.push(old.swap_remove(index).1);
+        } else {
+            let (transform, compression) = pose_for(&spec);
+            let chunks = cached_meshes(spec.suspension(), compression)
+                .into_iter()
+                .map(|geometry| {
+                    let component = match geometry.owner {
+                        SuspensionMeshOwner::Spring => 0,
+                        SuspensionMeshOwner::BumpStop => 2,
+                        SuspensionMeshOwner::Source | SuspensionMeshOwner::Opposite => {
+                            usize::from(spec.suspension().shock().is_some())
+                        }
+                    };
+                    let appearance = Some(spec.suspension().appearances()[component]);
+                    let mesh = meshes.add(render_mesh(&geometry, appearance));
+                    let entity = commands
+                        .spawn((
+                            Name::new(format!(
+                                "Suspension {:?} {}",
+                                geometry.owner, SUSPENSION_FINISHES[geometry.finish].name
+                            )),
+                            Mesh3d(mesh.clone()),
+                            transform,
+                            Visibility::Visible,
+                        ))
+                        .id();
+                    set_chunk_material(
+                        &mut commands,
+                        entity,
+                        spec.preview_valid.map(|valid| {
+                            if valid {
+                                visuals.green_preview_material.clone()
+                            } else {
+                                visuals.red_preview_material.clone()
+                            }
+                        }),
+                        cache.materials[geometry.finish].clone(),
+                    );
+                    RenderChunk {
+                        entity,
+                        mesh,
+                        geometry,
+                    }
+                })
+                .collect();
+            cache.assemblies.push(AssemblyVisual {
+                chunks,
+                compression,
+                preview: false,
+            });
+        }
+    }
+    for (_, assembly) in old {
+        for chunk in assembly.chunks {
+            commands.entity(chunk.entity).despawn();
+        }
+    }
+    {
+        for (spec, assembly) in specs.iter().zip(&mut cache.assemblies) {
+            let (transform, compression) = pose_for(spec);
+            for chunk in &mut assembly.chunks {
+                commands.entity(chunk.entity).insert(transform);
+                MATERIAL_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                set_chunk_material(
+                    &mut commands,
+                    chunk.entity,
+                    spec.preview_valid.map(|valid| {
+                        if valid {
+                            visuals.green_preview_material.clone()
+                        } else {
+                            visuals.red_preview_material.clone()
+                        }
+                    }),
+                    finish_materials[chunk.geometry.finish].clone(),
+                );
+                if assembly.preview != spec.preview_valid.is_some()
+                    && let Some(mut mesh) = meshes.get_mut(&chunk.mesh)
+                {
+                    if spec.preview_valid.is_some() {
+                        mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+                    } else {
+                        let component = match chunk.geometry.owner {
+                            SuspensionMeshOwner::Spring => 0,
+                            SuspensionMeshOwner::BumpStop => 2,
+                            _ => usize::from(spec.suspension().shock().is_some()),
+                        };
+                        mesh.insert_attribute(
+                            Mesh::ATTRIBUTE_COLOR,
+                            vec![
+                                super::chroma::encode_appearance(
+                                    spec.suspension().appearances()[component]
+                                );
+                                chunk.geometry.positions.len()
+                            ],
+                        );
+                    }
+                }
+                if (assembly.compression - compression).abs() > 1e-7 {
+                    DEFORMATION_REBUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    chunk.geometry.update_deformation(compression);
+                    if let Some(mut mesh) = meshes.get_mut(&chunk.mesh) {
+                        mesh.insert_attribute(
+                            Mesh::ATTRIBUTE_POSITION,
+                            chunk.geometry.positions.clone(),
+                        );
+                        mesh.insert_attribute(
+                            Mesh::ATTRIBUTE_NORMAL,
+                            chunk.geometry.normals.clone(),
+                        );
+                        if chunk.geometry.owner == SuspensionMeshOwner::Spring
+                            || chunk.geometry.finish == 8
+                        {
+                            TANGENT_GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let _ = mesh.generate_tangents();
+                        }
+                    }
+                }
+            }
+            assembly.compression = compression;
+            assembly.preview = spec.preview_valid.is_some();
+        }
+    }
+    cache.specs = specs;
+}
+
+thread_local! {
+    static PICK_MESHES:RefCell<Vec<(SuspensionSpec,Vec<SuspensionMeshChunk>)>>=const {RefCell::new(Vec::new())};
+}
+fn triangle_hit(
+    origin: Vec3,
+    direction: Vec3,
+    first_vertex: Vec3,
+    second_vertex: Vec3,
+    third_vertex: Vec3,
+) -> Option<f32> {
+    let edge = second_vertex - first_vertex;
+    let second = third_vertex - first_vertex;
+    let cross = direction.cross(second);
+    let determinant = edge.dot(cross);
+    if determinant.abs() < 1e-9 {
+        return None;
+    }
+    let offset = origin - first_vertex;
+    let u = offset.dot(cross) / determinant;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = offset.cross(edge);
+    let v = direction.dot(q) / determinant;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let distance = second.dot(q) / determinant;
+    (distance >= 0.0).then_some(distance)
+}
+/// Nearest actual hardware triangle, with independent component ownership.
+pub(super) fn raycast_scene_component(
+    graph: &ConstructionGraph,
+    simulation: Option<&AppSimulation>,
+    sockets: &[PlacedBearing],
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<(usize, f32, SuspensionMeshOwner)> {
+    PICK_MESHES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.retain(|(spec, _)| {
+            sockets.iter().any(
+                |s| matches!(s.kind, BearingKind::Suspension(other) if same_geometry(*spec, other)),
+            )
+        });
+        let mut hit: Option<(usize, f32, SuspensionMeshOwner)> = None;
+        for (index, &socket) in sockets.iter().enumerate() {
+            let BearingKind::Suspension(spec) = socket.kind else {
+                continue;
+            };
+            let (pose, compression) = socket_pose(graph, simulation, socket);
+            let origin = pose.rotation.inverse() * (origin - pose.translation);
+            let direction = pose.rotation.inverse() * direction;
+            let entry = if let Some(i) = cache
+                .iter()
+                .position(|(existing, _)| same_geometry(*existing, spec))
+            {
+                i
+            } else {
+                cache.push((spec, cached_meshes(spec, compression)));
+                cache.len() - 1
+            };
+            for chunk in &mut cache[entry].1 {
+                chunk.update_deformation(compression);
+                PICK_TRIANGLES.fetch_add(
+                    u64::try_from(chunk.indices.len() / 3).unwrap_or(u64::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                for triangle in chunk.indices.chunks_exact(3) {
+                    let [a, b, c] = [triangle[0], triangle[1], triangle[2]]
+                        .map(|i| Vec3::from_array(chunk.positions[i as usize]));
+                    if let Some(distance) = triangle_hit(origin, direction, a, b, c)
+                        && hit.is_none_or(|(_, best, _)| distance < best)
+                    {
+                        hit = Some((index, distance, chunk.owner));
+                    }
+                }
+            }
+        }
+        hit
+    })
+}
+/// Nearest suspension socket index and ray distance, using deformed triangles.
+pub(super) fn raycast_scene(
+    graph: &ConstructionGraph,
+    simulation: Option<&AppSimulation>,
+    sockets: &[PlacedBearing],
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<(usize, f32)> {
+    raycast_scene_component(graph, simulation, sockets, origin, direction)
+        .map(|(index, distance, _)| (index, distance))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mechanic_core::{
+        BearingDimensions, BuildCommand, BuildOutcome, BuildPose, CuboidSpec, FaceKind, FaceRef,
+        ShockSpec,
+    };
+    fn fixture() -> (ConstructionGraph, PlacedBearing) {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new([1; 3], BuildPose::default()).unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("part")
+        };
+        let spec = SuspensionSpec::new(None, Some(ShockSpec::default()), None).unwrap();
+        let socket = PlacedBearing {
+            kind: BearingKind::Suspension(spec),
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            axis: Vec3::Y,
+            anchor: Vec3::Y * 0.125,
+            dimensions: BearingDimensions::default(),
+        };
+        (graph, socket)
+    }
+    #[test]
+    fn moving_ghost_and_fit_feedback_reuse_geometry() {
+        let (_, socket) = fixture();
+        let original = preview_spec(socket, true, None);
+        let mut moved = original;
+        moved.socket.anchor += Vec3::X;
+        moved.socket.axis = Vec3::Z;
+        moved.preview_valid = Some(false);
+        assert!(original.same_geometry(moved));
+        moved.socket.kind = BearingKind::Suspension(
+            SuspensionSpec::new(Some(mechanic_core::SpringSpec::default()), None, None).unwrap(),
+        );
+        assert!(!original.same_geometry(moved));
+    }
+    #[test]
+    fn triangle_picking_returns_shock_body_owner_and_misses_empty_shaft_space() {
+        let (graph, socket) = fixture();
+        let hit = raycast_scene_component(
+            &graph,
+            None,
+            &[socket],
+            Vec3::new(0.2, 0.24, 0.0),
+            Vec3::NEG_X,
+        )
+        .unwrap();
+        assert_eq!(hit.0, 0);
+        assert_eq!(hit.2, SuspensionMeshOwner::Source);
+        assert!((hit.1 - 0.15).abs() < 0.002);
+        assert!(
+            raycast_scene(
+                &graph,
+                None,
+                &[socket],
+                Vec3::new(0.2, 0.5, 0.04),
+                Vec3::NEG_X
+            )
+            .is_none()
+        );
+    }
+    #[test]
+    fn rendered_mesh_uses_chroma_payload_and_ghost_omits_it() {
+        let spec = SuspensionSpec::new(
+            Some(mechanic_core::SpringSpec::default()),
+            Some(ShockSpec::default()),
+            Some(mechanic_core::BumpStopSpec::new(0.05, 0.06).unwrap()),
+        )
+        .unwrap();
+        for chunk in suspension_meshes(spec, 0.0) {
+            assert!(
+                render_mesh(&chunk, None)
+                    .attribute(Mesh::ATTRIBUTE_TANGENT)
+                    .is_some(),
+                "finish {}",
+                chunk.finish
+            );
+        }
+        let chunk = suspension_meshes(spec, 0.0).remove(0);
+        let appearance = mechanic_core::MaterialAppearance::BAKED;
+        let mesh = render_mesh(&chunk, Some(appearance));
+        let bevy::mesh::VertexAttributeValues::Float32x4(colors) =
+            mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap()
+        else {
+            panic!("Chroma payload")
+        };
+        assert_eq!(colors.len(), chunk.positions.len());
+        assert!(colors.iter().all(|color| color.map(f32::to_bits)
+            == super::super::chroma::encode_appearance(appearance).map(f32::to_bits)));
+        assert!(
+            render_mesh(&chunk, None)
+                .attribute(Mesh::ATTRIBUTE_COLOR)
+                .is_none()
+        );
+    }
+    #[test]
+    fn finish_modulation_preserves_guide_colour_over_existing_dark_textures() {
+        let base = ConstructionRenderMaterial {
+            base: StandardMaterial::default(),
+            extension: super::super::ChromaMaterialExtension {
+                tint_mask: Handle::default(),
+                base_lightness: Vec4::ZERO,
+            },
+        };
+        for finish in SUSPENSION_FINISHES {
+            let material = finish_material(&base, finish);
+            let representative =
+                super::super::chroma::material_profile(finish.material).representative_srgb;
+            let baked =
+                Color::srgb_u8(representative[0], representative[1], representative[2]).to_linear();
+            let multiplier = material.base.base_color.to_linear();
+            let target =
+                Color::srgb_u8(finish.color[0], finish.color[1], finish.color[2]).to_linear();
+            assert!((baked.red * multiplier.red - target.red).abs() < 1e-6);
+            assert!((baked.green * multiplier.green - target.green).abs() < 1e-6);
+            assert!((baked.blue * multiplier.blue - target.blue).abs() < 1e-6);
+        }
+    }
+    #[test]
+    fn insertion_preview_retains_nonzero_joint_compression_and_source_pose() {
+        let (graph, socket) = fixture();
+        let candidate = crate::builder::suspension_block_candidate(socket).unwrap();
+        let graph = crate::builder::stage_suspension_block(
+            &graph,
+            socket,
+            candidate,
+            &[],
+            crate::PlacementBounds::Garage,
+        )
+        .unwrap();
+        let creation = graph.compile().unwrap();
+        let host = visual_specs(&graph, &[socket], Some(&creation))[0];
+        let host_spec = host.suspension();
+        let replacement = host_spec
+            .with_components(
+                Some(mechanic_core::SpringSpec::default()),
+                host_spec.shock(),
+                None,
+                true,
+            )
+            .unwrap();
+        let mut preview = preview_spec(
+            PlacedBearing {
+                kind: BearingKind::Suspension(replacement),
+                ..socket
+            },
+            true,
+            None,
+        );
+        preview.source_body = host.source_body;
+        preview.joint = host.joint;
+        preview.preview_host = Some(host_spec);
+        let world_rotation = Quat::from_rotation_z(0.6);
+        let world_offset = Vec3::new(3.0, 2.0, -1.0);
+        let mut transforms = creation
+            .compounds
+            .iter()
+            .map(|body| mechanic_gpu::GpuTransform {
+                position: (world_offset + world_rotation * body.root_translation)
+                    .extend(0.0)
+                    .to_array(),
+                rotation: (world_rotation * body.root_rotation).to_array(),
+            })
+            .collect::<Vec<_>>();
+        let target = creation.bearings[host.joint.unwrap()].compound_b as usize;
+        let initial = transforms[target].position;
+        let key = preview;
+        for compression in [0.025, 0.075, 0.1] {
+            let position =
+                Vec3::from_slice(&initial[..3]) - world_rotation * socket.axis * compression;
+            transforms[target].position = position.extend(0.0).to_array();
+            let host_pose = snapshot_pose(&host, &creation, &transforms);
+            let ghost = insertion_pose(&preview, host_spec, host_pose);
+            assert!((ghost.1 - compression).abs() < 1e-5);
+            assert!(
+                (replacement.extended_length()
+                    - ghost.1
+                    - (host_spec.extended_length() - host_pose.1))
+                    .abs()
+                    < 1e-6
+            );
+            assert!(
+                ghost
+                    .0
+                    .translation
+                    .distance(world_offset + world_rotation * socket.anchor)
+                    < 1e-5
+            );
+            assert!((ghost.0.rotation * Vec3::Y).distance(world_rotation * socket.axis) < 1e-5);
+            assert!(preview == key);
+        }
+    }
+    #[test]
+    fn local_preview_matches_authored_mount_and_follows_moving_frame_without_rekeying() {
+        let (_, local_socket) = fixture();
+        let authored =
+            ConstructionFrame::new(Vec3::new(3.0, -1.0, 2.0), Quat::from_rotation_z(0.7)).unwrap();
+        let preview = preview_spec(local_socket, true, Some(authored));
+        let committed = VisualSpec {
+            socket: super::super::live_edit::transform_bearing(local_socket, authored),
+            source_body: None,
+            joint: None,
+            preview_valid: None,
+            preview_host: None,
+        };
+        assert!(preview.same_mount(committed));
+        for world in [
+            authored,
+            ConstructionFrame::new(Vec3::new(-2.0, 4.0, 8.0), Quat::from_rotation_x(1.2)).unwrap(),
+        ] {
+            let (transform, _) =
+                render_pose(&preview, None, Some(world.compose(authored.inverse())));
+            assert!(
+                transform
+                    .translation
+                    .distance(world.point(local_socket.anchor))
+                    < 1e-5
+            );
+            assert!(
+                (transform.rotation * Vec3::Y).distance(world.vector(local_socket.axis)) < 1e-5
+            );
+            // Frame motion is outside VisualSpec's topology/material cache key.
+            assert!(preview == preview_spec(local_socket, true, Some(authored)));
+        }
+        let (placed, _) = render_pose(&committed, None, Some(authored));
+        assert!(placed.translation.distance(committed.socket.anchor) < 1e-6);
+    }
+    #[test]
+    fn stopped_snapshot_retains_build_pose_and_starting_compression() {
+        let (graph, socket) = fixture();
+        let creation = graph.compile().unwrap();
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|compound| mechanic_gpu::GpuTransform {
+                position: (compound.root_translation + Vec3::splat(5.0))
+                    .extend(0.0)
+                    .to_array(),
+                rotation: Quat::IDENTITY.to_array(),
+            })
+            .collect();
+        let simulation = AppSimulation {
+            creation: Some(creation),
+            transforms,
+            published_graph: graph.clone(),
+            ..default()
+        };
+        let (pose, compression) = socket_pose(&graph, Some(&simulation), socket);
+        assert_eq!(pose.translation, socket.anchor);
+        assert!(compression.abs() < 1e-7);
+    }
+    #[test]
+    fn damping_and_camera_motion_share_render_and_pick_geometry_keys() {
+        let (_, socket) = fixture();
+        let BearingKind::Suspension(spec) = socket.kind else {
+            panic!("suspension");
+        };
+        let changed = crate::suspension_controls::Parameter::Compression
+            .edit(spec, 25.0, false)
+            .unwrap();
+        assert!(same_geometry(spec, changed));
+        let a = preview_spec(socket, true, None);
+        let mut b = a;
+        b.socket.kind = BearingKind::Suspension(changed);
+        b.socket.anchor += Vec3::X;
+        b.preview_valid = None;
+        assert!(a.same_geometry(b));
+        assert!(!same_geometry(
+            spec,
+            crate::suspension_controls::Parameter::ShockOd
+                .edit(spec, 0.1025, false)
+                .unwrap()
+        ));
+    }
+    #[test]
+    fn free_mount_preview_moves_while_attached_preview_preserves_live_spacing() {
+        let original =
+            SuspensionSpec::new(None, Some(mechanic_core::ShockSpec::default()), None).unwrap();
+        let draft = crate::suspension_controls::Parameter::ShockLength
+            .edit(original, 0.55, false)
+            .unwrap();
+        assert!(draft_compression(original, draft, 0.02, false).abs() < 1e-6);
+        assert!((draft_compression(original, draft, 0.02, true) - 0.07).abs() < 1e-6);
+    }
+    #[test]
+    fn cached_mesh_has_exactly_one_material_during_preview_and_after_release() {
+        let mut world = World::new();
+        let entity = world.spawn(Mesh3d(Handle::default())).id();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        for preview in [false, true, false] {
+            set_chunk_material(
+                &mut Commands::new(&mut queue, &world),
+                entity,
+                preview.then(Handle::default),
+                Handle::default(),
+            );
+            queue.apply(&mut world);
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<StandardMaterial>>(entity)
+                    .is_some(),
+                preview
+            );
+            assert_eq!(
+                world
+                    .get::<MeshMaterial3d<ConstructionRenderMaterial>>(entity)
+                    .is_some(),
+                !preview
+            );
+            assert!(world.get::<Mesh3d>(entity).is_some());
+        }
+    }
+}

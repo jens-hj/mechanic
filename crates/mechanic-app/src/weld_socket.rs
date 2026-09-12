@@ -30,6 +30,17 @@ pub(super) fn append_outline(
                 }
             }
         }
+        BearingKind::Suspension(spec) => {
+            let center = socket.anchor + socket.axis * spec.initial_length();
+            let (u, v) = crate::axis_tangents(socket.axis);
+            for i in 0..32_u16 {
+                let point = |i| {
+                    let angle = f32::from(i) * std::f32::consts::TAU / 32.0;
+                    center + (u * angle.cos() + v * angle.sin()) * spec.plates().diameter * 0.5
+                };
+                line(point(i), point(i + 1));
+            }
+        }
         BearingKind::Linear(rail) => {
             let Ok(rotation) = rail.rotation(socket.axis) else {
                 return;
@@ -163,6 +174,26 @@ fn surface(
                 point,
                 socket.axis,
                 crate::axis_tangents(socket.axis).0,
+            ))
+        }
+        BearingKind::Suspension(spec) => {
+            let normal = socket.axis;
+            let denominator = direction.dot(normal);
+            if denominator >= -1.0e-6 {
+                return None;
+            }
+            let center = socket.anchor + normal * spec.initial_length();
+            let distance = (center - origin).dot(normal) / denominator;
+            let point = origin + direction * distance;
+            if distance < 0.0 || point.distance(center) > spec.plates().diameter / 2.0 {
+                return None;
+            }
+            Some((
+                distance,
+                socket,
+                point,
+                normal,
+                crate::axis_tangents(normal).0,
             ))
         }
         BearingKind::Linear(rail) => {

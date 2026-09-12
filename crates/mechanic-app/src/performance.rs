@@ -31,6 +31,7 @@ pub(crate) struct PerformanceSnapshot {
     pub(crate) render_extent: Option<crate::render_diagnostics::RenderExtent>,
     pub(crate) simulation_ticks_per_second: Option<f64>,
     pub(crate) tick_backlog: Option<u64>,
+    pub(crate) dropped_ticks: Option<u64>,
     pub(crate) physics_cpu_ms: Option<f64>,
     pub(crate) physics_submission_timings: Option<mechanic_gpu::GpuSubmissionTimings>,
     pub(crate) ticks_submitted_per_frame: Option<u32>,
@@ -213,6 +214,7 @@ pub(crate) fn sample(
         render_extent: render.extent,
         simulation_ticks_per_second: running.then_some(ticks_per_second).flatten(),
         tick_backlog: running.then_some(simulation.tick_backlog),
+        dropped_ticks: running.then_some(simulation.dropped_ticks),
         physics_cpu_ms: running.then_some(simulation.physics_cpu_ms).flatten(),
         physics_submission_timings: running
             .then_some(simulation.physics_submission_timings)
