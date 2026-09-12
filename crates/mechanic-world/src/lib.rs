@@ -7,6 +7,7 @@ mod construction_collision;
 mod coordinates;
 mod edits;
 mod generation;
+mod material_response;
 mod mesh;
 mod persistence;
 mod query;
@@ -29,6 +30,7 @@ pub use edits::{
     encode_brick,
 };
 pub use generation::{CaveEdge, CaveGraph, CaveNode, TerrainField, TerrainMaterial, TerrainSample};
+pub use material_response::{TerrainMaterialError, TerrainSurfaceResponse};
 pub use mesh::{
     LatticeEdgeVertexCache, PreparedTerrainRegion, TerrainCollisionChunk, TerrainIndexGroups,
     TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest, TerrainRayHit,

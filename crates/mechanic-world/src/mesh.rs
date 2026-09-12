@@ -42,6 +42,28 @@ impl WorldBounds {
     pub fn contains(self, point: WorldPosition) -> bool {
         point.0.cmpge(self.minimum.0).all() && point.0.cmple(self.maximum.0).all()
     }
+
+    /// True when the two inclusive boxes share any point.
+    pub fn intersects(self, other: Self) -> bool {
+        self.minimum.0.cmple(other.maximum.0).all() && self.maximum.0.cmpge(other.minimum.0).all()
+    }
+}
+
+impl TerrainNodeId {
+    /// Inclusive global owning bounds, including shared boundary triangles.
+    #[allow(clippy::cast_precision_loss)] // Finite-world cell coordinates fit exactly in f64.
+    pub fn world_bounds(self) -> WorldBounds {
+        WorldBounds {
+            minimum: WorldPosition(DVec3::from_array(
+                self.minimum_cell_i64()
+                    .map(|cell| cell as f64 * TERRAIN_CELL_METERS),
+            )),
+            maximum: WorldPosition(DVec3::from_array(
+                self.maximum_cell_exclusive_i64()
+                    .map(|cell| cell as f64 * TERRAIN_CELL_METERS),
+            )),
+        }
+    }
 }
 
 /// Compact triangle acceleration structure owned by a terrain chunk.
@@ -85,7 +107,7 @@ pub struct TriangleBvhTriangle {
 }
 
 /// Bit mask for regular, per-face transition, and per-face cap triangles.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TerrainTriangleGroupMask(u16);
 
 impl TerrainTriangleGroupMask {
@@ -103,6 +125,11 @@ impl TerrainTriangleGroupMask {
     /// True when the masks enable at least one common geometry group.
     pub const fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
+    }
+
+    /// True when every group in `other` is included in this mask.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
     }
 
     const fn union(self, other: Self) -> Self {
@@ -569,6 +596,44 @@ pub struct TerrainCollisionChunk {
     pub triangle_bvh: TriangleBvh,
     /// Geometry groups currently enabled for collision.
     pub active_groups: TerrainTriangleGroupMask,
+}
+
+impl TerrainCollisionChunk {
+    /// Active triangle rows in the shared BVH whose leaf boxes overlap the query.
+    /// Stable row order gives contact identities independent of traversal order.
+    /// Leaf candidates still require an exact finite-triangle narrowphase.
+    pub fn bounds_candidates(&self, bounds: WorldBounds) -> Vec<usize> {
+        let mut result = Vec::new();
+        if self.triangle_bvh.nodes.is_empty() {
+            return result;
+        }
+        let mut stack = vec![0_usize];
+        while let Some(index) = stack.pop() {
+            let node = &self.triangle_bvh.nodes[index];
+            if !node.group_mask.intersects(self.active_groups) || !node.bounds.intersects(bounds) {
+                continue;
+            }
+            if node.triangle_count > 0 {
+                let start = node.first_triangle as usize;
+                result.extend(
+                    (start..start + node.triangle_count as usize).filter(|&row| {
+                        self.triangle_bvh.triangles[row]
+                            .group_mask
+                            .intersects(self.active_groups)
+                    }),
+                );
+            } else {
+                stack.extend(
+                    [node.left_child, node.right_child]
+                        .into_iter()
+                        .flatten()
+                        .map(|child| child as usize),
+                );
+            }
+        }
+        result.sort_unstable();
+        result
+    }
 }
 
 /// Result of a terrain triangle raycast.

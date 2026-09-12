@@ -92,21 +92,65 @@ impl ActiveTerrainScene<'_> {
 }
 
 /// Incrementally maintained sparse octree index of active terrain nodes.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TerrainSpatialIndex {
     active: BTreeSet<TerrainNodeId>,
     descendant_counts: BTreeMap<TerrainNodeId, u32>,
+    active_bounds: BTreeMap<TerrainNodeId, crate::WorldBounds>,
+    aggregate_bounds: BTreeMap<TerrainNodeId, crate::WorldBounds>,
 }
+
+#[cfg(test)]
+mod bounds_tests;
 
 impl TerrainSpatialIndex {
     /// Inserts an active node and updates its ancestor path.
     pub fn insert(&mut self, id: TerrainNodeId) {
-        if !self.active.insert(id) {
-            return;
+        self.insert_bounds(id, id.world_bounds());
+    }
+
+    /// Inserts or refits one active node using its actual mesh bounds. This
+    /// handles finite vertices rounded outside a nominal node boundary without
+    /// clipping the mesh or losing contacts at a seam. Returns false for invalid
+    /// bounds, leaving the index unchanged.
+    pub fn insert_bounds(&mut self, id: TerrainNodeId, bounds: crate::WorldBounds) -> bool {
+        if !bounds.minimum.0.is_finite()
+            || !bounds.maximum.0.is_finite()
+            || !bounds.minimum.0.cmple(bounds.maximum.0).all()
+        {
+            return false;
         }
+        if self.active.insert(id) {
+            let mut current = Some(id);
+            while let Some(node) = current {
+                *self.descendant_counts.entry(node).or_default() += 1;
+                current = node.parent();
+            }
+        }
+        self.active_bounds.insert(id, bounds);
+        self.refit_bounds(id);
+        true
+    }
+
+    fn refit_bounds(&mut self, id: TerrainNodeId) {
         let mut current = Some(id);
         while let Some(node) = current {
-            *self.descendant_counts.entry(node).or_default() += 1;
+            let mut bounds = self.active_bounds.get(&node).copied();
+            if let Some(children) = node.children() {
+                for child in children {
+                    if let Some(&child) = self.aggregate_bounds.get(&child) {
+                        bounds = Some(bounds.map_or(child, |old| crate::WorldBounds {
+                            minimum: WorldPosition(old.minimum.0.min(child.minimum.0)),
+                            maximum: WorldPosition(old.maximum.0.max(child.maximum.0)),
+                        }));
+                    }
+                }
+            }
+            if let Some(bounds) = bounds {
+                self.aggregate_bounds.insert(node, bounds);
+            } else {
+                self.aggregate_bounds.remove(&node);
+            }
             current = node.parent();
         }
     }
@@ -116,6 +160,7 @@ impl TerrainSpatialIndex {
         if !self.active.remove(&id) {
             return;
         }
+        self.active_bounds.remove(&id);
         let mut current = Some(id);
         while let Some(node) = current {
             let remove = if let Some(count) = self.descendant_counts.get_mut(&node) {
@@ -129,11 +174,39 @@ impl TerrainSpatialIndex {
             }
             current = node.parent();
         }
+        self.refit_bounds(id);
     }
 
     /// True when the exact active node is indexed.
     pub fn contains(&self, id: TerrainNodeId) -> bool {
         self.active.contains(&id)
+    }
+
+    /// Active nodes whose owning boxes overlap inclusive global bounds, in stable
+    /// node order. This reuses the incrementally maintained ancestor hierarchy.
+    pub fn bounds_candidates(&self, bounds: crate::WorldBounds) -> Vec<TerrainNodeId> {
+        let mut result = Vec::new();
+        let mut stack = vec![TerrainNodeId::ROOT];
+        while let Some(node) = stack.pop() {
+            if !self.descendant_counts.contains_key(&node) {
+                continue;
+            }
+            if !bounds.intersects(self.aggregate_bounds[&node]) {
+                continue;
+            }
+            if self
+                .active_bounds
+                .get(&node)
+                .is_some_and(|own| bounds.intersects(*own))
+            {
+                result.push(node);
+            }
+            if let Some(children) = node.children() {
+                stack.extend(children);
+            }
+        }
+        result.sort_unstable();
+        result
     }
 
     fn ray_candidates(
@@ -149,13 +222,21 @@ impl TerrainSpatialIndex {
         let mut stack = vec![TerrainNodeId::ROOT];
         while let Some(node) = stack.pop() {
             if !self.descendant_counts.contains_key(&node)
-                || !ray_intersects_node(origin.0, direction, node, maximum_distance)
+                || !ray_intersects_bounds(
+                    origin.0,
+                    direction,
+                    self.aggregate_bounds[&node],
+                    maximum_distance,
+                )
             {
                 continue;
             }
-            if self.active.contains(&node) {
+            if self.active_bounds.get(&node).is_some_and(|&bounds| {
+                ray_intersects_bounds(origin.0, direction, bounds, maximum_distance)
+            }) {
                 candidates.push(node);
-            } else if let Some(children) = node.children() {
+            }
+            if let Some(children) = node.children() {
                 stack.extend(children);
             }
         }
@@ -171,25 +252,31 @@ impl TerrainSpatialIndex {
         let mut best_distance = f64::INFINITY;
         let mut nearest = None;
         if self.descendant_counts.contains_key(&TerrainNodeId::ROOT) {
-            heap.push(DistanceNode::new(position, TerrainNodeId::ROOT));
+            heap.push(DistanceNode::new(
+                position,
+                TerrainNodeId::ROOT,
+                self.aggregate_bounds[&TerrainNodeId::ROOT],
+            ));
         }
         while let Some(entry) = heap.pop() {
             if entry.distance_squared >= best_distance * best_distance {
                 break;
             }
-            if self.active.contains(&entry.node) {
-                if let Some((candidate, distance)) = visit(entry.node)
-                    && distance < best_distance
-                {
-                    best_distance = distance;
-                    nearest = Some(candidate);
-                }
-            } else if let Some(children) = entry.node.children() {
+            if self.active.contains(&entry.node)
+                && let Some((candidate, distance)) = visit(entry.node)
+                && distance < best_distance
+            {
+                best_distance = distance;
+                nearest = Some(candidate);
+            }
+            if let Some(children) = entry.node.children() {
                 heap.extend(
                     children
                         .into_iter()
                         .filter(|child| self.descendant_counts.contains_key(child))
-                        .map(|child| DistanceNode::new(position, child)),
+                        .map(|child| {
+                            DistanceNode::new(position, child, self.aggregate_bounds[&child])
+                        }),
                 );
             }
         }
@@ -204,8 +291,8 @@ struct DistanceNode {
 }
 
 impl DistanceNode {
-    fn new(position: WorldPosition, node: TerrainNodeId) -> Self {
-        let (minimum, maximum) = node_bounds(node);
+    fn new(position: WorldPosition, node: TerrainNodeId, bounds: crate::WorldBounds) -> Self {
+        let (minimum, maximum) = (bounds.minimum.0, bounds.maximum.0);
         let distance_squared = (0..3)
             .map(|axis| {
                 if position.0[axis] < minimum[axis] {
@@ -248,26 +335,13 @@ impl Ord for DistanceNode {
     }
 }
 
-fn node_bounds(node: TerrainNodeId) -> (DVec3, DVec3) {
-    (
-        DVec3::from_array(
-            node.minimum_cell_i64()
-                .map(|cell| cell as f64 * TERRAIN_CELL_METERS),
-        ),
-        DVec3::from_array(
-            node.maximum_cell_exclusive_i64()
-                .map(|cell| cell as f64 * TERRAIN_CELL_METERS),
-        ),
-    )
-}
-
-fn ray_intersects_node(
+fn ray_intersects_bounds(
     origin: DVec3,
     direction: DVec3,
-    node: TerrainNodeId,
+    bounds: crate::WorldBounds,
     maximum_distance: f64,
 ) -> bool {
-    let (minimum, maximum) = node_bounds(node);
+    let (minimum, maximum) = (bounds.minimum.0, bounds.maximum.0);
     let mut near = 0.0_f64;
     let mut far = maximum_distance;
     for axis in 0..3 {
