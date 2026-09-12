@@ -350,6 +350,99 @@ fn a_long_multi_collider_body_settles_on_a_redundant_manifold() {
     );
 }
 
+// A faceted cylinder is the only contact shape the saved car has that the boxes
+// above do not. Rolling resistance only dissipates, so a free wheel released at
+// its no-slip speed can never gain forward speed or spin, whichever facet
+// happens to carry the load.
+//
+// Retained failing input: this reproduces the saved car's tick-17 event-search
+// chase in one free body and 0.2 s, with no suspension, drives or captured
+// state. The wheel rests on a sixteen-sided hull, so rolling pivots onto each
+// new edge; stopping one corner of that edge throws the other corner up at 10
+// to 30 percent of its closing speed, which is the unique solution of the
+// manifold's own complementarity problem. The ejected corner leaves the 1e-12 m
+// activation window within one substep, gravity closes it again, and the search
+// must localize a fresh arrival every 0.1 ms. `docs/cpu-solver-repair.md`
+// records the measurements and the rejected window sizes.
+#[test]
+fn a_rolling_wheel_only_loses_speed_on_its_facets() {
+    use mechanic_core::{BuildCommand, ConstructionGraph, CylinderDimensions, CylinderSpec};
+    let radius = 0.475_f64;
+    let mut graph = ConstructionGraph::new();
+    graph
+        .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
+            CylinderDimensions::new(0.95, 0.0, 0.25).expect("the wheel dimensions are in range"),
+            // The authored axis is local Y; a quarter turn about X lays it along Z,
+            // so the wheel rolls along X.
+            BuildPose::from_position_ticks(IVec3::Y * 300, GridRotation::new(1, 0, 0)),
+        )))
+        .unwrap();
+    let creation = graph.compile().unwrap();
+    let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
+    let scene = scene();
+    let terrain = context(&scene, &geometry, 7);
+
+    // Seat the faceted hull exactly on the surface: the lowest vertex of a facet
+    // is nearer the axis than the authored radius.
+    let mut initial = MachineState::at_rest(&creation);
+    let seated = clearance(&creation, &initial);
+    initial.poses[0].position.y -= seated;
+    let forward = 1.0;
+    initial.velocities[0] = forward;
+    // Contact-point velocity vanishes when the spin matches the forward speed.
+    initial.velocities[5] = -forward / radius;
+
+    let mut machine = CpuJointMachine::new(creation.clone(), 7, initial).unwrap();
+    let mut speed = forward;
+    let mut spin = forward / radius;
+    for tick in 1..=60 {
+        let result = machine
+            .step_candidate(
+                -DVec3::Y * 9.81,
+                JointTickSettings::default(),
+                &[],
+                &[],
+                Some(&terrain),
+            )
+            .map(|_| ());
+        assert!(
+            result.is_ok(),
+            "tick={tick} result={result:?} diagnostics={:?}",
+            machine.diagnostics()
+        );
+        assert_eq!(
+            machine.diagnostics().terrain_impact_holds,
+            0,
+            "tick={tick} event search exhausted its trials"
+        );
+        let state = &machine.snapshot().state;
+        let clearance = clearance(&creation, state);
+        assert!(
+            clearance >= -1e-6,
+            "tick={tick} penetration clearance={clearance:e}"
+        );
+        let next = state.velocities[0];
+        let turning = state.velocities[5].abs();
+        assert!(
+            next <= speed + 1e-9 && next >= -1e-9,
+            "tick={tick} forward speed={next:e} previous={speed:e}"
+        );
+        assert!(
+            turning <= spin + 1e-9,
+            "tick={tick} spin={turning:e} previous={spin:e}"
+        );
+        speed = next;
+        spin = turning;
+    }
+    let state = &machine.snapshot().state;
+    println!(
+        "rolling wheel forward={:e} spin={:e} clearance={:e}",
+        state.velocities[0],
+        state.velocities[5],
+        clearance(&creation, state)
+    );
+}
+
 #[test]
 fn a_separating_box_leaves_without_a_contact_impulse() {
     let (creation, geometry, initial) = box_on_floor(0.0, 0.5);
