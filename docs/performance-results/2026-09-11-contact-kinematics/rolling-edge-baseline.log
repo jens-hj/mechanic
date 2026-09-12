@@ -1,0 +1,20 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.18s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+test joint_machine::tests::terrain_ticks::rolling_edge::rotating_edge_support_force_converges_to_constrained_rigid_body_equation ... rolling_edge dt=0.001 force=40195.00331844053 reference=30535.616287250665 relative_error=0.3163318185663372
+
+thread 'joint_machine::tests::terrain_ticks::rolling_edge::rotating_edge_support_force_converges_to_constrained_rigid_body_equation' (11177593) panicked at crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/rolling_edge.rs:67:9:
+rotating support omits point acceleration: dt=0.001 actual=40195.00331844053 expected=30535.616287250665
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    joint_machine::tests::terrain_ticks::rolling_edge::rotating_edge_support_force_converges_to_constrained_rigid_body_equation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

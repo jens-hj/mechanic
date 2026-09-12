@@ -1,0 +1,31 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.76s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+rank=12 residual=1.4937177835775155e-8 rhs=1.0017994878097625e-8 output=1.6438636122843167e-7
+rank=12 residual=1.493717768047733e-8 rhs=1.0030633212920748e-8 output=1.6458481274116605e-7
+rank=12 residual=1.493717784168922e-8 rhs=1.0041566689267256e-8 output=1.6475915963693304e-7
+rank=12 residual=1.4937177728181887e-8 rhs=1.0052796373116735e-8 output=1.6493933085181476e-7
+rank=12 residual=1.4937177824950173e-8 rhs=1.0062812805244903e-8 output=1.6510177359412904e-7
+rank=12 residual=1.49371776894757e-8 rhs=1.0071776745945726e-8 output=1.6524836645421756e-7
+rank=12 residual=1.4937177656120208e-8 rhs=1.007982097789295e-8 output=1.653807697314261e-7
+rank=12 residual=1.4937177730036035e-8 rhs=1.0087477519959975e-8 output=1.6550709882475898e-7
+block scale=8.743003475896963e-2 raw=[8.821959933402734e-10, -5.65479703698319e-10, 2.403567696436515e-10, 0.03774400741128317, -0.06270742248208593]
+block scale=1.7485669937620174e-1 raw=[-1.7296696436241987e-9, -1.276154960947861e-9, 2.4771634374830265e-10, 0.03774400741128317, -0.06270742248208593, -0.013437934532988343, 2.326573221979089e-5, 0.0022526761385374045, 0.03774400741128317, -0.06270742248208593]
+captured_impact bounded=ConstraintSolution { newton_attempts: 492, newton_accepts: 256, newton_applications: 0, newton_local_factorizations: 0, newton_generalized_factorizations: 0, newton_reduced_storage: 0, newton_contact_factorizations: 492, newton_contact_storage: 450, newton_line_searches: 915, sliding: [true, true, true], friction_transitions: 0, velocity_change: [8.913862920414824e-5, 3.851357494855172e-7, -0.00033825140370334877, -7.675920388934595e-6, -0.00015744267308850956, 8.064735431107798e-5, -0.015126271220575608, -0.00012269065642886296, 0.00010154243398713292, 7.910089707016302e-5, -0.0033648499515969202, -0.0008949621142671189, -8.07131445578324e-5, 8.071315269139514e-5, -0.006570919838500399, 8.070932918989313e-5], impulses: [2.540699710507588, -0.23592435303742515, 0.196759177169638, 0.006230648162388632, -0.010351521034892517, 0.48809526762710337, -0.3241650144072919, 0.09628501969009186, 0.0011969733945395588, -0.0019886366485633066, 0.0, 0.0, 0.0, 0.0, 0.0], residual: 1.729669647405688e-9, iterations: 256, converged: false, response_storage: 225, factor_solves: 16 }
+extended=ConstraintSolution { newton_attempts: 16364, newton_accepts: 2481, newton_applications: 0, newton_local_factorizations: 0, newton_generalized_factorizations: 0, newton_reduced_storage: 0, newton_contact_factorizations: 16364, newton_contact_storage: 450, newton_line_searches: 218267, sliding: [true, true, true], friction_transitions: 0, velocity_change: [8.913862902234051e-5, 3.85135748669227e-7, -0.0003382514036682944, -7.675922490023704e-6, -0.00015744267268994882, 8.064735412010416e-5, -0.015126271212429826, -0.00012269065927379472, 0.00010154243687708596, 7.910089379567271e-5, -0.0033648499509999754, -0.0008949621120998532, -8.071314438601665e-5, 8.071315251957912e-5, -0.006570919842054701, 8.070932901703632e-5], impulses: [2.5407809736823137, -0.23597649669184062, 0.19678135492241905, 0.006230847447597266, -0.01035185212340447, 0.48801400347846197, -0.32411286925874877, 0.09626284158755831, 0.0011967741076573959, -0.0019883055556417836, 0.0, 0.0, 0.0, 0.0, -0.0], residual: 1.72548573966251e-9, iterations: 8192, converged: false, response_storage: 225, factor_solves: 16 }
+
+thread 'response::tests::cold_impact::captured_cold_car_impact_converges_without_relaxing_its_velocity_residual' (10720805) panicked at crates/mechanic-physics/src/response/tests/cold_impact.rs:52:5:
+residual=1.729669647405688e-9
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test response::tests::cold_impact::captured_cold_car_impact_converges_without_relaxing_its_velocity_residual ... FAILED
+
+failures:
+
+failures:
+    response::tests::cold_impact::captured_cold_car_impact_converges_without_relaxing_its_velocity_residual
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 100 filtered out; finished in 0.28s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

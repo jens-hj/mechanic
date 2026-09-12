@@ -1,0 +1,9 @@
+{
+  "files_sha256": {
+    "crates/mechanic-core/src/contact_geometry/envelope.rs": "50b16cb7bb8feb04b59b574a1ed76e07dfbf7d1de5d898c16f271d26e1ee6fb9",
+    "crates/mechanic-core/src/contact_geometry/envelope/tests.rs": "76f102c809047f6c06525c18417d188d46b58baff6c86444a43ba657ed0a2729",
+    "crates/mechanic-physics/src/terrain_contacts/penetration.rs": "ed7181420b8530b26bc61e43978f35f1532a5c0c34f2d82681d2ce35126fc91b",
+    "crates/mechanic-physics/src/terrain_contacts/penetration/tests.rs": "127ce7efa9e437efdef7310e6e90ca12d4288593e636a826388f37d9f4da50b0"
+  },
+  "regression_exit_code": 101
+}

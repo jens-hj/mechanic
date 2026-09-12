@@ -1,0 +1,11 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.09s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+test response::tests::cold_impact::a_loaded_near_dependent_contact_can_release_without_relaxing_any_original_row ... late impact residual=9.688234487667136e-11 iterations=24 inactive_trials=1
+late impact residual=9.688234487667136e-11 iterations=24 inactive_trials=1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.02s
+

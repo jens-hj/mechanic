@@ -1,0 +1,23 @@
+   Compiling wgpu-core v29.0.4 (/Users/jens/repos/mechanic/.physics-reference/foreground-baseline-20260910/source/vendor/wgpu-core)
+   Compiling wgpu v29.0.4
+   Compiling bevy_render v0.19.0 (/Users/jens/repos/mechanic/.physics-reference/foreground-baseline-20260910/source/vendor/bevy_render)
+   Compiling mosaic-render-wgpu v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/.physics-reference/foreground-baseline-20260910/source/crates/mechanic-gpu)
+   Compiling bevy_core_pipeline v0.19.0 (/Users/jens/repos/mechanic/.physics-reference/foreground-baseline-20260910/source/vendor/bevy_core_pipeline)
+   Compiling bevy_pbr v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_post_process v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_gizmos_render v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_internal v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_mosaic v0.1.0 (/Users/jens/repos/mechanic/.physics-reference/foreground-baseline-20260910/source/crates/bevy_mosaic)
+   Compiling mechanic-app v0.1.0 (/Users/jens/repos/mechanic/.physics-reference/foreground-baseline-20260910/source/crates/mechanic-app)
+error[E0609]: no field `dynamics` on type `&CompiledCreation`
+   --> crates/mechanic-app/src/performance_capture.rs:218:902
+    |
+218 | ...d_velocities":simulation.creation.as_ref().map(|c| c.dynamics.elimination_parent.len())});
+    |                                                         ^^^^^^^^ unknown field
+    |
+    = note: available fields are: `compounds`, `colliders`, `bearings`, `loop_topology`, `collision_suppression` ... and 2 others
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `mechanic-app` (bin "mechanic-app") due to 1 previous error

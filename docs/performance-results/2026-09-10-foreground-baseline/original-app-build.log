@@ -1,0 +1,16 @@
+   Compiling wgpu-core v29.0.4 (/private/tmp/mechanic-frozen-20260909/vendor/wgpu-core)
+   Compiling mechanic-core v0.1.0 (/private/tmp/mechanic-frozen-20260909/crates/mechanic-core)
+   Compiling mechanic-world v0.1.0 (/private/tmp/mechanic-frozen-20260909/crates/mechanic-world)
+   Compiling wgpu v29.0.4
+   Compiling bevy_render v0.19.0 (/private/tmp/mechanic-frozen-20260909/vendor/bevy_render)
+   Compiling mosaic-render-wgpu v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mechanic-gpu v0.1.0 (/private/tmp/mechanic-frozen-20260909/crates/mechanic-gpu)
+   Compiling bevy_core_pipeline v0.19.0 (/private/tmp/mechanic-frozen-20260909/vendor/bevy_core_pipeline)
+   Compiling bevy_pbr v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_post_process v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_gizmos_render v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_internal v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_mosaic v0.1.0 (/private/tmp/mechanic-frozen-20260909/crates/bevy_mosaic)
+   Compiling mechanic-app v0.1.0 (/private/tmp/mechanic-frozen-20260909/crates/mechanic-app)
+    Finished `release` profile [optimized] target(s) in 6m 10s

@@ -1,0 +1,25 @@
+test-perf-capture.py
+..............
+----------------------------------------------------------------------
+Ran 14 tests in 0.010s
+
+OK
+test-background-capture.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.006s
+
+OK
+test-compare-perf-captures.py
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.007s
+
+OK
+test-performance-reference.py
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.004s
+
+OK
+/private/var/folders/_g/lqxwtfds47b716tcmlnkhj080000gn/T/tmplnyz22h9/reference/identity.json

@@ -1,0 +1,17 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.57s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+saved_car_sustained substeps=1 completed_ticks=120 hash=2e1dacca83ccbe43 maximum_vertex_depth_m=1.0000000143751686e-3
+saved_car_sustained substeps=1 completed_ticks=120 hash=2e1dacca83ccbe43 maximum_vertex_depth_m=1.0000000143751686e-3
+saved_car_sustained substeps=2 completed_ticks=120 hash=3ee19385b3ca51e7 maximum_vertex_depth_m=1.0000000119606e-3
+saved_car_sustained substeps=2 completed_ticks=120 hash=3ee19385b3ca51e7 maximum_vertex_depth_m=1.0000000119606e-3
+saved_car_sustained substeps=4 completed_ticks=120 hash=871a710e76296f1c maximum_vertex_depth_m=9.999999881755706e-4
+saved_car_sustained substeps=4 completed_ticks=120 hash=871a710e76296f1c maximum_vertex_depth_m=9.999999881755706e-4
+saved_car_sustained substeps=8 completed_ticks=120 hash=70bc10a59fd9b87a maximum_vertex_depth_m=9.999999944617644e-4
+saved_car_sustained substeps=8 completed_ticks=120 hash=70bc10a59fd9b87a maximum_vertex_depth_m=9.999999944617644e-4
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_sustained_support_repeats_at_each_substep_policy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 28.83s
+

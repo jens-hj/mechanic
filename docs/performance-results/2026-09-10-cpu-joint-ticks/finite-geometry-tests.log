@@ -1,0 +1,16 @@
+   Compiling mechanic-core v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 9.18s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_core-8ce2a69c2bb50ef3)
+
+running 8 tests
+test contact_geometry::tests::invalid_triangle_and_motion_are_errors_instead_of_missing_contacts ... ok
+test contact_geometry::tests::rotational_sweep_finds_an_impact_hidden_by_identical_endpoint_poses ... ok
+test contact_geometry::tests::oblique_contacts_have_points_on_both_actual_surfaces ... ok
+test contact_geometry::tests::continuous_translation_finds_fast_crossing_even_when_both_endpoints_are_clear ... ok
+test contact_geometry::tests::resting_box_retains_four_finite_supports_with_measured_depth ... ok
+test contact_geometry::tests::convex_plane_offsets_and_local_box_rotation_give_equivalent_queries ... ok
+test contact_geometry::tests::conservative_sweep_matches_exact_translation_and_reports_exhaustion ... ok
+test contact_geometry::tests::finite_edges_holes_and_below_surface_separation_produce_no_contact ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 243 filtered out; finished in 0.00s
+

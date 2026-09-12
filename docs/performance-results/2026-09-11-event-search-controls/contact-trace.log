@@ -1,0 +1,63 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.45s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=6.086644247063511e-4 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=3.046221203160807e-4 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=3.0984046364837385e-5 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=3.62023896971305e-6 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=2.2560726492192054e-6 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=1.0283229607747457e-6 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=9.055479919302996e-7 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.4746689086269822e-3 dt=8.93270495045855e-7 initial=Some([(7, 2, 5.010517026262706e-13), (42, 7, 0.0)])
+HIT collider=67 body=9 elapsed=1.5161238008125453e-3 dt=5.67209532520788e-4 initial=Some([])
+HIT collider=67 body=9 elapsed=1.5161238008125453e-3 dt=2.836058589715158e-4 initial=Some([])
+HIT collider=67 body=9 elapsed=1.5161238008125453e-3 dt=2.8362552777170802e-5 initial=Some([])
+HIT collider=67 body=9 elapsed=1.5161238008125453e-3 dt=2.8382221577362986e-6 initial=Some([])
+HIT collider=67 body=9 elapsed=1.5161238008125453e-3 dt=1.5620056267645736e-6 initial=Some([])
+HIT collider=67 body=9 elapsed=1.5161238008125453e-3 dt=1.009017819661587e-6 initial=Some([])
+HIT collider=67 body=9 elapsed=1.5161238008125453e-3 dt=8.616240726112946e-7 initial=Some([])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=5.663684507306423e-4 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.836697027901384e-4 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.9240829643684866e-5 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.7855770050416644e-5 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.7232493233445948e-5 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.6952018665809135e-5 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.6825805110372567e-5 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.6803730157745993e-5 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=42 body=7 elapsed=1.516964882602691e-3 dt=2.6793796429064035e-5 initial=Some([(67, 9, 5.005479384318596e-13)])
+HIT collider=67 body=9 elapsed=1.543754208853848e-3 dt=5.395791244794852e-4 initial=Some([(42, 7, 4.997551650476995e-13)])
+HIT collider=67 body=9 elapsed=1.543754208853848e-3 dt=2.6979011803770846e-4 initial=Some([(42, 7, 4.997551650476995e-13)])
+HIT collider=67 body=9 elapsed=1.543754208853848e-3 dt=2.6980012240109475e-5 initial=Some([(42, 7, 4.997551650476995e-13)])
+HIT collider=67 body=9 elapsed=1.543754208853848e-3 dt=2.699001660349573e-6 initial=Some([(42, 7, 4.997551650476995e-13)])
+HIT collider=67 body=9 elapsed=1.543754208853848e-3 dt=1.4849511313615777e-6 initial=Some([(42, 7, 4.997551650476995e-13)])
+HIT collider=67 body=9 elapsed=1.543754208853848e-3 dt=1.2117897623392787e-6 initial=Some([(42, 7, 4.997551650476995e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=5.384139176904815e-4 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=2.6992776840188465e-4 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=2.8290234042147545e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.924879795236883e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.5350397602581068e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.3725725815490736e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.3059811076409873e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.2788940299797349e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.2679116489419078e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.2634649259699675e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=7 body=2 elapsed=1.5449194156428518e-3 dt=1.26166539963582e-5 initial=Some([(42, 7, 5.003452885597447e-13), (67, 9, 5.005456965920129e-13)])
+HIT collider=42 body=7 elapsed=1.5575215078656632e-3 dt=5.258118254676701e-4 initial=Some([(7, 2, 5.002532792146329e-13)])
+HIT collider=42 body=7 elapsed=1.5575215078656632e-3 dt=2.629059922584346e-4 initial=Some([(7, 2, 5.002532792146329e-13)])
+HIT collider=42 body=7 elapsed=1.5575215078656632e-3 dt=2.6290742370122732e-5 initial=Some([(7, 2, 5.002532792146329e-13)])
+
+thread 'joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling' (11121877) panicked at crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs:279:9:
+tick=6 result=Err(NotConverged) diagnostics=JointTickDiagnostics { published: false, attempts: 4, substeps: 8, factorizations: 734, dynamics_assemblies: 5396, response_preparation_solves: 7435, constraint_factor_solves: 2214, force_factor_solves: 4428, position_factor_solves: 0, force_iterations: 2214, constraint_iterations: 5767, constraint_rows_prepared: 7435, surface_points: 707, surface_manifolds: 707, terrain_contact_queries: 884, terrain_contact_query_failures: 0, terrain_path_queries: 577, terrain_correction_paths: 0, terrain_path_poses: 120131, terrain_envelopes: 39168, terrain_certified_intervals: 39168, terrain_chunk_candidates: 59851, terrain_triangle_candidates: 119702, terrain_path_rejections: 289, terrain_sweep_queries: 577, terrain_sweep_query_failures: 0, terrain_envelope_query_failures: 0, terrain_separation_evaluations: 79110, terrain_initial_contact_evaluations: 78472, terrain_linear_sweep_evaluations: 0, terrain_quadratic_sweep_evaluations: 3263, terrain_velocity_evaluations: 3263, terrain_impact_holds: 4, event_trials: 650, event_refinements: 289, event_localizations: 204, release_refinements: 73, release_localizations: 38, joint_stop_refinements: 0, last_joint_stop_coordinate: None, released_surface_points: 147, accepted_intervals: 16, accepted_seconds: 0.005724188174532329, impact_attempts: 84, impact_events: 84, impact_rows_prepared: 515, impact_factor_solves: 599, impact_iterations: 218, newton_attempts: 5743, newton_accepts: 5743, newton_applications: 0, newton_local_factorizations: 0, newton_generalized_factorizations: 0, newton_reduced_storage: 0, newton_contact_factorizations: 5743, newton_contact_storage: 256, newton_line_searches: 5910, constraint_active_set_trials: 0, constraint_active_set_trial_rejections: 0, constraint_warm_start_restarts: 0, constraint_active_set_trial_matrix_storage: 0, residual: 9.82788100034365e-9, force_velocity_residual: 0.09959080050846503, constraint_velocity_residual: 9.994812371679024e-10, impact_velocity_residual: 6.210886718655813e-10, drive_impulses: [0.0, 0.5251489693521435, -0.21928948712726956, 0.0, -0.953068861797406, -0.20619818395938747, 0.0, -4.817426563049179, 0.0, -0.7133602303368785] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling ... FAILED
+
+failures:
+
+failures:
+    joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 104 filtered out; finished in 1.49s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

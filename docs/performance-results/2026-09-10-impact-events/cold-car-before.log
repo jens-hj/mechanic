@@ -1,0 +1,19 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.56s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+
+thread 'joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_resolves_its_first_impact_before_publication' (10637569) panicked at crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs:216:5:
+Err(InvalidCollision) JointTickDiagnostics { published: false, attempts: 1, substeps: 1, factorizations: 10, dynamics_assemblies: 35, response_preparation_solves: 180, constraint_factor_solves: 282, force_factor_solves: 20, position_factor_solves: 0, force_iterations: 10, constraint_iterations: 17, constraint_rows_prepared: 180, surface_points: 0, surface_manifolds: 0, terrain_contact_queries: 11, terrain_path_queries: 10, terrain_correction_paths: 0, terrain_path_poses: 2102, terrain_envelopes: 712, terrain_certified_intervals: 696, terrain_chunk_candidates: 1020, terrain_triangle_candidates: 2040, terrain_path_rejections: 5, terrain_sweep_queries: 10, terrain_separation_evaluations: 1370, terrain_initial_contact_evaluations: 1360, terrain_linear_sweep_evaluations: 0, terrain_impact_holds: 0, event_trials: 11, event_refinements: 5, accepted_intervals: 5, accepted_seconds: 0.012314056374093453, impact_attempts: 0, impact_events: 0, impact_rows_prepared: 0, impact_factor_solves: 0, impact_iterations: 0, newton_attempts: 16, newton_accepts: 16, newton_applications: 0, newton_local_factorizations: 288, newton_generalized_factorizations: 16, newton_reduced_storage: 544, newton_line_searches: 16, residual: 1.8632469496111478e-9, drive_impulses: [0.0, -4.1147696815599667e-11, 2.9040932625828023e-11, 0.0, 9.288531472470932e-11, -8.224708707282163e-11, 0.0, 3.892135060777869e-11, 0.0, 6.796835905250985e-12] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_resolves_its_first_impact_before_publication ... FAILED
+
+failures:
+
+failures:
+    joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_resolves_its_first_impact_before_publication
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

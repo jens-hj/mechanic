@@ -1,0 +1,19 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.44s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+
+thread 'response::tests::cold_impact::event_resolved_car_retry_impact_satisfies_all_original_contact_laws' (11436294) panicked at crates/mechanic-physics/src/response/tests/cold_impact.rs:17:5:
+ConstraintSolution { newton_attempts: 256, newton_accepts: 256, newton_applications: 0, newton_local_factorizations: 0, newton_generalized_factorizations: 0, newton_reduced_storage: 0, newton_contact_factorizations: 256, newton_contact_storage: 2500, newton_line_searches: 776, active_set_trials: 1, active_set_trial_rejections: 1, active_set_trial_matrix_storage: 3750, warm_start_restarts: 0, continuation_trials: 0, continuation_iterations: 0, continuation_stages: 0, continuation_evaluations: 0, continuation_mixed_rows: 0, sliding: [true, true, true, true, true, true, true, true, true, true], friction_transitions: 0, velocity_change: [-4.165583041560269e-5, 4.312761920561142e-8, 0.0004055734783665147, -3.1195517923739346e-5, 8.8754722966876e-5, -3.6710475686100724e-5, 7.741568884376041e-5, 3.902554466790689e-6, -0.01141672013864891, -0.011562016113767021, 0.00019666423500306978, 0.00046697313801419906, -0.0004014064740296893, 7.804231962342307e-5, -2.077977407139175e-5, -3.644043185140197e-5], impulses: [0.0038895383966075755, -0.002227071480597698, -0.001517179084517589, 1.594686496639609e-5, 9.370649401625853e-6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.0, -0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.300940388806868, -0.8334404405962788, 0.4160702348363457, 0.009433073249499156, 0.005544500754782226, 0.0, 0.0, 0.0, 0.0, 0.0, 2.3125191700500327, 1.5254920293750351, -0.4896853747569946, 0.009470100360568591, 0.0055901271330169484], residual: 2.1252906647024895e-5, iterations: 256, converged: false, response_storage: 2500, factor_solves: 52 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test response::tests::cold_impact::event_resolved_car_retry_impact_satisfies_all_original_contact_laws ... FAILED
+
+failures:
+
+failures:
+    response::tests::cold_impact::event_resolved_car_retry_impact_satisfies_all_original_contact_laws
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 138 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

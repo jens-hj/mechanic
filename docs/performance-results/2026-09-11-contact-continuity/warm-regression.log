@@ -1,0 +1,9 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+cold_settling warm_sweeps=154 cold_sweeps=106 residual=5.321604426830339e-10 restarts=1
+test response::tests::cold_impact::stalled_warm_contact_restarts_within_the_original_budget_and_proves_breakaway ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 104 filtered out; finished in 0.02s
+

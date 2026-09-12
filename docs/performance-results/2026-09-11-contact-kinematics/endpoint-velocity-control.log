@@ -1,0 +1,148 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+warning: method `point_acceleration_bias` is never used
+   --> crates/mechanic-physics/src/machine.rs:449:19
+    |
+ 40 | impl MachineDynamics {
+    | -------------------- method in this implementation
+...
+449 |     pub(crate) fn point_acceleration_bias(
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `mechanic-physics` (lib) generated 1 warning
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.29s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 115 tests
+test free_motion::tests::anchored_tree_keeps_its_root_fixed_while_joint_motion_evolves ... ok
+test free_motion::tests::asymmetric_free_rotation_converges_to_conserved_angular_momentum_and_energy ... ok
+test free_motion::tests::authored_drive_and_loop_constraints_cannot_be_silently_ignored ... ok
+test free_motion::tests::floating_tree_conserves_momentum_and_keeps_exact_joint_anchors_and_axes ... ok
+test free_motion::tests::free_fall_matches_ballistic_motion_at_the_external_clock ... ok
+test free_motion::tests::impulse_at_a_child_accelerates_the_whole_machine_with_correct_total_momentum ... ok
+test free_motion::tests::off_centre_impulse_changes_momentum_once_independent_of_substeps ... ok
+test free_motion::tests::principal_axis_spin_matches_the_analytic_orientation ... ok
+test free_motion::tests::rejected_commands_and_failed_numerics_preserve_the_last_snapshot ... ok
+test free_motion::tests::repeated_fixed_input_ticks_have_identical_completed_hashes ... ok
+test joint_machine::impact::tests::contact_impulse_respects_an_active_joint_stop_and_back_drives_the_root ... ok
+test joint_machine::impact::tests::failed_instantaneous_solve_preserves_all_physical_state ... ok
+test joint_machine::impact::tests::impact_applies_restitution_once_without_moving_or_biasing_penetration ... ok
+test joint_machine::tests::a_joint_limit_activates_at_arrival_and_then_advances_with_coupled_velocity ... ok
+test joint_machine::tests::changing_targets_reuses_response_without_repeated_inverse_preparation ... ok
+test joint_machine::tests::coupled_surface_substeps_hold_static_load_and_apply_kinetic_deceleration ... ok
+test joint_machine::tests::failed_tick_and_drive_change_are_rolled_back_then_can_be_retried ... ok
+test joint_machine::tests::hard_stop_reacts_against_a_stalled_drive_without_consuming_its_budget ... ok
+test joint_machine::tests::implicit_spring_and_asymmetric_damping_match_the_scalar_midpoint_solution ... ok
+test joint_machine::tests::loaded_spring_reaches_the_authored_equilibrium_with_preload ... ok
+test joint_machine::tests::motor_budget_accelerates_rotor_and_back_drives_the_floating_mount ... ok
+test joint_machine::tests::nonlinear_midpoint_rotation_converges_to_the_rk4_free_motion_reference ... ok
+test joint_machine::tests::nonlinear_retry_restarts_the_same_tick_without_duplicating_impulses ... ok
+test joint_machine::tests::progressive_rubber_and_damping_satisfy_the_actual_midpoint_force_equation ... ok
+test joint_machine::tests::refreshed_terrain_manifolds_hold_a_free_body_without_velocity_or_pose_drift ... ok
+test joint_machine::tests::speed_torque_curve_fades_acceleration_but_keeps_braking_effort ... ok
+test joint_machine::tests::terrain_support_and_suspension_share_the_implicit_force_response ... ok
+test joint_machine::tests::terrain_ticks::changed_supporting_terrain_or_wrong_topology_cannot_publish_an_invalid_tick ... ok
+test joint_machine::tests::terrain_ticks::failed_terrain_path_retries_match_direct_quality_and_consume_impulse_once ... ok
+test joint_machine::tests::terrain_ticks::final_terrain_failure_retains_completed_state_and_does_not_consume_a_command ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::a_fast_drop_through_a_finite_hole_does_not_activate_a_ghost_surface ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::a_near_resting_fall_locates_impact_without_tiny_prefix_exhaustion ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::a_rotating_cube_reaches_a_real_finite_edge_before_applying_impact ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::an_initial_touching_impact_bounces_once_then_advances_with_outgoing_velocity ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::cold_fast_impact_matches_analytic_bounce_and_uses_the_remaining_tick ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::exhausted_event_trials_preserve_snapshot_and_do_not_consume_an_impulse ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::existing_floor_support_does_not_hide_a_new_finite_wall_impact ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::gravity_is_reintegrated_at_the_impact_time_before_restitution ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::released_support_can_return_and_impact_the_same_triangle_within_one_tick ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::separating_support_releases_before_gravity_reverses_its_velocity ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::shallow_first_impact_activates_even_when_its_depth_envelope_would_pass ... ok
+test joint_machine::tests::terrain_ticks::rolling_edge::rotating_edge_support_force_converges_to_constrained_rigid_body_equation ... ok
+test joint_machine::tests::terrain_ticks::saved_car::activation_preserves_existing_authored_car_support_manifolds ... ok
+test joint_machine::tests::terrain_ticks::saved_car::car_contact_reversal_uses_bounded_trials_and_agrees_with_finer_integration ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling ... FAILED
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_resolves_its_first_impact_before_publication ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_linear_suspension_paths_are_exact_affine_translations ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_sustained_support_repeats_at_each_substep_policy ... ok
+test joint_machine::tests::terrain_ticks::split_joint_recovery_checks_terrain_and_restores_physical_velocity_on_failure ... ok
+test joint_machine::tests::terrain_ticks::supported_ticks_validate_motion_before_publication_and_repeat_at_each_substep_policy ... ok
+test joint_machine::tests::terrain_ticks::terrain_failure_does_not_commit_a_drive_change ... ok
+test joint_machine::tests::timed_travel_stop_preserves_floating_machine_momentum_without_rebound ... ok
+test joint_machine::tests::undamped_spring_oscillation_converges_without_artificial_decay ... ok
+test joint_machine::tests::unlimited_drive_remains_unbounded_and_can_be_disabled_at_no_load ... ok
+test joint_machine::tests::whole_tick_impulses_are_not_reapplied_at_each_substep ... ok
+test machine::tests::free_body_gravity_is_independent_of_mass_and_does_not_generate_torque ... ok
+test machine::tests::point_acceleration_bias_matches_reconstructed_constant_rate_motion ... ok
+test motion_path::tests::a_near_unit_root_has_the_same_normalized_pose_at_cached_and_sampled_start ... ok
+test motion_path::tests::authored_car_spatial_derivatives_and_acceleration_bounds_cover_reconstructed_motion ... ok
+test motion_path::tests::full_root_rotation_is_preserved_between_matching_endpoint_orientations ... ok
+test motion_path::tests::invalid_displacements_and_fractions_fail_without_changing_the_initial_state ... ok
+test motion_path::tests::motion_bounds_round_outward_and_reject_invalid_radius_inputs ... ok
+test motion_path::tests::pose_only_queries_are_not_limited_by_dense_inertia_capacity ... ok
+test response::articulated::tests::authored_car_suspension_and_branched_inertia_match_dense ... ok
+test response::articulated::tests::coupled_car_contact_response_uses_tree_inverse_with_original_friction_bounds ... ok
+test response::articulated::tests::independent_floating_and_fixed_components_remain_uncoupled ... ok
+test response::articulated::tests::large_coaxial_chain_matches_independent_torque_balance_without_dense_storage ... ok
+test response::articulated::tests::tree_factor_rejects_invalid_poses_diagonals_and_impulses ... ok
+test response::articulated::tests::tree_inverse_matches_dense_for_floating_anchored_and_reversed_joints ... ok
+test response::newton::dense_tests::contact_newton_preserves_a_weak_direction_and_dependent_rows ... ok
+test response::newton::projection::tests::analytic_point_inverse_matches_lu_and_every_original_row ... ok
+test response::newton::projection::tests::analytic_point_inverse_rejects_invalid_or_unshifted_singular_systems ... ok
+test response::newton::reduced::tests::recovered_reduced_direction_satisfies_every_full_newton_row ... ok
+test response::newton::tests::cone_derivative_matches_differentiated_normal_tangent_and_rolling_projection ... ok
+test response::newton::tests::krylov_norm_handles_large_small_and_zero_vectors_without_overflow ... ok
+test response::newton::tests::local_pivoted_factor_preserves_a_nonsymmetric_response_and_singular_rows ... ok
+test response::newton::tests::matrix_free_gmres_solves_a_nonsymmetric_system ... ok
+test response::tests::cold_impact::a_wrong_inactive_contact_trial_is_discarded_without_losing_the_original_solution ... ok
+test response::tests::cold_impact::captured_cold_car_impact_converges_without_relaxing_its_velocity_residual ... ok
+test response::tests::cold_impact::stalled_warm_contact_restarts_within_the_original_budget_and_proves_breakaway ... ok
+test response::tests::contradictory_friction_bounds_are_rejected_before_projection ... ok
+test response::tests::coupled_normal_iterations_do_not_falsely_trigger_static_breakaway ... ok
+test response::tests::coupling_to_a_clamped_contact_cannot_falsely_converge ... ok
+test response::tests::duplicate_loop_rows_preserve_response_and_inconsistent_rows_fail ... ok
+test response::tests::friction_impulse_obeys_the_circular_coulomb_bound ... ok
+test response::tests::impulse_at_light_wheel_accelerates_the_coupled_chassis ... ok
+test response::tests::large_contact_sets_use_implicit_response_and_repeat_exactly ... ok
+test response::tests::large_generalized_systems_keep_dense_and_krylov_storage_bounded ... ok
+test response::tests::nearly_coincident_supports_transfer_load_to_the_outer_contact ... ok
+test response::tests::rolling_resistance_obeys_the_normal_load_radius_bound_and_dissipates_spin ... ok
+test response::tests::static_breakaway_reuses_response_and_cannot_pass_an_exhausted_solve ... ok
+test response::tests::static_support_and_initial_sliding_use_distinct_physical_friction_limits ... ok
+test response::tests::unilateral_support_cannot_pull_a_separating_body ... ok
+test response::tests::warm_impulses_reuse_an_implicit_response_and_are_revalidated_for_new_targets ... ok
+test terrain_contacts::penetration::tests::a_separated_body_below_a_finite_surface_does_not_get_a_penetration_hold ... ok
+test terrain_contacts::penetration::tests::finite_holes_and_origin_rebases_preserve_supported_path_results ... ok
+test terrain_contacts::penetration::tests::full_rotation_rejects_penetration_hidden_at_start_midpoint_and_end ... ok
+test terrain_contacts::penetration::tests::motion_below_a_finite_surface_is_certified_after_subdivision ... ok
+test terrain_contacts::penetration::tests::sliding_support_subdivides_and_exhaustion_never_claims_clearance ... ok
+test terrain_contacts::penetration::tests::stationary_existing_support_is_bounded_without_ignoring_its_triangles ... ok
+test terrain_contacts::sweep::tests::articulated_full_turn_finds_a_finite_impact_between_clear_endpoint_poses ... ok
+test terrain_contacts::sweep::tests::exact_linear_sweep_handles_fast_translation_and_finite_holes ... ok
+test terrain_contacts::sweep::tests::near_separated_parallel_motion_does_not_invent_a_first_impact ... ok
+test terrain_contacts::sweep::tests::rotating_parallel_motion_certifies_clearance_without_spending_tangential_speed ... ok
+test terrain_contacts::sweep::tests::sweep_rejects_a_different_topology_and_preserves_origin_rebased_impact_time ... ok
+test terrain_contacts::tests::changed_active_groups_and_materials_invalidate_only_changed_chunk_features ... ok
+test terrain_contacts::tests::coplanar_triangle_seam_reduces_to_four_supports_without_changing_materials ... ok
+test terrain_contacts::tests::finite_manifold_restitution_uses_impact_speed_without_penetration_bounce ... ok
+test terrain_contacts::tests::generated_chunk_bvh_queries_match_direct_finite_triangle_queries ... ok
+test terrain_contacts::tests::malformed_publication_preserves_the_previous_collision_scene ... ok
+test terrain_contacts::tests::near_terrain_contacts_report_positive_gaps_and_survive_origin_rebasing ... ok
+test terrain_contacts::tests::origin_rebase_preserves_physical_support_and_feature_identity ... ok
+test terrain_contacts::tests::real_manifold_impulses_support_the_coupled_body_without_spurious_spin ... ok
+test terrain_contacts::tests::small_finite_triangles_remain_collidable_and_nonfinite_query_bounds_fail ... ok
+
+failures:
+
+---- joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling stdout ----
+
+thread 'joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling' (11191522) panicked at crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs:293:9:
+tick=11 result=Err(NotConverged) diagnostics=JointTickDiagnostics { factorization: DenseReference, published: false, attempts: 4, substeps: 8, factorizations: 1060, dynamics_assemblies: 13375, response_preparation_solves: 26898, constraint_factor_solves: 3076, force_factor_solves: 5978, position_factor_solves: 0, force_iterations: 2989, constraint_iterations: 21027, constraint_rows_prepared: 26898, contact_bias_traversals: 0, surface_points: 4140, surface_manifolds: 4140, terrain_contact_queries: 1058, terrain_contact_query_failures: 0, terrain_path_queries: 396, terrain_correction_paths: 0, terrain_path_poses: 55072, terrain_pose_cache_hits: 51840, terrain_envelopes: 52224, terrain_certified_intervals: 52224, terrain_chunk_candidates: 57374, terrain_triangle_candidates: 114748, terrain_path_rejections: 12, terrain_sweep_queries: 396, terrain_sweep_query_failures: 0, terrain_envelope_query_failures: 0, terrain_separation_evaluations: 52269, terrain_initial_contact_evaluations: 53856, terrain_linear_sweep_evaluations: 0, terrain_quadratic_sweep_evaluations: 1564, terrain_velocity_evaluations: 1564, terrain_impact_holds: 4, event_trials: 1033, event_prefix_commits: 0, event_refinements: 12, event_localizations: 21, release_refinements: 637, release_localizations: 160, joint_stop_refinements: 0, last_joint_stop_coordinate: None, released_surface_points: 1205, accepted_intervals: 140, accepted_seconds: 0.015944785038262608, impact_attempts: 27, impact_events: 27, impact_rows_prepared: 730, impact_factor_solves: 758, impact_iterations: 104, newton_attempts: 21110, newton_accepts: 21108, newton_applications: 0, newton_local_factorizations: 0, newton_generalized_factorizations: 0, newton_reduced_storage: 0, newton_contact_factorizations: 21110, newton_contact_storage: 2500, newton_line_searches: 35472, constraint_active_set_trials: 88, constraint_active_set_trial_rejections: 85, constraint_warm_start_restarts: 2, constraint_active_set_trial_matrix_storage: 2060, residual: 9.695133676623998e-9, force_velocity_residual: 0.028316935137585885, constraint_velocity_residual: 9.99853295164039e-10, impact_velocity_residual: 7.161785563198457e-10, drive_impulses: [0.0, -5.623764116277123, 10.596135704345475, 0.0, 9.272190445824931, -11.32116371162919, 0.0, -12.633831179889478, 0.0, 6.075917568985198] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling
+
+test result: FAILED. 114 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.36s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

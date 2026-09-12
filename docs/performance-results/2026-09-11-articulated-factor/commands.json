@@ -1,0 +1,174 @@
+[
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "dense"
+    ],
+    "result": 0,
+    "output": "car-1-dense.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "car-2-articulated.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "car-3-articulated.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "dense"
+    ],
+    "result": 0,
+    "output": "car-4-dense.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "chain_256",
+      "dense"
+    ],
+    "result": 0,
+    "output": "chain_256-1-dense.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "chain_256",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "chain_256-2-articulated.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "chain_256",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "chain_256-3-articulated.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-inertia",
+      "chain_256",
+      "dense"
+    ],
+    "result": 0,
+    "output": "chain_256-4-dense.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "dense"
+    ],
+    "result": 0,
+    "output": "overlapped-response-control/car-finite-response-1-dense.jsonl",
+    "excluded": "Fourth run overlapped Clippy; entire response series excluded and repeated."
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "overlapped-response-control/car-finite-response-2-articulated.jsonl",
+    "excluded": "Fourth run overlapped Clippy; entire response series excluded and repeated."
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "overlapped-response-control/car-finite-response-3-articulated.jsonl",
+    "excluded": "Fourth run overlapped Clippy; entire response series excluded and repeated."
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "dense"
+    ],
+    "result": 0,
+    "output": "overlapped-response-control/car-finite-response-4-dense.jsonl",
+    "excluded": "Fourth run overlapped Clippy; entire response series excluded and repeated."
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "dense"
+    ],
+    "result": 0,
+    "output": "car-finite-response-1-dense.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "car-finite-response-2-articulated.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "car-finite-response-3-articulated.jsonl"
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "dense"
+    ],
+    "result": 0,
+    "output": "car-finite-response-4-dense.jsonl"
+  }
+]

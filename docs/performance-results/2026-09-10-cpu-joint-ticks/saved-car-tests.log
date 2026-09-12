@@ -1,0 +1,17 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+   Compiling mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.17s
+     Running unittests src/bin/compiled-response.rs (target/debug/deps/compiled_response-847b485891a7106d)
+
+running 5 tests
+saved_car_bias_maximum_relative_error=5.438005956577891e-10
+test tests::saved_car_free_fall_moves_floating_roots_without_stretching_joints ... ok
+test tests::saved_car_inertial_bias_matches_differentiated_body_motion ... ok
+test tests::saved_car_joint_jacobians_match_reconstructed_point_motion ... ok
+saved_car_finite_response bodies=11 colliders=78 retained_contacts=48 triangle_candidates=24 residual=8.585129000544862e-10 repeatable=true tick_gate=false
+test tests::saved_car_finite_terrain_response_repeats_and_balances_external_momentum ... ok
+saved_car_joint_only_airborne_ticks=120 hash=54bf728a1a59d30e absolute_drive_impulse_sum=1.4170738964077143e3
+test tests::saved_car_joint_ticks_keep_authored_suspension_and_drives_and_repeat ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

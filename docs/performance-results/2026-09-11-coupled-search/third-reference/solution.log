@@ -1,0 +1,6 @@
+eliminated 1.31e-12 1 equation 1.2437792766203937e-12 original 6.369579660061662e-07
+eliminated 1e-13 7 equation 3.898078583010334e-12 original 1.0784083427490726e-07
+eliminated 1e-14 12 equation 3.771104197143604e-12 original 3.805513139410241e-08
+eliminated 1e-15 6 equation 8.151414872953344e-12 original 3.805518118001443e-09
+eliminated 1e-16 3 equation 2.9331966298662133e-05 original 3.8056102219386824e-10
+{"converged": true, "original_residual": 2.2402026769553106e-11, "normal_error": 3.916977853180015e-12, "disk_error": 8.881784197001252e-16, "direction_error": 6.037170563730763e-12, "rows": 240, "coordinates": 16, "numpy_version": "2.3.0", "fixture_sha256": "04f9dc9013bd15273eb8a72aff057df7e79645b9c113c1c1570ab2797c89e20e", "script_sha256": "b0c2063e609f8b4b84ee2bcab0de5ff8e3890f246836840b670474521104b3b1", "semantics": "instantaneous algebra candidate; no physical tick or performance acceptance", "initial_sha256": "cd6baa8e26d6b664660dafdeb5a8a358a8997c9b7e6e3ad16ad87fdbac7ecb99"}

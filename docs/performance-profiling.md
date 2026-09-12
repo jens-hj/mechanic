@@ -420,6 +420,77 @@ python3 scripts/summarize-perf-capture.py /tmp/mechanic-test4-results/*.jsonl
 
 ## Unattended background capture
 
+For the compiled-dynamics redesign, source-matched foreground captures use the
+same runner with explicit foreground selection:
+
+```sh
+python3 scripts/build-performance-reference.py --output .physics-reference/foreground-reference
+python3 scripts/run-background-capture.py --foreground --drive \
+  --binary .physics-reference/foreground-reference/mechanic-app \
+  --identity .physics-reference/foreground-reference/identity.json \
+  --assets .physics-reference/foreground-reference/source/crates/mechanic-app \
+  --world .physics-reference/2026-09-09/car \
+  --output .physics-reference/foreground-run-01
+```
+
+The build uses a copied source tree and a fresh isolated target directory.
+Shared Cargo artifacts cannot establish provenance across dirty worktrees with
+preserved file timestamps. The launcher checks binary and asset hashes, records
+all world-file hashes, and opens a disposable store under the results directory.
+It strips inherited Mechanic diagnostic switches. Foreground mode requests
+focus and rejects a capture if any measured frame loses focus, changes render
+settings, or fails to render at 4112x2524 with baseline 4x MSAA/AutoNoVsync/F3.
+Demonstration screenshots and scripted placement are prohibited in this mode.
+
+An earlier reference build reused the application's release target and left a
+stale `mechanic-core` artifact. This can report a missing `CompiledCreation::dynamics`
+field even though it exists in the current source. The existing cache was repaired
+with `cargo clean -p mechanic-core --release`, followed by
+`cargo build --release -p mechanic-app`. New reference builds use isolated target
+directories; do not share the application's target with archived source trees.
+
+Foreground graphics warm-up holds the loaded physical state; driving advances
+once per dispatched physics tick and starts with 180 settling ticks. This
+protocol differs from historical background captures and must match on both
+sides of a comparison. Initial camera/state identities and completed-state
+hashes accompany the trace. Terrain-readiness holds are recorded explicitly.
+The external clock remains 60 Hz. Without `--replay-ticks`, the nominal capture
+interval is 60 wall-clock seconds; dropped ticks still invalidate workload
+matching and performance acceptance.
+
+Use `--replay-ticks 1800` with foreground driving for a fixed 30-simulated-second
+workload (or 3600 for 60 simulated seconds). The unchanged 60 Hz clock retains
+every overdue tick, including time spent waiting for terrain. The run submits
+exactly that count, then drains readbacks without GPU waits. This is a replay
+protocol, not a change to normal application scheduling. A growing backlog or
+low wall-clock TPS still fails performance acceptance even with zero dropped ticks.
+
+Capture schema 3 records `measurement` and `drain` phases. Wall-time captures
+close at the end of the frame crossing 60 seconds, preserving the complete last
+batch. Both protocols wait for the last actually submitted tick to be published
+and the readback ring to empty. Failure or a ten-second drain timeout invalidates
+the result. Total replay TPS includes drain latency; measurement frame/render
+distributions exclude drain samples. Use archived tools for historical captures;
+the new summarizer deliberately rejects older schemas.
+
+Initial terrain fingerprints cover ordered packed geometry/materials/generations
+and reachable GPU allocation layout. Effective drive rows are hashed for every
+scripted tick. These identities supplement the initial state/camera and source
+world hashes when diagnosing repeatability.
+
+`scripts/compare-perf-captures.py --repeat A.jsonl B.jsonl` checks identical-build
+repeatability against complete submitted workloads. A shorter shared prefix or
+an unpublished boundary tail does not pass. Initial terrain geometry/layout and
+effective drive rows are also compared. The first state and drive divergences
+are reported separately.
+Neither passing the foreground protocol nor matching hashes establishes full
+kernel coverage or physical-bound correctness.
+
+The [fixed-duration replay evidence](performance-results/2026-09-10-fixed-replay/README.md)
+verifies complete submission/readback/publication for two 1,800-tick Metal runs.
+Both fail throughput and completed-state repeatability; retain those failures
+when comparing the replacement solver.
+
 Use this for the standing TEST4 scene while continuing to use the computer.
 It drives world loading and recording inside Bevy, saves a Bevy-rendered PNG,
 and exits without OS mouse clicks, keypresses or screenshot commands:
@@ -432,7 +503,7 @@ python3 scripts/run-background-capture.py \
 ```
 
 The output directory must be new. The launcher copies the world to a uniquely
-named sibling in the world store and changes that copy's manifest identity.
+named directory in an isolated disposable store and changes its manifest identity.
 Autosaves affect only the copy, which is removed after exit or timeout. Results
 remain in the output directory: `run.json`, `app.log`, raw capture JSONL,
 `summary.json`, and a PNG with the same basename as the capture. `--binary` and
@@ -474,3 +545,64 @@ cargo test -p mechanic-app performance_capture::tests
 cargo clippy -p mechanic-app --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+## Editing stalls: scripted placement captures
+
+Placing a block republishes the whole world physics scene. Use scripted
+placements to capture that path without OS input:
+
+```sh
+cargo build --release -p mechanic-app
+python3 scripts/run-background-capture.py --place 5 \
+  --world "$HOME/Library/Application Support/Mechanic/worlds/<world>" \
+  --output /tmp/mechanic-placement-01
+```
+
+`--place SECONDS` (`MECHANIC_AUTO_PLACE`) commits one disposable cuboid above
+the construction on that cadence, from the moment the world starts playing, so
+a world whose construction is entirely static still reaches a running
+simulation. Placements republish the scene, so the tick sequence is not
+continuous and `summarize-perf-capture.py` is skipped for these runs; read the
+raw JSONL instead. A capture that never starts logs its phase, world notice and
+terrain readiness every two seconds — an outdated saved world reports the
+unsupported creation version there rather than timing out silently.
+
+Records attributing the edit path: `scripted_placement`, `world_physics_request`,
+`world_physics_prepare` (worker `compile_ms`/`scene_ms`), `world_physics_install`
+(main-thread `install_ms`), `visual_mesh_sync`, and `terrain_publication`
+(`snapshot_ms` and `publication_ms` are main-thread; `reused_chunks` versus
+`uploaded_chunks` shows whether resident terrain was kept).
+
+A replacement scene inherits the retired scene's terrain: the packed chunk cache
+and the uploaded device buffer move across, and the buffer is rebound
+immediately, so an edit publishes no terrain at all. Before that, every
+placement in the suspension world repacked and re-uploaded the whole cut —
+3140 chunks, 1.07 GB, roughly two seconds of main-thread snapshotting plus a
+second of upload — and frame p99 was 4.7 s. After it, placements do no terrain
+work, frame p50 fell from 95 ms to 38 ms, and worst-case frames fell from 7.3 s
+to 0.36 s. The remaining steady-state cost of that world (6.5 M resident terrain
+collision triangles, ~55 ms physics GPU per frame) is a separate problem.
+
+Focused verification:
+
+```sh
+cargo test -p mechanic-gpu adopted_terrain_residency_collides_without_uploading_chunks_again
+cargo test -p mechanic-app inheriting_keeps_the_accepted_cut
+```
+
+## Suspension car physics and World driving
+
+`cargo run --release -p mechanic-bench --bin suspension-world -- --seconds 60`
+loads the installed suspension car against production-generated terrain; `--plane`
+selects the control. These are 60 simulated seconds with serialized per-tick
+readbacks, not a World frame/backlog gate. Use
+`scripts/summarize-suspension-benchmark.py` for completed JSONL traces.
+
+The background World runner accepts `--drive` to exercise the sole input-linked
+seat through application-level W/A/D states. `--demonstration` additionally saves
+frames every five seconds and perturbs frame timing. Physics readbacks include
+terrain contact generation, rotational sweep, positional recovery, and nested
+recovery projection timings. Terrain publication records worker preparation,
+publication latency, upload/copy bytes, and reused chunk counts. The [performance
+report](performance-results/2026-09-07-suspension-world/README.md) records the unmet
+acceptance gate and the older baseline's GPU timestamp limitations.

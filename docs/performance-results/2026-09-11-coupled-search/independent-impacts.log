@@ -1,0 +1,16 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.62s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 2 tests
+endpoint converged=true residual=3.466108738544856e-10 iterations=70 continuation=54 stages=8 factors=3597
+late_endpoint converged=true residual=8.156757106673803e-11 iterations=78 continuation=62 mixed_rows=61 factors=4020
+endpoint converged=true residual=3.466108738544856e-10 iterations=70 continuation=54 stages=8 factors=3597
+independent_impact_velocity_error=1.7386222583154476e-10
+test response::tests::cold_impact::captured_endpoint_impact_satisfies_all_original_contact_laws ... ok
+late_endpoint converged=true residual=8.156757106673803e-11 iterations=78 continuation=62 mixed_rows=61 factors=4020
+independent_impact_velocity_error=2.7507107702717803e-11
+test response::tests::cold_impact::later_endpoint_impact_satisfies_all_original_contact_laws ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 134 filtered out; finished in 0.15s
+

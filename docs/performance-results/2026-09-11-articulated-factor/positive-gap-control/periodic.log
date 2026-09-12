@@ -1,0 +1,19 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.34s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling ... 
+thread 'joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling' (11165898) panicked at crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs:293:9:
+tick=6 result=Err(NotConverged) diagnostics=JointTickDiagnostics { factorization: DenseReference, published: false, attempts: 4, substeps: 8, factorizations: 866, dynamics_assemblies: 5009, response_preparation_solves: 7556, constraint_factor_solves: 1826, force_factor_solves: 3652, position_factor_solves: 0, force_iterations: 1826, constraint_iterations: 4316, constraint_rows_prepared: 7556, surface_points: 574, surface_manifolds: 574, terrain_contact_queries: 1310, terrain_contact_query_failures: 0, terrain_path_queries: 738, terrain_correction_paths: 0, terrain_path_poses: 103435, terrain_event_separation_evaluations: 720, terrain_pose_cache_hits: 74385, terrain_envelopes: 74936, terrain_certified_intervals: 74936, terrain_chunk_candidates: 88651, terrain_triangle_candidates: 177302, terrain_path_rejections: 187, terrain_sweep_queries: 738, terrain_sweep_query_failures: 0, terrain_envelope_query_failures: 0, terrain_separation_evaluations: 100659, terrain_initial_contact_evaluations: 100368, terrain_linear_sweep_evaluations: 0, terrain_quadratic_sweep_evaluations: 2969, terrain_velocity_evaluations: 2969, terrain_impact_holds: 4, event_trials: 781, event_refinements: 187, event_localizations: 504, release_refinements: 43, release_localizations: 13, joint_stop_refinements: 0, last_joint_stop_coordinate: None, released_surface_points: 90, accepted_intervals: 14, accepted_seconds: 0.005775932853743697, impact_attempts: 85, impact_events: 85, impact_rows_prepared: 495, impact_factor_solves: 580, impact_iterations: 210, newton_attempts: 4153, newton_accepts: 4153, newton_applications: 0, newton_local_factorizations: 0, newton_generalized_factorizations: 0, newton_reduced_storage: 0, newton_contact_factorizations: 4153, newton_contact_storage: 256, newton_line_searches: 4250, constraint_active_set_trials: 0, constraint_active_set_trial_rejections: 0, constraint_warm_start_restarts: 0, constraint_active_set_trial_matrix_storage: 0, residual: 9.755449739122468e-9, force_velocity_residual: 0.09967923572838688, constraint_velocity_residual: 9.992784065130061e-10, impact_velocity_residual: 6.473226623125852e-10, drive_impulses: [0.0, 0.3622719604295088, -0.17973729277557643, 0.0, -0.7891227228067084, -0.19938584733258913, 0.0, -4.842368100410011, 0.0, -0.7246980486813321] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_remains_bounded_through_settling
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 112 filtered out; finished in 2.05s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

@@ -1,0 +1,21 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+   Compiling mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.49s
+     Running unittests src/bin/compiled-response.rs (target/debug/deps/compiled_response-847b485891a7106d)
+
+running 1 test
+saved_car_full_surface_response rows=240 blocks=12 residual=1.43938058164476e-3 iterations=256 factor_solves=3313 response_storage=0 converged=false tick_gate=false
+
+thread 'tests::saved_car_finite_terrain_response_repeats_and_balances_external_momentum' (10457496) panicked at crates/mechanic-bench/src/bin/compiled-response.rs:544:9:
+full friction/rolling manifold response must converge at the default iteration bound
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::saved_car_finite_terrain_response_repeats_and_balances_external_momentum ... FAILED
+
+failures:
+
+failures:
+    tests::saved_car_finite_terrain_response_repeats_and_balances_external_momentum
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p mechanic-bench --bin compiled-response`

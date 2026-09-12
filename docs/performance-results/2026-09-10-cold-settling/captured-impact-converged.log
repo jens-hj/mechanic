@@ -1,0 +1,11 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.31s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+restarted solution=ConstraintSolution { newton_attempts: 25, newton_accepts: 25, newton_applications: 0, newton_local_factorizations: 0, newton_generalized_factorizations: 0, newton_reduced_storage: 0, newton_contact_factorizations: 25, newton_contact_storage: 225, newton_line_searches: 43, active_set_restarts: 1, sliding: [true, true, true], friction_transitions: 0, velocity_change: [8.913862690436995e-5, 3.8513573866038057e-7, -0.0003382514142156521, -7.675591502323274e-6, -0.000157442761224106, 8.064735512893051e-5, -0.015126272684655499, -0.00012269017151233513, 0.00010154194964113975, 7.910137653658872e-5, -0.003364850164287397, -0.0008949624307786254, -8.071314237788312e-5, 8.07131505114633e-5, -0.006570919156666475, 8.07093271727057e-5], impulses: [3.0287951765840657, -0.5600896120768281, 0.2930441883130135, 0.007427621887842331, -0.012340158517891053, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], residual: 2.006631673002808e-11, iterations: 25, converged: true, response_storage: 225, factor_solves: 17 }
+captured_impact residual=2.006631673002808e-11 iterations=25 restarts=1
+test response::tests::cold_impact::captured_cold_car_impact_converges_without_relaxing_its_velocity_residual ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out; finished in 0.00s
+

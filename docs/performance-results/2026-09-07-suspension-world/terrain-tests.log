@@ -1,0 +1,61 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_gpu-acda15e0dc9fccb3)
+
+running 27 tests
+test device::terrain::generated::generated_caves_stop_wall_and_ceiling_impacts ... Generated terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+{"scenario":"cave_ceiling","speed_mps":20,"triangles":26244,"maximum_contacts":38,"maximum_penetration_m":0.0007712841,"ticks":10,"failure_flags":0}
+{"scenario":"cave_wall","speed_mps":20,"triangles":40340,"maximum_contacts":19,"maximum_penetration_m":0.00096955895,"ticks":10,"failure_flags":0}
+ok
+test device::terrain::generated::generated_terrain_supports_fast_impacts_across_brick_boundaries ... Generated terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+{"scenario":"surface_0","speed_mps":20,"triangles":18432,"maximum_contacts":4,"maximum_penetration_m":0.0010415912,"ticks":120,"failure_flags":0}
+{"scenario":"surface_180","speed_mps":20,"triangles":21844,"maximum_contacts":5,"maximum_penetration_m":0.0011362135,"ticks":120,"failure_flags":0}
+{"scenario":"surface_300","speed_mps":20,"triangles":20287,"maximum_contacts":5,"maximum_penetration_m":0.001724869,"ticks":120,"failure_flags":0}
+ok
+test device::terrain::publication::tests::failed_preparation_preserves_cached_geometry ... ok
+test device::terrain::publication::tests::incremental_publication_reuses_chunks_and_rejects_stale_output_before_writes ... Incremental terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test device::terrain::publication::tests::mesh_handoff_copies_only_changed_geometry ... ok
+test device::terrain::publication::tests::preparation_reuses_geometry_across_origin_shifts_and_replaces_changed_generations ... ok
+test device::terrain::publication::tests::top_level_bvh_miss_skips_all_distant_chunks ... ok
+test device::terrain::rotational::rotating_body_cannot_pass_through_terrain_between_clear_endpoint_poses ... Rotational terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+rotational impact: pose GpuTransform { position: [0.0, 0.26980808, 0.0, 0.0], rotation: [0.0, 0.0, 0.40910843, 0.91248584] }, velocity GpuVelocity { linear: [-1.3241224, 2.1027787, 2.4795532e-5, 0.0], angular: [0.00084400177, 0.0010061264, 28.808634, 0.0] }, contacts 2, energy ratio 0.42682266
+ok
+test device::terrain::tests::curved_terrain_triangles_support_impacts_without_overflow_or_rebound ... Dense terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+{"scenario":"dense_terrain_impact","speed_mps":20,"curvature":0.02,"tilt_radians":0,"triangles":1152,"ticks":120,"supported_ticks":120,"maximum_penetration_m":0.0010919869,"settling_penetration_m":0.0010005236,"maximum_upward_velocity_mps":0,"maximum_contacts":5,"failure_flags":0}
+Dense terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+{"scenario":"dense_terrain_impact","speed_mps":20,"curvature":0.02,"tilt_radians":0.34906584,"triangles":1152,"ticks":120,"supported_ticks":120,"maximum_penetration_m":0.00109151,"settling_penetration_m":0.0010639131,"maximum_upward_velocity_mps":0,"maximum_contacts":5,"failure_flags":0}
+Dense terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+{"scenario":"dense_terrain_impact","speed_mps":20,"curvature":-0.02,"tilt_radians":0,"triangles":1152,"ticks":120,"supported_ticks":120,"maximum_penetration_m":0.000997901,"settling_penetration_m":0.0009976029,"maximum_upward_velocity_mps":0,"maximum_contacts":4,"failure_flags":0}
+Dense terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+{"scenario":"dense_terrain_impact","speed_mps":20,"curvature":-0.02,"tilt_radians":0.34906584,"triangles":1152,"ticks":120,"supported_ticks":120,"maximum_penetration_m":0.0010083616,"settling_penetration_m":0.0009985864,"maximum_upward_velocity_mps":0,"maximum_contacts":5,"failure_flags":0}
+ok
+test device::terrain::tests::dense_terrain_triangles_share_support_without_overflow_or_rebound ... Dense terrain adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+{"scenario":"dense_terrain_impact","speed_mps":20,"curvature":0,"tilt_radians":0,"triangles":1152,"ticks":120,"supported_ticks":120,"maximum_penetration_m":0.0010415912,"settling_penetration_m":0.0010003746,"maximum_upward_velocity_mps":0,"maximum_contacts":4,"failure_flags":0}
+ok
+test device::terrain::tests::gpu_terrain_contacts_use_finite_triangles_without_ground_planes ... Terrain GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test device::terrain::tests::rigid_terrain_impacts_do_not_tunnel_or_rebound_from_recovery ... Terrain impact regression adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test device::terrain::tests::terrain_downward_impact_trace ... ignored, diagnostic GPU impact trace; run explicitly with --ignored --nocapture
+test device::terrain::tests::terrain_upload_preserves_bvh_escape_ranges ... ok
+test device::terrain::tests::terrain_upload_rebases_before_narrowing_and_uses_material_response ... ok
+test device::terrain::tests::terrain_upload_rejects_invalid_indices_and_non_finite_materials ... ok
+test device::tests::rigid_terrain_impact_bounds_hold_for_convex_parts_and_cylinders ... GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test device::tests::terrain_contacts_enter_the_fused_articulated_solver ... GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test device::tests::terrain_position_recovery_preserves_intentional_restitution ... GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test device::tests::terrain_recovery_preserves_articulated_and_suspension_constraints ... GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test device::tests::terrain_triangles_contact_cuboids_convex_parts_and_cylinders_on_slopes_and_walls ... GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+ok
+test terrain::tests::asymmetric_convex_uses_support_toward_terrain ... ok
+test terrain::tests::cuboid_convex_and_wheel_generate_triangle_contacts ... ok
+test terrain::tests::device_limit_overflow_keeps_the_previous_generation_and_reports_backlog ... ok
+test terrain::tests::late_worker_results_cannot_replace_newer_pending_or_active_chunks ... ok
+test terrain::tests::replacement_at_tick_boundary_invalidates_old_generation_and_pins_overlap ... ok
+test terrain::tests::unloading_invalidates_contacts_and_cancels_pending_replacement ... ok
+
+test result: ok. 26 passed; 0 failed; 1 ignored; 0 measured; 90 filtered out; finished in 164.35s
+

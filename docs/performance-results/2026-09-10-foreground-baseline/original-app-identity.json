@@ -1,0 +1,7 @@
+{
+  "binary_sha256": "e15150fe17afb442f5d65227d389f45aa4c99e2592f8fc9a815ad4f074a0e85f",
+  "source_archive_sha256": "1a92ab3de91f690a33df2079201bc897d49220a49d8e773ddf11f682957d45d9",
+  "build_complete": true,
+  "command": "cargo build -p mechanic-app --release --offline --manifest-path /private/tmp/mechanic-frozen-20260909/Cargo.toml --target-dir /Users/jens/repos/mechanic/target",
+  "capture_protocol": "historical background schema; not the repaired foreground baseline"
+}

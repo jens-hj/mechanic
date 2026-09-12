@@ -1,0 +1,6 @@
+{
+  "passed": true,
+  "rejections": [],
+  "physics_acceptance_passed": false,
+  "reason": "complete kernel coverage and physical acceptance remain separate gates"
+}

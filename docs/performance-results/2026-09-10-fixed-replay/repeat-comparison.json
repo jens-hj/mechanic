@@ -1,0 +1,13 @@
+{
+  "comparable": false,
+  "rejections": [
+    "completed-state hashes differ"
+  ],
+  "repeat_requested": true,
+  "shared_script_ticks": 1800,
+  "first_state_hash_mismatch_script_tick": 13,
+  "first_drive_hash_mismatch_script_tick": null,
+  "missing_published_states": 0,
+  "physics_acceptance_passed": false,
+  "note": "Full kernel coverage and physical-bound acceptance require independent evidence."
+}

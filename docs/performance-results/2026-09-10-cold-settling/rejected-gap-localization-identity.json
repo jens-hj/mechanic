@@ -1,0 +1,8 @@
+{
+  "archive_sha256": "e0e6f8278365861deb1009bab7560fa71219bb37ec0fa9457977ef43faf0e3c3",
+  "files": {
+    "crates/mechanic-physics/src/joint_machine.rs": "55904cb6a1df9a3fc893556c58c6f431d15992896409e5569ceb7aa855e18d18",
+    "crates/mechanic-physics/src/joint_machine/events.rs": "a4d5f4661b191630050969b0192a61352afd7319547a8a163f80f72768b848f1",
+    "crates/mechanic-physics/src/terrain_contacts/sweep.rs": "1e4070e898282df99ea888a8c2739286eac1e3837f2dce7aeb3b6039ff254df5"
+  }
+}

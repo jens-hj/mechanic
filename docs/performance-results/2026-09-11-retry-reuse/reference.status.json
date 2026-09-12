@@ -1,0 +1,13 @@
+{
+  "converged": true,
+  "original_residual": 6.484177394240455e-15,
+  "normal_error": 6.4855431200066015e-15,
+  "disk_error": 1.734723475976807e-18,
+  "direction_error": 8.766233377482421e-15,
+  "rows": 50,
+  "coordinates": 16,
+  "numpy_version": "2.3.0",
+  "fixture_sha256": "a17563b827fd7bfdfa3167797611cea506f7aa91c1cbb5a517ef225a1e36c550",
+  "script_sha256": "4b67fd7d53c72451add07a560d65ad34f4a82acdf232a08b4677417088602600",
+  "semantics": "instantaneous algebra candidate; no physical tick or performance acceptance"
+}

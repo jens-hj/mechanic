@@ -1,0 +1,105 @@
+   Compiling mechanic-world v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-world)
+    Finished `test` profile [optimized + debuginfo] target(s) in 13.43s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_world-7519a31f41359702)
+
+running 91 tests
+test coordinates::tests::floating_origin_preserves_global_position ... ok
+test coordinates::tests::negative_cells_use_euclidean_bricks ... ok
+test construction_collision::tests::compiled_floor_and_ceiling_return_opposite_normals ... ok
+test construction_collision::tests::compiled_convex_uses_support_mapped_sweep ... ok
+test edits::tests::boundary_refusal_does_not_promote_bricks ... ok
+test construction_collision::tests::compiled_cylinder_bore_remains_passable ... ok
+test construction_collision::tests::swept_capsule_stops_at_a_thin_compiled_wall ... ok
+test construction_collision::tests::published_body_sweep_pushes_a_stationary_capsule ... ok
+test edits::tests::ancestor_bounds_revisions_and_region_traversal_follow_promoted_leaves ... ok
+test edits::tests::depth_twenty_seven_root_covers_both_signed_cell_extremes ... ok
+test edits::tests::addition_assigns_material_without_repainting_existing_solids ... ok
+test edits::tests::excavating_untouched_air_does_not_promote_empty_bricks ... ok
+test edits::tests::edited_brick_rle_round_trips_exactly ... ok
+test edits::tests::delta_addition_matches_two_complete_overlapping_spheres ... ok
+test edits::tests::snapshot_isolation_is_copy_on_write ... ok
+test edits::tests::insertion_order_rebuilds_identical_hierarchy ... ok
+test edits::tests::untouched_space_allocates_nothing_and_promotion_is_sparse ... ok
+test generation::tests::cave_is_connected_branched_and_has_walking_clearance ... ok
+test generation::tests::cell_sampling_uses_exact_centres ... ok
+test generation::tests::finite_world_is_empty_beyond_horizontal_bounds ... ok
+test generation::tests::generation_is_deterministic_and_seeded ... ok
+test generation::tests::spawn_meadow_has_safe_clearance_and_shallow_slope ... ok
+test generation::tests::strata_resolve_at_cell_centres ... ok
+test material_response::tests::triangle_blending_normalizes_weights_and_rejects_invalid_material_data ... ok
+test mesh::tests::authored_addition_uses_solid_material_without_changing_procedural_cover ... ok
+test edits::tests::octree_range_minimum_matches_promoted_cell_scan ... ok
+test edits::tests::added_material_rle_round_trips_exactly ... ok
+test edits::tests::delta_excavation_matches_two_complete_overlapping_spheres ... ok
+test mesh::tests::generated_triangle_bvh_has_real_branches_and_leaf_ranges ... ok
+test mesh::tests::index_counts_match_combined_vectors ... ok
+test mesh::tests::official_regular_and_transition_tables_cover_every_case ... ok
+test mesh::tests::generated_vertices_stay_in_owning_bounds_and_normals_are_finite ... ok
+test mesh::tests::official_transition_vertices_only_use_crossing_edges ... ok
+test mesh::tests::prepared_region_matches_octree_range_queries_across_signed_bricks ... ok
+test mesh::tests::adjacent_equal_lod_boundaries_are_byte_identical ... ok
+test mesh::tests::isolated_authored_addition_mesh_keeps_its_selected_material ... ok
+test mesh::tests::terrain_mesh_raycast_hits_the_surface ... ok
+test persistence::tests::autosave_debounces_but_never_waits_more_than_thirty_seconds ... ok
+test mesh::tests::promoted_meshing_keeps_the_analytic_surface_height_and_outward_winding ... ok
+test edits::tests::excavation_is_idempotent_and_accounts_by_material ... ok
+test persistence::tests::corrupt_brick_reports_exact_file_and_preserves_it ... ok
+test persistence::tests::dirty_leaf_save_and_hierarchy_reconstruction_are_deterministic ... ok
+test persistence::tests::failed_manifest_publication_restores_frozen_and_construction_generations ... ok
+test persistence::tests::frozen_target_round_trips_with_matching_published_generation ... ok
+test persistence::tests::invalid_frozen_state_is_rejected_on_save_and_load ... ok
+test persistence::tests::list_classifies_version_two_outdated_and_corrupt_manifests ... ok
+test persistence::tests::paired_spaces_publish_and_reload_one_generation ... ok
+test persistence::tests::opening_outdated_deletes_only_exact_child_and_corrupt_current_is_preserved ... ok
+test query::bounds_tests::actual_mesh_bounds_refit_ancestors_across_nominal_seams_and_removal ... ok
+test query::bounds_tests::mixed_parent_child_updates_keep_every_overlapping_candidate_in_stable_order ... ok
+test persistence::tests::world_instance_and_brick_round_trip ... ok
+test query::tests::brick_index_returns_only_overlapping_foundations ... ok
+test query::tests::capsule_lands_and_jumps_to_requested_height ... ok
+test query::tests::changed_bricks_refresh_only_intersecting_foundation_samples ... ok
+test query::tests::construction_step_can_be_climbed_at_an_angle ... ok
+test query::tests::construction_step_climbs_only_to_the_compiled_top_face ... ok
+test query::tests::foundation_detaches_only_after_final_anchor_is_lost ... ok
+test query::tests::dynamic_construction_supports_and_receives_opposite_player_impulses ... ok
+test mesh::tests::edited_transition_coarse_edge_matches_coarse_regular_surface ... ok
+test mesh::tests::transition_surface_occupies_an_inset_band ... ok
+test query::tests::grazing_a_step_edge_does_not_repeat_step_and_fall ... ok
+test query::tests::grounded_capsule_stays_still_on_a_walkable_slope ... ok
+test query::tests::holding_jump_during_a_fall_does_not_slow_gravity ... ok
+test query::tests::moving_creation_edit_has_clear_feedback ... ok
+test query::tests::holding_jump_progressively_increases_height_by_up_to_fifty_percent ... ok
+test query::tests::moving_support_carries_position_yaw_and_jump_velocity ... ok
+test query::tests::grounded_capsule_stays_still_on_a_walkable_construction_slope ... ok
+test query::tests::grounded_capsule_does_not_slide_from_a_flat_construction_edge ... ok
+test query::tests::one_block_foundation_samples_twenty_five_terrain_points ... ok
+test query::tests::pressing_jump_again_in_midair_does_not_restore_extra_lift ... ok
+test query::tests::sprint_uses_configured_faster_speed ... ok
+test query::tests::vertical_construction_contact_does_not_slow_a_fall ... ok
+test streaming::tests::coarsened_cut_replaces_all_fine_nodes_in_one_activation ... ok
+test streaming::tests::critical_empty_results_count_as_resolved_and_dirty ... ok
+test streaming::tests::mesh_generation_tracks_edits_in_a_neighbouring_sampling_halo ... ok
+test query::tests::active_octree_and_chunk_bvhs_match_direct_chunk_raycast ... ok
+test streaming::tests::publication_caps_only_faces_with_pending_desired_neighbors ... ok
+test streaming::tests::publication_delta_reports_only_changed_upserts_and_removals ... ok
+test streaming::tests::refined_cut_stays_active_until_every_replacement_is_staged ... ok
+test streaming::tests::selection_delta_reconstructs_the_full_selected_cut ... ok
+test streaming::tests::stale_active_generation_is_not_ready_for_seam_publication ... ok
+test streaming::tests::transition_boundary_samples_propagate_across_fine_edges_and_corners ... ok
+test streaming::tests::procedural_bounds_are_conservative_on_every_meshing_lattice ... ok
+test streaming::tests::every_selected_and_balance_created_node_is_mixed ... ok
+test streaming::tests::edited_surface_keeps_coarse_sampling_footprints_outside_the_edit ... ok
+test mesh::tests::transition_surface_has_no_open_interior_edges ... ok
+test mesh::tests::excavated_surface_triangles_keep_outward_winding ... ok
+test mesh::tests::untouched_surface_remains_smooth_and_covered_at_every_lod ... ok
+test mesh::tests::cavity_generates_transitions_and_caps_on_all_six_faces ... ok
+test streaming::tests::cached_reselection_reuses_horizontal_procedural_bounds ... ok
+test streaming::tests::selected_cut_is_non_overlapping_and_two_to_one_balanced ... ok
+
+test result: ok. 91 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s
+
+   Doc-tests mechanic_world
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

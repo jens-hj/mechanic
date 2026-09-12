@@ -1,0 +1,3 @@
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.48s
+  Executable unittests src/lib.rs (target/debug/deps/mechanic_gpu-acda15e0dc9fccb3)

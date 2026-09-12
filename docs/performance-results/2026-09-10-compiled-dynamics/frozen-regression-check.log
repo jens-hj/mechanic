@@ -1,0 +1,103 @@
+
+running 11 tests
+test device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration ... FAILED
+test device::tests::articulated_car_wall_impact_remains_bounded_and_decays ... FAILED
+test device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion ... FAILED
+test device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion ... FAILED
+test device::tests::lower_modulus_allows_more_transient_penetration_without_failure ... FAILED
+test device::tests::plastic_rebounds_more_than_concrete ... FAILED
+test device::tests::production_servos_hold_steering_under_first_gear_gas_drive ... FAILED
+test device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding ... FAILED
+test device::tests::steering_servos_reach_angle_without_overshooting ... FAILED
+test device::tests::struck_articulated_wheel_recovers_without_crossing_ground ... FAILED
+test device::tests::tall_single_and_double_pendulums_dissipate_energy ... FAILED
+
+failures:
+
+---- device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration' (9970446) panicked at crates/mechanic-gpu/src/device.rs:8410:17:
+wheel 2 entered the ground at tick 30: y=0.48957208
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- device::tests::articulated_car_wall_impact_remains_bounded_and_decays stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::articulated_car_wall_impact_remains_bounded_and_decays' (9970453) panicked at crates/mechanic-gpu/src/device.rs:9315:9:
+wall-impact bearing motion did not decay: final speed 0.035505295 rad/s
+
+---- device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion' (9970492) panicked at crates/mechanic-gpu/src/device.rs:10312:9:
+annular drop reached y=3.1012783 instead of resting on the ring
+
+---- device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion' (9970497) panicked at crates/mechanic-gpu/src/device.rs:10391:9:
+assertion failed: annular_snapshot[falling_body].position[1] > 3.0
+
+---- device::tests::lower_modulus_allows_more_transient_penetration_without_failure stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::lower_modulus_allows_more_transient_penetration_without_failure' (9970504) panicked at crates/mechanic-gpu/src/device.rs:10120:9:
+soft contact became unstable at -0.8241361 m
+
+---- device::tests::plastic_rebounds_more_than_concrete stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::plastic_rebounds_more_than_concrete' (9970511) panicked at crates/mechanic-gpu/src/device.rs:10150:9:
+plastic rebounded to 0.5122585 m while concrete reached 0.5 m
+
+---- device::tests::production_servos_hold_steering_under_first_gear_gas_drive stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::production_servos_hold_steering_under_first_gear_gas_drive' (9970532) panicked at crates/mechanic-gpu/src/device.rs:8741:9:
+full first-gear drive deflected centred steering by 5.709531 degrees
+
+---- device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding' (9970562) panicked at crates/mechanic-gpu/src/device.rs:9889:9:
+sub-threshold static load moved the cube 0.39855438 m
+
+---- device::tests::steering_servos_reach_angle_without_overshooting stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::steering_servos_reach_angle_without_overshooting' (9970570) panicked at crates/mechanic-gpu/src/device.rs:8601:13:
+steering coordinate 0 overshot 30 degrees to 30.804607 degrees
+
+---- device::tests::struck_articulated_wheel_recovers_without_crossing_ground stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::struck_articulated_wheel_recovers_without_crossing_ground' (9970644) panicked at crates/mechanic-gpu/src/device.rs:9212:9:
+struck wheel remained in the ground at 0.4945614 m
+
+---- device::tests::tall_single_and_double_pendulums_dissipate_energy stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::tall_single_and_double_pendulums_dissipate_energy' (9970669) panicked at crates/mechanic-gpu/src/device.rs:5277:9:
+double pendulum retained free angles [1.3451535, -1.6540538] and speeds [0.056169037, 0.16564614]
+
+
+failures:
+    device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration
+    device::tests::articulated_car_wall_impact_remains_bounded_and_decays
+    device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion
+    device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion
+    device::tests::lower_modulus_allows_more_transient_penetration_without_failure
+    device::tests::plastic_rebounds_more_than_concrete
+    device::tests::production_servos_hold_steering_under_first_gear_gas_drive
+    device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding
+    device::tests::steering_servos_reach_angle_without_overshooting
+    device::tests::struck_articulated_wheel_recovers_without_crossing_ground
+    device::tests::tall_single_and_double_pendulums_dissipate_energy
+
+test result: FAILED. 0 passed; 11 failed; 0 ignored; 0 measured; 108 filtered out; finished in 20.56s
+

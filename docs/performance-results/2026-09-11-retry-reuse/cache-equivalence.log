@@ -1,0 +1,10 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.97s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+interval_cache queries=29->10 assemblies=379->360 trials=22
+test joint_machine::tests::terrain_ticks::saved_car::reintegration_reuses_initial_geometry_until_a_validated_prefix_changes_the_state ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 137 filtered out; finished in 0.08s
+

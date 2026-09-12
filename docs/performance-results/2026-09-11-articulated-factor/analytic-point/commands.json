@@ -1,0 +1,54 @@
+[
+  {
+    "command": [
+      "/private/tmp/mechanic-response-point-lu",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "1-lu.jsonl",
+    "binary_sha256": "2b258eabaa05df1319e4865f61d8c4646a3ecc9765674a35694b99a0637fb705"
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "2-analytic.jsonl",
+    "binary_sha256": "a264a777a446f25728fb6c92f0f2d8043faf634ddcd09ee09e38ce81b3a69829"
+  },
+  {
+    "command": [
+      "target/release/compiled-response",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "3-analytic.jsonl",
+    "binary_sha256": "a264a777a446f25728fb6c92f0f2d8043faf634ddcd09ee09e38ce81b3a69829"
+  },
+  {
+    "command": [
+      "/private/tmp/mechanic-response-point-lu",
+      "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+      "256",
+      "finite-terrain",
+      "1e-8",
+      "articulated"
+    ],
+    "result": 0,
+    "output": "4-lu.jsonl",
+    "binary_sha256": "2b258eabaa05df1319e4865f61d8c4646a3ecc9765674a35694b99a0637fb705"
+  }
+]

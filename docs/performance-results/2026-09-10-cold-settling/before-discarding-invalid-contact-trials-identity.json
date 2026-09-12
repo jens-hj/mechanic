@@ -1,0 +1,9 @@
+{
+  "archive_sha256": "36b0907da464a3ae7d77eca04d7228bcf44f7df7c1dc742c5af215722ffc1929",
+  "files": {
+    "crates/mechanic-physics/src/response.rs": "582767572186b80080e0ca873e1e9265e847c04169ec6941c6dedcf710e10ea2",
+    "crates/mechanic-physics/src/joint_machine.rs": "51c4e68ec76220728c2a173ea39230c4863577d1413a520042d33fbf44daf88e",
+    "crates/mechanic-physics/src/joint_machine/events.rs": "2145c812605c78cc84fda7d7b29f8fad18b02fac1890b94d6faa7c5611ea6b3a",
+    "crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs": "5da410e5e56a9c6d6ba979cff65893d0ac226ec0209e99d84cdddff55f82c708"
+  }
+}

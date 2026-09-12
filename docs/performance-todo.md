@@ -1,5 +1,51 @@
 # Vehicle performance checklist
 
+The active architectural redesign follows
+[Compiled machine dynamics](compiled-machine-dynamics.md), including its current
+checkpoint and exact acceptance gates. The dated profiling pauses below are
+historical; they do not pause the authorized CPU/GPU and production-rendering work.
+
+## BLOB physics optimization (2026-09-08)
+
+- [x] Limit World physics terrain publication to snapped, generously margined
+  interest regions around compiled body positions. Keep ticking on an accepted
+  cut; block before first publication, across rebases, and when travel exhausts
+  the 48 m safety allowance.
+- [x] Skip terrain BVH traversal for immovable colliders. Their terrain contacts
+  were already discarded by contact preparation because inverse mass is zero.
+- [x] Expand the asynchronous readback ring from three to 12 slots and cap wall
+  time catch-up at 30 ticks, reporting dropped ticks in F3 and captures.
+- [x] Keep a dynamic vehicle backlog from starving render submission: at most
+  three physics ticks are submitted per rendered frame. In the driven `car`
+  save this raised background FPS 8.59 → 9.95 and cut frame p95 241.69 →
+  132.89 ms with all eight sweeps and zero failure flags.
+- [x] Use the exact closed-form spring/damper solution during ordinary travel;
+  retain all eight Newton iterations whenever the rubber bump stop engages.
+  The ten-test Metal suspension suite passes.
+- [x] Restore dynamic-root mechanisms to the established fully separated
+  terrain-recovery route after a driven car fell through terrain. A deterministic
+  60-second straight full-throttle real-save run stays grounded; the exact
+  intermittent failure did not reproduce in the A/B automation runs.
+- [x] Move terrain streaming with an occupied seat's simulated pose. Previously
+  it stayed at the seat-entry point, so vehicles eventually outran the resident
+  collision meshes. Prioritize that same local region and hold physics whenever
+  its current terrain is unresolved. The `car` save stayed grounded through a
+  60-second Metal capture spanning 18 reselections and 37 collision publications.
+- [x] Measure the real BLOB world before and after on Apple M1 Pro / Metal.
+  [Evidence](performance-results/2026-09-08-blob-physics/README.md): first terrain
+  publication 41.81 → 11.31 s, terrain-contact GPU p50 537.21 → 0.0557 ms,
+  whole-physics GPU p50 545.17 → 6.73 ms, completed TPS 0.47 → 48.60, final
+  backlog 422 → 0, zero dropped ticks and zero failure flags after the change.
+  Frame rate remains render-bound near 19 FPS; render quality was not changed.
+- [x] Run the prescribed headless comparisons and archive failures without
+  weakening gates. `test2_car` and the suspension plane control pass. The longer
+  `four_bar` run sets the closure flag, `bearings_4` misses its 4 ms p95 budget,
+  and `dense_100k` regresses with far more active contacts. Those fixtures do not
+  execute the optimized terrain path and remain broader-worktree follow-up work.
+- [ ] Diagnose the headless `four_bar`, `bearings_4`, and `dense_100k` regressions
+  as a separate physics pass. Do not weaken tolerances, iteration counts, or
+  coverage gates.
+
 ## Paused after profiling
 
 The fence backport and opt-in diagnostics are retained. No new terrain shader

@@ -1,0 +1,16 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.45s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-dac2f47f7911b970)
+
+running 8 tests
+test joint_machine::tests::terrain_ticks::terrain_failure_does_not_commit_a_drive_change ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::shallow_first_impact_is_held_even_when_its_depth_envelope_passes ... ok
+test joint_machine::tests::terrain_ticks::changed_supporting_terrain_or_wrong_topology_cannot_publish_an_invalid_tick ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::existing_floor_support_does_not_hide_a_new_finite_wall_impact ... ok
+test joint_machine::tests::terrain_ticks::final_terrain_failure_retains_completed_state_and_does_not_consume_a_command ... ok
+test joint_machine::tests::terrain_ticks::failed_terrain_path_retries_match_direct_quality_and_consume_impulse_once ... ok
+test joint_machine::tests::terrain_ticks::split_joint_recovery_checks_terrain_and_restores_physical_velocity_on_failure ... ok
+test joint_machine::tests::terrain_ticks::supported_ticks_validate_motion_before_publication_and_repeat_at_each_substep_policy ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.29s
+

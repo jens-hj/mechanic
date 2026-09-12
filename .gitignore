@@ -1,4 +1,5 @@
 /target
+/.physics-reference
 *.trace
 *.jsonl
 .DS_Store

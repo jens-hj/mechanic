@@ -1,0 +1,1060 @@
+(
+    version: 17,
+    name: "Suspension - Sprint AWD",
+    parts: [
+        Cuboid(
+            dimensions: (12, 1, 2),
+            pose: (
+                translation_ticks: (0, 1700, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 10),
+            pose: (
+                translation_ticks: (-500, 1700, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 10),
+            pose: (
+                translation_ticks: (500, 1700, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-500, 1500, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-500, 1400, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.9,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-500, 1400, 600),
+                rotation: (1, 0, 0),
+            ),
+            material: Rubber,
+            appearance: (
+                color: Baked,
+                finish: Baked,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-500, 1500, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-500, 1400, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.9,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-500, 1400, -600),
+                rotation: (1, 2, 2),
+            ),
+            material: Rubber,
+            appearance: (
+                color: Baked,
+                finish: Baked,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (500, 1500, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (500, 1400, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.9,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (500, 1400, 600),
+                rotation: (1, 0, 0),
+            ),
+            material: Rubber,
+            appearance: (
+                color: Baked,
+                finish: Baked,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (500, 1500, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (500, 1400, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Wood,
+            appearance: (
+                color: Dye((
+                    target_rgb: (36, 126, 218),
+                    structure: 0.8,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.9,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (500, 1400, -600),
+                rotation: (1, 2, 2),
+            ),
+            material: Rubber,
+            appearance: (
+                color: Baked,
+                finish: Baked,
+            ),
+        ),
+        Input(
+            pose: (
+                translation_ticks: (-300, 1800, 0),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Seat(
+            pose: (
+                translation_ticks: (-150, 1800, 0),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Servo(
+            pose: (
+                translation_ticks: (0, 1800, -50),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Servo(
+            pose: (
+                translation_ticks: (0, 1800, 50),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Servo(
+            pose: (
+                translation_ticks: (0, 1800, 150),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Servo(
+            pose: (
+                translation_ticks: (0, 1800, -150),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Engine(
+            kind: Gas,
+            pose: (
+                translation_ticks: (300, 1850, 100),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Engine(
+            kind: Gas,
+            pose: (
+                translation_ticks: (300, 1850, -100),
+                rotation: (0, 1, 0),
+            ),
+        ),
+        Controller(
+            pose: (
+                translation_ticks: (100, 1850, 0),
+                rotation: (0, 3, 0),
+            ),
+        ),
+    ],
+    frames: [
+        (
+            translation: (0.0, 0.0, 0.0),
+            rotation: (0.0, 0.0, 0.0, 1.0),
+        ),
+    ],
+    part_frames: [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ],
+    region_frames: [],
+    welds: [
+        (
+            first: (
+                owner: Part(16),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(15),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(17),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(16),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(18),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(17),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(18),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(16),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(19),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(18),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(20),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(17),
+                face: PositiveX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(21),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(23),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(21),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(22),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(22),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(23),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(23),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(18),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(23),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(17),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+    ],
+    rigid_links: [
+        (
+            first: 0,
+            second: 1,
+        ),
+        (
+            first: 0,
+            second: 2,
+        ),
+        (
+            first: 9,
+            second: 10,
+        ),
+        (
+            first: 12,
+            second: 13,
+        ),
+        (
+            first: 0,
+            second: 15,
+        ),
+        (
+            first: 0,
+            second: 16,
+        ),
+        (
+            first: 0,
+            second: 17,
+        ),
+        (
+            first: 0,
+            second: 18,
+        ),
+        (
+            first: 0,
+            second: 19,
+        ),
+        (
+            first: 0,
+            second: 20,
+        ),
+        (
+            first: 0,
+            second: 21,
+        ),
+        (
+            first: 0,
+            second: 22,
+        ),
+        (
+            first: 0,
+            second: 23,
+        ),
+    ],
+    bearings: [
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.25,
+                    od: 0.16,
+                    id: 0.13,
+                    coils: 3,
+                    preload: 0.005,
+                )),
+                shock: Some((
+                    length: 0.25,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.0,
+                    compression: 8.0,
+                    rebound: 12.0,
+                )),
+                bump_stop: Some((0.025, 0.065)),
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.25,
+            )),
+            source: (
+                owner: Part(1),
+                face: NegativeY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(3),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (-1.25, 4.125, 1.25),
+            axis: (0.0, -1.0, 0.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(3),
+                face: NegativeY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(4),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (-1.25, 3.625, 1.25),
+            axis: (0.0, -1.0, 0.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(4),
+                face: PositiveZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(5),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (-1.25, 3.5, 1.375),
+            axis: (0.0, 0.0, 1.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.25,
+                    od: 0.16,
+                    id: 0.13,
+                    coils: 3,
+                    preload: 0.005,
+                )),
+                shock: Some((
+                    length: 0.25,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.0,
+                    compression: 8.0,
+                    rebound: 12.0,
+                )),
+                bump_stop: Some((0.025, 0.065)),
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.25,
+            )),
+            source: (
+                owner: Part(1),
+                face: NegativeY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(6),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (-1.25, 4.125, -1.25),
+            axis: (0.0, -1.0, 0.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(6),
+                face: NegativeY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(7),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (-1.25, 3.625, -1.25),
+            axis: (0.0, -1.0, 0.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(7),
+                face: NegativeZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(8),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (-1.25, 3.5, -1.375),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.25,
+                    od: 0.16,
+                    id: 0.13,
+                    coils: 3,
+                    preload: 0.005,
+                )),
+                shock: Some((
+                    length: 0.25,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.0,
+                    compression: 8.0,
+                    rebound: 12.0,
+                )),
+                bump_stop: Some((0.025, 0.065)),
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.25,
+            )),
+            source: (
+                owner: Part(2),
+                face: NegativeY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(9),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (1.25, 4.125, 1.25),
+            axis: (0.0, -1.0, 0.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(10),
+                face: PositiveZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(11),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (1.25, 3.5, 1.375),
+            axis: (0.0, 0.0, 1.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.25,
+                    od: 0.16,
+                    id: 0.13,
+                    coils: 3,
+                    preload: 0.005,
+                )),
+                shock: Some((
+                    length: 0.25,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.0,
+                    compression: 8.0,
+                    rebound: 12.0,
+                )),
+                bump_stop: Some((0.025, 0.065)),
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.25,
+            )),
+            source: (
+                owner: Part(2),
+                face: NegativeY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(12),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (1.25, 4.125, -1.25),
+            axis: (0.0, -1.0, 0.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(13),
+                face: NegativeZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(14),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (1.25, 3.5, -1.375),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+        ),
+    ],
+    drive_links: [
+        (
+            linear_limits: None,
+            controller: 23,
+            bearing: 1,
+            reversed: false,
+            actuator: Servo,
+            limits: (
+                max_speed_rad_s: 3.1415927,
+                max_torque_newton_meters: None,
+                angle_limits: Some((-0.21, 0.21)),
+            ),
+            program: (
+                loops: false,
+                states: [
+                    (
+                        target: Angle(0.0),
+                        dwell: None,
+                        trigger: None,
+                    ),
+                    (
+                        target: Angle(-0.2),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'A',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                    (
+                        target: Angle(0.2),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'D',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                ],
+            ),
+            name: "Steering",
+        ),
+        (
+            linear_limits: None,
+            controller: 23,
+            bearing: 4,
+            reversed: false,
+            actuator: Servo,
+            limits: (
+                max_speed_rad_s: 3.1415927,
+                max_torque_newton_meters: None,
+                angle_limits: Some((-0.21, 0.21)),
+            ),
+            program: (
+                loops: false,
+                states: [
+                    (
+                        target: Angle(0.0),
+                        dwell: None,
+                        trigger: None,
+                    ),
+                    (
+                        target: Angle(-0.2),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'A',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                    (
+                        target: Angle(0.2),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'D',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                ],
+            ),
+            name: "Steering",
+        ),
+        (
+            linear_limits: None,
+            controller: 23,
+            bearing: 5,
+            reversed: true,
+            actuator: Motor(
+                electric_percent: 0,
+                gas_percent: 100,
+            ),
+            limits: (
+                max_speed_rad_s: 40.0,
+                max_torque_newton_meters: None,
+                angle_limits: None,
+            ),
+            program: (
+                loops: false,
+                states: [
+                    (
+                        target: Speed(0.0),
+                        dwell: None,
+                        trigger: None,
+                    ),
+                    (
+                        target: Speed(40.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'W',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                    (
+                        target: Speed(-12.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'S',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                ],
+            ),
+            name: "AWD",
+        ),
+        (
+            linear_limits: None,
+            controller: 23,
+            bearing: 9,
+            reversed: true,
+            actuator: Motor(
+                electric_percent: 0,
+                gas_percent: 100,
+            ),
+            limits: (
+                max_speed_rad_s: 40.0,
+                max_torque_newton_meters: None,
+                angle_limits: None,
+            ),
+            program: (
+                loops: false,
+                states: [
+                    (
+                        target: Speed(0.0),
+                        dwell: None,
+                        trigger: None,
+                    ),
+                    (
+                        target: Speed(40.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'W',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                    (
+                        target: Speed(-12.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'S',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                ],
+            ),
+            name: "AWD",
+        ),
+        (
+            linear_limits: None,
+            controller: 23,
+            bearing: 2,
+            reversed: false,
+            actuator: Motor(
+                electric_percent: 0,
+                gas_percent: 100,
+            ),
+            limits: (
+                max_speed_rad_s: 40.0,
+                max_torque_newton_meters: None,
+                angle_limits: None,
+            ),
+            program: (
+                loops: false,
+                states: [
+                    (
+                        target: Speed(0.0),
+                        dwell: None,
+                        trigger: None,
+                    ),
+                    (
+                        target: Speed(40.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'W',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                    (
+                        target: Speed(-12.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'S',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                ],
+            ),
+            name: "AWD",
+        ),
+        (
+            linear_limits: None,
+            controller: 23,
+            bearing: 7,
+            reversed: false,
+            actuator: Motor(
+                electric_percent: 0,
+                gas_percent: 100,
+            ),
+            limits: (
+                max_speed_rad_s: 40.0,
+                max_torque_newton_meters: None,
+                angle_limits: None,
+            ),
+            program: (
+                loops: false,
+                states: [
+                    (
+                        target: Speed(0.0),
+                        dwell: None,
+                        trigger: None,
+                    ),
+                    (
+                        target: Speed(40.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'W',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                    (
+                        target: Speed(-12.0),
+                        dwell: None,
+                        trigger: Some((
+                            key: 'S',
+                            release: RevertTo(0),
+                        )),
+                    ),
+                ],
+            ),
+            name: "AWD",
+        ),
+    ],
+    input_seat_links: [
+        (
+            input: 15,
+            seat: 16,
+        ),
+    ],
+    seat_controller_links: [
+        (
+            seat: 16,
+            controller: 23,
+        ),
+    ],
+    gearbox_configs: [],
+    regions: [],
+    shape_features: [],
+    sockets: [],
+)

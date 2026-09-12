@@ -1,0 +1,5 @@
+{
+  "crates/mechanic-physics/src/joint_machine.rs": "eef1e09fa9a186549dbfc429dad59204f8a0e590231d8ba77257500438e8b070",
+  "crates/mechanic-physics/src/joint_machine/events.rs": "fd91025bffc9e4c66014496959c56e8e34da95b537c9ce83a491a7e89ec803f4",
+  "crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/first_impacts.rs": "0d54a41a97cd1db11961e5378972150511e9724113a16198bdf1ed634500113f"
+}

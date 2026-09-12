@@ -1,0 +1,30 @@
+
+running 25 tests
+test sequencer::tests::a_blocked_keyboard_drives_nothing ... ok
+test sequencer::tests::a_dwell_without_a_target_walks_the_program_and_wraps_only_when_it_loops ... ok
+test sequencer::tests::a_key_press_reaches_the_gpu_row_for_that_bearings_coordinate ... ok
+test sequencer::tests::a_reversed_wire_flips_the_row_the_sequencer_uploads ... ok
+test sequencer::tests::automatic_shift_thresholds_have_hysteresis ... ok
+test sequencer::tests::changing_a_wire_program_resets_its_cursor ... ok
+test sequencer::tests::dwell_advances_to_its_named_state_and_cycles ... ok
+test sequencer::tests::external_controller_pauses_only_rows_driving_held_bearings ... ok
+test sequencer::tests::frozen_gearbox_does_not_complete_a_pending_reversal ... ok
+test sequencer::tests::frozen_gearbox_preserves_cooldown_across_publication_and_resumes ... ok
+test sequencer::tests::frozen_program_retains_remaining_dwell_while_another_controller_advances ... ok
+test sequencer::tests::gas_direction_banks_and_reversal_gate_cover_missing_and_safe_destinations ... ok
+test sequencer::tests::held_key_reverts_to_its_default_state_on_release ... ok
+test sequencer::tests::latched_pose_keys_stay_until_another_key ... ok
+test sequencer::tests::linear_position_sequence_preserves_signed_targets_and_dwell_reversal ... ok
+test sequencer::tests::live_publication_preserves_gear_and_pending_shift_until_config_changes ... ok
+test sequencer::tests::live_publication_preserves_wire_progress_when_coordinates_change ... ok
+test sequencer::tests::renaming_and_tuning_a_wire_preserves_its_program_progress ... ok
+test sequencer::tests::reset_key_interrupts_a_running_procedure ... ok
+test sequencer::tests::sequencer_rows_are_scoped_to_the_physics_publication ... ok
+test sequencer::tests::shift_chords_accept_space_page_keys_and_modifiers ... ok
+test sequencer::tests::steering_the_other_way_switches_states_without_passing_through_neutral ... ok
+test sequencer::tests::the_panel_key_is_bindable_with_gameplay_conflicts_allowed ... ok
+test sequencer::tests::wire_reversal_does_not_select_the_opposite_gas_gear_bank ... ok
+test sequencer::tests::zero_speed_explicitly_disengages_gas_torque ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 717 filtered out; finished in 0.00s
+

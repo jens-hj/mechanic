@@ -1,0 +1,7 @@
+{
+  "fixture_sha256": "692ccaab0885add970c85be7b7dee3070273e8fb791e405588a276923ee29316",
+  "physics_base": "before-gap-localization.tar.gz",
+  "core_base": "before-event-localization.tar.gz",
+  "event_budget": 1024,
+  "purpose": "diagnostic only; do not retain as production policy"
+}

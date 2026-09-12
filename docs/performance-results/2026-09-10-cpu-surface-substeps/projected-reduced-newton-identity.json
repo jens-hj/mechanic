@@ -1,0 +1,26 @@
+{
+  "binary_sha256": "f074b0125791fde8645ee6d6c27c7a7707f0aaff4aad44460d03821314cf635d",
+  "files_sha256": {
+    "crates/mechanic-bench/src/bin/compiled-response.rs": "45a7969880d7379574b4c7bd44fb03086273121def82f473bd058a0d4709c27f",
+    "crates/mechanic-bench/src/bin/compiled-response/finite_support.rs": "951076a946a7aa46b5938f372f966eafb9094d35087acaa4c5141e43a57662c0",
+    "crates/mechanic-bench/src/bin/compiled-response/measurement.rs": "759f727f7a9fd3a081fd25896428463f1abeefb5e7688bfa9e2bbfc014f0d6d1",
+    "crates/mechanic-physics/src/free_motion.rs": "a34ba0006120495a54050238117b0d6f83d84af80fbe940396ec0be4427caad4",
+    "crates/mechanic-physics/src/free_motion/tests.rs": "e04fb679778a5f115ecbdbf6d9d77fecdc9006a11c583a79dad20a30d92dbbd0",
+    "crates/mechanic-physics/src/joint_forces.rs": "020e77002112e6ad1e32676c3a0d608ee88f0d39a2026017b77564f2f88488ac",
+    "crates/mechanic-physics/src/joint_machine.rs": "87886bb7aec5a03a6b7dda542d3dbc28ac5621386a21d5cfd93386d2016750ca",
+    "crates/mechanic-physics/src/joint_machine/tests.rs": "b12ab65df589f6c836a006bd51edfb7861893b3ffa67009f267a5ecfb3e027e8",
+    "crates/mechanic-physics/src/lib.rs": "70eebe48d5dad4384940fcdae03ef273c40ab026446797feb9c5400553f857ca",
+    "crates/mechanic-physics/src/machine.rs": "54efda2dfdafb8801efd7ef32ea5fc9c707f06a586f1933144e0baf7bd3138b2",
+    "crates/mechanic-physics/src/motion_path.rs": "52e574ecf9a5d7c72cf28dee6e9ecca3afec47a6b98ef58915fe40954f5e8854",
+    "crates/mechanic-physics/src/motion_path/tests.rs": "861f568d1aa4a4993473b264f9b043c5e2bd80546e3963a527504ec4798e8658",
+    "crates/mechanic-physics/src/response.rs": "102d5ed1ccf458918fd2130776e32805bd2964522bef0303ea9900bc2dcc6d92",
+    "crates/mechanic-physics/src/response/newton.rs": "7e6f26d5df647554f7c2e2d0947d16c31b53193fa7dae68c73ba5fe233e0355a",
+    "crates/mechanic-physics/src/response/newton/projection.rs": "4e698b9268d34b27579dd32e4ea52c513a58ed9b958a7b594924a4a7d43c71ce",
+    "crates/mechanic-physics/src/response/newton/reduced.rs": "a41da476f7dd7feef6bd5b8717fdd14055b8709afc6d9bede26dec90fa65caf9",
+    "crates/mechanic-physics/src/terrain_contacts.rs": "e7340dc50b48f0947b65758f3a40e74281bb1eca8658986419c06eec8644be4f",
+    "crates/mechanic-physics/src/terrain_contacts/constraints.rs": "07713458c262bebfb8b8d285506e9760f931919de80d8f191ada565243094fda",
+    "crates/mechanic-physics/src/terrain_contacts/sweep.rs": "f0462c546c376fa064a7aa0c3a5bfa9e540961dc71eccf32bb6e4f240b251d6f",
+    "crates/mechanic-physics/src/terrain_contacts/sweep/tests.rs": "4e765d3a00e5a8203efc29a66cce875b7859c4a883334b3f4f4aa26bf9c410e2",
+    "crates/mechanic-physics/src/terrain_contacts/tests.rs": "1f7a0e62962ec05eb159f0a967fa00ffeaa270cc8c51df26162cd14635af1d3a"
+  }
+}

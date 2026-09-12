@@ -1,0 +1,29 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.29s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+test response::tests::cold_impact::later_endpoint_impact_satisfies_all_original_contact_laws ... phase eps=6.6156242350687375e-3 iter=9 original=1.7667069975877035e-4 smooth=1.0895360178371608e-5
+phase eps=6.615624235068738e-4 iter=22 original=2.6077264982497144e-4 smooth=5.2943446504253616e-6
+phase eps=6.615624235068738e-5 iter=29 original=2.4550651955928907e-5 smooth=4.94070184016562e-7
+phase eps=6.615624235068738e-6 iter=35 original=2.0021860456231572e-6 smooth=3.493945898210702e-9
+phase eps=6.615624235068738e-7 iter=67 original=1.6994793716928014e-6 smooth=1.5405714140824123e-6
+phase eps=6.615624235068738e-8 iter=68 original=1.6994793716928014e-6 smooth=1.6970630507240806e-6
+phase eps=6.615624235068739e-9 iter=70 original=1.6994793627665507e-6 smooth=1.699479517190325e-6
+phase eps=6.615624235068739e-10 iter=74 original=1.6994793571306465e-6 smooth=1.6995038797887081e-6
+phase eps=1.0000000000000002e-10 iter=85 original=1.6994792212096763e-6 smooth=1.699503966990038e-6
+late continuation iterations=85 stages=9 factors=5941
+
+thread 'response::tests::cold_impact::later_endpoint_impact_satisfies_all_original_contact_laws' (11271888) panicked at crates/mechanic-physics/src/response/tests/cold_impact.rs:321:33:
+bounded continuation
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    response::tests::cold_impact::later_endpoint_impact_satisfies_all_original_contact_laws
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 127 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

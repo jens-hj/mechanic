@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on build directory
+    Checking mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Checking mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2.84s

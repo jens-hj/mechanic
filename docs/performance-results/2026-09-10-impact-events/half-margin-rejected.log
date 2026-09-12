@@ -1,0 +1,20 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.36s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+invalid activation point: TerrainContact { feature: TerrainContactFeature { topology_generation: 7, collider: 31, node: TerrainNodeId { coordinates: BrickCoord { x: -67108864, y: -67108864, z: -67108864 }, level: 27 }, geometry_generation: 3, publication_generation: 1, triangle: 1, corner: 0 }, body: 5, manifold: 0, terrain_point: DVec3(-1.3390963056010636, 0.0, -4.875000005257901), body_point: DVec3(-1.3390963056010636, 1.1457124765797274e-7, -4.875000005257901), normal: DVec3(0.0, 1.0, 0.0), depth: 0.0, separation: 1.1457124765797274e-7, response: [0.8944271976639178, 0.6928203419545677, 0.699999988079071, 0.009999999776482582] }
+
+thread 'joint_machine::tests::terrain_ticks::saved_car::saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension' (10633748) panicked at crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs:62:18:
+called `Result::unwrap()` on an `Err` value: InvalidConstraints
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension ... FAILED
+
+failures:
+
+failures:
+    joint_machine::tests::terrain_ticks::saved_car::saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

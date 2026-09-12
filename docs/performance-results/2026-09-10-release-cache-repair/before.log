@@ -1,0 +1,13 @@
+   0.412430250s  INFO prepare_target{force=false package_id=mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app) target="mechanic-app"}: cargo::core::compiler::fingerprint: fingerprint dirty for mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)/Build/TargetInner { name: "mechanic-app", doc: true, ..: with_path("/Users/jens/repos/mechanic/crates/mechanic-app/src/main.rs", Edition2024) }
+   0.412501000s  INFO prepare_target{force=false package_id=mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app) target="mechanic-app"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(195) }
+   Compiling mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)
+error[E0609]: no field `dynamics` on type `&CompiledCreation`
+   --> crates/mechanic-app/src/performance_capture.rs:271:902
+    |
+271 | ...d_velocities":simulation.creation.as_ref().map(|c| c.dynamics.elimination_parent.len())});
+    |                                                         ^^^^^^^^ unknown field
+    |
+    = note: available fields are: `compounds`, `colliders`, `bearings`, `loop_topology`, `collision_suppression` ... and 2 others
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `mechanic-app` (bin "mechanic-app") due to 1 previous error

@@ -1,0 +1,14 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+   Compiling mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.74s
+     Running unittests src/bin/compiled-response.rs (target/debug/deps/compiled_response-e4e2e7b757371b11)
+
+running 3 tests
+saved_car_bias_maximum_relative_error=5.438005956577891e-10
+test tests::saved_car_free_fall_moves_floating_roots_without_stretching_joints ... ok
+test tests::saved_car_inertial_bias_matches_differentiated_body_motion ... ok
+test tests::saved_car_joint_jacobians_match_reconstructed_point_motion ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

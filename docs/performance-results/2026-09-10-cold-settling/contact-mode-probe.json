@@ -1,0 +1,93 @@
+{
+  "kind": "independent_python_pgs_control_not_physical_acceptance",
+  "generalized": 16,
+  "rows": 26,
+  "results": [
+    {
+      "forced_kinetic_control": false,
+      "history": [
+        {
+          "iterations": 256,
+          "projected_velocity_residual": 4.239237347917596e-06
+        },
+        {
+          "iterations": 8192,
+          "projected_velocity_residual": 3.3957100845598427e-06
+        }
+      ],
+      "contacts": [
+        {
+          "initially_sliding": false,
+          "normal_impulse": 7.9087056966301565,
+          "normal_slack": 6.747850075927708e-08,
+          "tangent_velocity": 2.548183558663267e-06,
+          "tangent_cone_fraction": 0.815238684645778
+        },
+        {
+          "initially_sliding": true,
+          "normal_impulse": 7.836363987791768,
+          "normal_slack": 8.11881298717898e-08,
+          "tangent_velocity": 3.2008304779955193e-06,
+          "tangent_cone_fraction": 0.7013706510734433
+        },
+        {
+          "initially_sliding": true,
+          "normal_impulse": 8.121723101874911,
+          "normal_slack": -1.6983270623160962e-08,
+          "tangent_velocity": 1.9628970224438814e-05,
+          "tangent_cone_fraction": 1.0
+        },
+        {
+          "initially_sliding": true,
+          "normal_impulse": 8.059490224144461,
+          "normal_slack": -1.924397479563522e-08,
+          "tangent_velocity": 2.5129469329591578e-05,
+          "tangent_cone_fraction": 1.0
+        }
+      ]
+    },
+    {
+      "forced_kinetic_control": true,
+      "history": [
+        {
+          "iterations": 256,
+          "projected_velocity_residual": 4.2877414893111646e-08
+        },
+        {
+          "iterations": 8192,
+          "projected_velocity_residual": 1.200875429074802e-10
+        }
+      ],
+      "contacts": [
+        {
+          "initially_sliding": false,
+          "normal_impulse": 7.908566717749847,
+          "normal_slack": 1.5153156507352605e-13,
+          "tangent_velocity": 1.4684635452974774e-05,
+          "tangent_cone_fraction": 1.0
+        },
+        {
+          "initially_sliding": true,
+          "normal_impulse": 7.83668094032728,
+          "normal_slack": -8.465866896401053e-13,
+          "tangent_velocity": 1.223460427246514e-10,
+          "tangent_cone_fraction": 0.7550421172024678
+        },
+        {
+          "initially_sliding": true,
+          "normal_impulse": 8.121906514417036,
+          "normal_slack": -7.290765213774364e-13,
+          "tangent_velocity": 6.950903207463983e-06,
+          "tangent_cone_fraction": 0.9999999999999999
+        },
+        {
+          "initially_sliding": true,
+          "normal_impulse": 8.059332070587176,
+          "normal_slack": -9.309913950872328e-14,
+          "tangent_velocity": 2.0925101046946286e-05,
+          "tangent_cone_fraction": 0.9999999999999999
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "source_world": "/Users/jens/Library/Application Support/Mechanic/worlds/mechanic-suspension-source-n4s_ogec",
+  "temporary_world": "/Users/jens/Library/Application Support/Mechanic/worlds/mechanic-auto-81a2373ed17c4ac1bdc0881960bb6ed0",
+  "manifest_sha256": "b6a1092e6c2f4b737bfbfa606230d614b654b80ff8b72e19d9efca64f9929a69",
+  "binary": "/Users/jens/repos/mechanic/target/release/mechanic-app",
+  "assets": "/Users/jens/repos/mechanic/crates/mechanic-app",
+  "automated_background": true,
+  "scripted_driving": true,
+  "demonstration_frames": true,
+  "controlled_foreground_benchmark": false
+}

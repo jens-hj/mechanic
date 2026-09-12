@@ -1,0 +1,20 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.38s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+test response::tests::cold_impact::slow_endpoint_impact_control ... endpoint converged=false residual=0.00000655860743677029 iterations=256
+
+thread 'response::tests::cold_impact::slow_endpoint_impact_control' (11249150) panicked at crates/mechanic-physics/src/response/tests/cold_impact.rs:274:5:
+assertion failed: solution.converged
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    response::tests::cold_impact::slow_endpoint_impact_control
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

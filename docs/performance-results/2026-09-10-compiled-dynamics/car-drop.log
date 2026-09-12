@@ -1,0 +1,19 @@
+
+running 1 test
+test device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration ... FAILED
+
+failures:
+
+---- device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration' (9922675) panicked at crates/mechanic-gpu/src/device.rs:8410:17:
+wheel 2 entered the ground at tick 30: y=0.48957208
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.28s
+

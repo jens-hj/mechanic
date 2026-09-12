@@ -1,0 +1,149 @@
+--- a/crates/mechanic-app/src/main.rs
++++ b/crates/mechanic-app/src/main.rs
+@@ -3384,25 +3384,19 @@
+                     for (mesh, material, kind) in ordinary {
+                         root.spawn((
+                             Name::new(format!("{} local simulation mesh", kind.label())),
+-                            Mesh3d(mesh),
+-                            MeshMaterial3d(material),
+-                            NoFrustumCulling,
++                            simulation_body_mesh(mesh, material),
+                         ));
+                     }
+                     for (mesh, material, appearance) in authored {
+                         root.spawn((
+                             Name::new(format!("{appearance:?} local simulation mesh")),
+-                            Mesh3d(mesh),
+-                            MeshMaterial3d(material),
+-                            NoFrustumCulling,
++                            simulation_body_mesh(mesh, material),
+                         ));
+                     }
+                     if let Some(mesh) = bearing {
+                         root.spawn((
+                             Name::new("Local bearing mesh"),
+-                            Mesh3d(mesh),
+-                            MeshMaterial3d(visuals.bearing_material.clone()),
+-                            NoFrustumCulling,
++                            simulation_body_mesh(mesh, visuals.bearing_material.clone()),
+                         ));
+                     }
+                 })
+@@ -3424,6 +3418,12 @@
+         *visibility = Visibility::Hidden;
+     }
+     simulation.record_visual_update(started.elapsed());
++}
++
++// Body-local geometry is immutable between scene revisions. Bevy can calculate
++// its AABB once and cull using the current propagated compound transform.
++fn simulation_body_mesh<M: Material>(mesh: Handle<Mesh>, material: Handle<M>) -> impl Bundle {
++    (Mesh3d(mesh), MeshMaterial3d(material))
+ }
+ 
+ fn transform_from_gpu(transform: GpuTransform) -> Transform {
+@@ -17873,6 +17873,104 @@
+     }
+ 
+     #[test]
++    #[allow(clippy::too_many_lines)] // Exercise the actual body bundle through Bevy visibility and transform propagation.
++    fn immutable_body_meshes_cull_offscreen_and_follow_motion_and_origin_rebases() {
++        use bevy::camera::{
++            CameraProjection,
++            primitives::Aabb,
++            visibility::{VisibilityPlugin, VisibleEntities},
++        };
++        use bevy::prelude::*;
++        use std::any::TypeId;
++
++        let mut app = App::new();
++        app.add_plugins((
++            MinimalPlugins,
++            bevy::asset::AssetPlugin::default(),
++            bevy::mesh::MeshPlugin,
++            TransformPlugin,
++            VisibilityPlugin,
++        ));
++        let mut graph = ConstructionGraph::new();
++        graph
++            .apply(BuildCommand::Spawn(
++                CuboidSpec::new([3, 2, 1], BuildPose::default()).unwrap(),
++            ))
++            .unwrap();
++        let creation = graph.compile().unwrap();
++        let mesh = local_simulation_material_mesh(
++            &graph,
++            &creation,
++            &[GpuTransform {
++                position: [0.0; 4],
++                rotation: Quat::IDENTITY.to_array(),
++            }],
++            0,
++            ConstructionMaterial::Steel,
++        );
++        let original_positions = positions(&mesh);
++        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
++        let root = app
++            .world_mut()
++            .spawn((Transform::IDENTITY, Visibility::Inherited))
++            .id();
++        let body = app
++            .world_mut()
++            .spawn((
++                super::simulation_body_mesh(handle.clone(), Handle::<StandardMaterial>::default()),
++                ChildOf(root),
++            ))
++            .id();
++        let projection = PerspectiveProjection {
++            fov: std::f32::consts::FRAC_PI_2,
++            aspect_ratio: 1.0,
++            ..default()
++        };
++        let camera = app
++            .world_mut()
++            .spawn((
++                Camera::default(),
++                VisibleEntities::default(),
++                projection.compute_frustum(&GlobalTransform::IDENTITY),
++            ))
++            .id();
++        for rebase in [Vec3::ZERO, Vec3::new(1024.0, -512.0, 2048.0)] {
++            let camera_pose = GlobalTransform::from_translation(-rebase);
++            app.world_mut()
++                .entity_mut(camera)
++                .insert(projection.compute_frustum(&camera_pose));
++            for (position, visible) in [
++                (Vec3::new(0.0, 0.0, -5.0), true),
++                (Vec3::new(100.0, 0.0, -5.0), false),
++                (Vec3::new(0.0, 0.0, 5.0), false),
++                (Vec3::new(4.9, 0.0, -5.0), true),
++                (Vec3::new(0.0, 0.0, -5.0), true),
++            ] {
++                app.world_mut().entity_mut(root).insert(Transform {
++                    translation: position - rebase,
++                    rotation: Quat::from_rotation_y(0.7),
++                    ..default()
++                });
++                app.update();
++                assert_eq!(
++                    app.world()
++                        .get::<VisibleEntities>(camera)
++                        .unwrap()
++                        .get(TypeId::of::<Mesh3d>())
++                        .contains(&body),
++                    visible,
++                    "position={position} rebase={rebase}"
++                );
++                assert!(app.world().get::<Aabb>(body).is_some());
++                assert_eq!(
++                    positions(app.world().resource::<Assets<Mesh>>().get(&handle).unwrap()),
++                    original_positions
++                );
++            }
++        }
++    }
++
++    #[test]
+     fn a_4096_block_sheet_renders_as_one_globally_mapped_cuboid() {
+         let blocks = (0..64)
+             .flat_map(|x| {

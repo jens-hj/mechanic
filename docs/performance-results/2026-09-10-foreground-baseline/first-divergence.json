@@ -1,0 +1,288 @@
+[
+  {
+    "run": 1,
+    "prefix": [
+      {
+        "tick": 1,
+        "state_hash": "e5663fb78bfe3e04",
+        "contacts": 14,
+        "active_contacts": 6,
+        "error_flags": 0
+      },
+      {
+        "tick": 2,
+        "state_hash": "50de475e8a3d2e77",
+        "contacts": 14,
+        "active_contacts": 6,
+        "error_flags": 0
+      },
+      {
+        "tick": 3,
+        "state_hash": "d59d758ad5e60bfb",
+        "contacts": 14,
+        "active_contacts": 6,
+        "error_flags": 0
+      },
+      {
+        "tick": 4,
+        "state_hash": "c058ed1a0e9b7034",
+        "contacts": 14,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 5,
+        "state_hash": "c91fc021a9faa3d7",
+        "contacts": 14,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 6,
+        "state_hash": "ce2c3c890b6e4df9",
+        "contacts": 14,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 7,
+        "state_hash": "759547e15eba2264",
+        "contacts": 12,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 8,
+        "state_hash": "8163850aef8e51e7",
+        "contacts": 12,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 9,
+        "state_hash": "e1b32bc4bd5e4134",
+        "contacts": 12,
+        "active_contacts": 10,
+        "error_flags": 0
+      },
+      {
+        "tick": 10,
+        "state_hash": "8e1de186908154c3",
+        "contacts": 12,
+        "active_contacts": 10,
+        "error_flags": 0
+      },
+      {
+        "tick": 11,
+        "state_hash": "ccdfcf37996c2a4a",
+        "contacts": 12,
+        "active_contacts": 10,
+        "error_flags": 0
+      },
+      {
+        "tick": 12,
+        "state_hash": "1c0ab82f75fc49ef",
+        "contacts": 60,
+        "active_contacts": 58,
+        "error_flags": 0
+      },
+      {
+        "tick": 13,
+        "state_hash": "e6dd0eda2cb3a330",
+        "contacts": 61,
+        "active_contacts": 43,
+        "error_flags": 0
+      },
+      {
+        "tick": 14,
+        "state_hash": "25d8563a573c65c0",
+        "contacts": 61,
+        "active_contacts": 58,
+        "error_flags": 0
+      },
+      {
+        "tick": 15,
+        "state_hash": "1fafb23f837d997c",
+        "contacts": 60,
+        "active_contacts": 57,
+        "error_flags": 0
+      }
+    ],
+    "first_drop": {
+      "data": {
+        "count": 3,
+        "first_tick": 25
+      },
+      "elapsed_ms": 972.8116249999999,
+      "kind": "physics_drop"
+    },
+    "first_hold": {
+      "data": {
+        "tick": 1192
+      },
+      "elapsed_ms": 20406.104124999998,
+      "kind": "physics_terrain_hold"
+    },
+    "first_terrain_publication": {
+      "data": {
+        "copied_bytes": 0,
+        "cut_chunks": 548,
+        "interest_regions": 11,
+        "latency_ms": 101.4945,
+        "preparation_ms": 1.366041,
+        "publication_ms": 3.9785000000000004,
+        "reused_chunks": 533,
+        "snapshot_ms": 1.130458,
+        "source_revision": 20,
+        "uploaded_bytes": 2584176,
+        "uploaded_chunks": 7,
+        "worker_preparation_ms": 0.23558300000000001
+      },
+      "elapsed_ms": 11938.405542,
+      "kind": "terrain_publication"
+    }
+  },
+  {
+    "run": 2,
+    "prefix": [
+      {
+        "tick": 1,
+        "state_hash": "e5663fb78bfe3e04",
+        "contacts": 14,
+        "active_contacts": 6,
+        "error_flags": 0
+      },
+      {
+        "tick": 2,
+        "state_hash": "50de475e8a3d2e77",
+        "contacts": 14,
+        "active_contacts": 6,
+        "error_flags": 0
+      },
+      {
+        "tick": 3,
+        "state_hash": "d59d758ad5e60bfb",
+        "contacts": 14,
+        "active_contacts": 6,
+        "error_flags": 0
+      },
+      {
+        "tick": 4,
+        "state_hash": "c058ed1a0e9b7034",
+        "contacts": 14,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 5,
+        "state_hash": "c91fc021a9faa3d7",
+        "contacts": 14,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 6,
+        "state_hash": "ce2c3c890b6e4df9",
+        "contacts": 14,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 7,
+        "state_hash": "759547e15eba2264",
+        "contacts": 12,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 8,
+        "state_hash": "8163850aef8e51e7",
+        "contacts": 12,
+        "active_contacts": 8,
+        "error_flags": 0
+      },
+      {
+        "tick": 9,
+        "state_hash": "e1b32bc4bd5e4134",
+        "contacts": 12,
+        "active_contacts": 10,
+        "error_flags": 0
+      },
+      {
+        "tick": 10,
+        "state_hash": "8e1de186908154c3",
+        "contacts": 12,
+        "active_contacts": 10,
+        "error_flags": 0
+      },
+      {
+        "tick": 11,
+        "state_hash": "ccdfcf37996c2a4a",
+        "contacts": 12,
+        "active_contacts": 10,
+        "error_flags": 0
+      },
+      {
+        "tick": 12,
+        "state_hash": "b804e0869b65b582",
+        "contacts": 60,
+        "active_contacts": 58,
+        "error_flags": 0
+      },
+      {
+        "tick": 13,
+        "state_hash": "46c87ebaf6700697",
+        "contacts": 61,
+        "active_contacts": 43,
+        "error_flags": 0
+      },
+      {
+        "tick": 14,
+        "state_hash": "f85c731ec38c72d5",
+        "contacts": 61,
+        "active_contacts": 58,
+        "error_flags": 0
+      },
+      {
+        "tick": 15,
+        "state_hash": "dfe0135d95736630",
+        "contacts": 60,
+        "active_contacts": 57,
+        "error_flags": 0
+      }
+    ],
+    "first_drop": {
+      "data": {
+        "count": 7,
+        "first_tick": 25
+      },
+      "elapsed_ms": 1035.4600839999998,
+      "kind": "physics_drop"
+    },
+    "first_hold": {
+      "data": {
+        "tick": 1124
+      },
+      "elapsed_ms": 19279.280292,
+      "kind": "physics_terrain_hold"
+    },
+    "first_terrain_publication": {
+      "data": {
+        "copied_bytes": 0,
+        "cut_chunks": 613,
+        "interest_regions": 11,
+        "latency_ms": 107.34762500000001,
+        "preparation_ms": 25.537791,
+        "publication_ms": 10.465667,
+        "reused_chunks": 537,
+        "snapshot_ms": 15.067874999999999,
+        "source_revision": 18,
+        "uploaded_bytes": 21405328,
+        "uploaded_chunks": 64,
+        "worker_preparation_ms": 10.469916
+      },
+      "elapsed_ms": 11755.717,
+      "kind": "terrain_publication"
+    }
+  }
+]

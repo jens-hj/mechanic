@@ -1,0 +1,21 @@
+   Compiling mechanic-core v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 1.71s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_core-8ce2a69c2bb50ef3)
+
+running 1 test
+
+thread 'contact_geometry::tests::activation_vertex::an_empty_inner_search_still_activates_finite_vertices_inside_the_full_bound' (11202811) panicked at crates/mechanic-core/src/contact_geometry/tests/activation_vertex.rs:129:9:
+assertion `left == right` failed: finite vertices disappeared at gap=6e-13
+  left: 0
+ right: 4
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test contact_geometry::tests::activation_vertex::an_empty_inner_search_still_activates_finite_vertices_inside_the_full_bound ... FAILED
+
+failures:
+
+failures:
+    contact_geometry::tests::activation_vertex::an_empty_inner_search_still_activates_finite_vertices_inside_the_full_bound
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 268 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p mechanic-core --lib`

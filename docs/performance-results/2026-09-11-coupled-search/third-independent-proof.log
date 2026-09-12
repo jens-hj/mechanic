@@ -1,0 +1,10 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 1 test
+independent_impact_velocity_error=4.986538959528275e-12
+third_reference residual=2.214055358026864e-11 iterations=1
+test response::tests::cold_impact::independently_traced_third_impact_has_a_valid_solution ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in 0.00s
+

@@ -1,0 +1,31 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.28s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-2cc116d39a396cc6)
+
+running 18 tests
+test free_motion::tests::rejected_commands_and_failed_numerics_preserve_the_last_snapshot ... ok
+test machine::tests::free_body_gravity_is_independent_of_mass_and_does_not_generate_torque ... ok
+test free_motion::tests::impulse_at_a_child_accelerates_the_whole_machine_with_correct_total_momentum ... ok
+test response::tests::contradictory_friction_bounds_are_rejected_before_projection ... ok
+test free_motion::tests::authored_drive_and_loop_constraints_cannot_be_silently_ignored ... ok
+test response::tests::friction_impulse_obeys_the_circular_coulomb_bound ... ok
+test response::tests::coupling_to_a_clamped_contact_cannot_falsely_converge ... ok
+test response::tests::duplicate_loop_rows_preserve_response_and_inconsistent_rows_fail ... ok
+test response::tests::impulse_at_light_wheel_accelerates_the_coupled_chassis ... ok
+test response::tests::unilateral_support_cannot_pull_a_separating_body ... ok
+test free_motion::tests::off_centre_impulse_changes_momentum_once_independent_of_substeps ... ok
+test free_motion::tests::free_fall_matches_ballistic_motion_at_the_external_clock ... ok
+test response::tests::large_contact_sets_use_implicit_response_and_repeat_exactly ... ok
+test free_motion::tests::principal_axis_spin_matches_the_analytic_orientation ... ok
+test free_motion::tests::anchored_tree_keeps_its_root_fixed_while_joint_motion_evolves ... ok
+test free_motion::tests::repeated_fixed_input_ticks_have_identical_completed_hashes ... ok
+test free_motion::tests::asymmetric_free_rotation_converges_to_conserved_angular_momentum_and_energy ... ok
+test free_motion::tests::floating_tree_conserves_momentum_and_keeps_exact_joint_anchors_and_axes ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests mechanic_physics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

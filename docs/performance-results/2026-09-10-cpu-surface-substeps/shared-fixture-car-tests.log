@@ -1,0 +1,19 @@
+   Compiling mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
+    Finished `test` profile [optimized + debuginfo] target(s) in 2.05s
+     Running unittests src/bin/compiled-response.rs (target/debug/deps/compiled_response-a6510bc69a7f54b5)
+
+running 6 tests
+saved_car_bias_maximum_relative_error=5.438005956577891e-10
+saved_car_articulated_point_speed_maximum_bound_ratio=6.165717391975718e-1
+test tests::saved_car_joint_jacobians_match_reconstructed_point_motion ... ok
+test tests::saved_car_inertial_bias_matches_differentiated_body_motion ... ok
+test tests::saved_car_articulated_motion_bounds_cover_joint_and_suspension_point_speed ... ok
+test tests::saved_car_free_fall_moves_floating_roots_without_stretching_joints ... ok
+saved_car_joint_only_airborne_ticks=120 hash=e06aa32768ad0b86 absolute_drive_impulse_sum=1.417073896312224e3
+test tests::saved_car_joint_ticks_keep_authored_suspension_and_drives_and_repeat ... ok
+saved_car_full_surface_response rows=240 blocks=12 residual=6.237585133123822e-9 iterations=172 factor_solves=4706 response_storage=0 converged=true newton_attempts=172 newton_accepts=89 newton_applications=1529 newton_local_factorizations=8256 newton_line_searches=872 tick_gate=false
+saved_car_finite_response bodies=11 colliders=78 retained_contacts=48 triangle_candidates=24 residual=1.6508050550621969e-10 repeatable=true tick_gate=false
+test tests::saved_car_finite_terrain_response_repeats_and_balances_external_momentum ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+

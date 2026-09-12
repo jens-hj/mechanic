@@ -1,0 +1,48 @@
+{
+  "free_motion_foundation_verified": true,
+  "redesign_complete": false,
+  "workspace_green": false,
+  "physics_tests": {
+    "passed": 18,
+    "new": 10
+  },
+  "saved_car_algebra_tests": {
+    "passed": 3,
+    "new": 1
+  },
+  "shader_validation": "passed",
+  "clippy": "passed",
+  "formatting": "passed",
+  "whitespace": "passed",
+  "app_workspace_tests": {
+    "passed": 739,
+    "failed": 1,
+    "ignored": 6,
+    "failure": "ui::suspension::tests::leader_geometry_follows_projected_positions_without_remounting"
+  },
+  "workspace_stopped_at_app": true,
+  "previous_gpu_failures_remain_open": true,
+  "hardware_adapter_check": {
+    "passed": true,
+    "adapter": "Apple M1 Pro / Metal",
+    "hardware_tests_serial": true
+  },
+  "ballistic_position_error_m": 6.023919126296978e-15,
+  "free_rotation_conservation_errors_substeps_1_2_4_8": [
+    9.643764375242162e-07,
+    6.102540411557681e-08,
+    3.854372130804408e-09,
+    2.4241099488823857e-10
+  ],
+  "tree_relative_linear_momentum_error": 8.29561436668487e-12,
+  "tree_relative_angular_momentum_error": 2.4989116001483305e-11,
+  "tree_relative_energy_error": 2.511546526307029e-12,
+  "saved_car_bias_maximum_scaled_error": 5.438005956577891e-10,
+  "repeated_60_tick_hash": "05ebcb7b614803fb",
+  "supports_terrain_or_body_contacts": false,
+  "supports_drives_stops_suspension_loops": false,
+  "optimized_effective_tick_factorization": false,
+  "car_tick_gate": false,
+  "integrated_gate": false,
+  "scale_gates": false
+}

@@ -1,0 +1,65 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.85s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-dac2f47f7911b970)
+
+running 39 tests
+test free_motion::tests::authored_drive_and_loop_constraints_cannot_be_silently_ignored ... ok
+test free_motion::tests::rejected_commands_and_failed_numerics_preserve_the_last_snapshot ... ok
+test joint_machine::tests::changing_targets_reuses_response_without_repeated_inverse_preparation ... ok
+test free_motion::tests::impulse_at_a_child_accelerates_the_whole_machine_with_correct_total_momentum ... ok
+test joint_machine::tests::hard_stop_reacts_against_a_stalled_drive_without_consuming_its_budget ... ok
+test joint_machine::tests::failed_tick_and_drive_change_are_rolled_back_then_can_be_retried ... ok
+test joint_machine::tests::implicit_spring_and_asymmetric_damping_match_the_scalar_midpoint_solution ... ok
+test joint_machine::tests::motor_budget_accelerates_rotor_and_back_drives_the_floating_mount ... ok
+test free_motion::tests::off_centre_impulse_changes_momentum_once_independent_of_substeps ... ok
+nonlinear_retry attempts=2 accepted_substeps=2
+test joint_machine::tests::nonlinear_retry_restarts_the_same_tick_without_duplicating_impulses ... ok
+progressive_bump momentum_residual_ns=1.1570003124461437e-6 iterations=13
+test joint_machine::tests::predictive_travel_stop_preserves_floating_machine_momentum_without_rebound ... ok
+test joint_machine::tests::progressive_rubber_and_damping_satisfy_the_actual_midpoint_force_equation ... ok
+test joint_machine::tests::speed_torque_curve_fades_acceleration_but_keeps_braking_effort ... ok
+test free_motion::tests::principal_axis_spin_matches_the_analytic_orientation ... ok
+ballistic_position_error_m=6.023919126296978e-15
+test free_motion::tests::free_fall_matches_ballistic_motion_at_the_external_clock ... ok
+test joint_machine::tests::unlimited_drive_remains_unbounded_and_can_be_disabled_at_no_load ... ok
+test joint_machine::tests::whole_tick_impulses_are_not_reapplied_at_each_substep ... ok
+test machine::tests::free_body_gravity_is_independent_of_mass_and_does_not_generate_torque ... ok
+test response::tests::contradictory_friction_bounds_are_rejected_before_projection ... ok
+test response::tests::coupling_to_a_clamped_contact_cannot_falsely_converge ... ok
+test response::tests::duplicate_loop_rows_preserve_response_and_inconsistent_rows_fail ... ok
+test response::tests::friction_impulse_obeys_the_circular_coulomb_bound ... ok
+test response::tests::impulse_at_light_wheel_accelerates_the_coupled_chassis ... ok
+test response::tests::unilateral_support_cannot_pull_a_separating_body ... ok
+test free_motion::tests::anchored_tree_keeps_its_root_fixed_while_joint_motion_evolves ... ok
+test terrain_contacts::tests::coplanar_triangle_seam_reduces_to_four_supports_without_changing_materials ... ok
+test terrain_contacts::tests::changed_active_groups_and_materials_invalidate_only_changed_chunk_features ... ok
+test response::tests::large_contact_sets_use_implicit_response_and_repeat_exactly ... ok
+test terrain_contacts::tests::origin_rebase_preserves_physical_support_and_feature_identity ... ok
+test terrain_contacts::tests::malformed_publication_preserves_the_previous_collision_scene ... ok
+test terrain_contacts::tests::small_finite_triangles_remain_collidable_and_nonfinite_query_bounds_fail ... ok
+test terrain_contacts::tests::real_manifold_impulses_support_the_coupled_body_without_spurious_spin ... ok
+repeated_tree_ticks=60 final_state_hash=05ebcb7b614803fb
+test free_motion::tests::repeated_fixed_input_ticks_have_identical_completed_hashes ... ok
+loaded_spring preload=0 equilibrium_error_m=1.734723475976807e-18
+floating_tree reverse=false relative_linear_error=8.29561436668487e-12 relative_angular_error=2.4989116001483305e-11 relative_energy_error=2.511546526307029e-12
+undamped_spring_phase_space_error_1_2_4_8=[0.4532907778268744, 0.11687386658132305, 0.02940374237761621, 0.007361880589654706]
+test joint_machine::tests::undamped_spring_oscillation_converges_without_artificial_decay ... ok
+loaded_spring preload=0.005 equilibrium_error_m=0e0
+test joint_machine::tests::loaded_spring_reaches_the_authored_equilibrium_with_preload ... ok
+floating_tree reverse=true relative_linear_error=8.29561436668487e-12 relative_angular_error=2.4989116001483305e-11 relative_energy_error=2.511546526307029e-12
+test free_motion::tests::floating_tree_conserves_momentum_and_keeps_exact_joint_anchors_and_axes ... ok
+free_rotation_relative_conservation_errors_1_2_4_8=[9.643764375242162e-7, 6.102540411557681e-8, 3.854372130804408e-9, 2.4241099488823857e-10]
+test free_motion::tests::asymmetric_free_rotation_converges_to_conserved_angular_momentum_and_energy ... ok
+generated_vertex_outside_nominal_node_m=2.3841857821338408e-8
+test terrain_contacts::tests::generated_chunk_bvh_queries_match_direct_finite_triangle_queries ... ok
+midpoint_free_rotation_reference_errors_1_2_4_8=[0.0025897383707331645, 0.0006471941822390653, 0.0001618362729844617, 4.0312261745312595e-5]
+test joint_machine::tests::nonlinear_midpoint_rotation_converges_to_the_rk4_free_motion_reference ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests mechanic_physics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

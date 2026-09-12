@@ -1,0 +1,13 @@
+{
+  "cause": "stale release mechanic-core artifact from an earlier shared-target archived-source build",
+  "rust_source_changed_for_repair": false,
+  "cleanup_command": "cargo clean -p mechanic-core --release",
+  "rebuild_command": "cargo build --release -p mechanic-app --offline",
+  "recheck_command": "cargo build --release -p mechanic-app",
+  "executable": "target/release/mechanic-app",
+  "executable_sha256": "30ac549b66a560e6183e3f2089d18cd4931fbff8f7f8803330ee18cb4db1bbae",
+  "before_dep_info": "mechanic_core-af30b1b8e73ec3fb.d did not list dynamics.rs",
+  "after_dep_info": "mechanic_core-af30b1b8e73ec3fb.d lists dynamics.rs",
+  "prevention": "reference builder already uses a fresh isolated target per frozen source tree",
+  "application_launched": false
+}

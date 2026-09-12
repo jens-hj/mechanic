@@ -1,0 +1,581 @@
+(
+    version: 17,
+    name: "Suspension - Motion Playground",
+    parts: [
+        Cuboid(
+            dimensions: (24, 1, 20),
+            pose: (
+                translation_ticks: (0, 2050, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Concrete,
+            appearance: (
+                color: Dye((
+                    target_rgb: (62, 70, 80),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (3, 1, 3),
+            pose: (
+                translation_ticks: (-700, 2150, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (246, 177, 55),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (2, 1, 2),
+            pose: (
+                translation_ticks: (-700, 2550, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Plastic,
+            appearance: (
+                color: Dye((
+                    target_rgb: (246, 177, 55),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (3, 1, 3),
+            pose: (
+                translation_ticks: (0, 2150, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (242, 112, 68),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (2, 1, 2),
+            pose: (
+                translation_ticks: (0, 2550, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Plastic,
+            appearance: (
+                color: Dye((
+                    target_rgb: (242, 112, 68),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (3, 1, 3),
+            pose: (
+                translation_ticks: (700, 2150, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (64, 194, 180),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (2, 1, 2),
+            pose: (
+                translation_ticks: (700, 2550, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Plastic,
+            appearance: (
+                color: Dye((
+                    target_rgb: (64, 194, 180),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (3, 1, 3),
+            pose: (
+                translation_ticks: (-700, 2150, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (79, 149, 235),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (2, 1, 2),
+            pose: (
+                translation_ticks: (-700, 2550, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Plastic,
+            appearance: (
+                color: Dye((
+                    target_rgb: (79, 149, 235),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (3, 1, 3),
+            pose: (
+                translation_ticks: (0, 2150, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (186, 128, 231),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (2, 1, 2),
+            pose: (
+                translation_ticks: (0, 2550, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Plastic,
+            appearance: (
+                color: Dye((
+                    target_rgb: (186, 128, 231),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (3, 1, 3),
+            pose: (
+                translation_ticks: (700, 2150, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (224, 91, 145),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+        Cuboid(
+            dimensions: (2, 1, 2),
+            pose: (
+                translation_ticks: (700, 2550, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Plastic,
+            appearance: (
+                color: Dye((
+                    target_rgb: (224, 91, 145),
+                    structure: 0.7,
+                )),
+                finish: Painted,
+            ),
+        ),
+    ],
+    frames: [
+        (
+            translation: (0.0, 0.0, 0.0),
+            rotation: (0.0, 0.0, 0.0, 1.0),
+        ),
+    ],
+    part_frames: [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ],
+    region_frames: [],
+    welds: [
+        (
+            first: (
+                owner: Part(0),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(1),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(0),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(3),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(0),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(5),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(0),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(7),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(0),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(9),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(0),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(11),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+    ],
+    rigid_links: [],
+    bearings: [
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.75,
+                    od: 0.16,
+                    id: 0.1375,
+                    coils: 16,
+                    preload: 0.0,
+                )),
+                shock: None,
+                bump_stop: None,
+                appearances: ((
+                    color: Dye((
+                        target_rgb: (246, 177, 55),
+                        structure: 0.7,
+                    )),
+                    finish: Painted,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.75,
+            )),
+            source: (
+                owner: Part(1),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(2),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (-1.75, 5.5, -1.25),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.25,
+            inner_diameter: 0.1,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.75,
+                    od: 0.16,
+                    id: 0.1375,
+                    coils: 16,
+                    preload: 0.075,
+                )),
+                shock: None,
+                bump_stop: None,
+                appearances: ((
+                    color: Dye((
+                        target_rgb: (242, 112, 68),
+                        structure: 0.7,
+                    )),
+                    finish: Painted,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.75,
+            )),
+            source: (
+                owner: Part(3),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(4),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (0.0, 5.5, -1.25),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.25,
+            inner_diameter: 0.1,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.75,
+                    od: 0.16,
+                    id: 0.1375,
+                    coils: 16,
+                    preload: 0.0,
+                )),
+                shock: Some((
+                    length: 0.75,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.0,
+                    compression: 1.0,
+                    rebound: 1.6,
+                )),
+                bump_stop: None,
+                appearances: ((
+                    color: Dye((
+                        target_rgb: (64, 194, 180),
+                        structure: 0.7,
+                    )),
+                    finish: Painted,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.75,
+            )),
+            source: (
+                owner: Part(5),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(6),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (1.75, 5.5, -1.25),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.25,
+            inner_diameter: 0.1,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.75,
+                    od: 0.16,
+                    id: 0.1375,
+                    coils: 16,
+                    preload: 0.0,
+                )),
+                shock: Some((
+                    length: 0.75,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.0,
+                    compression: 30.0,
+                    rebound: 48.0,
+                )),
+                bump_stop: None,
+                appearances: ((
+                    color: Dye((
+                        target_rgb: (79, 149, 235),
+                        structure: 0.7,
+                    )),
+                    finish: Painted,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.75,
+            )),
+            source: (
+                owner: Part(7),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(8),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (-1.75, 5.5, 1.25),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.25,
+            inner_diameter: 0.1,
+        ),
+        (
+            kind: Suspension((
+                spring: None,
+                shock: Some((
+                    length: 0.75,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.0,
+                    compression: 4.0,
+                    rebound: 6.4,
+                )),
+                bump_stop: Some((0.1, 0.065)),
+                appearances: ((
+                    color: Dye((
+                        target_rgb: (186, 128, 231),
+                        structure: 0.7,
+                    )),
+                    finish: Painted,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.11000001,
+                initial_length: 0.75,
+            )),
+            source: (
+                owner: Part(9),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(10),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (0.0, 5.5, 1.25),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.25,
+            inner_diameter: 0.1,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.75,
+                    od: 0.16,
+                    id: 0.1375,
+                    coils: 16,
+                    preload: 0.0,
+                )),
+                shock: Some((
+                    length: 0.75,
+                    od: 0.1,
+                    body_end: Opposite,
+                    starting_compression: 0.0,
+                    compression: 2.0,
+                    rebound: 3.2,
+                )),
+                bump_stop: Some((0.1, 0.065)),
+                appearances: ((
+                    color: Dye((
+                        target_rgb: (224, 91, 145),
+                        structure: 0.7,
+                    )),
+                    finish: Painted,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.75,
+            )),
+            source: (
+                owner: Part(11),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(12),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (1.75, 5.5, 1.25),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.25,
+            inner_diameter: 0.1,
+        ),
+    ],
+    drive_links: [],
+    input_seat_links: [],
+    seat_controller_links: [],
+    gearbox_configs: [],
+    regions: [],
+    shape_features: [],
+    sockets: [],
+)

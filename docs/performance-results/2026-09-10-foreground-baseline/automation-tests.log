@@ -1,0 +1,11 @@
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+   Compiling mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)
+    Finished `test` profile [optimized + debuginfo] target(s) in 51.63s
+     Running unittests src/main.rs (target/debug/deps/mechanic_app-0cfe4b2694baa09e)
+
+running 2 tests
+test automation::tests::automation_discards_keyboard_mouse_and_camera_motion ... ok
+test automation::tests::driving_sequence_settles_accelerates_and_steers_both_directions ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 740 filtered out; finished in 0.01s
+

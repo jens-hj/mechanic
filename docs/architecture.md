@@ -2,6 +2,14 @@
 
 ## Ownership
 
+Shared compiled dynamics schedules and body-frame inertia live in
+`mechanic-core`. The new `mechanic-physics` crate owns the CPU numerical
+experiment and transactional free-motion reference; constrained scene ticks
+remain incomplete, and it is not yet the application's authoritative runtime. Terrain
+ownership stays in `mechanic-world`, and GPU code and ABI stay in `mechanic-gpu`.
+The measured redesign, delivery status, and remaining acceptance requirements
+are recorded in [compiled machine dynamics](compiled-machine-dynamics.md).
+
 The editable construction graph exists only on the CPU and can mutate only in
 `Building` state. Compilation is all-or-nothing. Welds are collapsed with
 union-find; no weld reaches the solver as a soft constraint.
@@ -196,3 +204,10 @@ the GPU physics pipeline, but synchronously reads snapshots back to CPU-rebuilt
 part/bearing meshes. Its CPU picking, transient ghost meshes, editor HUD, and
 snapshot readback do not exercise or stand in for the required GPU-culling and
 indirect production render path.
+
+Production rendering work is permitted before the 100,000-body gates pass:
+immutable construction geometry with transform buffers, persistent terrain
+allocation and indirect draws, culling, and measured native-resolution temporal
+and material-cache experiments. This permission does not waive either scale
+gate or the separate 1920×1080 integrated gate. Rendering candidates must pass
+matched performance and visual comparisons before becoming the default.
