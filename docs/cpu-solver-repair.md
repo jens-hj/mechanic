@@ -302,6 +302,26 @@ activation unchanged while retaining those supports.
 `event_policy_tick17_search_completes_from_captured_state` is retained as a
 failing regression input: it reproduces the tick-17 search in 1.5 s.
 
+### Analytic contact semantics
+
+`joint_machine/tests/terrain_ticks/contact_semantics.rs` states the intended
+physics for one free box on the flat floor, independent of the saved car. Both the
+block material and Rock have zero restitution, so the expectations are exact.
+
+Three cases pass. A settled box stays within 1e-9 m of the surface for 30 ticks
+and never exhausts its event trials, so the car's 60 nm resting gap is not a
+general integration defect and the drift hypothesis does not hold for a single
+box. A separating box keeps ballistic motion to within 1e-9. A box that returns
+inside one tick stops on the surface.
+
+The fourth case fails and pins a new defect. A box dropped from 2 mm at 1 m/s ends
+its first tick moving **upward** at 5.98e-2 m/s — about 6% rebound where
+restitution is zero — identically at 1, 2, 4 and 8 substeps; it then settles by
+tick 3. Gravity is the only force, so outgoing upward motion is unphysical.
+Spurious impact energy of this size would keep a settling car re-impacting, which
+is the shape of the tick-17 event-search failure, and it reproduces in 0.03 s on
+one box instead of 17 ticks of the car.
+
 Captures: `/private/tmp/cpu-fix-tick37-state.ron`, `cpu-fix-tick17-state.ron`,
 `cpu-fix-endpoint-next-{impact,force,state}.ron` (tick 94) and
 `cpu-fix-endpoint-r12-{impact,force,state}.ron` (tick 61 under the rejected
