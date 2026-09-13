@@ -1,19 +1,17 @@
 //! Bounded interval validation for supports that already overlap at path start.
 
-use super::{MachineCollisionGeometry, TerrainContactScene, valid_bounds};
-use crate::{MachineMotion, PhysicsError};
+use super::{ContactTarget, MachineCollisionGeometry, TerrainContactScene, valid_bounds};
+use crate::{BodyPose, MachineMotion, PhysicsError};
 use bevy_math::{DVec3, Vec3};
-use mechanic_world::{TerrainNodeId, WorldBounds, WorldPosition};
+use mechanic_world::{WorldBounds, WorldPosition};
 
 /// Finite geometry and unresolved interval, suitable for retry diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainPathFailure {
     /// Collider row within the query's topology generation.
     pub collider: usize,
-    /// Owning immutable terrain chunk.
-    pub node: TerrainNodeId,
-    /// Triangle row within that chunk.
-    pub triangle: usize,
+    /// Terrain triangle or collider on another body.
+    pub target: ContactTarget,
     /// Normalized interval that could not be certified.
     pub interval: [f64; 2],
     /// Conservative envelope depth; this may overestimate physical overlap.
@@ -57,6 +55,8 @@ pub struct TerrainPathQuery {
     pub envelope_evaluations: usize,
     /// Intervals whose entire trajectory was bounded, rather than merely sampled.
     pub certified_intervals: usize,
+    /// Collider pairs on different bodies whose swept bounds overlap.
+    pub collider_pair_candidates: usize,
 }
 
 impl TerrainContactScene {
@@ -95,6 +95,7 @@ impl TerrainContactScene {
             pose_cache_hits: 0,
             envelope_evaluations: 0,
             certified_intervals: 0,
+            collider_pair_candidates: 0,
         };
         // Every triangle first asks for the same dyadic midpoint. Its immutable
         // trajectory and generation are fixed for this query. Retain just this
@@ -144,8 +145,10 @@ impl TerrainContactScene {
                         if evaluations >= maximum_evaluations_per_triangle {
                             query.outcome = TerrainPathOutcome::Unconverged(TerrainPathFailure {
                                 collider: collider_row,
-                                node,
-                                triangle: triangle_row,
+                                target: ContactTarget::Terrain {
+                                    node,
+                                    triangle: triangle_row,
+                                },
                                 interval,
                                 upper_bound: None,
                                 observed_depth: None,
@@ -196,8 +199,10 @@ impl TerrainContactScene {
                             .fold(0.0_f64, f64::max);
                         let failure = TerrainPathFailure {
                             collider: collider_row,
-                            node,
-                            triangle: triangle_row,
+                            target: ContactTarget::Terrain {
+                                node,
+                                triangle: triangle_row,
+                            },
                             interval,
                             upper_bound: Some(upper_bound),
                             observed_depth: Some(observed_depth),
@@ -218,6 +223,108 @@ impl TerrainContactScene {
                         pending.push([interval[0], midpoint]);
                     }
                 }
+            }
+        }
+        // Colliders of different bodies. Over an interval, their relative point
+        // displacement is within both colliders' bounds together, so the
+        // midpoint's separating-axis overlap plus that sum bounds the whole path.
+        let mut bounds = Vec::with_capacity(machine.colliders.len());
+        for collider in &machine.colliders {
+            let reach = (motion.bounds()[collider.body].origin_speed + collider.radius).next_up();
+            let center = motion.initial_poses()[collider.body].position;
+            let corners = [
+                (center - DVec3::splat(reach)).map(f64::next_down),
+                (center + DVec3::splat(reach)).map(f64::next_up),
+            ];
+            if !corners[0].is_finite() || !corners[1].is_finite() {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            bounds.push(corners);
+        }
+        for [first, second] in machine.candidate_pairs(&bounds) {
+            query.collider_pair_candidates += 1;
+            let colliders = [&machine.colliders[first], &machine.colliders[second]];
+            let speed = colliders.iter().fold(0.0_f64, |sum, collider| {
+                (sum + motion.bounds()[collider.body].point_speed(collider.radius)).next_up()
+            });
+            if !speed.is_finite() {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            let failure = |interval, upper_bound, observed_depth| TerrainPathFailure {
+                collider: first,
+                target: ContactTarget::Collider(second),
+                interval,
+                upper_bound,
+                observed_depth,
+            };
+            let mut pending = vec![[0.0_f64, 1.0_f64]];
+            let mut evaluations = 0;
+            while let Some(interval) = pending.pop() {
+                if evaluations >= maximum_evaluations_per_triangle {
+                    query.outcome = TerrainPathOutcome::Unconverged(failure(interval, None, None));
+                    return Ok(query);
+                }
+                let midpoint = interval[0] + (interval[1] - interval[0]) * 0.5;
+                let sampled;
+                let poses: &[BodyPose] = if midpoint.to_bits() == 0.5_f64.to_bits() {
+                    if midpoint_poses.is_none() {
+                        midpoint_poses = Some(motion.poses_at(midpoint)?);
+                        query.pose_evaluations += 1;
+                    } else {
+                        query.pose_cache_hits += 1;
+                    }
+                    midpoint_poses
+                        .as_deref()
+                        .ok_or(PhysicsError::InvalidCollision)?
+                } else {
+                    query.pose_evaluations += 1;
+                    sampled = motion.poses_at(midpoint)?;
+                    &sampled
+                };
+                let [own, other] = colliders.map(|collider| {
+                    let pose = poses[collider.body];
+                    collider
+                        .local
+                        .transformed(pose.position, pose.rotation)
+                        .map_err(|_| PhysicsError::InvalidCollision)
+                });
+                let (own, other) = (own?, other?);
+                let half_width = (midpoint - interval[0])
+                    .max(interval[1] - midpoint)
+                    .next_up();
+                let displacement = (speed * half_width).next_up();
+                let bound = own
+                    .convex_penetration_bound(&other, displacement)
+                    .map_err(|_| PhysicsError::InvalidCollision)?;
+                evaluations += 1;
+                query.envelope_evaluations += 1;
+                let Some(upper_bound) = bound else {
+                    query.certified_intervals += 1;
+                    continue;
+                };
+                if upper_bound <= maximum_depth {
+                    query.certified_intervals += 1;
+                    continue;
+                }
+                let observed_depth = (-own
+                    .convex_separation(&other)
+                    .map_err(|_| PhysicsError::InvalidCollision)?
+                    .separation)
+                    .max(0.0);
+                let failure = failure(interval, Some(upper_bound), Some(observed_depth));
+                if observed_depth > maximum_depth {
+                    query.outcome = TerrainPathOutcome::ExcessPenetration(failure);
+                    return Ok(query);
+                }
+                if evaluations == maximum_evaluations_per_triangle
+                    || midpoint <= interval[0]
+                    || midpoint >= interval[1]
+                {
+                    query.outcome = TerrainPathOutcome::Unconverged(failure);
+                    return Ok(query);
+                }
+                pending.push([midpoint, interval[1]]);
+                pending.push([interval[0], midpoint]);
             }
         }
         Ok(query)

@@ -6,7 +6,9 @@ use crate::{ColliderShape, LocalCollider};
 
 mod activation;
 mod envelope;
+mod pair;
 mod quadratic;
+pub use pair::{ConvexFeature, ConvexSeparation};
 pub use quadratic::ContactVelocity;
 
 /// Invalid compiled geometry or query input. A failed query is not an empty hit.

@@ -1,20 +1,21 @@
 //! Conservative advancement along a reconstructed articulated trajectory.
 
-use super::{MachineCollisionGeometry, TerrainContactScene, valid_bounds};
-use crate::{MachineMotion, PhysicsError};
+use super::{
+    CONTACT_ACTIVATION_DISTANCE, ContactTarget, MachineCollisionGeometry, PAIR_ACTIVATION_DISTANCE,
+    TerrainContactScene, valid_bounds,
+};
+use crate::{BodyPose, MachineMotion, PhysicsError};
 use bevy_math::{DQuat, DVec3, Vec3};
 use mechanic_core::ContactPolytope;
-use mechanic_world::{TerrainNodeId, WorldBounds, WorldPosition};
+use mechanic_world::{WorldBounds, WorldPosition};
 
-/// First finite triangle approached by a certified candidate path.
+/// First terrain triangle or collider approached by a certified candidate path.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainSweepHit {
     /// Collider row within the query's topology generation.
     pub collider: usize,
-    /// Owning terrain chunk.
-    pub node: TerrainNodeId,
-    /// Triangle row in the chunk's immutable BVH.
-    pub triangle: usize,
+    /// Approached terrain triangle or collider on another body.
+    pub target: ContactTarget,
     /// Candidate motion fraction, in [0, 1].
     pub fraction: f64,
     /// Signed SAT gap at this fraction, in metres.
@@ -65,6 +66,8 @@ pub struct TerrainSweepQuery {
     /// Maximum point displacement over all moving colliders for the full path.
     /// This is computed before traversal, including on an inconclusive query.
     pub maximum_point_displacement: f64,
+    /// Collider pairs on different bodies whose swept bounds overlap.
+    pub collider_pair_candidates: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -193,6 +196,7 @@ impl TerrainContactScene {
             quadratic_interval_evaluations: 0,
             velocity_evaluations: 0,
             maximum_point_displacement: 0.0,
+            collider_pair_candidates: 0,
         };
         for collider in &machine.colliders {
             if collider.moving {
@@ -287,8 +291,10 @@ impl TerrainContactScene {
                             if earliest.is_none_or(|previous| fraction < previous.fraction) {
                                 earliest = Some(TerrainSweepHit {
                                     collider: collider_row,
-                                    node,
-                                    triangle: triangle_row,
+                                    target: ContactTarget::Terrain {
+                                        node,
+                                        triangle: triangle_row,
+                                    },
                                     fraction,
                                     separation,
                                 });
@@ -321,8 +327,10 @@ impl TerrainContactScene {
                         query.separation_evaluations += 1;
                         let hit = TerrainSweepHit {
                             collider: collider_row,
-                            node,
-                            triangle: triangle_row,
+                            target: ContactTarget::Terrain {
+                                node,
+                                triangle: triangle_row,
+                            },
                             fraction,
                             separation,
                         };
@@ -360,6 +368,143 @@ impl TerrainContactScene {
                 }
             }
         }
+        // Colliders of different bodies approaching each other. The separating-
+        // axis gap is a lower bound on distance, and distance closes no faster
+        // than both colliders' point-speed bounds together, so advancing by that
+        // sum stays conservative with both sides moving.
+        let mut bounds = Vec::with_capacity(machine.colliders.len());
+        for collider in &machine.colliders {
+            let reach = motion.bounds()[collider.body].origin_speed + collider.radius + tolerance;
+            let center = motion.initial_poses()[collider.body].position;
+            let corners = [center - DVec3::splat(reach), center + DVec3::splat(reach)];
+            if !corners[0].is_finite() || !corners[1].is_finite() {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            bounds.push(corners);
+        }
+        for [first, second] in machine.candidate_pairs(&bounds) {
+            query.collider_pair_candidates += 1;
+            let colliders = [&machine.colliders[first], &machine.colliders[second]];
+            if let Some(slow) = &slow
+                && colliders.iter().all(|collider| {
+                    [motion.bounds(), slow.initial, slow.final_bounds]
+                        .iter()
+                        .all(|bounds| {
+                            bounds[collider.body].point_speed(collider.radius)
+                                <= slow.maximum_displacement
+                        })
+                })
+            {
+                query.slow_contact_deferrals += 1;
+                continue;
+            }
+            let speed = colliders
+                .iter()
+                .map(|collider| motion.bounds()[collider.body].point_speed(collider.radius))
+                .sum::<f64>();
+            if !speed.is_finite() {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            let end = earliest.map_or(1.0, |hit| hit.fraction);
+            let mut fraction = 0.0;
+            for evaluation in 1..=maximum_evaluations_per_triangle {
+                let sampled;
+                let poses: &[BodyPose] = if evaluation == 1 {
+                    motion.initial_poses()
+                } else {
+                    sampled = motion.poses_at(fraction)?;
+                    query.pose_evaluations += 1;
+                    &sampled
+                };
+                let [own, other] = colliders.map(|collider| {
+                    let pose = poses[collider.body];
+                    collider
+                        .local
+                        .transformed(pose.position, pose.rotation)
+                        .map_err(|_| PhysicsError::InvalidCollision)
+                });
+                let (own, other) = (own?, other?);
+                let separation = own
+                    .convex_separation(&other)
+                    .map_err(|_| PhysicsError::InvalidCollision)?
+                    .separation;
+                query.separation_evaluations += 1;
+                if evaluation == 1 && exclude_initial_supports {
+                    query.initial_contact_evaluations += 1;
+                    if separation <= PAIR_ACTIVATION_DISTANCE {
+                        query.supported_pairs += 1;
+                        break;
+                    }
+                }
+                let hit = TerrainSweepHit {
+                    collider: first,
+                    target: ContactTarget::Collider(second),
+                    fraction,
+                    separation,
+                };
+                // Scale the requested terrain tolerance to the pair window.
+                if separation
+                    <= tolerance.max(
+                        PAIR_ACTIVATION_DISTANCE
+                            * (tolerance / CONTACT_ACTIVATION_DISTANCE).min(1.0),
+                    )
+                {
+                    if earliest.is_none_or(|previous| fraction < previous.fraction) {
+                        earliest = Some(hit);
+                    }
+                    break;
+                }
+                if speed == 0.0 || separation > speed * (end - fraction) {
+                    break;
+                }
+                // Bodies moving together keep their gap even when both move fast,
+                // so certify the prefix from relative motion before falling back
+                // to dividing the gap by both absolute speeds.
+                let velocities = motion.velocities_at_poses(poses);
+                query.velocity_evaluations += 1;
+                query.quadratic_interval_evaluations += 1;
+                let [own_body, other_body] = colliders.map(|collider| collider.body);
+                let acceleration = colliders
+                    .iter()
+                    .map(|collider| {
+                        motion.bounds()[collider.body].point_acceleration(collider.radius)
+                    })
+                    .sum::<f64>();
+                let prefix = own
+                    .convex_motion_prefix(
+                        poses[own_body].position,
+                        velocities[own_body],
+                        &other,
+                        poses[other_body].position,
+                        velocities[other_body],
+                        acceleration,
+                        end - fraction,
+                    )
+                    .map_err(|_| PhysicsError::InvalidCollision)?;
+                if prefix == end - fraction {
+                    break;
+                }
+                let next = fraction + prefix.max(separation / speed);
+                if next <= fraction
+                    || (evaluation == maximum_evaluations_per_triangle && fraction == 0.0)
+                {
+                    query.outcome = TerrainSweepOutcome::Unconverged(hit);
+                    return Ok(query);
+                }
+                if evaluation == maximum_evaluations_per_triangle {
+                    // A body rolling over another's edge a fraction of a micron
+                    // away closes its gap far slower than any bound admits, so
+                    // advancement crawls. Everything before `fraction` is still
+                    // certified clear: report it as the earliest candidate so the
+                    // event search commits that prefix and continues from it.
+                    if earliest.is_none_or(|previous| fraction < previous.fraction) {
+                        earliest = Some(hit);
+                    }
+                    break;
+                }
+                fraction = next.min(end);
+            }
+        }
         query.outcome = earliest.map_or(TerrainSweepOutcome::Clear, TerrainSweepOutcome::Impact);
         Ok(query)
     }
@@ -375,7 +520,8 @@ fn initial_support(
         return Ok(false);
     }
     query.initial_contact_evaluations += 1;
-    let supported = !super::activation_points(shape, triangle)?.is_empty();
+    let supported =
+        !super::activation_points(shape, triangle, CONTACT_ACTIVATION_DISTANCE)?.is_empty();
     query.supported_pairs += usize::from(supported);
     Ok(supported)
 }

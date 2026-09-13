@@ -194,17 +194,104 @@ impl ContactPolytope {
         if certified(maximum) {
             return Ok(maximum);
         }
-        let (mut lower, mut upper) = (0.0, maximum);
-        for _ in 0..48 {
-            let middle = lower + (upper - lower) * 0.5;
-            if certified(middle) {
-                lower = middle;
-            } else {
-                upper = middle;
-            }
-        }
-        Ok(lower)
+        Ok(largest_certified(maximum, certified))
     }
+
+    /// Certifies a separated prefix against another moving convex solid, on the
+    /// fixed axis of their current largest separating-axis gap. Each solid's
+    /// projection moves with its vertices' signed axis velocities, and
+    /// `point_acceleration` bounds both solids' point accelerations together.
+    /// Bodies moving together therefore keep a tiny gap for the whole interval,
+    /// where dividing the gap by both absolute speeds would barely advance.
+    ///
+    /// # Errors
+    /// Rejects invalid geometry, non-finite kinematics or negative time/acceleration.
+    #[allow(clippy::too_many_arguments)] // Both solids' origins and velocities.
+    pub fn convex_motion_prefix(
+        &self,
+        origin: DVec3,
+        velocity: ContactVelocity,
+        other: &Self,
+        other_origin: DVec3,
+        other_velocity: ContactVelocity,
+        point_acceleration: f64,
+        maximum: f64,
+    ) -> Result<f64, ContactGeometryError> {
+        if !origin.is_finite()
+            || !other_origin.is_finite()
+            || !point_acceleration.is_finite()
+            || point_acceleration < 0.0
+            || !maximum.is_finite()
+            || maximum < 0.0
+        {
+            return Err(ContactGeometryError);
+        }
+        for component in [velocity, other_velocity]
+            .into_iter()
+            .flat_map(|velocity| velocity.linear.into_iter().chain(velocity.angular))
+        {
+            component.finite()?;
+        }
+        let axis = self.convex_separation(other)?.axis;
+        // Recenter on one vertex of the other solid so small gaps survive far
+        // from the world origin.
+        let reference = other.vertices[0];
+        let projections = |polytope: &Self, origin: DVec3, velocity: ContactVelocity| {
+            polytope
+                .vertices
+                .iter()
+                .map(|&point| {
+                    let position = dot(difference(point, reference), axis).finite()?;
+                    let rate = dot(velocity.shifted(origin, point).linear, axis).finite()?;
+                    Ok::<_, ContactGeometryError>((position, rate))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let own = projections(self, origin, velocity)?;
+        let opposing = projections(other, other_origin, other_velocity)?;
+        let acceleration = super::envelope::interval::dot(axis, axis)
+            .sqrt()?
+            .scale(point_acceleration)
+            .scale(0.5)
+            .finite()?;
+        let certified = |time: f64| {
+            let t = Interval::point(time);
+            let lowest = own
+                .iter()
+                .map(|&(position, rate)| position.add(rate.mul(t)).lo)
+                .fold(f64::INFINITY, f64::min);
+            let highest = opposing
+                .iter()
+                .map(|&(position, rate)| position.add(rate.mul(t)).hi)
+                .fold(f64::NEG_INFINITY, f64::max);
+            Interval::point(lowest)
+                .sub(Interval::point(highest))
+                .sub(acceleration.mul(t.square()))
+                .lo
+                > 0.0
+        };
+        if !certified(0.0) {
+            return Ok(0.0);
+        }
+        Ok(largest_certified(maximum, certified))
+    }
+}
+
+// Concave certificates hold on a prefix, so bisection finds its bounded end.
+fn largest_certified(maximum: f64, certified: impl Fn(f64) -> bool) -> f64 {
+    if certified(maximum) {
+        return maximum;
+    }
+    let (mut lower, mut upper) = (0.0, maximum);
+    for _ in 0..48 {
+        let middle = lower + (upper - lower) * 0.5;
+        if certified(middle) {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    lower
 }
 
 #[cfg(test)]

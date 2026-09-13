@@ -308,6 +308,8 @@ fn changed_supporting_terrain_or_wrong_topology_cannot_publish_an_invalid_tick()
     assert_eq!(world.diagnostics().terrain_path_rejections, 4);
 }
 
+mod body_contacts;
+
 mod contact_semantics;
 
 mod first_impacts;

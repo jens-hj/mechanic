@@ -25,9 +25,10 @@ pub use response::{
     DynamicsFactorization, ImpulseBounds, PreparedConstraints, solve_constraints,
 };
 pub use terrain_contacts::{
-    MachineCollisionGeometry, TerrainContact, TerrainContactFeature, TerrainContactQuery,
-    TerrainContactScene, TerrainImpactConstraints, TerrainPathFailure, TerrainPathOutcome,
-    TerrainPathQuery, TerrainSweepHit, TerrainSweepOutcome, TerrainSweepQuery,
+    ContactObstacle, ContactTarget, MachineCollisionGeometry, TerrainContact,
+    TerrainContactFeature, TerrainContactQuery, TerrainContactScene, TerrainImpactConstraints,
+    TerrainPathFailure, TerrainPathOutcome, TerrainPathQuery, TerrainSweepHit, TerrainSweepOutcome,
+    TerrainSweepQuery,
 };
 
 /// Explicit failures from the compiled dynamics experiment. Failed results must

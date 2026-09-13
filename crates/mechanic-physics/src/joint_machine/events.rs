@@ -5,7 +5,10 @@ use super::{
     MachineDynamics, MachineState, PassiveForce, PhysicsError, SubstepContacts, TerrainSubstep,
     impact, integrate_substep,
 };
-use crate::{TerrainSweepHit, TerrainSweepOutcome, terrain_contacts::CONTACT_ACTIVATION_DISTANCE};
+use crate::{
+    TerrainSweepHit, TerrainSweepOutcome,
+    terrain_contacts::{CONTACT_ACTIVATION_DISTANCE, PAIR_ACTIVATION_DISTANCE},
+};
 
 #[derive(Clone, Debug)]
 pub(super) enum TrialOutcome {
@@ -24,7 +27,17 @@ pub(super) enum TrialOutcome {
 pub(super) struct VelocityReversal {
     pub fraction: f64,
     pub row: Vec<f64>,
-    pub point: Option<(usize, DVec3, DVec3)>,
+    pub point: Option<MaterialPoint>,
+}
+
+// A contact point followed through each body's own motion. Its normal speed is
+// the receiving point's minus the opposing body's point, when there is one.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MaterialPoint {
+    pub body: usize,
+    pub local: DVec3,
+    pub normal: DVec3,
+    pub other: Option<(usize, DVec3)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -389,8 +402,8 @@ fn trace_trial(
     let kind = match outcome {
         TrialOutcome::Complete { arrived, .. } => format!("complete arrived={arrived}"),
         TrialOutcome::Refine(hit) => format!(
-            "refine fraction={:e} collider={} triangle={} separation={:e}",
-            hit.fraction, hit.collider, hit.triangle, hit.separation
+            "refine fraction={:e} collider={} target={:?} separation={:e}",
+            hit.fraction, hit.collider, hit.target, hit.separation
         ),
         TrialOutcome::Release(hit) => format!("release fraction={:e}", hit.fraction),
         TrialOutcome::JointStop(hit) => {
@@ -515,7 +528,7 @@ fn validate_path_candidate(
             // first visited collider. Round subtraction and product outward.
             let remaining =
                 ((1.0 - hit.fraction).next_up() * sweep.maximum_point_displacement).next_up();
-            if remaining > CONTACT_ACTIVATION_DISTANCE {
+            if remaining > hit.target.activation_distance() {
                 diagnostics.terrain_path_rejections += 1;
                 return Ok(PathOutcome::Refine(hit));
             }
@@ -596,12 +609,10 @@ fn activate_clear_endpoint(
 }
 
 fn contains_hit(query: &crate::TerrainContactQuery, hit: TerrainSweepHit) -> bool {
-    query.contacts.iter().any(|contact| {
-        contact.feature.collider == hit.collider
-            && contact.feature.node == hit.node
-            && contact.feature.triangle == hit.triangle
-            && contact.separation <= CONTACT_ACTIVATION_DISTANCE
-    })
+    query
+        .activation_features
+        .iter()
+        .any(|feature| feature.touches(hit.collider, hit.target))
 }
 
 #[allow(clippy::too_many_arguments)] // Fresh endpoint geometry and incoming velocity; no cached impulse.
@@ -659,23 +670,29 @@ impl SustainingSurface {
             released: Vec::new(),
         };
         result.query.contacts.clear();
+        let local = |body: usize, world: DVec3| {
+            let pose = model.poses[body];
+            pose.rotation.inverse() * (world - pose.position)
+        };
         for point in &query.contacts {
-            let row = model.point_row(point.body, point.body_point, point.normal)?;
+            let row = point.point_row(model, point.normal)?;
             let speed = row.iter().zip(velocity).map(|(j, v)| j * v).sum::<f64>();
             if !speed.is_finite() {
                 return Err(PhysicsError::InvalidDynamics);
             }
             if speed > tolerance {
-                let pose = model.poses[point.body];
                 result.released.push((
                     VelocityReversal {
                         fraction: 0.0,
                         row,
-                        point: Some((
-                            point.body,
-                            pose.rotation.inverse() * (point.body_point - pose.position),
-                            point.normal,
-                        )),
+                        point: Some(MaterialPoint {
+                            body: point.body,
+                            local: local(point.body, point.body_point),
+                            normal: point.normal,
+                            other: point
+                                .other_body
+                                .map(|body| (body, local(body, point.terrain_point))),
+                        }),
                     },
                     speed,
                 ));
@@ -712,6 +729,16 @@ impl SustainingSurface {
             let final_speed = hit.motion_speed(creation, &poses, &motions, velocity);
             if final_speed < -tolerance && initial.max(-final_speed) > event_speed_threshold {
                 let fraction = initial / (initial - final_speed);
+                // A body point that cannot lift past the pair contact window before
+                // approaching again never left the other body. Releasing and
+                // relanding it commits ever-shorter prefixes, each start's manifold
+                // point separating a little slower, until the trials run out.
+                // Terrain keeps every reversal: its window is numerical zero.
+                if hit.point.is_some_and(|point| point.other.is_some())
+                    && initial * fraction * dt * 0.5 <= PAIR_ACTIVATION_DISTANCE
+                {
+                    continue;
+                }
                 if earliest.as_ref().is_none_or(|hit| fraction < hit.fraction) {
                     earliest = Some(VelocityReversal {
                         fraction,
@@ -732,8 +759,21 @@ impl VelocityReversal {
         motions: &[crate::SpatialMotion],
         velocity: &[f64],
     ) -> f64 {
-        if let Some((body, local, normal)) = self.point {
-            super::contact_kinematics::point_speed(creation, poses, motions, body, local, normal)
+        if let Some(point) = self.point {
+            let speed = |body, local| {
+                super::contact_kinematics::point_speed(
+                    creation,
+                    poses,
+                    motions,
+                    body,
+                    local,
+                    point.normal,
+                )
+            };
+            let own = speed(point.body, point.local);
+            point
+                .other
+                .map_or(own, |(body, local)| own - speed(body, local))
         } else {
             self.row.iter().zip(velocity).map(|(j, v)| j * v).sum()
         }

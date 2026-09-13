@@ -24,6 +24,182 @@ pub(crate) fn cube() -> (CompiledCreation, MachineCollisionGeometry, Vec<BodyPos
     )
 }
 
+// Two 1 m cubes with no bearing between them. They are authored apart so the
+// build never joins them; tests place them by pose.
+pub(crate) fn loose_cubes() -> CompiledCreation {
+    use mechanic_core::GridRotation;
+    let mut graph = ConstructionGraph::new();
+    for ticks in [bevy_math::IVec3::ZERO, bevy_math::IVec3::X * 800] {
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+    }
+    let creation = graph.compile().unwrap();
+    assert_eq!(creation.compounds.len(), 2);
+    creation
+}
+
+pub(crate) fn pose(position: DVec3) -> BodyPose {
+    BodyPose {
+        position,
+        rotation: DQuat::IDENTITY,
+    }
+}
+
+#[test]
+fn a_box_resting_on_another_box_is_supported_through_one_face_manifold() {
+    let creation = loose_cubes();
+    let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
+    let poses = vec![pose(DVec3::Y * 0.5), pose(DVec3::Y * 1.499)];
+    let query = TerrainContactScene::default()
+        .contacts(&geometry, &poses, DVec3::ZERO)
+        .unwrap();
+    assert_eq!(query.collider_pair_candidates, 1);
+    // The upper box's sides also meet the lower box's top edges; only the one
+    // separating face supplies points, so no horizontal support appears.
+    assert_eq!(query.contacts.len(), 4);
+    let model = crate::MachineDynamics::assemble(&creation, &poses, &[]).unwrap();
+    let rows = creation.dynamics.elimination_parent.len();
+    let mut rising = vec![0.0; rows];
+    for range in &creation.dynamics.body_velocities {
+        rising[range.start + 1] = 1.0;
+    }
+    for contact in &query.contacts {
+        let opposing = contact.other_body.unwrap();
+        assert_ne!(contact.body, opposing);
+        assert!(matches!(
+            contact.feature.obstacle,
+            ContactObstacle::Collider(_)
+        ));
+        // The normal pushes the receiving body away from the opposing one.
+        let away = poses[contact.body].position - poses[opposing].position;
+        assert!(contact.normal.abs_diff_eq(away.normalize(), 1e-12));
+        assert!((contact.depth - 0.001).abs() < 1e-9);
+        assert!((contact.separation + 0.001).abs() < 1e-9);
+        // Rows measure relative motion: rising together does not close the gap.
+        let row = contact.point_row(&model, contact.normal).unwrap();
+        let speed =
+            |velocities: &[f64]| row.iter().zip(velocities).map(|(j, v)| j * v).sum::<f64>();
+        assert!(speed(&rising).abs() < 1e-12);
+        let mut receiving = vec![0.0; rows];
+        receiving[creation.dynamics.body_velocities[contact.body].start + 1] = 1.0;
+        assert!((speed(&receiving) - contact.normal.y).abs() < 1e-12);
+    }
+    let constraints = query
+        .impact_constraints(&model, &vec![0.0; rows], 1.0, 1e-7)
+        .unwrap();
+    assert_eq!(constraints.blocks.len(), 1);
+    assert_eq!(constraints.blocks[0].contacts.len(), 4);
+}
+
+#[test]
+fn bodies_joined_by_a_bearing_never_collide_with_each_other() {
+    use mechanic_core::{BearingSpec, BuildOutcome, FaceKind, FaceRef, GridRotation, PartId};
+    let mut graph = ConstructionGraph::new();
+    let mut spawn = |ticks: bevy_math::IVec3| {
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("spawn expected");
+        };
+        part as PartId
+    };
+    let root = spawn(bevy_math::IVec3::ZERO);
+    let tip = spawn(bevy_math::IVec3::X * 400);
+    graph
+        .apply(BuildCommand::AddBearing(BearingSpec::new(
+            FaceRef::part(root, FaceKind::PositiveX),
+            FaceRef::part(tip, FaceKind::NegativeX),
+            Vec3::X * 0.5,
+            Vec3::X,
+        )))
+        .unwrap();
+    let hinged = graph.compile().unwrap();
+    // Share one face exactly, as a built hinge does.
+    let poses = vec![pose(DVec3::ZERO), pose(DVec3::X)];
+    let scene = TerrainContactScene::default();
+    let geometry = MachineCollisionGeometry::new(&hinged, 1).unwrap();
+    let query = scene.contacts(&geometry, &poses, DVec3::ZERO).unwrap();
+    assert_eq!(query.collider_pair_candidates, 0);
+    assert!(query.contacts.is_empty());
+    // The same boxes without the bearing do touch there.
+    let loose = MachineCollisionGeometry::new(&loose_cubes(), 1).unwrap();
+    let query = scene.contacts(&loose, &poses, DVec3::ZERO).unwrap();
+    assert_eq!(query.collider_pair_candidates, 1);
+    assert!(!query.contacts.is_empty());
+    assert!(
+        query
+            .contacts
+            .iter()
+            .all(|contact| contact.normal.abs().abs_diff_eq(DVec3::X, 1e-12))
+    );
+}
+
+#[test]
+fn bodies_of_one_mechanism_collide_only_when_they_were_built_apart() {
+    use mechanic_core::{BearingSpec, BuildOutcome, FaceKind, FaceRef, GridRotation, PartId};
+    // Three boxes in a row, each joined to the next. Root and tip are two joints
+    // apart and built a metre from each other.
+    let mut graph = ConstructionGraph::new();
+    let mut spawn = |ticks: bevy_math::IVec3| {
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+        else {
+            panic!("spawn expected");
+        };
+        part as PartId
+    };
+    let parts = [0, 400, 800].map(|x| spawn(bevy_math::IVec3::X * x));
+    for (joint, anchor) in [0.5_f32, 1.5].into_iter().enumerate() {
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(parts[joint], FaceKind::PositiveX),
+                FaceRef::part(parts[joint + 1], FaceKind::NegativeX),
+                Vec3::X * anchor,
+                Vec3::X,
+            )))
+            .unwrap();
+    }
+    let chain = graph.compile().unwrap();
+    let geometry = MachineCollisionGeometry::new(&chain, 1).unwrap();
+    // Fold the tip back onto the root: it rests 1 mm deep on the root's top.
+    let poses = vec![pose(DVec3::ZERO), pose(DVec3::X), pose(DVec3::Y * 0.999)];
+    let query = TerrainContactScene::default()
+        .contacts(&geometry, &poses, DVec3::ZERO)
+        .unwrap();
+    let bodies = |contact: &TerrainContact| {
+        let other = contact.other_body.unwrap();
+        [contact.body.min(other), contact.body.max(other)]
+    };
+    assert_eq!(query.contacts.len(), 4);
+    assert!(
+        query
+            .contacts
+            .iter()
+            .all(|contact| bodies(contact) == [0, 2])
+    );
+}
+
 // The exact shapes the solver collides, paired with their bodies. A test that
 // measures penetration from `creation.colliders` instead would read a solid
 // cylinder's sixteen boxes, whose shared corners sit about 1e-8 m below the prism
@@ -113,8 +289,14 @@ fn coplanar_triangle_seam_reduces_to_four_supports_without_changing_materials() 
     for contact in query.contacts {
         assert!((contact.depth - 0.001).abs() < 1e-12);
         assert_eq!(contact.feature.topology_generation, 7);
-        assert_eq!(contact.feature.geometry_generation, 3);
-        assert_eq!(contact.feature.publication_generation, 1);
+        assert!(matches!(
+            contact.feature.obstacle,
+            ContactObstacle::Terrain {
+                geometry_generation: 3,
+                publication_generation: 1,
+                ..
+            }
+        ));
     }
     scene
         .publish(
@@ -269,7 +451,13 @@ fn changed_active_groups_and_materials_invalidate_only_changed_chunk_features() 
             .unwrap()
             .contacts
             .iter()
-            .all(|c| c.feature.publication_generation == 1)
+            .all(|c| matches!(
+                c.feature.obstacle,
+                ContactObstacle::Terrain {
+                    publication_generation: 1,
+                    ..
+                }
+            ))
     );
     Arc::make_mut(&mut chunk).active_groups = TerrainTriangleGroupMask::default();
     Arc::make_mut(&mut chunk).indices.clear();
@@ -290,7 +478,13 @@ fn changed_active_groups_and_materials_invalidate_only_changed_chunk_features() 
             .unwrap()
             .contacts
             .iter()
-            .all(|c| c.feature.publication_generation == 4)
+            .all(|c| matches!(
+                c.feature.obstacle,
+                ContactObstacle::Terrain {
+                    publication_generation: 4,
+                    ..
+                }
+            ))
     );
 }
 

@@ -6,7 +6,10 @@ use std::{
 };
 
 use bevy_math::{DVec3, Vec3};
-use mechanic_core::{CompiledCreation, ContactPolytope, MaterialProperties};
+use mechanic_core::{
+    CompiledCreation, ContactPolytope, ConvexFeature, ConvexSeparation, MaterialProperties,
+    TriangleContactPoint,
+};
 use mechanic_world::{
     TerrainCollisionChunk, TerrainNodeId, TerrainSpatialIndex, WorldBounds, WorldPosition,
 };
@@ -21,43 +24,114 @@ pub use sweep::{TerrainSweepHit, TerrainSweepOutcome, TerrainSweepQuery};
 mod constraints;
 pub use constraints::TerrainImpactConstraints;
 
+/// Geometry opposing a collider at one contact point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ContactObstacle {
+    /// A finite triangle of published terrain.
+    Terrain {
+        /// Owning terrain node.
+        node: TerrainNodeId,
+        /// Chunk geometry generation supplied by the world.
+        geometry_generation: u64,
+        /// Publication that selected this chunk's active groups/materials.
+        publication_generation: u64,
+        /// Stable triangle row within the immutable BVH.
+        triangle: usize,
+    },
+    /// Another collider row of the same construction, on a different body.
+    Collider(usize),
+}
+
+/// Geometry a continuous query found approaching, independent of generations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContactTarget {
+    /// A terrain triangle.
+    Terrain {
+        /// Owning terrain chunk.
+        node: TerrainNodeId,
+        /// Triangle row in the chunk's immutable BVH.
+        triangle: usize,
+    },
+    /// Another collider row of the same construction.
+    Collider(usize),
+}
+
+impl ContactObstacle {
+    /// The approached geometry, without the generations that published it.
+    pub fn target(self) -> ContactTarget {
+        match self {
+            Self::Terrain { node, triangle, .. } => ContactTarget::Terrain { node, triangle },
+            Self::Collider(collider) => ContactTarget::Collider(collider),
+        }
+    }
+}
+
 /// Stable source identity; replacing a chunk or topology invalidates its points.
 /// A retained corner is refreshed against geometry before any future reuse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TerrainContactFeature {
     /// Compiled construction generation.
     pub topology_generation: u64,
-    /// Collider row within that construction.
+    /// Collider row receiving the contact normal.
     pub collider: usize,
-    /// Owning terrain node.
-    pub node: TerrainNodeId,
-    /// Chunk geometry generation supplied by the world.
-    pub geometry_generation: u64,
-    /// Publication that selected this chunk's active groups/materials.
-    pub publication_generation: u64,
-    /// Stable triangle row within the immutable BVH.
-    pub triangle: usize,
+    /// Opposing terrain triangle or collider.
+    pub obstacle: ContactObstacle,
     /// Retained finite polygon corner, requiring geometry refresh before reuse.
     pub corner: usize,
+}
+
+impl TerrainContactFeature {
+    /// Whether this point touches the geometry a continuous query reported for
+    /// `collider`. A collider pair matches in either order: which of the two
+    /// receives the normal depends on the pose, not on the approach.
+    pub fn touches(&self, collider: usize, target: ContactTarget) -> bool {
+        let own = self.obstacle.target();
+        (self.collider == collider && own == target)
+            || matches!(
+                (own, target),
+                (ContactTarget::Collider(other), ContactTarget::Collider(approached))
+                    if other == collider && approached == self.collider
+            )
+    }
 }
 
 // Numerical zero for actual finite opposing points, never a speculative margin.
 pub(crate) const CONTACT_ACTIVATION_DISTANCE: f64 = 1e-12;
 
-/// Actual finite terrain/body support and mixed material properties.
+// Numerical zero between two bodies' solids. Their separating-axis gap comes from
+// two independently rounded, moving polytopes, and a body rolling over another's
+// edge closes its last fraction of a micron far slower than any conservative
+// bound, so a terrain-precision window exhausts the event search. The GPU emits
+// body contacts from 1e-5 m apart; this stays ten times tighter.
+pub(crate) const PAIR_ACTIVATION_DISTANCE: f64 = 1e-6;
+
+impl ContactTarget {
+    /// Largest gap at which a contact with this target counts as touching.
+    pub(crate) const fn activation_distance(self) -> f64 {
+        match self {
+            Self::Terrain { .. } => CONTACT_ACTIVATION_DISTANCE,
+            Self::Collider(_) => PAIR_ACTIVATION_DISTANCE,
+        }
+    }
+}
+
+/// Actual finite support against terrain or another body, with mixed materials.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainContact {
     /// Generations and geometric source of this point.
     pub feature: TerrainContactFeature,
-    /// Compound body receiving the contact impulse.
+    /// Compound body receiving the contact impulse along `normal`.
     pub body: usize,
-    /// Query-local manifold number within this collider, for coupled block solving.
+    /// Body carrying the opposing surface, which receives the opposite impulse.
+    /// None for terrain.
+    pub other_body: Option<usize>,
+    /// Query-local manifold number within this collider/obstacle, for coupled block solving.
     pub manifold: usize,
-    /// Surface point, relative to the query's floating origin.
+    /// Opposing surface point, relative to the query's floating origin.
     pub terrain_point: DVec3,
-    /// Opposing convex point, relative to the same origin.
+    /// Receiving convex point, relative to the same origin.
     pub body_point: DVec3,
-    /// Triangle's outward unit normal.
+    /// Opposing surface's outward unit normal, toward the receiving body.
     pub normal: DVec3,
     /// Current penetration along the normal, in metres.
     pub depth: f64,
@@ -72,12 +146,17 @@ pub struct TerrainContact {
 pub struct TerrainContactQuery {
     /// Contacts sorted by stable source identity.
     pub contacts: Vec<TerrainContact>,
+    /// One numerical-zero contact witness per source triangle, before manifold
+    /// reduction. Event arrival must not depend on which support corners survive.
+    pub activation_features: Vec<TerrainContactFeature>,
     /// Chunk candidates visited across all moving colliders.
     pub chunk_candidates: usize,
     /// Triangle candidates passed to finite narrowphase.
     pub triangle_candidates: usize,
     /// Point count before cross-triangle manifold reduction.
     pub unreduced_points: usize,
+    /// Collider pairs on different bodies whose bounds overlap.
+    pub collider_pair_candidates: usize,
 }
 
 struct Collider {
@@ -94,6 +173,8 @@ pub struct MachineCollisionGeometry {
     generation: u64,
     bodies: usize,
     colliders: Vec<Collider>,
+    // Sorted body pairs joined by a bearing, which never collide with each other.
+    suppressed: Vec<[usize; 2]>,
 }
 
 impl MachineCollisionGeometry {
@@ -143,12 +224,135 @@ impl MachineCollisionGeometry {
             });
             row += cylinder.map_or(1, |_| mechanic_core::CYLINDER_COLLIDER_COUNT);
         }
-        Ok(Self {
+        let mut suppressed = creation
+            .collision_suppression
+            .iter()
+            .map(|pair| {
+                let [a, b] = pair.map(|body| body as usize);
+                if a.max(b) >= creation.compounds.len() {
+                    return Err(PhysicsError::InvalidCollision);
+                }
+                Ok([a.min(b), a.max(b)])
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        suppressed.sort_unstable();
+        let mut geometry = Self {
             generation: topology_generation,
             bodies: creation.compounds.len(),
             colliders,
-        })
+            suppressed,
+        };
+        let flush = geometry.built_flush(creation)?;
+        geometry.suppressed.extend(flush);
+        geometry.suppressed.sort_unstable();
+        geometry.suppressed.dedup();
+        Ok(geometry)
     }
+
+    // Bodies of one mechanism built touching each other, such as a wheel face
+    // flush against the mount two joints away. They slide on that shared face
+    // as one assembly: it carries no load, and a spinning face never clears a
+    // conservative sweep bounded by its full point speed. Compilation already
+    // suppresses each bearing's own pair; this adds every other pair of one
+    // mechanism that touches as built. Separate mechanisms always collide, and
+    // bodies of one mechanism built apart still collide when they meet.
+    fn built_flush(&self, creation: &CompiledCreation) -> Result<Vec<[usize; 2]>, PhysicsError> {
+        // Authored f32 positions put flush faces within rounding of each other.
+        const BUILT_TOUCHING: f64 = 1e-6;
+        let mut mechanism = vec![usize::MAX; self.bodies];
+        for (index, component) in creation
+            .loop_topology
+            .mechanism_components
+            .iter()
+            .enumerate()
+        {
+            for &body in component {
+                *mechanism
+                    .get_mut(body as usize)
+                    .ok_or(PhysicsError::InvalidCollision)? = index;
+            }
+        }
+        let built = crate::MachineState::at_rest(creation);
+        let shapes = self
+            .colliders
+            .iter()
+            .map(|collider| {
+                let pose = built.poses[collider.body];
+                collider
+                    .local
+                    .transformed(pose.position, pose.rotation)
+                    .map_err(|_| PhysicsError::InvalidCollision)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let bounds = shapes
+            .iter()
+            .map(|shape| {
+                let [minimum, maximum] = shape.bounds();
+                [
+                    minimum - DVec3::splat(BUILT_TOUCHING),
+                    maximum + DVec3::splat(BUILT_TOUCHING),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let mut flush = Vec::new();
+        for [first, second] in self.candidate_pairs(&bounds) {
+            let bodies = [self.colliders[first].body, self.colliders[second].body];
+            let pair = [bodies[0].min(bodies[1]), bodies[0].max(bodies[1])];
+            if mechanism[pair[0]] != mechanism[pair[1]]
+                || mechanism[pair[0]] == usize::MAX
+                || flush.contains(&pair)
+            {
+                continue;
+            }
+            let separation = shapes[first]
+                .convex_separation(&shapes[second])
+                .map_err(|_| PhysicsError::InvalidCollision)?;
+            if separation.separation <= BUILT_TOUCHING {
+                flush.push(pair);
+            }
+        }
+        Ok(flush)
+    }
+
+    // Collider pairs that may touch within `bounds`, in sorted order: on
+    // different bodies, at least one moving, and not joined by a bearing.
+    // Sweep-and-prune on x keeps this near-linear for scattered bodies.
+    pub(crate) fn candidate_pairs(&self, bounds: &[[DVec3; 2]]) -> Vec<[usize; 2]> {
+        let mut order = (0..self.colliders.len()).collect::<Vec<_>>();
+        order.sort_by(|&a, &b| bounds[a][0].x.total_cmp(&bounds[b][0].x).then(a.cmp(&b)));
+        let mut pairs = Vec::new();
+        for (index, &a) in order.iter().enumerate() {
+            for &b in &order[index + 1..] {
+                if bounds[b][0].x > bounds[a][1].x {
+                    break;
+                }
+                let [low, high] = [a.min(b), a.max(b)];
+                let (first, second) = (&self.colliders[low], &self.colliders[high]);
+                let bodies = [first.body.min(second.body), first.body.max(second.body)];
+                if first.body == second.body
+                    || !(first.moving || second.moving)
+                    || bounds[a][0].cmpgt(bounds[b][1]).any()
+                    || bounds[b][0].cmpgt(bounds[a][1]).any()
+                    || self.suppressed.binary_search(&bodies).is_ok()
+                {
+                    continue;
+                }
+                pairs.push([low, high]);
+            }
+        }
+        pairs.sort_unstable();
+        pairs
+    }
+}
+
+// Collider/collider friction mixing, matching the GPU route.
+fn mixed_response(first: MaterialProperties, second: MaterialProperties) -> [f64; 4] {
+    [
+        (f64::from(first.static_friction) * f64::from(second.static_friction)).sqrt(),
+        (f64::from(first.dynamic_friction) * f64::from(second.dynamic_friction)).sqrt(),
+        f64::from(first.restitution.max(second.restitution)),
+        (f64::from(first.rolling_resistance) * f64::from(second.rolling_resistance)).sqrt(),
+    ]
 }
 
 struct Chunk {
@@ -316,15 +520,23 @@ impl TerrainContactScene {
             return Err(PhysicsError::InvalidCollision);
         }
         let mut result = TerrainContactQuery::default();
+        let shapes = machine
+            .colliders
+            .iter()
+            .map(|collider| {
+                let pose = poses[collider.body];
+                collider
+                    .local
+                    .transformed(pose.position, pose.rotation)
+                    .map_err(|_| PhysicsError::InvalidCollision)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         for (collider_row, collider) in machine.colliders.iter().enumerate() {
             if !collider.moving {
                 continue;
             }
             let pose = poses[collider.body];
-            let shape = collider
-                .local
-                .transformed(pose.position, pose.rotation)
-                .map_err(|_| PhysicsError::InvalidCollision)?;
+            let shape = &shapes[collider_row];
             let center = pose.position + pose.rotation * collider.center;
             let [minimum, maximum] = shape.bounds();
             let bounds = WorldBounds {
@@ -356,22 +568,8 @@ impl TerrainContactScene {
                     {
                         continue;
                     }
-                    let points = match kind {
-                        QueryKind::Activation => activation_points(&shape, triangle)?,
-                        QueryKind::Surface => shape
-                            .triangle_proximity(triangle, margin)
-                            .map_err(|_| PhysicsError::InvalidCollision)?,
-                        QueryKind::Recovery => {
-                            let points = shape
-                                .triangle_recovery_contacts(triangle)
-                                .map_err(|_| PhysicsError::InvalidCollision)?;
-                            if points.is_empty() {
-                                activation_points(&shape, triangle)?
-                            } else {
-                                points
-                            }
-                        }
-                    };
+                    let points =
+                        surface_points(shape, triangle, kind, margin, CONTACT_ACTIVATION_DISTANCE)?;
                     if points.is_empty() {
                         continue;
                     }
@@ -387,19 +585,23 @@ impl TerrainContactScene {
                         f64::from(material.restitution).max(surface[2]),
                         (f64::from(material.rolling_resistance) * surface[3]).sqrt(),
                     ];
+                    let mut activation_recorded = false;
                     for (corner, point) in points.into_iter().enumerate() {
                         result.unreduced_points += 1;
                         let contact = TerrainContact {
                             feature: TerrainContactFeature {
                                 topology_generation: machine.generation,
                                 collider: collider_row,
-                                node,
-                                geometry_generation: chunk.generation,
-                                publication_generation: published.publication,
-                                triangle: row,
+                                obstacle: ContactObstacle::Terrain {
+                                    node,
+                                    geometry_generation: chunk.generation,
+                                    publication_generation: published.publication,
+                                    triangle: row,
+                                },
                                 corner,
                             },
                             body: collider.body,
+                            other_body: None,
                             manifold: 0,
                             terrain_point: point.triangle_point,
                             body_point: point.body_point,
@@ -408,6 +610,11 @@ impl TerrainContactScene {
                             separation: (point.body_point - point.triangle_point).dot(point.normal),
                             response,
                         };
+                        if !activation_recorded && contact.separation <= CONTACT_ACTIVATION_DISTANCE
+                        {
+                            result.activation_features.push(contact.feature);
+                            activation_recorded = true;
+                        }
                         if matches!(kind, QueryKind::Recovery) {
                             result.contacts.push(contact);
                         } else {
@@ -415,7 +622,7 @@ impl TerrainContactScene {
                                 &mut groups,
                                 &mut result.contacts,
                                 contact,
-                                &shape,
+                                shape,
                                 center,
                             );
                         }
@@ -426,9 +633,144 @@ impl TerrainContactScene {
                 group.append_unique(manifold, &mut result.contacts);
             }
         }
+        // Bodies of one construction against each other. Terrain triangles above
+        // are one-sided surfaces; here both sides are solids, and one separating
+        // axis per pair selects the single face or edge that supplies the normal.
+        let reach = match kind {
+            QueryKind::Surface => margin,
+            QueryKind::Activation | QueryKind::Recovery => PAIR_ACTIVATION_DISTANCE,
+        };
+        let bounds = shapes
+            .iter()
+            .map(|shape| {
+                let [minimum, maximum] = shape.bounds();
+                [minimum - DVec3::splat(reach), maximum + DVec3::splat(reach)]
+            })
+            .collect::<Vec<_>>();
+        for [first, second] in machine.candidate_pairs(&bounds) {
+            result.collider_pair_candidates += 1;
+            let separation = shapes[first]
+                .convex_separation(&shapes[second])
+                .map_err(|_| PhysicsError::InvalidCollision)?;
+            if separation.separation > reach {
+                continue;
+            }
+            let (receiving, opposing, points) =
+                pair_points(&shapes, [first, second], separation, kind, margin)?;
+            let collider = &machine.colliders[receiving];
+            let pose = poses[collider.body];
+            let center = pose.position + pose.rotation * collider.center;
+            let response = mixed_response(collider.material, machine.colliders[opposing].material);
+            let mut groups = Vec::<SupportGroup>::new();
+            let mut activation_recorded = false;
+            for (corner, point) in points.into_iter().enumerate() {
+                result.unreduced_points += 1;
+                let contact = TerrainContact {
+                    feature: TerrainContactFeature {
+                        topology_generation: machine.generation,
+                        collider: receiving,
+                        obstacle: ContactObstacle::Collider(opposing),
+                        corner,
+                    },
+                    body: collider.body,
+                    other_body: Some(machine.colliders[opposing].body),
+                    manifold: 0,
+                    terrain_point: point.triangle_point,
+                    body_point: point.body_point,
+                    normal: point.normal,
+                    depth: point.depth,
+                    separation: (point.body_point - point.triangle_point).dot(point.normal),
+                    response,
+                };
+                if !activation_recorded && contact.separation <= PAIR_ACTIVATION_DISTANCE {
+                    result.activation_features.push(contact.feature);
+                    activation_recorded = true;
+                }
+                if matches!(kind, QueryKind::Recovery) {
+                    result.contacts.push(contact);
+                } else {
+                    reduce_support(
+                        &mut groups,
+                        &mut result.contacts,
+                        contact,
+                        &shapes[receiving],
+                        center,
+                    );
+                }
+            }
+            for (manifold, group) in groups.into_iter().enumerate() {
+                group.append_unique(manifold, &mut result.contacts);
+            }
+        }
         result.contacts.sort_by_key(|contact| contact.feature);
         Ok(result)
     }
+}
+
+// Finite points of one convex against one triangle for the requested query.
+fn surface_points(
+    shape: &ContactPolytope,
+    triangle: [DVec3; 3],
+    kind: QueryKind,
+    margin: f64,
+    window: f64,
+) -> Result<Vec<TriangleContactPoint>, PhysicsError> {
+    match kind {
+        QueryKind::Activation => activation_points(shape, triangle, window),
+        QueryKind::Surface => shape
+            .triangle_proximity(triangle, margin)
+            .map_err(|_| PhysicsError::InvalidCollision),
+        QueryKind::Recovery => {
+            let points = shape
+                .triangle_recovery_contacts(triangle)
+                .map_err(|_| PhysicsError::InvalidCollision)?;
+            if points.is_empty() {
+                activation_points(shape, triangle, window)
+            } else {
+                Ok(points)
+            }
+        }
+    }
+}
+
+// Points between two colliders from the feature realizing their separating
+// axis, as (receiving collider, opposing collider, points). A face clips the
+// other solid against that face's triangles, so its outward normal pushes the
+// other collider away; crossed edges touch at their single closest pair.
+fn pair_points(
+    shapes: &[ContactPolytope],
+    [first, second]: [usize; 2],
+    separation: ConvexSeparation,
+    kind: QueryKind,
+    margin: f64,
+) -> Result<(usize, usize, Vec<TriangleContactPoint>), PhysicsError> {
+    let (receiving, opposing, plane) = match separation.feature {
+        ConvexFeature::OtherFace(plane) => (first, second, plane),
+        ConvexFeature::OwnFace(plane) => (second, first, plane),
+        ConvexFeature::Edges([own, other]) => {
+            let point = TriangleContactPoint {
+                triangle_point: other,
+                body_point: own,
+                normal: separation.axis,
+                depth: (-separation.separation).max(0.0),
+            };
+            return Ok((first, second, vec![point]));
+        }
+    };
+    let mut points = Vec::new();
+    for triangle in shapes[opposing]
+        .face_triangles(plane)
+        .map_err(|_| PhysicsError::InvalidCollision)?
+    {
+        points.extend(surface_points(
+            &shapes[receiving],
+            triangle,
+            kind,
+            margin,
+            PAIR_ACTIVATION_DISTANCE,
+        )?);
+    }
+    Ok((receiving, opposing, points))
 }
 
 struct SupportGroup {
@@ -619,13 +961,14 @@ pub(crate) mod tests;
 fn activation_points(
     shape: &ContactPolytope,
     triangle: [DVec3; 3],
+    window: f64,
 ) -> Result<Vec<mechanic_core::TriangleContactPoint>, PhysicsError> {
     let points = shape
-        .triangle_activation_contacts(triangle, CONTACT_ACTIVATION_DISTANCE)
+        .triangle_activation_contacts(triangle, window)
         .map_err(|_| PhysicsError::NotConverged)?;
     if points.iter().any(|point| {
         let gap = (point.body_point - point.triangle_point).dot(point.normal);
-        !gap.is_finite() || gap > CONTACT_ACTIVATION_DISTANCE
+        !gap.is_finite() || gap > window
     }) {
         return Err(PhysicsError::NotConverged);
     }

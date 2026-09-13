@@ -75,10 +75,7 @@ fn correct_candidate(
             });
         };
         for point in &query.contacts {
-            add(
-                model.point_row(point.body, point.body_point, point.normal)?,
-                -point.separation,
-            );
+            add(point.point_row(&model, point.normal)?, -point.separation);
         }
         for (coordinate, &row) in creation.dynamics.coordinate_velocities.iter().enumerate() {
             let [lower, upper] = bounds(creation, drives, coordinate);

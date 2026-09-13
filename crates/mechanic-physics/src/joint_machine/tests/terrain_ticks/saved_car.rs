@@ -683,3 +683,16 @@ fn car_recovery_clears_a_sunk_car_by_requerying_geometry_as_it_moves() {
     };
     assert_eq!(run(), run());
 }
+
+#[test]
+fn a_wheel_built_flush_against_its_mount_does_not_collide_with_it() {
+    // Body 5 is built flush against body 3, two joints away through body 4.
+    // Colliding that face stalled every sweep of the spinning wheel.
+    let (creation, initial, geometry, _) = fixture();
+    assert!(!creation.collision_suppression.contains(&[3, 5]));
+    let query = TerrainContactScene::default()
+        .activation_contacts(&geometry, &initial.poses, DVec3::ZERO)
+        .unwrap();
+    assert!(query.contacts.is_empty(), "{:?}", query.contacts);
+    assert_eq!(query.collider_pair_candidates, 0);
+}

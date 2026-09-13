@@ -10,6 +10,8 @@ pub(super) struct ContactPoint {
     pub body: usize,
     pub local_point: DVec3,
     pub normal: DVec3,
+    // Opposing body and its local point; the row measures relative speed.
+    pub other: Option<(usize, DVec3)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -33,7 +35,7 @@ pub(super) fn endpoint_targets(
         .flat_map(|block| &block.jacobian)
         .collect::<Vec<_>>();
     for point in points {
-        let speed = point_speed(
+        let mut speed = point_speed(
             creation,
             &poses,
             &motions,
@@ -41,6 +43,9 @@ pub(super) fn endpoint_targets(
             point.local_point,
             point.normal,
         );
+        if let Some((body, local)) = point.other {
+            speed -= point_speed(creation, &poses, &motions, body, local, point.normal);
+        }
         let initial_speed = rows[point.row]
             .iter()
             .zip(candidate)

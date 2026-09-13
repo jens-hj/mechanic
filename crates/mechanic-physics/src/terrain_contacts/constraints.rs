@@ -1,9 +1,50 @@
 //! Contact manifold rows for the coupled machine response.
 
-use super::TerrainContactQuery;
+use super::{ContactObstacle, TerrainContact, TerrainContactQuery};
 use crate::{ConstraintBlock, ContactFriction, ImpulseBounds, MachineDynamics, PhysicsError};
 use bevy_math::DVec3;
 use std::collections::BTreeMap;
+
+impl TerrainContact {
+    /// Generalized row of the relative point velocity along `direction`: the
+    /// receiving body's material point minus the opposing body's, if any.
+    ///
+    /// # Errors
+    /// Rejects unknown bodies or non-finite points/directions.
+    pub fn point_row(
+        &self,
+        model: &MachineDynamics,
+        direction: DVec3,
+    ) -> Result<Vec<f64>, PhysicsError> {
+        let mut row = model.point_row(self.body, self.body_point, direction)?;
+        if let Some(other) = self.other_body {
+            let opposing = model.point_row(other, self.terrain_point, direction)?;
+            for (value, theirs) in row.iter_mut().zip(opposing) {
+                *value -= theirs;
+            }
+        }
+        Ok(row)
+    }
+
+    /// Generalized row of the relative angular velocity along `direction`.
+    ///
+    /// # Errors
+    /// Rejects unknown bodies or a non-finite direction.
+    pub fn angular_row(
+        &self,
+        model: &MachineDynamics,
+        direction: DVec3,
+    ) -> Result<Vec<f64>, PhysicsError> {
+        let mut row = model.angular_row(self.body, direction)?;
+        if let Some(other) = self.other_body {
+            let opposing = model.angular_row(other, direction)?;
+            for (value, theirs) in row.iter_mut().zip(opposing) {
+                *value -= theirs;
+            }
+        }
+        Ok(row)
+    }
+}
 
 /// Coupled impact blocks and their geometric source point order.
 pub struct TerrainImpactConstraints {
@@ -40,15 +81,21 @@ impl TerrainContactQuery {
         {
             return Err(PhysicsError::InvalidConstraints);
         }
-        let mut groups = BTreeMap::<(usize, usize), Vec<usize>>::new();
+        let mut groups = BTreeMap::<(usize, Option<usize>, usize), Vec<usize>>::new();
         for (index, contact) in self.contacts.iter().enumerate() {
             if !contact.separation.is_finite()
-                || contact.separation > super::CONTACT_ACTIVATION_DISTANCE
+                || contact.separation > contact.feature.obstacle.target().activation_distance()
             {
                 return Err(PhysicsError::InvalidConstraints);
             }
+            // Terrain manifolds share one numbering per collider; each collider
+            // pair numbers its own.
+            let opposing = match contact.feature.obstacle {
+                ContactObstacle::Terrain { .. } => None,
+                ContactObstacle::Collider(collider) => Some(collider),
+            };
             groups
-                .entry((contact.feature.collider, contact.manifold))
+                .entry((contact.feature.collider, opposing, contact.manifold))
                 .or_default()
                 .push(index);
         }
@@ -74,7 +121,7 @@ impl TerrainContactQuery {
                 let v = contact.normal.cross(u);
                 let first = block.jacobian.len();
                 for direction in [contact.normal, u, v] {
-                    let row = model.point_row(contact.body, contact.body_point, direction)?;
+                    let row = contact.point_row(model, direction)?;
                     let speed = row
                         .iter()
                         .zip(incoming)
@@ -101,7 +148,7 @@ impl TerrainContactQuery {
                     (contact.response[3] > 0.0).then_some(contact.response[3] * radius);
                 if rolling_length.is_some() {
                     for direction in [u, v] {
-                        let row = model.angular_row(contact.body, direction)?;
+                        let row = contact.angular_row(model, direction)?;
                         let speed = row
                             .iter()
                             .zip(incoming)

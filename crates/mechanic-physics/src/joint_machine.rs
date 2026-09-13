@@ -817,12 +817,17 @@ fn integrate_substep(
             let mut row = first;
             for law in &block.contacts {
                 let point = contacts.query.contacts[impact.point_indices[point_index]];
+                let local = |body: usize, world: DVec3| {
+                    model.poses[body].rotation.inverse() * (world - model.poses[body].position)
+                };
                 contact_kinematics.push(contact_kinematics::ContactPoint {
                     row,
                     body: point.body,
-                    local_point: model.poses[point.body].rotation.inverse()
-                        * (point.body_point - model.poses[point.body].position),
+                    local_point: local(point.body, point.body_point),
                     normal: point.normal,
+                    other: point
+                        .other_body
+                        .map(|body| (body, local(body, point.terrain_point))),
                 });
                 point_index += 1;
                 row += if law.rolling_length.is_some() { 5 } else { 3 };
@@ -837,20 +842,26 @@ fn integrate_substep(
     let mut velocity = state.velocities.clone();
     let mut adjusted_desired = desired.clone();
     if !contact_kinematics.is_empty() {
+        let world = |body: usize, local: DVec3| {
+            let pose = model.poses[body];
+            (body, pose.position + pose.rotation * local)
+        };
         let points = contact_kinematics
             .iter()
-            .map(|point| {
-                let pose = model.poses[point.body];
-                (
-                    point.body,
-                    pose.position + pose.rotation * point.local_point,
-                )
+            .flat_map(|point| {
+                std::iter::once(world(point.body, point.local_point))
+                    .chain(point.other.map(|(body, local)| world(body, local)))
             })
             .collect::<Vec<_>>();
         let bias = model.point_acceleration_bias(creation, &state.velocities, &points)?;
         diagnostics.contact_bias_traversals += 1;
-        for (point, bias) in contact_kinematics.iter().zip(bias) {
-            adjusted_desired[point.row] -= dt * point.normal.dot(bias);
+        let mut bias = bias.into_iter();
+        for point in &contact_kinematics {
+            let mut relative = bias.next().ok_or(PhysicsError::InvalidDynamics)?;
+            if point.other.is_some() {
+                relative -= bias.next().ok_or(PhysicsError::InvalidDynamics)?;
+            }
+            adjusted_desired[point.row] -= dt * point.normal.dot(relative);
         }
     }
     let mut last_residual = f64::INFINITY;

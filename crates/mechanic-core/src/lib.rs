@@ -33,8 +33,8 @@ pub use compile::{
     PIPE_BEND_COLLIDER_COUNT, TopologyError,
 };
 pub use contact_geometry::{
-    ContactGeometryError, ContactPolytope, ContactVelocity, RigidContactSweep, SweepOutcome,
-    TriangleContactPoint,
+    ContactGeometryError, ContactPolytope, ContactVelocity, ConvexFeature, ConvexSeparation,
+    RigidContactSweep, SweepOutcome, TriangleContactPoint,
 };
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, ConstructionFrameDoc,

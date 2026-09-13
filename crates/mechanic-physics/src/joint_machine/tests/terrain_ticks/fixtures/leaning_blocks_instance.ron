@@ -1,0 +1,330 @@
+(
+    id: 1,
+    creation: (
+        version: 17,
+        name: "World construction",
+        parts: [
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (600, 2250, -500),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (244, 244, 242),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (600, 2250, -600),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (244, 244, 242),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (500, 2250, -500),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (244, 244, 242),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (500, 2250, -600),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (244, 244, 242),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (400, 2250, -500),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (244, 244, 242),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (400, 2250, -600),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (244, 244, 242),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (400, 2650, -600),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (143, 201, 58),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (500, 2650, -600),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (143, 201, 58),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (600, 2650, -600),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (143, 201, 58),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (400, 2550, -500),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (34, 166, 179),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+            Cuboid(
+                dimensions: (1, 1, 1),
+                pose: (
+                    translation_ticks: (300, 2550, -500),
+                    rotation: (0, 0, 0),
+                ),
+                material: Steel,
+                appearance: (
+                    color: Dye((
+                        target_rgb: (34, 166, 179),
+                        structure: 1.0,
+                    )),
+                    finish: Anodised,
+                ),
+            ),
+        ],
+        frames: [
+            (
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+            ),
+        ],
+        part_frames: [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+        region_frames: [],
+        welds: [
+            (
+                first: (
+                    owner: Part(5),
+                    face: PositiveX,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(3),
+                    face: NegativeX,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(5),
+                    face: PositiveZ,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(4),
+                    face: NegativeZ,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(4),
+                    face: PositiveX,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(2),
+                    face: NegativeX,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(3),
+                    face: PositiveX,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(1),
+                    face: NegativeX,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(3),
+                    face: PositiveZ,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(2),
+                    face: NegativeZ,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(2),
+                    face: PositiveX,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(0),
+                    face: NegativeX,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(1),
+                    face: PositiveZ,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(0),
+                    face: NegativeZ,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(6),
+                    face: PositiveX,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(7),
+                    face: NegativeX,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(7),
+                    face: PositiveX,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(8),
+                    face: NegativeX,
+                    patch: None,
+                ),
+            ),
+            (
+                first: (
+                    owner: Part(10),
+                    face: PositiveX,
+                    patch: None,
+                ),
+                second: (
+                    owner: Part(9),
+                    face: NegativeX,
+                    patch: None,
+                ),
+            ),
+        ],
+        rigid_links: [],
+        bearings: [],
+        drive_links: [],
+        input_seat_links: [],
+        seat_controller_links: [],
+        gearbox_configs: [],
+        regions: [],
+        shape_features: [],
+        sockets: [],
+    ),
+    root_pose: (
+        translation: (0.0, 0.0, 0.0),
+        rotation: (0.0, 0.0, 0.0, 1.0),
+    ),
+    joint_coordinates: [],
+)

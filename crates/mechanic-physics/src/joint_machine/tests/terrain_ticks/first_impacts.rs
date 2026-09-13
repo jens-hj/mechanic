@@ -69,12 +69,10 @@ fn existing_floor_support_does_not_hide_a_new_finite_wall_impact() {
     let contacts = scene
         .contacts(&geometry, &initial.poses, DVec3::ZERO)
         .unwrap();
-    assert!(
-        contacts
-            .contacts
-            .iter()
-            .all(|point| point.feature.triangle < 2)
-    );
+    assert!(contacts.contacts.iter().all(|point| matches!(
+        point.feature.obstacle,
+        crate::ContactObstacle::Terrain { triangle, .. } if triangle < 2
+    )));
     assert!(!contacts.contacts.is_empty());
     let displacement = initial
         .velocities
@@ -95,7 +93,10 @@ fn existing_floor_support_does_not_hide_a_new_finite_wall_impact() {
     let crate::TerrainSweepOutcome::Impact(hit) = sweep.outcome else {
         panic!("{:?}", sweep.outcome)
     };
-    assert_eq!(hit.triangle, 2);
+    assert!(matches!(
+        hit.target,
+        crate::ContactTarget::Terrain { triangle: 2, .. }
+    ));
     assert_eq!(sweep.supported_pairs, 2);
     let mut world = CpuJointMachine::new(creation, 7, initial).unwrap();
     world
@@ -439,5 +440,79 @@ fn a_near_resting_fall_locates_impact_without_tiny_prefix_exhaustion() {
         assert!(world.snapshot().state.velocities[1].abs() < 1e-8);
         assert_eq!(world.diagnostics().impact_events, 1);
         assert!((world.diagnostics().accepted_seconds - 1.0 / 60.0).abs() < 1e-15);
+    }
+}
+
+#[test]
+fn first_impact_on_an_interior_terrain_triangle_survives_manifold_reduction() {
+    use mechanic_world::{TerrainTriangleGroupMask, TriangleBvhTriangle};
+    let (creation, geometry, _) = cube();
+    let mut initial = MachineState::at_rest(&creation);
+    initial.poses[0].position.y = 0.5001;
+    initial.velocities[1] = -0.012;
+    let mut chunk = terrain([TerrainMaterial::Rock; 2]);
+    let changed = std::sync::Arc::make_mut(&mut chunk);
+    changed.vertices.clear();
+    changed.indices.clear();
+    changed.triangle_bvh.triangles.clear();
+    // Visit the interior tile first. It witnesses arrival, but none of its
+    // points are extreme corners of the final four-point floor manifold.
+    let spans = [(-1.0, -0.2), (-0.2, 0.2), (0.2, 1.0)];
+    let tiles = [(1, 1)].into_iter().chain(
+        (0..3)
+            .flat_map(|x| (0..3).map(move |z| (x, z)))
+            .filter(|&tile| tile != (1, 1)),
+    );
+    for (x, z) in tiles {
+        let (x0, x1) = spans[x];
+        let (z0, z1) = spans[z];
+        let base = u32::try_from(changed.vertices.len()).unwrap();
+        changed
+            .vertices
+            .extend([[x0, 0.0, z0], [x0, 0.0, z1], [x1, 0.0, z1], [x1, 0.0, z0]]);
+        for indices in [[base, base + 1, base + 2], [base, base + 2, base + 3]] {
+            changed.indices.extend(indices);
+            changed.triangle_bvh.triangles.push(TriangleBvhTriangle {
+                indices,
+                group_mask: TerrainTriangleGroupMask::REGULAR,
+            });
+        }
+    }
+    changed
+        .material_weights
+        .resize(changed.vertices.len(), changed.material_weights[0]);
+    changed.triangle_bvh.nodes[0].triangle_count = 18;
+    let mut scene = TerrainContactScene::default();
+    scene.publish(1, &[chunk], &[]).unwrap();
+    let mut touching = initial.clone();
+    touching.poses[0].position.y = 0.5;
+    let contacts = scene
+        .activation_contacts(&geometry, &touching.poses, DVec3::ZERO)
+        .unwrap();
+    assert!(contacts.contacts.iter().all(|point| matches!(
+        point.feature.obstacle,
+        crate::ContactObstacle::Terrain { triangle, .. } if triangle >= 2
+    )));
+    let terrain = context(&scene, &geometry, 7);
+    let mut world = CpuJointMachine::new(creation, 7, initial).unwrap();
+    world
+        .step_candidate(DVec3::ZERO, fixed(1), &[], &[], Some(&terrain))
+        .unwrap();
+    assert!((world.snapshot().state.poses[0].position.y - 0.5).abs() < 1e-10);
+    assert!(world.snapshot().state.velocities[1].abs() < 1e-8);
+    assert_eq!(world.diagnostics().terrain_impact_holds, 0);
+    for _ in 0..60 {
+        world
+            .step_candidate(-DVec3::Y * 9.81, fixed(1), &[], &[], Some(&terrain))
+            .unwrap();
+        assert!((world.snapshot().state.poses[0].position.y - 0.5).abs() < 1e-9);
+        assert!(
+            world
+                .snapshot()
+                .state
+                .velocities
+                .iter()
+                .all(|v| v.abs() < 1e-8)
+        );
     }
 }
