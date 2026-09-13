@@ -1521,5 +1521,4 @@ mod tests {
             (-3.0 + solution.velocity_change[3]).hypot(-4.0 + solution.velocity_change[4]);
         assert!((remaining - 4.8).abs() < 1e-12);
     }
-
 }
