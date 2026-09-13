@@ -161,6 +161,16 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
             ),
         ],
         physics_rows: vec![
+            Row {
+                label: "Physics solver",
+                value: match snapshot.physics_route {
+                    Some(crate::cpu_physics::Route::Cpu) => "CPU (experimental)",
+                    Some(crate::cpu_physics::Route::Gpu) => "GPU",
+                    None => "Inactive",
+                }
+                .to_owned(),
+                tone: Tone::Neutral,
+            },
             rate_row(
                 "Simulation rate",
                 snapshot.simulation_ticks_per_second,
@@ -606,6 +616,33 @@ mod tests {
                     .value,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn physics_solver_identifies_the_route_independently_of_render_gpu_timing() {
+        for (route, expected) in [
+            (Some(crate::cpu_physics::Route::Cpu), "CPU (experimental)"),
+            (Some(crate::cpu_physics::Route::Gpu), "GPU"),
+            (None, "Inactive"),
+        ] {
+            let model = capture(&PerformanceSnapshot {
+                physics_route: route,
+                render_gpu_ms: Some(25.0),
+                ..PerformanceSnapshot::default()
+            });
+            let solver = model
+                .physics_rows
+                .iter()
+                .find(|row| row.label == "Physics solver")
+                .unwrap();
+            assert_eq!(solver.value, expected);
+            let rendering = model
+                .frame_rows
+                .iter()
+                .find(|row| row.label == "Tracked GPU span")
+                .unwrap();
+            assert_eq!(rendering.value, "25.00 ms");
         }
     }
 

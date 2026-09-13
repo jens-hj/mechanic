@@ -249,17 +249,18 @@ pub(crate) fn publish(
     let streaming_ready = world.physics_terrain_ready();
     let publication = &mut simulation.terrain_publication;
     if publication.accepted.as_ref() == Some(&key) {
-        let accepted_may_tick = accepted_cut_may_tick(
-            publication.accepted.as_ref(),
-            &publication.accepted_positions,
-            origin,
-            &positions,
-        );
+        // This cut was selected around the current bodies, so it also covers
+        // a new body layout after a construction edit. Device residency alone
+        // does not initialize the replacement CPU solver's collision scene.
+        if let Some(cpu) = simulation.cpu.as_mut().filter(|cpu| !cpu.is_ready()) {
+            cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
+        }
+        publication.accepted_positions = positions;
         publication.observed = None;
         if !streaming_ready {
             record_gate("streaming_pending", true, key.chunks.len(), None);
         }
-        return Ok(streaming_ready && accepted_may_tick);
+        return Ok(streaming_ready);
     }
     let may_tick = |publication: &TerrainPublication| {
         streaming_ready
@@ -349,6 +350,100 @@ pub(crate) fn publish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_inherited_cut_initializes_cpu_terrain_after_a_body_split() {
+        use mechanic_core::{BuildCommand, BuildPose, ConstructionGraph, CuboidSpec, GridRotation};
+        use mechanic_gpu::{GpuTransform, GpuVelocity};
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("real GPU adapter required");
+        eprintln!("Terrain publication adapter: {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let world = <WorldRuntime as bevy::prelude::FromWorld>::from_world(
+            &mut bevy::prelude::World::new(),
+        );
+        let origin = world.local_to_global(Vec3::ZERO).0;
+        let mut graph = ConstructionGraph::new();
+        for height in [0, 800] {
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [1; 3],
+                        BuildPose::from_position_ticks(
+                            bevy::math::IVec3::Y * height,
+                            GridRotation::default(),
+                        ),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+        }
+        let creation = graph.compile().unwrap();
+        assert_eq!(creation.compounds.len(), 2);
+        let transforms: Vec<_> = creation
+            .compounds
+            .iter()
+            .map(|body| GpuTransform {
+                position: body.root_translation.extend(0.0).to_array(),
+                rotation: body.root_rotation.to_array(),
+            })
+            .collect();
+        let cpu = crate::cpu_physics::CpuRoute::new(
+            &creation,
+            2,
+            0,
+            &transforms,
+            &[GpuVelocity {
+                linear: [0.0; 4],
+                angular: [0.0; 4],
+            }; 2],
+            &[],
+        )
+        .unwrap();
+        let mut simulation = AppSimulation {
+            cpu: Some(Box::new(cpu)),
+            creation: Some(creation),
+            transforms,
+            ..Default::default()
+        };
+        let positions = physics_body_positions(&simulation);
+        let interest = interest_regions(&world, &positions);
+        let mut retired = TerrainPublication {
+            accepted: Some(TerrainPublicationKey::new(
+                origin,
+                world.physics_terrain_near(&interest),
+            )),
+            accepted_positions: vec![Vec3::ZERO],
+            ..Default::default()
+        };
+        simulation.terrain_publication.inherit(&mut retired, true);
+        assert!(!simulation.cpu.as_ref().unwrap().is_ready());
+
+        let may_tick = publish(&mut simulation, &world, &device, &queue).unwrap();
+        assert!(simulation.cpu.as_ref().unwrap().is_ready());
+        assert_eq!(may_tick, world.physics_terrain_ready());
+        assert!(accepted_cut_may_tick(
+            simulation.terrain_publication.accepted.as_ref(),
+            &simulation.terrain_publication.accepted_positions,
+            origin,
+            &positions,
+        ));
+        // The replacement can advance both detached bodies, even though its
+        // device cut was inherited and required no GPU publication.
+        let completed = simulation
+            .cpu
+            .as_mut()
+            .unwrap()
+            .step(1, DVec3::NEG_Y * 9.81, &[], &[])
+            .unwrap();
+        for (before, after) in simulation.transforms.iter().zip(&completed.transforms) {
+            assert!(after.position[1] < before.position[1]);
+        }
+    }
 
     #[test]
     fn ticks_continue_on_an_accepted_cut_but_never_before_one_or_across_a_rebase() {

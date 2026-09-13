@@ -34,6 +34,37 @@ fn velocity(linear: Vec3, angular: Vec3) -> GpuVelocity {
 }
 
 #[test]
+fn failed_tick_keeps_the_last_completed_pose_even_between_visual_snapshots() {
+    let airborne = pose(Vec3::Y * 5.0, Quat::IDENTITY);
+    let landed = pose(Vec3::Y * 0.125, Quat::IDENTITY);
+    let mut simulation = AppSimulation {
+        transforms: vec![airborne],
+        snapshot_tick: 10,
+        live_state: Some(LivePhysicsState {
+            tick: 11,
+            transforms: vec![landed],
+            velocities: vec![velocity(Vec3::ZERO, Vec3::ZERO)],
+            coordinates: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let mut editor = super::EditorState::default();
+    super::stop_failed_simulation(&mut simulation, &mut editor, "tick failed".to_owned());
+    assert_eq!(
+        simulation.transforms[0].position.map(f32::to_bits),
+        landed.position.map(f32::to_bits)
+    );
+    assert_eq!(
+        simulation.previous_transforms[0].position.map(f32::to_bits),
+        airborne.position.map(f32::to_bits)
+    );
+    assert_eq!(simulation.snapshot_tick, 11);
+    assert!(simulation.render_dirty);
+    assert_eq!(simulation.failure.as_deref(), Some("tick failed"));
+    assert!(editor.feedback.unwrap().contains("tick failed"));
+}
+
+#[test]
 fn reframed_replacement_chain_preserves_motion_and_keeps_local_pose_edits() {
     let mut graph = ConstructionGraph::new();
     let source = spawn(&mut graph, IVec3::new(4, 0, 0), [2, 4, 6]);

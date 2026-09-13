@@ -3290,9 +3290,10 @@ fn sync_simulation_visual_cache(
     mut roots: Query<(&SimulationBodyVisualRoot, &mut Transform)>,
     mut legacy_visuals: Query<&mut Visibility, Or<(With<AuthoredPartVisual>, With<BearingVisual>)>>,
 ) {
+    // The published scene owns its visuals even after a solver failure pauses it.
     let Some(revision) = simulation
         .world_revision
-        .filter(|_| simulation.is_running())
+        .filter(|_| simulation.gpu.is_some())
     else {
         for entity in cache.roots.drain(..) {
             commands.entity(entity).despawn();
@@ -3675,14 +3676,45 @@ fn advance_simulation(
                 );
                 world_runtime.clear_player_reactions();
                 match stepped {
-                    Ok(completed) => simulation.publish_cpu_tick(tick, completed),
+                    Ok(completed) => {
+                        simulation.publish_cpu_tick(tick, completed);
+                        continue;
+                    }
                     Err(message) => {
-                        simulation.cpu = cpu_route;
-                        stop_failed_simulation(&mut simulation, &mut state, message);
-                        return;
+                        // Physics in the world never pauses. The GPU runtime stays
+                        // resident, so it takes over from the last CPU publication
+                        // and runs this same tick; the next construction publication
+                        // builds a fresh CPU route.
+                        let gpu = simulation
+                            .gpu
+                            .as_ref()
+                            .expect("running simulation has GPU state");
+                        let handoff = simulation.live_state.as_ref().map_or(Ok(()), |live| {
+                            gpu.write_body_states(
+                                &render_queue,
+                                &live.transforms,
+                                &live.velocities,
+                            )
+                            .map_err(|error| error.to_string())?;
+                            gpu.initialize_mechanism_coordinates(&render_queue, &live.coordinates)
+                                .map_err(|error| error.to_string())
+                        });
+                        if let Err(error) = handoff {
+                            stop_failed_simulation(
+                                &mut simulation,
+                                &mut state,
+                                format!("{message} Handing the state to the GPU failed: {error}"),
+                            );
+                            return;
+                        }
+                        warn!("{message} Continuing on the GPU solver.");
+                        state.feedback = Some(format!(
+                            "CPU physics fell back to the GPU solver: {message}"
+                        ));
+                        state.drive_rows_dirty = true;
+                        cpu_route = None;
                     }
                 }
-                continue;
             }
             let dispatch = simulation
                 .gpu
@@ -3877,6 +3909,20 @@ const fn visual_snapshot_is_due(snapshot_tick: u64, completed_tick: u64) -> bool
 }
 
 fn stop_failed_simulation(simulation: &mut AppSimulation, state: &mut EditorState, error: String) {
+    // A failed tick pauses at the last completed state, including a CPU tick
+    // that has not reached the throttled visual snapshot yet.
+    if let Some(live) = &simulation.live_state {
+        simulation
+            .previous_transforms
+            .clone_from(&simulation.transforms);
+        simulation.transforms.clone_from(&live.transforms);
+        simulation.previous_snapshot_tick = simulation.snapshot_tick;
+        simulation.snapshot_tick = live.tick;
+        simulation.pose_revision = simulation.pose_revision.wrapping_add(1);
+        simulation.render_dirty = true;
+    }
+    // The status line is easy to miss while the world simply looks frozen.
+    error!("Simulation stopped: {error}");
     simulation.failure = Some(error.clone());
     state.feedback = Some(format!("Simulation stopped: {error}"));
 }
@@ -12854,10 +12900,11 @@ fn sync_visual_meshes(
 ) {
     // A new static publication takes ownership back from the moving-body meshes.
     // Even unchanged materials need their meshes and visibility restored.
+    // A failed live scene still owns its last poses; do not redraw authored poses.
     let publication_changed = state.rendered_world_revision != simulation.world_revision;
     if !should_sync_editor_visual_meshes(
         state.construction_mesh_dirty || publication_changed,
-        simulation.is_running(),
+        simulation.gpu.is_some(),
     ) {
         return;
     }
@@ -17864,10 +17911,20 @@ mod rendering_tests {
                 Visibility::Visible,
             ))
             .id();
-        for revision in [(1, 1), (2, 1)] {
-            app.world_mut()
-                .resource_mut::<super::AppSimulation>()
-                .world_revision = Some(revision);
+        for (revision, failure) in [
+            ((1, 1), None),
+            ((2, 1), None),
+            ((2, 1), Some("CPU tick failed".to_owned())),
+        ] {
+            {
+                let mut simulation = app.world_mut().resource_mut::<super::AppSimulation>();
+                simulation.world_revision = Some(revision);
+                simulation.failure = failure;
+                assert!(!should_sync_editor_visual_meshes(
+                    true,
+                    simulation.gpu.is_some()
+                ));
+            }
             app.update();
             assert_eq!(
                 app.world().get::<Visibility>(legacy),

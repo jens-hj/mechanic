@@ -84,7 +84,7 @@ pub(crate) struct CpuRoute {
     origin: DVec3,
     /// Whether terrain has been published at least once.
     published: bool,
-    /// App tick that the machine's own tick zero corresponds to.
+    /// App tick at publication; earlier commands belong to a retired scene.
     base_tick: u64,
     integration: TerrainIntegration,
     settings: JointTickSettings,
@@ -171,9 +171,16 @@ impl CpuRoute {
         drives: &[GpuMechanismDrive],
         impulses: &[GpuExternalImpulse],
     ) -> Result<Completed, String> {
-        let machine_tick = tick
-            .checked_sub(self.base_tick)
+        tick.checked_sub(self.base_tick)
             .ok_or_else(|| format!("tick {tick} precedes this CPU publication"))?;
+        // The app drops overdue ticks by skipping their labels. The CPU machine
+        // counts only completed steps, so commands must use its next local tick.
+        let machine_tick = self
+            .machine
+            .snapshot()
+            .tick
+            .checked_add(1)
+            .ok_or_else(|| "CPU tick counter exhausted".to_owned())?;
         let commands = drives
             .iter()
             .enumerate()
@@ -360,14 +367,9 @@ fn machine_state(
             .normalize(),
         })
         .collect();
-    let mut rates = vec![
-        0.0;
-        creation
-            .dynamics
-            .body_velocities
-            .last()
-            .map_or(0, |rows| rows.end)
-    ];
+    // Rows are assigned in preorder, not body order, so only the elimination tree
+    // states how many generalized velocities the creation has.
+    let mut rates = vec![0.0; creation.dynamics.elimination_parent.len()];
     for (body, rows) in creation.dynamics.body_velocities.iter().enumerate() {
         if rows.len() != 6 {
             continue;
@@ -470,6 +472,86 @@ mod tests {
             let row = GpuMechanismDrive::from(drive);
             assert_eq!(CoordinateDrive::from(row), drive);
         }
+    }
+
+    // A hinged pair: one free root body plus one joint coordinate.
+    fn hinge() -> CompiledCreation {
+        use mechanic_core::{BearingSpec, BuildOutcome, FaceKind, FaceRef, GridRotation, PartId};
+        let mut graph = ConstructionGraph::new();
+        let mut spawn = |ticks: bevy::math::IVec3| {
+            let BuildOutcome::Spawned(part) = graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [4, 4, 4],
+                        BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap()
+            else {
+                panic!("spawn expected");
+            };
+            part as PartId
+        };
+        let root = spawn(bevy::math::IVec3::ZERO);
+        let tip = spawn(bevy::math::IVec3::X * 400);
+        graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(root, FaceKind::PositiveX),
+                FaceRef::part(tip, FaceKind::NegativeX),
+                bevy::math::Vec3::X * 0.5,
+                bevy::math::Vec3::X,
+            )))
+            .unwrap();
+        graph.compile().unwrap()
+    }
+
+    #[test]
+    fn seeding_covers_every_generalized_row_whatever_order_bodies_are_compiled_in() {
+        // Velocity rows are assigned in preorder, so the last body's range is not
+        // the row count: a root compiled after its child sizes it six rows short.
+        let mut creation = hinge();
+        creation.dynamics.body_velocities.reverse();
+        let transforms = vec![
+            GpuTransform {
+                position: [0.0, 1.0, 0.0, 0.0],
+                rotation: bevy::math::Quat::IDENTITY.to_array(),
+            };
+            creation.compounds.len()
+        ];
+        let velocities = vec![
+            GpuVelocity {
+                linear: [0.5, -1.5, 0.25, 0.0],
+                angular: [0.1, 0.2, 0.3, 0.0],
+            };
+            creation.compounds.len()
+        ];
+        let coordinates = vec![
+            GpuMechanismCoordinate {
+                position: 0.25,
+                velocity: -0.75,
+            };
+            creation.dynamics.coordinate_velocities.len()
+        ];
+        assert_eq!(coordinates.len(), 1);
+
+        let state = machine_state(&creation, &transforms, &velocities, &coordinates).unwrap();
+
+        assert_eq!(
+            state.velocities.len(),
+            creation.dynamics.elimination_parent.len()
+        );
+        let row = creation.dynamics.coordinate_velocities[0];
+        assert!((state.velocities[row] + 0.75).abs() < 1e-6);
+        let root = creation
+            .dynamics
+            .body_velocities
+            .iter()
+            .find(|rows| rows.len() == 6)
+            .unwrap()
+            .clone();
+        assert!((state.velocities[root.start + 1] + 1.5).abs() < 1e-6);
+        assert!((state.velocities[root.start + 5] - 0.3).abs() < 1e-6);
     }
 
     #[test]
@@ -598,6 +680,116 @@ mod tests {
             resting.velocities[0].linear[1]
         );
         assert!((resting.transforms[0].position[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_cube_dropped_on_another_cube_rests_on_it_instead_of_falling_through() {
+        use mechanic_core::GridRotation;
+        let mut graph = ConstructionGraph::new();
+        for ticks in [bevy::math::IVec3::ZERO, bevy::math::IVec3::X * 800] {
+            graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        [4, 4, 4],
+                        BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap();
+        }
+        let creation = graph.compile().unwrap();
+        let transforms = [0.5, 1.52]
+            .map(|height| GpuTransform {
+                position: [0.0, height, 0.0, 0.0],
+                rotation: bevy::math::Quat::IDENTITY.to_array(),
+            })
+            .to_vec();
+        let velocities = vec![
+            GpuVelocity {
+                linear: [0.0; 4],
+                angular: [0.0; 4],
+            };
+            2
+        ];
+        let mut route = CpuRoute::new(&creation, 7, 0, &transforms, &velocities, &[]).unwrap();
+        route.publish_terrain([&floor()], DVec3::ZERO).unwrap();
+        let mut last = None;
+        for tick in 1..=60 {
+            let completed = route
+                .step(tick, gravity(), &[], &[])
+                .unwrap_or_else(|message| panic!("tick {tick}: {message}"));
+            let [lower, upper] = [0, 1].map(|body| completed.transforms[body].position[1]);
+            assert!(
+                upper - lower >= 0.997,
+                "tick {tick}: upper cube sank to {upper} over {lower}"
+            );
+            last = Some(upper);
+        }
+        assert!((last.unwrap() - 1.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dropped_app_ticks_keep_joint_commands_and_impulses_on_the_next_cpu_step() {
+        let creation = hinge();
+        let initial = MachineState::at_rest(&creation);
+        let transforms = initial
+            .poses
+            .iter()
+            .map(|pose| GpuTransform {
+                position: [
+                    narrow(pose.position.x),
+                    narrow(pose.position.y) + 5.0,
+                    narrow(pose.position.z),
+                    0.0,
+                ],
+                rotation: pose.rotation.to_array().map(narrow),
+            })
+            .collect::<Vec<_>>();
+        let velocities = vec![
+            GpuVelocity {
+                linear: [0.0; 4],
+                angular: [0.0; 4]
+            };
+            transforms.len()
+        ];
+        let coordinates = vec![
+            GpuMechanismCoordinate {
+                position: 0.0,
+                velocity: 0.0
+            };
+            creation.dynamics.coordinate_velocities.len()
+        ];
+        let drives = creation
+            .coordinate_drives
+            .iter()
+            .copied()
+            .map(GpuMechanismDrive::from)
+            .collect::<Vec<_>>();
+        assert_eq!(drives.len(), 1);
+        let run = |ticks: [u64; 3]| {
+            let mut route =
+                CpuRoute::new(&creation, 7, 10, &transforms, &velocities, &coordinates).unwrap();
+            route.publish_terrain([&floor()], DVec3::ZERO).unwrap();
+            for tick in ticks {
+                route
+                    .step(
+                        tick,
+                        gravity(),
+                        &drives,
+                        &[GpuExternalImpulse::new(
+                            0,
+                            bevy::math::Vec3::new(0.0, 5.0, 0.0),
+                            bevy::math::Vec3::X * 0.01,
+                        )],
+                    )
+                    .unwrap();
+            }
+            assert_eq!(route.machine.snapshot().tick, 3);
+            let completed = route.published_state().unwrap();
+            assert!(completed.transforms[0].position[1] < transforms[0].position[1]);
+            route.machine.snapshot().state_hash()
+        };
+        assert_eq!(run([11, 12, 13]), run([11, 23, 41]));
     }
 
     #[test]

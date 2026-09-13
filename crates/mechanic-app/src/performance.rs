@@ -10,7 +10,7 @@ use bevy::{
 };
 use mechanic_gpu::GpuKernelTimings;
 
-use crate::AppSimulation;
+use crate::{AppSimulation, cpu_physics::Route};
 
 const FRAME_HISTORY_LENGTH: usize = 120;
 const DISPLAY_INTERVAL: Duration = Duration::from_millis(250);
@@ -33,6 +33,7 @@ pub(crate) struct PerformanceSnapshot {
     pub(crate) tick_backlog: Option<u64>,
     pub(crate) dropped_ticks: Option<u64>,
     pub(crate) physics_cpu_ms: Option<f64>,
+    pub(crate) physics_route: Option<Route>,
     pub(crate) physics_submission_timings: Option<mechanic_gpu::GpuSubmissionTimings>,
     pub(crate) ticks_submitted_per_frame: Option<u32>,
     pub(crate) in_flight_tick_count: Option<u32>,
@@ -191,7 +192,9 @@ pub(crate) fn sample(
 
     let running = simulation.is_running();
     let creation = simulation.creation.as_ref().filter(|_| running);
-    let readback = simulation.last_tick_readback.filter(|_| running);
+    let readback = simulation
+        .last_tick_readback
+        .filter(|_| running && simulation.cpu.is_none());
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(bevy::diagnostic::Diagnostic::smoothed);
@@ -216,6 +219,10 @@ pub(crate) fn sample(
         tick_backlog: running.then_some(simulation.tick_backlog),
         dropped_ticks: running.then_some(simulation.dropped_ticks),
         physics_cpu_ms: running.then_some(simulation.physics_cpu_ms).flatten(),
+        physics_route: simulation
+            .creation
+            .as_ref()
+            .map(|_| simulation.cpu.as_ref().map_or(Route::Gpu, |_| Route::Cpu)),
         physics_submission_timings: running
             .then_some(simulation.physics_submission_timings)
             .flatten(),
