@@ -1,9 +1,0 @@
-2026-09-05T18:07:31.205757Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
-2026-09-05T18:07:32.166128Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
-2026-09-05T18:07:32.166181Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
-2026-09-05T18:07:32.354185Z  INFO bevy_winit::system: Creating new window Mechanic — construction and simulation prototype (62v0)
-2026-09-05T18:07:32.922477Z  INFO mechanic_app::automation: Automatic background capture: mechanic-auto-57f0707e04a9432cbccda28450f1d467 (not a controlled foreground benchmark)
-2026-09-05T18:08:33.529682Z  INFO mechanic_app::performance_capture: Performance capture started (60 seconds)
-2026-09-05T18:09:33.569896Z  INFO mechanic_app::performance_capture: Performance capture: /private/tmp/mechanic-attribution-pair-01/partitioned/capture-1788631773531531000-52120.jsonl
-2026-09-05T18:09:33.770277Z  INFO mechanic_app::automation: Automatic screenshot saved: /private/tmp/mechanic-attribution-pair-01/partitioned/capture-1788631773531531000-52120.png
-2026-09-05T18:09:33.820542Z  WARN bevy_winit::state: Skipped event Destroyed for unknown winit Window Id WindowId(526915175680)

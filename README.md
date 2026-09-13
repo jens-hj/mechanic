@@ -454,17 +454,10 @@ cargo run -p mechanic-bench --release -- --scenario test2_car --seconds 30 --war
 `MECHANIC_PHYSICS=cpu cargo run -p mechanic-app` runs published ticks on the
 experimental CPU solver instead of the GPU runtime. The GPU scene stays resident
 and keeps owning terrain preparation, drive resolution and every buffer the
-renderer reads; only the tick changes. The route refuses a creation it cannot
-run — closed mechanism loops, for now — with a message naming the flag. World
-physics never pauses: a tick the route cannot complete publishes nothing from the
-CPU, logs the failing stage, substep policy, residual, contact counts and
-per-attempt history, and hands the last published state to the resident GPU
-runtime, which runs that tick and every later one until the next construction
-publication builds a fresh CPU route. Bodies collide with terrain and with each other, except
-bodies joined by a bearing and, on this route only, bodies of one mechanism
-built touching. It is not a substitute for the GPU route: wheeled creations
-still stall within a few seconds of touching ground, and `docs/cpu-solver-repair.md`
-lists the states that fail. Anything other than `cpu` selects the GPU runtime.
+renderer reads; only the tick changes. Creations with closed mechanism loops are
+refused. World physics never pauses: a tick the CPU route cannot complete hands
+the last published state to the GPU runtime. See [CPU physics](docs/physics-cpu.md).
+Anything other than `cpu` selects the GPU runtime.
 
 Benchmark output is machine-readable JSONL. The four-bar cases prove correction
 and explicit rejection but do not unlock editor work. A scale gate only passes

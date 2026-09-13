@@ -32,7 +32,7 @@ Mechanic is pre-production. Do not add backward-compatibility readers, migration
 
 ## Testing Guidelines
 
-Add focused regression tests beside the code being changed. Name tests after observable behavior, for example `off_centre_external_impulse_changes_linear_and_angular_motion`. Exercise both graph compilation and GPU behavior when a change crosses that boundary. Hardware-specific GPU tests may require a real adapter; report the adapter and command used. Do not claim scale-gate completion unless the exact body count, kernel coverage, failure flags, throughput, and p95 requirements in `README.md` are satisfied.
+Add focused regression tests beside the code being changed. Name tests after observable behavior, for example `off_centre_external_impulse_changes_linear_and_angular_motion`. Exercise both graph compilation and GPU behavior when a change crosses that boundary. Hardware-specific GPU tests may require a real adapter; report the adapter and command used. Mechanic is experimental: tests assert observable behaviour with tolerances suited to a game, not solver internals. Captured solver states, iteration counts, and storage bounds belong in bench reports, not `cargo test`. Do not claim scale-gate completion unless the exact body count, kernel coverage, failure flags, throughput, and p95 requirements in `README.md` are satisfied.
 
 ## Commit & Pull Request Guidelines
 

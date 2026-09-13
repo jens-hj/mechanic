@@ -51,7 +51,7 @@ The ignored pixel test needs a real GPU and uses the same terrain shader plus
 another opaque material at 4096×2524, 4× MSAA. It compares partitioned and normal
 output byte-for-byte and requires valid positive timings for both groups.
 
-Latest remaining-wait investigation: [background CPU/GPU evidence](performance-results/2026-09-05-background-bottleneck/README.md).
+Latest remaining-wait investigation: [background CPU/GPU evidence](performance-results/README.md#2026-09-05-background-bottleneck).
 The raw summarizer now includes separate render GPU group distributions, physics
 CPU stages, sample observation age, in-flight occupancy and focused-frame counts.
 Use `python3 scripts/summarize-perf-capture.py PATH_TO_CAPTURE.jsonl` after a run;
@@ -103,7 +103,7 @@ For a new experiment, set `MECHANIC_TERRAIN_REFERENCE_SHADER` and
 actual starting shader. Without these variables, the existing frozen reference
 and compiled-in runtime shader remain the defaults. Keep
 `MECHANIC_PERF_TERRAIN_PASSES=0`. Require the pixel gate before an in-game capture.
-The [single-projection experiment](performance-results/2026-09-05-terrain-single-projection/README.md)
+The [single-projection experiment](performance-results/README.md#2026-09-05-terrain-single-projection)
 was rejected at this gate and its runtime change was removed.
 
 ```sh
@@ -393,7 +393,7 @@ For this run, `test4` was copied to `test4-perf` under the normal macOS world
 store and only its manifest name changed to `TEST4 PERF`. The copy was reset
 from the original between launches. Original scene hashes, frozen source hashes,
 binary hashes, raw compressed JSONL, CPU profiles and results are retained in
-[`performance-results/2026-09-05-test4-fence`](performance-results/2026-09-05-test4-fence/README.md).
+[`performance-results/2026-09-05-test4-fence`](performance-results/README.md#2026-09-05-test4-fence).
 
 Native macOS input selected the copy, set the outer window to 2056×1290 points
 at (0,39), then pressed F3 and F9 after world loading. Captures verify that this
@@ -486,7 +486,7 @@ are reported separately.
 Neither passing the foreground protocol nor matching hashes establishes full
 kernel coverage or physical-bound correctness.
 
-The [fixed-duration replay evidence](performance-results/2026-09-10-fixed-replay/README.md)
+The [fixed-duration replay evidence](performance-results/README.md#2026-09-10-fixed-replay)
 verifies complete submission/readback/publication for two 1,800-tick Metal runs.
 Both fail throughput and completed-state repeatability; retain those failures
 when comparing the replacement solver.
@@ -604,5 +604,5 @@ frames every five seconds and perturbs frame timing. Physics readbacks include
 terrain contact generation, rotational sweep, positional recovery, and nested
 recovery projection timings. Terrain publication records worker preparation,
 publication latency, upload/copy bytes, and reused chunk counts. The [performance
-report](performance-results/2026-09-07-suspension-world/README.md) records the unmet
+report](performance-results/README.md#2026-09-07-suspension-world) records the unmet
 acceptance gate and the older baseline's GPU timestamp limitations.

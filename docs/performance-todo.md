@@ -32,7 +32,7 @@ historical; they do not pause the authorized CPU/GPU and production-rendering wo
   its current terrain is unresolved. The `car` save stayed grounded through a
   60-second Metal capture spanning 18 reselections and 37 collision publications.
 - [x] Measure the real BLOB world before and after on Apple M1 Pro / Metal.
-  [Evidence](performance-results/2026-09-08-blob-physics/README.md): first terrain
+  [Evidence](performance-results/README.md#2026-09-08-blob-physics): first terrain
   publication 41.81 → 11.31 s, terrain-contact GPU p50 537.21 → 0.0557 ms,
   whole-physics GPU p50 545.17 → 6.73 ms, completed TPS 0.47 → 48.60, final
   backlog 422 → 0, zero dropped ticks and zero failure flags after the change.
@@ -61,7 +61,7 @@ open. Background diagnostics must not be presented as controlled acceptance runs
 ## Latest remaining-wait investigation
 
 - [x] Collect fresh background TEST4 raw timings and two native CPU stack profiles.
-  [Evidence and limitations](performance-results/2026-09-05-background-bottleneck/README.md):
+  [Evidence and limitations](performance-results/README.md#2026-09-05-background-bottleneck):
   opaque p50 20.7 ms, acquisition 26.4 ms, physics readback 96.9 ms, all three slots
   occupied. Main-thread render-world handoff and Metal drawable waits remain.
   Current scene has 20 bodies; do not compare throughput with the earlier 17-body scene.
@@ -70,7 +70,7 @@ open. Background diagnostics must not be presented as controlled acceptance runs
 - [x] Attribute opaque cost to terrain versus other draws before choosing the
   next quality-preserving render optimization. Native xctrace still exits 137;
   exact GPU queue/execution/presentation timeline remains unavailable.
-  [Callback and terrain evidence](performance-results/2026-09-05-callback-terrain-attribution/README.md):
+  [Callback and terrain evidence](performance-results/README.md#2026-09-05-callback-terrain-attribution):
   opt-in actual-pass partition measures terrain p50 21.27 ms versus other opaque
   0.89 ms; native pixel comparison is byte-identical. Normal-path callback-to-
   publication p50/p95 1.13/33.29 ms, with 26.2% above one physics timestep.
@@ -79,7 +79,7 @@ open. Background diagnostics must not be presented as controlled acceptance runs
   then compare integrated results with terrain partitioning disabled and matched
   scene/focus/presentation conditions. Continue reporting publication-delay tails.
   - [x] Test a single-projection UV/gradient sampling fast path.
-    [Rejected](performance-results/2026-09-05-terrain-single-projection/README.md):
+    [Rejected](performance-results/README.md#2026-09-05-terrain-single-projection):
     blended-terrain maximum channel delta 24 (gate 2), about 6% slower in that
     fixture, and no repeatable flat-terrain gain. A/A control is byte-identical.
     Runtime shader restored exactly; no integrated run or gain claimed.
@@ -423,7 +423,7 @@ below supersede the earlier absence of application captures; acceptance remains 
 
 - [x] Run standing/offscreen-car stationary A/B/B/A, per the user's scene correction.
   Full results, raw JSONL, hashes and native profiles:
-  [TEST4 report](performance-results/2026-09-05-test4-fence/README.md).
+  [TEST4 report](performance-results/README.md#2026-09-05-test4-fence).
 - [x] Confirm matched 4112×2524, 4× MSAA, baseline materials, F3/AutoNoVsync;
   idle streaming, consecutive ticks, zero flags, complete unique GPU samples.
   Original TEST4 and car2 hashes unchanged after running a resettable copy.
@@ -453,7 +453,7 @@ requirements remain unmet.
 - [x] Explicit background metadata; raw per-frame focus state.
 - [x] Real TEST4 Metal run: all 1,733 CPU frames unfocused, zero physics flags,
   valid screenshot/capture, exit zero, original manifest unchanged, copy removed.
-  [Verification and raw capture](performance-results/2026-09-05-background-runner/README.md).
+  [Verification and raw capture](performance-results/README.md#2026-09-05-background-runner).
 
 This is stationary background diagnostic automation. Controlled foreground
 benchmarks, scripted driving, headless rendering and full window-stress coverage

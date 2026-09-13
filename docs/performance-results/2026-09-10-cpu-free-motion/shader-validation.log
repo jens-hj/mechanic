@@ -1,8 +1,0 @@
-    Finished `test` profile [optimized + debuginfo] target(s) in 0.18s
-     Running unittests src/lib.rs (target/debug/deps/mechanic_gpu-acda15e0dc9fccb3)
-
-running 1 test
-test device::tests::physics_wgsl_parses_and_validates_without_a_gpu ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 121 filtered out; finished in 0.02s
-

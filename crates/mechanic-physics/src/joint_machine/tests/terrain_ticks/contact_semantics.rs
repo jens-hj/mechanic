@@ -711,7 +711,7 @@ fn a_settled_box_is_at_rest_in_velocity_when_every_arrival_is_resolved() {
 // which by design leaves velocity alone, so gravity accumulates until the path
 // certificate rejects every substep policy at tick 19. The endpoint policy is the
 // one that carries the saved-car drops furthest, so its progress there is bounded
-// by the same gap. `docs/cpu-solver-repair.md` records the measurement.
+// by the same gap.
 #[test]
 fn a_settled_box_is_also_at_rest_under_the_endpoint_policy() {
     let (clearance, vertical) = settles_at_rest(TerrainIntegration::SlowContactsAtEndpoint, 30);

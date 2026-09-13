@@ -1,8 +1,0 @@
-    Finished `test` profile [optimized + debuginfo] target(s) in 0.16s
-     Running unittests src/lib.rs (target/debug/deps/mechanic_gpu-acda15e0dc9fccb3)
-
-running 1 test
-test device::tests::asynchronous_tick_readback_is_monotonic_and_tick_matched ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.13s
-

@@ -1,5 +1,0 @@
-    Blocking waiting for file lock on build directory
-    Checking mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
-    Checking mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)
-    Checking mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 17.15s

@@ -1,6 +1,0 @@
-{
-  "crates/mechanic-physics/src/response/newton/projection.rs": "9fea78346311e2042b4ca55ff91255da18527dc305f1c86047ae29645bf679ea",
-  "crates/mechanic-physics/src/response/newton/reduced.rs": "35c68560d70d8c0feea3bc42e48442fb2aea0de61d776f44e9c2fc7b2d51bc7f",
-  "crates/mechanic-physics/src/response.rs": "ca448732a26f8c2dcf1f0701ab0be36ae3623f8cad45e47eb1082d4d5388c602",
-  "crates/mechanic-bench/src/bin/compiled-response/measurement.rs": "b9f7fe17f531506ddd14ef172c47ba0b4e901139b52e3422551e6f5c49b0d9df"
-}

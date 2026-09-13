@@ -1,7 +1,0 @@
-{
-  "status": "focused verification only; integrated performance and visual acceptance pending",
-  "base_checkpoint": "docs/performance-results/2026-09-11-retry-reuse",
-  "changed_source": "crates/mechanic-app/src/main.rs",
-  "before_sha256": "d90cbb9ee00fa69be0c2588d963e495816bb97db25ba81a3f67be42cf7b0a632",
-  "after_sha256": "ab9d15a3cbc7577404882549c468abfaf9c787d50bfdfd961dc7a85e9b57d113"
-}

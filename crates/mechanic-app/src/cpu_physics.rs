@@ -4,8 +4,7 @@
 //! resolution and every buffer the renderer reads; this route only replaces the
 //! tick itself, stepping `mechanic_physics::CpuJointMachine` against the same
 //! published terrain cut and publishing the same body/joint state the readback
-//! would. It exists to run the CPU solver against real creations, not to retire
-//! the GPU route: `docs/cpu-solver-repair.md` lists the states that still fail.
+//! would. See `docs/physics-cpu.md`.
 
 use bevy::math::{DQuat, DVec3};
 use mechanic_core::{CompiledCreation, CoordinateDrive};

@@ -3,12 +3,11 @@
 ## Ownership
 
 Shared compiled dynamics schedules and body-frame inertia live in
-`mechanic-core`. The new `mechanic-physics` crate owns the CPU numerical
-experiment and transactional free-motion reference; constrained scene ticks
-remain incomplete, and it is not yet the application's authoritative runtime. Terrain
-ownership stays in `mechanic-world`, and GPU code and ABI stay in `mechanic-gpu`.
-The measured redesign, delivery status, and remaining acceptance requirements
-are recorded in [compiled machine dynamics](compiled-machine-dynamics.md).
+`mechanic-core`. `mechanic-physics` owns the CPU solvers; the GPU runtime stays
+the application default. Terrain ownership stays in `mechanic-world`, and GPU
+code and ABI stay in `mechanic-gpu`. The machine model is described in
+[compiled machine dynamics](compiled-machine-dynamics.md), and the CPU solvers
+in [CPU physics](physics-cpu.md).
 
 The editable construction graph exists only on the CPU and can mutate only in
 `Building` state. Compilation is all-or-nothing. Welds are collapsed with

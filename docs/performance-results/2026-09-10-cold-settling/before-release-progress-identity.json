@@ -1,4 +1,0 @@
-{
-  "crates/mechanic-physics/src/joint_machine/events.rs": "27b1ba88788cd78bb8984fd007c3f4c39bbf4279dafdf9b7b75d7eab2c187d59",
-  "crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs": "6a5405ce6a6143d4b8bc048dd226f3349be9a23d6394c0241b87de7feac2cd07"
-}

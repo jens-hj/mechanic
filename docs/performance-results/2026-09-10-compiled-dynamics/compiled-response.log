@@ -1,5 +1,0 @@
-   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
-   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
-   Compiling mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
-    Finished `release` profile [optimized] target(s) in 17.65s
-     Running `target/release/compiled-response crates/mechanic-bench/tests/fixtures/driven_car_instance.ron`

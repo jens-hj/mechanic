@@ -1,9 +1,0 @@
-{
-  "source_world": "/Users/jens/Library/Application Support/Mechanic/worlds/test4",
-  "temporary_world": "/Users/jens/Library/Application Support/Mechanic/worlds/mechanic-auto-935eadd91a06482db980463fbb9792bc",
-  "manifest_sha256": "4e2f229b2c8044a3a6ce8a5c13cebae3610fced68c1648426c8688c2994132c6",
-  "binary": "/Users/jens/repos/mechanic/target/release/mechanic-app",
-  "assets": "/Users/jens/repos/mechanic/crates/mechanic-app",
-  "automated_background": true,
-  "controlled_foreground_benchmark": false
-}

@@ -1,9 +1,0 @@
-{
-  "crates/mechanic-core/src/contact_geometry.rs": "fdae187abbf022c84a7f3968466422e25bf244876723adf7d69f3d49fe563477",
-  "crates/mechanic-physics/src/joint_machine.rs": "0bd81af4ad8e5679dcccb8b6df2c945a06ad329b6feb5270555c8b5371f4dc3e",
-  "crates/mechanic-physics/src/joint_machine/events.rs": "d33903e20370f0901037353ce607fb134edbad54167ab9e8b30e7fb63dec2fbc",
-  "crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/first_impacts.rs": "56db3e22df832f8318e1578983aedfed132eeee79733b86ec2627abfe0c57750",
-  "crates/mechanic-physics/src/joint_machine/tests/terrain_ticks/saved_car.rs": "514aed3ee44c03e9b621944539656be4da2616af342276b0fc0d75fd7465e5fd",
-  "crates/mechanic-physics/src/terrain_contacts.rs": "25793f34889fe72e2cfe390b691c136c5ce80b8e218987580d0b506a58a81eb1",
-  "crates/mechanic-physics/src/terrain_contacts/sweep.rs": "46df4020cd5a428849bfa617a581328ee8634878697a7c530e839acbdae9360c"
-}

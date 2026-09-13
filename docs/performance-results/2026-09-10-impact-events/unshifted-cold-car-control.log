@@ -1,9 +1,0 @@
-   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
-    Finished `test` profile [optimized + debuginfo] target(s) in 1.52s
-     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
-
-running 1 test
-test joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_resolves_its_first_impact_before_publication ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.08s
-
