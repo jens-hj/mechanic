@@ -526,8 +526,95 @@ and the editor read state from one place.
   velocity rows from its body velocity, every other row from its joint rate.
 - An unsupported creation is refused before it publishes, naming the flag and the
   way back. Closed mechanism loops are the only such class today.
-- A failed tick publishes nothing: the simulation stops with the failing stage,
-  substep policy, residual, contact counts and per-attempt history.
+- A failed tick publishes nothing from the CPU. World physics never pauses, so the
+  failing stage, substep policy, residual, contact counts and per-attempt history
+  are logged and shown, and the last published state is handed to the resident
+  GPU runtime, which runs that tick onward until the next construction
+  publication builds a fresh CPU route.
+
+### Body contacts
+
+The first app run showed blocks colliding only with terrain: the CPU contact
+model was terrain-only throughout. Bodies now collide with each other in every
+stage — contact query, event activation, sweep, path depth certificate, impact
+and split recovery.
+
+- One normal per collider pair, from the feature realizing the largest
+  separating-axis gap (`ContactPolytope::convex_separation`). A face clips the
+  other solid against that face's triangles through the existing triangle
+  queries; crossed edges touch at their closest pair. Face axes win unless an
+  edge axis separates by more than 1e-6 m, so resting faces keep one normal. A
+  box on a box is supported by one face manifold, never also by horizontal
+  points where its sides meet the lower box's top edges.
+- Rows are relative: the receiving body's material point minus the opposing
+  body's, for normal, tangent, rolling, endpoint kinematics and release speeds.
+- Sweeps first certify a prefix on the fixed separating axis from both solids'
+  vertex velocities and summed acceleration bounds
+  (`ContactPolytope::convex_motion_prefix`), as terrain does per triangle, and
+  otherwise advance on the gap by both colliders' point-speed bounds together.
+  Path certificates bound overlap by the midpoint gap plus that sum. The gap
+  bounds distance from below and distance closes no faster, so both are
+  conservative with both bodies moving.
+- An edge axis that wins within about 2.6° of a face normal keeps its axis and
+  gap for bounds but takes its manifold from that face: it is a face lying across
+  the other solid's edge, tilted by drift.
+- Materials mix as on the GPU. Broadphase is sweep-and-prune on x.
+- Excluded pairs: each bearing's own pair, as on the GPU, and — CPU only — pairs
+  of one mechanism that touch as built. The saved car's wheel (body 5) is built
+  flush against its mount (body 3) two joints away. Colliding it failed eight
+  saved-car tests that pass without body contacts: the spinning face never cleared
+  a sweep bounded by its full point speed. The GPU emits contacts for that pair
+  down to 1e-5 m penetration. Bodies of separate mechanisms always collide, and
+  bodies of one mechanism built apart collide when they meet.
+
+The second app run froze a beam with a two-block piece dropped half over its edge
+and a three-block bar landing on the piece
+(`blocks_dropped_across_a_ledge_settle_instead_of_stalling_the_tick`, captured
+from the app's world save). It measured two defects, fixed in order:
+
+1. Tick 25, every substep policy, sweep unconverged: the bar rested on the piece
+   2e-12 m apart, just outside the activation window, while both still moved at
+   up to 0.6 m/s. Dividing that gap by both absolute speeds advanced 1e-10 of the
+   substep per evaluation. The relative-motion prefix certifies the whole
+   interval (`boxes_stacked_a_hair_apart_keep_ticking_while_they_glide_together`).
+2. Tick 40, every substep policy, excess penetration 5.07 mm: the piece, rolled a
+   few mrad over the beam's edge, won the separating-axis test on a crossed-edge
+   axis. Its one closest point flipped between the piece's two bottom edges each
+   tick, so the piece rocked into the beam from 1.9 mm to 4.95 mm over five ticks.
+   With the face manifold it settles by tick 240 with every rate below 1e-6.
+
+A third app run dropped the same two pieces on a short block
+(`blocks_landing_on_each_other_keep_ticking_until_they_rest`) and froze just
+after landing. It measured three more defects:
+
+1. Tick 33, sweep unconverged: the bar rolled over the block's edge 4e-7 m away,
+   closing that gap at 3e-6 of the substep per unit fraction while every bound
+   admitted 1e-3. Advancement crawled to 0.12 of the substep. An exhausted pair
+   sweep that made progress now reports its certified-clear fraction as the
+   earliest candidate, so the event search commits that prefix instead of
+   refusing the tick.
+2. Tick 33 again, event search exhausted: the gap kept closing geometrically
+   (4e-7 m to 2e-9 m) while the search bisected toward the 1e-12 m window. Body
+   pairs now count as touching within 1 µm (`PAIR_ACTIVATION_DISTANCE`) for
+   activation, initial-support exclusion, sweep hit tolerance, impact rows and
+   the remaining-travel check. The two solids' gap comes from independently
+   rounded moving polytopes; the GPU emits body contacts from 1e-5 m. Terrain
+   keeps its numerical-zero window.
+3. Tick 52, event search exhausted: 1239 of 1586 proposed releases were one
+   beam/piece point. Either it separated at a few times the 1e-8 m/s tolerance
+   and each committed prefix left the next manifold point separating slower, or
+   it rocked up 0.27 µm and back. A body-pair reversal whose lift before turning
+   back stays within the pair window is no longer an event. Terrain keeps every
+   reversal.
+
+The same scene runs 600 ticks to rest with the piece fallen to the ground. The
+ledge scene still runs 240 ticks to rest, but its piece now ends tipped off the
+beam's edge (centre 0.25 m high) rather than lying on the beam. A body pair spinning past another within a small positive gap
+still falls back to the full point-speed bound when the relative prefix does not
+certify, and now commits its clear prefix rather than refusing the tick.
+
+With body contacts the suite has the same eight failures as before, at the same
+drop ticks (72, 91, 8).
 
 Building it measured one more defect. The route uses `EventResolved` because the
 endpoint policy never activates a support for a box dropped 2 mm: the deferred

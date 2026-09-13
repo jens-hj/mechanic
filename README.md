@@ -455,10 +455,14 @@ cargo run -p mechanic-bench --release -- --scenario test2_car --seconds 30 --war
 experimental CPU solver instead of the GPU runtime. The GPU scene stays resident
 and keeps owning terrain preparation, drive resolution and every buffer the
 renderer reads; only the tick changes. The route refuses a creation it cannot
-run — closed mechanism loops, for now — with a message naming the flag, and a
-tick it cannot complete stops the simulation and prints the failing stage,
-substep policy, residual, contact counts and per-attempt history rather than
-publishing anything. It is not a substitute for the GPU route: wheeled creations
+run — closed mechanism loops, for now — with a message naming the flag. World
+physics never pauses: a tick the route cannot complete publishes nothing from the
+CPU, logs the failing stage, substep policy, residual, contact counts and
+per-attempt history, and hands the last published state to the resident GPU
+runtime, which runs that tick and every later one until the next construction
+publication builds a fresh CPU route. Bodies collide with terrain and with each other, except
+bodies joined by a bearing and, on this route only, bodies of one mechanism
+built touching. It is not a substitute for the GPU route: wheeled creations
 still stall within a few seconds of touching ground, and `docs/cpu-solver-repair.md`
 lists the states that fail. Anything other than `cpu` selects the GPU runtime.
 
