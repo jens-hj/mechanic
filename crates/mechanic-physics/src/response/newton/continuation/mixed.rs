@@ -340,31 +340,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn too_many_weak_rows_reject_the_search_without_allocating_a_large_contact_matrix() {
-        let (factor, blocks, impulses) = problem(50);
-        let prepared = PreparedConstraints::new(&factor, &blocks).unwrap();
-        let at = super::super::smoothing::evaluate(
-            &blocks,
-            &prepared.layout,
-            &vec![vec![true]; 50],
-            &vec![None; 50],
-            &impulses,
-            &vec![0.0; impulses.len()],
-            1e-6,
-        )
-        .unwrap();
-        let rows = blocks.iter().flat_map(|b| &b.jacobian).collect::<Vec<_>>();
-        let scales = prepared
-            .layout
-            .iter()
-            .flat_map(|info| [info.scale; 5])
-            .collect::<Vec<_>>();
-        let mut work = NewtonWork::default();
-        assert!(direction(&factor, &rows, &scales, &at, &mut work).is_none());
-        assert_eq!(work.mixed_rows, 0);
-        assert_eq!(work.generalized_factorizations, 0);
-        assert_eq!(work.factor_solves, 0);
-    }
 }

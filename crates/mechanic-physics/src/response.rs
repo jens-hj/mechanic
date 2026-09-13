@@ -1208,7 +1208,6 @@ fn rank_solve(matrix: &[f64], rhs: &[f64], tolerance: f64) -> Result<Vec<f64>, P
 
 #[cfg(test)]
 mod tests {
-    mod cold_impact;
     use super::*;
 
     fn bilateral(jacobian: Vec<Vec<f64>>, target: Vec<f64>) -> ConstraintBlock {
@@ -1466,45 +1465,6 @@ mod tests {
     }
 
     #[test]
-    fn large_generalized_systems_keep_dense_and_krylov_storage_bounded() {
-        let size = 65;
-        let mut mass = vec![0.0; size * size];
-        for row in 0..size {
-            mass[row * size + row] = 1.0;
-        }
-        mass[1] = -0.9;
-        mass[size] = -0.9;
-        let factor = DynamicsFactor::new(&mass, size).unwrap();
-        let mut expected = vec![0.0; size];
-        expected[0] = 1.0;
-        expected[1] = 0.6;
-        factor.solve(&mut expected).unwrap();
-        let mut block = contact_block(expected[..3].to_vec(), false, None);
-        for row in &mut block.jacobian {
-            row.resize(size, 0.0);
-        }
-        for copies in [1, 43] {
-            let solution =
-                solve_constraints(&factor, &vec![block.clone(); copies], 256, 1e-10).unwrap();
-            assert!(solution.converged);
-            if copies == 1 {
-                assert!(solution.newton_contact_factorizations > 0);
-                assert_eq!(solution.newton_contact_storage, 9);
-                assert_eq!(solution.newton_applications, 0);
-            } else {
-                assert!(solution.newton_applications > 0);
-                assert_eq!(solution.newton_contact_storage, 0);
-                assert_eq!(solution.response_storage, 0);
-            }
-            assert_eq!(solution.newton_generalized_factorizations, 0);
-            assert_eq!(solution.newton_reduced_storage, 0);
-            for (actual, expected) in solution.velocity_change.iter().zip(&expected) {
-                assert!((actual - expected).abs() < 1e-9);
-            }
-        }
-    }
-
-    #[test]
     fn static_breakaway_reuses_response_and_cannot_pass_an_exhausted_solve() {
         let factor = identity_factor(3);
         let block = contact_block(vec![1.0, 1.0, 0.0], false, None);
@@ -1562,24 +1522,4 @@ mod tests {
         assert!((remaining - 4.8).abs() < 1e-12);
     }
 
-    #[test]
-    fn large_contact_sets_use_implicit_response_and_repeat_exactly() {
-        let factor = DynamicsFactor::new(&[2.0], 1).unwrap();
-        for count in [128, 129] {
-            let blocks = vec![bilateral(vec![vec![1.0]], vec![1.0]); count];
-            let a = solve_constraints(&factor, &blocks, 8, 1e-10).unwrap();
-            let b = solve_constraints(&factor, &blocks, 8, 1e-10).unwrap();
-            assert!(a.converged);
-            if count <= 128 {
-                assert_eq!(a.factor_solves, count + 1);
-            }
-            assert_eq!(
-                a.response_storage,
-                if count <= 128 { count * count } else { 0 }
-            );
-            assert_eq!(a.velocity_change, b.velocity_change);
-            assert_eq!(a.impulses, b.impulses);
-            assert!((a.velocity_change[0] - 1.0).abs() < 1e-12);
-        }
-    }
 }

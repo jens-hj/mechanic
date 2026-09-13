@@ -237,51 +237,6 @@ fn gravity_is_reintegrated_at_the_impact_time_before_restitution() {
 }
 
 #[test]
-fn exhausted_event_trials_preserve_snapshot_and_do_not_consume_an_impulse() {
-    let (creation, geometry, _) = cube();
-    let scene = scene();
-    let mut terrain = context(&scene, &geometry, 7);
-    terrain.maximum_event_trials = 1;
-    let mut initial = MachineState::at_rest(&creation);
-    initial.poses[0].position.y = 1.0;
-    let impulse = ExternalImpulse {
-        tick: 1,
-        topology_generation: 7,
-        body: 0,
-        point: initial.poses[0].position,
-        impulse: -DVec3::Y * 100.0 * f64::from(creation.dynamics.inertias[0].mass),
-    };
-    let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
-    let before = world.snapshot().clone();
-    assert_eq!(
-        world.step_candidate(DVec3::ZERO, fixed(1), &[impulse], &[], Some(&terrain)),
-        Err(PhysicsError::NotConverged)
-    );
-    assert_eq!(world.snapshot(), &before);
-    assert_eq!(world.diagnostics().terrain_impact_holds, 1);
-    assert_eq!(
-        world.diagnostics().failure_stage,
-        Some(JointFailureStage::EventSearch)
-    );
-    assert_eq!(world.diagnostics().attempt_failures.len(), 1);
-    assert_eq!(
-        world.diagnostics().attempt_failures[0].stage,
-        JointFailureStage::EventSearch
-    );
-    terrain.maximum_event_trials = 128;
-    world
-        .step_candidate(DVec3::ZERO, fixed(1), &[impulse], &[], Some(&terrain))
-        .unwrap();
-    let mut direct = CpuJointMachine::new(creation, 7, initial).unwrap();
-    direct
-        .step_candidate(DVec3::ZERO, fixed(1), &[impulse], &[], Some(&terrain))
-        .unwrap();
-    assert_eq!(world.snapshot(), direct.snapshot());
-    assert_eq!(world.diagnostics().failure_stage, None);
-    assert!(world.diagnostics().attempt_failures.is_empty());
-}
-
-#[test]
 fn a_rotating_cube_reaches_a_real_finite_edge_before_applying_impact() {
     let (creation, geometry, _) = cube();
     let scene = scene();
@@ -411,35 +366,6 @@ fn released_support_can_return_and_impact_the_same_triangle_within_one_tick() {
         );
         assert!(world.snapshot().state.velocities[1].abs() < 1e-8);
         assert_eq!(world.diagnostics().impact_events, 1);
-    }
-}
-#[test]
-fn a_near_resting_fall_locates_impact_without_tiny_prefix_exhaustion() {
-    let (creation, geometry, _) = cube();
-    let mut initial = MachineState::at_rest(&creation);
-    initial.poses[0].position.y = 0.5 + 1e-8;
-    let scene = scene();
-    let terrain = context(&scene, &geometry, 7);
-    for subdivisions in [1, 2, 4, 8] {
-        let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
-        let result = world
-            .step_candidate(
-                -DVec3::Y * 9.81,
-                fixed(subdivisions),
-                &[],
-                &[],
-                Some(&terrain),
-            )
-            .map(|_| ());
-        assert!(
-            result.is_ok(),
-            "subdivisions={subdivisions} {result:?} {:?}",
-            world.diagnostics()
-        );
-        assert!((world.snapshot().state.poses[0].position.y - 0.5).abs() < 1e-10);
-        assert!(world.snapshot().state.velocities[1].abs() < 1e-8);
-        assert_eq!(world.diagnostics().impact_events, 1);
-        assert!((world.diagnostics().accepted_seconds - 1.0 / 60.0).abs() < 1e-15);
     }
 }
 

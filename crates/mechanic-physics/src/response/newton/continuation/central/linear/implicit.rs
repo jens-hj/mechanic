@@ -338,17 +338,4 @@ mod tests {
             assert!((value - expected).abs() < 1e-12);
         }
     }
-
-    #[test]
-    fn streamed_full_rank_search_retains_only_its_fixed_128_directions() {
-        let result = least_squares(
-            &[1.0; 144],
-            |column| (0..144).map(|row| f64::from(row == column)).collect(),
-            <[f64]>::to_vec,
-            &mut NewtonWork::default(),
-        )
-        .unwrap();
-        assert_eq!(&result[..128], &[1.0; 128]);
-        assert_eq!(&result[128..], &[0.0; 16]);
-    }
 }

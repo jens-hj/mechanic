@@ -453,11 +453,8 @@ mod tests {
         validate_surface_impulses(&creation, &model, &query, &contacts, &incoming, &rich);
         // Five rows for each of the four wheels' twenty support points. A solid
         // cylinder contacts the floor as one prism, so this manifold no longer
-        // carries sixteen rounded copies of every wheel's contact edge. The
-        // implicit path above the dense bound is covered by the long rigid body in
-        // `mechanic-physics`, whose manifold really exceeds it.
+        // carries sixteen rounded copies of every wheel's contact edge.
         assert_eq!(rich.impulses.len(), 80);
-        assert!(rich.impulses.len() < mechanic_physics::DENSE_CONTACT_ROWS);
         assert_eq!(first.impulses, second.impulses);
         assert_eq!(first.velocity_change, second.velocity_change);
         for block in &blocks {

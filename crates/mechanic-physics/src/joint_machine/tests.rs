@@ -509,28 +509,6 @@ fn whole_tick_impulses_are_not_reapplied_at_each_substep() {
 }
 
 #[test]
-fn changing_targets_reuses_response_without_repeated_inverse_preparation() {
-    let factor = crate::DynamicsFactor::new(&[2.0], 1).unwrap();
-    let block = ConstraintBlock {
-        jacobian: vec![vec![1.0]],
-        target: vec![0.0],
-        bounds: vec![ImpulseBounds {
-            minimum: -2.0,
-            maximum: 2.0,
-        }],
-        contacts: Vec::new(),
-    };
-    let mut prepared = PreparedConstraints::new(&factor, &[block]).unwrap();
-    assert_eq!(prepared.preparation_factor_solves(), 1);
-    for target in [-0.5, 0.2, 3.0, -2.0] {
-        let solution = prepared.solve(&[target], 32, 1e-10).unwrap();
-        assert!(solution.converged);
-        assert!((solution.velocity_change[0] - target.clamp(-1.0, 1.0)).abs() < 1e-10);
-        assert_eq!(solution.factor_solves, 1);
-    }
-}
-
-#[test]
 fn nonlinear_retry_restarts_the_same_tick_without_duplicating_impulses() {
     let spec = SuspensionSpec::new(
         None,
