@@ -306,7 +306,10 @@ mod tests {
 
     #[test]
     fn saved_car_joint_ticks_keep_authored_suspension_and_drives_and_repeat() {
-        use mechanic_physics::{CpuJointMachine, DriveCommand, JointTickSettings, MachineState};
+        use mechanic_physics::{
+            DriveCommand, MachineState,
+            reference::{CpuJointMachine, JointTickSettings},
+        };
         let creation = car();
         let driven = creation
             .coordinate_drives

@@ -545,7 +545,11 @@ impl CpuJointMachine {
     }
 }
 
-fn bounds(creation: &CompiledCreation, drives: &[CoordinateDrive], coordinate: usize) -> [f64; 2] {
+pub(crate) fn bounds(
+    creation: &CompiledCreation,
+    drives: &[CoordinateDrive],
+    coordinate: usize,
+) -> [f64; 2] {
     let physical = creation.bearings[creation.dynamics.coordinate_bearings[coordinate]]
         .kind
         .bounds();

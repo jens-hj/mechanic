@@ -1,9 +1,10 @@
-//! CPU experiments for compiled machine dynamics.
+//! CPU physics for compiled machines.
 //!
-//! Numerical factors, pose-dependent response, and transactional free-motion
-//! reference ticks and implicit midpoint joint ticks with bounded drives, stops,
-//! and suspension. This is not yet an authoritative world runtime: complete
-//! collision integration, loops, and cross-backend acceptance remain open.
+//! [`CpuMachine`] is the soft-step game solver the app runs: every valid tick
+//! publishes. [`reference`] holds the exact solver, which publishes only when the
+//! original contact laws hold and serves as an offline checker. Both share the
+//! reduced-coordinate machine model, joint force laws and collision geometry.
+//! Closed mechanism loops are not supported yet.
 
 mod free_motion;
 mod joint_forces;
@@ -11,19 +12,27 @@ mod joint_machine;
 mod machine;
 mod motion_path;
 mod response;
+mod soft_step;
 mod terrain_contacts;
 
+/// The exact reference solver: implicit midpoint ticks with event search and
+/// original-law contact solves. A tick it cannot certify is rejected unchanged.
+pub mod reference {
+    pub use crate::joint_machine::{
+        CpuJointMachine, JointAttemptFailure, JointFailureStage, JointTickDiagnostics,
+        JointTickSettings, TerrainIntegration, TerrainSubstep,
+    };
+}
+
 pub use free_motion::{CpuFreeMotion, CpuSnapshot, ExternalImpulse, MachineState, TICK_SECONDS};
-pub use joint_machine::{
-    CpuJointMachine, DriveCommand, JointAttemptFailure, JointFailureStage, JointTickDiagnostics,
-    JointTickSettings, TerrainIntegration, TerrainSubstep,
-};
+pub use joint_machine::DriveCommand;
 pub use machine::{BodyPose, MachineDynamics, SpatialMotion};
 pub use motion_path::{MachineMotion, MotionBound};
 pub use response::{
     ConstraintBlock, ConstraintSolution, ContactFriction, DENSE_CONTACT_ROWS, DynamicsFactor,
     DynamicsFactorization, ImpulseBounds, PreparedConstraints, solve_constraints,
 };
+pub use soft_step::{CpuMachine, SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
 pub use terrain_contacts::{
     ContactObstacle, ContactTarget, MachineCollisionGeometry, TerrainContact,
     TerrainContactFeature, TerrainContactQuery, TerrainContactScene, TerrainImpactConstraints,

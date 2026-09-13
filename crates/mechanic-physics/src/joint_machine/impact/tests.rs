@@ -120,7 +120,7 @@ fn failed_instantaneous_solve_preserves_all_physical_state() {
     assert!(diagnostics.impact_factor_solves > 0);
     assert_eq!(
         diagnostics.failure_stage,
-        Some(crate::JointFailureStage::Impact)
+        Some(crate::reference::JointFailureStage::Impact)
     );
 }
 
