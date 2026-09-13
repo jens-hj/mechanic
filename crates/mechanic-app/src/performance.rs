@@ -34,6 +34,8 @@ pub(crate) struct PerformanceSnapshot {
     pub(crate) dropped_ticks: Option<u64>,
     pub(crate) physics_cpu_ms: Option<f64>,
     pub(crate) physics_route: Option<Route>,
+    /// CPU-route ticks since the last publication that fell back numerically.
+    pub(crate) cpu_degraded_ticks: Option<u64>,
     pub(crate) physics_submission_timings: Option<mechanic_gpu::GpuSubmissionTimings>,
     pub(crate) ticks_submitted_per_frame: Option<u32>,
     pub(crate) in_flight_tick_count: Option<u32>,
@@ -157,7 +159,7 @@ const fn performance_present_mode(open: bool) -> PresentMode {
 }
 
 /// Samples existing Bevy and physics diagnostics; it never waits for the GPU.
-#[allow(clippy::similar_names)] // CPU/GPU pairs deliberately share metric names.
+#[allow(clippy::similar_names, clippy::too_many_lines)] // CPU/GPU pairs deliberately share metric names; one flat snapshot.
 pub(crate) fn sample(
     time: Res<Time<Real>>,
     diagnostics: Res<DiagnosticsStore>,
@@ -223,6 +225,11 @@ pub(crate) fn sample(
             .creation
             .as_ref()
             .map(|_| simulation.cpu.as_ref().map_or(Route::Gpu, |_| Route::Cpu)),
+        cpu_degraded_ticks: simulation
+            .cpu
+            .as_ref()
+            .filter(|_| running)
+            .map(|route| route.degraded_ticks()),
         physics_submission_timings: running
             .then_some(simulation.physics_submission_timings)
             .flatten(),

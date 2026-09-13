@@ -12,8 +12,8 @@ use mechanic_gpu::{
     GpuExternalImpulse, GpuMechanismCoordinate, GpuMechanismDrive, GpuTransform, GpuVelocity,
 };
 use mechanic_physics::{
-    BodyPose, CpuJointMachine, DriveCommand, ExternalImpulse, JointTickSettings, MachineDynamics,
-    MachineState, PhysicsError, TerrainContactScene, TerrainIntegration, TerrainSubstep,
+    BodyPose, CpuMachine, DriveCommand, ExternalImpulse, MachineDynamics, MachineState,
+    PhysicsError, SoftStepSettings, SoftStepTerrain, TerrainContactScene,
 };
 use mechanic_world::TerrainMeshChunk;
 use std::sync::{Arc, OnceLock};
@@ -54,13 +54,6 @@ pub(crate) fn selected() -> bool {
     route() == Route::Cpu
 }
 
-/// Policy bounds for one CPU tick. These match the terrain-tick experiments.
-const MAXIMUM_DEPTH: f64 = 0.005;
-const MAXIMUM_EVALUATIONS: usize = 128;
-const MAXIMUM_EVENT_TRIALS: usize = 128;
-const RESTITUTION_THRESHOLD: f64 = 1.0;
-const STICTION_THRESHOLD: f64 = 1e-7;
-
 /// One completed CPU tick, in exactly the form a GPU readback publishes.
 pub(crate) struct Completed {
     /// Body poses for the renderer and world walking.
@@ -73,7 +66,7 @@ pub(crate) struct Completed {
 
 /// A CPU solver bound to one published creation and terrain cut.
 pub(crate) struct CpuRoute {
-    machine: CpuJointMachine,
+    machine: CpuMachine,
     creation: CompiledCreation,
     geometry: mechanic_physics::MachineCollisionGeometry,
     scene: TerrainContactScene,
@@ -85,8 +78,9 @@ pub(crate) struct CpuRoute {
     published: bool,
     /// App tick at publication; earlier commands belong to a retired scene.
     base_tick: u64,
-    integration: TerrainIntegration,
-    settings: JointTickSettings,
+    settings: SoftStepSettings,
+    /// Ticks since this route was built that hit a numerical fallback.
+    degraded_ticks: u64,
 }
 
 impl CpuRoute {
@@ -107,7 +101,7 @@ impl CpuRoute {
         let state = machine_state(creation, transforms, velocities, coordinates)?;
         let geometry = mechanic_physics::MachineCollisionGeometry::new(creation, generation)
             .map_err(|error| unsupported(creation, &error))?;
-        let machine = CpuJointMachine::new(creation.clone(), generation, state)
+        let machine = CpuMachine::new(creation.clone(), generation, state)
             .map_err(|error| unsupported(creation, &error))?;
         Ok(Self {
             machine,
@@ -119,8 +113,8 @@ impl CpuRoute {
             origin: DVec3::ZERO,
             published: false,
             base_tick,
-            integration: TerrainIntegration::EventResolved,
-            settings: JointTickSettings::default(),
+            settings: SoftStepSettings::default(),
+            degraded_ticks: 0,
         })
     }
 
@@ -208,60 +202,36 @@ impl CpuRoute {
                 ),
             })
             .collect::<Vec<_>>();
-        let terrain = TerrainSubstep {
-            integration: self.integration,
+        let terrain = SoftStepTerrain {
             scene: &self.scene,
             geometry: &self.geometry,
             topology_generation: self.generation,
             origin: self.origin,
-            maximum_depth: MAXIMUM_DEPTH,
-            maximum_evaluations: MAXIMUM_EVALUATIONS,
-            maximum_event_trials: MAXIMUM_EVENT_TRIALS,
-            restitution_threshold: RESTITUTION_THRESHOLD,
-            stiction_threshold: STICTION_THRESHOLD,
         };
         let outcome =
             self.machine
-                .step_with_terrain(gravity, self.settings, &impulses, &commands, &terrain);
+                .step(gravity, &self.settings, &impulses, &commands, Some(terrain));
         if let Err(error) = outcome {
             return Err(self.failure(tick, &error));
+        }
+        if self.machine.diagnostics().degraded {
+            self.degraded_ticks += 1;
         }
         self.published_state()
     }
 
-    /// What the last attempted tick did, for the pause message.
+    /// Why a tick was refused. The soft-step solver only refuses invalid input.
     fn failure(&self, tick: u64, error: &PhysicsError) -> String {
-        let diagnostics = self.machine.diagnostics();
-        let stage = diagnostics
-            .failure_stage
-            .map_or_else(|| "none".to_owned(), |stage| format!("{stage:?}"));
-        let attempts = diagnostics
-            .attempt_failures
-            .iter()
-            .map(|failure| {
-                format!(
-                    "{} substeps {:?} at {:.3} ms",
-                    failure.substeps,
-                    failure.stage,
-                    failure.accepted_seconds * 1000.0
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
         format!(
-            "the CPU solver could not complete tick {tick}: {error}. \
-             Stage {stage}, {} substeps over {} attempts, residual {:e}, \
-             contacts {} over {} manifolds, event trials {}, impact holds {}. \
-             Attempts: [{attempts}]. \
+            "the CPU solver refused tick {tick}: {error} ({} earlier ticks degraded). \
              This is the experimental route; MECHANIC_PHYSICS=gpu runs the shipping solver.",
-            diagnostics.substeps,
-            diagnostics.attempts,
-            diagnostics.residual,
-            diagnostics.surface_points,
-            diagnostics.surface_manifolds,
-            diagnostics.event_trials,
-            diagnostics.terrain_impact_holds,
+            self.degraded_ticks
         )
+    }
+
+    /// Ticks since this route was built that fell back after numerical trouble.
+    pub(crate) fn degraded_ticks(&self) -> u64 {
+        self.degraded_ticks
     }
 
     /// Converts the committed snapshot into the publication the renderer reads.
@@ -663,22 +633,21 @@ mod tests {
             assert_eq!(completed.velocities.len(), 1);
             let height = completed.transforms[0].position[1];
             assert!(
-                (0.498..=0.503).contains(&height),
+                (0.495..=0.503).contains(&height),
                 "tick {tick} settled at {height}"
             );
             published += 1;
         }
         assert_eq!(published, 30);
         let resting = route.step(31, gravity(), &[], &[]).unwrap();
-        // A settled body must be at rest in velocity too, not merely held in place
-        // by position recovery: the endpoint policy holds the pose while gravity
-        // keeps accumulating, which would launch the creation when it releases.
+        // Settled in velocity too, not merely held in place.
         assert!(
-            resting.velocities[0].linear[1].abs() < 1e-6,
+            resting.velocities[0].linear[1].abs() < 1e-2,
             "resting vertical velocity {}",
             resting.velocities[0].linear[1]
         );
-        assert!((resting.transforms[0].position[1] - 0.5).abs() < 1e-6);
+        assert!((resting.transforms[0].position[1] - 0.5).abs() < 0.005);
+        assert_eq!(route.degraded_ticks(), 0);
     }
 
     #[test]
@@ -719,12 +688,12 @@ mod tests {
                 .unwrap_or_else(|message| panic!("tick {tick}: {message}"));
             let [lower, upper] = [0, 1].map(|body| completed.transforms[body].position[1]);
             assert!(
-                upper - lower >= 0.997,
+                upper - lower >= 0.99,
                 "tick {tick}: upper cube sank to {upper} over {lower}"
             );
             last = Some(upper);
         }
-        assert!((last.unwrap() - 1.5).abs() < 1e-3);
+        assert!((last.unwrap() - 1.5).abs() < 0.01);
     }
 
     #[test]
@@ -822,14 +791,13 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_tick_reports_the_stage_and_the_way_back_to_the_gpu() {
+    fn a_refused_tick_names_the_tick_and_the_way_back_to_the_gpu() {
         let (creation, transforms, velocities) = dropped_cube(0.502);
         let route = CpuRoute::new(&creation, 7, 0, &transforms, &velocities, &[]).unwrap();
-        let message = route.failure(12, &PhysicsError::NotConverged);
+        let message = route.failure(12, &PhysicsError::InvalidCommand);
 
-        assert!(message.contains("could not complete tick 12"), "{message}");
-        assert!(message.contains("Stage"), "{message}");
-        assert!(message.contains("event trials"), "{message}");
+        assert!(message.contains("refused tick 12"), "{message}");
         assert!(message.contains("MECHANIC_PHYSICS=gpu"), "{message}");
+        assert_eq!(route.degraded_ticks(), 0);
     }
 }

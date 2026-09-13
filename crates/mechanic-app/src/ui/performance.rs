@@ -171,6 +171,7 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
                 .to_owned(),
                 tone: Tone::Neutral,
             },
+            count_u64_row("CPU degraded ticks", snapshot.cpu_degraded_ticks),
             rate_row(
                 "Simulation rate",
                 snapshot.simulation_ticks_per_second,
