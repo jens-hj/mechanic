@@ -80,6 +80,9 @@ pub(crate) struct TerrainPublication {
     accepted_positions: Vec<Vec3>,
     geometry_fingerprint: Option<u64>,
     layout_fingerprint: Option<u64>,
+    /// Floating origin at which local terrain streaming has finished at least
+    /// once. Ticks never run at an origin that has not settled.
+    settled_origin: Option<DVec3>,
 }
 
 impl TerrainPublication {
@@ -98,6 +101,7 @@ impl TerrainPublication {
     pub(crate) fn inherit(&mut self, previous: &mut Self, resident: bool) {
         self.cache = std::mem::take(&mut previous.cache);
         self.revision = previous.revision;
+        self.settled_origin = previous.settled_origin;
         if resident {
             self.accepted = previous.accepted.take();
             self.geometry_fingerprint = previous.geometry_fingerprint.take();
@@ -231,11 +235,10 @@ fn accepted_cut_may_tick(
 
 /// Returns true when dependent ticks may run against the published terrain.
 ///
-/// Ticking waits only for the *first* cut, and for a cut in the current physics
-/// frame after a floating-origin rebase. A cut that merely predates newly
-/// streamed chunks keeps ticking: it is the same geometry every frame between
-/// publications already runs on, and blocking on it starves physics for the
-/// whole streaming window.
+/// Ticking waits for local streaming to finish once per floating origin, which
+/// covers world entry. After that, terrain streaming ahead of a moving body never
+/// holds ticks: the critical region follows the focus, so waiting on it froze
+/// physics for as long as a vehicle kept driving into new terrain.
 pub(crate) fn publish(
     simulation: &mut AppSimulation,
     world: &WorldRuntime,
@@ -246,24 +249,47 @@ pub(crate) fn publish(
     let positions = physics_body_positions(simulation);
     let interest = interest_regions(world, &positions);
     let key = TerrainPublicationKey::new(origin, world.physics_terrain_near(&interest));
-    let streaming_ready = world.physics_terrain_ready();
+    let publication = &mut simulation.terrain_publication;
+    if world.physics_terrain_ready() {
+        publication.settled_origin = Some(origin);
+    }
+    let settled = publication.settled_origin == Some(origin);
+    let current = publication.accepted.as_ref() == Some(&key);
+    let gpu_may_tick = publish_gpu(simulation, world, device, queue, &interest, key, settled)?;
+    let Some(cpu) = simulation.cpu.as_mut() else {
+        return Ok(gpu_may_tick);
+    };
+    // The CPU scene follows the chunks around the bodies every frame, so it never
+    // waits for a GPU preparation, which only matters if the GPU takes over.
+    if settled || current {
+        cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
+    }
+    Ok(settled && cpu.is_ready())
+}
+
+/// Publishes the cut to the GPU scene and returns whether GPU ticks may run.
+fn publish_gpu(
+    simulation: &mut AppSimulation,
+    world: &WorldRuntime,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    interest: &[WorldBounds],
+    key: TerrainPublicationKey,
+    settled: bool,
+) -> Result<bool, String> {
+    let origin = key.origin;
+    let positions = physics_body_positions(simulation);
     let publication = &mut simulation.terrain_publication;
     if publication.accepted.as_ref() == Some(&key) {
-        // This cut was selected around the current bodies, so it also covers
-        // a new body layout after a construction edit. Device residency alone
-        // does not initialize the replacement CPU solver's collision scene.
-        if let Some(cpu) = simulation.cpu.as_mut().filter(|cpu| !cpu.is_ready()) {
-            cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
-        }
         publication.accepted_positions = positions;
         publication.observed = None;
-        if !streaming_ready {
+        if !settled {
             record_gate("streaming_pending", true, key.chunks.len(), None);
         }
-        return Ok(streaming_ready);
+        return Ok(settled);
     }
     let may_tick = |publication: &TerrainPublication| {
-        streaming_ready
+        settled
             && accepted_cut_may_tick(
                 publication.accepted.as_ref(),
                 &publication.accepted_positions,
@@ -314,12 +340,7 @@ pub(crate) fn publish(
             });
             publication.accepted = Some(key);
             publication.accepted_positions = positions;
-            // Both routes must see one cut. The CPU solver holds its own scene, so
-            // it is republished here, from the same meshes, at the same origin.
-            if let Some(cpu) = simulation.cpu.as_mut() {
-                cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
-            }
-            return Ok(streaming_ready);
+            return Ok(settled);
         }
         // A stale result never writes the GPU, consumes an impulse, or advances a tick.
         record_gate(
@@ -343,7 +364,7 @@ pub(crate) fn publish(
     if publication.observed.replace(fingerprint) != Some(fingerprint) {
         return Ok(may_tick(publication));
     }
-    begin_preparation(publication, world, &interest, origin, key);
+    begin_preparation(publication, world, interest, origin, key);
     Ok(may_tick(publication))
 }
 
@@ -443,6 +464,19 @@ mod tests {
         for (before, after) in simulation.transforms.iter().zip(&completed.transforms) {
             assert!(after.position[1] < before.position[1]);
         }
+
+        // Driving into terrain that is still streaming must not freeze physics:
+        // once streaming finished at this origin, later incomplete streaming
+        // around a moved focus keeps the CPU route ticking.
+        assert!(!world.physics_terrain_ready());
+        AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        simulation.terrain_publication.settled_origin = Some(origin);
+        simulation.terrain_publication.accepted = None;
+        assert!(publish(&mut simulation, &world, &device, &queue).unwrap());
+
+        // A floating-origin rebase still waits for streaming at the new origin.
+        simulation.terrain_publication.settled_origin = Some(origin + DVec3::X);
+        assert!(!publish(&mut simulation, &world, &device, &queue).unwrap());
     }
 
     #[test]

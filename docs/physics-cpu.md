@@ -16,9 +16,15 @@ corners, and vertex activation. It works as a checker, not a runtime.
 ## Selecting the route
 
 `MECHANIC_PHYSICS=cpu cargo run -p mechanic-app` steps ticks on the CPU. The GPU
-scene stays resident and keeps owning terrain preparation, drive resolution and
-every buffer the renderer reads; only the tick changes. Anything other than
-`cpu` selects the GPU runtime.
+scene stays resident and keeps owning drive resolution and every buffer the
+renderer reads; only the tick changes. Anything other than `cpu` selects the GPU
+runtime.
+
+The CPU contact scene updates every frame from the terrain chunks around the
+bodies, publishing only chunks that appeared, remeshed or left. It never waits
+for the GPU terrain preparation. Ticks wait for local terrain streaming once per
+floating origin (world entry); after that, terrain still streaming ahead of a
+moving vehicle never holds physics.
 
 A creation the CPU cannot run (closed mechanism loops, for now) is refused with
 a message. An invalid tick input hands the last published state to the GPU

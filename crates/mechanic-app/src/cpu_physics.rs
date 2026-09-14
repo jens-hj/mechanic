@@ -1,10 +1,10 @@
 //! Optional CPU solver route, selected with `MECHANIC_PHYSICS=cpu`.
 //!
-//! The GPU runtime stays resident and keeps owning terrain preparation, drive
-//! resolution and every buffer the renderer reads; this route only replaces the
-//! tick itself, stepping `mechanic_physics::CpuJointMachine` against the same
-//! published terrain cut and publishing the same body/joint state the readback
-//! would. See `docs/physics-cpu.md`.
+//! The GPU runtime stays resident and keeps owning drive resolution and every
+//! buffer the renderer reads; this route replaces the tick itself, stepping
+//! `mechanic_physics::CpuMachine` against its own terrain scene, kept current
+//! with the chunks around the bodies, and publishing the same body/joint state
+//! the readback would. See `docs/physics-cpu.md`.
 
 use bevy::math::{DQuat, DVec3};
 use mechanic_core::{CompiledCreation, CoordinateDrive};
@@ -15,7 +15,8 @@ use mechanic_physics::{
     BodyPose, CpuMachine, DriveCommand, ExternalImpulse, MachineDynamics, MachineState,
     PhysicsError, SoftStepSettings, SoftStepTerrain, TerrainContactScene,
 };
-use mechanic_world::TerrainMeshChunk;
+use mechanic_world::{TerrainMeshChunk, TerrainNodeId};
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 /// Which solver advances published ticks.
@@ -70,6 +71,8 @@ pub(crate) struct CpuRoute {
     creation: CompiledCreation,
     geometry: mechanic_physics::MachineCollisionGeometry,
     scene: TerrainContactScene,
+    /// Mesh generation of every chunk in `scene`.
+    chunks: BTreeMap<TerrainNodeId, u64>,
     generation: u64,
     /// Terrain publications applied to `scene`, which must keep increasing.
     publication: u64,
@@ -108,6 +111,7 @@ impl CpuRoute {
             creation: creation.clone(),
             geometry,
             scene: TerrainContactScene::default(),
+            chunks: BTreeMap::new(),
             generation,
             publication: 0,
             origin: DVec3::ZERO,
@@ -118,8 +122,9 @@ impl CpuRoute {
         })
     }
 
-    /// Replaces the collision scene with the accepted terrain cut. Called from the
-    /// same place that publishes the cut to the GPU, so both routes see one cut.
+    /// Brings the collision scene up to the terrain around the bodies. Called every
+    /// frame, independent of GPU terrain preparation, so CPU ticks never wait on
+    /// it; only chunks that appeared, changed generation or left are published.
     ///
     /// # Errors
     /// Returns a message when the chunk geometry or the frame is invalid.
@@ -128,19 +133,45 @@ impl CpuRoute {
         chunks: impl IntoIterator<Item = &'a TerrainMeshChunk>,
         origin: DVec3,
     ) -> Result<(), String> {
+        let chunks = chunks.into_iter().collect::<Vec<_>>();
+        let current = chunks
+            .iter()
+            .map(|mesh| (mesh.node, mesh.generation))
+            .collect::<BTreeMap<_, _>>();
+        self.origin = origin;
+        if self.published && current == self.chunks {
+            return Ok(());
+        }
         let upserts = chunks
-            .into_iter()
+            .iter()
+            .filter(|mesh| self.chunks.get(&mesh.node) != Some(&mesh.generation))
             .map(|mesh| Arc::new(mesh.collision_chunk()))
             .collect::<Vec<_>>();
-        // A fresh scene keeps publication generations monotonic without tracking
-        // which nodes the world dropped between cuts.
-        let mut scene = TerrainContactScene::default();
+        let removed = self
+            .chunks
+            .keys()
+            .filter(|node| !current.contains_key(node))
+            .copied()
+            .collect::<Vec<_>>();
         self.publication += 1;
-        scene
-            .publish(self.publication, &upserts, &[])
-            .map_err(|error| format!("cannot publish terrain to the CPU solver: {error}"))?;
-        self.scene = scene;
-        self.origin = origin;
+        if self
+            .scene
+            .publish(self.publication, &upserts, &removed)
+            .is_err()
+        {
+            // A node whose generation went backwards cannot update in place, so
+            // the whole cut is rebuilt.
+            let upserts = chunks
+                .iter()
+                .map(|mesh| Arc::new(mesh.collision_chunk()))
+                .collect::<Vec<_>>();
+            let mut scene = TerrainContactScene::default();
+            scene
+                .publish(self.publication, &upserts, &[])
+                .map_err(|error| format!("cannot publish terrain to the CPU solver: {error}"))?;
+            self.scene = scene;
+        }
+        self.chunks = current;
         self.published = true;
         Ok(())
     }
@@ -648,6 +679,35 @@ mod tests {
         );
         assert!((resting.transforms[0].position[1] - 0.5).abs() < 0.005);
         assert_eq!(route.degraded_ticks(), 0);
+    }
+
+    #[test]
+    fn terrain_updates_follow_the_chunks_around_the_bodies_without_republishing_unchanged_ones() {
+        let (creation, transforms, velocities) = dropped_cube(0.502);
+        let mut route = CpuRoute::new(&creation, 7, 0, &transforms, &velocities, &[]).unwrap();
+        route.publish_terrain([&floor()], DVec3::ZERO).unwrap();
+        let publication = route.publication;
+
+        // The same chunks every frame cost nothing.
+        route.publish_terrain([&floor()], DVec3::ZERO).unwrap();
+        assert_eq!(route.publication, publication);
+        let resting = route.step(1, gravity(), &[], &[]).unwrap();
+        assert!(resting.transforms[0].position[1] > 0.49);
+
+        // A chunk that left the cut stops supporting the cube.
+        route.publish_terrain([], DVec3::ZERO).unwrap();
+        let mut fallen = resting;
+        for tick in 2..=20 {
+            fallen = route.step(tick, gravity(), &[], &[]).unwrap();
+        }
+        assert!(fallen.transforms[0].position[1] < 0.4);
+
+        // A remeshed chunk comes back as a new generation.
+        let mut remeshed = floor();
+        remeshed.generation = 2;
+        route.publish_terrain([&remeshed], DVec3::ZERO).unwrap();
+        assert!(route.publication > publication + 1);
+        assert_eq!(route.chunks.get(&remeshed.node), Some(&2));
     }
 
     #[test]
