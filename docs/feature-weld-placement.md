@@ -11,8 +11,7 @@ the other mode.
   joints such as a double wishbone; a live articulation that has moved away from
   that arrangement is refused at publication. A separate creation is reframed
   to its current pose relative to the first. Join uses the ordinary edit
-  publication path, and warns when a weld locks a bearing. The CPU physics route
-  refuses closed loops, so a joined loop runs on the GPU route.
+  publication path, and warns when a weld locks a bearing.
 - **Place** is described below: the first selected creation moves in its
   authored internal arrangement onto the second creation's current pose.
   Original source physics continues during preview. The endpoint is validated;

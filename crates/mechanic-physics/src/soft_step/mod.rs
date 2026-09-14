@@ -26,7 +26,7 @@ use crate::{
     joint_forces::{PassiveForce, validate_drive},
     joint_machine::bounds,
 };
-use solve::{Contact, JointImpulses, Machine};
+use solve::{Contact, JointImpulses, Machine, closure_errors};
 
 /// Offset separating submerged-vertex features from clipped manifold corners,
 /// so their warm-start impulses never share a key.
@@ -79,6 +79,11 @@ pub struct SoftStepSettings {
     /// Biased and relaxing passes for substeps holding a contact that arrived
     /// faster than `continuous_travel` per substep.
     pub impact_iterations: u32,
+    /// Stiffness of loop-closing bearings in hertz, capped at a quarter of the
+    /// substep rate.
+    pub joint_hertz: f64,
+    /// Damping ratio of loop-closing bearings.
+    pub joint_damping_ratio: f64,
 }
 
 impl Default for SoftStepSettings {
@@ -103,6 +108,8 @@ impl Default for SoftStepSettings {
             continuous_depth: 0.01,
             requery_angle: 0.25,
             impact_iterations: 8,
+            joint_hertz: 60.0,
+            joint_damping_ratio: 2.0,
         }
     }
 }
@@ -119,6 +126,8 @@ impl SoftStepSettings {
             self.stiction_speed,
             self.continuous_travel,
             self.continuous_depth,
+            self.joint_hertz,
+            self.joint_damping_ratio,
         ];
         (1..=64).contains(&self.substeps)
             && self.iterations > 0
@@ -177,6 +186,13 @@ pub struct SoftStepDiagnostics {
     pub continuous_sweeps: usize,
     /// Swept substeps cut short before a collision the contacts would miss.
     pub continuous_hits: usize,
+    /// Bearings closing mechanism loops, solved as soft rows.
+    pub closures: usize,
+    /// Largest distance a loop-closing bearing has pulled apart after the tick,
+    /// in metres, across its constrained directions.
+    pub closure_position_error: f64,
+    /// Largest misalignment of a loop-closing bearing after the tick, in radians.
+    pub closure_angle_error: f64,
 }
 
 impl SoftStepDiagnostics {
@@ -187,7 +203,8 @@ impl SoftStepDiagnostics {
 }
 
 /// CPU machine stepped by the soft-step solver. Tree joints are exact by
-/// reconstruction; contacts, drives and joint limits are soft rows.
+/// reconstruction; contacts, drives, joint limits and loop-closing bearings are
+/// soft rows.
 pub struct CpuMachine {
     creation: CompiledCreation,
     passive: Vec<PassiveForce>,
@@ -195,6 +212,10 @@ pub struct CpuMachine {
     completed: CpuSnapshot,
     diagnostics: SoftStepDiagnostics,
     warm: BTreeMap<TerrainContactFeature, [f64; 5]>,
+    /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
+    closure_passive: Vec<PassiveForce>,
+    /// Loop-closure impulses carried into the next tick.
+    closure_warm: Vec<[f64; 8]>,
 }
 
 impl CpuMachine {
@@ -202,16 +223,13 @@ impl CpuMachine {
     /// clamped into it.
     ///
     /// # Errors
-    /// Rejects closed loops, mismatched state or drive rows, invalid drives, and
-    /// non-finite or non-positive dynamics.
+    /// Rejects mismatched state or drive rows, invalid drives, and non-finite or
+    /// non-positive dynamics.
     pub fn new(
         creation: CompiledCreation,
         topology_generation: u64,
         mut state: MachineState,
     ) -> Result<Self, PhysicsError> {
-        if !creation.dynamics.loops.is_empty() {
-            return Err(PhysicsError::UnsupportedJointLoops);
-        }
         let drives = creation.coordinate_drives.clone();
         if drives.len() != creation.dynamics.coordinate_bearings.len()
             || state.coordinates.len() != drives.len()
@@ -232,7 +250,15 @@ impl CpuMachine {
             .iter()
             .map(|&row| PassiveForce::from_kind(creation.bearings[row].kind))
             .collect();
+        let closure_passive = creation
+            .dynamics
+            .loops
+            .iter()
+            .map(|pattern| PassiveForce::from_kind(creation.bearings[pattern.bearing].kind))
+            .collect::<Vec<_>>();
         Ok(Self {
+            closure_warm: vec![[0.0; 8]; closure_passive.len()],
+            closure_passive,
             creation,
             passive,
             drives,
@@ -340,8 +366,9 @@ impl CpuMachine {
             creation: &self.creation,
             passive: &self.passive,
             drives: &self.drives,
+            closure_passive: &self.closure_passive,
         };
-        let mut joints = JointImpulses::new(self.drives.len());
+        let mut joints = JointImpulses::new(self.drives.len(), self.closure_warm.clone());
         let dt = TICK_SECONDS / f64::from(settings.substeps);
         let mut last = None;
         // Each collider's travel, and the largest body rotation, since the last
@@ -422,6 +449,17 @@ impl CpuMachine {
                 diagnostics.degrade("final pose");
             }
         }
+        diagnostics.closures = self.closure_warm.len();
+        (
+            diagnostics.closure_position_error,
+            diagnostics.closure_angle_error,
+        ) = closure_errors(&self.creation, &state.poses);
+        // Impulses from a rewound substep describe a state that never published.
+        self.closure_warm = if diagnostics.degraded {
+            vec![[0.0; 8]; self.closure_warm.len()]
+        } else {
+            joints.closures
+        };
 
         self.warm = contacts
             .iter()

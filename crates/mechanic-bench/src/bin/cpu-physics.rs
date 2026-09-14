@@ -51,12 +51,54 @@ fn main() -> Result<(), Box<dyn Error>> {
         "car-drive" => car(true),
         "block-pile" => block_pile(),
         "fast-impacts" => fast_impacts(),
+        "four-bar" => four_bar(),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
-             block-pile or fast-impacts"
+             block-pile, fast-impacts or four-bar"
         )
         .into()),
     }
+}
+
+// A free planar parallelogram, whose coupler's second bearing closes a loop,
+// dropped 30 cm onto the floor and left to topple and settle.
+fn four_bar() -> Result<(), Box<dyn Error>> {
+    use mechanic_core::{BearingSpec, FaceKind, FaceRef, PartId};
+    let mut graph = ConstructionGraph::new();
+    let mut spawn = |ticks: IVec3, dimensions: [u8; 3]| -> Result<PartId, Box<dyn Error>> {
+        match graph.apply(BuildCommand::Spawn(CuboidSpec::new(
+            dimensions,
+            BuildPose::from_position_ticks(ticks, GridRotation::default()),
+        )?))? {
+            mechanic_core::BuildOutcome::Spawned(part) => Ok(part),
+            _ => Err("spawn expected".into()),
+        }
+    };
+    let height = IVec3::Y * 800;
+    let ground = spawn(height, [8, 1, 1])?;
+    let left = spawn(height + IVec3::new(-350, 250, 100), [1, 6, 1])?;
+    let right = spawn(height + IVec3::new(350, 250, 100), [1, 6, 1])?;
+    let coupler = spawn(height + IVec3::new(0, 500, 200), [8, 1, 1])?;
+    for (source, target, x, y, z) in [
+        (ground, left, -0.875, 0.0, 0.125),
+        (ground, right, 0.875, 0.0, 0.125),
+        (left, coupler, -0.875, 1.25, 0.375),
+        (right, coupler, 0.875, 1.25, 0.375),
+    ] {
+        graph.apply(BuildCommand::AddBearing(BearingSpec::new(
+            FaceRef::part(source, FaceKind::PositiveZ),
+            FaceRef::part(target, FaceKind::NegativeZ),
+            bevy_math::Vec3::new(x, y + 2.0, z),
+            bevy_math::Vec3::Z,
+        )))?;
+    }
+    let creation = graph.compile()?;
+    let mut state = MachineState::at_rest(&creation);
+    let lowest = lowest_point(&creation, &state)?;
+    for pose in &mut state.poses {
+        pose.position.y += 0.3 - lowest;
+    }
+    run("four-bar", &creation, state, 600, |_| Vec::new())
 }
 
 // The saved car dropped at 4 m/s, or settled and then driven on its speed drives.
@@ -138,6 +180,7 @@ fn run(
     let mut machine = CpuMachine::new(creation.clone(), 1, state)?;
     let mut samples = Vec::new();
     let (mut deepest, mut settled, mut degraded) = (0.0_f64, 0.0_f64, 0_u64);
+    let (mut closure_gap, mut closure_angle) = (0.0_f64, 0.0_f64);
     let mut reasons = std::collections::BTreeMap::<&str, u64>::new();
     for tick in 1..=ticks {
         let terrain = SoftStepTerrain {
@@ -151,6 +194,8 @@ fn run(
         samples.push(started.elapsed().as_secs_f64() * 1000.0);
         let diagnostics = machine.diagnostics();
         degraded += u64::from(diagnostics.degraded);
+        closure_gap = closure_gap.max(diagnostics.closure_position_error);
+        closure_angle = closure_angle.max(diagnostics.closure_angle_error);
         if let Some(reason) = diagnostics.degraded_reason {
             *reasons.entry(reason).or_default() += 1;
         }
@@ -173,6 +218,9 @@ fn run(
         "settled_m": settled,
         "degraded_ticks": degraded,
         "degraded_reasons": reasons,
+        "closures": creation.dynamics.loops.len(),
+        "closure_gap_m": closure_gap,
+        "closure_angle_rad": closure_angle,
         "travelled_m": (state.poses[0].position - start).with_y(0.0).length(),
         "fastest_final": state.velocities.iter().fold(0.0_f64, |m, v| m.max(v.abs())),
     });

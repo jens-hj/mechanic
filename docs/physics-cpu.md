@@ -26,8 +26,8 @@ for the GPU terrain preparation. Ticks wait for local terrain streaming once per
 floating origin (world entry); after that, terrain still streaming ahead of a
 moving vehicle never holds physics.
 
-A creation the CPU cannot run (closed mechanism loops, for now) is refused with
-a message. An invalid tick input hands the last published state to the GPU
+Closed mechanism loops run on the CPU route, such as a double wishbone closed
+with a Join weld. An invalid tick input hands the last published state to the GPU
 runtime, which keeps simulating until the next construction publication.
 
 ## Soft-step solver
@@ -75,7 +75,36 @@ Row laws:
   friction applies below 0.05 m/s of slip at the start of the tick.
 - **Drives** are clamped to `drive_budget` per substep. **Joint limits** are
   normal rows on the coordinate.
+- **Loop closures** are solved after limits and before contacts (below).
 - Warm-start impulses carry across ticks, keyed by contact feature.
+
+### Closure rows
+
+The compiler turns a loop into a spanning tree plus closure bearings, which have
+no coordinate. Each closure is a set of soft rows between its two bodies, built
+from the same generalized point and angular Jacobians as contacts:
+
+| Closure | Held | Free |
+| --- | --- | --- |
+| Rotational | anchor (3 rows), axis direction (2) | turning about the axis |
+| Linear | rail line (2), orientation (3) | travel, with stop rows at its ends |
+| Suspension | as linear | travel, pushed by the spring and damper |
+
+- **Block solve.** The anchor rows and the orientation rows are each solved
+  as one small block (`J·H⁻¹·Jᵀ`, up to 3 × 3). Separate Gauss–Seidel rows on
+  one anchor converge too slowly at a single pass.
+- **Redundant directions are dropped.** A direction the tree already holds,
+  such as a planar linkage's out-of-plane motion, cancels to rounding noise.
+  Solving it flung a dropped four-bar to the speed limit on its first contact.
+- **Softness.** 60 Hz with damping ratio 2, capped at a quarter of the
+  substep rate. The relaxing pass is unbiased. A loop seeded open closes at no
+  more than 3 m/s instead of snapping shut.
+- **Warm starts.** Impulses carry across ticks, and reset after a degraded
+  tick.
+- **Suspension.** A suspension closure's spring and damper are applied
+  explicitly along its rail.
+- **Diagnostics.** `closure_position_error` and `closure_angle_error` report
+  the widest gap after each tick.
 
 Measured on the saved car (release build, Apple M1 Pro), 600 ticks:
 
@@ -131,7 +160,10 @@ the car crash reaches 2.1 ms while it hits. Slow scenes changed by at most 7%.
 
 Known limits:
 
-- no closed loops
+- closures are soft, so a loaded loop stretches by a few millimetres; a dropped
+  four-bar opened up to about 5 mm on landing
+- drive budgets use the tree's axis inertia, so a driven bearing inside a loop
+  may be stronger or weaker than on the GPU
 - contact normals stay fixed between queries
 - two colliders that pass completely through each other within one substep are
   not caught; terrain is, because a collider below a surface stays buried in it
@@ -171,6 +203,7 @@ cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario car-drop
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario car-drive
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario block-pile
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario fast-impacts
+cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario four-bar
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario reference-fixtures
 ```
 

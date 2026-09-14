@@ -3,7 +3,7 @@
 use std::f64::consts::TAU;
 
 use bevy_math::DVec3;
-use mechanic_core::{CompiledCreation, CoordinateDrive, DriveMode};
+use mechanic_core::{CompiledBearing, CompiledCreation, CoordinateDrive, DriveMode};
 
 use super::{SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
 use crate::{
@@ -19,6 +19,8 @@ pub(super) struct Machine<'a> {
     pub creation: &'a CompiledCreation,
     pub passive: &'a [PassiveForce],
     pub drives: &'a [CoordinateDrive],
+    /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
+    pub closure_passive: &'a [PassiveForce],
 }
 
 /// One contact point, followed through its bodies' motion for the whole tick.
@@ -122,21 +124,364 @@ pub(super) struct PointRows {
     moved: f64,
 }
 
-/// Accumulated joint-limit and drive impulses, persisted across a tick's substeps.
+/// Accumulated joint-limit and drive impulses, persisted across a tick's substeps,
+/// and loop-closure impulses, which the machine carries across ticks.
 pub(super) struct JointImpulses {
     lower: Vec<f64>,
     upper: Vec<f64>,
     drive: Vec<f64>,
+    /// Per closure: three position rows, three orientation rows, then the lower
+    /// and upper rail stops.
+    pub closures: Vec<[f64; 8]>,
 }
 
 impl JointImpulses {
-    pub fn new(coordinates: usize) -> Self {
+    pub fn new(coordinates: usize, closures: Vec<[f64; 8]>) -> Self {
         Self {
             lower: vec![0.0; coordinates],
             upper: vec![0.0; coordinates],
             drive: vec![0.0; coordinates],
+            closures,
         }
     }
+}
+
+/// A loop-closing bearing's frame: where each body holds the joint and how far
+/// the bodies have turned from their authored arrangement.
+struct ClosureFrame {
+    anchor_a: DVec3,
+    anchor_b: DVec3,
+    axis_a: DVec3,
+    axis_b: DVec3,
+    /// Rotation still needed to bring B back to its authored orientation
+    /// relative to A, as a world scaled axis.
+    rotation_error: DVec3,
+}
+
+impl ClosureFrame {
+    fn new(creation: &CompiledCreation, poses: &[BodyPose], bearing: &CompiledBearing) -> Self {
+        let (a, b) = (bearing.compound_a as usize, bearing.compound_b as usize);
+        let (pose_a, pose_b) = (poses[a], poses[b]);
+        let authored = creation.compounds[a].root_rotation.as_dquat().inverse()
+            * creation.compounds[b].root_rotation.as_dquat();
+        let mut delta = (pose_a.rotation * authored * pose_b.rotation.inverse()).normalize();
+        if delta.w < 0.0 {
+            delta = -delta;
+        }
+        Self {
+            anchor_a: pose_a.position + pose_a.rotation * bearing.local_anchor_a.as_dvec3(),
+            anchor_b: pose_b.position + pose_b.rotation * bearing.local_anchor_b.as_dvec3(),
+            axis_a: (pose_a.rotation * bearing.local_axis_a.as_dvec3()).normalize(),
+            axis_b: (pose_b.rotation * bearing.local_axis_b.as_dvec3()).normalize(),
+            rotation_error: delta.to_scaled_axis(),
+        }
+    }
+}
+
+/// Coupled equality rows solved together, with their error and effective mass.
+struct Block {
+    rows: Vec<Row>,
+    errors: Vec<f64>,
+    effective: [[f64; 3]; 3],
+}
+
+impl Block {
+    fn new(rows: Vec<Row>, errors: Vec<f64>) -> Self {
+        let mut effective = [[0.0; 3]; 3];
+        for (i, row) in rows.iter().enumerate() {
+            for (j, other) in rows.iter().enumerate() {
+                effective[i][j] = dot(&row.jacobian, &other.response);
+            }
+        }
+        Self {
+            rows,
+            errors,
+            effective,
+        }
+    }
+
+    // Box2D's soft joint impulse for the whole block. Separate Gauss–Seidel rows
+    // on one anchor converge far too slowly at a single pass.
+    fn solve(
+        &self,
+        velocities: &mut [f64],
+        impulses: &mut [f64],
+        soft: Soft,
+        relax: bool,
+        push_out: f64,
+    ) {
+        let (mass_scale, impulse_scale) = if relax {
+            (1.0, 0.0)
+        } else {
+            (soft.mass_scale, soft.impulse_scale)
+        };
+        let mut bias = [0.0; 3];
+        if !relax {
+            for (bias, error) in bias.iter_mut().zip(&self.errors) {
+                *bias = soft.bias_rate * error;
+            }
+            // An open loop closes at a bounded speed instead of snapping shut.
+            let length = bias.iter().map(|value| value * value).sum::<f64>().sqrt();
+            if length > push_out {
+                for value in &mut bias {
+                    *value *= push_out / length;
+                }
+            }
+        }
+        let mut speed = [0.0; 3];
+        for ((speed, row), bias) in speed.iter_mut().zip(&self.rows).zip(bias) {
+            *speed = row.speed(velocities) + bias;
+        }
+        let solved = solve_block(&self.effective, speed, self.rows.len());
+        for ((row, impulse), solved) in self.rows.iter().zip(impulses.iter_mut()).zip(solved) {
+            let change = -mass_scale * solved - impulse_scale * *impulse;
+            row.apply(velocities, change);
+            *impulse += change;
+        }
+    }
+}
+
+// Solves a symmetric positive semidefinite system of up to three rows. Directions
+// with no effective mass, such as a planar linkage's redundant out-of-plane rows,
+// get no impulse instead of an unbounded one.
+fn solve_block(effective: &[[f64; 3]; 3], rhs: [f64; 3], size: usize) -> [f64; 3] {
+    let scale = (0..size).map(|i| effective[i][i]).fold(0.0_f64, f64::max);
+    let mut solution = [0.0; 3];
+    if scale <= 0.0 {
+        return solution;
+    }
+    let floor = scale * 1e-9;
+    let mut lower = [[0.0; 3]; 3];
+    let mut diagonal = [0.0; 3];
+    for j in 0..size {
+        diagonal[j] = effective[j][j]
+            - (0..j)
+                .map(|p| lower[j][p] * lower[j][p] * diagonal[p])
+                .sum::<f64>();
+        for i in j + 1..size {
+            let value = effective[i][j]
+                - (0..j)
+                    .map(|p| lower[i][p] * lower[j][p] * diagonal[p])
+                    .sum::<f64>();
+            lower[i][j] = if diagonal[j] > floor {
+                value / diagonal[j]
+            } else {
+                0.0
+            };
+        }
+    }
+    let mut forward = [0.0; 3];
+    for i in 0..size {
+        forward[i] = rhs[i] - (0..i).map(|p| lower[i][p] * forward[p]).sum::<f64>();
+    }
+    for i in (0..size).rev() {
+        let scaled = if diagonal[i] > floor {
+            forward[i] / diagonal[i]
+        } else {
+            0.0
+        };
+        solution[i] = scaled
+            - (i + 1..size)
+                .map(|p| lower[p][i] * solution[p])
+                .sum::<f64>();
+    }
+    solution
+}
+
+/// A sliding closure's travel: its coordinate, stops and the rows that hold them.
+struct Rail {
+    /// Rate of the travel coordinate, positive as B moves along A's axis.
+    jacobian: Vec<f64>,
+    position: f64,
+    lower: Option<(Row, f64)>,
+    upper: Option<(Row, f64)>,
+    moved: f64,
+}
+
+/// A bearing that closes a mechanism loop, as soft rows between its two bodies
+/// at one substep's starting pose. Revolute closures hold the anchor and the
+/// axis direction; sliding closures hold the rail line and the orientation, and
+/// stop at their travel.
+pub(super) struct Closure {
+    position: Block,
+    orientation: Block,
+    rail: Option<Rail>,
+}
+
+impl Closure {
+    fn new(
+        creation: &CompiledCreation,
+        model: &MachineDynamics,
+        factor: &DynamicsFactor,
+        bearing: &CompiledBearing,
+        settings: &SoftStepSettings,
+    ) -> Result<Self, PhysicsError> {
+        let (a, b) = (bearing.compound_a as usize, bearing.compound_b as usize);
+        let frame = ClosureFrame::new(creation, &model.poses, bearing);
+        // Each row is A's row minus B's, with the size of the two it came from.
+        let difference = |[mut row, other]: [Vec<f64>; 2]| {
+            let reference = dot(&row, &row) + dot(&other, &other);
+            for (value, other) in row.iter_mut().zip(other) {
+                *value -= other;
+            }
+            (row, reference)
+        };
+        let relative = |direction: DVec3| -> Result<(Vec<f64>, f64), PhysicsError> {
+            Ok(difference([
+                model.point_row(a, frame.anchor_a, direction)?,
+                model.point_row(b, frame.anchor_b, direction)?,
+            ]))
+        };
+        let turning = |direction: DVec3| -> Result<(Vec<f64>, f64), PhysicsError> {
+            Ok(difference([
+                model.angular_row(a, direction)?,
+                model.angular_row(b, direction)?,
+            ]))
+        };
+        let block = |directions: &[DVec3],
+                     row: &dyn Fn(DVec3) -> Result<(Vec<f64>, f64), PhysicsError>,
+                     error: DVec3|
+         -> Result<Block, PhysicsError> {
+            let mut rows = Vec::with_capacity(directions.len());
+            let mut errors = Vec::with_capacity(directions.len());
+            for &direction in directions {
+                let (jacobian, reference) = row(direction)?;
+                // The tree already holds this direction, as a planar linkage holds
+                // its out-of-plane motion: the endpoint rows cancel to rounding
+                // noise, and solving that noise would fling the machine apart.
+                if dot(&jacobian, &jacobian) <= 1e-10 * reference {
+                    continue;
+                }
+                rows.push(Row::new(factor, jacobian)?);
+                errors.push(error.dot(direction));
+            }
+            Ok(Block::new(rows, errors))
+        };
+        let separation = frame.anchor_a - frame.anchor_b;
+        let (u, v) = perpendicular(frame.axis_a);
+        let world = [DVec3::X, DVec3::Y, DVec3::Z];
+        if !bearing.kind.is_translational() {
+            return Ok(Self {
+                position: block(&world, &relative, separation)?,
+                orientation: block(&[u, v], &turning, frame.axis_b.cross(frame.axis_a))?,
+                rail: None,
+            });
+        }
+        let (mut jacobian, _) = relative(frame.axis_a)?;
+        for value in &mut jacobian {
+            *value = -*value;
+        }
+        let position = -separation.dot(frame.axis_a);
+        let [lower, upper] = bearing.kind.bounds().map(f64::from);
+        let stop = |gap: f64, sign: f64| -> Result<Option<(Row, f64)>, PhysicsError> {
+            if gap.is_finite() && gap < settings.speculative {
+                let row = jacobian.iter().map(|value| sign * value).collect();
+                Ok(Some((Row::new(factor, row)?, gap)))
+            } else {
+                Ok(None)
+            }
+        };
+        let rail = Rail {
+            lower: stop(position - lower, 1.0)?,
+            upper: stop(upper - position, -1.0)?,
+            jacobian: jacobian.clone(),
+            position,
+            moved: 0.0,
+        };
+        Ok(Self {
+            position: block(&[u, v], &relative, separation)?,
+            orientation: block(&world, &turning, frame.rotation_error)?,
+            rail: Some(rail),
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.position.rows.len()
+            + self.orientation.rows.len()
+            + self.rail.as_ref().map_or(0, |rail| {
+                usize::from(rail.lower.is_some()) + usize::from(rail.upper.is_some())
+            })
+    }
+
+    fn stops(&self) -> [Option<&(Row, f64)>; 2] {
+        self.rail.as_ref().map_or([None, None], |rail| {
+            [rail.lower.as_ref(), rail.upper.as_ref()]
+        })
+    }
+
+    fn warm_start(&self, velocities: &mut [f64], impulses: &[f64; 8]) {
+        for (row, &impulse) in self.position.rows.iter().zip(&impulses[..3]) {
+            row.apply(velocities, impulse);
+        }
+        for (row, &impulse) in self.orientation.rows.iter().zip(&impulses[3..6]) {
+            row.apply(velocities, impulse);
+        }
+        for (stop, &impulse) in self.stops().into_iter().zip(&impulses[6..]) {
+            if let Some((row, _)) = stop {
+                row.apply(velocities, impulse);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)] // Mirrors `normal`, which the stops share.
+    fn solve(
+        &self,
+        velocities: &mut [f64],
+        impulses: &mut [f64; 8],
+        soft: Soft,
+        relax: bool,
+        dt: f64,
+        settings: &SoftStepSettings,
+    ) {
+        let [position, orientation, stops] = impulses.get_disjoint_mut([0..3, 3..6, 6..8]).unwrap();
+        self.position
+            .solve(velocities, position, soft, relax, settings.push_out);
+        self.orientation
+            .solve(velocities, orientation, soft, relax, settings.push_out);
+        let moved = self.rail.as_ref().map_or(0.0, |rail| rail.moved);
+        for ((stop, impulse), sign) in self.stops().into_iter().zip(stops).zip([1.0, -1.0]) {
+            if let Some((row, gap)) = stop {
+                let gap = gap + if relax { sign * moved } else { 0.0 };
+                normal(row, velocities, gap, impulse, soft, relax, dt, settings);
+            }
+        }
+    }
+}
+
+fn perpendicular(axis: DVec3) -> (DVec3, DVec3) {
+    let reference = if axis.y.abs() > 0.9 {
+        DVec3::X
+    } else {
+        DVec3::Y
+    };
+    let u = reference.cross(axis).normalize();
+    (u, axis.cross(u))
+}
+
+/// The widest gap and misalignment across loop-closing bearings at a pose, in
+/// metres and radians. A sliding closure's travel along its rail is not a gap.
+pub(super) fn closure_errors(creation: &CompiledCreation, poses: &[BodyPose]) -> (f64, f64) {
+    creation
+        .dynamics
+        .loops
+        .iter()
+        .fold((0.0_f64, 0.0_f64), |(gap, angle), pattern| {
+            let bearing = &creation.bearings[pattern.bearing];
+            let frame = ClosureFrame::new(creation, poses, bearing);
+            let separation = frame.anchor_a - frame.anchor_b;
+            let (distance, misalignment) = if bearing.kind.is_translational() {
+                (
+                    (separation - frame.axis_a * separation.dot(frame.axis_a)).length(),
+                    frame.rotation_error.length(),
+                )
+            } else {
+                (
+                    separation.length(),
+                    frame.axis_a.angle_between(frame.axis_b),
+                )
+            };
+            (gap.max(distance), angle.max(misalignment))
+        })
 }
 
 struct Row {
@@ -250,6 +595,27 @@ pub(super) fn substep(
         .iter()
         .map(|contact| contact.rows(&model, &factor))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut closures = creation
+        .dynamics
+        .loops
+        .iter()
+        .map(|pattern| {
+            Closure::new(
+                creation,
+                &model,
+                &factor,
+                &creation.bearings[pattern.bearing],
+                settings,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (closure, impulses) in closures.iter().zip(&mut joints.closures) {
+        for (stop, impulse) in closure.stops().into_iter().zip(&mut impulses[6..]) {
+            if stop.is_none() {
+                *impulse = 0.0;
+            }
+        }
+    }
     // Approach and slip before forces act decide restitution and the friction
     // mode, once per contact: at the tick's first substep or after a re-query.
     for (contact, point) in contacts.iter_mut().zip(&points) {
@@ -276,6 +642,15 @@ pub(super) fn substep(
         force[row] +=
             machine.passive[coordinate].force(state.coordinates[coordinate], state.velocities[row]);
     }
+    // A suspension closing a loop pushes along its rail, explicitly.
+    for (closure, passive) in closures.iter().zip(machine.closure_passive) {
+        if let Some(rail) = &closure.rail {
+            let push = passive.force(rail.position, dot(&rail.jacobian, &state.velocities));
+            for (value, rate) in force.iter_mut().zip(&rail.jacobian) {
+                *value += push * rate;
+            }
+        }
+    }
     for value in &mut force {
         *value *= dt;
     }
@@ -285,8 +660,10 @@ pub(super) fn substep(
     }
 
     let (mut limits, drives) = joint_rows(machine, state, joints, &factor, dt, settings)?;
-    diagnostics.rows =
-        points.iter().map(|point| point.rows.len()).sum::<usize>() + limits.len() + drives.len();
+    diagnostics.rows = points.iter().map(|point| point.rows.len()).sum::<usize>()
+        + limits.len()
+        + drives.len()
+        + closures.iter().map(Closure::len).sum::<usize>();
 
     // Warm start with the impulses the previous substep settled on.
     for (contact, point) in contacts.iter().zip(&points) {
@@ -304,10 +681,18 @@ pub(super) fn substep(
         *impulse = impulse.clamp(-drive.capacity, drive.capacity);
         drive.row.apply(&mut state.velocities, *impulse);
     }
+    for (closure, impulses) in closures.iter().zip(&joints.closures) {
+        closure.warm_start(&mut state.velocities, impulses);
+    }
 
     let soft = Soft::new(
         settings.contact_hertz.min(0.25 / dt),
         settings.damping_ratio,
+        dt,
+    );
+    let joint_soft = Soft::new(
+        settings.joint_hertz.min(0.25 / dt),
+        settings.joint_damping_ratio,
         dt,
     );
     // A contact arriving from beyond one substep's continuous travel needs
@@ -331,9 +716,10 @@ pub(super) fn substep(
             &points,
             &limits,
             &drives,
+            &closures,
             joints,
             &mut state.velocities,
-            soft,
+            [soft, joint_soft],
             false,
             dt,
             settings,
@@ -357,15 +743,22 @@ pub(super) fn substep(
     for limit in &mut limits {
         limit.moved = advanced * limit.row.speed(&state.velocities);
     }
+    for rail in closures
+        .iter_mut()
+        .filter_map(|closure| closure.rail.as_mut())
+    {
+        rail.moved = advanced * dot(&rail.jacobian, &state.velocities);
+    }
     for _ in 0..relax_iterations {
         pass(
             contacts,
             &points,
             &limits,
             &drives,
+            &closures,
             joints,
             &mut state.velocities,
-            soft,
+            [soft, joint_soft],
             true,
             dt,
             settings,
@@ -581,9 +974,10 @@ fn pass(
     points: &[PointRows],
     limits: &[Limit],
     drives: &[Drive],
+    closures: &[Closure],
     joints: &mut JointImpulses,
     velocities: &mut [f64],
-    soft: Soft,
+    [soft, joint_soft]: [Soft; 2],
     relax: bool,
     dt: f64,
     settings: &SoftStepSettings,
@@ -601,6 +995,11 @@ fn pass(
         normal(
             &limit.row, velocities, gap, impulse, soft, relax, dt, settings,
         );
+    }
+    // Joints before contacts: a loop that pulls apart shows more than a contact
+    // that gives a little.
+    for (closure, impulses) in closures.iter().zip(&mut joints.closures) {
+        closure.solve(velocities, impulses, joint_soft, relax, dt, settings);
     }
     for (contact, point) in contacts.iter_mut().zip(points) {
         let separation = point.separation + if relax { point.moved } else { 0.0 };

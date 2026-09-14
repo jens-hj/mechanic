@@ -357,6 +357,178 @@ fn suspension(spec: SuspensionSpec, anchored: bool) -> CompiledCreation {
         .unwrap()
 }
 
+// A planar parallelogram 2 m above the floor: a 2 m ground bar, two 1.5 m cranks
+// on Z bearings and a coupler whose second bearing closes the loop.
+fn four_bar(anchored: bool) -> CompiledCreation {
+    let mut graph = ConstructionGraph::new();
+    let height = IVec3::Y * 800;
+    let ground = spawn(&mut graph, height, [8, 1, 1]);
+    let left = spawn(&mut graph, height + IVec3::new(-350, 250, 100), [1, 6, 1]);
+    let right = spawn(&mut graph, height + IVec3::new(350, 250, 100), [1, 6, 1]);
+    let coupler = spawn(&mut graph, height + IVec3::new(0, 500, 200), [8, 1, 1]);
+    let hinge = |source, target, anchor: Vec3| {
+        BuildCommand::AddBearing(BearingSpec::new(
+            FaceRef::part(source, FaceKind::PositiveZ),
+            FaceRef::part(target, FaceKind::NegativeZ),
+            anchor + Vec3::Y * 2.0,
+            Vec3::Z,
+        ))
+    };
+    graph
+        .apply_batch([
+            hinge(ground, left, Vec3::new(-0.875, 0.0, 0.125)),
+            hinge(ground, right, Vec3::new(0.875, 0.0, 0.125)),
+            hinge(left, coupler, Vec3::new(-0.875, 1.25, 0.375)),
+            hinge(right, coupler, Vec3::new(0.875, 1.25, 0.375)),
+        ])
+        .unwrap();
+    let creation = graph
+        .compile_with_static_parts(if anchored { vec![ground] } else { vec![] })
+        .unwrap();
+    assert_eq!(creation.dynamics.loops.len(), 1);
+    creation
+}
+
+// A 1 m block carrying a 1 m plate on two parallel suspensions, one of which
+// closes a loop.
+fn twin_suspension(spec: SuspensionSpec) -> CompiledCreation {
+    let mut graph = ConstructionGraph::new();
+    let root = spawn(&mut graph, IVec3::ZERO, [4, 4, 4]);
+    #[allow(clippy::cast_possible_truncation)] // Bounded fixture spacing on the lattice.
+    let spacing = ((spec.initial_length() + 0.625) / 0.0025).round() as i32;
+    let plate = spawn(&mut graph, IVec3::Y * spacing, [4, 1, 4]);
+    let strut = |x: f32| {
+        BuildCommand::AddBearing(
+            BearingSpec::new(
+                FaceRef::part(root, FaceKind::PositiveY),
+                FaceRef::part(plate, FaceKind::NegativeY),
+                Vec3::new(x, 0.5, 0.0),
+                Vec3::Y,
+            )
+            .with_kind(BearingKind::Suspension(spec)),
+        )
+    };
+    graph.apply_batch([strut(-0.25), strut(0.25)]).unwrap();
+    let creation = graph.compile_with_static_parts(vec![root]).unwrap();
+    assert_eq!(creation.dynamics.loops.len(), 1);
+    creation
+}
+
+// Runs `ticks` and returns the widest closure gap and misalignment seen.
+fn worst_closure(world: &mut World, ticks: usize, mut each: impl FnMut(&World)) -> (f64, f64) {
+    let mut worst = (0.0_f64, 0.0_f64);
+    for _ in 0..ticks {
+        world.tick(GRAVITY);
+        let diagnostics = world.machine.diagnostics();
+        worst = (
+            worst.0.max(diagnostics.closure_position_error),
+            worst.1.max(diagnostics.closure_angle_error),
+        );
+        each(world);
+    }
+    worst
+}
+
+#[test]
+fn a_four_bar_swings_under_gravity_and_stays_closed() {
+    let creation = four_bar(true);
+    let mut state = MachineState::at_rest(&creation);
+    state.velocities[creation.dynamics.coordinate_velocities[0]] = 0.5;
+    let mut world = World::new(creation, state);
+    let start = world.machine.snapshot().state.poses.clone();
+
+    // A swing through the bottom can return near its start, so track the peak.
+    let mut moved = 0.0_f64;
+    let worst = worst_closure(&mut world, 180, |world| {
+        for (now, then) in world.machine.snapshot().state.poses.iter().zip(&start) {
+            moved = moved.max(now.position.distance(then.position));
+        }
+    });
+
+    assert!(moved > 0.3, "the linkage barely moved: {moved} m");
+    assert!(
+        worst.0 < 0.005 && worst.1 < 1_f64.to_radians(),
+        "the loop opened: {worst:?}"
+    );
+}
+
+#[test]
+fn a_free_four_bar_lands_on_the_floor_and_stays_closed() {
+    let creation = four_bar(false);
+    let state = lifted(&creation, 0.3);
+    let mut world = World::new(creation, state);
+
+    let worst = worst_closure(&mut world, 240, |world| {
+        let state = &world.machine.snapshot().state;
+        let clearance = clearance(world.creation(), state);
+        assert!(clearance > -0.02, "sank {clearance} m into the floor");
+    });
+
+    assert!(
+        worst.0 < 0.005 && worst.1 < 1_f64.to_radians(),
+        "the loop opened: {worst:?}"
+    );
+}
+
+#[test]
+fn a_loop_seeded_open_closes_without_flying_apart() {
+    let creation = four_bar(true);
+    let mut state = MachineState::at_rest(&creation);
+    state.coordinates[0] = 0.05;
+    let mut world = World::new(creation, state);
+
+    let mut fastest_seen = 0.0_f64;
+    worst_closure(&mut world, 60, |world| {
+        fastest_seen = fastest_seen.max(fastest(&world.machine.snapshot().state));
+    });
+
+    let settled = world.machine.diagnostics().closure_position_error;
+    assert!(settled < 0.005, "still {settled} m open after a second");
+    assert!(fastest_seen < 10.0, "closing flung it at {fastest_seen}");
+}
+
+#[test]
+fn two_parallel_suspensions_share_their_load() {
+    let spring = SpringSpec::new(0.5, 0.16, 0.12, 6, 0.0).unwrap();
+    let shock = ShockSpec::new(0.5, 0.1, ShockBodyEnd::Source, 0.0, 20.0, 20.0).unwrap();
+    let spec = SuspensionSpec::new(Some(spring), Some(shock), None).unwrap();
+    let creation = twin_suspension(spec);
+    // Both springs carry the plate, so each compresses half as far as one would.
+    let expected = f64::from(spec.passive_rows()[0][1])
+        - f64::from(creation.compounds[1].mass_properties.mass) * 9.81
+            / (2.0 * f64::from(spring.rate()));
+    let state = MachineState::at_rest(&creation);
+    let mut world = World::new(creation, state);
+
+    let worst = worst_closure(&mut world, 360, |_| {});
+
+    let state = &world.machine.snapshot().state;
+    assert!(
+        (state.coordinates[0] - expected).abs() < 0.005,
+        "{} expected {expected}",
+        state.coordinates[0]
+    );
+    assert!(fastest(state) < 0.05, "still moving at {}", fastest(state));
+    assert!(
+        worst.0 < 0.005 && worst.1 < 1_f64.to_radians(),
+        "the struts parted: {worst:?}"
+    );
+}
+
+#[test]
+fn a_looped_machine_repeats_exactly_from_identical_inputs() {
+    let run = || {
+        let creation = four_bar(false);
+        let state = lifted(&creation, 0.3);
+        let mut world = World::new(creation, state);
+        for _ in 0..90 {
+            world.tick(GRAVITY);
+        }
+        world.machine.snapshot().state_hash()
+    };
+    assert_eq!(run(), run());
+}
+
 // Two 1 m blocks joined by a revolute bearing along X.
 fn rotor(anchored: bool) -> CompiledCreation {
     let mut graph = ConstructionGraph::new();

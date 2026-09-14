@@ -103,9 +103,9 @@ impl CpuRoute {
     ) -> Result<Self, String> {
         let state = machine_state(creation, transforms, velocities, coordinates)?;
         let geometry = mechanic_physics::MachineCollisionGeometry::new(creation, generation)
-            .map_err(|error| unsupported(creation, &error))?;
+            .map_err(|error| unsupported(&error))?;
         let machine = CpuMachine::new(creation.clone(), generation, state)
-            .map_err(|error| unsupported(creation, &error))?;
+            .map_err(|error| unsupported(&error))?;
         Ok(Self {
             machine,
             creation: creation.clone(),
@@ -315,17 +315,10 @@ impl CpuRoute {
 }
 
 /// Names what the CPU solver cannot run, in the user's terms.
-fn unsupported(creation: &CompiledCreation, error: &PhysicsError) -> String {
-    let detail = match error {
-        PhysicsError::UnsupportedJointLoops => format!(
-            "it closes {} mechanism loop(s). The CPU solver runs tree mechanisms only",
-            creation.dynamics.loops.len()
-        ),
-        other => format!("the CPU solver rejected it: {other}"),
-    };
+fn unsupported(error: &PhysicsError) -> String {
     format!(
-        "MECHANIC_PHYSICS=cpu cannot run this creation because {detail}. \
-         Unset the variable, or set MECHANIC_PHYSICS=gpu, to run the shipping solver."
+        "MECHANIC_PHYSICS=cpu cannot run this creation because the CPU solver rejected it: \
+         {error}. Unset the variable, or set MECHANIC_PHYSICS=gpu, to run the shipping solver."
     )
 }
 
@@ -838,16 +831,94 @@ mod tests {
 
     #[test]
     fn an_unsupported_creation_is_refused_with_a_message_naming_the_route() {
-        let creation = cube();
-        let loops = unsupported(&creation, &PhysicsError::UnsupportedJointLoops);
-        assert!(loops.contains("MECHANIC_PHYSICS=cpu cannot run"), "{loops}");
-        assert!(loops.contains("tree mechanisms only"), "{loops}");
-        assert!(loops.contains("MECHANIC_PHYSICS=gpu"), "{loops}");
+        let message = unsupported(&PhysicsError::InvalidCollision);
+        assert!(
+            message.contains("MECHANIC_PHYSICS=cpu cannot run"),
+            "{message}"
+        );
+        assert!(message.contains("the CPU solver rejected it"), "{message}");
+        assert!(message.contains("MECHANIC_PHYSICS=gpu"), "{message}");
+    }
 
-        // Anything else still names the route and the way back to the GPU.
-        let other = unsupported(&creation, &PhysicsError::InvalidCollision);
-        assert!(other.contains("the CPU solver rejected it"), "{other}");
-        assert!(other.contains("MECHANIC_PHYSICS=gpu"), "{other}");
+    #[test]
+    fn a_closed_loop_creation_publishes_on_the_cpu_route() {
+        use bevy::math::{IVec3, Vec3};
+        use mechanic_core::{BearingSpec, BuildOutcome, FaceKind, FaceRef, GridRotation};
+
+        // A parallelogram whose coupler's second bearing closes a loop.
+        let mut graph = ConstructionGraph::new();
+        let mut spawn = |ticks: IVec3, dimensions: [u8; 3]| {
+            let BuildOutcome::Spawned(part) = graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(
+                        dimensions,
+                        BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                    )
+                    .unwrap(),
+                ))
+                .unwrap()
+            else {
+                panic!("spawn expected");
+            };
+            part
+        };
+        let height = IVec3::Y * 800;
+        let ground = spawn(height, [8, 1, 1]);
+        let left = spawn(height + IVec3::new(-350, 250, 100), [1, 6, 1]);
+        let right = spawn(height + IVec3::new(350, 250, 100), [1, 6, 1]);
+        let coupler = spawn(height + IVec3::new(0, 500, 200), [8, 1, 1]);
+        for (source, target, anchor) in [
+            (ground, left, Vec3::new(-0.875, 2.0, 0.125)),
+            (ground, right, Vec3::new(0.875, 2.0, 0.125)),
+            (left, coupler, Vec3::new(-0.875, 3.25, 0.375)),
+            (right, coupler, Vec3::new(0.875, 3.25, 0.375)),
+        ] {
+            graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(source, FaceKind::PositiveZ),
+                    FaceRef::part(target, FaceKind::NegativeZ),
+                    anchor,
+                    Vec3::Z,
+                )))
+                .unwrap();
+        }
+        let creation = graph.compile().unwrap();
+        assert_eq!(creation.dynamics.loops.len(), 1);
+        let transforms = creation
+            .compounds
+            .iter()
+            .map(|body| GpuTransform {
+                position: body.root_translation.extend(0.0).to_array(),
+                rotation: body.root_rotation.to_array(),
+            })
+            .collect::<Vec<_>>();
+        let velocities = vec![
+            GpuVelocity {
+                linear: [0.0; 4],
+                angular: [0.0; 4],
+            };
+            transforms.len()
+        ];
+        let coordinates = vec![
+            GpuMechanismCoordinate {
+                position: 0.0,
+                velocity: 0.0,
+            };
+            creation.dynamics.coordinate_velocities.len()
+        ];
+
+        let mut route =
+            CpuRoute::new(&creation, 7, 0, &transforms, &velocities, &coordinates).unwrap();
+        route.publish_terrain([&floor()], DVec3::ZERO).unwrap();
+        let mut completed = None;
+        for tick in 1..=60 {
+            completed = Some(route.step(tick, gravity(), &[], &[]).unwrap());
+        }
+        let completed = completed.unwrap();
+        assert!(
+            completed.transforms[0].position[1] < transforms[0].position[1],
+            "the linkage should fall"
+        );
     }
 
     #[test]

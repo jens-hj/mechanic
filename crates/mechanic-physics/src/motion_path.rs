@@ -80,7 +80,8 @@ impl<'a> MachineMotion<'a> {
     /// Generalized displacement uses the same row order as state velocities.
     ///
     /// # Errors
-    /// Rejects loops, invalid state/dimensions, non-finite motion, or overflow.
+    /// Rejects invalid state/dimensions, non-finite motion, or overflow. A closed
+    /// loop follows its tree path; closure equations are not projected.
     #[allow(clippy::too_many_lines)] // Root and joint bounds follow the same ordered reconstruction schedule.
     pub fn new(
         creation: &'a CompiledCreation,
@@ -88,9 +89,6 @@ impl<'a> MachineMotion<'a> {
         initial: &'a MachineState,
         displacement: &'a [f64],
     ) -> Result<Self, PhysicsError> {
-        if !creation.dynamics.loops.is_empty() {
-            return Err(PhysicsError::UnsupportedJointLoops);
-        }
         if displacement.len() != creation.dynamics.elimination_parent.len()
             || displacement.iter().any(|value| !value.is_finite())
             || initial.velocities.len() != displacement.len()

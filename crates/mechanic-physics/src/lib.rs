@@ -4,7 +4,7 @@
 //! publishes. [`reference`] holds the exact solver, which publishes only when the
 //! original contact laws hold and serves as an offline checker. Both share the
 //! reduced-coordinate machine model, joint force laws and collision geometry.
-//! Closed mechanism loops are not supported yet.
+//! The soft-step solver runs closed mechanism loops; the exact reference does not.
 
 mod free_motion;
 mod joint_forces;

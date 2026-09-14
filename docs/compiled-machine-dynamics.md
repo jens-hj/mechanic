@@ -111,7 +111,8 @@ external clock:
 
 Open architecture work towards those targets:
 
-- loop constraints on the CPU
+- exact loop constraints on the CPU (the soft-step solver closes loops with soft
+  rows; see [CPU physics](physics-cpu.md#closure-rows))
 - compound broadphase and sleeping islands
 - persistent construction and terrain rendering with interpolation
 - a portable GPU port of whichever CPU formulation proves out
