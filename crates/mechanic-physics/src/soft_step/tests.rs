@@ -16,7 +16,201 @@ use mechanic_world::TerrainMaterial;
 const GRAVITY: DVec3 = DVec3::new(0.0, -9.81, 0.0);
 const GENERATION: u64 = 7;
 
-/// A machine on a 128 m rock floor.
+// The 128 m rock floor, optionally with a 128 m wall at `wall` metres facing −X.
+fn ground(wall: Option<f32>) -> std::sync::Arc<mechanic_world::TerrainCollisionChunk> {
+    let mut chunk = terrain([TerrainMaterial::Rock; 2]);
+    let expanded = std::sync::Arc::make_mut(&mut chunk);
+    for vertex in &mut expanded.vertices {
+        vertex[0] *= 64.0;
+        vertex[2] *= 64.0;
+    }
+    expanded.bounds.minimum.0 *= 64.0;
+    expanded.bounds.maximum.0 *= 64.0;
+    if let Some(x) = wall {
+        // Mapping (x, y, z) to (wall, x, z) keeps the winding, so the floor's
+        // upward normal becomes −X.
+        let offset = u32::try_from(expanded.vertices.len()).unwrap();
+        let floor = expanded.vertices.clone();
+        expanded
+            .vertices
+            .extend(floor.iter().map(|vertex| [x, vertex[0], vertex[2]]));
+        let weights = expanded.material_weights.clone();
+        expanded.material_weights.extend(weights);
+        let indices = expanded.indices.clone();
+        expanded
+            .indices
+            .extend(indices.iter().map(|index| index + offset));
+        let triangles = expanded.triangle_bvh.triangles.clone();
+        expanded
+            .triangle_bvh
+            .triangles
+            .extend(triangles.into_iter().map(|mut triangle| {
+                triangle.indices = triangle.indices.map(|index| index + offset);
+                triangle
+            }));
+        expanded.bounds.minimum.0.y = -64.0;
+        expanded.bounds.maximum.0.y = 64.0;
+    }
+    expanded.triangle_bvh.bounds = expanded.bounds;
+    expanded.triangle_bvh.nodes[0].bounds = expanded.bounds;
+    expanded.triangle_bvh.nodes[0].triangle_count =
+        expanded.triangle_bvh.triangles.len().try_into().unwrap();
+    chunk
+}
+
+// Corners of the box around every collider.
+fn extent(creation: &CompiledCreation, state: &MachineState) -> [DVec3; 2] {
+    collision_shapes(creation).into_iter().fold(
+        [DVec3::INFINITY, DVec3::NEG_INFINITY],
+        |[low, high], (body, shape)| {
+            let pose = state.poses[body];
+            let [minimum, maximum] = shape
+                .transformed(pose.position, pose.rotation)
+                .unwrap()
+                .bounds();
+            [low.min(minimum), high.max(maximum)]
+        },
+    )
+}
+
+// One cuboid of the given block dimensions.
+fn block(dimensions: [u8; 3]) -> CompiledCreation {
+    let mut graph = ConstructionGraph::new();
+    spawn(&mut graph, IVec3::ZERO, dimensions);
+    graph.compile().unwrap()
+}
+
+// A creation at rest with its lowest point `height` above the floor.
+fn lifted(creation: &CompiledCreation, height: f64) -> MachineState {
+    let mut state = MachineState::at_rest(creation);
+    let lowest = clearance(creation, &state);
+    for pose in &mut state.poses {
+        pose.position.y += height - lowest;
+    }
+    state
+}
+
+fn launch(
+    creation: &CompiledCreation,
+    state: &mut MachineState,
+    body: usize,
+    linear: DVec3,
+    angular: DVec3,
+) {
+    let rows = creation.dynamics.body_velocities[body].clone();
+    state.velocities[rows].copy_from_slice(&[
+        linear.x, linear.y, linear.z, angular.x, angular.y, angular.z,
+    ]);
+}
+
+#[test]
+fn a_very_fast_cube_never_ends_below_the_floor() {
+    for speed in [30.0, 60.0, 120.0, 250.0] {
+        let creation = block([1, 1, 1]);
+        let mut state = lifted(&creation, 2.0);
+        launch(&creation, &mut state, 0, DVec3::NEG_Y * speed, DVec3::ZERO);
+        let mut world = World::new(creation, state);
+        for tick in 1..=60 {
+            let state = world.tick(GRAVITY);
+            let clearance = clearance(world.creation(), &state);
+            assert!(
+                clearance > -0.05,
+                "{speed} m/s, tick {tick}: clearance {clearance}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_fast_cube_grazing_the_floor_stays_above_it() {
+    let creation = block([1, 1, 1]);
+    let mut state = lifted(&creation, 1.0);
+    let angle = 20.0_f64.to_radians();
+    let velocity = DVec3::new(angle.cos(), -angle.sin(), 0.0) * 120.0;
+    launch(&creation, &mut state, 0, velocity, DVec3::ZERO);
+    let mut world = World::new(creation, state);
+    for tick in 1..=25 {
+        let state = world.tick(GRAVITY);
+        let clearance = clearance(world.creation(), &state);
+        assert!(clearance > -0.05, "tick {tick}: clearance {clearance}");
+    }
+}
+
+#[test]
+fn a_fast_cube_does_not_pass_through_a_steep_wall() {
+    let creation = block([1, 1, 1]);
+    let mut state = lifted(&creation, 0.5);
+    launch(&creation, &mut state, 0, DVec3::X * 100.0, DVec3::ZERO);
+    let mut world = World::with_wall(creation, state, 5.0);
+    for tick in 1..=60 {
+        let state = world.tick(GRAVITY);
+        let front = extent(world.creation(), &state)[1].x;
+        assert!(front < 5.05, "tick {tick}: front {front}");
+    }
+}
+
+#[test]
+fn a_fast_spinning_bar_does_not_pass_through_the_floor() {
+    let creation = block([8, 1, 1]);
+    let mut state = lifted(&creation, 0.5);
+    launch(
+        &creation,
+        &mut state,
+        0,
+        DVec3::NEG_Y * 5.0,
+        DVec3::Z * 60.0,
+    );
+    let mut world = World::new(creation, state);
+    for tick in 1..=60 {
+        let state = world.tick(GRAVITY);
+        let clearance = clearance(world.creation(), &state);
+        assert!(clearance > -0.05, "tick {tick}: clearance {clearance}");
+    }
+}
+
+#[test]
+fn a_fast_projectile_neither_passes_through_nor_pushes_its_target_through_the_floor() {
+    let creation = loose_cubes();
+    let mut state = MachineState {
+        poses: vec![pose(DVec3::Y * 0.501), pose(DVec3::Y * 4.0)],
+        ..MachineState::at_rest(&creation)
+    };
+    launch(&creation, &mut state, 1, DVec3::NEG_Y * 80.0, DVec3::ZERO);
+    let mut world = World::new(creation, state);
+    for tick in 1..=60 {
+        let state = world.tick(GRAVITY);
+        let clearance = clearance(world.creation(), &state);
+        let gap = state.poses[1].position.y - state.poses[0].position.y;
+        assert!(
+            clearance > -0.05 && gap > 0.95,
+            "tick {tick}: clearance {clearance}, gap {gap}"
+        );
+    }
+}
+
+#[test]
+fn a_car_crashing_into_a_wall_stays_in_front_of_it() {
+    let (creation, mut state) = saved_car();
+    let front = extent(&creation, &state)[1].x;
+    for body in 0..creation.compounds.len() {
+        if creation.loop_topology.body_parents[body].is_root {
+            launch(&creation, &mut state, body, DVec3::X * 40.0, DVec3::ZERO);
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)] // A wall a few metres from the origin.
+    let wall = (front + 6.0) as f32;
+    let mut world = World::with_wall(creation, state, wall);
+    for tick in 1..=90 {
+        let state = world.tick(GRAVITY);
+        let front = extent(world.creation(), &state)[1].x;
+        assert!(
+            front < f64::from(wall) + 0.05,
+            "tick {tick}: front {front}, wall {wall}"
+        );
+    }
+}
+
+/// A machine on a 128 m rock floor, optionally facing a wall.
 struct World {
     scene: TerrainContactScene,
     geometry: MachineCollisionGeometry,
@@ -26,18 +220,16 @@ struct World {
 
 impl World {
     fn new(creation: CompiledCreation, state: MachineState) -> Self {
-        let mut chunk = terrain([TerrainMaterial::Rock; 2]);
-        let expanded = std::sync::Arc::make_mut(&mut chunk);
-        for vertex in &mut expanded.vertices {
-            vertex[0] *= 64.0;
-            vertex[2] *= 64.0;
-        }
-        expanded.bounds.minimum.0 *= 64.0;
-        expanded.bounds.maximum.0 *= 64.0;
-        expanded.triangle_bvh.bounds = expanded.bounds;
-        expanded.triangle_bvh.nodes[0].bounds = expanded.bounds;
+        Self::on(creation, state, None)
+    }
+
+    fn with_wall(creation: CompiledCreation, state: MachineState, wall: f32) -> Self {
+        Self::on(creation, state, Some(wall))
+    }
+
+    fn on(creation: CompiledCreation, state: MachineState, wall: Option<f32>) -> Self {
         let mut scene = TerrainContactScene::default();
-        scene.publish(1, &[chunk], &[]).unwrap();
+        scene.publish(1, &[ground(wall)], &[]).unwrap();
         Self {
             scene,
             geometry: MachineCollisionGeometry::new(&creation, GENERATION).unwrap(),

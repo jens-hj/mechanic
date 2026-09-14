@@ -168,6 +168,16 @@ struct Collider {
     radius: f64,
 }
 
+impl MachineCollisionGeometry {
+    /// Body and conservative radius about the body origin of every collider row,
+    /// in row order.
+    pub(crate) fn collider_reach(&self) -> impl ExactSizeIterator<Item = (usize, f64)> + '_ {
+        self.colliders
+            .iter()
+            .map(|collider| (collider.body, collider.radius))
+    }
+}
+
 /// Immutable local collider data compiled once for a construction generation.
 pub struct MachineCollisionGeometry {
     generation: u64,
@@ -468,7 +478,26 @@ impl TerrainContactScene {
         origin: DVec3,
         margin: f64,
     ) -> Result<TerrainContactQuery, PhysicsError> {
-        self.query(machine, poses, origin, margin, QueryKind::Surface)
+        self.query(
+            machine,
+            poses,
+            origin,
+            &vec![margin; machine.colliders.len()],
+            QueryKind::Surface,
+        )
+    }
+
+    /// Like [`Self::proximity`], with one margin per compiled collider row, so a
+    /// fast collider reaches far without widening the query for resting ones. A
+    /// collider pair uses the larger of its two margins.
+    pub(crate) fn proximity_margins(
+        &self,
+        machine: &MachineCollisionGeometry,
+        poses: &[BodyPose],
+        origin: DVec3,
+        margins: &[f64],
+    ) -> Result<TerrainContactQuery, PhysicsError> {
+        self.query(machine, poses, origin, margins, QueryKind::Surface)
     }
 
     // Preserve actual intersection manifolds. Only separated pairs need the
@@ -483,7 +512,7 @@ impl TerrainContactScene {
             machine,
             poses,
             origin,
-            CONTACT_ACTIVATION_DISTANCE,
+            &vec![CONTACT_ACTIVATION_DISTANCE; machine.colliders.len()],
             QueryKind::Activation,
         )
     }
@@ -498,7 +527,7 @@ impl TerrainContactScene {
             machine,
             poses,
             origin,
-            CONTACT_ACTIVATION_DISTANCE,
+            &vec![CONTACT_ACTIVATION_DISTANCE; machine.colliders.len()],
             QueryKind::Recovery,
         )
     }
@@ -509,13 +538,15 @@ impl TerrainContactScene {
         machine: &MachineCollisionGeometry,
         poses: &[BodyPose],
         origin: DVec3,
-        margin: f64,
+        margins: &[f64],
         kind: QueryKind,
     ) -> Result<TerrainContactQuery, PhysicsError> {
         if poses.len() != machine.bodies
             || !origin.is_finite()
-            || !margin.is_finite()
-            || margin < 0.0
+            || margins.len() != machine.colliders.len()
+            || margins
+                .iter()
+                .any(|margin| !margin.is_finite() || *margin < 0.0)
         {
             return Err(PhysicsError::InvalidCollision);
         }
@@ -535,6 +566,7 @@ impl TerrainContactScene {
             if !collider.moving {
                 continue;
             }
+            let margin = margins[collider_row];
             let pose = poses[collider.body];
             let shape = &shapes[collider_row];
             let center = pose.position + pose.rotation * collider.center;
@@ -636,19 +668,28 @@ impl TerrainContactScene {
         // Bodies of one construction against each other. Terrain triangles above
         // are one-sided surfaces; here both sides are solids, and one separating
         // axis per pair selects the single face or edge that supplies the normal.
-        let reach = match kind {
-            QueryKind::Surface => margin,
+        let reach = |row: usize| match kind {
+            QueryKind::Surface => margins[row],
             QueryKind::Activation | QueryKind::Recovery => PAIR_ACTIVATION_DISTANCE,
         };
         let bounds = shapes
             .iter()
-            .map(|shape| {
+            .enumerate()
+            .map(|(row, shape)| {
                 let [minimum, maximum] = shape.bounds();
-                [minimum - DVec3::splat(reach), maximum + DVec3::splat(reach)]
+                [
+                    minimum - DVec3::splat(reach(row)),
+                    maximum + DVec3::splat(reach(row)),
+                ]
             })
             .collect::<Vec<_>>();
         for [first, second] in machine.candidate_pairs(&bounds) {
             result.collider_pair_candidates += 1;
+            let reach = match kind {
+                // The faster collider's margin already covers its own travel.
+                QueryKind::Surface => margins[first].max(margins[second]),
+                QueryKind::Activation | QueryKind::Recovery => PAIR_ACTIVATION_DISTANCE,
+            };
             let separation = shapes[first]
                 .convex_separation(&shapes[second])
                 .map_err(|_| PhysicsError::InvalidCollision)?;
@@ -656,7 +697,7 @@ impl TerrainContactScene {
                 continue;
             }
             let (receiving, opposing, points) =
-                pair_points(&shapes, [first, second], separation, kind, margin)?;
+                pair_points(&shapes, [first, second], separation, kind, reach)?;
             let collider = &machine.colliders[receiving];
             let pose = poses[collider.body];
             let center = pose.position + pose.rotation * collider.center;

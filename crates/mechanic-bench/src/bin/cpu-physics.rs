@@ -1,7 +1,7 @@
 //! CPU physics quality report. Prints JSONL and always exits successfully:
 //! solver quality is tracked here, not gated in `cargo test`.
 
-use std::{error::Error, fs, path::Path, time::Instant};
+use std::{collections::BTreeMap, error::Error, fs, path::Path, sync::Arc, time::Instant};
 
 use bevy_math::{DVec3, IVec3};
 use mechanic_core::{
@@ -10,10 +10,17 @@ use mechanic_core::{
 };
 use mechanic_physics::{
     ConstraintBlock, ConstraintSolution, ContactFriction, CpuMachine, DriveCommand, DynamicsFactor,
-    ImpulseBounds, MachineState, PreparedConstraints, SoftStepSettings, SoftStepTerrain,
-    solve_constraints,
+    ImpulseBounds, MachineCollisionGeometry, MachineState, PreparedConstraints, SoftStepSettings,
+    SoftStepTerrain, TerrainContactScene, solve_constraints,
+};
+use mechanic_world::{
+    TerrainCollisionChunk, TerrainMaterial, TerrainNodeId, TerrainTriangleGroupMask, TriangleBvh,
+    TriangleBvhNode, TriangleBvhTriangle, WorldBounds, WorldPosition,
 };
 use serde_json::json;
+
+/// Position of the wall faced by `fast-impacts` cases, along +X.
+const WALL: f32 = 5.0;
 
 #[path = "compiled-response/finite_support.rs"]
 mod finite_support;
@@ -43,8 +50,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "car-drop" => car(false),
         "car-drive" => car(true),
         "block-pile" => block_pile(),
+        "fast-impacts" => fast_impacts(),
         other => Err(format!(
-            "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive or block-pile"
+            "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
+             block-pile or fast-impacts"
         )
         .into()),
     }
@@ -52,12 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 // The saved car dropped at 4 m/s, or settled and then driven on its speed drives.
 fn car(drive: bool) -> Result<(), Box<dyn Error>> {
-    let instance: mechanic_world::WorldCreationInstanceDoc =
-        ron::from_str(include_str!("../../tests/fixtures/driven_car_instance.ron"))?;
-    let loaded = instance.creation.into_graph()?;
-    let creation = loaded
-        .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)?;
+    let creation = saved_car()?;
     let mut state = MachineState::at_rest(&creation);
     if !drive {
         for pose in &mut state.poses {
@@ -178,17 +182,218 @@ fn run(
 
 // Lowest collider point above the floor; negative values are penetration.
 fn lowest_point(creation: &CompiledCreation, state: &MachineState) -> Result<f64, Box<dyn Error>> {
-    let mut lowest = f64::INFINITY;
+    Ok(extent(creation, state)?[0].y)
+}
+
+// Corners of the box around every collider.
+fn extent(creation: &CompiledCreation, state: &MachineState) -> Result<[DVec3; 2], Box<dyn Error>> {
+    let mut extent = [DVec3::INFINITY, DVec3::NEG_INFINITY];
     for collider in &creation.colliders {
         let pose = state.poses[collider.compound_index as usize];
-        lowest = lowest.min(
-            ContactPolytope::from_collider(collider)?
-                .transformed(pose.position, pose.rotation)?
-                .bounds()[0]
-                .y,
-        );
+        let [minimum, maximum] = ContactPolytope::from_collider(collider)?
+            .transformed(pose.position, pose.rotation)?
+            .bounds();
+        extent = [extent[0].min(minimum), extent[1].max(maximum)];
     }
-    Ok(lowest)
+    Ok(extent)
+}
+
+fn saved_car() -> Result<CompiledCreation, Box<dyn Error>> {
+    let instance: mechanic_world::WorldCreationInstanceDoc =
+        ron::from_str(include_str!("../../tests/fixtures/driven_car_instance.ron"))?;
+    let loaded = instance.creation.into_graph()?;
+    Ok(loaded
+        .graph
+        .compile_with_suspension_sockets([], &loaded.sockets)?)
+}
+
+// Cuboids of the given block dimensions at lattice positions.
+fn cuboids(parts: &[([u8; 3], IVec3)]) -> Result<CompiledCreation, Box<dyn Error>> {
+    let mut graph = ConstructionGraph::new();
+    for &(dimensions, ticks) in parts {
+        graph.apply(BuildCommand::Spawn(CuboidSpec::new(
+            dimensions,
+            BuildPose::from_position_ticks(ticks, GridRotation::default()),
+        )?))?;
+    }
+    Ok(graph.compile()?)
+}
+
+// A creation with its lowest point `clearance` above the floor, and root bodies
+// launched with (body, linear, angular) velocities.
+fn launched(
+    creation: &CompiledCreation,
+    clearance: f64,
+    launches: &[(usize, DVec3, DVec3)],
+) -> Result<MachineState, Box<dyn Error>> {
+    let mut state = MachineState::at_rest(creation);
+    let lowest = lowest_point(creation, &state)?;
+    for pose in &mut state.poses {
+        pose.position.y += clearance - lowest;
+    }
+    for &(body, linear, angular) in launches {
+        let rows = creation.dynamics.body_velocities[body].clone();
+        state.velocities[rows].copy_from_slice(&[
+            linear.x, linear.y, linear.z, angular.x, angular.y, angular.z,
+        ]);
+    }
+    Ok(state)
+}
+
+// Fast bodies against the floor, a wall and each other. A case has tunnelled
+// when a collider ends up more than one block past a surface.
+fn fast_impacts() -> Result<(), Box<dyn Error>> {
+    let cube = || cuboids(&[([1, 1, 1], IVec3::ZERO)]);
+    for speed in [30.0, 60.0, 120.0, 250.0] {
+        let creation = cube()?;
+        let state = launched(&creation, 2.0, &[(0, DVec3::NEG_Y * speed, DVec3::ZERO)])?;
+        impact(&format!("drop-{speed}"), &creation, state, false)?;
+    }
+    let creation = cube()?;
+    let angle = 20.0_f64.to_radians();
+    let graze = DVec3::new(angle.cos(), -angle.sin(), 0.0) * 120.0;
+    let state = launched(&creation, 1.0, &[(0, graze, DVec3::ZERO)])?;
+    impact("graze-120", &creation, state, false)?;
+    let creation = cube()?;
+    let state = launched(&creation, 0.5, &[(0, DVec3::X * 100.0, DVec3::ZERO)])?;
+    impact("wall-100", &creation, state, true)?;
+    let creation = cuboids(&[([8, 1, 1], IVec3::ZERO)])?;
+    let state = launched(&creation, 0.5, &[(0, DVec3::NEG_Y * 5.0, DVec3::Z * 60.0)])?;
+    impact("spinning-bar-60", &creation, state, false)?;
+    let creation = cuboids(&[([4, 4, 4], IVec3::ZERO), ([4, 4, 4], IVec3::X * 800)])?;
+    let mut state = launched(&creation, 0.001, &[(1, DVec3::NEG_Y * 80.0, DVec3::ZERO)])?;
+    state.poses[1].position = state.poses[0].position + DVec3::Y * 3.5;
+    impact("projectile-80", &creation, state, false)?;
+    let creation = saved_car()?;
+    let roots = (0..creation.compounds.len())
+        .filter(|&body| creation.loop_topology.body_parents[body].is_root)
+        .map(|body| (body, DVec3::X * 40.0, DVec3::ZERO))
+        .collect::<Vec<_>>();
+    let state = launched(&creation, 0.001, &roots)?;
+    impact("car-crash-40", &creation, state, true)
+}
+
+fn impact(
+    name: &str,
+    creation: &CompiledCreation,
+    mut state: MachineState,
+    wall: bool,
+) -> Result<(), Box<dyn Error>> {
+    const TICKS: u64 = 90;
+    if wall {
+        // Five metres short of the wall.
+        let front = extent(creation, &state)?[1].x;
+        for pose in &mut state.poses {
+            pose.position.x += f64::from(WALL) - 5.0 - front;
+        }
+    }
+    let geometry = MachineCollisionGeometry::new(creation, 1)?;
+    let mut scene = TerrainContactScene::default();
+    scene.publish(1, &[ground(wall)], &[])?;
+    let settings = SoftStepSettings::default();
+    let mut machine = CpuMachine::new(creation.clone(), 1, state)?;
+    let (mut samples, mut deepest, mut degraded) = (Vec::new(), 0.0_f64, 0_u64);
+    let (mut requeries, mut hits) = (0_usize, 0_usize);
+    let mut reasons = BTreeMap::<&str, u64>::new();
+    for _ in 1..=TICKS {
+        let terrain = SoftStepTerrain {
+            scene: &scene,
+            geometry: &geometry,
+            topology_generation: 1,
+            origin: DVec3::ZERO,
+        };
+        let started = Instant::now();
+        machine.step(GRAVITY, &settings, &[], &[], Some(terrain))?;
+        samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        let diagnostics = machine.diagnostics();
+        degraded += u64::from(diagnostics.degraded);
+        requeries += diagnostics.requeries;
+        hits += diagnostics.continuous_hits;
+        if let Some(reason) = diagnostics.degraded_reason {
+            *reasons.entry(reason).or_default() += 1;
+        }
+        let [minimum, maximum] = extent(creation, &machine.snapshot().state)?;
+        // The floor only counts while the bodies are over it.
+        let over_floor =
+            minimum.x > -64.0 && maximum.x < 64.0 && minimum.z > -64.0 && maximum.z < 64.0;
+        let mut depth = if over_floor { -minimum.y } else { 0.0 };
+        if wall {
+            depth = depth.max(maximum.x - f64::from(WALL));
+        }
+        deepest = deepest.max(depth);
+    }
+    samples.sort_by(f64::total_cmp);
+    let percentile =
+        |fraction: usize| samples[(samples.len() * fraction / 100).min(samples.len() - 1)];
+    let record = json!({
+        "scenario": "fast-impacts",
+        "case": name,
+        "ticks": TICKS,
+        "p50_ms": percentile(50),
+        "p95_ms": percentile(95),
+        "deepest_m": deepest,
+        "tunnelled": deepest > 0.25,
+        "degraded_ticks": degraded,
+        "degraded_reasons": reasons,
+        "requeries": requeries,
+        "continuous_hits": hits,
+    });
+    println!("{record}");
+    Ok(())
+}
+
+// The 128 m rock floor, optionally with a wall at `WALL` facing −X.
+fn ground(wall: bool) -> Arc<TerrainCollisionChunk> {
+    let mut weights = [0.0; TerrainMaterial::COUNT];
+    weights[usize::from(TerrainMaterial::Rock.code())] = 1.0;
+    let mask = TerrainTriangleGroupMask::REGULAR;
+    let mut vertices = vec![
+        [-64.0, 0.0, -64.0],
+        [-64.0, 0.0, 64.0],
+        [64.0, 0.0, 64.0],
+        [64.0, 0.0, -64.0],
+    ];
+    let mut indices = vec![0, 1, 2, 0, 2, 3];
+    let mut bounds = WorldBounds {
+        minimum: WorldPosition(DVec3::new(-64.0, 0.0, -64.0)),
+        maximum: WorldPosition(DVec3::new(64.0, 0.0, 64.0)),
+    };
+    if wall {
+        // Mapping (x, y, z) to (wall, x, z) keeps the winding, so the floor's
+        // upward normal becomes −X.
+        let floor = vertices.clone();
+        vertices.extend(floor.into_iter().map(|[x, _, z]| [WALL, x, z]));
+        indices.extend([4, 5, 6, 4, 6, 7]);
+        bounds.minimum.0.y = -64.0;
+        bounds.maximum.0.y = 64.0;
+    }
+    let triangles = indices
+        .chunks(3)
+        .map(|corners| TriangleBvhTriangle {
+            indices: [corners[0], corners[1], corners[2]],
+            group_mask: mask,
+        })
+        .collect::<Vec<_>>();
+    Arc::new(TerrainCollisionChunk {
+        node: TerrainNodeId::ROOT,
+        material_weights: vec![weights; vertices.len()],
+        vertices,
+        indices,
+        bounds,
+        generation: 1,
+        triangle_bvh: TriangleBvh {
+            bounds,
+            nodes: vec![TriangleBvhNode {
+                bounds,
+                triangle_count: if wall { 4 } else { 2 },
+                group_mask: mask,
+                ..Default::default()
+            }],
+            triangles,
+        },
+        active_groups: mask,
+        ..Default::default()
+    })
 }
 
 // Captured solves the exact reference solver once failed or narrowly passed.

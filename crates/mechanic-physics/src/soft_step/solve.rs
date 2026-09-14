@@ -5,9 +5,10 @@ use std::f64::consts::TAU;
 use bevy_math::DVec3;
 use mechanic_core::{CompiledCreation, CoordinateDrive, DriveMode};
 
-use super::{SoftStepDiagnostics, SoftStepSettings};
+use super::{SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
 use crate::{
-    BodyPose, DynamicsFactor, MachineDynamics, MachineState, PhysicsError, TerrainContact,
+    BodyPose, DynamicsFactor, MachineDynamics, MachineMotion, MachineState, PhysicsError,
+    TerrainContact, TerrainSweepHit, TerrainSweepOutcome,
     free_motion::advance_positions,
     joint_forces::{PassiveForce, drive_budget, drive_target},
     joint_machine::bounds,
@@ -35,6 +36,9 @@ pub(super) struct Contact {
     sliding: bool,
     approach: f64,
     loaded: bool,
+    /// Approach and slip not yet captured, which happens at the first substep
+    /// this contact is solved in.
+    fresh: bool,
 }
 
 impl Contact {
@@ -67,6 +71,7 @@ impl Contact {
             sliding: false,
             approach: 0.0,
             loaded: false,
+            fresh: true,
             source,
         }
     }
@@ -217,8 +222,7 @@ impl Soft {
     }
 }
 
-/// Integrates forces, solves and advances positions over one substep. Returns
-/// the contact rows for the restitution pass.
+/// Integrates forces, solves and advances positions over one substep.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One ordered substep with explicit inputs and work accounting.
 pub(super) fn substep(
     machine: &Machine<'_>,
@@ -228,9 +232,9 @@ pub(super) fn substep(
     gravity: DVec3,
     dt: f64,
     settings: &SoftStepSettings,
-    first: bool,
+    terrain: Option<SoftStepTerrain<'_>>,
     diagnostics: &mut SoftStepDiagnostics,
-) -> Result<Vec<PointRows>, PhysicsError> {
+) -> Result<Substep, PhysicsError> {
     let creation = machine.creation;
     let model = MachineDynamics::assemble(creation, &state.poses, &state.coordinates)?;
     state.poses.clone_from(&model.poses);
@@ -246,10 +250,11 @@ pub(super) fn substep(
         .iter()
         .map(|contact| contact.rows(&model, &factor))
         .collect::<Result<Vec<_>, _>>()?;
-    if first {
-        // Approach and slip before this tick's forces decide restitution and
-        // the friction mode.
-        for (contact, point) in contacts.iter_mut().zip(&points) {
+    // Approach and slip before forces act decide restitution and the friction
+    // mode, once per contact: at the tick's first substep or after a re-query.
+    for (contact, point) in contacts.iter_mut().zip(&points) {
+        if contact.fresh {
+            contact.fresh = false;
             contact.approach = point.rows[0].speed(&state.velocities);
             contact.sliding = point.rows[1]
                 .speed(&state.velocities)
@@ -305,7 +310,22 @@ pub(super) fn substep(
         settings.damping_ratio,
         dt,
     );
-    for _ in 0..settings.iterations {
+    // A contact arriving from beyond one substep's continuous travel needs
+    // converged rows: a single pass loads its manifold unevenly and the friction
+    // rows then spin the body. Slower arrivals, such as a faceted wheel's rim
+    // rolling onto the ground, keep the usual passes.
+    let impact = contacts
+        .iter()
+        .any(|contact| contact.approach * dt < -settings.continuous_travel);
+    let (iterations, relax_iterations) = if impact {
+        (
+            settings.iterations.max(settings.impact_iterations),
+            settings.relax_iterations.max(settings.impact_iterations),
+        )
+    } else {
+        (settings.iterations, settings.relax_iterations)
+    };
+    for _ in 0..iterations {
         pass(
             contacts,
             &points,
@@ -319,7 +339,12 @@ pub(super) fn substep(
             settings,
         );
     }
-    advance_positions(creation, state, dt);
+    let (fraction, travelled, turned) = match terrain {
+        Some(terrain) => continuous_fraction(creation, state, terrain, dt, settings, diagnostics),
+        None => (1.0, Vec::new(), 0.0),
+    };
+    let advanced = fraction * dt;
+    advance_positions(creation, state, advanced);
     for (coordinate, value) in state.coordinates.iter_mut().enumerate() {
         let [lower, upper] = bounds(creation, machine.drives, coordinate);
         if lower <= upper {
@@ -327,12 +352,12 @@ pub(super) fn substep(
         }
     }
     for point in &mut points {
-        point.moved = dt * point.rows[0].speed(&state.velocities);
+        point.moved = advanced * point.rows[0].speed(&state.velocities);
     }
     for limit in &mut limits {
-        limit.moved = dt * limit.row.speed(&state.velocities);
+        limit.moved = advanced * limit.row.speed(&state.velocities);
     }
-    for _ in 0..settings.relax_iterations {
+    for _ in 0..relax_iterations {
         pass(
             contacts,
             &points,
@@ -349,7 +374,127 @@ pub(super) fn substep(
     for drive in &drives {
         diagnostics.drive_impulses[drive.coordinate] += joints.drive[drive.coordinate];
     }
-    Ok(points)
+    Ok(Substep {
+        points,
+        travelled,
+        turned,
+        rewound: fraction < 1.0,
+    })
+}
+
+/// One substep's contact rows for the restitution pass, each collider's travel
+/// bound and the largest body rotation over the advanced part, and whether a
+/// continuous hit cut it short.
+pub(super) struct Substep {
+    pub points: Vec<PointRows>,
+    pub travelled: Vec<f64>,
+    pub turned: f64,
+    pub rewound: bool,
+}
+
+// The fraction of the substep positions may advance, stopping short of a
+// collision the soft contacts would miss, with each collider's travel bound and
+// the largest body rotation over that fraction. Only colliders travelling far
+// within the substep are swept.
+fn continuous_fraction(
+    creation: &CompiledCreation,
+    state: &MachineState,
+    terrain: SoftStepTerrain<'_>,
+    dt: f64,
+    settings: &SoftStepSettings,
+    diagnostics: &mut SoftStepDiagnostics,
+) -> (f64, Vec<f64>, f64) {
+    let displacement = state
+        .velocities
+        .iter()
+        .map(|velocity| velocity * dt)
+        .collect::<Vec<_>>();
+    let Ok(motion) =
+        MachineMotion::new(creation, terrain.topology_generation, state, &displacement)
+    else {
+        diagnostics.degrade("continuous path");
+        return (1.0, Vec::new(), 0.0);
+    };
+    let reach = terrain.geometry.collider_reach().collect::<Vec<_>>();
+    let travelled = reach
+        .iter()
+        .map(|&(body, radius)| motion.bounds()[body].point_speed(radius))
+        .collect::<Vec<_>>();
+    let turned = reach
+        .iter()
+        .map(|&(body, _)| motion.bounds()[body].angular_speed)
+        .fold(0.0_f64, f64::max);
+    let mut fraction = 1.0;
+    if settings.continuous
+        && travelled
+            .iter()
+            .any(|&travel| travel > settings.continuous_travel)
+    {
+        diagnostics.continuous_sweeps += 1;
+        match terrain.scene.sweep_new_contacts(
+            terrain.geometry,
+            &motion,
+            terrain.origin,
+            settings.continuous_tolerance,
+            settings.continuous_evaluations,
+        ) {
+            Ok(query) => {
+                if let TerrainSweepOutcome::Impact(hit) | TerrainSweepOutcome::Unconverged(hit) =
+                    query.outcome
+                    && missed(
+                        terrain,
+                        motion.final_poses(),
+                        hit,
+                        reach.get(hit.collider).map_or(0.0, |&(_, radius)| radius),
+                        settings,
+                    )
+                {
+                    // Stop a tolerance short of the arrival, measured along the
+                    // fastest collider's path.
+                    let backoff = settings.continuous_tolerance
+                        / query
+                            .maximum_point_displacement
+                            .max(settings.continuous_tolerance);
+                    let cut = (hit.fraction - backoff).max(0.0);
+                    // A collider already at the gap got its rows from the query
+                    // before this substep; holding it back would only stall it.
+                    if cut > 0.0 {
+                        fraction = cut;
+                        diagnostics.continuous_hits += 1;
+                    }
+                }
+            }
+            Err(_) => diagnostics.degrade("continuous sweep"),
+        }
+    }
+    let travelled = travelled
+        .into_iter()
+        .map(|travel| travel * fraction)
+        .collect();
+    (fraction, travelled, turned * fraction)
+}
+
+// Whether the contact rows would miss a swept arrival: at the end of the path
+// the collider is buried in the target deeper than the rows recover from
+// gracefully, which includes having passed into it. A collider merely leaving
+// a surface it started near is not a miss. Buried vertices give the depth; a
+// clipped manifold deep in overlap only reports the gap at its clipping boundary.
+fn missed(
+    terrain: SoftStepTerrain<'_>,
+    end: &[BodyPose],
+    hit: TerrainSweepHit,
+    radius: f64,
+    settings: &SoftStepSettings,
+) -> bool {
+    let allowed = settings.continuous_depth.min(0.25 * radius);
+    terrain
+        .scene
+        .recovery_contacts(terrain.geometry, end, terrain.origin)
+        .map_or(true, |buried| {
+            buried.contacts.iter().any(|contact| {
+                contact.feature.touches(hit.collider, hit.target) && contact.depth > allowed
+            })
+        })
 }
 
 fn joint_rows(

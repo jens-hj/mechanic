@@ -1,11 +1,13 @@
 //! Soft-step game solver: every valid tick publishes.
 //!
 //! The `Box2D` v3 soft step on the reduced-coordinate machine model. Each tick queries
-//! contacts once with a speculative margin, then runs fixed substeps: integrate
-//! forces, warm start, a biased projected Gauss–Seidel pass over drive, joint-limit
-//! and contact rows, integrate positions, and an unbiased relaxing pass. A
-//! restitution pass follows the substeps. Quality is reported in diagnostics; only
-//! invalid input returns an error, and numerical trouble marks the tick degraded.
+//! contacts with small per-collider speculative margins, then runs fixed substeps:
+//! integrate forces, warm start, a biased projected Gauss–Seidel pass over drive,
+//! joint-limit and contact rows, a continuous sweep of fast colliders, integrate
+//! positions, and an unbiased relaxing pass. Contacts are queried again when a
+//! collider outruns its margin. A restitution pass follows the substeps. Quality is
+//! reported in diagnostics; only invalid input returns an error, and numerical
+//! trouble marks the tick degraded.
 
 mod solve;
 #[cfg(test)]
@@ -18,8 +20,8 @@ use mechanic_core::{CompiledCreation, CoordinateDrive};
 
 use crate::{
     CpuSnapshot, DriveCommand, DynamicsFactorization, ExternalImpulse, MachineCollisionGeometry,
-    MachineDynamics, MachineState, PhysicsError, TICK_SECONDS, TerrainContactFeature,
-    TerrainContactScene,
+    MachineDynamics, MachineMotion, MachineState, PhysicsError, TICK_SECONDS,
+    TerrainContactFeature, TerrainContactScene,
     free_motion::apply_external_impulses,
     joint_forces::{PassiveForce, validate_drive},
     joint_machine::bounds,
@@ -59,6 +61,24 @@ pub struct SoftStepSettings {
     pub stiction_speed: f64,
     /// Bound on every generalized velocity after a substep.
     pub maximum_speed: f64,
+    /// Whether fast substeps are swept for collisions the contact margins miss.
+    pub continuous: bool,
+    /// Collider travel within one substep above which it is swept, in metres.
+    pub continuous_travel: f64,
+    /// Gap at which a swept collider counts as arriving, in metres.
+    pub continuous_tolerance: f64,
+    /// Conservative-advancement steps per swept triangle or collider pair.
+    pub continuous_evaluations: usize,
+    /// Penetration at the end of a swept substep left to the contact rows, in
+    /// metres; deeper or missed arrivals cut the substep short.
+    pub continuous_depth: f64,
+    /// Body rotation since the last contact query, in radians, after which
+    /// contacts are queried again. Anchors are fixed on the body, so a spinning
+    /// wheel's queried points turn away from the surface it approaches.
+    pub requery_angle: f64,
+    /// Biased and relaxing passes for substeps holding a contact that arrived
+    /// faster than `continuous_travel` per substep.
+    pub impact_iterations: u32,
 }
 
 impl Default for SoftStepSettings {
@@ -76,6 +96,13 @@ impl Default for SoftStepSettings {
             restitution_threshold: 1.0,
             stiction_speed: 0.05,
             maximum_speed: 500.0,
+            continuous: true,
+            continuous_travel: 0.05,
+            continuous_tolerance: 1e-3,
+            continuous_evaluations: 32,
+            continuous_depth: 0.01,
+            requery_angle: 0.25,
+            impact_iterations: 8,
         }
     }
 }
@@ -90,6 +117,8 @@ impl SoftStepSettings {
             self.speculative,
             self.restitution_threshold,
             self.stiction_speed,
+            self.continuous_travel,
+            self.continuous_depth,
         ];
         (1..=64).contains(&self.substeps)
             && self.iterations > 0
@@ -98,6 +127,12 @@ impl SoftStepSettings {
                 .all(|value| value.is_finite() && *value >= 0.0)
             && self.maximum_speed.is_finite()
             && self.maximum_speed > 0.0
+            && self.continuous_tolerance.is_finite()
+            && self.continuous_tolerance > 0.0
+            && self.continuous_evaluations > 0
+            && self.requery_angle.is_finite()
+            && self.requery_angle > 0.0
+            && self.impact_iterations > 0
     }
 }
 
@@ -135,6 +170,13 @@ pub struct SoftStepDiagnostics {
     pub solve_ms: f64,
     /// Signed drive impulses summed over the tick, in N·s or N·m·s.
     pub drive_impulses: Vec<f64>,
+    /// Contact queries repeated within the tick because a collider outran its
+    /// margin or a continuous hit cut a substep short.
+    pub requeries: usize,
+    /// Substeps swept for collisions the contact margins could miss.
+    pub continuous_sweeps: usize,
+    /// Swept substeps cut short before a collision the contacts would miss.
+    pub continuous_hits: usize,
 }
 
 impl SoftStepDiagnostics {
@@ -278,9 +320,19 @@ impl CpuMachine {
         {
             diagnostics.degrade("external impulse");
         }
-        let mut contacts = terrain.map_or_else(Vec::new, |terrain| {
-            self.contacts(terrain, &state, settings, &mut diagnostics)
-        });
+        let (mut contacts, mut margins) = terrain.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |terrain| {
+                self.contacts(
+                    terrain,
+                    &state,
+                    settings,
+                    gravity,
+                    &self.warm,
+                    &mut diagnostics,
+                )
+            },
+        );
         diagnostics.contacts = contacts.len();
         diagnostics.query_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -292,7 +344,39 @@ impl CpuMachine {
         let mut joints = JointImpulses::new(self.drives.len());
         let dt = TICK_SECONDS / f64::from(settings.substeps);
         let mut last = None;
-        for index in 0..settings.substeps {
+        // Each collider's travel, and the largest body rotation, since the last
+        // contact query.
+        let mut travelled = vec![0.0; margins.len()];
+        let mut turned = 0.0;
+        let mut requery = false;
+        for _ in 0..settings.substeps {
+            if let Some(terrain) = terrain.filter(|_| requery) {
+                requery = false;
+                diagnostics.requeries += 1;
+                // A collider outran its margin or a continuous hit cut the path
+                // short: query again from the current pose, keeping impulses.
+                match MachineDynamics::assemble(&self.creation, &state.poses, &state.coordinates) {
+                    Ok(model) => {
+                        state.poses = model.poses;
+                        let warm = contacts
+                            .iter()
+                            .map(|contact| (contact.source.feature, contact.impulses))
+                            .collect::<BTreeMap<_, _>>();
+                        (contacts, margins) = self.contacts(
+                            terrain,
+                            &state,
+                            settings,
+                            gravity,
+                            &warm,
+                            &mut diagnostics,
+                        );
+                        travelled.fill(0.0);
+                        turned = 0.0;
+                        diagnostics.contacts = diagnostics.contacts.max(contacts.len());
+                    }
+                    Err(_) => diagnostics.degrade("contact query"),
+                }
+            }
             let before = state.clone();
             let result = solve::substep(
                 &machine,
@@ -302,11 +386,21 @@ impl CpuMachine {
                 gravity,
                 dt,
                 settings,
-                index == 0,
+                terrain,
                 &mut diagnostics,
             );
             match result {
-                Ok(points) if sane(&mut state, settings, &mut diagnostics) => last = Some(points),
+                Ok(outcome) if sane(&mut state, settings, &mut diagnostics) => {
+                    for ((total, travel), margin) in
+                        travelled.iter_mut().zip(&outcome.travelled).zip(&margins)
+                    {
+                        *total += travel;
+                        requery |= *total > margin - settings.speculative;
+                    }
+                    turned += outcome.turned;
+                    requery |= outcome.rewound || turned > settings.requery_angle;
+                    last = Some(outcome.points);
+                }
                 Ok(_) | Err(_) => {
                     state = before;
                     state.velocities.fill(0.0);
@@ -343,37 +437,69 @@ impl CpuMachine {
         Ok(&self.completed)
     }
 
+    // Contacts at the current pose, and the margin each collider row was queried
+    // with.
     fn contacts(
         &self,
         terrain: SoftStepTerrain<'_>,
         state: &MachineState,
         settings: &SoftStepSettings,
+        gravity: DVec3,
+        warm: &BTreeMap<TerrainContactFeature, [f64; 5]>,
         diagnostics: &mut SoftStepDiagnostics,
-    ) -> Vec<Contact> {
-        // One query serves the whole tick, so it must reach as far as any body can
-        // travel in it. Angular reach assumes a one-metre lever.
-        let reach = MachineDynamics::assemble(&self.creation, &state.poses, &state.coordinates)
-            .and_then(|model| model.body_motions(&state.velocities))
-            .map_or(0.0, |motions| {
-                motions
-                    .iter()
-                    .map(|motion| motion.linear.length() + motion.angular.length())
-                    .fold(0.0, f64::max)
-            });
-        let margin = (settings.speculative + TICK_SECONDS * reach).min(1.0);
+    ) -> (Vec<Contact>, Vec<f64>) {
+        // A query serves until a collider outruns its margin. Each collider
+        // reaches as far as its body carries it in a tick, ancestor rotation and
+        // suspension travel included, with a quarter more for speed gained within
+        // the tick and the fall under gravity. The reach stops at the travel the
+        // continuous sweep takes over from: a wide margin measures a tilted
+        // collider's gap up its side faces, so most of a far manifold's points
+        // would sit at the margin instead of on the corners that arrive.
+        let colliders = terrain.geometry.collider_reach().len();
+        let fall = 0.5 * gravity.length() * TICK_SECONDS * TICK_SECONDS;
+        let displacement = state
+            .velocities
+            .iter()
+            .map(|velocity| 1.25 * TICK_SECONDS * velocity)
+            .collect::<Vec<_>>();
+        let reach = if let Ok(motion) = MachineMotion::new(
+            &self.creation,
+            terrain.topology_generation,
+            state,
+            &displacement,
+        ) {
+            terrain
+                .geometry
+                .collider_reach()
+                .map(|(body, radius)| {
+                    settings.speculative
+                        + fall
+                        + motion.bounds()[body]
+                            .point_speed(radius)
+                            .min(settings.continuous_travel)
+                })
+                .collect()
+        } else {
+            diagnostics.degrade("contact reach");
+            vec![settings.speculative; colliders]
+        };
         // Clipping nearly parallel faces within a wide margin can refuse a query;
         // narrower queries still keep the bodies apart.
-        let Some(query) = [margin, settings.speculative, 0.0]
-            .into_iter()
-            .find_map(|margin| {
-                terrain
-                    .scene
-                    .proximity(terrain.geometry, &state.poses, terrain.origin, margin)
-                    .ok()
-            })
-        else {
+        let Some((query, margins)) = [
+            reach,
+            vec![settings.speculative; colliders],
+            vec![0.0; colliders],
+        ]
+        .into_iter()
+        .find_map(|margins| {
+            terrain
+                .scene
+                .proximity_margins(terrain.geometry, &state.poses, terrain.origin, &margins)
+                .ok()
+                .map(|query| (query, margins))
+        }) else {
             diagnostics.degrade("contact query");
-            return Vec::new();
+            return (Vec::new(), vec![0.0; colliders]);
         };
         let mut points = query.contacts;
         // A clipped manifold only holds points where the collider crosses the
@@ -385,20 +511,31 @@ impl CpuMachine {
                 .recovery_contacts(terrain.geometry, &state.poses, terrain.origin)
         {
             for mut vertex in recovery.contacts {
-                if vertex.depth > 0.0
-                    && points
-                        .iter()
-                        .all(|point| point.body_point.distance(vertex.body_point) > 1e-4)
-                {
+                if vertex.depth <= 0.0 {
+                    continue;
+                }
+                // Deep in overlap, a clipped point reports the gap at its clipping
+                // boundary rather than the overlap; the buried vertex beside it
+                // carries the real depth and takes its place.
+                if let Some(point) = points.iter_mut().find(|point| {
+                    point.body == vertex.body
+                        && point.body_point.distance(vertex.body_point) <= 1e-4
+                }) {
+                    if point.separation > vertex.separation {
+                        vertex.feature = point.feature;
+                        *point = vertex;
+                    }
+                } else {
                     vertex.feature.corner += SUBMERGED_CORNERS;
                     points.push(vertex);
                 }
             }
         }
-        points
+        let contacts = points
             .into_iter()
-            .map(|point| Contact::new(point, &state.poses, self.warm.get(&point.feature)))
-            .collect()
+            .map(|point| Contact::new(point, &state.poses, warm.get(&point.feature)))
+            .collect();
+        (contacts, margins)
     }
 }
 
