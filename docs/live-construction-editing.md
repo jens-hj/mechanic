@@ -36,7 +36,10 @@ features directly. Surrounding construction still blocks obstructed steps.
   New/replacement parts retain source identity through publication and splits.
   Deleted anchors cancel attached gestures; delete selections use composed centers
   and stay on their starting body. No-op views preserve graph change detection.
-- Feature welds move the first structural creation in its authored default pose
+- Join welds validate actual convex contact between two live bodies and weld them
+  where they are; a separate creation is reframed to its live relative pose
+  (`live_weld::stage`).
+- Feature welds (Place) move the first structural creation in its authored default pose
   onto the second creation's current pose. Picking, constrained dragging, and
   ghost rendering live in `weld_tool`; core topology, alignment, contact-square,
   and default-construction validation live in `mechanic_core::weld`.

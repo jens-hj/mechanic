@@ -255,8 +255,13 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             "Release to place pipe run — R cycles dimensions, F adds bends".to_owned()
         }
     } else if selected_tool == Tool::Weld {
-        if state.weld.busy() { "Press a destination feature, drag, and release to weld; R rotates 15°, Shift snaps 5 cm".to_owned() }
-        else { "Select a source face, straight edge, or corner".to_owned() }
+        let selector = controls.label(GameAction::MaterialWheel);
+        match (selection.weld_mode, state.weld.busy()) {
+            (crate::hotbar::WeldMode::Join, false) => format!("Join: click a body to weld where it touches another · Tap {selector} for Place"),
+            (crate::hotbar::WeldMode::Join, true) => "Click a touching body; faces must share a 5 × 5 cm square".to_owned(),
+            (crate::hotbar::WeldMode::Place, true) => "Press a destination feature, drag, and release to weld; R rotates 15°, Shift snaps 5 cm".to_owned(),
+            (crate::hotbar::WeldMode::Place, false) => format!("Place: select a source face, straight edge, or corner · Tap {selector} for Join"),
+        }
     } else {
         match (
             live_hammer,

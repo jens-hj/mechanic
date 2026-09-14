@@ -170,6 +170,7 @@ pub(crate) struct MaterialWheelState {
     pub(crate) selector: Vec2,
     pub(crate) highlighted: Option<WheelChoice>,
     context: Option<WheelChoice>,
+    aimed: bool,
 }
 
 impl MaterialWheelState {
@@ -179,6 +180,22 @@ impl MaterialWheelState {
         self.selector = Vec2::ZERO;
         self.highlighted = Some(current);
         self.context = Some(current);
+        self.aimed = false;
+    }
+
+    /// The choice a Tab release commits. A two-choice selector released
+    /// without aiming switches to the other choice, so a tap toggles.
+    pub(crate) fn released_choice(&self) -> Option<WheelChoice> {
+        if !self.aimed
+            && let Some(current) = self.context
+            && current.context().count() == 2
+        {
+            return current
+                .context()
+                .choices()
+                .find(|&choice| choice != current);
+        }
+        self.highlighted
     }
 
     pub(crate) fn open_chroma_config(&mut self) {
@@ -191,6 +208,7 @@ impl MaterialWheelState {
 
     fn move_selector(&mut self, delta: Vec2) {
         self.selector = (self.selector + delta).clamp_length_max(MATERIAL_WHEEL_RADIUS);
+        self.aimed |= self.selector.length() >= MATERIAL_WHEEL_DEAD_ZONE;
         if let Some(choice) = choice_at_selector(self.selector, self.context) {
             self.highlighted = Some(choice);
         }
@@ -393,13 +411,14 @@ pub(crate) fn update_material_wheel(
         {
             if let Some(highlighted) = committed_choice(
                 actions.just_released(GameAction::MaterialWheel),
-                wheel.highlighted,
+                wheel.released_choice(),
             ) {
                 match highlighted {
                     WheelChoice::ConstructionMaterial(next) => material.0 = next,
                     WheelChoice::Item(next) => selection.select_item(next),
                     WheelChoice::TerrainMaterial(next) => terrain_material.0 = next,
                     WheelChoice::ShapeMode(next) => *shape_mode = next,
+                    WheelChoice::WeldMode(next) => selection.weld_mode = next,
                 }
             }
             wheel.close();
@@ -422,6 +441,7 @@ pub(crate) fn update_material_wheel(
         (Some(MainTool::MatterManipulator), MatterMode::Manipulate) => {
             Some(Some(WheelChoice::ShapeMode(*shape_mode)))
         }
+        (Some(MainTool::Welder), _) => Some(Some(WheelChoice::WeldMode(selection.weld_mode))),
         _ => None,
     };
     if actions.just_pressed(GameAction::MaterialWheel)
@@ -884,6 +904,36 @@ mod tests {
             wheel.highlighted,
             Some(WheelChoice::ConstructionMaterial(
                 ConstructionMaterial::Aluminium
+            ))
+        );
+    }
+
+    #[test]
+    fn tapping_a_two_choice_selector_toggles_and_aiming_commits_the_highlight() {
+        use crate::hotbar::WeldMode;
+        let mut wheel = MaterialWheelState::default();
+        wheel.open(WheelChoice::WeldMode(WeldMode::Join));
+        wheel.move_selector(Vec2::new(2.0, -3.0));
+        assert_eq!(
+            wheel.released_choice(),
+            Some(WheelChoice::WeldMode(WeldMode::Place))
+        );
+
+        wheel.open(WheelChoice::WeldMode(WeldMode::Place));
+        wheel.move_selector(Vec2::new(0.0, -80.0));
+        wheel.move_selector(Vec2::new(0.0, 78.0));
+        assert_eq!(
+            wheel.released_choice(),
+            Some(WheelChoice::WeldMode(WeldMode::Join))
+        );
+
+        wheel.open(WheelChoice::ShapeMode(
+            crate::shape_tool::ShapeEditMode::Chamfer,
+        ));
+        assert_eq!(
+            wheel.released_choice(),
+            Some(WheelChoice::ShapeMode(
+                crate::shape_tool::ShapeEditMode::Chamfer
             ))
         );
     }

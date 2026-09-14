@@ -1,8 +1,22 @@
 # Feature weld placement
 
-The first selected creation moves in its authored internal arrangement onto the
-second creation's current pose. Original source physics continues during preview.
-The endpoint is validated; travel is not animated.
+The Welder has two modes. Hold Tab for its selector; a single tap switches to
+the other mode.
+
+- **Join** welds two touching bodies where they are. Click one body, then a
+  body it touches. Their faces must share a continuous 5 × 5 cm square. In the
+  Garage the authored faces must touch; in the live world the current snapshot
+  must also show contact (gap at most 1 mm, penetration at most 5 mm). Bodies
+  of one creation weld in their authored arrangement, which closes loops through
+  joints such as a double wishbone; a live articulation that has moved away from
+  that arrangement is refused at publication. A separate creation is reframed
+  to its current pose relative to the first. Join uses the ordinary edit
+  publication path, and warns when a weld locks a bearing. The CPU physics route
+  refuses closed loops, so a joined loop runs on the GPU route.
+- **Place** is described below: the first selected creation moves in its
+  authored internal arrangement onto the second creation's current pose.
+  Original source physics continues during preview. The endpoint is validated;
+  travel is not animated.
 
 ## Interaction and geometry
 
@@ -58,10 +72,8 @@ together. History captures only affected assemblies, restores their placement an
 hold state, and preserves unrelated bodies' current motion. Saved construction uses
 the existing frame and joint formats without migration.
 
-Bodies connected through joints use the in-place path, which validates both authored
-and current contact and rejects a merge that would move existing body poses. Same-body
-welds are rejected. Terrain-anchored sources cannot relocate. Joint-lock warnings are
-retained for in-place loops.
+Place refuses a destination in the source's own creation and points to Join.
+Terrain-anchored sources cannot relocate.
 
 ## Verification
 

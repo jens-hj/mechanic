@@ -1,6 +1,8 @@
 //! Feature picking and a destination-relative weld gesture. Ghosts use authored geometry.
 
-use crate::{AppSimulation, EditorState, builder, controls::GameAction, weld_publication};
+use crate::{
+    AppSimulation, EditorState, builder, controls::GameAction, hotbar::WeldMode, weld_publication,
+};
 use bevy::prelude::*;
 use mechanic_core::{
     ConstructionFrame, ConstructionGraph, FaceRef, PartId, SolidOwner, WeldAlignment,
@@ -38,6 +40,10 @@ struct Drag {
 
 #[derive(Default)]
 pub(crate) struct WeldTool {
+    mode: WeldMode,
+    join_first: Option<(ConstructionGraph, PartId)>,
+    pub(crate) join_hovered: Option<PartId>,
+    join_candidate: Option<(PartId, Option<u64>, Result<ConstructionGraph, String>)>,
     source: Option<Source>,
     pub(crate) hovered: Option<Pick>,
     drag: Option<Drag>,
@@ -62,10 +68,22 @@ impl WeldTool {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.source.is_some() || self.request.is_some()
+        self.source.is_some() || self.request.is_some() || self.join_first.is_some()
     }
     pub(crate) fn cancel(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            mode: self.mode,
+            ..Self::default()
+        };
+    }
+    pub(crate) fn join_first(&self) -> Option<PartId> {
+        self.join_first.as_ref().map(|(_, part)| *part)
+    }
+    /// Whether the hovered Join target would weld, once a first body is chosen.
+    pub(crate) fn join_valid(&self) -> Option<bool> {
+        self.join_candidate
+            .as_ref()
+            .map(|(_, _, staged)| staged.is_ok())
     }
     pub(crate) fn finish_publication(&mut self) {
         self.publishing = None;
@@ -323,12 +341,7 @@ fn build_candidate(
             if destination.socket.is_some() {
                 return Err("Select a separate assembly to attach to this bearing".to_owned());
             }
-            return weld_publication::Intent::in_place(
-                graph,
-                simulation,
-                &source.pick,
-                destination,
-            );
+            return Err("Parts of one creation weld where they are; use Join mode".to_owned());
         }
         let alignment = WeldAlignment::new(source.pick.selection, destination.selection)
             .and_then(WeldAlignment::align_tangent_grids)
@@ -558,6 +571,152 @@ pub(crate) fn actions(
                     .unwrap_or_else(|| "Select a valid destination feature".to_owned()),
             );
         }
+    }
+}
+
+/// Cancels a gesture begun in another mode, so switching never carries a
+/// half-made weld across.
+pub(crate) fn sync_mode(state: &mut EditorState, mode: WeldMode) {
+    if state.weld.mode == mode {
+        return;
+    }
+    state.weld.cancel();
+    state.weld.mode = mode;
+    state.hovered = None;
+    state.feedback = Some(format!("Welder · {}", mode.label()));
+}
+
+/// The nearest part under the ray, whole bodies rather than features.
+fn body_pick(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    ray: Ray3d,
+) -> Option<(PartId, builder::SurfaceHit)> {
+    graph
+        .parts()
+        .filter_map(|(part, _)| {
+            let inverse = motion(simulation, part, false).ok()?.inverse();
+            builder::raycast_part_in_construction(
+                graph,
+                part,
+                inverse.point(ray.origin),
+                inverse.vector(ray.direction.as_vec3()),
+            )
+            .map(|hit| (part, hit))
+        })
+        .min_by(|a, b| a.1.distance.total_cmp(&b.1.distance))
+}
+
+/// Welds two touching bodies where they are: authored contact in the Garage,
+/// current contact in the live world.
+fn join_stage(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    first: PartId,
+    second: PartId,
+) -> Result<ConstructionGraph, String> {
+    if simulation.world_revision.is_some() && simulation.creation.is_some() {
+        crate::live_weld::stage(graph, simulation, first, second)
+    } else {
+        builder::stage_weld_objects(
+            graph,
+            mechanic_core::FaceOwner::Part(first),
+            mechanic_core::FaceOwner::Part(second),
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+pub(crate) fn join_hover(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    state: &mut EditorState,
+    ray: Ray3d,
+) {
+    state.edit_context = None;
+    state.pointer_ray = Some((ray.origin, ray.direction.as_vec3()));
+    if state
+        .weld
+        .join_first
+        .as_ref()
+        .is_some_and(|(baseline, _)| !baseline.shares_revision(graph))
+    {
+        state.weld.cancel();
+        state.feedback = Some("Weld selection changed; select the first body again".to_owned());
+    }
+    let hit = body_pick(graph, simulation, ray);
+    state.hovered = hit.map(|(_, hit)| hit);
+    state.weld.join_hovered = hit.map(|(part, _)| part);
+    let Some(first) = state.weld.join_first() else {
+        state.weld.join_candidate = None;
+        return;
+    };
+    let Some(second) = state.weld.join_hovered else {
+        state.weld.join_candidate = None;
+        state.feedback = Some("Select a touching body to weld to".to_owned());
+        return;
+    };
+    let tick = simulation.live_state.as_ref().map(|live| live.tick);
+    if !state
+        .weld
+        .join_candidate
+        .as_ref()
+        .is_some_and(|(part, at, _)| *part == second && *at == tick)
+    {
+        state.weld.join_candidate =
+            Some((second, tick, join_stage(graph, simulation, first, second)));
+    }
+    if let Some((_, _, staged)) = &state.weld.join_candidate {
+        state.feedback = Some(match staged {
+            Ok(staged) => crate::weld_lockup_warning(graph, staged).map_or_else(
+                || "Click to weld these bodies where they are".to_owned(),
+                |warning| format!("Click to weld — {warning}"),
+            ),
+            Err(error) => error.clone(),
+        });
+    }
+}
+
+pub(crate) fn join_actions(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut crate::EditorHistory,
+    actions: &ButtonInput<GameAction>,
+    blocked: bool,
+) {
+    if actions.just_pressed(GameAction::Secondary) {
+        state.weld.cancel();
+        state.feedback = Some("Weld cancelled".to_owned());
+        return;
+    }
+    if blocked || !actions.just_pressed(GameAction::Primary) {
+        return;
+    }
+    if state.weld.join_first.is_none() {
+        if let Some(part) = state.weld.join_hovered {
+            state.weld.join_first = Some((graph.clone(), part));
+            state.weld.join_candidate = None;
+            state.feedback = Some("First body selected; click a touching body".to_owned());
+        } else {
+            state.feedback = Some("Select a body".to_owned());
+        }
+        return;
+    }
+    match state.weld.join_candidate.take() {
+        Some((_, _, Ok(staged))) => {
+            let lockup = crate::weld_lockup_warning(graph, &staged);
+            let previous = crate::EditorSnapshot::capture(graph, state);
+            *graph = staged;
+            history.commit(previous);
+            state.weld.cancel();
+            state.construction_mesh_dirty = true;
+            state.feedback = Some(lockup.map_or_else(
+                || "Welded the two bodies".to_owned(),
+                |warning| format!("Welded the two bodies — {warning}"),
+            ));
+        }
+        Some((_, _, Err(error))) => state.feedback = Some(error),
+        None => state.feedback = Some("Select a touching body to weld to".to_owned()),
     }
 }
 

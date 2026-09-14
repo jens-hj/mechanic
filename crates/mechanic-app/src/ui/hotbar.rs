@@ -91,6 +91,14 @@ pub(crate) fn Hotbar(handles: Handles) -> Element {
             .get()
             .map_or_else(
                 || {
+                    if selected.tool == Some(MainTool::Welder) {
+                        let selector_key =
+                            controls.with(|bindings| bindings.label(GameAction::MaterialWheel));
+                        return Some(format!(
+                            "Welder · {} · Tap {selector_key} to switch",
+                            selected.weld_mode.label()
+                        ));
+                    }
                     (selected.tool == Some(MainTool::MatterManipulator)).then(|| {
                         let choose = if matches!(
                             selected.matter_mode,
@@ -165,7 +173,8 @@ pub(crate) fn Hotbar(handles: Handles) -> Element {
                     size.set(bounds.size);
                 }
             } } {
-            if (hovered.get().is_some() || selection.get().tool == Some(MainTool::MatterManipulator))
+            if (hovered.get().is_some()
+                || matches!(selection.get().tool, Some(MainTool::MatterManipulator | MainTool::Welder)))
                 && material_menu.get().is_none() {
                 OverlayBadge width:max-content height:24px
                     pad:(left:10px right:12px top:0px bottom:0px) radius:12px exponent:1 {

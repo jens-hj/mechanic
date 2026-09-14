@@ -580,3 +580,185 @@ fn weld_gesture_attaches_to_linear_carriage_and_undoes() {
         },
     ));
 }
+
+fn blocks(placements: &[([u8; 3], IVec3)]) -> (ConstructionGraph, Vec<PartId>) {
+    let mut graph = ConstructionGraph::new();
+    let parts = placements
+        .iter()
+        .map(|&(size, position)| {
+            let BuildOutcome::Spawned(part) = graph
+                .apply(BuildCommand::Spawn(
+                    CuboidSpec::new(size, BuildPose::new(position, GridRotation::default()))
+                        .unwrap(),
+                ))
+                .unwrap()
+            else {
+                panic!("spawn expected")
+            };
+            part
+        })
+        .collect();
+    (graph, parts)
+}
+
+/// A base carrying two bearing-mounted arms whose facing sides touch.
+fn bearing_loop() -> (ConstructionGraph, PartId, PartId, PartId) {
+    let (mut graph, parts) = blocks(&[
+        ([6, 2, 2], IVec3::new(0, 28, 0)),
+        ([2; 3], IVec3::new(-1, 30, 0)),
+        ([2; 3], IVec3::new(1, 30, 0)),
+    ]);
+    for (arm, x) in [(parts[1], -0.25), (parts[2], 0.25)] {
+        graph
+            .apply(BuildCommand::AddBearing(mechanic_core::BearingSpec::new(
+                FaceRef::part(parts[0], mechanic_core::FaceKind::PositiveY),
+                FaceRef::part(arm, mechanic_core::FaceKind::NegativeY),
+                Vec3::new(x, 7.25, 0.0),
+                Vec3::Y,
+            )))
+            .unwrap();
+    }
+    (graph, parts[0], parts[1], parts[2])
+}
+
+fn click(
+    graph: &mut ConstructionGraph,
+    state: &mut EditorState,
+    history: &mut crate::EditorHistory,
+    x: f32,
+) {
+    join_hover(graph, &AppSimulation::default(), state, ray(x));
+    let mut input = ButtonInput::default();
+    input.press(GameAction::Primary);
+    join_actions(graph, state, history, &input, false);
+}
+
+#[test]
+fn join_welds_two_touching_garage_parts_in_place_with_one_history_entry() {
+    let (mut graph, parts) = blocks(&[
+        ([2; 3], IVec3::new(0, 28, 0)),
+        ([2; 3], IVec3::new(2, 28, 0)),
+    ]);
+    let frames = parts
+        .iter()
+        .map(|&part| graph.part_frame(part))
+        .collect::<Vec<_>>();
+    let mut state = EditorState::default();
+    let mut history = crate::EditorHistory::default();
+    click(&mut graph, &mut state, &mut history, 0.0);
+    assert_eq!(state.weld.join_first(), Some(parts[0]));
+    join_hover(&graph, &AppSimulation::default(), &mut state, ray(0.5));
+    assert_eq!(state.weld.join_valid(), Some(true), "{:?}", state.feedback);
+    click(&mut graph, &mut state, &mut history, 0.5);
+    assert_eq!(graph.weld_count(), 1, "{:?}", state.feedback);
+    assert_eq!(history.undo.len(), 1);
+    assert!(!state.weld.busy());
+    assert_eq!(
+        parts
+            .iter()
+            .map(|&part| graph.part_frame(part))
+            .collect::<Vec<_>>(),
+        frames
+    );
+    assert!(crate::apply_history_action(
+        crate::HistoryAction::Undo,
+        &mut graph,
+        &mut state,
+        &mut history
+    ));
+    assert_eq!(graph.weld_count(), 0);
+}
+
+#[test]
+fn join_closes_a_loop_through_bearings() {
+    let (mut graph, _, left, right) = bearing_loop();
+    let mut state = EditorState::default();
+    let mut history = crate::EditorHistory::default();
+    click(&mut graph, &mut state, &mut history, -0.25);
+    click(&mut graph, &mut state, &mut history, 0.25);
+    assert_eq!(graph.weld_count(), 1, "{:?}", state.feedback);
+    assert_eq!(graph.bearing_count(), 2);
+    let creation = graph.compile().unwrap();
+    let body = |part| {
+        creation
+            .part_to_compound
+            .iter()
+            .find_map(|&(id, body)| (id == part).then_some(body))
+    };
+    assert_eq!(body(left), body(right));
+}
+
+#[test]
+fn join_refuses_separated_bodies_and_the_same_body() {
+    let (mut graph, _) = blocks(&[
+        ([2; 3], IVec3::new(0, 28, 0)),
+        ([2; 3], IVec3::new(4, 28, 0)),
+    ]);
+    let mut state = EditorState::default();
+    let mut history = crate::EditorHistory::default();
+    click(&mut graph, &mut state, &mut history, 0.0);
+    for x in [1.0, 0.0] {
+        click(&mut graph, &mut state, &mut history, x);
+        assert_eq!(state.weld.join_valid(), None);
+        assert!(state.weld.busy());
+        join_hover(&graph, &AppSimulation::default(), &mut state, ray(x));
+        assert_eq!(state.weld.join_valid(), Some(false));
+    }
+    assert_eq!(graph.weld_count(), 0);
+    assert!(history.undo.is_empty());
+}
+
+#[test]
+fn changing_weld_mode_cancels_the_gesture() {
+    let (mut graph, _) = blocks(&[
+        ([2; 3], IVec3::new(0, 28, 0)),
+        ([2; 3], IVec3::new(2, 28, 0)),
+    ]);
+    let mut state = EditorState::default();
+    let mut history = crate::EditorHistory::default();
+    sync_mode(&mut state, WeldMode::Join);
+    click(&mut graph, &mut state, &mut history, 0.0);
+    assert!(state.weld.busy());
+    sync_mode(&mut state, WeldMode::Place);
+    assert!(!state.weld.busy());
+    sync_mode(&mut state, WeldMode::Place);
+    assert_eq!(state.feedback.as_deref(), Some("Welder · Place"));
+}
+
+#[test]
+fn place_mode_refuses_a_destination_in_the_source_creation() {
+    let (mut graph, _, _, _) = bearing_loop();
+    let simulation = AppSimulation::default();
+    let world = crate::world::WorldRuntime::from_world(&mut World::new());
+    let mut state = EditorState {
+        placement_bounds: builder::PlacementBounds::GarageBuild,
+        ..default()
+    };
+    let mut history = crate::EditorHistory::default();
+    let mut input = ButtonInput::default();
+    hover(&graph, &simulation, &mut state, ray(-0.25), &input, &world);
+    input.press(GameAction::Primary);
+    actions(
+        &mut graph,
+        &simulation,
+        &mut state,
+        &mut history,
+        &input,
+        false,
+    );
+    input.clear();
+    input.release(GameAction::Primary);
+    actions(
+        &mut graph,
+        &simulation,
+        &mut state,
+        &mut history,
+        &input,
+        false,
+    );
+    input.clear();
+    hover(&graph, &simulation, &mut state, ray(0.25), &input, &world);
+    let error = state.weld.error.clone().unwrap_or_default();
+    assert!(error.contains("Join"), "{error:?}");
+    assert_eq!(graph.weld_count(), 0);
+}

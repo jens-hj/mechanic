@@ -250,6 +250,29 @@ fn choice_thumbnail(choice: WheelChoice, index: usize, count: usize) -> Element 
             }
         }
         WheelChoice::ShapeMode(edit_mode) => shape_mode_thumbnail(edit_mode, position),
+        WheelChoice::WeldMode(weld_mode) => weld_mode_thumbnail(weld_mode, position),
+    }
+}
+
+fn weld_mode_thumbnail(weld_mode: crate::hotbar::WeldMode, position: (f32, f32)) -> Element {
+    match weld_mode {
+        crate::hotbar::WeldMode::Join => view! {
+            canvas width:54px height:54px
+                translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                rect at:(x:6px y:16px) size:(w:20px h:22px) stroke:(width:3px color:ink.fg)
+                rect at:(x:28px y:16px) size:(w:20px h:22px) stroke:(width:3px color:ink.fg)
+                line from:(x:27px y:12px) to:(x:27px y:42px) stroke:(width:4px color:accent.key)
+            }
+        },
+        crate::hotbar::WeldMode::Place => view! {
+            canvas width:54px height:54px
+                translate:(x:{ Length::px(position.0) } y:{ Length::px(position.1) }) {
+                rect at:(x:8px y:34px) size:(w:38px h:14px) stroke:(width:3px color:ink.fg)
+                line from:(x:27px y:6px) to:(x:27px y:28px) stroke:(width:4px color:accent.key)
+                line from:(x:19px y:20px) to:(x:27px y:28px) stroke:(width:4px color:accent.key)
+                line from:(x:35px y:20px) to:(x:27px y:28px) stroke:(width:4px color:accent.key)
+            }
+        },
     }
 }
 
@@ -441,7 +464,7 @@ const fn choice_base_color_bytes(choice: WheelChoice) -> Option<&'static [u8]> {
     match choice {
         WheelChoice::ConstructionMaterial(material) => Some(material_base_color_bytes(material)),
         WheelChoice::TerrainMaterial(material) => Some(terrain_base_color_bytes(material)),
-        WheelChoice::Item(_) | WheelChoice::ShapeMode(_) => None,
+        WheelChoice::Item(_) | WheelChoice::ShapeMode(_) | WheelChoice::WeldMode(_) => None,
     }
 }
 
@@ -544,6 +567,10 @@ mod tests {
         assert_eq!(
             WheelChoice::Item(PlaceableItem::Bearing).context().label(),
             "ITEMS"
+        );
+        assert_eq!(
+            ordered_sectors(Some(WheelChoice::WeldMode(crate::hotbar::WeldMode::Join))).len(),
+            2
         );
     }
 

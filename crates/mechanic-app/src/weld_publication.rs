@@ -14,8 +14,7 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, Task},
 };
 use mechanic_core::{
-    BuildCommand, CompiledCreation, ConstructionFrame, ConstructionGraph, FaceOwner, PartId,
-    WeldPlacement,
+    CompiledCreation, ConstructionFrame, ConstructionGraph, FaceOwner, PartId, WeldPlacement,
 };
 use mechanic_gpu::{GpuMechanismCoordinate, GpuTransform, GpuVelocity};
 use std::sync::Arc;
@@ -27,7 +26,6 @@ pub(crate) struct Intent {
     destination: Pick,
     transform: ConstructionFrame,
     pub(crate) parts: Vec<PartId>,
-    in_place: bool,
 }
 
 impl Intent {
@@ -49,42 +47,16 @@ impl Intent {
                 .structural_component(source.part, [])
                 .map(|c| c.parts().collect())
                 .unwrap_or_default(),
-            in_place: false,
         }
-    }
-    pub(crate) fn in_place(
-        graph: &ConstructionGraph,
-        simulation: &AppSimulation,
-        source: &Pick,
-        destination: &Pick,
-    ) -> Result<Self, String> {
-        let parts = crate::builder::rigid_body_parts(graph, source.part);
-        if parts.contains(&destination.part) {
-            return Err("Select two different rigid bodies".to_owned());
-        }
-        let mut intent = Self::relocation(graph, source, destination, ConstructionFrame::IDENTITY);
-        intent.in_place = true;
-        intent.parts = parts;
-        intent.transform = motion(simulation, destination.part, false)?
-            .inverse()
-            .compose(motion(simulation, source.part, false)?);
-        Ok(intent)
     }
     pub(crate) fn preview(
         &self,
         simulation: &AppSimulation,
     ) -> Result<(ConstructionGraph, Vec<PartId>, ConstructionFrame), String> {
-        let frame = if self.in_place {
-            motion(simulation, self.source.part, false)?
-        } else {
-            motion(simulation, self.destination.part, false)?.compose(self.transform)
-        };
+        let frame = motion(simulation, self.destination.part, false)?.compose(self.transform);
         Ok((self.baseline.clone(), self.parts.clone(), frame))
     }
     pub(crate) fn place_sockets(&self, state: &mut EditorState) {
-        if self.in_place {
-            return;
-        }
         for socket in &mut state.placed_bearings {
             if matches!(socket.source.owner, FaceOwner::Part(part) if self.parts.contains(&part)) {
                 *socket = crate::live_edit::transform_bearing(*socket, self.transform);
@@ -108,27 +80,6 @@ impl Intent {
                 self.transform,
                 anchored,
             );
-        }
-        if self.in_place {
-            graph
-                .weld_contact_square(
-                    &graph
-                        .weld_mating_faces(self.source.face)
-                        .map_err(|e| e.to_string())?,
-                    &graph
-                        .weld_mating_faces(self.destination.face)
-                        .map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
-            let mut staged = graph.clone();
-            staged
-                .apply(BuildCommand::Weld(mechanic_core::WeldSpec {
-                    first: self.source.face,
-                    second: self.destination.face,
-                }))
-                .map_err(|e| e.to_string())?;
-            staged.compile().map_err(|e| e.to_string())?;
-            return Ok(staged);
         }
         WeldPlacement::stage(
             graph,
@@ -156,11 +107,8 @@ impl Intent {
             .collect::<Vec<_>>();
         self.stage(graph, anchored)?;
         let creation = graph.compile().map_err(|e| e.to_string())?;
-        let source_motion = if self.in_place {
-            motion(simulation, self.source.part, true)?
-        } else {
-            motion(simulation, self.destination.part, true)?.compose(self.transform)
-        };
+        let source_motion =
+            motion(simulation, self.destination.part, true)?.compose(self.transform);
         let destination_motion = motion(simulation, self.destination.part, true)?;
         if self.destination.socket.is_none() {
             let source_faces = graph
@@ -169,31 +117,25 @@ impl Intent {
             let destination_faces = graph
                 .weld_mating_faces(self.destination.face)
                 .map_err(|e| e.to_string())?;
-            if !self.in_place {
-                if matches!(
-                    self.destination.selection.feature,
-                    mechanic_core::WeldFeature::Face
-                ) && !graph.weld_feature_on_faces(
-                    &destination_faces,
-                    self.source.selection.feature,
-                    self.transform,
-                ) {
-                    return Err(
-                        "Selected source feature leaves the destination material".to_owned()
-                    );
-                }
-                if matches!(
-                    self.source.selection.feature,
-                    mechanic_core::WeldFeature::Face
-                ) && !graph.weld_feature_on_faces(
-                    &source_faces,
-                    self.destination.selection.feature,
-                    self.transform.inverse(),
-                ) {
-                    return Err(
-                        "Selected destination feature leaves the source material".to_owned()
-                    );
-                }
+            if matches!(
+                self.destination.selection.feature,
+                mechanic_core::WeldFeature::Face
+            ) && !graph.weld_feature_on_faces(
+                &destination_faces,
+                self.source.selection.feature,
+                self.transform,
+            ) {
+                return Err("Selected source feature leaves the destination material".to_owned());
+            }
+            if matches!(
+                self.source.selection.feature,
+                mechanic_core::WeldFeature::Face
+            ) && !graph.weld_feature_on_faces(
+                &source_faces,
+                self.destination.selection.feature,
+                self.transform.inverse(),
+            ) {
+                return Err("Selected destination feature leaves the source material".to_owned());
             }
             graph
                 .weld_contact_square_transformed(
@@ -253,9 +195,6 @@ impl Intent {
         graph: &ConstructionGraph,
         previous: &AppSimulation,
     ) -> Result<BodyStates, String> {
-        if self.in_place {
-            crate::validate_merged_body_poses(creation, graph, previous)?;
-        }
         let (mut transforms, mut velocities) =
             crate::rebuilt_body_states(creation, graph, previous);
         let old = previous
@@ -287,14 +226,12 @@ impl Intent {
                 .iter()
                 .any(|part| self.parts.contains(part))
         }) {
-            if !self.in_place {
-                transforms[index] = pose(
-                    frame.compose(
-                        ConstructionFrame::new(body.root_translation, body.root_rotation)
-                            .map_err(|e| e.to_string())?,
-                    ),
-                );
-            }
+            transforms[index] = pose(
+                frame.compose(
+                    ConstructionFrame::new(body.root_translation, body.root_rotation)
+                        .map_err(|e| e.to_string())?,
+                ),
+            );
             let position = Vec3::from_slice(&transforms[index].position[..3]);
             velocities[index] = GpuVelocity {
                 linear: (Vec3::from_slice(&velocity.linear[..3])
@@ -306,11 +243,9 @@ impl Intent {
         }
         let mut coordinates =
             crate::rebuilt_mechanism_coordinates(creation, previous, &transforms, &velocities);
-        if !self.in_place {
-            for (index, bearing) in creation.loop_topology.tree_bearings.iter().enumerate() {
-                if self.baseline.bearing(*bearing).is_some_and(|joint| matches!(joint.source.owner, FaceOwner::Part(part) if self.parts.contains(&part))) {
-                    coordinates[index] = GpuMechanismCoordinate { position: 0.0, velocity: 0.0 };
-                }
+        for (index, bearing) in creation.loop_topology.tree_bearings.iter().enumerate() {
+            if self.baseline.bearing(*bearing).is_some_and(|joint| matches!(joint.source.owner, FaceOwner::Part(part) if self.parts.contains(&part))) {
+                coordinates[index] = GpuMechanismCoordinate { position: 0.0, velocity: 0.0 };
             }
         }
         Ok((transforms, velocities, coordinates))

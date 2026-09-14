@@ -104,6 +104,27 @@ impl MatterMode {
     }
 }
 
+/// How the Welder joins bodies, chosen from its Tab selector.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum WeldMode {
+    /// Welds two touching bodies where they are, which can close a loop.
+    #[default]
+    Join,
+    /// Moves one creation onto a feature of another.
+    Place,
+}
+
+impl WeldMode {
+    pub(crate) const ALL: [Self; 2] = [Self::Join, Self::Place];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Join => "Join",
+            Self::Place => "Place",
+        }
+    }
+}
+
 /// Placeable selected inside Matter Manipulator → Item Placer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum PlaceableItem {
@@ -129,6 +150,7 @@ pub(crate) enum WheelChoice {
     Item(PlaceableItem),
     TerrainMaterial(TerrainMaterial),
     ShapeMode(crate::shape_tool::ShapeEditMode),
+    WeldMode(WeldMode),
 }
 
 /// A radial selector's data model, shared by input and rendering.
@@ -138,6 +160,7 @@ pub(crate) enum WheelContext {
     Item,
     TerrainMaterial,
     Shape,
+    Weld,
 }
 
 impl WheelChoice {
@@ -152,6 +175,7 @@ impl WheelChoice {
             Self::TerrainMaterial(TerrainMaterial::Iron) => "Iron",
             Self::TerrainMaterial(TerrainMaterial::Graphite) => "Graphite",
             Self::ShapeMode(mode) => mode.label(),
+            Self::WeldMode(mode) => mode.label(),
         }
     }
 
@@ -161,6 +185,7 @@ impl WheelChoice {
             Self::Item(_) => WheelContext::Item,
             Self::TerrainMaterial(_) => WheelContext::TerrainMaterial,
             Self::ShapeMode(_) => WheelContext::Shape,
+            Self::WeldMode(_) => WheelContext::Weld,
         }
     }
 }
@@ -172,6 +197,7 @@ impl WheelContext {
             Self::Item => "ITEMS",
             Self::TerrainMaterial => "TERRAIN",
             Self::Shape => "SHAPE",
+            Self::Weld => "WELD",
         }
     }
 
@@ -181,6 +207,7 @@ impl WheelContext {
             Self::Item => PlaceableItem::ALL.len(),
             Self::TerrainMaterial => TerrainMaterial::ALL.len(),
             Self::Shape => crate::shape_tool::ShapeEditMode::ALL.len(),
+            Self::Weld => WeldMode::ALL.len(),
         }
     }
 
@@ -202,6 +229,7 @@ impl WheelContext {
                 .get(index)
                 .copied()
                 .map(WheelChoice::ShapeMode),
+            Self::Weld => WeldMode::ALL.get(index).copied().map(WheelChoice::WeldMode),
         }
     }
 
@@ -302,6 +330,7 @@ pub(crate) struct SelectedTool {
     pub(crate) tool: Option<MainTool>,
     pub(crate) matter_mode: MatterMode,
     pub(crate) item: PlaceableItem,
+    pub(crate) weld_mode: WeldMode,
 }
 
 impl Default for SelectedTool {
@@ -310,6 +339,7 @@ impl Default for SelectedTool {
             tool: Some(MainTool::MatterManipulator),
             matter_mode: MatterMode::Block,
             item: PlaceableItem::Bearing,
+            weld_mode: WeldMode::Join,
         }
     }
 }

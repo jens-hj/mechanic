@@ -6715,14 +6715,18 @@ fn update_hover(
         return;
     };
     if selection.active_editor_tool() == Some(Tool::Weld) {
-        weld_tool::hover(
-            &graph.0,
-            &simulation,
-            &mut state,
-            ray,
-            &actions,
-            &world_runtime,
-        );
+        weld_tool::sync_mode(&mut state, selection.weld_mode);
+        match selection.weld_mode {
+            hotbar::WeldMode::Join => weld_tool::join_hover(&graph.0, &simulation, &mut state, ray),
+            hotbar::WeldMode::Place => weld_tool::hover(
+                &graph.0,
+                &simulation,
+                &mut state,
+                ray,
+                &actions,
+                &world_runtime,
+            ),
+        }
         return;
     }
     state.weld.cancel();
@@ -10730,14 +10734,21 @@ fn handle_build_actions(
         return;
     }
     if selection.active_editor_tool() == Some(Tool::Weld) {
-        weld_tool::actions(
-            &mut graph.0,
-            &simulation,
-            &mut state,
-            &mut history,
-            &actions,
-            overlay.blocks_pointer() || !player.world_input_active() || wheel.open,
-        );
+        let blocked = overlay.blocks_pointer() || !player.world_input_active() || wheel.open;
+        weld_tool::sync_mode(&mut state, selection.weld_mode);
+        match selection.weld_mode {
+            hotbar::WeldMode::Join => {
+                weld_tool::join_actions(&mut graph.0, &mut state, &mut history, &actions, blocked);
+            }
+            hotbar::WeldMode::Place => weld_tool::actions(
+                &mut graph.0,
+                &simulation,
+                &mut state,
+                &mut history,
+                &actions,
+                blocked,
+            ),
+        }
         return;
     }
     let mut view = live_edit::EditorView::new(&mut graph, &mut state);
@@ -13214,6 +13225,31 @@ fn update_previews(
         hide_preview(&mut action.2);
         hide_preview(&mut selection.2);
         hide_preview(&mut delete.2);
+        if selected_tool.weld_mode == hotbar::WeldMode::Join {
+            if let Some(part) = state.weld.join_hovered {
+                if let Some(mut mesh) = meshes.get_mut(&visuals.weld_hover_preview_mesh) {
+                    *mesh = frame_visuals::weld_preview_mesh(&graph.0, &simulation, part, None);
+                }
+                action.0.0 = visuals.weld_hover_preview_mesh.clone();
+                *action.1 = Transform::default();
+                action.3.0 = if state.weld.join_valid() == Some(false) {
+                    visuals.red_preview_material.clone()
+                } else {
+                    visuals.green_preview_material.clone()
+                };
+                *action.2 = Visibility::Visible;
+            }
+            if let Some(part) = state.weld.join_first() {
+                if let Some(mut mesh) = meshes.get_mut(&visuals.weld_selection_preview_mesh) {
+                    *mesh = frame_visuals::weld_preview_mesh(&graph.0, &simulation, part, None);
+                }
+                selection.0.0 = visuals.weld_selection_preview_mesh.clone();
+                *selection.1 = Transform::default();
+                selection.3.0 = visuals.white_preview_material.clone();
+                *selection.2 = Visibility::Visible;
+            }
+            return;
+        }
         if let Some((preview_graph, parts, frame)) = &state.weld.preview {
             if let Some(mut mesh) = meshes.get_mut(&visuals.weld_hover_preview_mesh) {
                 *mesh = weld_tool::preview_mesh(preview_graph, parts, &state.placed_bearings);

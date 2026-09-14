@@ -1,7 +1,7 @@
 use super::*;
 use mechanic_core::{
-    BearingSpec, BuildOutcome, BuildPose, CuboidSpec, FaceKind, FaceRef, GridRotation, WeldFeature,
-    WeldSelection,
+    BearingSpec, BuildCommand, BuildOutcome, BuildPose, CuboidSpec, FaceKind, FaceRef,
+    GridRotation, WeldFeature, WeldSelection,
 };
 
 fn spawn(graph: &mut ConstructionGraph, position: IVec3) -> PartId {
@@ -607,33 +607,4 @@ fn unrelated_authored_obstruction_does_not_reject_a_clear_live_endpoint() {
             PlacementBounds::GarageBuild,
         )
         .unwrap();
-}
-
-#[test]
-fn bearing_connected_bodies_weld_in_place_and_same_body_is_rejected() {
-    let mut graph = ConstructionGraph::new();
-    let base = spawn(&mut graph, IVec3::new(0, 28, 0));
-    let arm = spawn(&mut graph, IVec3::new(0, 30, 0));
-    graph
-        .apply(BuildCommand::AddBearing(BearingSpec::new(
-            FaceRef::part(base, FaceKind::PositiveY),
-            FaceRef::part(arm, FaceKind::NegativeY),
-            Vec3::Y * 7.25,
-            Vec3::Y,
-        )))
-        .unwrap();
-    let simulation = AppSimulation::default();
-    let source = face(&graph, base, FaceKind::PositiveY);
-    let destination = face(&graph, arm, FaceKind::NegativeY);
-    assert!(Intent::in_place(&graph, &simulation, &source, &source).is_err());
-    let intent = Intent::in_place(&graph, &simulation, &source, &destination).unwrap();
-    let world = WorldRuntime::from_world(&mut World::new());
-    intent
-        .validate(&graph, &simulation, &world, PlacementBounds::GarageBuild)
-        .unwrap();
-    let staged = intent.stage(&graph, []).unwrap();
-    assert_eq!(staged.part_frame(base), graph.part_frame(base));
-    assert_eq!(staged.part_frame(arm), graph.part_frame(arm));
-    assert_eq!(staged.weld_count(), 1);
-    assert!(crate::weld_lockup_warning(&graph, &staged).is_some());
 }
