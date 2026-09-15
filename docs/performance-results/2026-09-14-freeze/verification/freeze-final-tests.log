@@ -1,0 +1,350 @@
+   Compiling unicode-ident v1.0.24
+   Compiling cfg-if v1.0.4
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling log v0.4.33
+   Compiling serde_core v1.0.229
+   Compiling libc v0.2.189
+   Compiling libm v0.2.16
+   Compiling pin-project-lite v0.2.17
+   Compiling smallvec v1.15.2
+   Compiling foldhash v0.2.0
+   Compiling arrayvec v0.7.8
+   Compiling objc2-encode v4.1.0
+   Compiling proc-macro2 v1.0.107
+   Compiling parking v2.2.1
+   Compiling futures-core v0.3.34
+   Compiling crossbeam-utils v0.8.22
+   Compiling raw-window-handle v0.6.2
+   Compiling fastrand v2.5.0
+   Compiling futures-io v0.3.34
+   Compiling quote v1.0.47
+   Compiling indexmap v2.14.0
+   Compiling event-listener v5.4.2
+   Compiling futures-lite v2.6.1
+   Compiling syn v3.0.3
+   Compiling syn v2.0.119
+   Compiling num-traits v0.2.19
+   Compiling event-listener-strategy v0.5.4
+   Compiling concurrent-queue v2.5.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling getrandom v0.4.3
+   Compiling objc2 v0.6.4
+   Compiling typewit v1.15.2
+   Compiling async-channel v2.5.0
+   Compiling const_panic v0.2.17
+   Compiling rand_core v0.10.1
+   Compiling convert_case v0.10.0
+   Compiling rand v0.10.2
+   Compiling hashbrown v0.16.1
+   Compiling uuid v1.24.1
+   Compiling spin v0.10.1
+   Compiling block2 v0.6.2
+   Compiling typeid v1.0.3
+   Compiling thread_local v1.1.10
+   Compiling disqualified v1.0.0
+   Compiling inventory v0.3.24
+   Compiling once_cell v1.21.4
+   Compiling erased-serde v0.4.10
+   Compiling bevy_ptr v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling downcast-rs v2.0.2
+   Compiling slotmap v1.1.1
+   Compiling atomic-waker v1.1.2
+   Compiling slab v0.4.12
+   Compiling async-task v4.7.1
+   Compiling crossbeam-queue v0.3.13
+   Compiling nonmax v0.5.5
+   Compiling bumpalo v3.20.3
+   Compiling either v1.17.0
+   Compiling async-executor v1.14.0
+   Compiling fixedbitset v0.5.7
+   Compiling itertools v0.14.0
+   Compiling rand_distr v0.6.0
+   Compiling memchr v2.8.3
+   Compiling tracing-core v0.1.36
+   Compiling arrayref v0.3.9
+   Compiling simd-adler32 v0.3.10
+   Compiling termcolor v1.4.1
+   Compiling unicode-width v0.2.2
+   Compiling bevy_macro_utils v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling encase_derive_impl v0.12.1
+   Compiling adler2 v2.0.1
+   Compiling bevy_ecs_macro_logic v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bit-vec v0.9.1
+   Compiling miniz_oxide v0.8.9
+   Compiling bit-set v0.9.1
+   Compiling crc32fast v1.5.0
+   Compiling codespan-reporting v0.13.1
+   Compiling aho-corasick v1.1.5
+   Compiling errno v0.3.14
+   Compiling rustc-hash v1.1.0
+   Compiling hexf-parse v0.2.1
+   Compiling regex-syntax v0.8.11
+   Compiling flate2 v1.1.9
+   Compiling piper v0.2.5
+   Compiling crossbeam-channel v0.5.16
+   Compiling blocking v1.6.2
+   Compiling fdeflate v0.3.7
+   Compiling regex-automata v0.4.18
+   Compiling async-lock v3.4.2
+   Compiling constant_time_eq v0.4.2
+   Compiling futures-task v0.3.34
+   Compiling const-fnv1a-hash v1.1.0
+   Compiling blake3 v1.8.6
+   Compiling async-fs v2.2.0
+   Compiling stackfuture v0.3.1
+   Compiling async-broadcast v0.7.2
+   Compiling atomicow v1.2.0
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling parking_lot_core v0.9.12
+   Compiling const_soft_float v0.1.4
+   Compiling quick-error v2.0.1
+   Compiling color_quant v1.1.0
+   Compiling byteorder-lite v0.1.0
+   Compiling zune-core v0.5.3
+   Compiling weezl v0.1.12
+   Compiling pxfm v0.1.30
+   Compiling image-webp v0.2.4
+   Compiling zune-jpeg v0.5.15
+   Compiling gif v0.14.2
+   Compiling constgebra v0.1.4
+   Compiling parking_lot v0.12.5
+   Compiling profiling v1.0.18
+   Compiling lazy_static v1.5.0
+   Compiling sharded-slab v0.1.7
+   Compiling matchers v0.2.0
+   Compiling moxcms v0.8.1
+   Compiling tracing-log v0.2.0
+   Compiling euclid v0.22.14
+   Compiling bevy_mikktspace v1.0.0
+   Compiling svg_fmt v0.4.5
+   Compiling nu-ansi-term v0.50.3
+   Compiling guillotiere v0.6.2
+   Compiling rectangle-pack v0.4.2
+   Compiling objc-sys v0.3.5
+   Compiling regex v1.13.1
+   Compiling codespan-reporting v0.12.0
+   Compiling static_assertions v1.1.0
+   Compiling data-encoding v2.11.1
+   Compiling objc2 v0.5.2
+   Compiling core_maths v0.1.1
+   Compiling core-foundation-sys v0.8.7
+   Compiling dispatch v0.2.0
+   Compiling block2 v0.5.1
+   Compiling core-foundation v0.9.4
+   Compiling offset-allocator v0.2.0
+   Compiling weak-table v0.3.2
+   Compiling foreign-types-shared v0.3.1
+   Compiling bitflags v1.3.2
+   Compiling float-cmp v0.9.0
+   Compiling core-graphics-types v0.1.3
+   Compiling strict-num v0.1.1
+   Compiling polycool v0.4.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling mosaic-core v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling cursor-icon v1.2.0
+   Compiling dpi v0.1.2
+   Compiling kurbo v0.13.1
+   Compiling tinyvec v1.12.0
+   Compiling ttf-parser v0.25.1
+   Compiling memmap2 v0.9.11
+   Compiling yazi v0.2.1
+   Compiling siphasher v1.0.3
+   Compiling zeno v0.3.3
+   Compiling svgtypes v0.16.1
+   Compiling fontdb v0.23.0
+   Compiling mosaic-render v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling roxmltree v0.21.1
+   Compiling approx v0.5.1
+   Compiling simplecss v0.2.2
+   Compiling unicode-bidi v0.3.18
+   Compiling imagesize v0.14.0
+   Compiling unicode-script v0.5.8
+   Compiling xmlwriter v0.1.0
+   Compiling sys-locale v0.3.2
+   Compiling base64 v0.22.1
+   Compiling rustc-hash v2.1.3
+   Compiling self_cell v1.3.0
+   Compiling pico-args v0.5.0
+   Compiling linebender_resource_handle v0.1.1
+   Compiling unicode-linebreak v0.1.5
+   Compiling rangemap v1.8.0
+   Compiling smol_str v0.3.6
+   Compiling data-url v0.3.2
+   Compiling getrandom v0.3.4
+   Compiling fastnoise-lite v1.1.1
+   Compiling mosaic-layout v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mosaic-syntax v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling proc-macro-crate v3.5.0
+   Compiling pollster v0.4.0
+   Compiling zmij v1.0.23
+   Compiling itoa v1.0.18
+   Compiling serde_json v1.0.151
+   Compiling bytemuck_derive v1.12.0
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.20
+   Compiling encase_derive v0.12.1
+   Compiling derive_more-impl v2.1.1
+   Compiling assert_type_match v0.1.1
+   Compiling variadics_please v1.1.0
+   Compiling bevy_reflect_derive v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_ecs_macros v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_derive v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bytemuck v1.25.2
+   Compiling bitflags v2.13.1
+   Compiling nix v0.31.3
+   Compiling dispatch2 v0.3.1
+   Compiling zerocopy-derive v0.8.56
+   Compiling ctrlc v3.5.2
+   Compiling tracing-attributes v0.1.31
+   Compiling rustix v1.1.4
+   Compiling objc2-core-foundation v0.3.2
+   Compiling objc2-foundation v0.3.2
+   Compiling polling v3.11.0
+   Compiling futures-macro v0.3.34
+   Compiling thiserror v2.0.20
+   Compiling encase v0.12.1
+   Compiling glam v0.32.1
+   Compiling objc2-metal v0.3.2
+   Compiling serde v1.0.229
+   Compiling async-io v2.6.0
+   Compiling wgpu-types v29.0.4
+   Compiling bevy_platform v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling smol_str v0.2.2
+   Compiling bevy_utils v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling ron v0.12.2
+   Compiling png v0.18.1
+   Compiling futures-util v0.3.34
+   Compiling tracing v0.1.44
+   Compiling bevy_asset_macros v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling objc2-quartz-core v0.3.2
+   Compiling hexasphere v18.0.0
+   Compiling zerocopy v0.8.56
+   Compiling raw-window-metal v1.1.0
+   Compiling image v0.25.10
+   Compiling bevy_encase_derive v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling tracing-subscriber v0.3.23
+   Compiling font-types v0.11.3
+   Compiling enumn v0.1.14
+   Compiling derive_more v2.1.1
+   Compiling bevy_gizmos_macros v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_reflect v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_tasks v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_material_macros v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling half v2.7.1
+   Compiling objc2-foundation v0.2.2
+   Compiling naga v29.0.4
+   Compiling bevy_render_macros v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling accesskit v0.24.1
+   Compiling foreign-types-macros v0.2.4
+   Compiling accesskit_consumer v0.38.0
+   Compiling read-fonts v0.37.0
+   Compiling read-fonts v0.39.2
+   Compiling objc2-app-kit v0.2.2
+   Compiling foreign-types v0.5.0
+   Compiling bevy_ecs v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_math v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling core-graphics v0.23.2
+   Compiling winit v0.30.13
+   Compiling wgpu-naga-bridge v29.0.4
+   Compiling wgpu-hal v29.0.4 (/Users/jens/repos/mechanic/vendor/wgpu-hal)
+   Compiling wgpu-core-deps-apple v29.0.4
+   Compiling wgpu-core v29.0.4 (/Users/jens/repos/mechanic/vendor/wgpu-core)
+   Compiling bevy_color v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling wgpu v29.0.4
+   Compiling bevy_app v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling naga_oil v0.22.0
+   Compiling bevy_time v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_diagnostic v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_asset v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_input v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_transform v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_window v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_mesh v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_image v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_log v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_shader v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_material v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_camera v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling skrifa v0.42.1
+   Compiling bevy_gizmos v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_light v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_render v0.19.0 (/Users/jens/repos/mechanic/vendor/bevy_render)
+   Compiling accesskit_macos v0.26.3
+   Compiling tiny-skia-path v0.12.0
+   Compiling accesskit_winit v0.32.2
+   Compiling swash v0.2.10
+   Compiling bevy_input_focus v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_a11y v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling skrifa v0.40.0
+   Compiling harfrust v0.5.2
+   Compiling bevy_state_macros v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_state v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling cosmic-text v0.19.0
+   Compiling bevy_winit v0.19.0 (/Users/jens/repos/mechanic/vendor/bevy_winit)
+   Compiling usvg v0.47.0
+   Compiling tiny-skia v0.12.0
+   Compiling mechanic-core v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-core)
+   Compiling bevy_core_pipeline v0.19.0 (/Users/jens/repos/mechanic/vendor/bevy_core_pipeline)
+   Compiling rgb v0.8.53
+   Compiling resvg v0.47.0
+   Compiling mechanic-world v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-world)
+   Compiling mosaic-text v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mosaic-widgets v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mosaic-render-wgpu v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mosaic-macros v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+   Compiling bevy_pbr v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_post_process v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_gizmos_render v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_internal v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_mosaic v0.1.0 (/Users/jens/repos/mechanic/crates/bevy_mosaic)
+   Compiling mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6m 22s
+     Running unittests src/main.rs (/tmp/mechanic-freeze-target/debug/deps/mechanic_app-4eb89b8eedf0530a)
+
+running 37 tests
+test debug_frame_freeze_tests::freeze_stays_active_until_a_click_is_consumed ... ok
+test freeze::tests::downward_clearance_preserves_clipped_steps_and_rejects_sub_tolerance_progress ... ok
+test freeze::tests::last_downward_step_stops_at_clearance_between_block_heights ... ok
+test freeze::tests::common_height_interpolation_preserves_the_accepted_arrangement ... ok
+test freeze::tests::overlay_replaces_stale_held_readbacks_without_rewinding_neighbors ... ok
+test freeze::tests::garage_pose_keeps_link_pivot_at_target_and_rotates_all_held_bodies_cardinally ... ok
+test freeze::tests::held_bodies_with_clear_endpoints_cannot_pass_through_each_other ... ok
+test freeze::tests::arrows_during_alignment_still_reject_crossing_parts_and_keep_the_target ... ok
+test freeze::tests::close_held_bodies_translate_and_slide_without_bounding_sphere_false_blocks ... ok
+test freeze::tests::held_default_overlap_is_refused_but_joint_collision_suppression_is_honored ... ok
+test freeze::tests::bodies_outside_the_frozen_creation_never_block_it ... ok
+test freeze::tests::lowering_into_ground_or_planning_without_terrain_is_refused ... ok
+test freeze::tests::overturned_offset_geometry_lifts_before_leveling ... ok
+test freeze::tests::hierarchical_terrain_queries_keep_walls_ceilings_and_new_terrain_obstructing ... ok
+test freeze::tests::candidate_publication_replans_clearance_lift_before_leveling ... ok
+test freeze::tests::publication_and_restore_replace_cached_geometry_and_reset_translation ... ok
+test freeze::tests::reused_cache_uses_current_poses_after_origin_translation ... ok
+test freeze::tests::rejected_publication_leaves_original_hold_and_repeat_progress_untouched ... ok
+test freeze::tests::rotating_held_offset_geometry_cannot_sweep_through_another_held_body ... ok
+test freeze::tests::saved_global_target_is_restored_exactly_before_first_tick ... ok
+test freeze::tests::swept_path_rejects_terrain_ceiling_and_wall_between_clear_endpoints ... ok
+test freeze::tests::tangled_held_bodies_may_pass_through_each_other_to_come_apart ... ok
+test freeze::tests::terrain_clearance_checks_face_interiors_and_rotated_lowest_points ... ok
+test freeze::tests::visual_snapshot_contains_only_held_bodies_and_tracks_prescribed_pose ... ok
+test freeze::tests::triangle_clearance_replaces_dense_queries_for_a_wide_plate ... ok
+test freeze_motion::tests::grid_heights_round_up_on_both_sides_of_zero ... ok
+test freeze_motion::tests::heading_selects_nearest_cardinal_across_boundaries ... ok
+test freeze::tests::weld_destination_decides_the_hold_and_dimension_links_survive ... ok
+test freeze_motion::tests::height_steps_start_immediately_then_repeat_after_delay ... ok
+test freeze_motion::tests::opposite_arrows_release_and_reset_discard_repeat_progress ... ok
+test freeze::tests::wide_plate_can_lower_to_five_centimetres_above_terrain ... ok
+test freeze_motion::tests::overturned_and_vertical_creations_have_deterministic_headings ... ok
+test freeze_motion::tests::pose_smoothing_is_invariant_to_frame_subdivision ... ok
+test freeze_motion::tests::smoothing_finishes_alignment_at_world_coordinates_before_release ... ok
+test freeze_motion::tests::smoothing_settles_to_the_exact_target_and_accepts_equivalent_quaternions ... ok
+test freeze::tests::swept_cache_matches_exhaustive_checks_on_deterministic_poses ... ok
+test world::tests::freeze_triangle_query_prunes_distant_geometry_and_converts_global_coordinates ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.08s
+

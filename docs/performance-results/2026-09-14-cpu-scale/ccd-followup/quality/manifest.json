@@ -1,0 +1,68 @@
+[
+  {
+    "scenario": "reference-fixtures",
+    "command": [
+      ".physics-reference/ccd-followup/candidate",
+      "--scenario",
+      "reference-fixtures"
+    ],
+    "binary_sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "car-drop",
+    "command": [
+      ".physics-reference/ccd-followup/candidate",
+      "--scenario",
+      "car-drop"
+    ],
+    "binary_sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "car-drive",
+    "command": [
+      ".physics-reference/ccd-followup/candidate",
+      "--scenario",
+      "car-drive"
+    ],
+    "binary_sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "block-pile",
+    "command": [
+      ".physics-reference/ccd-followup/candidate",
+      "--scenario",
+      "block-pile"
+    ],
+    "binary_sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "fast-impacts",
+    "command": [
+      ".physics-reference/ccd-followup/candidate",
+      "--scenario",
+      "fast-impacts"
+    ],
+    "binary_sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "four-bar",
+    "command": [
+      ".physics-reference/ccd-followup/candidate",
+      "--scenario",
+      "four-bar"
+    ],
+    "binary_sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  }
+]

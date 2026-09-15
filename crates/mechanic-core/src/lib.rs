@@ -14,6 +14,7 @@ mod graph;
 mod id;
 mod linear;
 mod linear_geometry;
+mod pipe_junction;
 mod region;
 mod shape;
 mod solid;
@@ -34,13 +35,13 @@ pub use compile::{
 };
 pub use contact_geometry::{
     ContactGeometryError, ContactPolytope, ContactVelocity, ConvexFeature, ConvexSeparation,
-    RigidContactSweep, SweepOutcome, TriangleContactPoint,
+    RigidContactSweep, SweepOutcome, TriangleClipScratch, TriangleContactPoint,
 };
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, ConstructionFrameDoc,
-    CreationDocument, CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc,
-    DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc,
-    InputSeatLinkDoc, LoadedCreation, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc,
+    CreationDocument, CreationError, CylinderBandDoc, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc,
+    DriveProgramDoc, DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc,
+    GearboxConfigDoc, InputSeatLinkDoc, LoadedCreation, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc,
     SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc,
     WeldDoc,
 };
@@ -64,15 +65,15 @@ pub use gearbox::{
 };
 pub use geometry::{
     Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ConstructionMaterial, ControllerSpec, CuboidSpec,
-    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, DimensionLinkId,
-    DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS,
-    GridDimension, GridRotation, InputSpec, MAX_CYLINDER_OUTER_DIAMETER,
-    MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS, MAX_PIPE_BEND_RADIUS, MIN_CYLINDER_DIAMETER_GAP,
-    MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES, MIN_PIPE_BEND_RADIUS,
+    CylinderBand, CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError,
+    DimensionLinkId, DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
+    GRID_UNIT_METERS, GridDimension, GridRotation, InputSpec, LayerSide, MAX_CYLINDER_BANDS,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS,
+    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES,
     MaterialProperties, PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, POSITION_TICK_METERS,
-    POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartSpec,
-    PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, SeatSpec, ServoSpec,
-    TransmissionSpec, snap_world_to_grid,
+    POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartSpec, PipeArms,
+    PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, PipeJunctionDimensions,
+    PipeJunctionError, PipeJunctionSpec, SeatSpec, ServoSpec, TransmissionSpec, snap_world_to_grid,
 };
 pub use graph::{
     ActuatorInventory, AppearanceTarget, BearingDimensionError, BearingDimensions, BearingSpec,
@@ -84,6 +85,10 @@ pub use graph::{
 pub use linear::{
     BearingKind, CarriageFace, LINEAR_METERS_PER_RADIAN, LINEAR_METERS_PER_REVOLUTION,
     LinearBearing, LinearBearingDimensions, LinearBearingError,
+};
+pub use pipe_junction::{
+    PipeJunctionBox, PipeJunctionSurface, PipeJunctionTriangle, pipe_junction_triangles,
+    pipe_junction_wall_boxes,
 };
 
 pub use id::{

@@ -1,0 +1,28 @@
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.005s
+
+OK
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.007s
+
+OK
+...............
+----------------------------------------------------------------------
+Ran 15 tests in 0.010s
+
+OK
+.1x-separated-baseline-1 (reused)
+1x-separated-candidate-1
+1x-connected-baseline-1 (reused)
+1x-connected-candidate-1
+..1x-separated-baseline-1 (reused)
+1x-separated-candidate-1
+1x-connected-baseline-1 (reused)
+1x-connected-candidate-1
+...
+----------------------------------------------------------------------
+Ran 6 tests in 0.087s
+
+OK

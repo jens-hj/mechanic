@@ -15,6 +15,48 @@ spec.loader.exec_module(summary)
 
 
 class CaptureSummaryTests(unittest.TestCase):
+    def test_freeze_summary_keeps_active_hitches_out_of_idle_percentiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "freeze.jsonl"
+            self.write_capture(path, [
+                {"kind": "freeze_stage", "data": {"stage": "total", "ms": 0.01}},
+                {"kind": "freeze_stage", "data": {"stage": "internal_path", "ms": 19}},
+                {"kind": "freeze_stage", "data": {"stage": "planning", "ms": 20}},
+                {"kind": "freeze_stage", "data": {"stage": "total", "ms": 21}},
+            ])
+            result = summary.summarize(path)
+            self.assertEqual(result["freeze_stages_ms"]["active_total"],
+                             {"count": 1, "p95": 21, "max": 21})
+            self.assertEqual(result["freeze_stages_ms"]["internal_path"]["max"], 19)
+
+    def test_freeze_input_cadence_uses_update_timestamps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "freeze.jsonl"
+            self.write_capture(path, [
+                {"kind": "freeze_input", "elapsed_ms": 1, "data": {"toggle": True}},
+                {"kind": "freeze_stage", "elapsed_ms": 31, "data": {"stage": "total", "ms": 30}},
+                {"kind": "freeze_stage", "elapsed_ms": 42, "data": {"stage": "total", "ms": 1}},
+            ])
+            result = summary.summarize(path)
+            self.assertEqual(result["freeze_input_processing_ms"]["max"], 30)
+            self.assertEqual(result["freeze_input_update_interval_ms"]["max"], 40)
+
+    def test_cpu_completions_count_without_gpu_timings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cpu.jsonl"
+            self.write_capture(path, [
+                {"kind":"physics_submit", "data":{"tick":1,"sequence":1,"route":"cpu"}},
+                {"kind":"physics_cpu_tick", "data":{"tick":1,"duration_ms":1.5,"degraded":False}},
+                {"kind":"physics_publication", "data":{"tick":1,"route":"cpu"}},
+                {"kind":"physics_readback", "data":{"tick":1,"sequence":1,"route":"cpu","error_flags":0}},
+            ])
+            result = summary.summarize(path)
+            self.assertEqual(result["physics_routes"], ["cpu"])
+            self.assertTrue(result["drain_complete"])
+            self.assertEqual(result["cpu_tick_ms"]["p95"], 1.5)
+            self.assertEqual(result["physics_gpu_ms"]["count"], 0)
+            self.assertEqual(result["cpu_degraded_ticks"], 0)
+
     def test_replay_includes_drained_states_without_measuring_idle_drain_frames(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.jsonl"

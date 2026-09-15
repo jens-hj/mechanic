@@ -1,0 +1,35 @@
+(
+    id: 1,
+    creation: (
+        version: 17,
+        name: "GPU freeze smoke",
+        parts: [DimensionLink(id: (1), pose: (translation_ticks: (0, 2400, 0), rotation: (0, 0, 0)))],
+        frames: [
+            (
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+            ),
+            (
+                translation: (0.0, 0.0, 0.0),
+                rotation: (0.0, 0.0, 0.0, 1.0),
+            ),
+        ],
+        part_frames: [0],
+        region_frames: [],
+        welds: [],
+        rigid_links: [],
+        bearings: [],
+        drive_links: [],
+        input_seat_links: [],
+        seat_controller_links: [],
+        gearbox_configs: [],
+        regions: [],
+        shape_features: [],
+        sockets: [],
+    ),
+    root_pose: (
+        translation: (0.0, 0.0, 0.0),
+        rotation: (0.0, 0.0, 0.0, 1.0),
+    ),
+    joint_coordinates: [],
+)

@@ -1,0 +1,128 @@
+{
+  "baseline": [
+    {
+      "repeat": 1,
+      "warmup_ticks": 600,
+      "measured_ticks": 3600,
+      "summary": {
+        "closure_angle_rad": 2.1073424255447017e-08,
+        "closure_gap_m": 0.018527439215687926,
+        "degraded_ticks": 0,
+        "kind": "summary",
+        "maximum_penetration_m": 0.0018844724145656855,
+        "outside_terrain_region": false,
+        "p95_ms": 44.424749999999996,
+        "rendering_measured": false,
+        "timing_gate": false
+      },
+      "phase_p95_ms": {
+        "duration_ms": 44.424749999999996,
+        "query_ms": 35.157707,
+        "rows_ms": 7.719752,
+        "dynamics_ms": 0.22212400000000002,
+        "constraints_ms": 1.135834,
+        "continuous_ms": 0.699834,
+        "conversion_ms": 0.005208999999999999
+      },
+      "compute_ticks_per_second": 28.51123924618332
+    },
+    {
+      "repeat": 2,
+      "warmup_ticks": 600,
+      "measured_ticks": 3600,
+      "summary": {
+        "closure_angle_rad": 2.1073424255447017e-08,
+        "closure_gap_m": 0.018527439215687926,
+        "degraded_ticks": 0,
+        "kind": "summary",
+        "maximum_penetration_m": 0.0018844724145656855,
+        "outside_terrain_region": false,
+        "p95_ms": 44.606334,
+        "rendering_measured": false,
+        "timing_gate": false
+      },
+      "phase_p95_ms": {
+        "duration_ms": 44.606334,
+        "query_ms": 35.294124,
+        "rows_ms": 7.718081999999999,
+        "dynamics_ms": 0.22812600000000002,
+        "constraints_ms": 1.145207,
+        "continuous_ms": 0.7101679999999999,
+        "conversion_ms": 0.004958
+      },
+      "compute_ticks_per_second": 28.418051128012106
+    }
+  ],
+  "candidate": [
+    {
+      "repeat": 1,
+      "warmup_ticks": 600,
+      "measured_ticks": 3600,
+      "summary": {
+        "closure_angle_rad": 2.1073424255447017e-08,
+        "closure_gap_m": 0.018527439215687926,
+        "degraded_ticks": 0,
+        "kind": "summary",
+        "maximum_penetration_m": 0.0018844724145656855,
+        "outside_terrain_region": false,
+        "p95_ms": 30.131,
+        "rendering_measured": false,
+        "timing_gate": false
+      },
+      "phase_p95_ms": {
+        "duration_ms": 30.131,
+        "query_ms": 20.720792000000003,
+        "rows_ms": 7.761710000000001,
+        "dynamics_ms": 0.22004100000000001,
+        "constraints_ms": 1.137958,
+        "continuous_ms": 0.7056669999999999,
+        "conversion_ms": 0.005167
+      },
+      "compute_ticks_per_second": 41.278814262174606
+    },
+    {
+      "repeat": 2,
+      "warmup_ticks": 600,
+      "measured_ticks": 3600,
+      "summary": {
+        "closure_angle_rad": 2.1073424255447017e-08,
+        "closure_gap_m": 0.018527439215687926,
+        "degraded_ticks": 0,
+        "kind": "summary",
+        "maximum_penetration_m": 0.0018844724145656855,
+        "outside_terrain_region": false,
+        "p95_ms": 30.078292,
+        "rendering_measured": false,
+        "timing_gate": false
+      },
+      "phase_p95_ms": {
+        "duration_ms": 30.078292,
+        "query_ms": 20.591915999999998,
+        "rows_ms": 7.728166999999999,
+        "dynamics_ms": 0.21845799999999999,
+        "constraints_ms": 1.122542,
+        "continuous_ms": 0.702,
+        "conversion_ms": 0.005
+      },
+      "compute_ticks_per_second": 41.25493775764707
+    }
+  ],
+  "comparisons": [
+    {
+      "repeat": 1,
+      "identical_state_hashes": 4200,
+      "total_ticks": 4200,
+      "p95_reduction_percent": 32.17519513334346
+    },
+    {
+      "repeat": 2,
+      "identical_state_hashes": 4200,
+      "total_ticks": 4200,
+      "p95_reduction_percent": 32.56945975430304
+    }
+  ],
+  "repeat_state_hashes_identical": {
+    "baseline": true,
+    "candidate": true
+  }
+}

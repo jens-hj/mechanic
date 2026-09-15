@@ -636,3 +636,131 @@ fn generated_chunk_bvh_queries_match_direct_finite_triangle_queries() {
     assert_eq!(query.unreduced_points, direct);
     assert!(query.contacts.len() <= direct);
 }
+
+#[test]
+fn builder_pipe_hierarchy_matches_exhaustive_pairs_at_rotated_poses() {
+    let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
+        "../../../mechanic-bench/tests/fixtures/builder-world/generations/20/world.ron"
+    ))
+    .unwrap();
+    let loaded = instance.creation.into_graph().unwrap();
+    let creation = loaded
+        .graph
+        .compile_with_suspension_sockets([], &loaded.sockets)
+        .unwrap();
+    let geometry = MachineCollisionGeometry::new(&creation, 1).unwrap();
+    let state = crate::MachineState::at_rest(&creation);
+    for angle in [0.0, 0.4, 1.7] {
+        let rotation = bevy_math::DQuat::from_rotation_z(angle);
+        let poses = state
+            .poses
+            .iter()
+            .map(|pose| BodyPose {
+                position: rotation * pose.position,
+                rotation: rotation * pose.rotation,
+            })
+            .collect::<Vec<_>>();
+        let bounds = geometry
+            .colliders
+            .iter()
+            .map(|collider| {
+                let pose = poses[collider.body];
+                let exact = collider
+                    .local
+                    .transformed(pose.position, pose.rotation)
+                    .unwrap()
+                    .bounds();
+                assert_eq!(
+                    exact,
+                    collider
+                        .local
+                        .transformed_bounds(pose.position, pose.rotation)
+                        .unwrap()
+                );
+                [exact[0] - DVec3::splat(0.01), exact[1] + DVec3::splat(0.01)]
+            })
+            .collect::<Vec<_>>();
+        let mut expected = Vec::new();
+        for (a, first) in geometry.colliders.iter().enumerate() {
+            for (b, second) in geometry.colliders.iter().enumerate().skip(a + 1) {
+                let bodies = [first.body.min(second.body), first.body.max(second.body)];
+                if first.body != second.body
+                    && (first.moving || second.moving)
+                    && geometry.suppressed.binary_search(&bodies).is_err()
+                    && super::overlaps(bounds[a], bounds[b])
+                {
+                    expected.push([a, b]);
+                }
+            }
+        }
+        assert_eq!(&*geometry.candidate_pairs(&bounds), expected);
+        for [a, b] in expected.into_iter().take(50) {
+            let a = geometry.colliders[a]
+                .local
+                .transformed(
+                    poses[geometry.colliders[a].body].position,
+                    poses[geometry.colliders[a].body].rotation,
+                )
+                .unwrap();
+            let b = geometry.colliders[b]
+                .local
+                .transformed(
+                    poses[geometry.colliders[b].body].position,
+                    poses[geometry.colliders[b].body].rotation,
+                )
+                .unwrap();
+            let full = a.convex_separation(&b).unwrap();
+            for margin in [0.0, 0.01, 0.1] {
+                let bounded = a.convex_separation_within(&b, margin).unwrap();
+                if full.separation <= margin {
+                    assert_eq!(bounded, Some(full));
+                }
+                if let Some(bounded) = bounded {
+                    assert_eq!(bounded, full);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rotated_pipe_opening_stays_open_while_its_annulus_and_solid_version_collide() {
+    use mechanic_core::{GridRotation, PipeBendDimensions, PipeBendSpec};
+    for (inner, offset, collides) in [(0.6, 0.0, false), (0.0, 0.0, true), (0.6, 0.375, true)] {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
+                PipeBendDimensions::new(1.0, inner, 6).unwrap(),
+                BuildPose::default(),
+            )))
+            .unwrap();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [1, 1, 1],
+                    BuildPose::from_half_grid(bevy_math::IVec3::splat(64), GridRotation::default()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
+        let scene = TerrainContactScene::default();
+        let mut poses = crate::MachineState::at_rest(&creation).poses;
+        poses[1].position = DVec3::new(offset, 1.0, 0.0);
+        let rotation = DQuat::from_rotation_z(0.61);
+        for pose in &mut poses {
+            pose.position = rotation * pose.position;
+            pose.rotation = rotation * pose.rotation;
+        }
+        assert_eq!(
+            !scene
+                .contacts(&geometry, &poses, DVec3::ZERO)
+                .unwrap()
+                .contacts
+                .is_empty(),
+            collides,
+            "inner={inner}, offset={offset}"
+        );
+    }
+}

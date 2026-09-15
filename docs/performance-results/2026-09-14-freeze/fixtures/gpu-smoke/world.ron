@@ -1,0 +1,22 @@
+(
+    version: 5,
+    name: "gpu-freeze-smoke",
+    generator_version: 1,
+    seed: 13775900870976056167,
+    last_played_unix_seconds: 1789420395,
+    player_pose: (
+        translation: (-6.471810817718506, 4.000099809265136, 1.9918665885925293),
+        rotation: (0.0, 0.0, 0.0, 1.0),
+    ),
+    return_anchor: Some((0.0, 4.0000901222229, 0.0)),
+    construction_generation: 1,
+    active_dimension_link: Some((1)),
+    frozen_creation: None,
+    next_dimension_link_id: 2,
+    instances: [
+        (
+            id: 1,
+            name: "World construction",
+        ),
+    ],
+)

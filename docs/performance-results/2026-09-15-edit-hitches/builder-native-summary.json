@@ -1,0 +1,99 @@
+{
+  "before": {
+    "world_physics_install": {
+      "count": 10,
+      "min_ms": 98.419917,
+      "max_ms": 103.37120800000001
+    },
+    "installation_frame_record_gaps_ms": [
+      2176.438416000001,
+      2094.8952500000014,
+      2104.2843330000032,
+      2087.0846249999995,
+      2228.339708000003,
+      2231.4035409999997,
+      2232.683124999996,
+      2226.601416999998,
+      2228.4999580000003,
+      2227.477542000008
+    ],
+    "result": {
+      "capacity_exceeded": false,
+      "interrupted": false,
+      "kind": "result",
+      "records": 6712,
+      "valid": true
+    }
+  },
+  "normals-only": {
+    "world_physics_install": {
+      "count": 12,
+      "min_ms": 99.2875,
+      "max_ms": 101.723708
+    },
+    "body_mesh_rebuild": {
+      "count": 12,
+      "min_ms": 3.067292,
+      "max_ms": 3.52525
+    },
+    "installation_frame_record_gaps_ms": [
+      192.88666599999988,
+      132.7460000000001,
+      139.33700000000135,
+      139.47691699999996,
+      144.31462499999907,
+      151.4005840000027,
+      283.84820800000307,
+      283.8170839999948,
+      288.4297080000033,
+      284.56929200000013,
+      282.825334000001,
+      291.3343339999992
+    ],
+    "result": {
+      "capacity_exceeded": false,
+      "interrupted": false,
+      "kind": "result",
+      "records": 12616,
+      "valid": true
+    }
+  },
+  "after": {
+    "world_physics_install": {
+      "count": 12,
+      "min_ms": 0.3855,
+      "max_ms": 9.109375
+    },
+    "body_mesh_rebuild": {
+      "count": 12,
+      "min_ms": 2.974791,
+      "max_ms": 3.5595000000000003
+    },
+    "world_physics_prepare": {
+      "count": 12,
+      "min_ms": 96.728792,
+      "max_ms": 101.370458
+    },
+    "installation_frame_record_gaps_ms": [
+      96.76608300000044,
+      49.774625000000015,
+      42.079250000000684,
+      45.14058400000431,
+      52.13837499999863,
+      142.12812499999927,
+      191.86483300000327,
+      193.94166699999914,
+      199.22070900000108,
+      195.85425000000396,
+      200.30845799999952,
+      202.4312079999945
+    ],
+    "result": {
+      "capacity_exceeded": false,
+      "interrupted": false,
+      "kind": "result",
+      "records": 12413,
+      "valid": true
+    }
+  }
+}

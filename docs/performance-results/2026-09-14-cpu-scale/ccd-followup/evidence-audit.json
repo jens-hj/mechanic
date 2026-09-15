@@ -1,0 +1,186 @@
+{
+  "passed": true,
+  "paired_ticks": 64440,
+  "pairs": [
+    {
+      "folder": "cold",
+      "copies": 1,
+      "repeat": 1,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 1,
+      "repeat": 2,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 1,
+      "repeat": 3,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 2,
+      "repeat": 1,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 2,
+      "repeat": 2,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 2,
+      "repeat": 3,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 5,
+      "repeat": 1,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 5,
+      "repeat": 2,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 5,
+      "repeat": 3,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 10,
+      "repeat": 1,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 10,
+      "repeat": 2,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "cold",
+      "copies": 10,
+      "repeat": 3,
+      "paired_ticks": 120
+    },
+    {
+      "folder": "connected",
+      "copies": 1,
+      "repeat": 1,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 1,
+      "repeat": 2,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 1,
+      "repeat": 3,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 2,
+      "repeat": 1,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 2,
+      "repeat": 2,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 2,
+      "repeat": 3,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 5,
+      "repeat": 1,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 5,
+      "repeat": 2,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 5,
+      "repeat": 3,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 10,
+      "repeat": 1,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 10,
+      "repeat": 2,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "connected",
+      "copies": 10,
+      "repeat": 3,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "packed-separated-check",
+      "copies": 10,
+      "repeat": 1,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "separated",
+      "copies": 10,
+      "repeat": 1,
+      "paired_ticks": 4200
+    },
+    {
+      "folder": "separated",
+      "copies": 10,
+      "repeat": 2,
+      "paired_ticks": 4200
+    }
+  ],
+  "matched_observables": [
+    "state_hash",
+    "contacts",
+    "degraded",
+    "degraded_reason",
+    "penetration_m",
+    "closure_gap_m",
+    "closure_angle_rad",
+    "triangle_candidates",
+    "collider_pair_candidates",
+    "continuous_triangle_candidates",
+    "continuous_collider_pair_candidates",
+    "continuous_separation_evaluations"
+  ],
+  "repeat_determinism": true,
+  "includes_warmup": true,
+  "degraded_ticks": 0,
+  "incomplete_runs": 0
+}

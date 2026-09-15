@@ -1,0 +1,5 @@
+{
+  "type": "ValueError",
+  "message": "expected exactly one completed capture",
+  "acceptance_passed": false
+}

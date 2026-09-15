@@ -1,0 +1,7 @@
+{
+  "status": "intermediate_complete_pair",
+  "baseline_reusable": true,
+  "candidate": "before component-local contact-row scans",
+  "candidate_run_completed": true,
+  "launcher_paused_before_candidate_manifest_write": true
+}

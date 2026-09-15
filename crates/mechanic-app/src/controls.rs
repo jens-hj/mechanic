@@ -55,6 +55,7 @@ pub(crate) enum GameAction {
     MatterTerrain,
     MatterManipulate,
     MatterChroma,
+    MatterLayer,
     ClearPipette,
     Rotate,
     PipeTurn,
@@ -89,7 +90,7 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 70] = [
+    pub(crate) const ALL: [Self; 71] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -126,6 +127,7 @@ impl GameAction {
         Self::MatterTerrain,
         Self::MatterManipulate,
         Self::MatterChroma,
+        Self::MatterLayer,
         Self::ClearPipette,
         Self::Rotate,
         Self::PipeTurn,
@@ -172,7 +174,7 @@ impl GameAction {
         (Self::ToolHammer, crate::hotbar::MainTool::Hammer),
     ];
 
-    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 6] = [
+    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 7] = [
         (Self::MatterBlock, crate::hotbar::MatterMode::Block),
         (Self::MatterCylinder, crate::hotbar::MatterMode::Cylinder),
         (Self::MatterItem, crate::hotbar::MatterMode::Item),
@@ -182,6 +184,7 @@ impl GameAction {
             crate::hotbar::MatterMode::Manipulate,
         ),
         (Self::MatterChroma, crate::hotbar::MatterMode::Chroma),
+        (Self::MatterLayer, crate::hotbar::MatterMode::Layer),
     ];
 
     pub(crate) const fn for_tool(tool: crate::hotbar::MainTool) -> Self {
@@ -197,6 +200,7 @@ impl GameAction {
         match mode {
             crate::hotbar::MatterMode::Block => Self::MatterBlock,
             crate::hotbar::MatterMode::Cylinder => Self::MatterCylinder,
+            crate::hotbar::MatterMode::Layer => Self::MatterLayer,
             crate::hotbar::MatterMode::Item => Self::MatterItem,
             crate::hotbar::MatterMode::Terrain => Self::MatterTerrain,
             crate::hotbar::MatterMode::Manipulate => Self::MatterManipulate,
@@ -243,6 +247,7 @@ impl GameAction {
             Self::LowerFrozenCreation => "Lower Frozen Creation",
             Self::MatterBlock => "Matter: Block",
             Self::MatterCylinder => "Matter: Cylinder",
+            Self::MatterLayer => "Matter: Layer",
             Self::MatterItem => "Matter: Item Placer",
             Self::MatterTerrain => "Matter: Terrain",
             Self::MatterManipulate => "Matter: Manipulate",
@@ -321,6 +326,7 @@ impl GameAction {
             | Self::ToolHammer
             | Self::MatterBlock
             | Self::MatterCylinder
+            | Self::MatterLayer
             | Self::MatterItem
             | Self::MatterTerrain
             | Self::MatterManipulate
@@ -739,6 +745,7 @@ impl Default for Controls {
             K::Digit4,
             K::Digit5,
             K::Digit6,
+            K::Digit7,
         ];
         for ((action, _), key) in A::MODE_ACTIONS.into_iter().zip(mode_keys) {
             set(action, Some(InputChord::key(key).with_shift()), None);
@@ -1375,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_bind_four_tools_and_six_shift_modes_without_shadowing() {
+    fn defaults_bind_four_tools_and_seven_shift_modes_without_shadowing() {
         let controls = Controls::default();
         for ((action, _), digit) in GameAction::TOOL_ACTIONS.into_iter().zip([
             KeyCode::Digit1,
@@ -1392,6 +1399,7 @@ mod tests {
             KeyCode::Digit4,
             KeyCode::Digit5,
             KeyCode::Digit6,
+            KeyCode::Digit7,
         ]) {
             assert_eq!(
                 controls.binding(action).0[0],

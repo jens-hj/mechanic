@@ -1,0 +1,68 @@
+[
+  {
+    "scenario": "reference-fixtures",
+    "command": [
+      "target/release/cpu-physics",
+      "--scenario",
+      "reference-fixtures"
+    ],
+    "binary_sha256": "47447069ade079a0c4f5ed220b24df619aa84ded93ba0f71b6120e1ece7e036f",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "car-drop",
+    "command": [
+      "target/release/cpu-physics",
+      "--scenario",
+      "car-drop"
+    ],
+    "binary_sha256": "47447069ade079a0c4f5ed220b24df619aa84ded93ba0f71b6120e1ece7e036f",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "car-drive",
+    "command": [
+      "target/release/cpu-physics",
+      "--scenario",
+      "car-drive"
+    ],
+    "binary_sha256": "47447069ade079a0c4f5ed220b24df619aa84ded93ba0f71b6120e1ece7e036f",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "block-pile",
+    "command": [
+      "target/release/cpu-physics",
+      "--scenario",
+      "block-pile"
+    ],
+    "binary_sha256": "47447069ade079a0c4f5ed220b24df619aa84ded93ba0f71b6120e1ece7e036f",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "fast-impacts",
+    "command": [
+      "target/release/cpu-physics",
+      "--scenario",
+      "fast-impacts"
+    ],
+    "binary_sha256": "47447069ade079a0c4f5ed220b24df619aa84ded93ba0f71b6120e1ece7e036f",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  },
+  {
+    "scenario": "four-bar",
+    "command": [
+      "target/release/cpu-physics",
+      "--scenario",
+      "four-bar"
+    ],
+    "binary_sha256": "47447069ade079a0c4f5ed220b24df619aa84ded93ba0f71b6120e1ece7e036f",
+    "exit_code": 0,
+    "no_progress_timeout": false
+  }
+]

@@ -1,0 +1,61 @@
+{
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "warmup_ticks": 0,
+  "measured_ticks": 120,
+  "repeats": 1,
+  "assemblies": [
+    "connected"
+  ],
+  "binaries": {
+    "baseline": {
+      "path": "/private/tmp/mechanic-ccd/baseline",
+      "sha256": "75b6cf2222ba6ed5d80ed1d1e8af087c2c621ecd33904622c555efdccc13e16c"
+    },
+    "candidate": {
+      "path": "/private/tmp/mechanic-ccd/candidate",
+      "sha256": "03c788894059139f27e72349358a455d86baf012872014d51588b9834a7e330c"
+    }
+  },
+  "runs": [
+    {
+      "label": "10x-connected-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-ccd/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789408210.4961169,
+      "elapsed_seconds": 29.120620250701904,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-connected-candidate-1",
+      "command": [
+        "/private/tmp/mechanic-ccd/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789408239.617358,
+      "elapsed_seconds": 22.975402116775513,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    }
+  ],
+  "no_progress_timeout_seconds": 300
+}

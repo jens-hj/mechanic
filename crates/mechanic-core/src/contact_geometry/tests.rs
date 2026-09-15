@@ -61,6 +61,46 @@ fn near_contacts_keep_true_surface_points_and_do_not_bridge_finite_edges() {
 }
 
 #[test]
+fn reused_proximity_geometry_tracks_pose_normal_margin_and_finite_edges() {
+    let shapes = [
+        cube()
+            .transformed(DVec3::Y * 0.501, DQuat::IDENTITY)
+            .unwrap(),
+        cube()
+            .transformed(DVec3::Y * 0.3, DQuat::from_rotation_z(0.37))
+            .unwrap(),
+    ];
+    let triangles = [
+        floor(),
+        floor().map(|point| point + DVec3::Y * 0.1),
+        [DVec3::X * 2.0, DVec3::X * 3.0 + DVec3::Z, DVec3::X * 3.0],
+        floor().map(|point| DQuat::from_rotation_x(0.15) * point),
+    ];
+    let mut scratch = TriangleClipScratch::default();
+    let mut hits = 0;
+    let mut misses = 0;
+    for shape in shapes.iter().cycle().take(4) {
+        for margin in [0.02, 0.001, 0.0, 0.02] {
+            for triangle in triangles.into_iter().cycle().take(8) {
+                let expected = shape.triangle_proximity(triangle, margin).unwrap();
+                for _ in 0..2 {
+                    let actual = shape
+                        .triangle_proximity_with_scratch(triangle, margin, &mut scratch)
+                        .unwrap();
+                    assert_eq!(actual, expected);
+                    if actual.is_empty() {
+                        misses += 1;
+                    } else {
+                        hits += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(hits > 0 && misses > 0);
+}
+
+#[test]
 fn oblique_proximity_extrusion_preserves_the_actual_convex_silhouette() {
     let rotation = DQuat::from_rotation_x(0.4) * DQuat::from_rotation_z(0.7);
     let body = cube().transformed(DVec3::Y, rotation).unwrap();

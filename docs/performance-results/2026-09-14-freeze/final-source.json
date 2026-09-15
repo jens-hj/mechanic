@@ -1,0 +1,12 @@
+{
+  "Cargo.toml": "fe6cfbab9e807953a1d7c20c345b826fa3f4309afbf748a2cca5434431b664ce",
+  "Cargo.lock": "d0c56d73a1439d638b85bd51abe1f15194bdd22b6d9ec241a1157ab7ba9e3bf6",
+  "crates/mechanic-app/src/freeze.rs": "2e7e7f1f6a3bff69a15860599782966d85dcc76c14f1f39764ba0ef70c3fee09",
+  "crates/mechanic-app/src/freeze_clearance.rs": "9d057ebd2ca44523a6352c22ed38a394d9db2285d33e0a4c67117db0da461b31",
+  "crates/mechanic-app/src/freeze_tests.rs": "6b8702eac0c61384cb8ce835957debe1a1ffe1da659a26bfe11d9e5b9f7e451a",
+  "crates/mechanic-app/src/automation.rs": "6166000b3a1912a22417f5c890c430cd10d49664dfa74814fca02bf7f849937f",
+  "crates/mechanic-app/src/performance_capture.rs": "0f776839211a3d3895f248ad197bebae5e645818ad354aa52d4ac61065928d1c",
+  "crates/mechanic-app/src/freeze_motion.rs": "a910ac9ea86c0bb77198e11508006ff7d8db97b8424188bc064a22ae14e7c517",
+  "scripts/run-background-capture.py": "a021678ecdd8ae869400c7868c79baed3116f83239602c543ccac72feffeb1ec",
+  "scripts/summarize-perf-capture.py": "433decf9e70ab0e2cc4630e2327fc845966a9338177156ba4414642024e0c211"
+}

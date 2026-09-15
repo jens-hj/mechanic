@@ -1,0 +1,6 @@
+{
+  "status": "before_root_factor_correction",
+  "separated_runs_complete_and_valid": true,
+  "connected_runs_invalid": "All measured ticks degraded due to internal root symmetry rejection. Low timing is not a passing result.",
+  "final_evidence": "matched-separated-root and matched-connected-root"
+}

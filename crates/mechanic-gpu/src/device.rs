@@ -7022,7 +7022,7 @@ mod tests {
                 graph
                     .apply(BuildCommand::SpawnPipeBend(
                         PipeBendSpec::new(
-                            PipeBendDimensions::new(0.25, 0.0, 0.25).unwrap(),
+                            PipeBendDimensions::new(0.25, 0.0, 1).unwrap(),
                             pose(points[1], bend_rotation),
                         )
                         .with_material(material),
@@ -7334,18 +7334,20 @@ mod tests {
             .unwrap();
         let chassis_spec = CuboidSpec::new(
             [12, 1, 8],
-            BuildPose::from_position_ticks(IVec3::new(0, 450, 0), GridRotation::default()),
+            BuildPose::from_position_ticks(IVec3::new(0, 500, 0), GridRotation::default()),
         )
         .unwrap()
         .with_material(ConstructionMaterial::Stone);
         let chassis_part = spawned_part(graph.apply(BuildCommand::Spawn(chassis_spec)).unwrap());
-        let bend_dimensions = PipeBendDimensions::new(0.2, 0.0, 0.25).unwrap();
+        let bend_dimensions = PipeBendDimensions::new(0.2, 0.0, 2).unwrap();
 
+        // Two-block bends need the chassis an eighth of a metre higher than the
+        // captured one-block-radius bends did to keep the wheel axles in place.
         let corners = [
-            (600, 1.5, 1, 0.875, 1.125),
-            (-600, -1.5, 1, 0.875, 1.125),
-            (-600, -1.5, -1, -0.875, -1.125),
-            (600, 1.5, -1, -0.875, -1.125),
+            (600, 1.5, 1, 0.75, 1.125),
+            (-600, -1.5, 1, 0.75, 1.125),
+            (-600, -1.5, -1, -0.75, -1.125),
+            (600, 1.5, -1, -0.75, -1.125),
         ];
         let mut bends = [None; 4];
         let mut wheels = [None; 4];
@@ -7393,7 +7395,7 @@ mod tests {
                         .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
                             bend_dimensions,
                             BuildPose::from_position_ticks(
-                                IVec3::new(x_ticks, 300, z_sign * 350),
+                                IVec3::new(x_ticks, 300, z_sign * 300),
                                 bend_rotation,
                             ),
                         )))
@@ -7435,7 +7437,7 @@ mod tests {
                 .apply(BuildCommand::AddBearing(BearingSpec::new(
                     FaceRef::part(chassis_part, FaceKind::NegativeY),
                     FaceRef::part(bends[corner], FaceKind::NegativeX),
-                    Vec3::new(x, 1.0, bend_z),
+                    Vec3::new(x, 1.125, bend_z),
                     Vec3::NEG_Y,
                 )))
                 .unwrap();
@@ -10444,7 +10446,7 @@ mod tests {
             }))
             .unwrap();
         let bend_spec = PipeBendSpec::new(
-            PipeBendDimensions::new(1.0, inner_diameter, 1.0).unwrap(),
+            PipeBendDimensions::new(1.0, inner_diameter, 6).unwrap(),
             BuildPose::from_half_grid(IVec3::new(0, 16, 0), GridRotation::default()),
         );
         let BuildOutcome::Spawned(bend) =

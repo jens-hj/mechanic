@@ -268,7 +268,7 @@ pub(crate) fn sample(
                 .elapsed()
                 >= WARMUP
         {
-            recorder.metadata = json!({"capture_from_start":from_start, "terrain_pass_partition":crate::render_diagnostics::terrain_passes_enabled(), "automated_background":crate::automation::background(), "foreground_requested":crate::automation::foreground(), "adapter":format!("{:?}", adapter.0), "label":std::env::var("MECHANIC_PERF_LABEL").ok(), "executable":std::env::current_exe().ok(), "experiment":format!("{:?}", crate::render_experiments::current()), "f3":metrics.snapshot().open, "present_mode":format!("{:?}",window.present_mode), "start_submitted_tick":simulation.next_tick.saturating_sub(1), "start_completed_tick":simulation.completed_tick, "bodies":simulation.creation.as_ref().map(|c| c.compounds.len()), "dynamic_bodies":simulation.creation.as_ref().map(|c| c.compounds.iter().filter(|body| !body.is_static).count()), "generalized_velocities":simulation.creation.as_ref().map(|c| c.dynamics.elimination_parent.len())});
+            recorder.metadata = json!({"requested_physics_route":format!("{:?}", crate::cpu_physics::route()), "capture_from_start":from_start, "terrain_pass_partition":crate::render_diagnostics::terrain_passes_enabled(), "automated_background":crate::automation::background(), "foreground_requested":crate::automation::foreground(), "adapter":format!("{:?}", adapter.0), "label":std::env::var("MECHANIC_PERF_LABEL").ok(), "executable":std::env::current_exe().ok(), "experiment":format!("{:?}", crate::render_experiments::current()), "f3":metrics.snapshot().open, "present_mode":format!("{:?}",window.present_mode), "start_submitted_tick":simulation.next_tick.saturating_sub(1), "start_completed_tick":simulation.completed_tick, "bodies":simulation.creation.as_ref().map(|c| c.compounds.len()), "dynamic_bodies":simulation.creation.as_ref().map(|c| c.compounds.iter().filter(|body| !body.is_static).count()), "generalized_velocities":simulation.creation.as_ref().map(|c| c.dynamics.elimination_parent.len())});
             recorder.metadata["initial_state_hash"] = simulation
                 .live_state
                 .as_ref()
@@ -348,6 +348,22 @@ pub(crate) fn sample(
         };
         if let Some(interrupted) = outcome {
             recorder.finish(interrupted);
+        }
+    }
+}
+
+/// Opt-in scope timing, including early returns.
+pub(crate) struct FreezeStage(&'static str, Option<Instant>);
+impl FreezeStage {
+    pub(crate) fn new(stage: &'static str) -> Self {
+        Self(stage, is_recording().then(Instant::now))
+    }
+}
+impl Drop for FreezeStage {
+    fn drop(&mut self) {
+        if let Some(start) = self.1 {
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            record("freeze_stage", || json!({"stage": self.0, "ms": ms}));
         }
     }
 }

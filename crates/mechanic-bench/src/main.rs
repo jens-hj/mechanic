@@ -699,7 +699,7 @@ fn build_test2_car() -> Result<CompiledCreation, String> {
             .apply(BuildCommand::Spawn(
                 CuboidSpec::new(
                     [12, 1, 8],
-                    BuildPose::from_position_ticks(IVec3::new(0, 450, 0), GridRotation::default()),
+                    BuildPose::from_position_ticks(IVec3::new(0, 500, 0), GridRotation::default()),
                 )
                 .map_err(|error| error.to_string())?
                 .with_material(ConstructionMaterial::Stone),
@@ -774,12 +774,14 @@ fn build_test2_car() -> Result<CompiledCreation, String> {
     }
 
     let bend_dimensions =
-        PipeBendDimensions::new(0.2, 0.0, 0.25).map_err(|error| error.to_string())?;
+        PipeBendDimensions::new(0.2, 0.0, 2).map_err(|error| error.to_string())?;
+    // Two-block bends need the chassis an eighth of a metre higher than the
+    // captured one-block-radius bends did to keep the wheel axles in place.
     let corners = [
-        (600, 1.5, 1, 0.875, 1.125),
-        (-600, -1.5, 1, 0.875, 1.125),
-        (-600, -1.5, -1, -0.875, -1.125),
-        (600, 1.5, -1, -0.875, -1.125),
+        (600, 1.5, 1, 0.75, 1.125),
+        (-600, -1.5, 1, 0.75, 1.125),
+        (-600, -1.5, -1, -0.75, -1.125),
+        (600, 1.5, -1, -0.75, -1.125),
     ];
     let mut bends = [None; 4];
     let mut wheels = [None; 4];
@@ -820,7 +822,7 @@ fn build_test2_car() -> Result<CompiledCreation, String> {
                     .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
                         bend_dimensions,
                         BuildPose::from_position_ticks(
-                            IVec3::new(x_ticks, 300, z_sign * 350),
+                            IVec3::new(x_ticks, 300, z_sign * 300),
                             if z_sign > 0 {
                                 GridRotation::new(0, 3, 3)
                             } else {
@@ -840,7 +842,7 @@ fn build_test2_car() -> Result<CompiledCreation, String> {
             .apply(BuildCommand::AddBearing(BearingSpec::new(
                 FaceRef::part(chassis, FaceKind::NegativeY),
                 FaceRef::part(bends[corner], FaceKind::NegativeX),
-                Vec3::new(x, 1.0, bend_z),
+                Vec3::new(x, 1.125, bend_z),
                 Vec3::NEG_Y,
             )))
             .map_err(|error| error.to_string())?;

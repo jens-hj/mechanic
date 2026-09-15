@@ -1,0 +1,7 @@
+{
+  "status": "terminated_no_progress",
+  "last_completed_tick": 480,
+  "blocked_tick": 481,
+  "seconds_since_last_tick_output": 153.35484147071838,
+  "reason": "Same release stall as baseline; identical states through tick 480. Partial evidence, not completed acceptance."
+}

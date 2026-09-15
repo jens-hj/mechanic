@@ -47,6 +47,12 @@ pub struct TerrainSweepQuery {
     pub chunk_candidates: usize,
     /// Exact finite triangles tested.
     pub triangle_candidates: usize,
+    /// Shapes transformed during continuous collision checks.
+    pub shape_transformations: usize,
+    /// Starting shapes reused during continuous collision checks.
+    pub shape_cache_hits: usize,
+    /// Collider hierarchy node pairs tested during continuous collision checks.
+    pub hierarchy_node_pair_tests: usize,
     /// Whole-tree pose reconstructions; none assemble or factor inertia.
     pub pose_evaluations: usize,
     /// Separating-axis evaluations, including failed advancement work.
@@ -187,6 +193,9 @@ impl TerrainContactScene {
             terrain_generation: self.generation,
             chunk_candidates: 0,
             triangle_candidates: 0,
+            shape_transformations: 0,
+            shape_cache_hits: 0,
+            hierarchy_node_pair_tests: 0,
             pose_evaluations: 0,
             separation_evaluations: 0,
             initial_contact_evaluations: 0,
@@ -208,6 +217,22 @@ impl TerrainContactScene {
                     query.maximum_point_displacement.max(displacement);
             }
         }
+        // Lock order is shared with contact queries: pose cache, sweep scratch,
+        // then pair scratch. Velocities belong to this path, never the pose cache.
+        let mut cache = machine
+            .cache
+            .lock()
+            .map_err(|_| PhysicsError::InvalidCollision)?;
+        cache.update(machine, motion.initial_poses())?;
+        let mut scratch = machine
+            .sweep_scratch
+            .lock()
+            .map_err(|_| PhysicsError::InvalidCollision)?;
+        let SweepScratch {
+            shapes: [first_shape, second_shape],
+            clipping,
+        } = &mut *scratch;
+        let initial_velocities = std::sync::OnceLock::new();
         let mut earliest: Option<TerrainSweepHit> = None;
         for (collider_row, collider) in machine.colliders.iter().enumerate() {
             if !collider.moving {
@@ -231,11 +256,15 @@ impl TerrainContactScene {
                 motion.final_poses()[collider.body].position
                     - motion.initial_poses()[collider.body].position
             });
-            let reach = bound.origin_speed + collider.radius + tolerance;
-            let center = origin + motion.initial_poses()[collider.body].position;
+            let [minimum, maximum] = super::swept_bounds(
+                collider,
+                motion.initial_poses()[collider.body],
+                bound,
+                tolerance,
+            )?;
             let bounds = WorldBounds {
-                minimum: WorldPosition(center - DVec3::splat(reach)),
-                maximum: WorldPosition(center + DVec3::splat(reach)),
+                minimum: WorldPosition((origin + minimum).map(f64::next_down)),
+                maximum: WorldPosition((origin + maximum).map(f64::next_up)),
             };
             if !valid_bounds(bounds) {
                 return Err(PhysicsError::InvalidCollision);
@@ -266,13 +295,26 @@ impl TerrainContactScene {
                     query.triangle_candidates += 1;
                     let end = earliest.map_or(1.0, |hit| hit.fraction);
                     if let Some(translation) = translation {
-                        let pose = motion.initial_poses()[collider.body];
-                        let shape = collider
-                            .local
-                            .transformed(pose.position, pose.rotation)
-                            .map_err(|_| PhysicsError::InvalidCollision)?;
-                        if initial_support(&shape, triangle, exclude_initial_supports, &mut query)?
-                        {
+                        let shape = if reuse_start() {
+                            starting_shape(
+                                &cache,
+                                machine,
+                                motion.initial_poses(),
+                                collider_row,
+                                &mut query,
+                            )?
+                        } else {
+                            query.shape_transformations += 1;
+                            let pose = motion.initial_poses()[collider.body];
+                            transform(&collider.local, pose.position, pose.rotation, second_shape)?
+                        };
+                        if initial_support(
+                            shape,
+                            triangle,
+                            exclude_initial_supports,
+                            &mut query,
+                            clipping,
+                        )? {
                             continue;
                         }
                         query.linear_interval_evaluations += 1;
@@ -281,9 +323,13 @@ impl TerrainContactScene {
                             .map_err(|_| PhysicsError::InvalidCollision)?
                             && fraction <= end
                         {
-                            let at_impact = shape
-                                .transformed(translation * fraction, DQuat::IDENTITY)
-                                .map_err(|_| PhysicsError::InvalidCollision)?;
+                            query.shape_transformations += 1;
+                            let at_impact = transform(
+                                shape,
+                                translation * fraction,
+                                DQuat::IDENTITY,
+                                first_shape,
+                            )?;
                             let separation = at_impact
                                 .triangle_separation(triangle)
                                 .map_err(|_| PhysicsError::InvalidCollision)?;
@@ -304,19 +350,28 @@ impl TerrainContactScene {
                     }
                     let mut fraction = 0.0;
                     for evaluation in 1..=maximum_evaluations_per_triangle {
-                        let poses = motion.poses_at(fraction)?;
-                        query.pose_evaluations += 1;
+                        let sampled;
+                        let poses = if fraction == 0.0 && reuse_start() {
+                            motion.initial_poses()
+                        } else {
+                            sampled = motion.poses_at(fraction)?;
+                            query.pose_evaluations += 1;
+                            &sampled
+                        };
                         let pose = poses[collider.body];
-                        let shape = collider
-                            .local
-                            .transformed(pose.position, pose.rotation)
-                            .map_err(|_| PhysicsError::InvalidCollision)?;
+                        let shape = if fraction == 0.0 && reuse_start() {
+                            starting_shape(&cache, machine, poses, collider_row, &mut query)?
+                        } else {
+                            query.shape_transformations += 1;
+                            transform(&collider.local, pose.position, pose.rotation, first_shape)?
+                        };
                         if evaluation == 1
                             && initial_support(
-                                &shape,
+                                shape,
                                 triangle,
                                 exclude_initial_supports,
                                 &mut query,
+                                clipping,
                             )?
                         {
                             break;
@@ -343,8 +398,17 @@ impl TerrainContactScene {
                         if speed == 0.0 || separation > speed * (end - fraction) {
                             break;
                         }
-                        let velocities = motion.velocities_at_poses(&poses);
-                        query.velocity_evaluations += 1;
+                        let sampled_velocities;
+                        let velocities = if fraction == 0.0 && reuse_start() {
+                            initial_velocities.get_or_init(|| {
+                                query.velocity_evaluations += 1;
+                                motion.velocities_at_poses(motion.initial_poses())
+                            })
+                        } else {
+                            query.velocity_evaluations += 1;
+                            sampled_velocities = motion.velocities_at_poses(poses);
+                            &sampled_velocities
+                        };
                         query.quadratic_interval_evaluations += 1;
                         let prefix = shape
                             .triangle_motion_prefix(
@@ -374,15 +438,20 @@ impl TerrainContactScene {
         // sum stays conservative with both sides moving.
         let mut bounds = Vec::with_capacity(machine.colliders.len());
         for collider in &machine.colliders {
-            let reach = motion.bounds()[collider.body].origin_speed + collider.radius + tolerance;
-            let center = motion.initial_poses()[collider.body].position;
-            let corners = [center - DVec3::splat(reach), center + DVec3::splat(reach)];
+            let corners = super::swept_bounds(
+                collider,
+                motion.initial_poses()[collider.body],
+                motion.bounds()[collider.body],
+                tolerance,
+            )?;
             if !corners[0].is_finite() || !corners[1].is_finite() {
                 return Err(PhysicsError::InvalidCollision);
             }
             bounds.push(corners);
         }
-        for [first, second] in machine.candidate_pairs(&bounds) {
+        let candidates = machine.candidate_pairs(&bounds);
+        query.hierarchy_node_pair_tests += candidates.scratch.node_pair_tests;
+        for &[first, second] in candidates.iter() {
             query.collider_pair_candidates += 1;
             let colliders = [&machine.colliders[first], &machine.colliders[second]];
             if let Some(slow) = &slow
@@ -409,23 +478,38 @@ impl TerrainContactScene {
             let mut fraction = 0.0;
             for evaluation in 1..=maximum_evaluations_per_triangle {
                 let sampled;
-                let poses: &[BodyPose] = if evaluation == 1 {
+                let poses: &[BodyPose] = if evaluation == 1 && reuse_start() {
                     motion.initial_poses()
                 } else {
                     sampled = motion.poses_at(fraction)?;
                     query.pose_evaluations += 1;
                     &sampled
                 };
-                let [own, other] = colliders.map(|collider| {
-                    let pose = poses[collider.body];
-                    collider
-                        .local
-                        .transformed(pose.position, pose.rotation)
-                        .map_err(|_| PhysicsError::InvalidCollision)
-                });
-                let (own, other) = (own?, other?);
+                let (own, other) = if fraction == 0.0 && reuse_start() {
+                    (
+                        starting_shape(&cache, machine, poses, first, &mut query)?,
+                        starting_shape(&cache, machine, poses, second, &mut query)?,
+                    )
+                } else {
+                    query.shape_transformations += 2;
+                    let [own_pose, other_pose] = colliders.map(|collider| poses[collider.body]);
+                    (
+                        transform(
+                            &colliders[0].local,
+                            own_pose.position,
+                            own_pose.rotation,
+                            first_shape,
+                        )?,
+                        transform(
+                            &colliders[1].local,
+                            other_pose.position,
+                            other_pose.rotation,
+                            second_shape,
+                        )?,
+                    )
+                };
                 let separation = own
-                    .convex_separation(&other)
+                    .convex_separation(other)
                     .map_err(|_| PhysicsError::InvalidCollision)?
                     .separation;
                 query.separation_evaluations += 1;
@@ -460,8 +544,17 @@ impl TerrainContactScene {
                 // Bodies moving together keep their gap even when both move fast,
                 // so certify the prefix from relative motion before falling back
                 // to dividing the gap by both absolute speeds.
-                let velocities = motion.velocities_at_poses(poses);
-                query.velocity_evaluations += 1;
+                let sampled_velocities;
+                let velocities = if fraction == 0.0 && reuse_start() {
+                    initial_velocities.get_or_init(|| {
+                        query.velocity_evaluations += 1;
+                        motion.velocities_at_poses(motion.initial_poses())
+                    })
+                } else {
+                    query.velocity_evaluations += 1;
+                    sampled_velocities = motion.velocities_at_poses(poses);
+                    &sampled_velocities
+                };
                 query.quadratic_interval_evaluations += 1;
                 let [own_body, other_body] = colliders.map(|collider| collider.body);
                 let acceleration = colliders
@@ -474,7 +567,7 @@ impl TerrainContactScene {
                     .convex_motion_prefix(
                         poses[own_body].position,
                         velocities[own_body],
-                        &other,
+                        other,
                         poses[other_body].position,
                         velocities[other_body],
                         acceleration,
@@ -515,15 +608,72 @@ fn initial_support(
     triangle: [DVec3; 3],
     exclude: bool,
     query: &mut TerrainSweepQuery,
+    clipping: &mut mechanic_core::TriangleClipScratch,
 ) -> Result<bool, PhysicsError> {
     if !exclude {
         return Ok(false);
     }
     query.initial_contact_evaluations += 1;
-    let supported =
-        !super::activation_points(shape, triangle, CONTACT_ACTIVATION_DISTANCE)?.is_empty();
+    let supported = !super::activation_points_with_scratch(
+        shape,
+        triangle,
+        CONTACT_ACTIVATION_DISTANCE,
+        clipping,
+    )?
+    .is_empty();
     query.supported_pairs += usize::from(supported);
     Ok(supported)
+}
+
+#[derive(Default)]
+pub(super) struct SweepScratch {
+    shapes: [Option<ContactPolytope>; 2],
+    clipping: mechanic_core::TriangleClipScratch,
+}
+
+fn transform<'a>(
+    local: &ContactPolytope,
+    position: DVec3,
+    rotation: DQuat,
+    buffer: &'a mut Option<ContactPolytope>,
+) -> Result<&'a ContactPolytope, PhysicsError> {
+    let shape = buffer.get_or_insert_with(|| local.clone());
+    local
+        .transformed_into(position, rotation, shape)
+        .map_err(|_| PhysicsError::InvalidCollision)?;
+    Ok(shape)
+}
+
+fn starting_shape<'a>(
+    cache: &'a super::PoseCache,
+    machine: &MachineCollisionGeometry,
+    poses: &[BodyPose],
+    row: usize,
+    query: &mut TerrainSweepQuery,
+) -> Result<&'a ContactPolytope, PhysicsError> {
+    if cache.shapes[row].get().is_some() {
+        query.shape_cache_hits += 1;
+    } else {
+        query.shape_transformations += 1;
+    }
+    cache.shape(machine, poses, row)
+}
+
+// The uncached test path reconstructs and transforms each evaluation, as the
+// pre-reuse sweep did. This switch is absent from production builds.
+#[cfg(test)]
+std::thread_local! {
+    static REUSE_START: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+fn reuse_start() -> bool {
+    #[cfg(test)]
+    {
+        REUSE_START.get()
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 #[cfg(test)]

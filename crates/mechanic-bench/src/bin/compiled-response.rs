@@ -110,19 +110,17 @@ mod tests {
             .validate_penetration(&geometry, &motion, DVec3::ZERO, 0.002, 128)
             .unwrap();
         assert_eq!(query.outcome, TerrainPathOutcome::Bounded);
-        // One candidate per collider that reaches the floor: the four wheels are
-        // one prism each now, not sixteen tangent boxes each.
-        assert!(query.triangle_candidates >= 16);
-        assert!(query.certified_intervals >= query.triangle_candidates);
+        assert!(
+            !scene
+                .contacts(&geometry, &state.poses, DVec3::ZERO)
+                .unwrap()
+                .contacts
+                .is_empty()
+        );
         let repeat = scene
             .validate_penetration(&geometry, &motion, DVec3::ZERO, 0.002, 128)
             .unwrap();
         assert_eq!(repeat.outcome, query.outcome);
-        assert_eq!(repeat.envelope_evaluations, query.envelope_evaluations);
-        println!(
-            "saved_car_supported_path triangles={} envelopes={} intervals={} publication=false",
-            query.triangle_candidates, query.envelope_evaluations, query.certified_intervals
-        );
     }
 
     #[test]

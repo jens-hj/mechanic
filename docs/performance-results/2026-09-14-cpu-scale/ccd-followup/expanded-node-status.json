@@ -1,0 +1,9 @@
+{
+  "accepted": false,
+  "reason": "Repeated cold connected complete-tick p95 regression (2\u20139%) despite identical state hashes and reduced CCD work. Remaining timing groups stopped after cold comparisons completed.",
+  "completed_groups": [
+    "expanded-node-cold"
+  ],
+  "source_identity": "expanded-node-candidate-identity.json",
+  "foreground": "expanded-node-foreground"
+}

@@ -1,0 +1,6 @@
+{
+  "status": "intermediate_partial",
+  "reason": "Stopped after 2x separated first pair to measure subsequent triangle pruning and arena reuse. This directory is not final acceptance evidence.",
+  "candidate": "hierarchy-only; see original manifest hash",
+  "timing_caveat": "First 1x pair overlapped brief focused test compilation; exclude from final comparisons."
+}

@@ -260,6 +260,7 @@ fn tool_slot(handles: &Handles, tool: MainTool) -> Element {
     }
 }
 
+#[allow(clippy::too_many_lines)] // One view tree plus a short icon dispatch per mode.
 fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
     let handles = handles.clone();
     let selection = handles.hotbar;
@@ -283,6 +284,7 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
     let icon = match matter_mode {
         MatterMode::Block => icon(Tool::Block),
         MatterMode::Cylinder => icon(Tool::Cylinder),
+        MatterMode::Layer => icon(Tool::Layer),
         MatterMode::Item => icon(selection.get().item.editor_tool()),
         MatterMode::Terrain => terrain_icon(),
         MatterMode::Manipulate => icon(Tool::Shape),
@@ -390,7 +392,7 @@ fn contextual_choice(
     shape_status: &str,
 ) -> String {
     match matter_mode {
-        MatterMode::Block | MatterMode::Cylinder => construction_material,
+        MatterMode::Block | MatterMode::Cylinder | MatterMode::Layer => construction_material,
         MatterMode::Item => item,
         MatterMode::Terrain => terrain_material,
         MatterMode::Manipulate => shape_status,
@@ -534,6 +536,13 @@ pub(super) fn icon(tool: Tool) -> Element {
                 rect at:(x:20px y:20px) size:(w:26px h:30px) radius:13px exponent:2 fill:accent.speed
                     stroke:(width:2px color:ink.fg)
                 rect at:(x:20px y:20px) size:(w:10px h:16px) radius:5px exponent:2 fill:bar.slot
+            }
+        },
+        Tool::Layer => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                circle at:(x:20px y:20px) radius:13px exponent:1 stroke:(width:6px color:accent.speed)
+                circle at:(x:20px y:20px) radius:7px exponent:1 fill:ink.muted
+                    stroke:(width:2px color:ink.fg)
             }
         },
         Tool::Bearing => view! {

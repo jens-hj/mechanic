@@ -1,0 +1,51 @@
+running 1 test
+CPU collision preparation 145.775458ms
+CPU machine initialization 238.5µs
+Chamfer: tries=121 total=18.194292ms worst=398.084µs
+Fillet: tries=121 total=24.853916ms worst=520µs
+texture offsets 209µs
+welded ends 231.375µs
+body=0 material=Steel mesh=482.25µs
+body=1 material=Steel mesh=276.042µs
+body=2 material=Steel mesh=217.5µs
+body=3 material=Steel mesh=206.75µs
+body=4 material=Steel mesh=85.584µs
+body=5 material=Steel mesh=83.125µs
+body=6 material=Steel mesh=79.375µs
+body=7 material=Steel mesh=81.542µs
+body=8 material=Steel mesh=79.416µs
+body=9 material=Steel mesh=77.916µs
+body=10 material=Steel mesh=395.917µs
+body=11 material=Aluminium mesh=87.25µs
+body=11 material=Rubber mesh=493.375µs
+body=12 material=Aluminium mesh=87µs
+body=12 material=Rubber mesh=461µs
+body=13 material=Aluminium mesh=384.125µs
+body=13 material=Steel mesh=234.625µs
+body=14 material=Steel mesh=150.708µs
+body=15 material=Steel mesh=82.583µs
+body=16 material=Steel mesh=521.625µs
+body=17 material=Steel mesh=397.083µs
+body=18 material=Steel mesh=148.667µs
+body=19 material=Steel mesh=493.125µs
+body=20 material=Steel mesh=149.166µs
+body=21 material=Steel mesh=145.25µs
+body=22 material=Steel mesh=146.917µs
+body=23 material=Steel mesh=1.505167ms
+body=24 material=Steel mesh=132.25µs
+body=25 material=Steel mesh=148.416µs
+body=26 material=Steel mesh=80.667µs
+body=27 material=Steel mesh=146.875µs
+body=28 material=Steel mesh=145.875µs
+body=29 material=Steel mesh=100.5µs
+builder bodies=30 sample=0 vertices=69183 meshes_ms=9.963
+texture offsets 27.875µs
+welded ends 47.791µs
+builder bodies=30 sample=1 vertices=69183 meshes_ms=7.764
+texture offsets 26.417µs
+welded ends 47.416µs
+builder bodies=30 sample=2 vertices=69183 meshes_ms=7.830
+test rendering_tests::measure_builder_body_mesh_rebuild ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 803 filtered out; finished in 0.27s
+

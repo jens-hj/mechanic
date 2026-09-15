@@ -1,0 +1,38 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 5.55s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 30 tests
+test terrain_contacts::penetration::tests::stationary_existing_support_is_bounded_without_ignoring_its_triangles ... ok
+test terrain_contacts::penetration::tests::a_separated_body_below_a_finite_surface_does_not_get_a_penetration_hold ... ok
+test terrain_contacts::sweep::tests::exact_linear_sweep_handles_fast_translation_and_finite_holes ... ok
+test terrain_contacts::sweep::tests::articulated_full_turn_finds_a_finite_impact_between_clear_endpoint_poses ... ok
+test terrain_contacts::sweep::tests::near_separated_parallel_motion_does_not_invent_a_first_impact ... ok
+test terrain_contacts::penetration::tests::motion_below_a_finite_surface_is_certified_after_subdivision ... ok
+test terrain_contacts::sweep::tests::collider_sweeps_reuse_geometry_without_reusing_another_paths_velocities ... ok
+test terrain_contacts::sweep::tests::rotating_parallel_motion_certifies_clearance_without_spending_tangential_speed ... ok
+test terrain_contacts::sweep::tests::simultaneous_terrain_arrivals_keep_the_first_collider_and_triangle ... ok
+test terrain_contacts::sweep::tests::sweep_rejects_a_different_topology_and_preserves_origin_rebased_impact_time ... ok
+test terrain_contacts::tests::bodies_joined_by_a_bearing_never_collide_with_each_other ... ok
+test terrain_contacts::tests::bodies_of_one_mechanism_collide_only_when_they_were_built_apart ... ok
+test terrain_contacts::tests::a_box_resting_on_another_box_is_supported_through_one_face_manifold ... ok
+test terrain_contacts::tests::coplanar_triangle_seam_reduces_to_four_supports_without_changing_materials ... ok
+test terrain_contacts::tests::changed_active_groups_and_materials_invalidate_only_changed_chunk_features ... ok
+test terrain_contacts::tests::finite_manifold_restitution_uses_impact_speed_without_penetration_bounce ... ok
+test terrain_contacts::tests::malformed_publication_preserves_the_previous_collision_scene ... ok
+test terrain_contacts::tests::near_terrain_contacts_report_positive_gaps_and_survive_origin_rebasing ... ok
+test terrain_contacts::tests::origin_rebase_preserves_physical_support_and_feature_identity ... ok
+test terrain_contacts::tests::real_manifold_impulses_support_the_coupled_body_without_spurious_spin ... ok
+test terrain_contacts::penetration::tests::sliding_support_subdivides_and_exhaustion_never_claims_clearance ... ok
+test terrain_contacts::tests::small_finite_triangles_remain_collidable_and_nonfinite_query_bounds_fail ... ok
+test terrain_contacts::sweep::tests::reused_starting_geometry_preserves_impacts_across_motion_paths_and_publications ... ok
+test terrain_contacts::penetration::tests::full_rotation_rejects_penetration_hidden_at_start_midpoint_and_end ... ok
+test terrain_contacts::penetration::tests::finite_holes_and_origin_rebases_preserve_supported_path_results ... ok
+test terrain_contacts::tests::rotated_pipe_opening_stays_open_while_its_annulus_and_solid_version_collide ... ok
+test terrain_contacts::sweep::tests::rotated_pipe_sweeps_preserve_the_opening_and_annulus ... ok
+test terrain_contacts::broadphase::tests::paired_trees_match_exhaustive_overlaps_for_large_uneven_chassis ... ok
+test terrain_contacts::tests::generated_chunk_bvh_queries_match_direct_finite_triangle_queries ... ok
+test terrain_contacts::tests::builder_pipe_hierarchy_matches_exhaustive_pairs_at_rotated_poses ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 159 filtered out; finished in 0.07s
+

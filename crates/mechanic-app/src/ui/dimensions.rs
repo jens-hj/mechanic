@@ -13,7 +13,7 @@ use super::components::{OverlayBadge, OverlayBadgeProps, PanelSurface, PanelSurf
 use super::styles::*;
 #[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
-use crate::{AppSimulation, EditorState, pipe_bend_radius_is_fixed};
+use crate::{AppSimulation, EditorState};
 
 const LABEL_W: f32 = 132.0;
 const LABEL_H: f32 = 28.0;
@@ -73,33 +73,30 @@ pub(crate) fn capture(
                 text: format!("{:.2} m", segment[0].distance(segment[1])),
             });
         }
-        let bend_radius = if drag.choosing_direction || drag.bend_radii.is_empty() {
-            drag.pending_radius
-        } else {
-            *drag.bend_radii.last().expect("a latest pipe bend exists")
-        };
+        let bend_span = drag.pending_span;
+        let bend_radius = mechanic_core::PipeBendDimensions::new(
+            drag.dimensions.outer_diameter(),
+            drag.dimensions.inner_diameter(),
+            bend_span,
+        )
+        .map_or(0.0, mechanic_core::PipeBendDimensions::radius);
         return Model {
             edges,
             summary: Some(Summary {
                 counts: format!(
-                    "{} leg{} · {} bend{}",
+                    "{} leg{} · {} fitting{}",
                     points.len() - 1,
                     if points.len() == 2 { "" } else { "s" },
-                    drag.bend_radii.len(),
-                    if drag.bend_radii.len() == 1 { "" } else { "s" },
+                    drag.nodes.len(),
+                    if drag.nodes.len() == 1 { "" } else { "s" },
                 ),
                 metres: format!(
-                    "OD {:.2} m · ID {:.2} m · radius {:.2} m",
+                    "OD {:.2} m · ID {:.2} m · bend {bend_span} × {bend_span} (r {bend_radius:.3} m)",
                     drag.dimensions.outer_diameter(),
                     drag.dimensions.inner_diameter(),
-                    bend_radius,
                 ),
-                plane: if drag.choosing_direction
-                    && pipe_bend_radius_is_fixed(drag.dimensions.outer_diameter())
-                {
-                    "Choose turn direction · one-block radius".to_owned()
-                } else if drag.choosing_direction {
-                    "Choose turn direction · wheel changes radius".to_owned()
+                plane: if drag.choosing_direction {
+                    "Choose turn direction · wheel changes bend size".to_owned()
                 } else {
                     format!("{} mode · R cycles · F bends", drag.mode.label())
                 },

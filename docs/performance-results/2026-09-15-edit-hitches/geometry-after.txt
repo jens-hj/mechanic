@@ -1,0 +1,15 @@
+   Compiling mechanic-core v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-core)
+   Compiling mechanic-world v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-world)
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+   Compiling mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 10.26s
+     Running `target/debug/edit-latency`
+block: 100 boundary queries 0.333 ms
+block: 100 shared cached queries 0.004 ms
+Fillet: 20 preview steps with 10 queries 2.972 ms
+Chamfer: 20 preview steps with 10 queries 0.915 ms
+pipe: 100 boundary queries 0.812 ms
+pipe: 100 shared cached queries 0.004 ms
+junction: 100 boundary queries 37.315 ms
+junction: 100 shared cached queries 0.004 ms

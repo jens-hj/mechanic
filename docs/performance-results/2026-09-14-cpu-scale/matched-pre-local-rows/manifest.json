@@ -1,0 +1,36 @@
+{
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "warmup_ticks": 600,
+  "measured_ticks": 3600,
+  "repeats": 2,
+  "binaries": {
+    "baseline": {
+      "path": "/private/tmp/mechanic-cpu-baseline",
+      "sha256": "385bb4e3776a832379525b256f3ae3711427dfd536f2397c11f4d2e78698f54b"
+    },
+    "candidate": {
+      "path": "/private/tmp/mechanic-cpu-candidate-verified",
+      "sha256": "02b6e0ad1b57239dd1d22766a4e429bdfb22749127399d45253e16c9e299d49e"
+    }
+  },
+  "runs": [
+    {
+      "label": "10x-separated-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789400981.05372,
+      "elapsed_seconds": 745.9180691242218,
+      "exit_code": 0
+    }
+  ]
+}

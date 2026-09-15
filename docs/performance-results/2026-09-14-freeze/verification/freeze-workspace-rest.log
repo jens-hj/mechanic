@@ -1,0 +1,1079 @@
+   Compiling mechanic-core v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-core)
+   Compiling mechanic-world v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-world)
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+   Compiling mechanic-bench v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-bench)
+    Finished `test` profile [optimized + debuginfo] target(s) in 35.50s
+     Running unittests src/lib.rs (target/debug/deps/bevy_mosaic-9279f4388a7bf373)
+
+running 18 tests
+test input::tests::a_line_of_scroll_is_a_fixed_number_of_logical_pixels ... ok
+test input::tests::every_mosaic_cursor_has_a_platform_spelling ... ok
+test input::tests::a_key_mosaic_cannot_name_is_never_dispatched ... ok
+test input::tests::only_the_three_buttons_mosaic_routes_are_translated ... ok
+test input::tests::pixel_scroll_passes_through_at_its_own_scale ... ok
+test input::tests::scrolling_the_wheel_up_moves_content_down ... ok
+test input::tests::the_named_keys_a_text_field_needs_all_map ... ok
+test context::tests::an_idle_tree_does_not_hold_the_keyboard ... ok
+test context::tests::a_pointer_that_never_entered_the_window_wants_nothing ... ok
+test context::tests::a_pointer_over_a_panel_wants_the_pointer ... ok
+test input::tests::a_button_press_flushes_the_move_that_put_the_pointer_there ... ok
+test input::tests::a_press_before_the_pointer_is_ever_seen_is_dropped ... ok
+test input::tests::suspending_the_pointer_drops_a_stale_hover_and_later_click ... ok
+test input::tests::the_pointer_leaving_drops_the_move_it_had_not_dispatched_yet ... ok
+test input::tests::a_burst_of_moves_in_one_frame_dispatches_once_at_the_latest_position ... ok
+test context::tests::a_pointer_past_the_panel_leaves_the_pointer_to_the_app ... ok
+test input::tests::flushing_with_nothing_pending_dispatches_nothing ... ok
+test input::tests::typed_text_arrives_as_a_character ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/compiled-inertia.rs (target/debug/deps/compiled_inertia-8993e1a10e6add3e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/compiled-response.rs (target/debug/deps/compiled_response-37e77f93325ded14)
+
+running 7 tests
+test tests::saved_car_free_fall_moves_floating_roots_without_stretching_joints ... ok
+test tests::saved_car_inertial_bias_matches_differentiated_body_motion ... ok
+test tests::saved_car_articulated_motion_bounds_cover_joint_and_suspension_point_speed ... ok
+test tests::saved_car_joint_jacobians_match_reconstructed_point_motion ... ok
+test tests::saved_car_supported_trajectory_certifies_all_candidates_and_repeats ... ok
+test tests::saved_car_finite_terrain_response_repeats_and_balances_external_momentum ... ok
+test tests::saved_car_joint_ticks_keep_authored_suspension_and_drives_and_repeat ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/bin/cpu-physics.rs (target/debug/deps/cpu_physics-11c70ecad2f66953)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/mechanic_bench-40ce5d6c81a89976)
+
+running 5 tests
+test tests::single_suspension_scene_has_one_grounded_mechanism ... ok
+test tests::four_bar_scenarios_have_one_closure ... ok
+test tests::test2_car_preserves_captured_topology ... ok
+test tests::smoke_scene_has_expected_rows ... ok
+test tests::bearing_sweep_preserves_the_64_65_topology_boundary ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/suspension-world.rs (target/debug/deps/suspension_world-2efba9750f1b817c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/mechanic_core-6a0ef49c12fc0a26)
+
+running 281 tests
+test appearance::tests::baked_is_the_default_appearance ... ok
+test appearance::tests::shift_and_dye_ranges_are_validated ... ok
+test compile::tests::a_cage_vertex_cannot_be_pushed_out_of_the_region ... ok
+test compile::tests::a_driven_bearing_collapsed_by_a_later_weld_is_rejected ... ok
+test compile::tests::assigned_motor_without_a_touching_engine_is_rejected ... ok
+test compile::tests::a_regions_blocks_contribute_no_colliders_of_their_own ... ok
+test compile::tests::an_unshaped_creation_still_compiles_to_one_collider_per_block ... ok
+test compile::tests::arbitrary_frame_rotates_cuboid_inertia_and_collider ... ok
+test compile::tests::a_solid_cylinder_also_compiles_an_exact_hull_sharing_every_corner ... ok
+test compile::tests::a_hollow_cylinder_or_sector_has_no_analytic_description ... ok
+test compile::tests::bearing_collapsed_by_a_later_weld_stops_being_a_joint ... ok
+test compile::tests::attached_suspension_socket_does_not_duplicate_either_endpoint_mass ... ok
+test compile::tests::bearing_dimensions_do_not_change_compiled_physics ... ok
+test compile::tests::closed_square_has_one_hard_closure_edge ... ok
+test compile::tests::closure_bearings_have_no_coordinate_to_drive ... ok
+test compile::tests::arbitrary_frame_composes_raw_region_convex_planes_and_mass ... ok
+test compile::tests::control_block_compiles_as_one_half_by_half_by_quarter_metre_collider ... ok
+test compile::tests::coordinate_axis_inertia_includes_the_whole_child_subtree ... ok
+test compile::tests::collapsing_a_region_edge_halves_its_mass_and_moves_its_centroid ... ok
+test compile::tests::coordinate_axis_inertia_matches_a_hand_computed_arm ... ok
+test compile::tests::coordinate_drives_apply_per_wire_reverse_and_leave_undriven_rows_passive ... ok
+test compile::tests::cylinder_sector_compiles_exact_offset_mass_properties_and_sixteen_colliders ... ok
+test compile::tests::driven_bearing_forced_onto_a_closure_edge_is_rejected ... ok
+test compile::tests::driven_bearing_is_preferred_as_a_tree_edge_over_a_passive_one ... ok
+test compile::tests::duplicate_bearing_rows_share_one_coordinate ... ok
+test compile::tests::arbitrary_frame_does_not_double_transform_evaluated_geometry ... ok
+test compile::tests::external_world_anchor_makes_only_its_rigid_group_static ... ok
+test compile::tests::floating_branch_has_one_canonical_root_and_stable_traversals ... ok
+test compile::tests::grounded_body_is_root_even_when_not_the_first_compound ... ok
+test compile::tests::every_material_scales_cuboid_and_cylinder_mass ... ok
+test compile::tests::hardware_torque_replaces_the_legacy_arbitrary_torque_limit ... ok
+test compile::tests::hollow_cylinder_compiles_exact_mass_inertia_and_sixteen_colliders ... ok
+test compile::tests::hollow_pipe_bend_compiles_exact_quarter_torus_mass_and_full_inertia ... ok
+test compile::tests::ideal_gearing_multiplies_torque_divides_speed_and_can_disengage_one_family ... ok
+test compile::tests::featured_cuboid_compiles_evaluated_mass_and_convex_collision ... ok
+test compile::tests::mirrored_floating_branches_use_heavy_chassis_root_and_equal_inertia ... ok
+test compile::tests::mixed_material_welds_sum_mass_and_keep_collider_contact_properties ... ok
+test compile::tests::multiple_ground_anchors_remain_fixed_roots_with_a_closure_edge ... ok
+test compile::tests::one_engine_splits_its_torque_across_its_assigned_coordinates ... ok
+test compile::tests::shared_bearing_attachments_compile_as_one_rotor_and_one_joint ... ok
+test compile::tests::unattached_suspension_socket_adds_carried_mass_center_and_inertia_once ... ok
+test compile::tests::welded_same_material_cuboids_compact_without_changing_mass_or_inertia ... ok
+test compile::tests::welding_to_ground_makes_only_that_group_static ... ok
+test contact_geometry::envelope::tests::envelope_arithmetic_overflow_is_an_error_instead_of_a_small_bound ... ok
+test contact_geometry::envelope::tests::certified_radius_detects_unbounded_planes_even_with_finite_vertices ... ok
+test contact_geometry::envelope::tests::envelope_bounds_analytic_box_depth_and_motion_reach_outward ... ok
+test contact_geometry::envelope::tests::below_surface_separation_requires_the_whole_envelope_to_miss ... ok
+test contact_geometry::envelope::tests::finite_prism_excludes_deep_geometry_beyond_a_terrain_edge ... ok
+test contact_geometry::envelope::tests::envelope_encloses_vertex_and_plane_representation_disagreement ... ok
+test contact_geometry::pair::tests::a_slightly_tilted_box_over_a_ledge_rests_on_a_face_not_a_crossed_edge ... ok
+test contact_geometry::pair::tests::penetration_bound_certifies_clear_paths_and_encloses_overlap ... ok
+test contact_geometry::pair::tests::resting_boxes_are_separated_by_one_of_their_touching_faces ... ok
+test contact_geometry::envelope::tests::ill_conditioned_dual_proposals_cannot_underestimate_a_feasible_point ... ok
+test contact_geometry::pair::tests::solids_moving_together_certify_the_whole_interval_across_a_tiny_gap ... ok
+test contact_geometry::pair::tests::crossed_edges_meet_at_one_point_on_their_cross_axis ... ok
+test contact_geometry::quadratic::tests::quadratic_certificate_stops_before_a_known_accelerated_impact ... ok
+test contact_geometry::quadratic::tests::departing_endpoints_do_not_hide_an_intermediate_acceleration_excursion ... ok
+test contact_geometry::quadratic::tests::signed_rigid_velocities_preserve_cancellation_at_the_support_feature ... ok
+test contact_geometry::quadratic::tests::tangential_translation_does_not_consume_normal_clearance ... ok
+test contact_geometry::tests::activation_vertex::a_near_parallel_wheel_corner_keeps_its_actual_finite_vertex_contact ... ok
+test contact_geometry::tests::activation_vertex::vertex_activation_requires_an_actual_corner_inside_the_finite_triangle ... ok
+test contact_geometry::tests::activation_vertex::an_empty_inner_search_still_activates_finite_vertices_inside_the_full_bound ... ok
+test contact_geometry::tests::continuous_translation_finds_fast_crossing_even_when_both_endpoints_are_clear ... ok
+test contact_geometry::tests::conservative_sweep_matches_exact_translation_and_reports_exhaustion ... ok
+test contact_geometry::tests::finite_edges_holes_and_below_surface_separation_produce_no_contact ... ok
+test contact_geometry::tests::near_contacts_keep_true_surface_points_and_do_not_bridge_finite_edges ... ok
+test contact_geometry::tests::invalid_triangle_and_motion_are_errors_instead_of_missing_contacts ... ok
+test contact_geometry::tests::near_parallel_wheel_faces_keep_activation_points_inside_the_gap_bound ... ok
+test contact_geometry::tests::activation_vertex::numerical_zero_vertex_overlap_survives_an_empty_rounded_face_query ... ok
+test contact_geometry::tests::oblique_contacts_have_points_on_both_actual_surfaces ... ok
+test contact_geometry::tests::convex_plane_offsets_and_local_box_rotation_give_equivalent_queries ... ok
+test contact_geometry::tests::resting_box_retains_four_finite_supports_with_measured_depth ... ok
+test contact_geometry::tests::oblique_proximity_extrusion_preserves_the_actual_convex_silhouette ... ok
+test contact_geometry::tests::rotational_sweep_finds_an_impact_hidden_by_identical_endpoint_poses ... ok
+test contact_geometry::tests::split_recovery_retains_a_tilted_box_vertex_without_changing_its_contact_manifold ... ok
+test creation::tests::a_fine_placed_shape_region_round_trips_its_exact_origin ... ok
+test creation::tests::append_remaps_frame_membership_without_moving_either_creation ... ok
+test creation::tests::canonical_socket_snapshot_preserves_exact_coordinate_bits ... ok
+test creation::tests::cardinal_transfer_applies_once_to_framed_world_geometry ... ok
+test creation::tests::a_shaped_creation_round_trips_its_regions ... ok
+test creation::tests::a_subdivided_region_round_trips_its_cage_planes ... ok
+test contact_geometry::tests::reused_proximity_geometry_tracks_pose_normal_margin_and_finite_edges ... ok
+test creation::tests::construction_documents_without_appearance_are_rejected ... ok
+test creation::tests::current_document_round_trips_five_centimetre_fine_placement ... ok
+test creation::tests::arbitrary_construction_frame_round_trip_preserves_local_grid_and_world_pose ... ok
+test creation::tests::appended_overlapping_local_regions_round_trip_in_separate_frames ... ok
+test creation::tests::current_version_round_trips_construction_appearances ... ok
+test creation::tests::current_version_round_trips_all_construction_materials ... ok
+test creation::tests::engine_kinds_survive_a_serialized_round_trip ... ok
+test creation::tests::current_version_round_trips_pipe_bends ... ok
+test contact_geometry::envelope::tests::envelopes_enclose_all_oblique_contact_depths_and_rebased_queries ... ok
+test creation::tests::hollow_sliced_cylinder_keeps_its_bore_and_sweep ... ok
+test creation::tests::framed_transmissions_replay_locally_and_reject_split_membership ... ok
+test creation::tests::invalid_frames_and_dense_membership_are_rejected ... ok
+test creation::tests::legacy_carbon_material_deserializes_as_graphite_and_writes_graphite ... ok
+test creation::tests::incomplete_matching_stacks_remain_saveable_and_loadable ... ok
+test creation::tests::obsolete_creation_versions_are_rejected ... ok
+test creation::tests::odd_sized_cuboid_keeps_its_half_grid_offset ... ok
+test creation::tests::out_of_range_cuboid_dimension_is_refused ... ok
+test creation::tests::reusable_creation_remaps_every_dimension_link_id ... ok
+test creation::tests::rebuilt_creation_compiles_to_the_same_bodies ... ok
+test creation::tests::servo_seat_input_and_their_routes_survive_a_round_trip ... ok
+test creation::tests::sample_creation_survives_a_serialized_round_trip ... ok
+test creation::tests::suspension_socket_loading_rejects_invalid_axis_anchor_and_support ... ok
+test creation::tests::transmissions_round_trip_when_arena_order_precedes_their_parents ... ok
+test creation::tests::transmission_parents_and_gearbox_settings_round_trip ... ok
+test creation::tests::unsupported_version_is_refused ... ok
+test creation::tests::unlimited_torque_round_trips_without_encoding_an_infinity ... ok
+test creation::tests::weld_to_a_missing_part_is_refused ... ok
+test creation::tests::tool_view_snapshot_restores_canonical_parts_and_socket_frames ... ok
+test drive::name_tests::a_name_reads_back_exactly_as_it_was_written ... ok
+test drive::name_tests::a_name_that_exactly_fills_the_buffer_keeps_every_byte ... ok
+test creation::tests::wire_to_a_missing_bearing_is_refused ... ok
+test drive::name_tests::an_unnamed_joint_reads_as_empty ... ok
+test drive::name_tests::an_overlong_name_is_cut_on_a_character_boundary ... ok
+test drive::tests::drive_keys_accept_letters_and_digits_and_fold_case ... ok
+test drive::tests::a_dwell_without_a_target_follows_the_program_and_wraps_only_when_it_loops ... ok
+test drive::tests::drive_limits_validate_speed_torque_and_limit_ordering ... ok
+test creation::tests::suspension_round_trip_and_cardinal_placement_preserve_attached_and_socket_mass ... ok
+test drive::tests::motor_contributions_validate_and_zero_normalizes_to_unpowered ... ok
+test drive::tests::dwell_advances_to_its_named_state_then_to_the_following_one ... ok
+test drive::tests::one_key_may_drive_many_bearings_but_not_two_states_of_one_bearing ... ok
+test drive::tests::programs_accept_engine_speeds_across_the_supported_gear_range ... ok
+test drive::tests::programs_reject_out_of_range_targets_dwells_and_state_references ... ok
+test drive::tests::removing_a_state_renumbers_every_reference_to_the_states_after_it ... ok
+test drive::tests::state_lookup_by_key_finds_the_bound_state ... ok
+test edit::tests::part_delta_distinguishes_added_removed_and_modified ... ok
+test dynamics::tests::independent_bodies_have_disjoint_six_velocity_components ... ok
+test frame::tests::missing_edit_frame_does_not_change_active_grid ... ok
+test edit::tests::reframing_invalidates_only_changed_parts_and_their_owned_regions ... ok
+test frame::tests::overlapping_local_regions_keep_independent_frame_membership ... ok
+test frame::tests::tool_view_round_trip_preserves_local_poses_and_bearing_geometry ... ok
+test gearbox::tests::defaults_grow_to_eighteen_strictly_descending_gears ... ok
+test gearbox::tests::gas_divider_accepts_both_extremes ... ok
+test gearbox::tests::gas_transmissions_keep_a_low_forward_gear_after_reverse ... ok
+test gearbox::tests::growing_an_edited_two_gear_box_preserves_both_ratios_and_order ... ok
+test geometry::tests::authored_parts_keep_their_fixed_grid_envelopes ... ok
+test geometry::tests::construction_material_property_rows_are_exact ... ok
+test geometry::tests::cylinder_dimensions_validate_defaults_bounds_wall_and_length_grid ... ok
+test geometry::tests::dimension_link_has_a_fixed_two_by_one_by_one_block_envelope ... ok
+test geometry::tests::half_grid_pose_preserves_eighth_metre_centres_in_both_directions ... ok
+test geometry::tests::nominal_block_compliance_uses_the_construction_scale ... ok
+test geometry::tests::one_centimetre_positions_round_trip_exactly_across_zero ... ok
+test geometry::tests::ordinary_part_specs_default_to_steel_and_accept_an_explicit_material ... ok
+test geometry::tests::pipe_bend_dimensions_enforce_grid_radius_and_outer_diameter_clearance ... ok
+test geometry::tests::pipe_bend_exposes_only_its_two_tangent_annular_ends ... ok
+test geometry::tests::pose_preserves_fine_position_ticks_in_both_directions ... ok
+test geometry::tests::rejects_dimensions_outside_builder_range ... ok
+test geometry::tests::rotates_face_orientation_in_quarter_turns ... ok
+test geometry::tests::snaps_world_coordinates_to_quarter_metre_grid ... ok
+test creation::tests::shape_feature_order_and_topology_provenance_round_trip ... ok
+test graph::tests::a_cage_move_that_would_invert_a_cell_is_rejected_and_changes_nothing ... ok
+test graph::tests::a_fresh_region_has_eight_cage_vertices ... ok
+test graph::tests::a_region_refuses_an_area_with_a_hole ... ok
+test graph::tests::a_cage_vertex_cannot_leave_the_regions_bounding_box ... ok
+test graph::tests::a_region_refuses_mixed_materials ... ok
+test graph::tests::a_region_can_span_a_whole_run_of_welded_blocks ... ok
+test graph::tests::a_region_refuses_overlapping_another ... ok
+test graph::tests::a_region_refuses_to_hold_only_part_of_a_block ... ok
+test graph::tests::a_region_requires_one_appearance_and_painting_it_updates_every_member ... ok
+test graph::tests::authored_machine_parts_reject_appearance_edits ... ok
+test graph::tests::bearing_axis_and_anchor_are_derived_geometry ... ok
+test graph::tests::bearing_dimensions_validate_defaults_bounds_and_ring_gap ... ok
+test graph::tests::bearing_does_not_attach_to_a_face_entirely_inside_its_hole ... ok
+test graph::tests::bearing_spec_defaults_and_accepts_custom_dimensions ... ok
+test graph::tests::collapsing_an_edge_into_a_wedge_is_accepted ... ok
+test graph::tests::connections_can_be_deleted_independently ... ok
+test graph::tests::control_block_exposes_cuboid_faces_and_reprogrammable_wires ... ok
+test graph::tests::cylinder_sector_end_connects_only_through_retained_material ... ok
+test graph::tests::deleting_a_bearings_support_part_also_drops_its_drive_wire ... ok
+test graph::tests::deleting_a_block_deletes_the_region_it_belonged_to ... ok
+test graph::tests::deleting_upstream_transmission_parts_cascades_downstream ... ok
+test graph::tests::deleting_a_controller_or_bearing_cascades_its_drive_links ... ok
+test graph::tests::deletion_cascades_connections_and_invalidates_old_handle ... ok
+test graph::tests::dimension_link_ids_are_unique_and_queryable ... ok
+test graph::tests::drive_link_requires_a_controller_part_and_an_undriven_bearing ... ok
+test graph::tests::failed_command_is_transactional ... ok
+test graph::tests::graph_stores_generalized_parts_and_rejects_cylinder_walls_as_faces ... ok
+test graph::tests::gearbox_edits_validate_physical_gear_count_and_are_transactional ... ok
+test graph::tests::mixed_welds_require_positive_annular_material_overlap ... ok
+test graph::tests::input_routes_are_typed_cardinal_and_cascade_with_the_seat ... ok
+test graph::tests::oversized_bearing_can_attach_to_an_offset_face_covered_by_its_ring ... ok
+test graph::tests::reversed_wire_flips_the_programmed_direction ... ok
+test graph::tests::rigid_links_validate_distinct_parts_and_cascade_on_deletion ... ok
+test graph::tests::same_type_stack_mismatch_is_visible_and_blocks_compile_only ... ok
+test graph::tests::structural_blocks_do_not_bridge_controller_actuator_modules ... ok
+test graph::tests::structural_component_crosses_every_joint_and_partitions_cleanly ... ok
+test graph::tests::suspension_cannot_receive_a_controller_motor_assignment ... ok
+test graph::tests::suspension_attachment_rejects_bad_axes_support_spacing_and_conflicting_specs ... ok
+test graph::tests::suspension_shared_mounts_compile_once_and_live_edits_preserve_attachment_ids ... ok
+test graph::tests::subdividing_inserts_a_whole_plane_without_moving_the_surface ... ok
+test graph::tests::transmission_attachment_is_atomic_and_protects_its_weld ... ok
+test graph::tests::five_centimetre_fillet_revalidates_a_welded_tangent_chain ... ok
+test graph::tests::weld_requires_touching_opposed_faces ... ok
+test graph::tests::transmissions_form_one_inherited_seventeen_block_chain ... ok
+test id::tests::stale_handle_does_not_alias_reused_slot ... ok
+test linear::tests::a_carriage_cannot_attach_on_a_second_face ... ok
+test linear::tests::all_mounting_orientations_preserve_flush_attachment_planes ... ok
+test linear::tests::default_carriage_is_130_mm_wide_with_850_mm_travel ... ok
+test linear::tests::deleting_either_attachment_removes_its_linear_joint ... ok
+test linear::tests::invalid_and_off_grid_dimensions_are_rejected ... ok
+test graph::tests::shape_features_add_adjust_remove_and_reject_invalid_amounts_atomically ... ok
+test linear::tests::linear_drive_insertion_rejects_rotational_units_and_overextended_limits ... ok
+test linear::tests::duplicate_linear_rows_share_one_physical_coordinate ... ok
+test linear::tests::live_compiled_rows_reject_mismatched_target_units ... ok
+test linear::tests::live_linear_reprogramming_rejects_unit_changes_and_preserves_the_previous_row ... ok
+test linear::tests::maximum_rail_can_overhang_a_single_support_block ... ok
+test linear::tests::rotational_joints_reject_linear_programs_and_limits ... ok
+test linear::tests::one_engine_shares_linear_force_and_gearing_preserves_output_power ... ok
+test linear::tests::transmission_conversion_conserves_power ... ok
+test linear::tests::transformed_linear_creation_preserves_frame_face_and_dimensions ... ok
+test linear_geometry::tests::exterior_faces_and_recessed_fixings_have_outward_winding ... ok
+test linear_geometry::tests::extreme_and_default_meshes_preserve_bounds_winding_and_finishes ... ok
+test linear_geometry::tests::snapped_outer_faces_keep_original_inner_clearance ... ok
+test linear::tests::attached_and_unattached_linear_sockets_survive_creation_transforms ... ok
+test shape::tests::a_shaped_cages_decomposition_is_a_closed_surface ... ok
+test shape::tests::a_sheared_cell_fuses_to_one_piece_with_three_face_normals ... ok
+test graph::tests::welded_block_solid_accepts_treatments_past_one_block ... ok
+test shape::tests::an_undisplaced_cage_covers_itself_with_one_box ... ok
+test shape::tests::a_single_displaced_corner_shapes_only_its_own_cell ... ok
+test shape::tests::an_unshaped_part_compiles_to_exactly_one_cuboid_piece ... ok
+test shape::tests::collapsing_an_edge_culls_degenerate_tetrahedra_and_makes_a_wedge ... ok
+test shape::tests::cells_sharing_an_in_plane_displaced_node_cover_the_shared_face_identically ... ok
+test shape::tests::every_reference_tetrahedron_is_positively_oriented ... ok
+test shape::tests::swapping_two_neighbouring_corners_is_an_inversion ... ok
+test shape::tests::every_convex_piece_stays_within_the_declared_caps ... ok
+test solid::tests::chamfer_replaces_one_edge_with_a_generated_patch ... ok
+test solid::tests::concave_region_edges_are_not_offered_as_subtractive_fillet_targets ... ok
+test solid::tests::cuboid_boundary_has_six_patches_and_twelve_logical_edges ... ok
+test shape::tests::cells_sharing_an_out_of_plane_displaced_node_cover_the_shared_face_identically ... ok
+test linear::tests::every_supported_dimension_survives_serialization ... ok
+test solid::tests::cuboid_treatments_accept_a_full_block_amount_but_not_more ... ok
+test solid::tests::cylinder_rims_are_closed_logical_chains_not_tessellation_edges ... ok
+test solid::tests::five_centimetre_fillet_is_available_on_a_generated_chamfer_edge ... ok
+test linear::tests::top_and_side_attachments_compile_in_every_cardinal_orientation ... ok
+test solid::tests::larger_cuboids_accept_fillets_and_chamfers_past_one_block ... ok
+test solid::tests::larger_regions_accept_fillets_and_chamfers_past_one_block ... ok
+test solid::tests::one_logical_edge_does_not_join_matching_edges_on_separate_cells ... ok
+test compile::tests::region_inertia_matches_numerical_integration_of_the_same_pieces ... ok
+test solid::tests::cuboid_fillet_accepts_sub_block_radii_in_five_centimetre_steps ... ok
+test solid::tests::five_centimetre_fillet_is_available_on_a_sloped_region ... ok
+test solid::tests::region_fillets_accept_a_full_block_radius ... ok
+test solid::tests::pipe_bend_generator_is_manifold_for_solid_and_hollow_profiles ... ok
+test solid::tests::shaped_region_boundary_excludes_internal_convex_decomposition_faces ... ok
+test solid::tests::vertex_profile_endpoints_are_face_tangencies ... ok
+test suspension::tests::bump_contact_uses_gland_and_integrated_force_matches_energy ... ok
+test solid::tests::cylinder_fillet_tangencies_are_not_selectable_edges ... ok
+test suspension::tests::complete_collars_constrain_insertion_in_both_orders ... ok
+test solid::tests::three_incident_fillet_edges_round_their_shared_corner ... ok
+test suspension::tests::guide_reference_springs_match_rate_solid_height_and_travel ... ok
+test suspension::tests::independent_shock_contains_its_shaft_throughout_stroke ... ok
+test suspension::tests::invalid_inputs_cannot_enter_through_constructors_or_deserialization ... ok
+test suspension::tests::persisted_mount_geometry_and_spacing_are_validated ... ok
+test suspension::tests::preload_adds_force_and_starting_compression_only_changes_pose ... ok
+test suspension::tests::removal_and_round_trip_preserve_independent_inputs ... ok
+test suspension::tests::removing_components_preserves_installed_hardware_and_compressed_spacing ... ok
+test suspension::tests::replacement_rejects_attached_spacing_edits_but_allows_preload ... ok
+test solid::tests::chamfered_cylinder_rim_produces_two_treatable_closed_chains ... ok
+test solid::tests::posed_cylinder_fillet_vertices_lie_on_the_rim_torus ... ok
+test suspension_geometry::tests::upper_plate_fixings_are_visible_above_outside_mount_face ... ok
+test suspension_geometry::tests::standalone_parts_and_shared_plates_have_correct_owners ... ok
+test weld::tests::all_feature_pairs_oppose_normals_and_keep_the_seed ... ok
+test suspension_geometry::tests::cached_deformation_preserves_topology_and_rigid_body_and_shaft_lengths ... ok
+test weld::tests::cylinder_ends_are_selectable_but_curved_rims_and_tessellation_vertices_are_not ... ok
+test solid::tests::hollow_sector_curved_rims_and_axial_cut_edges_accept_treatments ... ok
+test weld::tests::edge_alignment_skips_rotations_that_break_collinearity ... ok
+test weld::tests::cube_edges_and_real_corners_resolve_against_adjacent_surfaces ... ok
+test suspension_geometry::tests::both_orientations_have_outward_winding_and_finite_normals ... ok
+test weld::tests::exact_contact_and_adjacent_material_contain_a_square ... ok
+test weld::tests::finite_edges_and_vertex_incidence_are_preserved_in_both_orders ... ok
+test weld::tests::invalid_material_cannot_supply_missing_contact ... ok
+test weld::tests::sloped_mating_faces_use_one_rigid_transform ... ok
+test weld::tests::switching_snap_increment_does_not_move_a_stationary_pointer ... ok
+test weld::tests::topology_picks_reject_stale_revisions_and_nonincident_faces ... ok
+test weld::tests::placement_moves_first_assembly_and_preserves_joint_defaults_and_destination ... ok
+test weld::tests::narrow_disconnected_and_holed_contacts_are_rejected ... ok
+test weld::tests::default_assembly_obstructions_and_terrain_anchors_reject_transactionally ... ok
+test weld::tests::a_cylinder_end_weld_uses_the_entire_annulus_and_keeps_the_hole ... ok
+test creation::tests::nested_cylinder_features_round_trip_and_compile_under_current_format ... ok
+test solid::tests::solid_and_hollow_cylinder_rims_accept_five_centimetre_treatments ... ok
+test solid::tests::translated_and_rotated_cylinder_rims_accept_treatments ... ok
+
+test result: ok. 281 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src/lib.rs (target/debug/deps/mechanic_gpu-8bf37bedfb9f839a)
+
+running 122 tests
+test abi::tests::contact_rows_and_capacities_remain_fixed ... ok
+test abi::tests::gpu_rows_are_sixteen_byte_aligned_in_size ... ok
+test abi::tests::passive_drive_rows_never_clamp_a_joint_angle ... ok
+test abi::tests::expanded_manifold_rows_clear_before_reuse ... ok
+test collision::tests::rotated_edge_overlap_is_detected ... ok
+test collision::tests::sat_rejects_separated_boxes ... ok
+test collision::tests::sat_finds_minimum_face_axis ... ok
+test collision::tests::face_contact_retains_four_stable_points ... ok
+test device::terrain::publication::tests::preparation_reuses_geometry_across_origin_shifts_and_replaces_changed_generations ... ok
+test device::terrain::publication::tests::failed_preparation_preserves_cached_geometry ... ok
+test device::hold::tests::hold_masks_require_complete_components_and_exact_body_counts ... ok
+test device::terrain::publication::tests::top_level_bvh_miss_skips_all_distant_chunks ... ok
+test device::terrain::publication::tests::geometry_identity_tracks_packed_content_order_and_origin ... ok
+test device::terrain::publication::tests::mesh_handoff_copies_only_changed_geometry ... ok
+test device::terrain::publication::tests::incremental_publication_reuses_chunks_and_rejects_stale_output_before_writes ... ok
+test device::terrain::tests::terrain_downward_impact_trace ... ignored, diagnostic GPU impact trace; run explicitly with --ignored --nocapture
+test device::terrain::tests::terrain_upload_preserves_bvh_escape_ranges ... ok
+test device::terrain::tests::terrain_upload_rebases_before_narrowing_and_uses_material_response ... ok
+test device::terrain::tests::terrain_upload_rejects_invalid_indices_and_non_finite_materials ... ok
+test device::tests::a_shaped_part_compiles_to_convex_collider_rows ... ok
+test device::terrain::tests::an_immovable_body_generates_no_terrain_contacts ... ok
+test device::terrain::tests::adopted_terrain_residency_collides_without_uploading_chunks_again ... ok
+test device::terrain::tests::gpu_terrain_contacts_use_finite_triangles_without_ground_planes ... ok
+test device::terrain::rotational::rotating_body_cannot_pass_through_terrain_between_clear_endpoint_poses ... ok
+test device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration ... FAILED
+test device::tests::asynchronous_tick_readback_is_monotonic_and_tick_matched ... ok
+test device::tests::authoritative_readback_keeps_velocities_and_coordinates_with_their_tick ... ok
+test device::tests::authoritative_readback_supports_scenes_without_joints ... ok
+test device::tests::balanced_child_contacts_move_root_without_spurious_joint_motion ... ok
+test device::tests::callback_timing_distinguishes_servicing_from_later_consumption ... ok
+test device::tests::angle_state_reaches_its_target_and_holds_without_overshooting ... ok
+test device::tests::collision_buffers_scale_with_the_scene_up_to_the_hard_limit ... ok
+test device::tests::a_shaped_wedge_settles_on_the_ground_without_failing ... ok
+test device::tests::contact_supported_unwelded_tower_drives_welded_arm ... ok
+test device::tests::collider_local_ground_planes_support_bodies_at_different_heights ... ok
+test device::tests::double_pendulum_transfers_motion_through_both_bearings ... ok
+test device::tests::driven_coordinate_stops_and_holds_at_its_travel_limit ... ok
+test device::tests::external_impulse_batches_chunk_repeated_rows_and_validate_atomically ... ok
+test device::tests::external_impulse_drives_a_bearing_coordinate ... ok
+test device::terrain::generated::generated_caves_stop_wall_and_ceiling_impacts ... ok
+test device::tests::flat_disc_landing_on_another_disc_does_not_gain_energy ... ok
+test device::tests::flat_cylinder_face_stays_supported_above_ground ... ok
+test device::tests::freely_falling_hinge_has_no_gravity_induced_relative_rotation ... ok
+test device::terrain::tests::dense_terrain_triangles_share_support_without_overflow_or_rebound ... ok
+test device::tests::full_cylinder_ground_contacts_match_visual_wheel_radius ... ok
+test device::tests::fused_small_mechanism_schedule_has_explicit_size_and_scene_boundaries ... ok
+test device::tests::gated_recovery_timestamps_remain_ordered ... ok
+test device::terrain::generated::generated_terrain_supports_fast_impacts_across_brick_boundaries has been running for over 60 seconds
+test device::terrain::tests::curved_terrain_triangles_support_impacts_without_overflow_or_rebound has been running for over 60 seconds
+test device::terrain::tests::rigid_terrain_impacts_do_not_tunnel_or_rebound_from_recovery has been running for over 60 seconds
+test device::tests::articulated_car_wall_impact_remains_bounded_and_decays ... FAILED
+test device::tests::branching_pendulum_reaches_rest_instead_of_retaining_spin has been running for over 60 seconds
+test device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion ... FAILED
+test device::tests::gpu_pipelines_construct_on_noop_backend ... ok
+test device::tests::grounded_offset_pendulum_swings_without_detaching ... ok
+test device::tests::curved_suspension_car_lands_without_contact_correction_launch has been running for over 60 seconds
+test device::tests::dense_pipe_contacts_on_bearings_and_a_rail_remain_bounded has been running for over 60 seconds
+test device::terrain::tests::rigid_terrain_impacts_do_not_tunnel_or_rebound_from_recovery ... ok
+test device::tests::held_body_supports_a_falling_neighbor_without_moving ... ok
+test device::tests::held_rotational_and_linear_components_ignore_drives_impulses_and_reconstruction ... ok
+test device::tests::flat_disc_stops_sliding_without_long_term_contact_drift has been running for over 60 seconds
+test device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion ... FAILED
+test device::tests::front_steered_car_turns_through_ground_friction has been running for over 60 seconds
+test device::tests::higher_friction_material_loses_more_sliding_speed ... ok
+test device::tests::late_mapping_callbacks_cannot_reorder_publication ... ok
+test device::tests::linear_floating_mount_receives_end_stop_reaction_after_impact ... ok
+test device::tests::curved_suspension_car_lands_without_contact_correction_launch ... ok
+test device::tests::linear_mixed_chains_preserve_constraints_in_small_and_parallel_routes ... ok
+test device::tests::higher_rolling_resistance_stops_an_otherwise_identical_cylinder_sooner ... ok
+test device::tests::linear_off_centre_impact_locks_sideways_motion_and_all_rotation ... ok
+test device::tests::linear_mixed_loops_lock_orientation_after_off_centre_impacts ... ok
+test device::tests::linear_passive_vertical_carriage_hits_both_physical_stops_without_power ... ok
+test device::tests::linear_position_drive_seeks_and_holds_against_gravity_after_reprogramming ... ok
+test device::tests::linear_sustained_power_respects_stops_and_reverses_immediately ... ok
+test device::tests::max_speed_caps_a_faster_state_target ... ok
+test device::tests::linear_mixed_loops_enforce_narrower_closure_stops_in_all_routes ... ok
+test device::tests::negative_target_speed_drives_the_joint_the_other_way ... ok
+test device::tests::off_centre_external_impulse_changes_linear_and_angular_motion ... ok
+test device::tests::offset_ground_contact_applies_angular_impulse_about_compound_centre ... ok
+test device::tests::physics_wgsl_parses_and_validates_without_a_gpu ... ok
+test device::tests::lower_modulus_allows_more_transient_penetration_without_failure ... FAILED
+test device::tests::high_speed_steering_returns_to_center_after_release has been running for over 60 seconds
+test device::terrain::generated::generated_terrain_supports_fast_impacts_across_brick_boundaries ... ok
+test device::tests::plastic_rebounds_more_than_concrete ... FAILED
+test device::tests::releasing_a_loaded_hold_discards_only_changed_contact_warmstarts ... ok
+test device::tests::replacement_scene_reuses_every_compiled_shader_and_pipeline ... ok
+test device::tests::restored_authoritative_state_continues_rotational_and_linear_motion ... ok
+test device::tests::reprogramming_a_wire_changes_the_drive_without_reloading_the_scene ... ok
+test device::tests::speed_state_advances_a_bearing_coordinate_at_its_target_speed ... ok
+test device::tests::flat_disc_stops_sliding_without_long_term_contact_drift ... ok
+test device::terrain::tests::curved_terrain_triangles_support_impacts_without_overflow_or_rebound ... ok
+test device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding ... FAILED
+test device::tests::dense_pipe_contacts_on_bearings_and_a_rail_remain_bounded ... ok
+test device::tests::submission_sequence_and_execution_evidence_survive_scheduler_gaps ... ok
+test device::tests::suspension_damper_starting_stroke_is_force_free_and_rebound_is_stronger ... ok
+test device::tests::suspension_floating_mount_receives_bottom_out_reaction ... ok
+test device::tests::suspension_holds_suppress_passive_forces_and_release_restores_spring_motion ... ok
+test device::tests::sub_threshold_ground_contact_settles_without_repeated_bounce ... ok
+test device::tests::moving_coaxial_rotor_does_not_gain_perpetual_spin has been running for over 60 seconds
+test device::tests::production_servos_hold_steering_under_first_gear_gas_drive has been running for over 60 seconds
+test device::tests::production_servos_hold_steering_under_first_gear_gas_drive ... FAILED
+test device::tests::suspension_rubber_crush_limit_resists_sustained_overload_in_both_routes ... ok
+test device::tests::rigid_terrain_impact_bounds_hold_for_convex_parts_and_cylinders has been running for over 60 seconds
+test device::tests::steering_servos_reach_angle_without_overshooting ... FAILED
+test device::tests::suspension_passive_forces_preserve_mixed_loop_closures_in_both_routes ... ok
+test device::tests::suspension_spring_oscillates_and_preload_reduces_loaded_compression ... ok
+test device::tests::struck_articulated_wheel_recovers_without_crossing_ground has been running for over 60 seconds
+test device::tests::rigid_terrain_impact_bounds_hold_for_convex_parts_and_cylinders ... ok
+test device::tests::terrain_contacts_enter_the_fused_articulated_solver ... ok
+test device::tests::terrain_position_recovery_preserves_intentional_restitution ... ok
+test device::tests::front_steered_car_turns_through_ground_friction ... ok
+test device::tests::struck_articulated_wheel_recovers_without_crossing_ground ... FAILED
+test device::tests::terrain_triangles_contact_cuboids_convex_parts_and_cylinders_on_slopes_and_walls ... ok
+test device::tests::suspension_loaded_spring_equilibrium_in_small_and_parallel_routes has been running for over 60 seconds
+test device::tests::suspension_loaded_spring_equilibrium_in_small_and_parallel_routes ... ok
+test render::tests::cutover_is_atomic_when_replacement_cannot_coexist ... ok
+test render::tests::predecessor_ranges_retire_only_after_safety_window ... ok
+test render::tests::stale_generation_never_becomes_visible ... ok
+test runtime::tests::snapshots_advance_only_for_running_successful_ticks ... ok
+test scheduler::tests::one_second_always_produces_exactly_sixty_ticks ... ok
+test scheduler::tests::render_sized_fragments_do_not_drop_or_duplicate_ticks ... ok
+test terrain::tests::asymmetric_convex_uses_support_toward_terrain ... ok
+test terrain::tests::cuboid_convex_and_wheel_generate_triangle_contacts ... ok
+test terrain::tests::device_limit_overflow_keeps_the_previous_generation_and_reports_backlog ... ok
+test terrain::tests::late_worker_results_cannot_replace_newer_pending_or_active_chunks ... ok
+test terrain::tests::replacement_at_tick_boundary_invalidates_old_generation_and_pins_overlap ... ok
+test terrain::tests::unloading_invalidates_contacts_and_cancels_pending_replacement ... ok
+test device::tests::weak_drive_stalls_lifting_a_gravity_loaded_arm ... ok
+test device::tests::suspension_shock_bottoms_and_rubber_supports_load_in_both_body_orientations has been running for over 60 seconds
+test device::tests::vertical_axis_drive_is_not_zeroed_by_the_sleep_clamp ... ok
+test device::tests::sustained_gas_drive_stays_forward_with_bounded_longitudinal_slip has been running for over 60 seconds
+test device::tests::tall_single_and_double_pendulums_dissipate_energy has been running for over 60 seconds
+test device::tests::suspension_shock_bottoms_and_rubber_supports_load_in_both_body_orientations ... ok
+test device::tests::terrain_recovery_preserves_articulated_and_suspension_constraints has been running for over 60 seconds
+test device::tests::terrain_recovery_preserves_articulated_and_suspension_constraints ... ok
+test device::tests::high_speed_steering_returns_to_center_after_release ... ok
+test device::tests::moving_coaxial_rotor_does_not_gain_perpetual_spin ... ok
+test device::tests::tall_single_and_double_pendulums_dissipate_energy ... FAILED
+test device::tests::branching_pendulum_reaches_rest_instead_of_retaining_spin ... ok
+test device::tests::sustained_gas_drive_stays_forward_with_bounded_longitudinal_slip ... ok
+
+failures:
+
+---- device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration' (1912556) panicked at crates/mechanic-gpu/src/device.rs:8516:17:
+wheel 2 entered the ground at tick 30: y=0.48957208
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- device::tests::articulated_car_wall_impact_remains_bounded_and_decays stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::articulated_car_wall_impact_remains_bounded_and_decays' (1912558) panicked at crates/mechanic-gpu/src/device.rs:9421:9:
+wall-impact bearing motion did not decay: final speed 0.035505295 rad/s
+
+---- device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion' (1913555) panicked at crates/mechanic-gpu/src/device.rs:10418:9:
+annular drop reached y=3.1012783 instead of resting on the ring
+
+---- device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion' (1914032) panicked at crates/mechanic-gpu/src/device.rs:10497:9:
+assertion failed: annular_snapshot[falling_body].position[1] > 3.0
+
+---- device::tests::lower_modulus_allows_more_transient_penetration_without_failure stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::lower_modulus_allows_more_transient_penetration_without_failure' (1915596) panicked at crates/mechanic-gpu/src/device.rs:10226:9:
+soft contact became unstable at -0.8241361 m
+
+---- device::tests::plastic_rebounds_more_than_concrete stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::plastic_rebounds_more_than_concrete' (1916093) panicked at crates/mechanic-gpu/src/device.rs:10256:9:
+plastic rebounded to 0.5122585 m while concrete reached 0.5 m
+
+---- device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding' (1916802) panicked at crates/mechanic-gpu/src/device.rs:9995:9:
+sub-threshold static load moved the cube 0.39855438 m
+
+---- device::tests::production_servos_hold_steering_under_first_gear_gas_drive stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::production_servos_hold_steering_under_first_gear_gas_drive' (1916295) panicked at crates/mechanic-gpu/src/device.rs:8847:9:
+full first-gear drive deflected centred steering by 5.709531 degrees
+
+---- device::tests::steering_servos_reach_angle_without_overshooting stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::steering_servos_reach_angle_without_overshooting' (1916870) panicked at crates/mechanic-gpu/src/device.rs:8707:13:
+steering coordinate 0 overshot 30 degrees to 30.804607 degrees
+
+---- device::tests::struck_articulated_wheel_recovers_without_crossing_ground stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::struck_articulated_wheel_recovers_without_crossing_ground' (1917232) panicked at crates/mechanic-gpu/src/device.rs:9318:9:
+struck wheel remained in the ground at 0.4945614 m
+
+---- device::tests::tall_single_and_double_pendulums_dissipate_energy stdout ----
+GPU test adapter: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+
+thread 'device::tests::tall_single_and_double_pendulums_dissipate_energy' (1918479) panicked at crates/mechanic-gpu/src/device.rs:5322:9:
+double pendulum retained free angles [1.3451535, -1.6540538] and speeds [0.056169037, 0.16564614]
+
+
+failures:
+    device::tests::articulated_car_drop_settles_without_drift_or_ground_penetration
+    device::tests::articulated_car_wall_impact_remains_bounded_and_decays
+    device::tests::gpu_cylinder_bore_is_passable_and_annular_material_blocks_motion
+    device::tests::gpu_pipe_bend_bore_is_passable_and_annular_material_blocks_motion
+    device::tests::lower_modulus_allows_more_transient_penetration_without_failure
+    device::tests::plastic_rebounds_more_than_concrete
+    device::tests::production_servos_hold_steering_under_first_gear_gas_drive
+    device::tests::static_friction_holds_a_sub_threshold_load_while_kinetic_friction_slows_sliding
+    device::tests::steering_servos_reach_angle_without_overshooting
+    device::tests::struck_articulated_wheel_recovers_without_crossing_ground
+    device::tests::tall_single_and_double_pendulums_dissipate_energy
+
+test result: FAILED. 110 passed; 11 failed; 1 ignored; 0 measured; 0 filtered out; finished in 385.03s
+
+error: test failed, to rerun pass `-p mechanic-gpu --lib`
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-88e524c70605aeb1)
+
+running 190 tests
+test free_motion::tests::rejected_commands_and_failed_numerics_preserve_the_last_snapshot ... ok
+test free_motion::tests::off_centre_impulse_changes_momentum_once_independent_of_substeps ... ok
+test free_motion::tests::authored_drive_and_loop_constraints_cannot_be_silently_ignored ... ok
+test free_motion::tests::impulse_at_a_child_accelerates_the_whole_machine_with_correct_total_momentum ... ok
+test free_motion::tests::free_fall_matches_ballistic_motion_at_the_external_clock ... ok
+test free_motion::tests::principal_axis_spin_matches_the_analytic_orientation ... ok
+test joint_machine::impact::tests::contact_impulse_respects_an_active_joint_stop_and_back_drives_the_root ... ok
+test joint_machine::impact::tests::failed_instantaneous_solve_preserves_all_physical_state ... ok
+test free_motion::tests::anchored_tree_keeps_its_root_fixed_while_joint_motion_evolves ... ok
+test joint_machine::tests::a_joint_limit_activates_at_arrival_and_then_advances_with_coupled_velocity ... ok
+test joint_machine::impact::tests::impact_applies_restitution_once_without_moving_or_biasing_penetration ... ok
+test joint_machine::tests::hard_stop_reacts_against_a_stalled_drive_without_consuming_its_budget ... ok
+test joint_machine::tests::failed_tick_and_drive_change_are_rolled_back_then_can_be_retried ... ok
+test joint_machine::tests::implicit_spring_and_asymmetric_damping_match_the_scalar_midpoint_solution ... ok
+test free_motion::tests::repeated_fixed_input_ticks_have_identical_completed_hashes ... ok
+test joint_machine::tests::motor_budget_accelerates_rotor_and_back_drives_the_floating_mount ... ok
+test joint_machine::tests::nonlinear_retry_restarts_the_same_tick_without_duplicating_impulses ... ok
+test joint_machine::tests::progressive_rubber_and_damping_satisfy_the_actual_midpoint_force_equation ... ok
+test joint_machine::tests::terrain_ticks::body_contacts::a_sliding_box_pushes_a_floating_box_without_passing_through_it ... ok
+test free_motion::tests::asymmetric_free_rotation_converges_to_conserved_angular_momentum_and_energy ... ok
+test joint_machine::tests::speed_torque_curve_fades_acceleration_but_keeps_braking_effort ... ok
+test joint_machine::tests::coupled_surface_substeps_hold_static_load_and_apply_kinetic_deceleration ... ok
+test free_motion::tests::floating_tree_conserves_momentum_and_keeps_exact_joint_anchors_and_axes ... ok
+test joint_machine::tests::loaded_spring_reaches_the_authored_equilibrium_with_preload ... ok
+test joint_machine::tests::terrain_ticks::body_contacts::boxes_stacked_a_hair_apart_keep_ticking_while_they_glide_together ... ok
+test joint_machine::tests::terrain_ticks::changed_supporting_terrain_or_wrong_topology_cannot_publish_an_invalid_tick ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::a_box_that_returns_within_one_tick_stops_on_the_surface ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::a_separating_box_leaves_without_a_contact_impulse ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::a_settled_box_is_at_rest_in_velocity_when_every_arrival_is_resolved ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::a_settled_box_stays_within_the_activation_window ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::a_long_multi_collider_body_settles_on_a_redundant_manifold ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::an_impact_above_the_threshold_rebounds_at_the_material_restitution ... ok
+test joint_machine::tests::nonlinear_midpoint_rotation_converges_to_the_rk4_free_motion_reference ... ok
+test joint_machine::tests::terrain_ticks::final_terrain_failure_retains_completed_state_and_does_not_consume_a_command ... ok
+test joint_machine::tests::terrain_ticks::failed_terrain_path_retries_match_direct_quality_and_consume_impulse_once ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::a_fast_drop_through_a_finite_hole_does_not_activate_a_ghost_surface ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::an_initial_touching_impact_bounces_once_then_advances_with_outgoing_velocity ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::a_rotating_cube_reaches_a_real_finite_edge_before_applying_impact ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::existing_floor_support_does_not_hide_a_new_finite_wall_impact ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::cold_fast_impact_matches_analytic_bounce_and_uses_the_remaining_tick ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::gravity_is_reintegrated_at_the_impact_time_before_restitution ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::a_sprung_wheel_settles_on_the_floor_at_its_spring_equilibrium ... ok
+test joint_machine::tests::terrain_support_and_suspension_share_the_implicit_force_response ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::released_support_can_return_and_impact_the_same_triangle_within_one_tick ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::shallow_first_impact_activates_even_when_its_depth_envelope_would_pass ... ok
+test joint_machine::tests::terrain_ticks::recovery::split_recovery_changes_positions_without_time_velocity_or_physical_impulses ... ok
+test joint_machine::tests::terrain_ticks::recovery::split_recovery_does_not_extend_finite_terrain_into_empty_space ... ok
+test joint_machine::tests::terrain_ticks::recovery::split_recovery_rejects_excessive_penetration_before_mutating_state ... ok
+test joint_machine::tests::terrain_ticks::rolling_edge::a_rotating_released_edge_does_not_report_a_frozen_row_reversal ... ok
+test joint_machine::tests::terrain_ticks::rolling_edge::rotating_edge_support_force_converges_to_constrained_rigid_body_equation ... ok
+test joint_machine::tests::terrain_ticks::rolling_edge::rotating_support_uses_the_normal_velocity_at_its_reconstructed_end_pose ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::an_impact_below_the_threshold_stops_dead_for_every_substep_policy ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::separating_support_releases_before_gravity_reverses_its_velocity ... ok
+test joint_machine::tests::terrain_ticks::saved_car::activation_preserves_existing_authored_car_support_manifolds ... ok
+test joint_machine::tests::terrain_ticks::saved_car::a_wheel_built_flush_against_its_mount_does_not_collide_with_it ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_linear_suspension_paths_are_exact_affine_translations ... ok
+test joint_machine::tests::terrain_ticks::saved_car::car_recovery_clears_a_sunk_car_by_requerying_geometry_as_it_moves ... ok
+test joint_machine::tests::refreshed_terrain_manifolds_hold_a_free_body_without_velocity_or_pose_drift ... ok
+test joint_machine::tests::terrain_ticks::split_joint_recovery_checks_terrain_and_restores_physical_velocity_on_failure ... ok
+test joint_machine::tests::terrain_ticks::terrain_failure_does_not_commit_a_drive_change ... ok
+test joint_machine::tests::timed_travel_stop_preserves_floating_machine_momentum_without_rebound ... ok
+test joint_machine::tests::undamped_spring_oscillation_converges_without_artificial_decay ... ok
+test joint_machine::tests::unlimited_drive_remains_unbounded_and_can_be_disabled_at_no_load ... ok
+test joint_machine::tests::whole_tick_impulses_are_not_reapplied_at_each_substep ... ok
+test joint_machine::tests::terrain_ticks::first_impacts::first_impact_on_an_interior_terrain_triangle_survives_manifold_reduction ... ok
+test kinematics::tests::active_runtime_above_512_velocities_applies_off_centre_impulses_and_releases_holds ... ok
+test kinematics::tests::runtime_rows_forces_and_impulses_match_the_dense_suspension_reference ... ok
+test machine::tests::free_body_gravity_is_independent_of_mass_and_does_not_generate_torque ... ok
+test machine::tests::point_acceleration_bias_matches_reconstructed_constant_rate_motion ... ok
+test motion_path::tests::a_near_unit_root_has_the_same_normalized_pose_at_cached_and_sampled_start ... ok
+test motion_path::tests::authored_car_spatial_derivatives_and_acceleration_bounds_cover_reconstructed_motion ... ok
+test motion_path::tests::full_root_rotation_is_preserved_between_matching_endpoint_orientations ... ok
+test motion_path::tests::invalid_displacements_and_fractions_fail_without_changing_the_initial_state ... ok
+test motion_path::tests::motion_bounds_round_outward_and_reject_invalid_radius_inputs ... ok
+test motion_path::tests::pose_only_queries_are_not_limited_by_dense_inertia_capacity ... ok
+test response::articulated::tests::authored_car_suspension_and_branched_inertia_match_dense ... ok
+test response::articulated::tests::coupled_car_contact_response_uses_tree_inverse_with_original_friction_bounds ... ok
+test response::articulated::tests::independent_floating_and_fixed_components_remain_uncoupled ... ok
+test response::articulated::tests::large_coaxial_chain_matches_independent_torque_balance_without_dense_storage ... ok
+test kinematics::tests::a_long_rigid_chassis_keeps_its_suspensions_active_in_free_fall ... ok
+test response::articulated::tests::tree_factor_rejects_invalid_poses_diagonals_and_impulses ... ok
+test response::articulated::tests::tree_inverse_matches_dense_for_floating_anchored_and_reversed_joints ... ok
+test response::newton::continuation::central::equations::tests::barrier_and_eliminated_disk_derivatives_match_independent_perturbations ... ok
+test response::newton::continuation::central::equations::tests::drive_stop_bilateral_and_fixed_impulse_derivatives_match_perturbations ... ok
+test response::newton::continuation::central::equations::tests::saturated_drive_remains_evaluable_when_its_barrier_gap_is_below_one_ulp ... ok
+test response::newton::continuation::central::linear::implicit::tests::implicit_mixed_transpose_matches_every_independent_matrix_entry ... ok
+test response::newton::continuation::central::linear::implicit::tests::streamed_rank_revealing_solve_preserves_redundant_equations_and_minimum_norm ... ok
+test response::newton::continuation::full::tests::full_space_direction_satisfies_every_original_newton_row ... ok
+test response::newton::continuation::full::tests::truncated_solve_drops_a_nearly_dependent_direction_and_returns_the_minimum_norm_step ... ok
+test response::newton::continuation::full::tests::truncated_solve_keeps_a_weak_independent_direction_exactly ... ok
+test response::newton::continuation::manifold::tests::distinct_rolling_rows_keep_the_original_layout ... ok
+test response::newton::continuation::manifold::tests::identical_manifold_rolling_merges_and_splits_within_every_point_law ... ok
+test response::articulated::tests::tree_com_velocities_match_dense_jacobians_in_rotated_mixed_mechanisms ... ok
+test response::newton::continuation::rank::tests::redundant_search_equations_use_the_minimum_norm_least_squares_direction ... ok
+test response::newton::continuation::rank::tests::weak_independent_search_rows_are_kept_and_unavoidable_residual_is_not_biased_to_pivots ... ok
+test response::newton::continuation::smoothing::tests::merged_manifold_rolling_derivative_matches_central_differences ... ok
+test response::newton::continuation::smoothing::tests::smooth_contact_derivative_matches_central_differences_through_contact_transitions ... ok
+test response::newton::continuation::smoothing::tests::smooth_scalar_stop_and_drive_rows_stay_in_bounds_and_match_central_differences ... ok
+test response::newton::dense_tests::contact_newton_preserves_a_weak_direction_and_dependent_rows ... ok
+test response::newton::projection::tests::analytic_point_inverse_matches_lu_and_every_original_row ... ok
+test response::newton::projection::tests::analytic_point_inverse_rejects_invalid_or_unshifted_singular_systems ... ok
+test response::newton::reduced::tests::recovered_reduced_direction_satisfies_every_full_newton_row ... ok
+test response::newton::tests::cone_derivative_matches_differentiated_normal_tangent_and_rolling_projection ... ok
+test response::newton::tests::krylov_norm_handles_large_small_and_zero_vectors_without_overflow ... ok
+test response::newton::tests::local_pivoted_factor_preserves_a_nonsymmetric_response_and_singular_rows ... ok
+test response::newton::tests::matrix_free_gmres_solves_a_nonsymmetric_system ... ok
+test response::normal::tests::normal_basis_keeps_the_strongest_dependent_row_and_rejects_inconsistent_rows ... ok
+test response::normal::tests::normal_basis_releases_a_weaker_constraint_and_preserves_momentum_response ... ok
+test response::tests::contradictory_friction_bounds_are_rejected_before_projection ... ok
+test response::tests::coupled_normal_iterations_do_not_falsely_trigger_static_breakaway ... ok
+test response::newton::continuation::mixed::tests::mixed_search_reconstructs_every_original_newton_row_above_the_dense_response_boundary ... ok
+test response::tests::coupling_to_a_clamped_contact_cannot_falsely_converge ... ok
+test response::tests::duplicate_loop_rows_preserve_response_and_inconsistent_rows_fail ... ok
+test response::tests::friction_impulse_obeys_the_circular_coulomb_bound ... ok
+test response::tests::impulse_at_light_wheel_accelerates_the_coupled_chassis ... ok
+test response::tests::rolling_resistance_obeys_the_normal_load_radius_bound_and_dissipates_spin ... ok
+test response::tests::static_breakaway_reuses_response_and_cannot_pass_an_exhausted_solve ... ok
+test response::tests::static_support_and_initial_sliding_use_distinct_physical_friction_limits ... ok
+test response::tests::unilateral_support_cannot_pull_a_separating_body ... ok
+test response::tests::nearly_coincident_supports_transfer_load_to_the_outer_contact ... ok
+test response::tests::warm_impulses_reuse_an_implicit_response_and_are_revalidated_for_new_targets ... ok
+test soft_step::tests::a_box_dropped_on_the_floor_comes_to_rest_on_it ... ok
+test soft_step::tests::a_box_leaving_the_floor_is_not_pulled_back ... ok
+test soft_step::tests::a_box_dropped_on_a_resting_box_comes_to_rest_on_top_of_it ... ok
+test soft_step::tests::a_fast_cube_does_not_pass_through_a_steep_wall ... ok
+test soft_step::tests::a_fast_cube_grazing_the_floor_stays_above_it ... ok
+test soft_step::tests::a_fast_impact_rebounds_near_the_material_restitution ... ok
+test soft_step::tests::a_fast_projectile_neither_passes_through_nor_pushes_its_target_through_the_floor ... ok
+test soft_step::tests::a_fast_spinning_bar_does_not_pass_through_the_floor ... ok
+test soft_step::tests::a_four_bar_swings_under_gravity_and_stays_closed ... ok
+test joint_machine::tests::terrain_ticks::body_contacts::a_box_dropped_on_a_resting_box_comes_to_rest_on_top_of_it ... ok
+test soft_step::tests::a_held_box_stays_put_under_a_dropped_box_and_falls_once_released ... ok
+test soft_step::tests::a_joint_limit_holds_against_a_stalled_motor ... ok
+test soft_step::tests::a_long_multi_collider_body_settles_on_a_redundant_manifold ... ok
+test soft_step::tests::a_car_crashing_into_a_wall_stays_in_front_of_it ... ok
+test soft_step::tests::a_loop_seeded_open_closes_without_flying_apart ... ok
+test soft_step::tests::a_motor_spins_its_rotor_and_back_drives_the_floating_mount ... ok
+test soft_step::tests::a_free_four_bar_lands_on_the_floor_and_stays_closed ... ok
+test soft_step::tests::a_preloaded_spring_reaches_its_authored_equilibrium ... ok
+test soft_step::tests::a_sliding_box_pushes_a_floating_box_and_keeps_momentum ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_cold_drop_resolves_its_first_impact_before_publication ... ok
+test soft_step::tests::a_rolling_wheel_does_not_gain_energy ... ok
+test soft_step::tests::a_slow_impact_does_not_bounce ... ok
+test soft_step::tests::a_looped_machine_repeats_exactly_from_identical_inputs ... ok
+test soft_step::tests::a_very_fast_cube_never_ends_below_the_floor ... ok
+test soft_step::tests::a_sprung_block_settles_at_its_spring_equilibrium ... ok
+test soft_step::tests::captured_blocks_dropped_across_a_ledge_come_to_rest ... ok
+test soft_step::tests::invalid_input_is_refused_without_changing_state ... ok
+test soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest ... ok
+test soft_step::tests::the_saved_car_drives_forward_on_its_speed_drives ... ok
+test soft_step::tests::two_parallel_suspensions_share_their_load ... ok
+test terrain_contacts::broadphase::tests::paired_trees_match_exhaustive_overlaps_for_large_uneven_chassis ... ok
+test terrain_contacts::penetration::tests::a_separated_body_below_a_finite_surface_does_not_get_a_penetration_hold ... ok
+test terrain_contacts::penetration::tests::finite_holes_and_origin_rebases_preserve_supported_path_results ... ok
+test terrain_contacts::penetration::tests::full_rotation_rejects_penetration_hidden_at_start_midpoint_and_end ... ok
+test terrain_contacts::penetration::tests::motion_below_a_finite_surface_is_certified_after_subdivision ... ok
+test terrain_contacts::penetration::tests::sliding_support_subdivides_and_exhaustion_never_claims_clearance ... ok
+test terrain_contacts::penetration::tests::stationary_existing_support_is_bounded_without_ignoring_its_triangles ... ok
+test terrain_contacts::sweep::tests::articulated_full_turn_finds_a_finite_impact_between_clear_endpoint_poses ... ok
+test terrain_contacts::sweep::tests::collider_sweeps_reuse_geometry_without_reusing_another_paths_velocities ... ok
+test terrain_contacts::sweep::tests::exact_linear_sweep_handles_fast_translation_and_finite_holes ... ok
+test terrain_contacts::sweep::tests::near_separated_parallel_motion_does_not_invent_a_first_impact ... ok
+test terrain_contacts::sweep::tests::reused_starting_geometry_preserves_impacts_across_motion_paths_and_publications ... ok
+test terrain_contacts::sweep::tests::rotated_pipe_sweeps_preserve_the_opening_and_annulus ... ok
+test terrain_contacts::sweep::tests::rotating_parallel_motion_certifies_clearance_without_spending_tangential_speed ... ok
+test terrain_contacts::sweep::tests::simultaneous_terrain_arrivals_keep_the_first_collider_and_triangle ... ok
+test terrain_contacts::sweep::tests::sweep_rejects_a_different_topology_and_preserves_origin_rebased_impact_time ... ok
+test terrain_contacts::tests::a_box_resting_on_another_box_is_supported_through_one_face_manifold ... ok
+test terrain_contacts::tests::bodies_joined_by_a_bearing_never_collide_with_each_other ... ok
+test terrain_contacts::tests::bodies_of_one_mechanism_collide_only_when_they_were_built_apart ... ok
+test terrain_contacts::tests::builder_pipe_hierarchy_matches_exhaustive_pairs_at_rotated_poses ... ok
+test terrain_contacts::tests::changed_active_groups_and_materials_invalidate_only_changed_chunk_features ... ok
+test terrain_contacts::tests::coplanar_triangle_seam_reduces_to_four_supports_without_changing_materials ... ok
+test terrain_contacts::tests::finite_manifold_restitution_uses_impact_speed_without_penetration_bounce ... ok
+test terrain_contacts::tests::generated_chunk_bvh_queries_match_direct_finite_triangle_queries ... ok
+test terrain_contacts::tests::malformed_publication_preserves_the_previous_collision_scene ... ok
+test terrain_contacts::tests::near_terrain_contacts_report_positive_gaps_and_survive_origin_rebasing ... ok
+test terrain_contacts::tests::origin_rebase_preserves_physical_support_and_feature_identity ... ok
+test terrain_contacts::tests::real_manifold_impulses_support_the_coupled_body_without_spurious_spin ... ok
+test terrain_contacts::tests::rotated_pipe_opening_stays_open_while_its_annulus_and_solid_version_collide ... ok
+test terrain_contacts::tests::small_finite_triangles_remain_collidable_and_nonfinite_query_bounds_fail ... ok
+test soft_step::tests::identical_inputs_repeat_exactly ... ok
+test soft_step::tests::the_saved_car_survives_a_cold_drop_and_settles ... ok
+test joint_machine::tests::terrain_ticks::supported_ticks_validate_motion_before_publication_and_repeat_at_each_substep_policy ... ok
+test soft_step::tests::a_two_wheeled_cart_tips_its_tail_onto_the_floor ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::a_rolling_wheel_only_loses_energy_on_its_facets ... ok
+test joint_machine::tests::terrain_ticks::body_contacts::blocks_dropped_across_a_ledge_settle_instead_of_stalling_the_tick ... ok
+test joint_machine::tests::terrain_ticks::body_contacts::blocks_landing_on_each_other_keep_ticking_until_they_rest ... ok
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_sustained_support_repeats_at_each_substep_policy has been running for over 60 seconds
+test joint_machine::tests::terrain_ticks::saved_car::saved_car_sustained_support_repeats_at_each_substep_policy ... ok
+
+test result: ok. 190 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 81.34s
+
+     Running unittests src/lib.rs (target/debug/deps/mechanic_world-24217a3e19ddb3fc)
+
+running 91 tests
+test coordinates::tests::floating_origin_preserves_global_position ... ok
+test coordinates::tests::negative_cells_use_euclidean_bricks ... ok
+test construction_collision::tests::published_body_sweep_pushes_a_stationary_capsule ... ok
+test construction_collision::tests::swept_capsule_stops_at_a_thin_compiled_wall ... ok
+test edits::tests::boundary_refusal_does_not_promote_bricks ... ok
+test construction_collision::tests::compiled_cylinder_bore_remains_passable ... ok
+test construction_collision::tests::compiled_floor_and_ceiling_return_opposite_normals ... ok
+test construction_collision::tests::compiled_convex_uses_support_mapped_sweep ... ok
+test edits::tests::depth_twenty_seven_root_covers_both_signed_cell_extremes ... ok
+test edits::tests::addition_assigns_material_without_repainting_existing_solids ... ok
+test edits::tests::excavating_untouched_air_does_not_promote_empty_bricks ... ok
+test edits::tests::ancestor_bounds_revisions_and_region_traversal_follow_promoted_leaves ... ok
+test edits::tests::delta_addition_matches_two_complete_overlapping_spheres ... ok
+test edits::tests::edited_brick_rle_round_trips_exactly ... ok
+test edits::tests::insertion_order_rebuilds_identical_hierarchy ... ok
+test edits::tests::snapshot_isolation_is_copy_on_write ... ok
+test edits::tests::untouched_space_allocates_nothing_and_promotion_is_sparse ... ok
+test generation::tests::cave_is_connected_branched_and_has_walking_clearance ... ok
+test generation::tests::cell_sampling_uses_exact_centres ... ok
+test generation::tests::finite_world_is_empty_beyond_horizontal_bounds ... ok
+test generation::tests::generation_is_deterministic_and_seeded ... ok
+test generation::tests::spawn_meadow_has_safe_clearance_and_shallow_slope ... ok
+test generation::tests::strata_resolve_at_cell_centres ... ok
+test material_response::tests::triangle_blending_normalizes_weights_and_rejects_invalid_material_data ... ok
+test mesh::tests::authored_addition_uses_solid_material_without_changing_procedural_cover ... ok
+test edits::tests::octree_range_minimum_matches_promoted_cell_scan ... ok
+test mesh::tests::index_counts_match_combined_vectors ... ok
+test edits::tests::delta_excavation_matches_two_complete_overlapping_spheres ... ok
+test edits::tests::added_material_rle_round_trips_exactly ... ok
+test mesh::tests::official_regular_and_transition_tables_cover_every_case ... ok
+test mesh::tests::official_transition_vertices_only_use_crossing_edges ... ok
+test mesh::tests::generated_vertices_stay_in_owning_bounds_and_normals_are_finite ... ok
+test mesh::tests::generated_triangle_bvh_has_real_branches_and_leaf_ranges ... ok
+test mesh::tests::prepared_region_matches_octree_range_queries_across_signed_bricks ... ok
+test mesh::tests::adjacent_equal_lod_boundaries_are_byte_identical ... ok
+test mesh::tests::promoted_meshing_keeps_the_analytic_surface_height_and_outward_winding ... ok
+test persistence::tests::autosave_debounces_but_never_waits_more_than_thirty_seconds ... ok
+test mesh::tests::terrain_mesh_raycast_hits_the_surface ... ok
+test mesh::tests::isolated_authored_addition_mesh_keeps_its_selected_material ... ok
+test persistence::tests::corrupt_brick_reports_exact_file_and_preserves_it ... ok
+test edits::tests::excavation_is_idempotent_and_accounts_by_material ... ok
+test persistence::tests::failed_manifest_publication_restores_frozen_and_construction_generations ... ok
+test persistence::tests::list_classifies_version_two_outdated_and_corrupt_manifests ... ok
+test persistence::tests::dirty_leaf_save_and_hierarchy_reconstruction_are_deterministic ... ok
+test persistence::tests::frozen_target_round_trips_with_matching_published_generation ... ok
+test persistence::tests::invalid_frozen_state_is_rejected_on_save_and_load ... ok
+test persistence::tests::opening_outdated_deletes_only_exact_child_and_corrupt_current_is_preserved ... ok
+test query::bounds_tests::actual_mesh_bounds_refit_ancestors_across_nominal_seams_and_removal ... ok
+test query::bounds_tests::mixed_parent_child_updates_keep_every_overlapping_candidate_in_stable_order ... ok
+test query::tests::brick_index_returns_only_overlapping_foundations ... ok
+test persistence::tests::paired_spaces_publish_and_reload_one_generation ... ok
+test persistence::tests::world_instance_and_brick_round_trip ... ok
+test query::tests::capsule_lands_and_jumps_to_requested_height ... ok
+test query::tests::changed_bricks_refresh_only_intersecting_foundation_samples ... ok
+test query::tests::construction_step_can_be_climbed_at_an_angle ... ok
+test query::tests::construction_step_climbs_only_to_the_compiled_top_face ... ok
+test query::tests::dynamic_construction_supports_and_receives_opposite_player_impulses ... ok
+test query::tests::foundation_detaches_only_after_final_anchor_is_lost ... ok
+test query::tests::grazing_a_step_edge_does_not_repeat_step_and_fall ... ok
+test query::tests::grounded_capsule_does_not_slide_from_a_flat_construction_edge ... ok
+test query::tests::grounded_capsule_stays_still_on_a_walkable_slope ... ok
+test query::tests::grounded_capsule_stays_still_on_a_walkable_construction_slope ... ok
+test mesh::tests::edited_transition_coarse_edge_matches_coarse_regular_surface ... ok
+test query::tests::holding_jump_during_a_fall_does_not_slow_gravity ... ok
+test query::tests::holding_jump_progressively_increases_height_by_up_to_fifty_percent ... ok
+test query::tests::moving_creation_edit_has_clear_feedback ... ok
+test query::tests::moving_support_carries_position_yaw_and_jump_velocity ... ok
+test query::tests::one_block_foundation_samples_twenty_five_terrain_points ... ok
+test query::tests::pressing_jump_again_in_midair_does_not_restore_extra_lift ... ok
+test query::tests::sprint_uses_configured_faster_speed ... ok
+test query::tests::vertical_construction_contact_does_not_slow_a_fall ... ok
+test streaming::tests::coarsened_cut_replaces_all_fine_nodes_in_one_activation ... ok
+test streaming::tests::critical_empty_results_count_as_resolved_and_dirty ... ok
+test streaming::tests::mesh_generation_tracks_edits_in_a_neighbouring_sampling_halo ... ok
+test mesh::tests::transition_surface_occupies_an_inset_band ... ok
+test query::tests::active_octree_and_chunk_bvhs_match_direct_chunk_raycast ... ok
+test mesh::tests::transition_surface_has_no_open_interior_edges ... ok
+test streaming::tests::publication_caps_only_faces_with_pending_desired_neighbors ... ok
+test streaming::tests::publication_delta_reports_only_changed_upserts_and_removals ... ok
+test streaming::tests::refined_cut_stays_active_until_every_replacement_is_staged ... ok
+test streaming::tests::selection_delta_reconstructs_the_full_selected_cut ... ok
+test streaming::tests::stale_active_generation_is_not_ready_for_seam_publication ... ok
+test streaming::tests::procedural_bounds_are_conservative_on_every_meshing_lattice ... ok
+test streaming::tests::transition_boundary_samples_propagate_across_fine_edges_and_corners ... ok
+test mesh::tests::untouched_surface_remains_smooth_and_covered_at_every_lod ... ok
+test streaming::tests::every_selected_and_balance_created_node_is_mixed ... ok
+test mesh::tests::excavated_surface_triangles_keep_outward_winding ... ok
+test streaming::tests::cached_reselection_reuses_horizontal_procedural_bounds ... ok
+test streaming::tests::edited_surface_keeps_coarse_sampling_footprints_outside_the_edit ... ok
+test mesh::tests::cavity_generates_transitions_and_caps_on_all_six_faces ... ok
+test streaming::tests::selected_cut_is_non_overlapping_and_two_to_one_balanced ... ok
+
+test result: ok. 91 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.02s
+
+   Doc-tests bevy_mosaic
+error: extern location for bevy does not exist: /Users/jens/repos/mechanic/target/debug/deps/libbevy-5ef91bf108ba1cb8.rlib
+  --> crates/bevy_mosaic/src/context.rs:11:5
+   |
+11 | use bevy::prelude::*;
+   |     ^^^^
+
+error: extern location for mosaic_core does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmosaic_core-16ad462876948a67.rlib
+   --> crates/bevy_mosaic/src/lib.rs:126:13
+    |
+126 |     pub use mosaic_core::{
+    |             ^^^^^^^^^^^
+
+error: extern location for mosaic_layout does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmosaic_layout-f6f2d82f8a14dce2.rlib
+   --> crates/bevy_mosaic/src/lib.rs:134:13
+    |
+134 |     pub use mosaic_layout::{
+    |             ^^^^^^^^^^^^^
+
+error: extern location for mosaic_render does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmosaic_render-9b7413e4298676b0.rlib
+   --> crates/bevy_mosaic/src/lib.rs:141:13
+    |
+141 |     pub use mosaic_render::{
+    |             ^^^^^^^^^^^^^
+
+error[E0463]: can't find crate for `mosaic_text`
+   --> crates/bevy_mosaic/src/lib.rs:152:13
+    |
+152 |     pub use mosaic_text::{
+    |             ^^^^^^^^^^^ can't find crate
+
+error: extern location for mosaic_widgets does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmosaic_widgets-08f9990f9e47721b.rlib
+   --> crates/bevy_mosaic/src/lib.rs:156:13
+    |
+156 |     pub use mosaic_widgets::input::{
+    |             ^^^^^^^^^^^^^^
+
+error: extern location for mosaic_render_wgpu does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmosaic_render_wgpu-8515cb7b4f01449d.rlib
+  --> crates/bevy_mosaic/src/render.rs:22:5
+   |
+22 | use mosaic_render_wgpu::{TargetLoad, WgpuRenderer};
+   |     ^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 7 previous errors
+
+For more information about this error, try `rustc --explain E0463`.
+error: doctest failed, to rerun pass `-p bevy_mosaic --doc`
+
+Caused by:
+  process didn't exit successfully: `/Users/jens/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name bevy_mosaic --test crates/bevy_mosaic/src/lib.rs --test-run-directory /Users/jens/repos/mechanic/crates/bevy_mosaic -L native=/Users/jens/repos/mechanic/target/debug/build/blake3-dceaf15a8aa4d513/out '--warn=clippy::pedantic' '--warn=clippy::all' --forbid=unsafe_code '--allow=clippy::must_use_candidate' '--allow=clippy::module_name_repetitions' --warn=missing_docs --extern bevy=/Users/jens/repos/mechanic/target/debug/deps/libbevy-5ef91bf108ba1cb8.rlib --extern bevy_mosaic=/Users/jens/repos/mechanic/target/debug/deps/libbevy_mosaic-206b104af9558068.rlib --extern mosaic_core=/Users/jens/repos/mechanic/target/debug/deps/libmosaic_core-16ad462876948a67.rlib --extern mosaic_layout=/Users/jens/repos/mechanic/target/debug/deps/libmosaic_layout-f6f2d82f8a14dce2.rlib --extern mosaic_macros=/Users/jens/repos/mechanic/target/debug/deps/libmosaic_macros-14b9aeb4b38eeef9.dylib --extern mosaic_render=/Users/jens/repos/mechanic/target/debug/deps/libmosaic_render-9b7413e4298676b0.rlib --extern mosaic_render_wgpu=/Users/jens/repos/mechanic/target/debug/deps/libmosaic_render_wgpu-8515cb7b4f01449d.rlib --extern mosaic_text=/Users/jens/repos/mechanic/target/debug/deps/libmosaic_text-7582f5c8a1bd0cac.rlib --extern mosaic_widgets=/Users/jens/repos/mechanic/target/debug/deps/libmosaic_widgets-08f9990f9e47721b.rlib --extern wgpu=/Users/jens/repos/mechanic/target/debug/deps/libwgpu-3e8ba46c8e441034.rlib -L dependency=/Users/jens/repos/mechanic/target/debug/deps -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --error-format human` (exit status: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.
+   Doc-tests mechanic_core
+error: extern location for bevy_math does not exist: /Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib
+ --> crates/mechanic-core/src/contact_geometry/activation.rs:8:5
+  |
+8 | use bevy_math::DVec3;
+  |     ^^^^^^^^^
+
+error: extern location for serde does not exist: /Users/jens/repos/mechanic/target/debug/deps/libserde-16ed40a0dac46363.rlib
+ --> crates/mechanic-core/src/appearance.rs:3:5
+  |
+3 | use serde::{Deserialize, Deserializer, Serialize};
+  |     ^^^^^
+
+error: extern location for thiserror does not exist: /Users/jens/repos/mechanic/target/debug/deps/libthiserror-51e46175a843ca77.rlib
+ --> crates/mechanic-core/src/appearance.rs:4:5
+  |
+4 | use thiserror::Error;
+  |     ^^^^^^^^^
+
+error: aborting due to 3 previous errors
+
+error: doctest failed, to rerun pass `-p mechanic-core --doc`
+
+Caused by:
+  process didn't exit successfully: `/Users/jens/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name mechanic_core --test crates/mechanic-core/src/lib.rs --test-run-directory /Users/jens/repos/mechanic/crates/mechanic-core -L native=/Users/jens/repos/mechanic/target/debug/build/blake3-dceaf15a8aa4d513/out '--warn=clippy::pedantic' '--warn=clippy::all' --forbid=unsafe_code '--allow=clippy::must_use_candidate' '--allow=clippy::module_name_repetitions' --warn=missing_docs --extern bevy_math=/Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib --extern mechanic_core=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib --extern ron=/Users/jens/repos/mechanic/target/debug/deps/libron-7402dd018b9e3a67.rlib --extern serde=/Users/jens/repos/mechanic/target/debug/deps/libserde-16ed40a0dac46363.rlib --extern thiserror=/Users/jens/repos/mechanic/target/debug/deps/libthiserror-51e46175a843ca77.rlib -L dependency=/Users/jens/repos/mechanic/target/debug/deps -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --error-format human` (exit status: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.
+   Doc-tests mechanic_gpu
+error: extern location for bevy_math does not exist: /Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib
+ --> crates/mechanic-gpu/src/collision.rs:1:5
+  |
+1 | use bevy_math::{Quat, Vec3};
+  |     ^^^^^^^^^
+
+error: extern location for bytemuck does not exist: /Users/jens/repos/mechanic/target/debug/deps/libbytemuck-0c964da7ea67bef3.rlib
+ --> crates/mechanic-gpu/src/device/terrain/publication.rs:9:5
+  |
+9 | use bytemuck::{Zeroable, cast_slice};
+  |     ^^^^^^^^
+
+error: extern location for mechanic_world does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmechanic_world-6677f22de3ccda5e.rlib
+  --> crates/mechanic-gpu/src/device/terrain/publication.rs:10:5
+   |
+10 | use mechanic_world::{
+   |     ^^^^^^^^^^^^^^
+
+error: extern location for mechanic_core does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib
+ --> crates/mechanic-gpu/src/runtime.rs:1:5
+  |
+1 | use mechanic_core::{BearingId, CompiledCreation};
+  |     ^^^^^^^^^^^^^
+
+error: extern location for thiserror does not exist: /Users/jens/repos/mechanic/target/debug/deps/libthiserror-51e46175a843ca77.rlib
+ --> crates/mechanic-gpu/src/device/hold.rs:4:5
+  |
+4 | use thiserror::Error;
+  |     ^^^^^^^^^
+
+error: extern location for wgpu does not exist: /Users/jens/repos/mechanic/target/debug/deps/libwgpu-3e8ba46c8e441034.rlib
+  --> crates/mechanic-gpu/src/device.rs:22:5
+   |
+22 | use wgpu::util::DeviceExt;
+   |     ^^^^
+
+error: aborting due to 6 previous errors
+
+error: doctest failed, to rerun pass `-p mechanic-gpu --doc`
+
+Caused by:
+  process didn't exit successfully: `/Users/jens/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name mechanic_gpu --test crates/mechanic-gpu/src/lib.rs --test-run-directory /Users/jens/repos/mechanic/crates/mechanic-gpu -L native=/Users/jens/repos/mechanic/target/debug/build/blake3-dceaf15a8aa4d513/out '--warn=clippy::pedantic' '--warn=clippy::all' --forbid=unsafe_code '--allow=clippy::must_use_candidate' '--allow=clippy::module_name_repetitions' --warn=missing_docs --extern bevy_math=/Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib --extern bytemuck=/Users/jens/repos/mechanic/target/debug/deps/libbytemuck-0c964da7ea67bef3.rlib --extern mechanic_core=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib --extern mechanic_gpu=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_gpu-7faa21627da81345.rlib --extern mechanic_world=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_world-6677f22de3ccda5e.rlib --extern naga=/Users/jens/repos/mechanic/target/debug/deps/libnaga-a2826c130660df33.rlib --extern pollster=/Users/jens/repos/mechanic/target/debug/deps/libpollster-1cb381ccad47a410.rlib --extern ron=/Users/jens/repos/mechanic/target/debug/deps/libron-7402dd018b9e3a67.rlib --extern thiserror=/Users/jens/repos/mechanic/target/debug/deps/libthiserror-51e46175a843ca77.rlib --extern wgpu=/Users/jens/repos/mechanic/target/debug/deps/libwgpu-3e8ba46c8e441034.rlib -L dependency=/Users/jens/repos/mechanic/target/debug/deps -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --error-format human` (exit status: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.
+   Doc-tests mechanic_physics
+error: extern location for bevy_math does not exist: /Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib
+ --> crates/mechanic-physics/src/free_motion.rs:3:5
+  |
+3 | use bevy_math::{DQuat, DVec3};
+  |     ^^^^^^^^^
+
+error: extern location for mechanic_core does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib
+ --> crates/mechanic-physics/src/free_motion.rs:4:5
+  |
+4 | use mechanic_core::{BearingKind, CompiledCreation, CoordinateDrive};
+  |     ^^^^^^^^^^^^^
+
+error: extern location for mechanic_world does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmechanic_world-6677f22de3ccda5e.rlib
+  --> crates/mechanic-physics/src/terrain_contacts.rs:13:5
+   |
+13 | use mechanic_world::{
+   |     ^^^^^^^^^^^^^^
+
+error: aborting due to 3 previous errors
+
+error: doctest failed, to rerun pass `-p mechanic-physics --doc`
+
+Caused by:
+  process didn't exit successfully: `/Users/jens/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name mechanic_physics --test crates/mechanic-physics/src/lib.rs --test-run-directory /Users/jens/repos/mechanic/crates/mechanic-physics -L native=/Users/jens/repos/mechanic/target/debug/build/blake3-dceaf15a8aa4d513/out '--warn=clippy::pedantic' '--warn=clippy::all' --forbid=unsafe_code '--allow=clippy::must_use_candidate' '--allow=clippy::module_name_repetitions' --warn=missing_docs --extern bevy_math=/Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib --extern mechanic_core=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib --extern mechanic_physics=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_physics-8b9bab85f7209a80.rlib --extern mechanic_world=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_world-6677f22de3ccda5e.rlib --extern ron=/Users/jens/repos/mechanic/target/debug/deps/libron-7402dd018b9e3a67.rlib --extern thiserror=/Users/jens/repos/mechanic/target/debug/deps/libthiserror-51e46175a843ca77.rlib -L dependency=/Users/jens/repos/mechanic/target/debug/deps -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --error-format human` (exit status: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.
+   Doc-tests mechanic_world
+error: extern location for bevy_math does not exist: /Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib
+ --> crates/mechanic-world/src/construction_collision.rs:5:5
+  |
+5 | use bevy_math::{DVec3, Mat3, Quat, Vec3};
+  |     ^^^^^^^^^
+
+error: extern location for mechanic_core does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib
+ --> crates/mechanic-world/src/construction_collision.rs:6:5
+  |
+6 | use mechanic_core::{ColliderShape, CompiledCreation, LocalCollider, MassProperties};
+  |     ^^^^^^^^^^^^^
+
+error: extern location for serde does not exist: /Users/jens/repos/mechanic/target/debug/deps/libserde-16ed40a0dac46363.rlib
+ --> crates/mechanic-world/src/coordinates.rs:6:5
+  |
+6 | use serde::{Deserialize, Serialize};
+  |     ^^^^^
+
+error: extern location for thiserror does not exist: /Users/jens/repos/mechanic/target/debug/deps/libthiserror-51e46175a843ca77.rlib
+ --> crates/mechanic-world/src/coordinates.rs:7:5
+  |
+7 | use thiserror::Error;
+  |     ^^^^^^^^^
+
+error: extern location for fastnoise_lite does not exist: /Users/jens/repos/mechanic/target/debug/deps/libfastnoise_lite-6cba444e8b6b51aa.rlib
+  --> crates/mechanic-world/src/generation.rs:11:5
+   |
+11 | use fastnoise_lite::{DomainWarpType, FastNoiseLite, FractalType, NoiseType};
+   |     ^^^^^^^^^^^^^^
+
+error: aborting due to 5 previous errors
+
+error: doctest failed, to rerun pass `-p mechanic-world --doc`
+
+Caused by:
+  process didn't exit successfully: `/Users/jens/.rustup/toolchains/1.97.1-aarch64-apple-darwin/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name mechanic_world --test crates/mechanic-world/src/lib.rs --test-run-directory /Users/jens/repos/mechanic/crates/mechanic-world -L native=/Users/jens/repos/mechanic/target/debug/build/blake3-dceaf15a8aa4d513/out '--warn=clippy::pedantic' '--warn=clippy::all' --forbid=unsafe_code '--allow=clippy::must_use_candidate' '--allow=clippy::module_name_repetitions' --warn=missing_docs --extern bevy_math=/Users/jens/repos/mechanic/target/debug/deps/libbevy_math-ff03adf3a6f90890.rlib --extern fastnoise_lite=/Users/jens/repos/mechanic/target/debug/deps/libfastnoise_lite-6cba444e8b6b51aa.rlib --extern getrandom=/Users/jens/repos/mechanic/target/debug/deps/libgetrandom-d05814e04094a22e.rlib --extern mechanic_core=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib --extern mechanic_world=/Users/jens/repos/mechanic/target/debug/deps/libmechanic_world-6677f22de3ccda5e.rlib --extern ron=/Users/jens/repos/mechanic/target/debug/deps/libron-7402dd018b9e3a67.rlib --extern serde=/Users/jens/repos/mechanic/target/debug/deps/libserde-16ed40a0dac46363.rlib --extern thiserror=/Users/jens/repos/mechanic/target/debug/deps/libthiserror-51e46175a843ca77.rlib -L dependency=/Users/jens/repos/mechanic/target/debug/deps -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --error-format human` (exit status: 1)
+note: test exited abnormally; to see the full output pass --no-capture to the harness.
+error: 6 targets failed:
+    `-p mechanic-gpu --lib`
+    `-p bevy_mosaic --doc`
+    `-p mechanic-core --doc`
+    `-p mechanic-gpu --doc`
+    `-p mechanic-physics --doc`
+    `-p mechanic-world --doc`

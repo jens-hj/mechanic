@@ -229,7 +229,10 @@ impl ConstructionEditDelta {
 }
 
 const fn is_pipe(spec: &PartSpec) -> bool {
-    matches!(spec, PartSpec::Cylinder(_) | PartSpec::PipeBend(_))
+    matches!(
+        spec,
+        PartSpec::Cylinder(_) | PartSpec::PipeBend(_) | PartSpec::PipeJunction(_)
+    )
 }
 
 #[cfg(test)]

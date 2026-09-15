@@ -1,0 +1,122 @@
+{
+  "1x-before": {
+    "exit_code": 0,
+    "timeout": false,
+    "command": [
+      "/private/tmp/mechanic-cpu-before-clipping-pass",
+      "--scenario",
+      "builder-scale",
+      "--warmup",
+      "0",
+      "--copies",
+      "1",
+      "--ticks",
+      "120"
+    ],
+    "binary_sha256": "6ccec6bd1b769db11519b30c86561ccbcfbac26d672b4acbf0bef11437a3833b",
+    "summary": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 10.224459,
+      "rendering_measured": false,
+      "timing_gate": false
+    }
+  },
+  "1x-after": {
+    "exit_code": 0,
+    "timeout": false,
+    "command": [
+      "/private/tmp/mechanic-cpu-extrusion-pass",
+      "--scenario",
+      "builder-scale",
+      "--warmup",
+      "0",
+      "--copies",
+      "1",
+      "--ticks",
+      "120"
+    ],
+    "binary_sha256": "91326b48d459bf5b7b2c4bebf291be634779b97d225d372db42c3923c46c05e8",
+    "summary": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 8.48575,
+      "rendering_measured": false,
+      "timing_gate": false
+    }
+  },
+  "1x-comparison": {
+    "before_ticks": 120,
+    "after_ticks": 120,
+    "all_recorded_states_identical": true
+  },
+  "10x-connected-before": {
+    "exit_code": 0,
+    "timeout": false,
+    "command": [
+      "/private/tmp/mechanic-cpu-before-clipping-pass",
+      "--scenario",
+      "builder-scale",
+      "--warmup",
+      "0",
+      "--copies",
+      "10",
+      "--connected",
+      "--ticks",
+      "30"
+    ],
+    "binary_sha256": "6ccec6bd1b769db11519b30c86561ccbcfbac26d672b4acbf0bef11437a3833b",
+    "summary": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 476.31070800000003,
+      "rendering_measured": false,
+      "timing_gate": false
+    }
+  },
+  "10x-connected-after": {
+    "exit_code": 0,
+    "timeout": false,
+    "command": [
+      "/private/tmp/mechanic-cpu-extrusion-pass",
+      "--scenario",
+      "builder-scale",
+      "--warmup",
+      "0",
+      "--copies",
+      "10",
+      "--connected",
+      "--ticks",
+      "30"
+    ],
+    "binary_sha256": "91326b48d459bf5b7b2c4bebf291be634779b97d225d372db42c3923c46c05e8",
+    "summary": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 467.878709,
+      "rendering_measured": false,
+      "timing_gate": false
+    }
+  },
+  "10x-connected-comparison": {
+    "before_ticks": 30,
+    "after_ticks": 30,
+    "all_recorded_states_identical": true
+  }
+}

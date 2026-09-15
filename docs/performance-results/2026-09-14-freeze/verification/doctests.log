@@ -1,0 +1,46 @@
+    Blocking waiting for file lock on build directory
+   Compiling wgpu-core v29.0.4 (/Users/jens/repos/mechanic/vendor/wgpu-core)
+   Compiling wgpu v29.0.4
+   Compiling bevy_render v0.19.0 (/Users/jens/repos/mechanic/vendor/bevy_render)
+   Compiling mosaic-render-wgpu v0.28.1 (ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=ae4923ab76ea17ce8a9a27e2054ae642f70dae00#ae4923ab)
+   Compiling mechanic-gpu v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-gpu)
+   Compiling bevy_core_pipeline v0.19.0 (/Users/jens/repos/mechanic/vendor/bevy_core_pipeline)
+   Compiling bevy_pbr v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_post_process v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_gizmos_render v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_internal v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy v0.19.0 (https://github.com/bevyengine/bevy.git?tag=v0.19.0#c6f634ca)
+   Compiling bevy_mosaic v0.1.0 (/Users/jens/repos/mechanic/crates/bevy_mosaic)
+    Finished `release` profile [optimized] target(s) in 5m 59s
+   Doc-tests bevy_mosaic
+
+running 1 test
+test crates/bevy_mosaic/src/lib.rs - (line 34) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 8.50s; merged doctests compilation took 7.89s
+   Doc-tests mechanic_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mechanic_gpu
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mechanic_physics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests mechanic_world
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

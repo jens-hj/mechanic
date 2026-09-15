@@ -67,6 +67,7 @@ pub(crate) struct FeatureEdgeHit {
 /// One chamfer/fillet amount drag, committed only on release.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FeatureDrag {
+    pub(crate) validated_preview: Option<ValidatedFeaturePreview>,
     /// Existing feature being adjusted, or `None` for a new feature.
     pub(crate) feature: Option<ShapeFeatureId>,
     /// Every selected logical chain receiving the shared amount.
@@ -101,6 +102,7 @@ impl FeatureDrag {
         let projected = project_onto_plane(ray_origin, ray_direction, hit.point, drag_plane_normal)
             .unwrap_or(hit.point);
         Self {
+            validated_preview: None,
             feature,
             targets,
             treatment,
@@ -159,6 +161,23 @@ impl FeatureDrag {
     /// expensive failed preview every frame.
     pub(crate) fn discard_rejected_excess(&mut self, accepted_amount_ticks: u32) {
         self.raw_amount_ticks = f64::from(accepted_amount_ticks);
+    }
+}
+
+/// A successfully validated drag step, reusable while its input revision and
+/// feature parameters match. Geometry in the graph itself is shared cheaply.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedFeaturePreview {
+    pub(crate) source: mechanic_core::ConstructionGraph,
+    pub(crate) graph: mechanic_core::ConstructionGraph,
+    pub(crate) key: super::FeaturePreviewKey,
+}
+
+impl PartialEq for ValidatedFeaturePreview {
+    fn eq(&self, other: &Self) -> bool {
+        self.source.shares_revision(&other.source)
+            && self.graph.shares_revision(&other.graph)
+            && self.key == other.key
     }
 }
 

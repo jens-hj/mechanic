@@ -176,12 +176,6 @@ pub const MAX_CYLINDER_SWEEP_DEGREES: u16 = 360;
 /// Adjustment increment for retained cylinder sectors, in degrees.
 pub const CYLINDER_SWEEP_STEP_DEGREES: u16 = 15;
 
-/// Smallest supported pipe-bend centreline radius, in metres.
-pub const MIN_PIPE_BEND_RADIUS: f32 = GRID_UNIT_METERS;
-
-/// Largest supported pipe-bend centreline radius, in metres.
-pub const MAX_PIPE_BEND_RADIUS: f32 = 8.0;
-
 /// Radial sides used by the authored pipe-bend render and picking surface.
 pub const PIPE_BEND_RADIAL_SIDES: u16 = 24;
 
@@ -434,6 +428,15 @@ pub enum CylinderDimensionError {
     /// The retained angular sector was outside the supported stepped range.
     #[error("cylinder sweep angle must be between 15 and 360 degrees in 15-degree increments")]
     SweepAngleOutOfRange,
+    /// A material band boundary left a band thinner than the minimum wall.
+    #[error("each cylinder material layer must be at least 0.05 m across in diameter")]
+    BandOutOfRange,
+    /// The cylinder already carries the maximum number of material layers.
+    #[error("a cylinder holds at most {MAX_CYLINDER_BANDS} material layers")]
+    TooManyBands,
+    /// An inner layer needs a bore to line.
+    #[error("only a hollow cylinder can take a layer inside its bore")]
+    BoreRequired,
 }
 
 /// Validated dimensions for a solid or hollow cylinder.
@@ -561,17 +564,55 @@ impl Default for CylinderDimensions {
     }
 }
 
-/// Editable cylinder dimensions and build pose. Its axis is local Y.
+/// Largest number of radial material bands one cylinder carries.
+pub const MAX_CYLINDER_BANDS: usize = 4;
+
+/// One radial material band of a layered cylinder.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CylinderSpec {
-    /// Validated solid or hollow dimensions.
-    pub dimensions: CylinderDimensions,
-    /// Cylinder centre and cardinal orientation.
-    pub pose: BuildPose,
+pub struct CylinderBand {
+    /// Diameter of the band's outer boundary, in metres.
+    pub outer_diameter: f32,
     /// Material used for appearance, mass, and contact response.
     pub material: ConstructionMaterial,
     /// Independent color and finish treatment.
     pub appearance: MaterialAppearance,
+}
+
+impl CylinderBand {
+    const UNUSED: Self = Self {
+        outer_diameter: 0.0,
+        material: ConstructionMaterial::Steel,
+        appearance: MaterialAppearance::BAKED,
+    };
+}
+
+/// Curved wall of a cylinder that takes a new material layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LayerSide {
+    /// Around the outer wall, growing the outer diameter.
+    Outer,
+    /// Inside the bore, shrinking the inner diameter.
+    Inner,
+}
+
+/// Editable cylinder dimensions and build pose. Its axis is local Y.
+///
+/// A layered cylinder is still one solid: `dimensions` is its whole envelope,
+/// and radial material bands only divide that envelope's material. `material`
+/// and `appearance` belong to the outermost band; any bands inside it are held
+/// innermost first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CylinderSpec {
+    /// Validated solid or hollow envelope dimensions.
+    pub dimensions: CylinderDimensions,
+    /// Cylinder centre and cardinal orientation.
+    pub pose: BuildPose,
+    /// Outermost band material used for appearance, mass, and contact response.
+    pub material: ConstructionMaterial,
+    /// Outermost band color and finish treatment.
+    pub appearance: MaterialAppearance,
+    inner_bands: [CylinderBand; MAX_CYLINDER_BANDS - 1],
+    inner_band_count: u8,
 }
 
 impl CylinderSpec {
@@ -582,7 +623,166 @@ impl CylinderSpec {
             pose,
             material: ConstructionMaterial::Steel,
             appearance: MaterialAppearance::BAKED,
+            inner_bands: [CylinderBand::UNUSED; MAX_CYLINDER_BANDS - 1],
+            inner_band_count: 0,
         }
+    }
+
+    /// Number of radial material bands, at least one.
+    pub const fn band_count(self) -> usize {
+        self.inner_band_count as usize + 1
+    }
+
+    /// Band `index`, counted from the innermost, or `None` past the outermost.
+    pub const fn band(self, index: usize) -> Option<CylinderBand> {
+        let inner = self.inner_band_count as usize;
+        if index < inner {
+            Some(self.inner_bands[index])
+        } else if index == inner {
+            Some(CylinderBand {
+                outer_diameter: self.dimensions.outer_diameter(),
+                material: self.material,
+                appearance: self.appearance,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Every band, innermost first.
+    pub fn bands(self) -> impl Iterator<Item = CylinderBand> {
+        (0..self.band_count()).filter_map(move |index| self.band(index))
+    }
+
+    /// Inner boundary diameter of band `index`.
+    pub fn band_inner_diameter(self, index: usize) -> f32 {
+        index
+            .checked_sub(1)
+            .and_then(|previous| self.band(previous))
+            .map_or(self.dimensions.inner_diameter(), |band| band.outer_diameter)
+    }
+
+    /// Band whose radial span contains `radius`, clamped to the envelope.
+    pub fn band_at_radius(self, radius: f32) -> usize {
+        (0..self.band_count() - 1)
+            .find(|&index| {
+                self.band(index)
+                    .is_some_and(|band| radius <= band.outer_diameter * 0.5)
+            })
+            .unwrap_or(self.band_count() - 1)
+    }
+
+    /// Replaces the bands inside the outermost one, innermost first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CylinderDimensionError::TooManyBands`] or
+    /// [`CylinderDimensionError::BandOutOfRange`] when the bands do not fit
+    /// the envelope in order with a full wall each.
+    pub fn with_inner_bands(
+        mut self,
+        bands: impl IntoIterator<Item = CylinderBand>,
+    ) -> Result<Self, CylinderDimensionError> {
+        self.inner_bands = [CylinderBand::UNUSED; MAX_CYLINDER_BANDS - 1];
+        self.inner_band_count = 0;
+        for band in bands {
+            let slot = self
+                .inner_bands
+                .get_mut(usize::from(self.inner_band_count))
+                .ok_or(CylinderDimensionError::TooManyBands)?;
+            *slot = band;
+            self.inner_band_count += 1;
+        }
+        self.validate_bands()?;
+        Ok(self)
+    }
+
+    /// Checks every band is ordered and at least a minimum wall across.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CylinderDimensionError::BandOutOfRange`] otherwise.
+    pub fn validate_bands(self) -> Result<(), CylinderDimensionError> {
+        for (index, band) in self.bands().enumerate() {
+            let inner = self.band_inner_diameter(index);
+            if !band.outer_diameter.is_finite()
+                || band.outer_diameter - inner < MIN_CYLINDER_DIAMETER_GAP - 1.0e-4
+            {
+                return Err(CylinderDimensionError::BandOutOfRange);
+            }
+        }
+        Ok(())
+    }
+
+    /// Adds a full-length material layer `thickness` metres thick to one wall.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CylinderDimensionError`] when the grown envelope is out of
+    /// range, the cylinder already has the most bands, or an inner layer has
+    /// no bore to line.
+    pub fn with_layer(
+        self,
+        side: LayerSide,
+        thickness: f32,
+        material: ConstructionMaterial,
+        appearance: MaterialAppearance,
+    ) -> Result<Self, CylinderDimensionError> {
+        if self.band_count() >= MAX_CYLINDER_BANDS {
+            return Err(CylinderDimensionError::TooManyBands);
+        }
+        let outer = self.dimensions.outer_diameter();
+        let inner = self.dimensions.inner_diameter();
+        let length = self.dimensions.axial_length();
+        let sweep = self.dimensions.sweep_angle_degrees();
+        let mut bands = self.bands().collect::<Vec<_>>();
+        let (outer, inner) = match side {
+            LayerSide::Outer => {
+                let grown = outer + 2.0 * thickness;
+                bands.push(CylinderBand {
+                    outer_diameter: grown,
+                    material,
+                    appearance,
+                });
+                (grown, inner)
+            }
+            LayerSide::Inner => {
+                if inner <= 0.0 {
+                    return Err(CylinderDimensionError::BoreRequired);
+                }
+                bands.insert(
+                    0,
+                    CylinderBand {
+                        outer_diameter: inner,
+                        material,
+                        appearance,
+                    },
+                );
+                (outer, (inner - 2.0 * thickness).max(0.0))
+            }
+        };
+        let dimensions =
+            CylinderDimensions::new(outer, inner, length)?.with_sweep_angle_degrees(sweep)?;
+        let outermost = bands.pop().ok_or(CylinderDimensionError::BandOutOfRange)?;
+        Self {
+            dimensions,
+            material: outermost.material,
+            appearance: outermost.appearance,
+            ..self
+        }
+        .with_inner_bands(bands)
+    }
+
+    /// Returns the cylinder with one band's appearance replaced.
+    #[must_use]
+    pub fn with_band_appearance(mut self, index: usize, appearance: MaterialAppearance) -> Self {
+        if index + 1 == self.band_count() {
+            self.appearance = appearance;
+        } else if let Some(band) = self.inner_bands[..self.inner_band_count as usize].get_mut(index)
+        {
+            band.appearance = appearance;
+        }
+        self
     }
 
     /// Uses an explicit construction material.
@@ -617,42 +817,43 @@ pub enum PipeBendDimensionError {
         "pipe bend inner diameter must be non-negative and at least 0.05 m smaller than the outer diameter"
     )]
     InnerDiameterOutOfRange,
-    /// The centreline radius was not finite.
-    #[error("pipe bend centreline radius must be finite")]
-    NonFiniteRadius,
-    /// The radius was outside the grid range or not a quarter-metre increment.
-    #[error("pipe bend centreline radius must be between 0.25 m and 8.00 m in 0.25 m increments")]
-    RadiusOutOfRange,
-    /// The centreline radius would fold the outer wall through the bend.
-    #[error(
-        "pipe bend radius must be at least one block and the outer diameter rounded up to a block"
-    )]
-    RadiusTooSmallForDiameter,
+    /// The square span was zero or larger than the grid limit.
+    #[error("pipe bend span must be between 1 and {MAX_GRID_UNITS} blocks")]
+    SpanOutOfRange,
+    /// The square span is narrower than the pipe's block channel.
+    #[error("pipe bend span must be at least the outer diameter rounded up to a block")]
+    SpanTooSmallForDiameter,
 }
 
-/// Validated cross-section and centreline radius for a cardinal quarter-torus.
+/// Validated cross-section and block span for a cardinal quarter-torus.
+///
+/// A bend fills an `N × N` block square, where `N` is its span. The pipe runs
+/// in a channel `W` blocks wide (its outer diameter rounded up to a block), so
+/// the centreline sits `W / 2` blocks inside the square's edges and the
+/// centreline radius is `(N − W / 2)` blocks. Straight legs entering and
+/// leaving the bend therefore stay on the same block alignment.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PipeBendDimensions {
     outer_diameter: f32,
     inner_diameter: f32,
-    radius: GridDimension,
+    span: GridDimension,
 }
 
 impl PipeBendDimensions {
-    /// Default centreline radius: one construction block.
-    pub const DEFAULT_RADIUS: f32 = GRID_UNIT_METERS;
+    /// Default span: a bend inside one construction block.
+    pub const DEFAULT_SPAN: u8 = 1;
 
     /// Creates validated pipe-bend dimensions.
     ///
     /// # Errors
     ///
     /// Returns [`PipeBendDimensionError`] when the annular cross-section is
-    /// invalid, the radius is not on the construction grid, or the radius is
-    /// shorter than the outer diameter rounded up to one block.
+    /// invalid, the span is outside the grid range, or the span is narrower
+    /// than the pipe's block channel.
     pub fn new(
         outer_diameter: f32,
         inner_diameter: f32,
-        radius: f32,
+        span_blocks: u8,
     ) -> Result<Self, PipeBendDimensionError> {
         if !outer_diameter.is_finite() {
             return Err(PipeBendDimensionError::NonFiniteOuterDiameter);
@@ -666,28 +867,15 @@ impl PipeBendDimensions {
         if inner_diameter < 0.0 || inner_diameter > outer_diameter - MIN_CYLINDER_DIAMETER_GAP {
             return Err(PipeBendDimensionError::InnerDiameterOutOfRange);
         }
-        if !radius.is_finite() {
-            return Err(PipeBendDimensionError::NonFiniteRadius);
-        }
-        let radius_units = radius / GRID_UNIT_METERS;
-        let rounded_units = radius_units.round();
-        if (radius_units - rounded_units).abs() > 1.0e-5
-            || !(1.0..=f32::from(MAX_GRID_UNITS)).contains(&rounded_units)
-        {
-            return Err(PipeBendDimensionError::RadiusOutOfRange);
-        }
-        let units = (1..=MAX_GRID_UNITS)
-            .find(|&units| (f32::from(units) - rounded_units).abs() < 1.0e-5)
-            .ok_or(PipeBendDimensionError::RadiusOutOfRange)?;
-        let minimum_units = (outer_diameter / GRID_UNIT_METERS).ceil().max(1.0);
-        if f32::from(units) < minimum_units {
-            return Err(PipeBendDimensionError::RadiusTooSmallForDiameter);
+        let span =
+            GridDimension::new(span_blocks).map_err(|_| PipeBendDimensionError::SpanOutOfRange)?;
+        if span_blocks < Self::minimum_span(outer_diameter) {
+            return Err(PipeBendDimensionError::SpanTooSmallForDiameter);
         }
         Ok(Self {
             outer_diameter,
             inner_diameter,
-            radius: GridDimension::new(units)
-                .map_err(|_| PipeBendDimensionError::RadiusOutOfRange)?,
+            span,
         })
     }
 
@@ -701,19 +889,28 @@ impl PipeBendDimensions {
         self.inner_diameter
     }
 
-    /// Centreline radius in metres.
+    /// Side of the bend's square footprint, in blocks.
+    pub const fn span_blocks(self) -> u8 {
+        self.span.units()
+    }
+
+    /// Centreline radius in metres: `(span − channel / 2)` blocks.
     pub fn radius(self) -> f32 {
-        self.radius.meters()
+        (f32::from(self.span.units()) - f32::from(Self::channel_blocks(self.outer_diameter)) * 0.5)
+            * GRID_UNIT_METERS
     }
 
-    /// Centreline radius in quarter-metre grid units.
-    pub const fn radius_units(self) -> u8 {
-        self.radius.units()
+    /// Width in blocks of the channel a pipe of `outer_diameter` runs in.
+    pub fn channel_blocks(outer_diameter: f32) -> u8 {
+        let blocks = (outer_diameter / GRID_UNIT_METERS - 1.0e-4).ceil();
+        (1..=MAX_GRID_UNITS)
+            .find(|&units| f32::from(units) >= blocks)
+            .unwrap_or(MAX_GRID_UNITS)
     }
 
-    /// Minimum valid radius for `outer_diameter`, rounded up to a block.
-    pub fn minimum_radius(outer_diameter: f32) -> f32 {
-        (outer_diameter / GRID_UNIT_METERS).ceil().max(1.0) * GRID_UNIT_METERS
+    /// Smallest span that holds a pipe of `outer_diameter`.
+    pub fn minimum_span(outer_diameter: f32) -> u8 {
+        Self::channel_blocks(outer_diameter)
     }
 }
 
@@ -722,7 +919,7 @@ impl Default for PipeBendDimensions {
         Self {
             outer_diameter: CylinderDimensions::DEFAULT_OUTER_DIAMETER,
             inner_diameter: CylinderDimensions::DEFAULT_INNER_DIAMETER,
-            radius: GridDimension(1),
+            span: GridDimension(Self::DEFAULT_SPAN),
         }
     }
 }
@@ -730,7 +927,9 @@ impl Default for PipeBendDimensions {
 /// Cardinal 90-degree pipe bend with local negative-X inlet and positive-Y outlet.
 ///
 /// The pose translation is the theoretical sharp corner. The centreline is
-/// tangent at `(-radius, 0, 0)` and `(0, radius, 0)` in local space.
+/// tangent at `(-radius, 0, 0)` and `(0, radius, 0)` in local space. When the
+/// pipe fills its channel the inner wall pinches to a crease at
+/// `(-radius, radius, 0)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PipeBendSpec {
     /// Validated annular dimensions and centreline radius.
@@ -999,6 +1198,211 @@ impl TransmissionSpec {
     }
 }
 
+/// Faces a pipe junction can open, in arm-bit order.
+const PIPE_ARM_FACES: [FaceKind; 6] = [
+    FaceKind::PositiveX,
+    FaceKind::NegativeX,
+    FaceKind::PositiveY,
+    FaceKind::NegativeY,
+    FaceKind::PositiveZ,
+    FaceKind::NegativeZ,
+];
+
+/// Invalid pipe-junction cross-section or opening set.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum PipeJunctionError {
+    /// The outer diameter was not finite or outside the cylinder range.
+    #[error("pipe junction outer diameter must be between 0.05 m and 8.00 m")]
+    OuterDiameterOutOfRange,
+    /// The inner diameter was not finite, negative, or left too little wall.
+    #[error(
+        "pipe junction inner diameter must be non-negative and at least 0.05 m smaller than the outer diameter"
+    )]
+    InnerDiameterOutOfRange,
+    /// No face was open.
+    #[error("pipe junction needs at least one open face")]
+    NoArms,
+}
+
+/// Non-empty set of a pipe junction's open faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PipeArms(u8);
+
+impl PipeArms {
+    /// Every face open.
+    pub const ALL: Self = Self(0b11_1111);
+
+    /// Creates an arm set from face bits ordered +X, −X, +Y, −Y, +Z, −Z.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipeJunctionError::NoArms`] when no face bit is set.
+    pub const fn from_bits(bits: u8) -> Result<Self, PipeJunctionError> {
+        let bits = bits & 0b11_1111;
+        if bits == 0 {
+            Err(PipeJunctionError::NoArms)
+        } else {
+            Ok(Self(bits))
+        }
+    }
+
+    /// An arm set with exactly one open face.
+    pub const fn single(face: FaceKind) -> Self {
+        Self(pipe_arm_bit(face))
+    }
+
+    /// Face bits ordered +X, −X, +Y, −Y, +Z, −Z.
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Whether `face` is open.
+    pub const fn contains(self, face: FaceKind) -> bool {
+        self.0 & pipe_arm_bit(face) != 0
+    }
+
+    /// This set with `face` opened too.
+    #[must_use]
+    pub const fn with(self, face: FaceKind) -> Self {
+        Self(self.0 | pipe_arm_bit(face))
+    }
+
+    /// Open faces in arm-bit order.
+    pub fn faces(self) -> impl Iterator<Item = FaceKind> {
+        PIPE_ARM_FACES
+            .into_iter()
+            .filter(move |&face| self.contains(face))
+    }
+
+    /// Number of open faces.
+    pub const fn count(self) -> u32 {
+        self.0.count_ones()
+    }
+}
+
+const fn pipe_arm_bit(face: FaceKind) -> u8 {
+    match face {
+        FaceKind::PositiveX => 1,
+        FaceKind::NegativeX => 1 << 1,
+        FaceKind::PositiveY => 1 << 2,
+        FaceKind::NegativeY => 1 << 3,
+        FaceKind::PositiveZ => 1 << 4,
+        FaceKind::NegativeZ => 1 << 5,
+    }
+}
+
+/// Validated annular cross-section of a pipe junction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PipeJunctionDimensions {
+    outer_diameter: f32,
+    inner_diameter: f32,
+}
+
+impl PipeJunctionDimensions {
+    /// Creates a validated junction cross-section.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PipeJunctionError`] when either diameter is out of range.
+    pub fn new(outer_diameter: f32, inner_diameter: f32) -> Result<Self, PipeJunctionError> {
+        if !outer_diameter.is_finite()
+            || !(MIN_CYLINDER_OUTER_DIAMETER..=MAX_CYLINDER_OUTER_DIAMETER)
+                .contains(&outer_diameter)
+        {
+            return Err(PipeJunctionError::OuterDiameterOutOfRange);
+        }
+        if !inner_diameter.is_finite()
+            || inner_diameter < 0.0
+            || inner_diameter > outer_diameter - MIN_CYLINDER_DIAMETER_GAP
+        {
+            return Err(PipeJunctionError::InnerDiameterOutOfRange);
+        }
+        Ok(Self {
+            outer_diameter,
+            inner_diameter,
+        })
+    }
+
+    /// Outer diameter of each pipe end, in metres.
+    pub const fn outer_diameter(self) -> f32 {
+        self.outer_diameter
+    }
+
+    /// Bore diameter in metres. Zero represents a solid junction.
+    pub const fn inner_diameter(self) -> f32 {
+        self.inner_diameter
+    }
+
+    /// Side of the junction's channel cell in blocks: the pipe's channel width.
+    pub fn cell_blocks(self) -> u8 {
+        PipeBendDimensions::channel_blocks(self.outer_diameter)
+    }
+
+    /// Distance from the junction centre to each arm end, in metres.
+    pub fn half_side(self) -> f32 {
+        f32::from(self.cell_blocks()) * GRID_UNIT_METERS * 0.5
+    }
+}
+
+/// Fitting that joins pipe arms on any of the six faces of a channel cell.
+///
+/// The pose translation is the centre of a cell one pipe channel wide, so a
+/// junction replaces exactly one channel cell of a straight run. Each open face
+/// carries an arm of pipe from the centre to an annular end on the cell face;
+/// the fitting has no other connection faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PipeJunctionSpec {
+    /// Validated annular cross-section shared by every open face.
+    pub dimensions: PipeJunctionDimensions,
+    /// Open faces, in local space.
+    pub arms: PipeArms,
+    /// Channel cell centre and cardinal orientation.
+    pub pose: BuildPose,
+    /// Material used for appearance, mass, and contact response.
+    pub material: ConstructionMaterial,
+    /// Independent color and finish treatment.
+    pub appearance: MaterialAppearance,
+}
+
+impl PipeJunctionSpec {
+    /// Creates a junction from validated dimensions, open faces, and a pose.
+    pub const fn new(dimensions: PipeJunctionDimensions, arms: PipeArms, pose: BuildPose) -> Self {
+        Self {
+            dimensions,
+            arms,
+            pose,
+            material: ConstructionMaterial::Steel,
+            appearance: MaterialAppearance::BAKED,
+        }
+    }
+
+    /// Uses an explicit construction material.
+    #[must_use]
+    pub const fn with_material(mut self, material: ConstructionMaterial) -> Self {
+        self.material = material;
+        self
+    }
+
+    /// Uses an explicit construction appearance.
+    #[must_use]
+    pub const fn with_appearance(mut self, appearance: MaterialAppearance) -> Self {
+        self.appearance = appearance;
+        self
+    }
+
+    /// This junction with one more open face.
+    #[must_use]
+    pub const fn with_arm(mut self, face: FaceKind) -> Self {
+        self.arms = self.arms.with(face);
+        self
+    }
+
+    /// Number of box colliders [`crate::pipe_junction_wall_boxes`] produces.
+    pub fn collider_count(self) -> usize {
+        crate::pipe_junction::pipe_junction_box_count(self)
+    }
+}
+
 /// A construction part with shape-specific dimensions and a shared build pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PartSpec {
@@ -1008,6 +1412,8 @@ pub enum PartSpec {
     Cylinder(CylinderSpec),
     /// Cardinal 90-degree quarter-torus pipe bend.
     PipeBend(PipeBendSpec),
+    /// Fitting joining pipe arms on any of its six faces.
+    PipeJunction(PipeJunctionSpec),
     /// Fixed-size control block driving the bearings wired to it.
     Controller(ControllerSpec),
     /// Fixed-size inert engine with an authored appearance.
@@ -1031,6 +1437,7 @@ impl PartSpec {
             Self::Cuboid(spec) => spec.pose,
             Self::Cylinder(spec) => spec.pose,
             Self::PipeBend(spec) => spec.pose,
+            Self::PipeJunction(spec) => spec.pose,
             Self::Controller(spec) => spec.pose,
             Self::Engine(spec) => spec.pose,
             Self::Transmission(spec) => spec.pose,
@@ -1047,6 +1454,7 @@ impl PartSpec {
             Self::Cuboid(spec) => Some(spec.appearance),
             Self::Cylinder(spec) => Some(spec.appearance),
             Self::PipeBend(spec) => Some(spec.appearance),
+            Self::PipeJunction(spec) => Some(spec.appearance),
             Self::Controller(_)
             | Self::Engine(_)
             | Self::Transmission(_)
@@ -1063,6 +1471,7 @@ impl PartSpec {
             Self::Cuboid(spec) => Some(Self::Cuboid(spec.with_appearance(appearance))),
             Self::Cylinder(spec) => Some(Self::Cylinder(spec.with_appearance(appearance))),
             Self::PipeBend(spec) => Some(Self::PipeBend(spec.with_appearance(appearance))),
+            Self::PipeJunction(spec) => Some(Self::PipeJunction(spec.with_appearance(appearance))),
             Self::Controller(_)
             | Self::Engine(_)
             | Self::Transmission(_)
@@ -1088,6 +1497,10 @@ impl PartSpec {
             Self::PipeBend(mut spec) => {
                 spec.pose = pose;
                 Self::PipeBend(spec)
+            }
+            Self::PipeJunction(mut spec) => {
+                spec.pose = pose;
+                Self::PipeJunction(spec)
             }
             Self::Controller(mut spec) => {
                 spec.pose = pose;
@@ -1132,7 +1545,7 @@ impl PartSpec {
             Self::Seat(spec) => Some(spec.cuboid()),
             Self::Input(spec) => Some(spec.cuboid()),
             Self::DimensionLink(spec) => Some(spec.cuboid()),
-            Self::Cylinder(_) | Self::PipeBend(_) => None,
+            Self::Cylinder(_) | Self::PipeBend(_) | Self::PipeJunction(_) => None,
         }
     }
 
@@ -1143,6 +1556,7 @@ impl PartSpec {
             Self::Cuboid(_)
             | Self::Cylinder(_)
             | Self::PipeBend(_)
+            | Self::PipeJunction(_)
             | Self::Engine(_)
             | Self::Transmission(_)
             | Self::Servo(_)
@@ -1158,6 +1572,7 @@ impl PartSpec {
             Self::Cylinder(spec) => Some(spec),
             Self::Cuboid(_)
             | Self::PipeBend(_)
+            | Self::PipeJunction(_)
             | Self::Controller(_)
             | Self::Engine(_)
             | Self::Transmission(_)
@@ -1174,6 +1589,24 @@ impl PartSpec {
             Self::PipeBend(spec) => Some(spec),
             Self::Cuboid(_)
             | Self::Cylinder(_)
+            | Self::PipeJunction(_)
+            | Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_)
+            | Self::DimensionLink(_) => None,
+        }
+    }
+
+    /// Returns the pipe-junction shape, when this part is a junction.
+    pub const fn as_pipe_junction(self) -> Option<PipeJunctionSpec> {
+        match self {
+            Self::PipeJunction(spec) => Some(spec),
+            Self::Cuboid(_)
+            | Self::Cylinder(_)
+            | Self::PipeBend(_)
             | Self::Controller(_)
             | Self::Engine(_)
             | Self::Transmission(_)
@@ -1205,6 +1638,7 @@ impl PartSpec {
                 let radius = spec.dimensions.radius();
                 Vec3::new(radius + outer * 0.5, radius + outer * 0.5, outer)
             }
+            Self::PipeJunction(spec) => Vec3::splat(spec.dimensions.half_side() * 2.0),
         }
     }
 }
@@ -1230,6 +1664,12 @@ impl From<CylinderSpec> for PartSpec {
 impl From<PipeBendSpec> for PartSpec {
     fn from(value: PipeBendSpec) -> Self {
         Self::PipeBend(value)
+    }
+}
+
+impl From<PipeJunctionSpec> for PartSpec {
+    fn from(value: PipeJunctionSpec) -> Self {
+        Self::PipeJunction(value)
     }
 }
 
@@ -1523,6 +1963,26 @@ pub(crate) fn pipe_bend_face(spec: PipeBendSpec, face: FaceKind) -> Option<FaceG
         normal: snap_cardinal(rotation * local_normal),
         tangent_u: snap_cardinal(rotation * local_u),
         tangent_v: snap_cardinal(rotation * local_v),
+        profile: FaceProfile::Annulus {
+            inner_radius: spec.dimensions.inner_diameter() * 0.5,
+            outer_radius: spec.dimensions.outer_diameter() * 0.5,
+        },
+    })
+}
+
+/// Open arm end of a junction; closed faces are not connection faces.
+pub(crate) fn pipe_junction_face(spec: PipeJunctionSpec, face: FaceKind) -> Option<FaceGeometry> {
+    if !spec.arms.contains(face) {
+        return None;
+    }
+    let rotation = spec.pose.rotation.quaternion();
+    let (u_axis, v_axis) = face.tangent_axes();
+    let normal = snap_cardinal(rotation * face.axis().unit()) * face.sign();
+    Some(FaceGeometry {
+        center: spec.pose.translation() + normal * spec.dimensions.half_side(),
+        normal,
+        tangent_u: snap_cardinal(rotation * u_axis.unit()),
+        tangent_v: snap_cardinal(rotation * v_axis.unit()),
         profile: FaceProfile::Annulus {
             inner_radius: spec.dimensions.inner_diameter() * 0.5,
             outer_radius: spec.dimensions.outer_diameter() * 0.5,
@@ -1841,27 +2301,43 @@ mod tests {
     }
 
     #[test]
-    fn pipe_bend_dimensions_enforce_grid_radius_and_outer_diameter_clearance() {
-        assert!(PipeBendDimensions::new(0.25, 0.10, 0.25).is_ok());
+    fn pipe_bend_one_block_pipe_bends_inside_one_block() {
+        let bend = PipeBendDimensions::new(0.25, 0.10, 1).unwrap();
+        assert!((bend.radius() - 0.125).abs() < 1.0e-6);
+        assert!((bend.radius() + bend.outer_diameter() * 0.5 - 0.25).abs() < 1.0e-6);
+        let larger = PipeBendDimensions::new(0.20, 0.0, 3).unwrap();
+        assert!((larger.radius() - 0.625).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn wide_pipe_minimum_span_steps_up_by_channel_width() {
+        for (outer, span) in [(0.05, 1), (0.25, 1), (0.30, 2), (0.50, 2), (0.60, 3)] {
+            assert_eq!(PipeBendDimensions::minimum_span(outer), span, "OD {outer}");
+        }
+        let wide = PipeBendDimensions::new(0.50, 0.0, 2).unwrap();
+        assert!((wide.radius() - 0.25).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn span_below_channel_width_or_out_of_range_is_rejected() {
         assert_eq!(
-            PipeBendDimensions::new(0.30, 0.10, 0.25),
-            Err(PipeBendDimensionError::RadiusTooSmallForDiameter)
+            PipeBendDimensions::new(0.30, 0.10, 1),
+            Err(PipeBendDimensionError::SpanTooSmallForDiameter)
         );
-        assert!(PipeBendDimensions::new(0.30, 0.10, 0.50).is_ok());
         assert_eq!(
-            PipeBendDimensions::new(0.25, 0.21, 0.25),
+            PipeBendDimensions::new(0.25, 0.10, 0),
+            Err(PipeBendDimensionError::SpanOutOfRange)
+        );
+        assert_eq!(
+            PipeBendDimensions::new(0.25, 0.21, 1),
             Err(PipeBendDimensionError::InnerDiameterOutOfRange)
-        );
-        assert_eq!(
-            PipeBendDimensions::new(0.25, 0.10, 0.30),
-            Err(PipeBendDimensionError::RadiusOutOfRange)
         );
     }
 
     #[test]
     fn pipe_bend_exposes_only_its_two_tangent_annular_ends() {
         let spec = PipeBendSpec::new(
-            PipeBendDimensions::new(0.25, 0.10, 0.50).unwrap(),
+            PipeBendDimensions::new(0.25, 0.10, 2).unwrap(),
             BuildPose::new(IVec3::new(4, 8, 0), GridRotation::new(0, 0, 1)),
         );
         let inlet = pipe_bend_face(spec, FaceKind::NegativeX).unwrap();
@@ -1869,7 +2345,79 @@ mod tests {
         assert!(inlet.normal.abs_diff_eq(Vec3::NEG_Y, 1.0e-6));
         assert!(outlet.normal.abs_diff_eq(Vec3::NEG_X, 1.0e-6));
         assert!(pipe_bend_face(spec, FaceKind::PositiveZ).is_none());
-        assert!(((inlet.center - spec.pose.translation()).length() - 0.5).abs() < 1.0e-5);
-        assert!(((outlet.center - spec.pose.translation()).length() - 0.5).abs() < 1.0e-5);
+        assert!(((inlet.center - spec.pose.translation()).length() - 0.375).abs() < 1.0e-5);
+        assert!(((outlet.center - spec.pose.translation()).length() - 0.375).abs() < 1.0e-5);
+    }
+
+    fn layer_core(outer: f32, inner: f32) -> CylinderSpec {
+        CylinderSpec::new(
+            CylinderDimensions::new(outer, inner, 0.5).unwrap(),
+            BuildPose::default(),
+        )
+    }
+
+    fn rubber_layer(
+        spec: CylinderSpec,
+        side: super::LayerSide,
+        thickness: f32,
+    ) -> Result<CylinderSpec, CylinderDimensionError> {
+        spec.with_layer(
+            side,
+            thickness,
+            ConstructionMaterial::Rubber,
+            crate::MaterialAppearance::BAKED,
+        )
+    }
+
+    #[test]
+    fn outer_layer_grows_the_envelope_and_keeps_the_core_band() {
+        let layered = rubber_layer(layer_core(1.0, 0.0), super::LayerSide::Outer, 0.25).unwrap();
+        assert!((layered.dimensions.outer_diameter() - 1.5).abs() < 1.0e-5);
+        assert_eq!(layered.band_count(), 2);
+        let core = layered.band(0).unwrap();
+        assert_eq!(core.material, ConstructionMaterial::Steel);
+        assert!((core.outer_diameter - 1.0).abs() < 1.0e-5);
+        assert_eq!(layered.material, ConstructionMaterial::Rubber);
+        assert_eq!(layered.band_at_radius(0.4), 0);
+        assert_eq!(layered.band_at_radius(0.6), 1);
+    }
+
+    #[test]
+    fn bore_layer_can_fill_to_a_solid_core() {
+        let pipe = layer_core(1.0, 0.5);
+        let lined = rubber_layer(pipe, super::LayerSide::Inner, 0.1).unwrap();
+        assert!((lined.dimensions.inner_diameter() - 0.3).abs() < 1.0e-5);
+        assert_eq!(
+            lined.band(0).unwrap().material,
+            ConstructionMaterial::Rubber
+        );
+        assert_eq!(lined.material, ConstructionMaterial::Steel);
+        let cored = rubber_layer(pipe, super::LayerSide::Inner, 0.25).unwrap();
+        assert!(cored.dimensions.inner_diameter().abs() < f32::EPSILON);
+        assert_eq!(
+            rubber_layer(layer_core(1.0, 0.0), super::LayerSide::Inner, 0.1),
+            Err(CylinderDimensionError::BoreRequired)
+        );
+    }
+
+    #[test]
+    fn bands_thinner_than_the_wall_minimum_are_rejected() {
+        let thin = super::CylinderBand {
+            outer_diameter: 0.98,
+            material: ConstructionMaterial::Rubber,
+            appearance: crate::MaterialAppearance::BAKED,
+        };
+        assert_eq!(
+            layer_core(1.0, 0.0).with_inner_bands([thin]),
+            Err(CylinderDimensionError::BandOutOfRange)
+        );
+        let mut layered = layer_core(0.5, 0.0);
+        for _ in 1..super::MAX_CYLINDER_BANDS {
+            layered = rubber_layer(layered, super::LayerSide::Outer, 0.05).unwrap();
+        }
+        assert_eq!(
+            rubber_layer(layered, super::LayerSide::Outer, 0.05),
+            Err(CylinderDimensionError::TooManyBands)
+        );
     }
 }

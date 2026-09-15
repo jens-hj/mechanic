@@ -139,6 +139,7 @@ fn main() -> Result<()> {
                 },
                 material: ConstructionMaterial::Rubber,
                 appearance: MaterialAppearance::default(),
+                inner_bands: Vec::new(),
             });
             doc.part_frames.push(0);
             axles.push(bearing(
@@ -161,7 +162,7 @@ fn main() -> Result<()> {
     // Keep the proven seat/input/controller wiring and engine allocation.
     let electronics = u32::try_from(doc.parts.len())?;
     for (offset, original) in template.parts[62..=70].iter().enumerate() {
-        let mut part = *original;
+        let mut part = original.clone();
         let (PartDoc::Input { pose: p }
         | PartDoc::Seat { pose: p }
         | PartDoc::Servo { pose: p }

@@ -15,7 +15,7 @@ pub enum DynamicsFactorization {
     /// Frozen dense reference. Kept authoritative until complete tick gates pass.
     #[default]
     DenseReference,
-    /// Linear-work articulated tree factor; Jacobian/force assembly is still dense.
+    /// Articulated tree factor with component-local impulse responses.
     Articulated,
 }
 
@@ -108,6 +108,65 @@ impl DynamicsFactor {
                 implicit_diagonal,
             )?),
         })
+    }
+
+    pub(crate) fn articulated_from_poses(
+        creation: &mechanic_core::CompiledCreation,
+        poses: &[crate::BodyPose],
+        diagonal: &[f64],
+    ) -> Result<Self, PhysicsError> {
+        Ok(Self {
+            size: creation.dynamics.elimination_parent.len(),
+            storage: FactorStorage::Articulated(articulated::ArticulatedFactor::from_poses(
+                creation, poses, diagonal,
+            )?),
+        })
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        match &self.storage {
+            FactorStorage::Dense(values) => values.capacity() * size_of::<f64>(),
+            FactorStorage::Articulated(factor) => factor.retained_bytes(),
+        }
+    }
+
+    pub(crate) fn refit_articulated(
+        &mut self,
+        creation: &mechanic_core::CompiledCreation,
+        poses: &[crate::BodyPose],
+        diagonal: &[f64],
+    ) -> Result<(), PhysicsError> {
+        match &mut self.storage {
+            FactorStorage::Articulated(factor) => {
+                factor.refit(creation, poses, diagonal)?;
+                self.size = creation.dynamics.elimination_parent.len();
+            }
+            FactorStorage::Dense(_) => {
+                *self = Self::articulated_from_poses(creation, poses, diagonal)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn solve_ranges(
+        &self,
+        values: &mut [f64],
+        ranges: &[std::ops::Range<usize>],
+    ) -> Result<(), PhysicsError> {
+        if values.len() != self.size {
+            return Err(PhysicsError::InvalidDynamics);
+        }
+        match &self.storage {
+            FactorStorage::Articulated(factor) => factor.solve_ranges(values, ranges),
+            FactorStorage::Dense(_) => {
+                for (row, value) in values.iter_mut().enumerate() {
+                    if !ranges.iter().any(|range| range.contains(&row)) {
+                        *value = 0.0;
+                    }
+                }
+                self.solve(values)
+            }
+        }
     }
 
     /// Applies inverse dynamics in-place to a generalized impulse.

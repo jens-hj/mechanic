@@ -1,0 +1,5 @@
+{
+  "type": "ValueError",
+  "message": "missing valid capture or screenshot",
+  "acceptance_passed": false
+}

@@ -52,48 +52,39 @@ fn garage_pose_keeps_link_pivot_at_target_and_rotates_all_held_bodies_cardinally
 }
 
 #[test]
-fn swept_path_rejects_ceiling_and_wall_between_clear_endpoints() {
+fn swept_path_rejects_terrain_ceiling_and_wall_between_clear_endpoints() {
     let creation = creation();
     let held = [true, false, false];
     for direction in [Vec3::Y, Vec3::X] {
         let start = vec![pose(Vec3::Y, Quat::IDENTITY); 3];
         let end = vec![pose(Vec3::Y + direction * 2.0, Quat::IDENTITY); 3];
-        let obstacle = Obb {
-            center: Vec3::Y + direction,
-            orientation: Quat::IDENTITY,
-            half_extents: Vec3::splat(0.2),
+        // Flat ground with a 40 cm terrain block halfway along the path.
+        let blocked = |center: Vec3, radius: f32| {
+            let outside = ((center - (Vec3::Y + direction)).abs() - Vec3::splat(0.2))
+                .max(Vec3::ZERO)
+                .length();
+            Some((radius - center.y).max(radius - outside))
         };
-        assert!(endpoint_clear(
-            &creation,
-            &held,
-            &start,
-            &[obstacle],
-            &flat_terrain
-        ));
-        assert!(endpoint_clear(
-            &creation,
-            &held,
-            &end,
-            &[obstacle],
-            &flat_terrain
-        ));
-        assert!(!path_clear(
-            &creation,
-            &held,
-            &start,
-            &end,
-            &[obstacle],
-            &flat_terrain
-        ));
-        assert!(path_clear(
-            &creation,
-            &held,
-            &start,
-            &end,
-            &[],
-            &flat_terrain
-        ));
+        assert!(endpoint_clear(&creation, &held, &start, &blocked));
+        assert!(endpoint_clear(&creation, &held, &end, &blocked));
+        assert!(!path_clear(&creation, &held, &start, &end, &blocked));
+        assert!(path_clear(&creation, &held, &start, &end, &flat_terrain));
     }
+}
+
+#[test]
+fn bodies_outside_the_frozen_creation_never_block_it() {
+    let creation = creation();
+    let held = [true, false, false];
+    // An unheld body sits right on the held body's path and at its target.
+    let start = vec![
+        pose(Vec3::Y, Quat::IDENTITY),
+        pose(Vec3::Y + Vec3::X, Quat::IDENTITY),
+        pose(Vec3::Y + Vec3::X * 2.0, Quat::IDENTITY),
+    ];
+    let mut end = start.clone();
+    end[0] = start[2];
+    assert!(plan(&creation, &held, &start, &end, &flat_terrain).is_some());
 }
 
 #[test]
@@ -103,15 +94,8 @@ fn overturned_offset_geometry_lifts_before_leveling() {
     let held = [true, false, false];
     let start = vec![pose(Vec3::Y * 0.5, Quat::from_xyzw(0.0, 0.0, 1.0, 0.0)); 3];
     let end = vec![pose(Vec3::Y * 1.5, Quat::IDENTITY); 3];
-    assert!(!path_clear(
-        &creation,
-        &held,
-        &start,
-        &end,
-        &[],
-        &flat_terrain
-    ));
-    let waypoints = plan(&creation, &held, &start, &end, &[], &flat_terrain).unwrap();
+    assert!(!path_clear(&creation, &held, &start, &end, &flat_terrain));
+    let waypoints = plan(&creation, &held, &start, &end, &flat_terrain).unwrap();
     assert_eq!(waypoints.len(), 2);
     assert_eq!(waypoints[0][0].rotation, start[0].rotation);
     assert!(position(waypoints[0][0]).y > position(start[0]).y);
@@ -125,9 +109,9 @@ fn lowering_into_ground_or_planning_without_terrain_is_refused() {
     let held = [true, false, false];
     let start = vec![pose(Vec3::Y * 0.25, Quat::IDENTITY); 3];
     let below = vec![pose(Vec3::ZERO, Quat::IDENTITY); 3];
-    assert!(endpoint_clear(&creation, &held, &start, &[], &flat_terrain));
-    assert!(plan(&creation, &held, &start, &below, &[], &flat_terrain).is_none());
-    assert!(plan(&creation, &held, &start, &start, &[], &|_, _| None).is_none());
+    assert!(endpoint_clear(&creation, &held, &start, &flat_terrain));
+    assert!(plan(&creation, &held, &start, &below, &flat_terrain).is_none());
+    assert!(plan(&creation, &held, &start, &start, &|_, _| None).is_none());
 }
 
 #[test]
@@ -297,16 +281,27 @@ fn held_bodies_with_clear_endpoints_cannot_pass_through_each_other() {
         pose(Vec3::splat(50.0), Quat::IDENTITY),
     ];
     let end = vec![start[1], start[0], start[2]];
-    assert!(endpoint_clear(&creation, &held, &start, &[], &flat_terrain));
-    assert!(endpoint_clear(&creation, &held, &end, &[], &flat_terrain));
-    assert!(!path_clear(
-        &creation,
-        &held,
-        &start,
-        &end,
-        &[],
-        &flat_terrain
-    ));
+    assert!(endpoint_clear(&creation, &held, &start, &flat_terrain));
+    assert!(endpoint_clear(&creation, &held, &end, &flat_terrain));
+    assert!(!path_clear(&creation, &held, &start, &end, &flat_terrain));
+}
+
+#[test]
+fn tangled_held_bodies_may_pass_through_each_other_to_come_apart() {
+    let creation = creation();
+    let held = [true, true, false];
+    // The first cube starts buried in the second and ends on its far side.
+    let start = vec![
+        pose(Vec3::new(-0.1, 2.0, 0.0), Quat::IDENTITY),
+        pose(Vec3::new(0.0, 2.0, 0.0), Quat::IDENTITY),
+        pose(Vec3::splat(50.0), Quat::IDENTITY),
+    ];
+    let end = vec![
+        pose(Vec3::new(1.0, 2.0, 0.0), Quat::IDENTITY),
+        pose(Vec3::new(-1.0, 2.0, 0.0), Quat::IDENTITY),
+        start[2],
+    ];
+    assert!(plan(&creation, &held, &start, &end, &flat_terrain).is_some());
 }
 
 #[test]
@@ -314,24 +309,11 @@ fn held_default_overlap_is_refused_but_joint_collision_suppression_is_honored() 
     let mut creation = creation();
     let held = [true, true, false];
     let poses = vec![pose(Vec3::Y * 2.0, Quat::IDENTITY); 3];
-    assert!(!endpoint_clear(
-        &creation,
-        &held,
-        &poses,
-        &[],
-        &flat_terrain
-    ));
-    assert!(plan(&creation, &held, &poses, &poses, &[], &flat_terrain).is_none());
+    assert!(!endpoint_clear(&creation, &held, &poses, &flat_terrain));
+    assert!(plan(&creation, &held, &poses, &poses, &flat_terrain).is_none());
     creation.collision_suppression = vec![[0, 1]];
-    assert!(endpoint_clear(&creation, &held, &poses, &[], &flat_terrain));
-    assert!(path_clear(
-        &creation,
-        &held,
-        &poses,
-        &poses,
-        &[],
-        &flat_terrain
-    ));
+    assert!(endpoint_clear(&creation, &held, &poses, &flat_terrain));
+    assert!(path_clear(&creation, &held, &poses, &poses, &flat_terrain));
 }
 
 #[test]
@@ -346,7 +328,7 @@ fn close_held_bodies_translate_and_slide_without_bounding_sphere_false_blocks() 
     let (a_center, a_radius) = sphere(&creation.colliders[0], start[0]);
     let (b_center, b_radius) = sphere(&creation.colliders[1], start[1]);
     assert!(a_center.distance(b_center) < a_radius + b_radius);
-    assert!(endpoint_clear(&creation, &held, &start, &[], &flat_terrain));
+    assert!(endpoint_clear(&creation, &held, &start, &flat_terrain));
     let mut sliding = start.clone();
     sliding[1].position[2] += 2.0;
     assert!(path_clear(
@@ -354,7 +336,6 @@ fn close_held_bodies_translate_and_slide_without_bounding_sphere_false_blocks() 
         &held,
         &start,
         &sliding,
-        &[],
         &flat_terrain
     ));
     let mut translated = start.clone();
@@ -366,7 +347,6 @@ fn close_held_bodies_translate_and_slide_without_bounding_sphere_false_blocks() 
         &held,
         &start,
         &translated,
-        &[],
         &flat_terrain
     ));
 }
@@ -383,16 +363,9 @@ fn rotating_held_offset_geometry_cannot_sweep_through_another_held_body() {
     ];
     let mut end = start.clone();
     end[0].rotation = Quat::from_xyzw(0.0, 0.0, 1.0, 0.0).to_array();
-    assert!(endpoint_clear(&creation, &held, &start, &[], &flat_terrain));
-    assert!(endpoint_clear(&creation, &held, &end, &[], &flat_terrain));
-    assert!(!path_clear(
-        &creation,
-        &held,
-        &start,
-        &end,
-        &[],
-        &flat_terrain
-    ));
+    assert!(endpoint_clear(&creation, &held, &start, &flat_terrain));
+    assert!(endpoint_clear(&creation, &held, &end, &flat_terrain));
+    assert!(!path_clear(&creation, &held, &start, &end, &flat_terrain));
 }
 
 #[test]
@@ -406,23 +379,10 @@ fn wide_plate_can_lower_to_five_centimetres_above_terrain() {
     let held = [true, false, false];
     let start = vec![pose(Vec3::Y * 0.425, Quat::IDENTITY); 3];
     let end = vec![pose(Vec3::Y * 0.175, Quat::IDENTITY); 3];
-    assert!(endpoint_clear(&creation, &held, &end, &[], &flat_terrain));
-    assert!(path_clear(
-        &creation,
-        &held,
-        &start,
-        &end,
-        &[],
-        &flat_terrain
-    ));
+    assert!(endpoint_clear(&creation, &held, &end, &flat_terrain));
+    assert!(path_clear(&creation, &held, &start, &end, &flat_terrain));
     let below = vec![pose(Vec3::Y * 0.17, Quat::IDENTITY); 3];
-    assert!(!endpoint_clear(
-        &creation,
-        &held,
-        &below,
-        &[],
-        &flat_terrain
-    ));
+    assert!(!endpoint_clear(&creation, &held, &below, &flat_terrain));
 }
 
 #[test]
@@ -624,4 +584,318 @@ fn visual_snapshot_contains_only_held_bodies_and_tracks_prescribed_pose() {
     assert!((second.min - first.min).abs_diff_eq(Vec3::Y * 0.125, 1e-5));
     hold.reset();
     assert!(hold.visual_snapshot(&simulation).is_none());
+}
+
+fn exhaustive_pairs(creation: &CompiledCreation, held: &[bool]) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for (a, first) in creation.colliders.iter().enumerate() {
+        if !held[first.compound_index as usize] {
+            continue;
+        }
+        for (b, second) in creation.colliders.iter().enumerate().skip(a + 1) {
+            if !held[second.compound_index as usize]
+                || first.compound_index == second.compound_index
+            {
+                continue;
+            }
+            let pair = [
+                first.compound_index.min(second.compound_index),
+                first.compound_index.max(second.compound_index),
+            ];
+            if creation.collision_suppression.binary_search(&pair).is_err() {
+                pairs.push((a, b));
+            }
+        }
+    }
+    pairs
+}
+
+fn exhaustive_endpoint_clear(
+    creation: &CompiledCreation,
+    held: &[bool],
+    poses: &[GpuTransform],
+) -> bool {
+    exhaustive_pairs(creation, held).into_iter().all(|(a, b)| {
+        let first = &creation.colliders[a];
+        let second = &creation.colliders[b];
+        let Ok(a) = crate::live_weld::geometry(first, poses[first.compound_index as usize]) else {
+            return false;
+        };
+        let Ok(b) = crate::live_weld::geometry(second, poses[second.compound_index as usize])
+        else {
+            return false;
+        };
+        crate::live_weld::penetration(&a, &b) <= 1.0e-4
+    })
+}
+
+fn exhaustive_path_clear(
+    creation: &CompiledCreation,
+    held: &[bool],
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+) -> bool {
+    for (a_index, b_index) in exhaustive_pairs(creation, held) {
+        let a = &creation.colliders[a_index];
+        let b = &creation.colliders[b_index];
+        let a_body = a.compound_index as usize;
+        let b_body = b.compound_index as usize;
+        let relative_translation = (position(end[b_body]) - position(start[b_body]))
+            - (position(end[a_body]) - position(start[a_body]));
+        let rotation_bound = rotation_travel(start[a_body], end[a_body]) * collider_body_radius(a)
+            + rotation_travel(start[b_body], end[b_body]) * collider_body_radius(b);
+        let Ok(initial_a) = crate::live_weld::geometry(a, start[a_body]) else {
+            return false;
+        };
+        let Ok(initial_b) = crate::live_weld::geometry(b, start[b_body]) else {
+            return false;
+        };
+        let overlap = crate::live_weld::penetration(&initial_a, &initial_b);
+        // Parts already tangled into each other may pass through to come apart.
+        if overlap > 1.0e-4 {
+            continue;
+        }
+        let allowed = overlap.max(0.0) + 1.0e-4;
+        let mut intervals = vec![(0.0, 1.0, 0_u8)];
+        let mut evaluations = 0_usize;
+        while let Some((low, high, depth)) = intervals.pop() {
+            // A pair grazing along the whole path would otherwise split every
+            // interval down to the depth limit.
+            evaluations += 1;
+            if evaluations > MAX_PAIR_EVALUATIONS {
+                return false;
+            }
+            let midpoint = (low + high) * 0.5;
+            let Ok(mid_a) =
+                crate::live_weld::geometry(a, pose_at(start[a_body], end[a_body], midpoint))
+            else {
+                return false;
+            };
+            let Ok(mid_b) =
+                crate::live_weld::geometry(b, pose_at(start[b_body], end[b_body], midpoint))
+            else {
+                return false;
+            };
+            if swept_pair_depth(
+                &mid_a,
+                &mid_b,
+                relative_translation,
+                rotation_bound,
+                (high - low) * 0.5,
+                allowed,
+            ) <= allowed
+            {
+                continue;
+            }
+            if crate::live_weld::penetration(&mid_a, &mid_b) > allowed || depth >= 24 {
+                return false;
+            }
+            intervals.push((midpoint, high, depth + 1));
+            intervals.push((low, midpoint, depth + 1));
+        }
+    }
+    true
+}
+
+#[test]
+fn swept_cache_matches_exhaustive_checks_on_deterministic_poses() {
+    let mut creation = creation();
+    creation.colliders[0].local_center = Vec3::new(0.8, 0.1, -0.2);
+    let held = [true; 3];
+    let mut cache = ClearanceCache::new(&creation, &held);
+    // Distinct translations and rotations include separated, crossing and tangled poses.
+    for seed in 0..160_u32 {
+        let value = |n: u32| {
+            let bits = seed
+                .wrapping_mul(747_796_405)
+                .wrapping_add(n.wrapping_mul(2_891_336_453));
+            f32::from(u16::try_from((bits ^ (bits >> 16)) & 0xffff).unwrap()) / 65535.0
+        };
+        let poses = |offset: u32| {
+            (0..3_u32)
+                .map(|body| {
+                    let n = offset + body * 5;
+                    pose(
+                        Vec3::new(value(n) * 4.0 - 2.0, value(n + 1) * 2.0, value(n + 2) * 2.0),
+                        Quat::from_rotation_z(value(n + 3) * 5.0)
+                            * Quat::from_rotation_y(value(n + 4)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let start = poses(0);
+        let end = poses(17);
+        assert_eq!(
+            cache.endpoint_clear(&creation, &end),
+            exhaustive_endpoint_clear(&creation, &held, &end),
+            "endpoint seed {seed}"
+        );
+        assert_eq!(
+            cache.path_clear(&creation, &start, &end),
+            exhaustive_path_clear(&creation, &held, &start, &end),
+            "sweep seed {seed}"
+        );
+    }
+}
+
+#[test]
+fn common_height_interpolation_preserves_the_accepted_arrangement() {
+    let held = [true, true, false];
+    let start = vec![
+        pose(Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY),
+        pose(Vec3::new(1.25, 3.0, 3.0), Quat::from_rotation_y(0.3)),
+        pose(Vec3::splat(9.0), Quat::IDENTITY),
+    ];
+    let end = translated(&start, &held, 0.75);
+    let (next, done) = translated_step(&start, &end, &held, 1.0 / 60.0);
+    assert!(!done);
+    assert_eq!(next[2], start[2]);
+    assert_eq!(next[0].rotation, start[0].rotation);
+    assert_eq!(next[1].rotation, start[1].rotation);
+    assert!(
+        (position(next[1]) - position(next[0]))
+            .abs_diff_eq(position(start[1]) - position(start[0]), 1.0e-6)
+    );
+    assert!(next[0].position[1] > start[0].position[1]);
+}
+
+#[test]
+fn publication_and_restore_replace_cached_geometry_and_reset_translation() {
+    let candidate = linked_candidate();
+    let mut frozen = aligning_freeze(&candidate);
+    frozen.clearance = Some(ClearanceCache::new(&creation(), &[true; 3]));
+    frozen.aligned = true;
+    frozen.translating = true;
+    let prepared = frozen
+        .prepare_with_environment(&candidate, None, &|p| p.0.as_vec3(), &flat_terrain)
+        .unwrap();
+    assert!(!prepared.aligned);
+    assert!(!prepared.translating);
+    let mut cache = prepared.clearance.unwrap();
+    // The replacement has one held body; a stale three-body cache would index past its poses.
+    assert!(cache.endpoint_clear(candidate.creation.as_ref().unwrap(), &prepared.poses));
+    let restored = frozen.restored_for_weld(&candidate);
+    assert!(restored.clearance.is_none());
+    assert!(!restored.aligned);
+    assert!(!restored.translating);
+    frozen.reset();
+    assert!(frozen.clearance.is_none());
+}
+
+#[test]
+fn arrows_during_alignment_still_reject_crossing_parts_and_keep_the_target() {
+    let creation = creation();
+    let start = vec![
+        pose(Vec3::new(-1.0, 2.0, 0.0), Quat::IDENTITY),
+        pose(Vec3::new(1.0, 2.0, 0.0), Quat::IDENTITY),
+        pose(Vec3::splat(50.0), Quat::IDENTITY),
+    ];
+    let end = vec![start[1], start[0], start[2]];
+    let mut frozen = DimensionFreeze {
+        held: vec![true, true, false],
+        poses: start.clone(),
+        waypoints: VecDeque::from([start.clone()]),
+        ..Default::default()
+    };
+    assert!(frozen.plan_height(&creation, &end, &flat_terrain).is_none());
+    assert_eq!(frozen.poses, start);
+    assert_eq!(frozen.waypoints.back(), Some(&start));
+    // Once settled, height motion retains the validated arrangement and still queries terrain.
+    frozen.aligned = true;
+    let raised = translated(&start, &frozen.held, 0.25);
+    assert!(
+        frozen
+            .plan_height(&creation, &raised, &flat_terrain)
+            .is_some()
+    );
+    assert!(
+        frozen
+            .plan_height(&creation, &raised, &|_, _| Some(1.0))
+            .is_none()
+    );
+    assert_eq!(frozen.poses, start);
+}
+
+#[test]
+fn reused_cache_uses_current_poses_after_origin_translation() {
+    let creation = creation();
+    let held = [true, true, false];
+    let mut cache = ClearanceCache::new(&creation, &held);
+    let poses = vec![
+        pose(Vec3::new(-1.0, 2.0, 0.0), Quat::IDENTITY),
+        pose(Vec3::new(1.0, 2.0, 0.0), Quat::IDENTITY),
+        pose(Vec3::splat(50.0), Quat::IDENTITY),
+    ];
+    assert!(cache.endpoint_clear(&creation, &poses));
+    let mut shifted = poses.clone();
+    for p in &mut shifted {
+        p.position[0] += 1000.0;
+        p.position[1] -= 250.0;
+    }
+    assert!(cache.endpoint_clear(&creation, &shifted));
+    shifted[1] = shifted[0];
+    assert!(!cache.endpoint_clear(&creation, &shifted));
+    assert!(cache.endpoint_clear(&creation, &poses));
+}
+
+#[test]
+fn hierarchical_terrain_queries_keep_walls_ceilings_and_new_terrain_obstructing() {
+    let mut creation = creation();
+    let original = creation.colliders[0].clone();
+    creation.colliders.clear();
+    for x in [-0.5, 0.0, 0.5] {
+        let mut collider = original.clone();
+        collider.compound_index = 0;
+        collider.local_center = Vec3::new(x, 0.0, 0.0);
+        creation.colliders.push(collider);
+    }
+    let held = [true, false, false];
+    let cache = ClearanceCache::new(&creation, &held);
+    let start = vec![pose(Vec3::Y * 2.0, Quat::IDENTITY); 3];
+    let end = translated(&start, &held, 0.25);
+    assert!(external_path_clear_cached(
+        &cache,
+        &creation,
+        &start,
+        &end,
+        &flat_terrain
+    ));
+    let ceiling = |center: Vec3, radius: f32| Some(radius + center.y - 2.3);
+    assert!(!external_path_clear_cached(
+        &cache, &creation, &start, &end, &ceiling
+    ));
+    assert!(!external_endpoint_clear_cached(
+        &cache, &creation, &end, &ceiling
+    ));
+    assert!(!external_path_clear_cached(
+        &cache,
+        &creation,
+        &start,
+        &end,
+        &|_, _| None
+    ));
+    // The same cache observes changed terrain immediately.
+    assert!(external_path_clear_cached(
+        &cache,
+        &creation,
+        &start,
+        &end,
+        &flat_terrain
+    ));
+    let mut across = start.clone();
+    across[0].position[0] = 3.0;
+    let wall = |center: Vec3, radius: f32| Some(radius - (center.x - 1.5).abs());
+    assert!(!external_path_clear_cached(
+        &cache, &creation, &start, &across, &wall
+    ));
+}
+
+#[test]
+fn downward_clearance_preserves_clipped_steps_and_rejects_sub_tolerance_progress() {
+    let maximum = 0.25;
+    let clipped = minimum_clear_lift(maximum, |lift| lift >= 0.123).unwrap();
+    assert!((clipped - 0.123).abs() < 2.0e-5);
+    let already_at_floor = minimum_clear_lift(maximum, |lift| lift >= maximum - 5.0e-5).unwrap();
+    assert!(already_at_floor >= maximum - 1.0e-4);
+    assert!(minimum_clear_lift(maximum, |_| false).is_none());
 }

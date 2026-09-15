@@ -663,6 +663,34 @@ fn a_box_dropped_on_a_resting_box_comes_to_rest_on_top_of_it() {
 }
 
 #[test]
+fn a_held_box_stays_put_under_a_dropped_box_and_falls_once_released() {
+    let creation = loose_cubes();
+    let state = MachineState {
+        poses: vec![pose(DVec3::Y * 2.0), pose(DVec3::Y * 3.2)],
+        ..MachineState::at_rest(&creation)
+    };
+    let mut world = World::new(creation, state);
+    let held = world.machine.snapshot().state.poses.clone();
+    world.machine.hold(&[true, false], &held).unwrap();
+    for tick in 1..=120 {
+        let state = world.tick(GRAVITY);
+        let drift = state.poses[0].position.distance(held[0].position);
+        assert!(drift < 1e-6, "tick {tick}: the held box moved {drift} m");
+        let gap = state.poses[1].position.y - state.poses[0].position.y;
+        assert!(gap > 0.99, "tick {tick}: boxes {gap} apart");
+    }
+    let state = &world.machine.snapshot().state;
+    assert!((state.poses[1].position.y - 3.0).abs() < 0.01, "{state:?}");
+
+    world.machine.hold(&[false, false], &held).unwrap();
+    for _ in 0..30 {
+        world.tick(GRAVITY);
+    }
+    let fallen = 2.0 - world.machine.snapshot().state.poses[0].position.y;
+    assert!(fallen > 0.5, "the released box fell only {fallen} m");
+}
+
+#[test]
 fn a_sliding_box_pushes_a_floating_box_and_keeps_momentum() {
     let creation = loose_cubes();
     let x = |body: usize| creation.dynamics.body_velocities[body].start;
@@ -985,4 +1013,42 @@ fn invalid_input_is_refused_without_changing_state() {
         Err(PhysicsError::InvalidCommand)
     );
     assert_eq!(world.machine.snapshot(), &before);
+}
+
+#[test]
+fn a_two_wheeled_cart_tips_its_tail_onto_the_floor() {
+    // The builder's cart balances its chassis, tail behind the axle, on two
+    // wheels hung from double wishbones closed by loaded suspension struts.
+    let (creation, state) = captured(include_str!(
+        "../../../mechanic-bench/tests/fixtures/builder-world/generations/20/world.ron"
+    ));
+    let height = |creation: &CompiledCreation, state: &MachineState| {
+        let (mass, moment) = state.poses.iter().zip(&creation.dynamics.inertias).fold(
+            (0.0, 0.0),
+            |(mass, moment), (pose, inertia)| {
+                let center = pose.position + pose.rotation * inertia.center.as_dvec3();
+                let body = f64::from(inertia.mass);
+                (mass + body, moment + body * center.y)
+            },
+        );
+        moment / mass
+    };
+    let start = height(&creation, &state);
+    let mut world = World::new(creation, state);
+    for _ in 0..300 {
+        world.tick(GRAVITY);
+    }
+    let settled = height(world.creation(), &world.machine.snapshot().state);
+    assert!(
+        settled < start - 0.1,
+        "the tail stayed up: centre of mass {settled} from {start}"
+    );
+    for tick in 301..=600 {
+        let state = world.tick(GRAVITY);
+        let current = height(world.creation(), &state);
+        assert!(
+            current < settled + 0.005,
+            "tick {tick}: the tail climbed to {current} from {settled}"
+        );
+    }
 }

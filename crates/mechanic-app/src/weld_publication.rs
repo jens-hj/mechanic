@@ -316,6 +316,7 @@ pub(crate) fn maintain(
                 let device = device.clone();
                 let queue = queue.clone();
                 let pipelines = Arc::clone(&publication.pipelines);
+                let generation = history.next_revision.saturating_add(1);
                 publication.placement = Some(Publication {
                     intent,
                     foundation: world.foundation_revision(),
@@ -323,6 +324,7 @@ pub(crate) fn maintain(
                     task: Some(AsyncComputeTaskPool::get().spawn(async move {
                         crate::prepare_world_physics(
                             staged,
+                            generation,
                             suspension_sockets,
                             anchored.unwrap_or_default(),
                             config,

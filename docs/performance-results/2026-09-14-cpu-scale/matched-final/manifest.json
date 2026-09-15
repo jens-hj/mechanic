@@ -1,0 +1,143 @@
+{
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "warmup_ticks": 600,
+  "measured_ticks": 3600,
+  "repeats": 2,
+  "binaries": {
+    "baseline": {
+      "path": "/private/tmp/mechanic-cpu-baseline",
+      "sha256": "385bb4e3776a832379525b256f3ae3711427dfd536f2397c11f4d2e78698f54b"
+    },
+    "candidate": {
+      "path": "/private/tmp/mechanic-cpu-candidate-local",
+      "sha256": "d105ed6832906f20d7793d71d571b20fbbfbb764f4f4ca5fd7cd960f948ae29a"
+    }
+  },
+  "runs": [
+    {
+      "label": "10x-separated-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789400981.05372,
+      "elapsed_seconds": 745.9180691242218,
+      "exit_code": 0,
+      "copied_from": "/Users/jens/repos/mechanic/docs/performance-results/2026-09-14-cpu-scale/matched-pre-local-rows/10x-separated-baseline-1.jsonl",
+      "note": "Historical baseline; compilation may separate this run from candidate."
+    },
+    {
+      "label": "10x-separated-candidate-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-local",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789402414.689518,
+      "elapsed_seconds": 161.1872022151947,
+      "exit_code": 0
+    },
+    {
+      "label": "10x-separated-candidate-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-local",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789402575.8770828,
+      "elapsed_seconds": 160.87739634513855,
+      "exit_code": 0
+    },
+    {
+      "label": "10x-separated-baseline-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789402736.754936,
+      "elapsed_seconds": 748.1000778675079,
+      "exit_code": 0
+    },
+    {
+      "label": "10x-connected-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600",
+        "--connected"
+      ],
+      "started_unix": 1789403484.8555012,
+      "elapsed_seconds": 94.28401374816895,
+      "exit_code": 0
+    },
+    {
+      "label": "10x-connected-candidate-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-local",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600",
+        "--connected"
+      ],
+      "started_unix": 1789403579.13989,
+      "elapsed_seconds": 14.419134855270386,
+      "exit_code": 0
+    },
+    {
+      "label": "10x-connected-candidate-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-local",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600",
+        "--connected"
+      ],
+      "started_unix": 1789403593.559365,
+      "elapsed_seconds": 14.358965158462524,
+      "exit_code": 0
+    }
+  ]
+}

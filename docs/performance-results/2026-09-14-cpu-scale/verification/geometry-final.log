@@ -1,0 +1,42 @@
+    Blocking waiting for file lock on build directory
+   Compiling mechanic-core v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-core)
+    Finished `test` profile [optimized + debuginfo] target(s) in 27.51s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_core-8ce2a69c2bb50ef3)
+
+running 33 tests
+test contact_geometry::envelope::tests::envelope_arithmetic_overflow_is_an_error_instead_of_a_small_bound ... ok
+test contact_geometry::envelope::tests::finite_prism_excludes_deep_geometry_beyond_a_terrain_edge ... ok
+test contact_geometry::pair::tests::crossed_edges_meet_at_one_point_on_their_cross_axis ... ok
+test contact_geometry::pair::tests::a_slightly_tilted_box_over_a_ledge_rests_on_a_face_not_a_crossed_edge ... ok
+test contact_geometry::envelope::tests::ill_conditioned_dual_proposals_cannot_underestimate_a_feasible_point ... ok
+test contact_geometry::envelope::tests::certified_radius_detects_unbounded_planes_even_with_finite_vertices ... ok
+test contact_geometry::envelope::tests::envelope_encloses_vertex_and_plane_representation_disagreement ... ok
+test contact_geometry::envelope::tests::envelope_bounds_analytic_box_depth_and_motion_reach_outward ... ok
+test contact_geometry::envelope::tests::below_surface_separation_requires_the_whole_envelope_to_miss ... ok
+test contact_geometry::pair::tests::penetration_bound_certifies_clear_paths_and_encloses_overlap ... ok
+test contact_geometry::pair::tests::resting_boxes_are_separated_by_one_of_their_touching_faces ... ok
+test contact_geometry::pair::tests::solids_moving_together_certify_the_whole_interval_across_a_tiny_gap ... ok
+test contact_geometry::quadratic::tests::departing_endpoints_do_not_hide_an_intermediate_acceleration_excursion ... ok
+test contact_geometry::quadratic::tests::quadratic_certificate_stops_before_a_known_accelerated_impact ... ok
+test contact_geometry::quadratic::tests::signed_rigid_velocities_preserve_cancellation_at_the_support_feature ... ok
+test contact_geometry::quadratic::tests::tangential_translation_does_not_consume_normal_clearance ... ok
+test contact_geometry::tests::activation_vertex::a_near_parallel_wheel_corner_keeps_its_actual_finite_vertex_contact ... ok
+test contact_geometry::tests::activation_vertex::an_empty_inner_search_still_activates_finite_vertices_inside_the_full_bound ... ok
+test contact_geometry::tests::activation_vertex::vertex_activation_requires_an_actual_corner_inside_the_finite_triangle ... ok
+test contact_geometry::tests::conservative_sweep_matches_exact_translation_and_reports_exhaustion ... ok
+test contact_geometry::tests::continuous_translation_finds_fast_crossing_even_when_both_endpoints_are_clear ... ok
+test contact_geometry::tests::convex_plane_offsets_and_local_box_rotation_give_equivalent_queries ... ok
+test contact_geometry::tests::activation_vertex::numerical_zero_vertex_overlap_survives_an_empty_rounded_face_query ... ok
+test contact_geometry::tests::invalid_triangle_and_motion_are_errors_instead_of_missing_contacts ... ok
+test contact_geometry::tests::near_contacts_keep_true_surface_points_and_do_not_bridge_finite_edges ... ok
+test contact_geometry::tests::finite_edges_holes_and_below_surface_separation_produce_no_contact ... ok
+test contact_geometry::tests::near_parallel_wheel_faces_keep_activation_points_inside_the_gap_bound ... ok
+test contact_geometry::tests::oblique_contacts_have_points_on_both_actual_surfaces ... ok
+test contact_geometry::tests::oblique_proximity_extrusion_preserves_the_actual_convex_silhouette ... ok
+test contact_geometry::tests::resting_box_retains_four_finite_supports_with_measured_depth ... ok
+test contact_geometry::tests::rotational_sweep_finds_an_impact_hidden_by_identical_endpoint_poses ... ok
+test contact_geometry::tests::split_recovery_retains_a_tilted_box_vertex_without_changing_its_contact_manifold ... ok
+test contact_geometry::envelope::tests::envelopes_enclose_all_oblique_contact_depths_and_rebased_queries ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.00s
+

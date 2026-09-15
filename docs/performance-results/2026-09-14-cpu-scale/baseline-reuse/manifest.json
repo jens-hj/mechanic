@@ -1,0 +1,85 @@
+{
+  "binaries": {
+    "baseline": {
+      "path": "/private/tmp/mechanic-cpu-baseline",
+      "sha256": "385bb4e3776a832379525b256f3ae3711427dfd536f2397c11f4d2e78698f54b"
+    }
+  },
+  "warmup_ticks": 600,
+  "measured_ticks": 3600,
+  "runs": [
+    {
+      "label": "1x-separated-baseline-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789398681.223619,
+      "elapsed_seconds": 31.295297145843506,
+      "exit_code": 0,
+      "copied_from": "/Users/jens/repos/mechanic/docs/performance-results/2026-09-14-cpu-scale/matched/1x-separated-baseline-2.jsonl"
+    },
+    {
+      "label": "2x-separated-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789398820.120366,
+      "elapsed_seconds": 68.24079585075378,
+      "exit_code": 0,
+      "copied_from": "/Users/jens/repos/mechanic/docs/performance-results/2026-09-14-cpu-scale/matched/2x-separated-baseline-1.jsonl"
+    },
+    {
+      "label": "10x-separated-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789400981.05372,
+      "elapsed_seconds": 745.9180691242218,
+      "exit_code": 0,
+      "copied_from": "/Users/jens/repos/mechanic/docs/performance-results/2026-09-14-cpu-scale/matched-final/10x-separated-baseline-1.jsonl",
+      "note": "Historical baseline; compilation may separate this run from candidate."
+    },
+    {
+      "label": "10x-separated-baseline-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789402736.754936,
+      "elapsed_seconds": 748.1000778675079,
+      "exit_code": 0,
+      "copied_from": "/Users/jens/repos/mechanic/docs/performance-results/2026-09-14-cpu-scale/matched-final/10x-separated-baseline-2.jsonl"
+    }
+  ]
+}

@@ -1,0 +1,910 @@
+--- a/crates/mechanic-physics/src/terrain_contacts.rs
++++ b/crates/mechanic-physics/src/terrain_contacts.rs
+@@ -191,6 +191,7 @@
+     collider_trees: Vec<broadphase::Tree>,
+     body_tree: broadphase::Tree,
+     pair_scratch: Mutex<PairScratch>,
++    sweep_scratch: Mutex<sweep::SweepScratch>,
+     cache: Mutex<PoseCache>,
+ }
+ 
+@@ -286,6 +287,7 @@
+             collider_trees,
+             body_tree,
+             pair_scratch: Mutex::new(PairScratch::default()),
++            sweep_scratch: Mutex::new(sweep::SweepScratch::default()),
+             cache: Mutex::new(PoseCache::default()),
+         };
+         let flush = geometry.built_flush(creation)?;
+@@ -374,8 +376,10 @@
+             body_candidates,
+             trees,
+             stack,
+-            candidates,
++            pairs,
++            pair_stack,
+             node_pair_tests,
++            ..
+         } = &mut *scratch;
+         body_bounds.clear();
+         body_bounds.extend(self.body_colliders.iter().map(|rows| {
+@@ -385,7 +389,7 @@
+                 })
+         }));
+         self.body_tree.refit(body_bounds, body_nodes);
+-        let mut pairs = Vec::new();
++        pairs.clear();
+         *node_pair_tests = 0;
+         trees.resize_with(self.bodies, Vec::new);
+         for (tree, output) in self.collider_trees.iter().zip(trees.iter_mut()) {
+@@ -407,25 +411,17 @@
+                 {
+                     continue;
+                 }
+-                for &first in &self.body_colliders[a] {
+-                    if !overlaps(bounds[first], body_bounds[b]) {
+-                        continue;
+-                    }
+-                    candidates.clear();
+-                    *node_pair_tests +=
+-                        self.collider_trees[b].query(&trees[b], bounds[first], stack, candidates);
+-                    for &second in candidates.iter() {
+-                        pairs.push([first.min(second), first.max(second)]);
+-                    }
+-                }
++                *node_pair_tests += self.collider_trees[a].pairs(
++                    &trees[a],
++                    &self.collider_trees[b],
++                    &trees[b],
++                    pair_stack,
++                    pairs,
++                );
+             }
+         }
+         pairs.sort_unstable();
+-        CandidatePairs {
+-            pairs,
+-            node_pair_tests: *node_pair_tests,
+-            _scratch: scratch,
+-        }
++        CandidatePairs { scratch }
+     }
+ }
+ 
+@@ -1217,19 +1213,6 @@
+ // Existing finite intersections retain their established four-corner rule.
+ // Extrusion is only for a pair without an intersection, not a perturbation of
+ // every supporting manifold. Out-of-tolerance/invalid results still fail.
+-fn activation_points(
+-    shape: &ContactPolytope,
+-    triangle: [DVec3; 3],
+-    window: f64,
+-) -> Result<Vec<mechanic_core::TriangleContactPoint>, PhysicsError> {
+-    activation_points_with_scratch(
+-        shape,
+-        triangle,
+-        window,
+-        &mut mechanic_core::TriangleClipScratch::default(),
+-    )
+-}
+-
+ fn activation_points_with_scratch(
+     shape: &ContactPolytope,
+     triangle: [DVec3; 3],
+@@ -1330,14 +1313,12 @@
+ }
+ 
+ struct CandidatePairs<'a> {
+-    pairs: Vec<[usize; 2]>,
+-    node_pair_tests: usize,
+-    _scratch: std::sync::MutexGuard<'a, PairScratch>,
++    scratch: std::sync::MutexGuard<'a, PairScratch>,
+ }
+ impl std::ops::Deref for CandidatePairs<'_> {
+     type Target = [[usize; 2]];
+     fn deref(&self) -> &Self::Target {
+-        &self.pairs
++        &self.scratch.pairs
+     }
+ }
+ 
+@@ -1350,6 +1331,8 @@
+     stack: Vec<usize>,
+     candidates: Vec<usize>,
+     node_pair_tests: usize,
++    pairs: Vec<[usize; 2]>,
++    pair_stack: Vec<[usize; 2]>,
+ }
+ 
+ // Every vertex moves at most its integrated point-speed bound. Intersect that
+--- a/crates/mechanic-physics/src/terrain_contacts/broadphase.rs
++++ b/crates/mechanic-physics/src/terrain_contacts/broadphase.rs
+@@ -8,8 +8,15 @@
+     nodes: Vec<Node>,
+ }
+ struct Node {
+-    children: Option<[usize; 2]>,
++    // Equal children mark a leaf. Internal nodes store their descendant count
++    // in `item`; only leaves need a collider/body row. Keep each node compact.
++    children: [usize; 2],
+     item: usize,
++}
++impl Node {
++    fn children(&self) -> Option<[usize; 2]> {
++        (self.children[0] != self.children[1]).then_some(self.children)
++    }
+ }
+ impl Tree {
+     pub(super) fn new(mut items: Vec<usize>, bounds: &[Bounds]) -> Self {
+@@ -22,7 +29,7 @@
+     fn build(&mut self, items: &mut [usize], bounds: &[Bounds]) -> usize {
+         let index = self.nodes.len();
+         self.nodes.push(Node {
+-            children: None,
++            children: [0; 2],
+             item: items[0],
+         });
+         if items.len() > 1 {
+@@ -46,20 +53,59 @@
+             });
+             let (a, b) = items.split_at_mut(items.len() / 2);
+             let children = [self.build(a, bounds), self.build(b, bounds)];
+-            self.nodes[index].children = Some(children);
++            self.nodes[index].children = children;
++            self.nodes[index].item = items.len();
+         }
+         index
+     }
+     pub(super) fn refit(&self, bounds: &[Bounds], output: &mut Vec<Bounds>) {
+         output.resize(self.nodes.len(), [DVec3::ZERO; 2]);
+         for (index, node) in self.nodes.iter().enumerate().rev() {
+-            output[index] = node.children.map_or(bounds[node.item], |[a, b]| {
++            output[index] = if let Some([a, b]) = node.children() {
+                 [
+                     output[a][0].min(output[b][0]),
+                     output[a][1].max(output[b][1]),
+                 ]
+-            });
++            } else {
++                bounds[node.item]
++            };
+         }
++    }
++    /// Traverse overlapping nodes of both trees; ties split the first tree.
++    pub(super) fn pairs(
++        &self,
++        bounds: &[Bounds],
++        other: &Self,
++        other_bounds: &[Bounds],
++        stack: &mut Vec<[usize; 2]>,
++        output: &mut Vec<[usize; 2]>,
++    ) -> usize {
++        stack.clear();
++        if !self.nodes.is_empty() && !other.nodes.is_empty() {
++            stack.push([0, 0]);
++        }
++        let mut tests = 0;
++        while let Some([a, b]) = stack.pop() {
++            tests += 1;
++            if !overlaps(bounds[a], other_bounds[b]) {
++                continue;
++            }
++            let first = &self.nodes[a];
++            let second = &other.nodes[b];
++            match (first.children(), second.children()) {
++                (None, None) => {
++                    output.push([first.item.min(second.item), first.item.max(second.item)]);
++                }
++                (Some([left, right]), _)
++                    if second.children().is_none() || first.item >= second.item =>
++                {
++                    stack.extend([[right, b], [left, b]]);
++                }
++                (_, Some([left, right])) => stack.extend([[a, right], [a, left]]),
++                _ => unreachable!("a non-leaf first node was handled above"),
++            }
++        }
++        tests
+     }
+     pub(super) fn query(
+         &self,
+@@ -79,7 +125,7 @@
+                 continue;
+             }
+             let node = &self.nodes[index];
+-            if let Some([a, b]) = node.children {
++            if let Some([a, b]) = node.children() {
+                 stack.extend([b, a]);
+             } else {
+                 output.push(node.item);
+@@ -88,3 +134,46 @@
+         tests
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn paired_trees_match_exhaustive_overlaps_for_large_uneven_chassis() {
++        let bounds = (0..2049)
++            .map(|i| {
++                let x = f64::from(i % 1024) * 0.25;
++                let y = f64::from(i / 1024) * 0.2;
++                [DVec3::new(x, y, 0.0), DVec3::new(x + 0.25, y + 0.25, 0.25)]
++            })
++            .collect::<Vec<_>>();
++        let first = Tree::new((0..1024).collect(), &bounds);
++        let mut stack = Vec::new();
++        let mut pairs = Vec::new();
++        for last in [1024, 1025, 2049] {
++            let second = Tree::new((1024..last).collect(), &bounds);
++            for travel in [0.0, 0.01, 0.8, 5.0] {
++                let swept = bounds
++                    .iter()
++                    .map(|[lo, hi]| [*lo - DVec3::splat(travel), *hi + DVec3::splat(travel)])
++                    .collect::<Vec<_>>();
++                let mut a = Vec::new();
++                let mut b = Vec::new();
++                first.refit(&swept, &mut a);
++                second.refit(&swept, &mut b);
++                pairs.clear();
++                first.pairs(&a, &second, &b, &mut stack, &mut pairs);
++                pairs.sort_unstable();
++                let expected = (0..1024)
++                    .flat_map(|a| {
++                        let swept = &swept;
++                        (1024..last)
++                            .filter_map(move |b| overlaps(swept[a], swept[b]).then_some([a, b]))
++                    })
++                    .collect::<Vec<_>>();
++                assert_eq!(pairs, expected);
++            }
++        }
++    }
++}
+--- a/crates/mechanic-physics/src/terrain_contacts/sweep.rs
++++ b/crates/mechanic-physics/src/terrain_contacts/sweep.rs
+@@ -217,6 +217,22 @@
+                     query.maximum_point_displacement.max(displacement);
+             }
+         }
++        // Lock order is shared with contact queries: pose cache, sweep scratch,
++        // then pair scratch. Velocities belong to this path, never the pose cache.
++        let mut cache = machine
++            .cache
++            .lock()
++            .map_err(|_| PhysicsError::InvalidCollision)?;
++        cache.update(machine, motion.initial_poses())?;
++        let mut scratch = machine
++            .sweep_scratch
++            .lock()
++            .map_err(|_| PhysicsError::InvalidCollision)?;
++        let SweepScratch {
++            shapes: [first_shape, second_shape],
++            clipping,
++        } = &mut *scratch;
++        let initial_velocities = std::sync::OnceLock::new();
+         let mut earliest: Option<TerrainSweepHit> = None;
+         for (collider_row, collider) in machine.colliders.iter().enumerate() {
+             if !collider.moving {
+@@ -279,14 +295,26 @@
+                     query.triangle_candidates += 1;
+                     let end = earliest.map_or(1.0, |hit| hit.fraction);
+                     if let Some(translation) = translation {
+-                        let pose = motion.initial_poses()[collider.body];
+-                        query.shape_transformations += 1;
+-                        let shape = collider
+-                            .local
+-                            .transformed(pose.position, pose.rotation)
+-                            .map_err(|_| PhysicsError::InvalidCollision)?;
+-                        if initial_support(&shape, triangle, exclude_initial_supports, &mut query)?
+-                        {
++                        let shape = if reuse_start() {
++                            starting_shape(
++                                &cache,
++                                machine,
++                                motion.initial_poses(),
++                                collider_row,
++                                &mut query,
++                            )?
++                        } else {
++                            query.shape_transformations += 1;
++                            let pose = motion.initial_poses()[collider.body];
++                            transform(&collider.local, pose.position, pose.rotation, second_shape)?
++                        };
++                        if initial_support(
++                            shape,
++                            triangle,
++                            exclude_initial_supports,
++                            &mut query,
++                            clipping,
++                        )? {
+                             continue;
+                         }
+                         query.linear_interval_evaluations += 1;
+@@ -296,9 +324,12 @@
+                             && fraction <= end
+                         {
+                             query.shape_transformations += 1;
+-                            let at_impact = shape
+-                                .transformed(translation * fraction, DQuat::IDENTITY)
+-                                .map_err(|_| PhysicsError::InvalidCollision)?;
++                            let at_impact = transform(
++                                shape,
++                                translation * fraction,
++                                DQuat::IDENTITY,
++                                first_shape,
++                            )?;
+                             let separation = at_impact
+                                 .triangle_separation(triangle)
+                                 .map_err(|_| PhysicsError::InvalidCollision)?;
+@@ -319,20 +350,28 @@
+                     }
+                     let mut fraction = 0.0;
+                     for evaluation in 1..=maximum_evaluations_per_triangle {
+-                        let poses = motion.poses_at(fraction)?;
+-                        query.pose_evaluations += 1;
++                        let sampled;
++                        let poses = if fraction == 0.0 && reuse_start() {
++                            motion.initial_poses()
++                        } else {
++                            sampled = motion.poses_at(fraction)?;
++                            query.pose_evaluations += 1;
++                            &sampled
++                        };
+                         let pose = poses[collider.body];
+-                        query.shape_transformations += 1;
+-                        let shape = collider
+-                            .local
+-                            .transformed(pose.position, pose.rotation)
+-                            .map_err(|_| PhysicsError::InvalidCollision)?;
++                        let shape = if fraction == 0.0 && reuse_start() {
++                            starting_shape(&cache, machine, poses, collider_row, &mut query)?
++                        } else {
++                            query.shape_transformations += 1;
++                            transform(&collider.local, pose.position, pose.rotation, first_shape)?
++                        };
+                         if evaluation == 1
+                             && initial_support(
+-                                &shape,
++                                shape,
+                                 triangle,
+                                 exclude_initial_supports,
+                                 &mut query,
++                                clipping,
+                             )?
+                         {
+                             break;
+@@ -359,8 +398,17 @@
+                         if speed == 0.0 || separation > speed * (end - fraction) {
+                             break;
+                         }
+-                        let velocities = motion.velocities_at_poses(&poses);
+-                        query.velocity_evaluations += 1;
++                        let sampled_velocities;
++                        let velocities = if fraction == 0.0 && reuse_start() {
++                            initial_velocities.get_or_init(|| {
++                                query.velocity_evaluations += 1;
++                                motion.velocities_at_poses(motion.initial_poses())
++                            })
++                        } else {
++                            query.velocity_evaluations += 1;
++                            sampled_velocities = motion.velocities_at_poses(poses);
++                            &sampled_velocities
++                        };
+                         query.quadratic_interval_evaluations += 1;
+                         let prefix = shape
+                             .triangle_motion_prefix(
+@@ -402,7 +450,7 @@
+             bounds.push(corners);
+         }
+         let candidates = machine.candidate_pairs(&bounds);
+-        query.hierarchy_node_pair_tests += candidates.node_pair_tests;
++        query.hierarchy_node_pair_tests += candidates.scratch.node_pair_tests;
+         for &[first, second] in candidates.iter() {
+             query.collider_pair_candidates += 1;
+             let colliders = [&machine.colliders[first], &machine.colliders[second]];
+@@ -430,24 +478,38 @@
+             let mut fraction = 0.0;
+             for evaluation in 1..=maximum_evaluations_per_triangle {
+                 let sampled;
+-                let poses: &[BodyPose] = if evaluation == 1 {
++                let poses: &[BodyPose] = if evaluation == 1 && reuse_start() {
+                     motion.initial_poses()
+                 } else {
+                     sampled = motion.poses_at(fraction)?;
+                     query.pose_evaluations += 1;
+                     &sampled
+                 };
+-                query.shape_transformations += 2;
+-                let [own, other] = colliders.map(|collider| {
+-                    let pose = poses[collider.body];
+-                    collider
+-                        .local
+-                        .transformed(pose.position, pose.rotation)
+-                        .map_err(|_| PhysicsError::InvalidCollision)
+-                });
+-                let (own, other) = (own?, other?);
++                let (own, other) = if fraction == 0.0 && reuse_start() {
++                    (
++                        starting_shape(&cache, machine, poses, first, &mut query)?,
++                        starting_shape(&cache, machine, poses, second, &mut query)?,
++                    )
++                } else {
++                    query.shape_transformations += 2;
++                    let [own_pose, other_pose] = colliders.map(|collider| poses[collider.body]);
++                    (
++                        transform(
++                            &colliders[0].local,
++                            own_pose.position,
++                            own_pose.rotation,
++                            first_shape,
++                        )?,
++                        transform(
++                            &colliders[1].local,
++                            other_pose.position,
++                            other_pose.rotation,
++                            second_shape,
++                        )?,
++                    )
++                };
+                 let separation = own
+-                    .convex_separation(&other)
++                    .convex_separation(other)
+                     .map_err(|_| PhysicsError::InvalidCollision)?
+                     .separation;
+                 query.separation_evaluations += 1;
+@@ -482,8 +544,17 @@
+                 // Bodies moving together keep their gap even when both move fast,
+                 // so certify the prefix from relative motion before falling back
+                 // to dividing the gap by both absolute speeds.
+-                let velocities = motion.velocities_at_poses(poses);
+-                query.velocity_evaluations += 1;
++                let sampled_velocities;
++                let velocities = if fraction == 0.0 && reuse_start() {
++                    initial_velocities.get_or_init(|| {
++                        query.velocity_evaluations += 1;
++                        motion.velocities_at_poses(motion.initial_poses())
++                    })
++                } else {
++                    query.velocity_evaluations += 1;
++                    sampled_velocities = motion.velocities_at_poses(poses);
++                    &sampled_velocities
++                };
+                 query.quadratic_interval_evaluations += 1;
+                 let [own_body, other_body] = colliders.map(|collider| collider.body);
+                 let acceleration = colliders
+@@ -496,7 +567,7 @@
+                     .convex_motion_prefix(
+                         poses[own_body].position,
+                         velocities[own_body],
+-                        &other,
++                        other,
+                         poses[other_body].position,
+                         velocities[other_body],
+                         acceleration,
+@@ -537,16 +608,73 @@
+     triangle: [DVec3; 3],
+     exclude: bool,
+     query: &mut TerrainSweepQuery,
++    clipping: &mut mechanic_core::TriangleClipScratch,
+ ) -> Result<bool, PhysicsError> {
+     if !exclude {
+         return Ok(false);
+     }
+     query.initial_contact_evaluations += 1;
+-    let supported =
+-        !super::activation_points(shape, triangle, CONTACT_ACTIVATION_DISTANCE)?.is_empty();
++    let supported = !super::activation_points_with_scratch(
++        shape,
++        triangle,
++        CONTACT_ACTIVATION_DISTANCE,
++        clipping,
++    )?
++    .is_empty();
+     query.supported_pairs += usize::from(supported);
+     Ok(supported)
+ }
+ 
++#[derive(Default)]
++pub(super) struct SweepScratch {
++    shapes: [Option<ContactPolytope>; 2],
++    clipping: mechanic_core::TriangleClipScratch,
++}
++
++fn transform<'a>(
++    local: &ContactPolytope,
++    position: DVec3,
++    rotation: DQuat,
++    buffer: &'a mut Option<ContactPolytope>,
++) -> Result<&'a ContactPolytope, PhysicsError> {
++    let shape = buffer.get_or_insert_with(|| local.clone());
++    local
++        .transformed_into(position, rotation, shape)
++        .map_err(|_| PhysicsError::InvalidCollision)?;
++    Ok(shape)
++}
++
++fn starting_shape<'a>(
++    cache: &'a super::PoseCache,
++    machine: &MachineCollisionGeometry,
++    poses: &[BodyPose],
++    row: usize,
++    query: &mut TerrainSweepQuery,
++) -> Result<&'a ContactPolytope, PhysicsError> {
++    if cache.shapes[row].get().is_some() {
++        query.shape_cache_hits += 1;
++    } else {
++        query.shape_transformations += 1;
++    }
++    cache.shape(machine, poses, row)
++}
++
++// The uncached test path reconstructs and transforms each evaluation, as the
++// pre-reuse sweep did. This switch is absent from production builds.
++#[cfg(test)]
++std::thread_local! {
++    static REUSE_START: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
++}
++fn reuse_start() -> bool {
++    #[cfg(test)]
++    {
++        REUSE_START.get()
++    }
++    #[cfg(not(test))]
++    {
++        true
++    }
++}
++
+ #[cfg(test)]
+ mod tests;
+--- a/crates/mechanic-physics/src/terrain_contacts/sweep/tests.rs
++++ b/crates/mechanic-physics/src/terrain_contacts/sweep/tests.rs
+@@ -67,7 +67,7 @@
+         );
+     }
+     let query = scene
+-        .sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
+         .unwrap();
+     let TerrainSweepOutcome::Impact(hit) = query.outcome else {
+         panic!("articulated path must hit floor: {:?}", query.outcome);
+@@ -75,13 +75,13 @@
+     let angle = (1.0 / 2.0_f64.hypot(0.125)).asin() - (0.125_f64 / 2.0).atan();
+     assert!((hit.fraction - angle / std::f64::consts::TAU).abs() < 1e-8);
+     assert!(query.pose_evaluations > 2);
+-    assert_eq!(query.pose_evaluations, query.separation_evaluations);
++    assert!(query.pose_evaluations < query.separation_evaluations);
+     assert_eq!(
+         query.linear_interval_evaluations, 0,
+         "full rotations must use the rotational path"
+     );
+     let exhausted = scene
+-        .sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 1)
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 1)
+         .unwrap();
+     assert!(matches!(
+         exhausted.outcome,
+@@ -109,14 +109,14 @@
+         .publish(1, &[terrain([TerrainMaterial::Rock; 2])], &[])
+         .unwrap();
+     let query = scene
+-        .sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
+         .unwrap();
+     let TerrainSweepOutcome::Impact(hit) = query.outcome else {
+         panic!("fast translation must hit floor");
+     };
+     assert!((hit.fraction - 0.475).abs() < 1e-12);
+     let bounded = scene
+-        .sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 1)
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 1)
+         .unwrap();
+     assert_eq!(bounded.outcome, query.outcome);
+     assert_eq!(bounded.pose_evaluations, 0);
+@@ -126,7 +126,7 @@
+     let miss = MachineMotion::new(&creation, 7, &initial, &displacement).unwrap();
+     assert!(matches!(
+         scene
+-            .sweep(&geometry, &miss, DVec3::ZERO, 1e-9, 128)
++            .checked_sweep(&geometry, &miss, DVec3::ZERO, 1e-9, 128)
+             .unwrap()
+             .outcome,
+         TerrainSweepOutcome::Clear
+@@ -145,12 +145,12 @@
+     let wrong = MachineMotion::new(&creation, 9, &initial, &displacement).unwrap();
+     assert!(
+         scene
+-            .sweep(&geometry, &wrong, DVec3::ZERO, 1e-9, 128)
++            .checked_sweep(&geometry, &wrong, DVec3::ZERO, 1e-9, 128)
+             .is_err()
+     );
+     let motion = MachineMotion::new(&creation, 7, &initial, &displacement).unwrap();
+     let expected = scene
+-        .sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
+         .unwrap();
+     let shift = DVec3::new(1e6, 2e6, -3e6);
+     let updated = Arc::make_mut(&mut chunk);
+@@ -160,7 +160,9 @@
+     updated.triangle_bvh.bounds = updated.bounds;
+     updated.triangle_bvh.nodes[0].bounds = updated.bounds;
+     scene.publish(2, &[chunk], &[]).unwrap();
+-    let rebased = scene.sweep(&geometry, &motion, shift, 1e-9, 128).unwrap();
++    let rebased = scene
++        .checked_sweep(&geometry, &motion, shift, 1e-9, 128)
++        .unwrap();
+     assert_eq!(rebased.outcome, expected.outcome);
+     assert_eq!(rebased.terrain_generation, 2);
+ }
+@@ -184,7 +186,7 @@
+             .is_empty()
+     );
+     let query = scene
+-        .sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 1)
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 1)
+         .unwrap();
+     assert_eq!(query.outcome, TerrainSweepOutcome::Clear);
+     assert_eq!(query.linear_interval_evaluations, 2);
+@@ -208,14 +210,190 @@
+         .publish(1, &[terrain([TerrainMaterial::Rock; 2])], &[])
+         .unwrap();
+     let query = scene
+-        .sweep(&geometry, &motion, DVec3::ZERO, 1e-12, 128)
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-12, 128)
+         .unwrap();
+     assert_eq!(query.outcome, TerrainSweepOutcome::Clear);
+     assert!(query.quadratic_interval_evaluations > 0);
+-    assert_eq!(
+-        query.velocity_evaluations,
+-        query.quadratic_interval_evaluations
+-    );
++    assert!(query.velocity_evaluations < query.quadratic_interval_evaluations);
+     assert_eq!(query.linear_interval_evaluations, 0);
+     assert!(query.separation_evaluations < 32);
+ }
++
++#[test]
++fn reused_starting_geometry_preserves_impacts_across_motion_paths_and_publications() {
++    let (creation, geometry, _) = cube();
++    let mut scene = TerrainContactScene::default();
++    let mut initial = MachineState::at_rest(&creation);
++    // Alternate translations and rotations at identical poses, then move the
++    // body. A fresh compiled geometry is the cold-cache reference each time.
++    for height in [0.51, 2.0, 0.51] {
++        initial.poses[0].position.y = height;
++        for displacement in [
++            [3.0, 0.0, 0.0, 0.0, 0.001, 0.0],
++            [0.0, -20.0, 0.0, 0.0, 0.0, 0.0],
++            [0.0, 0.0, 0.0, 0.0, 0.0, std::f64::consts::TAU],
++            [0.0, 20.0, 0.0, 0.0, 0.01, 0.0],
++        ] {
++            let motion = MachineMotion::new(&creation, 7, &initial, &displacement).unwrap();
++            for _ in 0..2 {
++                let publication = scene.generation + 1;
++                scene
++                    .publish(publication, &[terrain([TerrainMaterial::Rock; 2])], &[])
++                    .unwrap();
++                let fresh = MachineCollisionGeometry::new(&creation, 7).unwrap();
++                let expected = scene
++                    .checked_sweep(&fresh, &motion, DVec3::ZERO, 1e-9, 128)
++                    .unwrap();
++                for _ in 0..2 {
++                    let actual = scene
++                        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
++                        .unwrap();
++                    assert_eq!(actual.outcome, expected.outcome);
++                    assert_eq!(actual.triangle_candidates, expected.triangle_candidates);
++                    assert_eq!(
++                        actual.collider_pair_candidates,
++                        expected.collider_pair_candidates
++                    );
++                }
++            }
++        }
++    }
++}
++
++impl TerrainContactScene {
++    fn checked_sweep(
++        &self,
++        geometry: &MachineCollisionGeometry,
++        motion: &MachineMotion<'_>,
++        origin: DVec3,
++        tolerance: f64,
++        limit: usize,
++    ) -> Result<TerrainSweepQuery, PhysicsError> {
++        struct Restore;
++        impl Drop for Restore {
++            fn drop(&mut self) {
++                REUSE_START.set(true);
++            }
++        }
++        let actual = self.sweep(geometry, motion, origin, tolerance, limit);
++        let new_contacts = self.sweep_new_contacts(geometry, motion, origin, tolerance, limit);
++        let _restore = Restore;
++        REUSE_START.set(false);
++        let reference = self.sweep(geometry, motion, origin, tolerance, limit);
++        let reference_new = self.sweep_new_contacts(geometry, motion, origin, tolerance, limit);
++        assert_eq!(
++            new_contacts.as_ref().map(|q| q.outcome),
++            reference_new.as_ref().map(|q| q.outcome)
++        );
++        match (&actual, &reference) {
++            (Ok(a), Ok(b)) => {
++                assert_eq!(a.outcome, b.outcome);
++                assert_eq!(a.collider_pair_candidates, b.collider_pair_candidates);
++                assert_eq!(a.triangle_candidates, b.triangle_candidates);
++            }
++            (Err(_), Err(_)) => {}
++            _ => panic!("cached and uncached sweep validity differs"),
++        }
++        actual
++    }
++}
++
++#[test]
++fn collider_sweeps_reuse_geometry_without_reusing_another_paths_velocities() {
++    let creation = crate::terrain_contacts::tests::loose_cubes();
++    let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
++    let scene = TerrainContactScene::default();
++    let mut state = MachineState::at_rest(&creation);
++    state.poses[0].position = DVec3::ZERO;
++    state.poses[1].position = DVec3::X * 1.1;
++    for speed in [0.01, -3.0, 3.0, -0.01] {
++        let mut displacement = vec![0.0; state.velocities.len()];
++        let second = creation.dynamics.body_velocities[1].start;
++        displacement[second] = speed;
++        displacement[second + 5] = 0.01;
++        let motion = MachineMotion::new(&creation, 7, &state, &displacement).unwrap();
++        for _ in 0..2 {
++            let query = scene
++                .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
++                .unwrap();
++            assert_eq!(
++                matches!(query.outcome, TerrainSweepOutcome::Impact(_)),
++                speed < -0.1
++            );
++        }
++    }
++}
++
++#[test]
++fn rotated_pipe_sweeps_preserve_the_opening_and_annulus() {
++    use mechanic_core::{PipeBendDimensions, PipeBendSpec};
++    for (inner, offset, collides) in [(0.6, 0.0, false), (0.0, 0.0, true), (0.6, 0.375, true)] {
++        let mut graph = ConstructionGraph::new();
++        graph
++            .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
++                PipeBendDimensions::new(1.0, inner, 1.0).unwrap(),
++                BuildPose::default(),
++            )))
++            .unwrap();
++        graph
++            .apply(BuildCommand::Spawn(
++                CuboidSpec::new(
++                    [1, 1, 1],
++                    BuildPose::from_half_grid(IVec3::splat(64), GridRotation::default()),
++                )
++                .unwrap(),
++            ))
++            .unwrap();
++        let creation = graph.compile().unwrap();
++        let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
++        let scene = TerrainContactScene::default();
++        let mut state = MachineState::at_rest(&creation);
++        state.poses[1].position = DVec3::new(offset, 1.5, 0.0);
++        let rotation = DQuat::from_rotation_z(0.61);
++        for pose in &mut state.poses {
++            pose.position = rotation * pose.position;
++            pose.rotation = rotation * pose.rotation;
++        }
++        let mut displacement = vec![0.0; state.velocities.len()];
++        let second = creation.dynamics.body_velocities[1].start;
++        displacement[second..second + 3].copy_from_slice(&(rotation * -DVec3::Y * 0.5).to_array());
++        let motion = MachineMotion::new(&creation, 7, &state, &displacement).unwrap();
++        for _ in 0..2 {
++            let query = scene
++                .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
++                .unwrap();
++            assert_eq!(
++                matches!(query.outcome, TerrainSweepOutcome::Impact(_)),
++                collides,
++                "inner={inner}, offset={offset}, outcome={:?}",
++                query.outcome
++            );
++        }
++    }
++}
++
++#[test]
++fn simultaneous_terrain_arrivals_keep_the_first_collider_and_triangle() {
++    let creation = crate::terrain_contacts::tests::loose_cubes();
++    let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
++    let mut scene = TerrainContactScene::default();
++    scene
++        .publish(1, &[terrain([TerrainMaterial::Rock; 2])], &[])
++        .unwrap();
++    let mut state = MachineState::at_rest(&creation);
++    state.poses[0].position = DVec3::new(-0.6, 2.0, 0.0);
++    state.poses[1].position = DVec3::new(0.6, 2.0, 0.0);
++    let mut displacement = vec![0.0; state.velocities.len()];
++    for range in &creation.dynamics.body_velocities {
++        displacement[range.start + 1] = -4.0;
++    }
++    let motion = MachineMotion::new(&creation, 7, &state, &displacement).unwrap();
++    let query = scene
++        .checked_sweep(&geometry, &motion, DVec3::ZERO, 1e-9, 128)
++        .unwrap();
++    let TerrainSweepOutcome::Impact(hit) = query.outcome else {
++        panic!("simultaneous impact expected");
++    };
++    assert_eq!(hit.collider, 0);
++    assert!((hit.fraction - 0.375).abs() < 1e-12);
++}
+--- a/scripts/run-cpu-scale-benchmark.py
++++ b/scripts/run-cpu-scale-benchmark.py
+@@ -100,6 +100,10 @@
+         summary[path.stem] = records[-1] if records and records[-1].get('kind') == 'summary' else {
+             'kind': 'incomplete', 'completed_ticks': sum(r.get('kind') == 'tick' for r in records),
+             'last_record': records[-1] if records else None}
++    def replay_states(label):
++        records = [json.loads(line) for line in (args.output / f'{label}.jsonl').read_text().splitlines()]
++        return [(r['tick'], r.get('state_hash')) for r in records if r.get('kind') == 'tick']
++
+     comparisons = {}
+     for label, baseline in summary.items():
+         if '-baseline-' not in label:
+@@ -114,11 +118,17 @@
+             comparisons[candidate_label] = {'quality_within_baseline_tolerances': None,
+                                             'headless_gate_passed': False, 'reason': 'degraded or escaped replay'}
+             continue
++        baseline_states = replay_states(label)
++        candidate_states = replay_states(candidate_label)
++        exact_states = (len(baseline_states) == args.warmup + args.ticks
++                        and all(state is not None for _, state in baseline_states)
++                        and baseline_states == candidate_states)
+         quality = (candidate['maximum_penetration_m'] <= baseline['maximum_penetration_m'] + 0.001
+                    and candidate['closure_gap_m'] <= baseline['closure_gap_m'] + 0.001
+                    and candidate['closure_angle_rad'] <= baseline['closure_angle_rad'] + 0.01)
+-        comparisons[candidate_label] = {'quality_within_baseline_tolerances': quality,
+-                                        'headless_gate_passed': candidate['timing_gate'] and quality,
++        comparisons[candidate_label] = {'matching_replay_state_hashes': exact_states,
++                                        'quality_within_baseline_tolerances': quality,
++                                        'headless_gate_passed': candidate['timing_gate'] and quality and exact_states,
+                                         'app_scheduler_and_rendering_verified': False}
+     (args.output / 'summary.json').write_text(json.dumps({'runs': summary, 'comparisons': comparisons}, indent=2)+'\n')
+     if failed:
+--- a/scripts/test-cpu-scale-benchmark.py
++++ b/scripts/test-cpu-scale-benchmark.py
+@@ -43,7 +43,7 @@
+         return '\n'.join(map(json.dumps, [
+             {'kind': 'metadata', 'copies': 1, 'connected': connected,
+              'terrain': 'saved-seed-leaf-mesh', 'hold': False, 'route': 'cpu'},
+-            {'kind': 'tick', 'tick': 1},
++            {'kind': 'tick', 'tick': 1, 'state_hash': 'same'},
+             {'kind': 'summary', 'maximum_penetration_m': 0, 'closure_gap_m': 0,
+              'closure_angle_rad': 0, 'timing_gate': False}])) + '\n'
+ 
+@@ -56,6 +56,18 @@
+         self.assertEqual(run.call_count, 2)
+         result = json.loads((self.args.output / 'manifest.json').read_text())
+         self.assertEqual(sum('copied_from' in r for r in result['runs']), 2)
++
++    def test_changed_replay_hash_fails_gate_even_when_quality_matches(self):
++        def candidate(command, stdout, _timeout):
++            records = self.records('--connected' in command).replace('"same"', '"different"').replace('"timing_gate": false', '"timing_gate": true')
++            stdout.write(records)
++            return argparse.Namespace(returncode=0), False
++        with patch.object(scale, 'run_until_idle', side_effect=candidate):
++            scale.run(self.args)
++        result = json.loads((self.args.output / 'summary.json').read_text())
++        for comparison in result['comparisons'].values():
++            self.assertFalse(comparison['matching_replay_state_hashes'])
++            self.assertFalse(comparison['headless_gate_passed'])
+ 
+     def test_silent_child_is_stopped_without_waiting_for_a_long_run_timeout(self):
+         with tempfile.TemporaryFile('w') as output:

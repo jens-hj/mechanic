@@ -1,0 +1,59 @@
+{
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "warmup_ticks": 600,
+  "measured_ticks": 3600,
+  "repeats": 1,
+  "assemblies": [
+    "separated"
+  ],
+  "binaries": {
+    "baseline": {
+      "path": "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+      "sha256": "75b6cf2222ba6ed5d80ed1d1e8af087c2c621ecd33904622c555efdccc13e16c"
+    },
+    "candidate": {
+      "path": "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+      "sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02"
+    }
+  },
+  "runs": [
+    {
+      "label": "10x-separated-baseline-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789409526.871731,
+      "elapsed_seconds": 113.83898687362671,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-separated-candidate-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789409640.711092,
+      "elapsed_seconds": 113.20086288452148,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    }
+  ],
+  "no_progress_timeout_seconds": 300
+}

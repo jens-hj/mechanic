@@ -1,0 +1,549 @@
+[
+  {
+    "file": "/private/tmp/mechanic-freeze-verified-cpu/capture-1789424026976625000-27743.jsonl",
+    "metadata": {
+      "adapter": "WgpuWrapper(AdapterInfo { name: \"Apple M1 Pro\", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"\", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })",
+      "automated_background": true,
+      "bodies": 14,
+      "capture_from_start": false,
+      "dynamic_bodies": 13,
+      "executable": "/private/tmp/mechanic-freeze-verified",
+      "experiment": "Baseline",
+      "f3": true,
+      "foreground_requested": false,
+      "generalized_velocities": 18,
+      "initial_camera_matrix": [
+        -1.0,
+        0.0,
+        8.742277657347586e-08,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        -8.742277657347586e-08,
+        0.0,
+        -1.0,
+        0.0,
+        0.0,
+        5.650090217590332,
+        0.0,
+        1.0
+      ],
+      "initial_state_hash": "7e1c2add5f2312d1",
+      "initial_terrain_fingerprint": "f02a026766e657cc",
+      "initial_terrain_layout_fingerprint": "76354e0cef1882c6",
+      "label": "builder-background",
+      "present_mode": "AutoNoVsync",
+      "replay_ticks": null,
+      "requested_physics_route": "Cpu",
+      "start_completed_tick": 3260,
+      "start_submitted_tick": 3260,
+      "terrain_pass_partition": false
+    },
+    "duration_seconds": 60.049297875,
+    "submission_duration_seconds": 60.049297708,
+    "drain_duration_seconds": 1.6700000315950092e-07,
+    "drain_complete": true,
+    "drained_readbacks": 0,
+    "physics_routes": [
+      "cpu"
+    ],
+    "cpu_degraded_ticks": 0,
+    "cpu_tick_ms": {
+      "count": 3603,
+      "p50": 0.411167,
+      "p95": 3.52175,
+      "p99": 4.544875
+    },
+    "complete_cpu_tick_ms": {
+      "count": 3603,
+      "p50": 0.429042,
+      "p95": 3.538166,
+      "p99": 4.558040999999999
+    },
+    "cpu_terrain_updates_ms": {
+      "count": 1627,
+      "p50": 0.227959,
+      "p95": 0.28200000000000003,
+      "p99": 0.354917
+    },
+    "cpu_stages_ms": {
+      "query_ms": {
+        "count": 3603,
+        "p50": 0.23658300000000002,
+        "p95": 2.9336659999999997,
+        "p99": 4.038041
+      },
+      "solve_ms": {
+        "count": 3603,
+        "p50": 0.16858400000000004,
+        "p95": 0.5567489999999999,
+        "p99": 0.710583
+      },
+      "dynamics_ms": {
+        "count": 3603,
+        "p50": 0.026000000000000002,
+        "p95": 0.035332,
+        "p99": 0.044041
+      },
+      "rows_ms": {
+        "count": 3603,
+        "p50": 0.045459000000000006,
+        "p95": 0.36129200000000006,
+        "p99": 0.506875
+      },
+      "constraints_ms": {
+        "count": 3603,
+        "p50": 0.004792000000000001,
+        "p95": 0.05921,
+        "p99": 0.08408199999999999
+      },
+      "continuous_ms": {
+        "count": 3603,
+        "p50": 0.067834,
+        "p95": 0.077124,
+        "p99": 0.092791
+      },
+      "conversion_ms": {
+        "count": 3603,
+        "p50": 0.001042,
+        "p95": 0.002333,
+        "p99": 0.003875
+      }
+    },
+    "cpu_publication_ms": {
+      "count": 3603,
+      "p50": 0.00475,
+      "p95": 0.00925,
+      "p99": 0.014
+    },
+    "cpu_solver_scratch": {
+      "solver_scratch_bytes": {
+        "count": 3603,
+        "p50": 369280,
+        "p95": 381568,
+        "p99": 381568
+      },
+      "solver_scratch_growth_bytes": {
+        "count": 3603,
+        "p50": 0,
+        "p95": 0,
+        "p99": 0
+      }
+    },
+    "cpu_candidates": {
+      "triangle_candidates": {
+        "count": 3603,
+        "p50": 0,
+        "p95": 1596,
+        "p99": 2058
+      },
+      "collider_pair_candidates": {
+        "count": 3603,
+        "p50": 12,
+        "p95": 24,
+        "p99": 64
+      }
+    },
+    "fps": 27.097431141032132,
+    "completed_tps": 60.00070154858576,
+    "submitted_tps": 60.00070171545061,
+    "frame_ms": {
+      "count": 1627,
+      "p50": 37.0285,
+      "p95": 45.345083,
+      "p99": 55.558375
+    },
+    "freeze_stages_ms": {
+      "total": {
+        "count": 1627,
+        "p95": 2.004,
+        "max": 29.464541
+      },
+      "internal_endpoint": {
+        "count": 2,
+        "p95": 1.85025,
+        "max": 1.85025
+      },
+      "internal_path": {
+        "count": 28,
+        "p95": 11.994416000000001,
+        "max": 13.351208
+      },
+      "terrain_endpoint": {
+        "count": 193,
+        "p95": 1.523541,
+        "max": 1.662625
+      },
+      "terrain_path": {
+        "count": 371,
+        "p95": 1.375708,
+        "max": 4.256625
+      },
+      "hold": {
+        "count": 291,
+        "p95": 0.15712500000000001,
+        "max": 0.573458
+      },
+      "planning": {
+        "count": 98,
+        "p95": 3.067084,
+        "max": 25.254542
+      },
+      "active_total": {
+        "count": 301,
+        "p95": 3.609334,
+        "max": 29.464541
+      },
+      "active_movement_total": {
+        "count": 300,
+        "p95": 3.609334,
+        "max": 29.464541
+      }
+    },
+    "freeze_input_update_interval_ms": {
+      "count": 279,
+      "p95": 44.917709000001196,
+      "max": 58.969959000001836
+    },
+    "freeze_input_processing_ms": {
+      "count": 279,
+      "p95": 3.618792,
+      "max": 29.464541
+    },
+    "freeze_input_operations_ms": {
+      "entry": {
+        "count": 1,
+        "p95": 29.464541,
+        "max": 29.464541
+      },
+      "height": {
+        "count": 277,
+        "p95": 3.612709,
+        "max": 15.527542
+      },
+      "release": {
+        "count": 1,
+        "p95": 2.566417,
+        "max": 2.566417
+      }
+    },
+    "frame_max_ms": 66.995583,
+    "queue_submission_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "readback_latency_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "submission_to_callbacks_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "callback_to_publication_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "callbacks_during_poll_counts": {
+      "true": 0,
+      "false": 0
+    },
+    "physics_poll_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "physics_poll_outcomes": {
+      "completed": 0,
+      "empty": 0,
+      "error": 0
+    },
+    "acquire_ms": {
+      "count": 1628,
+      "p50": 29.051707999999998,
+      "p95": 37.669958,
+      "p99": 48.240417
+    },
+    "render_cpu_ms": {
+      "count": 1627,
+      "p50": 4.608375,
+      "p95": 5.0675,
+      "p99": 5.4853749999999994
+    },
+    "physics_gpu_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "physics_terrain_stages_ms": {
+      "terrain_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "rotational_sweep_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "terrain_recovery_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "recovery_projection_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "contact_solver_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "terrain_publication": {
+      "preparation_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "publication_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "latency_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "uploaded_bytes": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "reused_chunks": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "uploaded_chunks": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "terrain_uploaded_bytes": 0,
+    "physics_cpu_stages_ms": {
+      "encoding_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "finalization_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "submission_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "readback_setup_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "render_gpu_ms": {
+      "tracked_span_ms": {
+        "count": 1628,
+        "p50": 35.658084,
+        "p95": 38.093209,
+        "p99": 39.054
+      },
+      "prepass_ms": {
+        "count": 1628,
+        "p50": 0.450458,
+        "p95": 2.595625,
+        "p99": 2.74625
+      },
+      "opaque_ms": {
+        "count": 1628,
+        "p50": 25.599834,
+        "p95": 27.886125,
+        "p99": 28.983042
+      },
+      "terrain_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "opaque_other_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "transparent_ms": {
+        "count": 1565,
+        "p50": 27.117542,
+        "p95": 29.704042,
+        "p99": 30.924083
+      },
+      "xray_ms": {
+        "count": 1628,
+        "p50": 0.796959,
+        "p95": 1.920458,
+        "p99": 1.969458
+      },
+      "other_ms": {
+        "count": 1628,
+        "p50": 1.316167,
+        "p95": 2.348709,
+        "p99": 2.528958
+      }
+    },
+    "terrain_passes_per_sample": {
+      "count": 1628,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0
+    },
+    "render_gpu_sample_age_ms": {
+      "count": 1628,
+      "p50": 110.961583,
+      "p95": 121.002084,
+      "p99": 130.81637500000002
+    },
+    "in_flight_slots": {
+      "count": 1627,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0
+    },
+    "focused_frame_counts": {
+      "true": 0,
+      "false": 1627
+    },
+    "dropped_ticks": 0,
+    "completed_interval_skipped_ticks": 0,
+    "boundary_readbacks": 0,
+    "pending_at_capture_end": 0,
+    "backlog_start_end": [
+      0,
+      0
+    ],
+    "settings_seen": {
+      "f3": [
+        "true"
+      ],
+      "present_mode": [
+        "\"AutoNoVsync\""
+      ],
+      "window_pixels": [
+        "[4112, 2524]"
+      ],
+      "target_pixels": [
+        "[4112, 2524]"
+      ],
+      "viewport_pixels": [
+        "[4112, 2524]"
+      ],
+      "msaa": [
+        "4"
+      ]
+    },
+    "terrain_busy_frames": 0,
+    "terrain_readiness_holds": 0,
+    "driving_input": {
+      "count": 0,
+      "matches_submitted_ticks": false,
+      "first_script_tick": null,
+      "last_script_tick": null
+    },
+    "physics_error_flags": [
+      0
+    ],
+    "observed_execution_masks": [],
+    "physics_execution": {
+      "integrated_bodies": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "published_bodies": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "validated_bearings": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "planned_solver_sweeps": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "executed_solver_sweeps": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "anchor_residual_m": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "axis_residual_deg": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "gpu_samples": 1628,
+    "gpu_status_counts": {
+      "Complete": 1628
+    },
+    "gpu_samples_originating_before_capture": 3
+  }
+]

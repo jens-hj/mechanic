@@ -4,7 +4,7 @@
 //! with motion S leaves I - (I S)(I S)^T / (S^T I S + diagonal). The two RHS
 //! passes reuse those factors; no generalized matrix or inverse is formed.
 
-use super::{DynamicsFactor, PhysicsError};
+use super::PhysicsError;
 use crate::{BodyPose, MachineDynamics};
 use bevy_math::{DMat3, DVec3};
 use mechanic_core::CompiledCreation;
@@ -36,11 +36,21 @@ struct Body {
 #[derive(Clone, Debug)]
 pub(super) struct ArticulatedFactor {
     bodies: Vec<Body>,
+    inertia: Vec<Matrix>,
     preorder: Vec<usize>,
-    postorder: Vec<usize>,
+    components: Vec<mechanic_core::DynamicsComponent>,
+    scratch: std::sync::Arc<std::sync::Mutex<Vec<Vector>>>,
 }
 
 impl ArticulatedFactor {
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.bodies.capacity() * size_of::<Body>()
+            + self.inertia.capacity() * size_of::<Matrix>()
+            + self.preorder.capacity() * size_of::<usize>()
+            + self.components.capacity() * size_of::<mechanic_core::DynamicsComponent>()
+            + self.scratch.lock().expect("factor scratch lock").capacity() * size_of::<Vector>()
+    }
+
     #[allow(clippy::too_many_lines)] // Ordered spatial inertia construction and joint elimination.
     pub(super) fn new(
         creation: &CompiledCreation,
@@ -48,15 +58,45 @@ impl ArticulatedFactor {
         coordinates: &[f64],
         diagonal: &[f64],
     ) -> Result<Self, PhysicsError> {
+        let poses = MachineDynamics::reconstruct_poses(creation, roots, coordinates)?;
+        Self::from_poses(creation, &poses, diagonal)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn from_poses(
+        creation: &CompiledCreation,
+        poses: &[BodyPose],
+        diagonal: &[f64],
+    ) -> Result<Self, PhysicsError> {
+        let mut factor = Self {
+            bodies: Vec::new(),
+            inertia: Vec::new(),
+            preorder: Vec::new(),
+            components: Vec::new(),
+            scratch: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        factor.refit(creation, poses, diagonal)?;
+        Ok(factor)
+    }
+
+    #[allow(clippy::too_many_lines)] // Rebuild numeric values in retained body/factor arenas.
+    pub(super) fn refit(
+        &mut self,
+        creation: &CompiledCreation,
+        poses: &[BodyPose],
+        diagonal: &[f64],
+    ) -> Result<(), PhysicsError> {
         let dynamics = &creation.dynamics;
         if diagonal.len() != dynamics.elimination_parent.len()
             || diagonal.iter().any(|v| !v.is_finite() || *v < 0.0)
         {
             return Err(PhysicsError::InvalidDynamics);
         }
-        let poses = MachineDynamics::reconstruct_poses(creation, roots, coordinates)?;
-        let mut inertia = vec![[[0.0; 6]; 6]; poses.len()];
-        let mut bodies = Vec::with_capacity(poses.len());
+        let mut inertia = std::mem::take(&mut self.inertia);
+        inertia.clear();
+        inertia.resize(poses.len(), [[0.0; 6]; 6]);
+        let mut bodies = std::mem::take(&mut self.bodies);
+        bodies.clear();
         for (body, pose) in poses.iter().enumerate() {
             let topology = creation.loop_topology.body_parents[body];
             let parent = (!topology.is_root).then_some(topology.parent_body as usize);
@@ -159,17 +199,69 @@ impl ArticulatedFactor {
                 }
             }
         }
-        Ok(Self {
-            bodies,
-            preorder: dynamics.preorder.clone(),
-            postorder: dynamics.postorder.clone(),
-        })
+        self.bodies = bodies;
+        self.inertia = inertia;
+        self.preorder.clone_from(&dynamics.preorder);
+        self.components.clone_from(&dynamics.components);
+        self.scratch
+            .lock()
+            .map_err(|_| PhysicsError::InvalidDynamics)?
+            .resize(poses.len(), [0.0; 6]);
+        Ok(())
     }
 
     pub(super) fn solve(&self, values: &mut [f64]) -> Result<(), PhysicsError> {
-        // One body-indexed arena serves as backward wrench and forward motion.
-        let mut scratch = vec![[0.0; 6]; self.bodies.len()];
-        for &index in &self.postorder {
+        let active = self
+            .components
+            .iter()
+            .filter(|component| {
+                values[component.velocities.clone()]
+                    .iter()
+                    .any(|v| *v != 0.0)
+            })
+            .collect::<Vec<_>>();
+        self.solve_active(values, active.into_iter())
+    }
+
+    pub(super) fn solve_ranges(
+        &self,
+        values: &mut [f64],
+        ranges: &[std::ops::Range<usize>],
+    ) -> Result<(), PhysicsError> {
+        let active = self.components.iter().filter(|component| {
+            ranges
+                .iter()
+                .any(|range| !range.is_empty() && *range == component.velocities)
+        });
+        self.solve_active(values, active)
+    }
+
+    fn solve_active<'a>(
+        &self,
+        values: &mut [f64],
+        active: impl DoubleEndedIterator<Item = &'a mechanic_core::DynamicsComponent> + Clone,
+    ) -> Result<(), PhysicsError> {
+        // Only the affected components need their body scratch cleared.
+        let mut scratch = self
+            .scratch
+            .lock()
+            .map_err(|_| PhysicsError::InvalidDynamics)?;
+        for component in active.clone() {
+            if values[component.velocities.clone()]
+                .iter()
+                .any(|v| !v.is_finite())
+            {
+                return Err(PhysicsError::InvalidDynamics);
+            }
+            for &body in &self.preorder[component.bodies.clone()] {
+                scratch[body] = [0.0; 6];
+            }
+        }
+        for &index in active
+            .clone()
+            .rev()
+            .flat_map(|component| self.preorder[component.bodies.clone()].iter().rev())
+        {
             let body = &self.bodies[index];
             if let Joint::Scalar {
                 motion,
@@ -191,7 +283,10 @@ impl ArticulatedFactor {
                 }
             }
         }
-        for &index in &self.preorder {
+        for &index in active
+            .clone()
+            .flat_map(|component| &self.preorder[component.bodies.clone()])
+        {
             let body = &self.bodies[index];
             scratch[index] = match body.joint {
                 Joint::Fixed => [0.0; 6],
@@ -220,7 +315,10 @@ impl ArticulatedFactor {
                 }
             };
         }
-        if values.iter().any(|v| !v.is_finite()) {
+        if active
+            .flat_map(|component| &values[component.velocities.clone()])
+            .any(|v| !v.is_finite())
+        {
             return Err(PhysicsError::InvalidDynamics);
         }
         Ok(())
@@ -256,14 +354,31 @@ fn shift_force(value: Vector, arm: DVec3) -> Vector {
 }
 
 fn cholesky(matrix: &Matrix) -> Result<Matrix, PhysicsError> {
-    let flat: Vec<_> = matrix.iter().flatten().copied().collect();
-    let factor = DynamicsFactor::new(&flat, 6)?;
-    let super::FactorStorage::Dense(lower) = factor.storage else {
-        unreachable!()
-    };
-    Ok(std::array::from_fn(|row| {
-        std::array::from_fn(|column| lower[row * 6 + column])
-    }))
+    // Spatial congruences and Schur updates construct a symmetric inertia.
+    // Their independently accumulated mirrored entries can differ by round-off,
+    // particularly for a long chassis. Use the same lower triangle as the dense
+    // factor without its arbitrary-input symmetry test; do not shift pivots.
+    if matrix.iter().flatten().any(|value| !value.is_finite()) {
+        return Err(PhysicsError::InvalidDynamics);
+    }
+    let mut lower = [[0.0; 6]; 6];
+    for row in 0..6 {
+        for column in 0..=row {
+            let value = matrix[row][column]
+                - (0..column)
+                    .map(|k| lower[row][k] * lower[column][k])
+                    .sum::<f64>();
+            if !value.is_finite() || (row == column && value <= 0.0) {
+                return Err(PhysicsError::InvalidDynamics);
+            }
+            lower[row][column] = if row == column {
+                value.sqrt()
+            } else {
+                value / lower[column][column]
+            };
+        }
+    }
+    Ok(lower)
 }
 
 fn solve_root(lower: &Matrix, values: &mut Vector) {

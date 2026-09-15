@@ -201,7 +201,8 @@ pub(crate) fn apply_external_impulses(
     factorization: crate::DynamicsFactorization,
 ) -> Result<(), PhysicsError> {
     if !commands.is_empty() {
-        let model = MachineDynamics::assemble(creation, &candidate.poses, &candidate.coordinates)?;
+        let model =
+            crate::MachineKinematics::assemble(creation, &candidate.poses, &candidate.coordinates)?;
         let mut impulse = vec![0.0; candidate.velocities.len()];
         for command in commands {
             let row = model.point_row(command.body, command.point, command.impulse)?;
@@ -209,10 +210,9 @@ pub(crate) fn apply_external_impulses(
                 *sum += value;
             }
         }
-        factorization
+        model
             .factor(
-                creation,
-                &model,
+                factorization,
                 &candidate.coordinates,
                 &vec![0.0; impulse.len()],
             )?

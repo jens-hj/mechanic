@@ -552,7 +552,7 @@ fn compile_graph(
         .map(|(part, spec)| {
             if graph.owner_has_shape_features(crate::SolidOwner::Part(*part)) {
                 return graph
-                    .evaluated_solid(crate::SolidOwner::Part(*part))
+                    .evaluated_solid_shared(crate::SolidOwner::Part(*part))
                     .expect("committed feature geometry replays")
                     .cells
                     .len();
@@ -568,6 +568,7 @@ fn compile_graph(
             | PartSpec::Cuboid(_) => 1,
             PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
             PartSpec::PipeBend(_) => PIPE_BEND_COLLIDER_COUNT,
+            PartSpec::PipeJunction(junction) => junction.collider_count(),
             }
         })
         .sum::<usize>()
@@ -578,7 +579,7 @@ fn compile_graph(
             .map(|(id, region)| {
                 if graph.owner_has_shape_features(crate::SolidOwner::Region(id)) {
                     graph
-                        .evaluated_solid(crate::SolidOwner::Region(id))
+                        .evaluated_solid_shared(crate::SolidOwner::Region(id))
                         .expect("committed region feature geometry replays")
                         .cells
                         .len()
@@ -648,7 +649,7 @@ fn compile_graph(
             }
             if graph.owner_has_shape_features(crate::SolidOwner::Part(part)) {
                 let solid = graph
-                    .evaluated_solid(crate::SolidOwner::Part(part))
+                    .evaluated_solid_shared(crate::SolidOwner::Part(part))
                     .expect("committed feature geometry replays");
                 append_evaluated_colliders(
                     &mut colliders,
@@ -656,7 +657,7 @@ fn compile_graph(
                     part,
                     compound_index,
                     mass_properties.center_of_mass,
-                    contact_properties(*spec),
+                    |band| band_contact_properties(*spec, band),
                 );
             } else {
                 let start = colliders.len();
@@ -683,7 +684,7 @@ fn compile_graph(
                 .expect("a region in this compound has a member part");
             if graph.owner_has_shape_features(crate::SolidOwner::Region(id)) {
                 let solid = graph
-                    .evaluated_solid(crate::SolidOwner::Region(id))
+                    .evaluated_solid_shared(crate::SolidOwner::Region(id))
                     .expect("committed region feature geometry replays");
                 append_evaluated_colliders(
                     &mut colliders,
@@ -691,7 +692,7 @@ fn compile_graph(
                     source_part,
                     compound_index,
                     mass_properties.center_of_mass,
-                    region.material().properties(),
+                    |_| region.material().properties(),
                 );
             } else {
                 let start = colliders.len();
@@ -1606,14 +1607,11 @@ fn calculate_mass_properties<'a>(
         .map(|(id, spec)| {
             if graph.owner_has_shape_features(crate::SolidOwner::Part(id)) {
                 let solid = graph
-                    .evaluated_solid(crate::SolidOwner::Part(id))
+                    .evaluated_solid_shared(crate::SolidOwner::Part(id))
                     .expect("committed feature geometry replays");
-                evaluated_world_mass(
-                    &solid,
-                    spec.appearance().map_or(CUBOID_DENSITY_KG_M3, |_| {
-                        contact_properties(spec).density_kg_m3
-                    }),
-                )
+                evaluated_world_mass(&solid, |band| {
+                    band_contact_properties(spec, band).density_kg_m3
+                })
             } else {
                 compose_world_mass(
                     part_world_mass(spec),
@@ -1624,9 +1622,9 @@ fn calculate_mass_properties<'a>(
         .chain(regions.iter().map(|(id, region)| {
             if graph.owner_has_shape_features(crate::SolidOwner::Region(*id)) {
                 let solid = graph
-                    .evaluated_solid(crate::SolidOwner::Region(*id))
+                    .evaluated_solid_shared(crate::SolidOwner::Region(*id))
                     .expect("committed region feature geometry replays");
-                evaluated_world_mass(&solid, region.material().properties().density_kg_m3)
+                evaluated_world_mass(&solid, |_| region.material().properties().density_kg_m3)
             } else {
                 compose_world_mass(
                     region_world_mass(region),
@@ -1739,32 +1737,50 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
             cuboid_mass_properties(spec, spec.material.properties().density_kg_m3)
         }
         PartSpec::Cylinder(spec) => {
-            let outer = spec.dimensions.outer_diameter() * 0.5;
-            let inner = spec.dimensions.inner_diameter() * 0.5;
             let length = spec.dimensions.axial_length();
             let sweep = spec.dimensions.sweep_angle_radians();
-            let radial_squared = outer * outer + inner * inner;
-            let mass = spec.material.properties().density_kg_m3
-                * sweep
-                * (outer * outer - inner * inner)
-                * length
-                * 0.5;
-            let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
-                / (3.0 * sweep * (outer * outer - inner * inner));
-            let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
-            let radial_perpendicular = radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
             let axial_variance = length * length / 12.0;
+            // Each band is an annular sector about the same axis. Sum their
+            // moments about the axis midpoint, then move to the shared centre.
+            let (mass, first_moment, origin_inertia) = spec.bands().enumerate().fold(
+                (0.0, 0.0, Vec3::ZERO),
+                |(mass, first_moment, inertia), (index, band)| {
+                    let outer = band.outer_diameter * 0.5;
+                    let inner = spec.band_inner_diameter(index) * 0.5;
+                    let radial_squared = outer * outer + inner * inner;
+                    let band_mass = band.material.properties().density_kg_m3
+                        * sweep
+                        * (outer * outer - inner * inner)
+                        * length
+                        * 0.5;
+                    let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
+                        / (3.0 * sweep * (outer * outer - inner * inner));
+                    let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
+                    let radial_perpendicular =
+                        radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
+                    (
+                        mass + band_mass,
+                        first_moment + band_mass * center_x,
+                        inertia
+                            + band_mass
+                                * Vec3::new(
+                                    axial_variance + radial_perpendicular,
+                                    radial_parallel + radial_perpendicular,
+                                    radial_parallel + axial_variance,
+                                ),
+                    )
+                },
+            );
+            let center_x = first_moment / mass;
+            let shift = mass * center_x * center_x;
             PartMassProperties {
                 mass,
                 local_center: Vec3::new(center_x, 0.0, 0.0),
-                local_inertia: Mat3::from_diagonal(Vec3::new(
-                    mass * (axial_variance + radial_perpendicular),
-                    mass * (radial_parallel + radial_perpendicular - center_x * center_x),
-                    mass * (radial_parallel + axial_variance - center_x * center_x),
-                )),
+                local_inertia: Mat3::from_diagonal(origin_inertia - Vec3::new(0.0, shift, shift)),
             }
         }
         PartSpec::PipeBend(spec) => pipe_bend_mass_properties(spec),
+        PartSpec::PipeJunction(spec) => pipe_junction_mass_properties(spec),
         PartSpec::Controller(controller) => {
             cuboid_mass_properties(controller.cuboid(), CUBOID_DENSITY_KG_M3)
         }
@@ -1813,6 +1829,46 @@ fn pipe_bend_mass_properties(spec: crate::PipeBendSpec) -> PartMassProperties {
             Vec3::new(0.0, 0.0, mass * planar_variance * 2.0),
         ),
     }
+}
+
+/// Integrates a junction's sampled solid: a pyramid from its centre to each
+/// outer triangle, minus the matching pyramid to the bore.
+#[allow(clippy::cast_possible_truncation)] // Metre-scale fittings fit f32 mass properties.
+fn pipe_junction_mass_properties(spec: crate::PipeJunctionSpec) -> PartMassProperties {
+    use bevy_math::{DMat3, DVec3};
+    let density = f64::from(spec.material.properties().density_kg_m3);
+    let covariance =
+        |point: DVec3| DMat3::from_cols(point * point.x, point * point.y, point * point.z);
+    let mut mass = 0.0_f64;
+    let mut first_moment = DVec3::ZERO;
+    let mut second_moment = DMat3::ZERO;
+    for triangle in crate::pipe_junction::ray_triangles(spec) {
+        for (corners, sign) in [(triangle.outer, 1.0), (triangle.inner, -1.0)] {
+            let [a, b, c] = corners;
+            let pyramid_mass = sign * density * a.dot(b.cross(c)).abs() / 6.0;
+            let sum = a + b + c;
+            mass += pyramid_mass;
+            first_moment += sum * (pyramid_mass / 4.0);
+            second_moment += (covariance(a) + covariance(b) + covariance(c) + covariance(sum))
+                * (pyramid_mass / 20.0);
+        }
+    }
+    let trace = second_moment.x_axis.x + second_moment.y_axis.y + second_moment.z_axis.z;
+    let origin_inertia = (DMat3::IDENTITY * trace - second_moment).as_mat3();
+    let local_center = (first_moment / mass).as_vec3();
+    let mass = mass as f32;
+    PartMassProperties {
+        mass,
+        local_center,
+        local_inertia: origin_inertia - shifted_inertia(local_center, mass),
+    }
+}
+
+/// Parallel-axis term moving an inertia tensor `offset` away from its centre.
+fn shifted_inertia(offset: Vec3, mass: f32) -> Mat3 {
+    (Mat3::IDENTITY * offset.length_squared()
+        - Mat3::from_cols(offset * offset.x, offset * offset.y, offset * offset.z))
+        * mass
 }
 
 fn cuboid_mass_properties(spec: CuboidSpec, density_kg_m3: f32) -> PartMassProperties {
@@ -1887,25 +1943,31 @@ fn region_world_mass(region: &ShapeRegion) -> WorldMassProperties {
     }
 }
 
-fn evaluated_world_mass(solid: &crate::EvaluatedSolid, density: f32) -> WorldMassProperties {
-    let mut volume = 0.0_f32;
+/// Mass of an evaluated solid whose cells may belong to different material
+/// bands; `density` maps a cell's band to kilograms per cubic metre.
+fn evaluated_world_mass(
+    solid: &crate::EvaluatedSolid,
+    density: impl Fn(u8) -> f32,
+) -> WorldMassProperties {
+    let mut mass = 0.0_f32;
     let mut first_moment = Vec3::ZERO;
     let mut second_moment = Mat3::ZERO;
     for cell in &solid.cells {
-        accumulate_convex_moments(
-            &cell.piece,
-            &mut volume,
-            &mut first_moment,
-            &mut second_moment,
-        );
+        let mut volume = 0.0_f32;
+        let mut cell_first = Vec3::ZERO;
+        let mut cell_second = Mat3::ZERO;
+        accumulate_convex_moments(&cell.piece, &mut volume, &mut cell_first, &mut cell_second);
+        let density = density(cell.band);
+        mass += density * volume;
+        first_moment += cell_first * density;
+        second_moment += cell_second * density;
     }
-    let mass = density * volume;
-    let center = first_moment / volume;
-    let about_center = second_moment - outer_product(center, center) * volume;
+    let center = first_moment / mass;
+    let about_center = second_moment - outer_product(center, center) * mass;
     WorldMassProperties {
         mass,
         center,
-        inertia: (Mat3::IDENTITY * trace(about_center) - about_center) * density,
+        inertia: Mat3::IDENTITY * trace(about_center) - about_center,
     }
 }
 
@@ -2132,11 +2194,36 @@ const AUTHORED_CONTACT_PROPERTIES: MaterialProperties = MaterialProperties {
     youngs_modulus_pa: 200.0e9,
 };
 
+/// Contact material of one evaluated cell band. Only layered cylinders have
+/// more than band zero; every other part answers with its own material.
+fn band_contact_properties(spec: PartSpec, band: u8) -> MaterialProperties {
+    match spec {
+        PartSpec::Cylinder(cylinder) => cylinder
+            .band(usize::from(band))
+            .map_or(cylinder.material, |band| band.material)
+            .properties(),
+        PartSpec::Cuboid(_) | PartSpec::PipeBend(_) | PartSpec::PipeJunction(_) => {
+            contact_properties(spec)
+        }
+        PartSpec::Controller(_)
+        | PartSpec::Engine(_)
+        | PartSpec::Transmission(_)
+        | PartSpec::Servo(_)
+        | PartSpec::Seat(_)
+        | PartSpec::Input(_)
+        | PartSpec::DimensionLink(_) => MaterialProperties {
+            density_kg_m3: CUBOID_DENSITY_KG_M3,
+            ..AUTHORED_CONTACT_PROPERTIES
+        },
+    }
+}
+
 fn contact_properties(spec: PartSpec) -> MaterialProperties {
     match spec {
         PartSpec::Cuboid(cuboid) => cuboid.material.properties(),
         PartSpec::Cylinder(cylinder) => cylinder.material.properties(),
         PartSpec::PipeBend(bend) => bend.material.properties(),
+        PartSpec::PipeJunction(junction) => junction.material.properties(),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
         | PartSpec::Transmission(_)
@@ -2294,6 +2381,22 @@ fn append_part_colliders(
             center_of_mass,
             material_properties,
         ),
+        PartSpec::PipeJunction(spec) => {
+            let part_rotation = spec.pose.rotation.quaternion();
+            for wall in crate::pipe_junction_wall_boxes(spec) {
+                colliders.push(LocalCollider {
+                    source_part: part,
+                    compound_index,
+                    local_center: spec.pose.translation() - center_of_mass
+                        + part_rotation * wall.center,
+                    material_properties,
+                    shape: ColliderShape::Cuboid {
+                        local_rotation: part_rotation * wall.rotation,
+                        half_extents: wall.half_extents,
+                    },
+                });
+            }
+        }
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
         | PartSpec::Transmission(_)
@@ -2396,13 +2499,13 @@ fn append_evaluated_colliders(
     source_part: PartId,
     compound_index: u32,
     center_of_mass: Vec3,
-    material_properties: MaterialProperties,
+    material_properties: impl Fn(u8) -> MaterialProperties,
 ) {
     colliders.extend(solid.cells.iter().map(|cell| LocalCollider {
         source_part,
         compound_index,
         local_center: cell.piece.centroid - center_of_mass,
-        material_properties,
+        material_properties: material_properties(cell.band),
         shape: ColliderShape::Convex(compile_convex(&cell.piece, center_of_mass)),
     }));
 }
@@ -2853,8 +2956,62 @@ mod tests {
     }
 
     #[test]
+    fn hollow_pipe_tee_compiles_pipe_mass_and_leaves_open_passages() {
+        use crate::{PipeArms, PipeJunctionDimensions, PipeJunctionSpec};
+        let arms = PipeArms::single(FaceKind::NegativeX)
+            .with(FaceKind::PositiveX)
+            .with(FaceKind::PositiveY);
+        let spec = PipeJunctionSpec::new(
+            PipeJunctionDimensions::new(0.20, 0.10).unwrap(),
+            arms,
+            BuildPose::default(),
+        );
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::SpawnPipeJunction(spec)).unwrap();
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.colliders.len(), spec.collider_count());
+
+        let (radius, bore, reach) = (0.10_f32, 0.05_f32, 0.125_f32);
+        let annulus = std::f32::consts::PI * (radius * radius - bore * bore);
+        let density = ConstructionMaterial::Steel.properties().density_kg_m3;
+        let properties = compiled.compounds[0].mass_properties;
+        // The through pipe alone, and with a whole side arm added, bracket the tee.
+        let through = annulus * 2.0 * reach * density;
+        assert!(properties.mass > through * 0.97, "{}", properties.mass);
+        assert!(properties.mass < through * 1.5, "{}", properties.mass);
+        assert!(
+            properties.center_of_mass.y > 1.0e-4,
+            "the side arm adds mass above"
+        );
+        assert!(properties.center_of_mass.x.abs() < 1.0e-4);
+
+        // No wall box covers a point travelling along an open bore.
+        let bore_points = (-10_i16..=10)
+            .map(|step| Vec3::X * (f32::from(step) * reach * 0.1))
+            .chain((0_i16..=10).map(|step| Vec3::Y * (f32::from(step) * reach * 0.1)))
+            .collect::<Vec<_>>();
+        for collider in &compiled.colliders {
+            let ColliderShape::Cuboid {
+                local_rotation,
+                half_extents,
+            } = collider.shape
+            else {
+                panic!("junction walls are boxes");
+            };
+            let centre = collider.local_center + properties.center_of_mass;
+            for &point in &bore_points {
+                let local = local_rotation.inverse() * (point - centre);
+                assert!(
+                    (local.abs() - half_extents).max_element() > -1.0e-5,
+                    "a wall box covers the open bore at {point}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn hollow_pipe_bend_compiles_exact_quarter_torus_mass_and_full_inertia() {
-        let dimensions = PipeBendDimensions::new(0.50, 0.25, 0.75).unwrap();
+        let dimensions = PipeBendDimensions::new(0.50, 0.25, 4).unwrap();
         let spec = PipeBendSpec::new(dimensions, BuildPose::default());
         let mut graph = ConstructionGraph::new();
         graph.apply(BuildCommand::SpawnPipeBend(spec)).unwrap();
@@ -4215,5 +4372,76 @@ mod tests {
                 available: 0,
             })
         );
+    }
+
+    fn layered_steel_wheel() -> CylinderSpec {
+        CylinderSpec::new(
+            CylinderDimensions::new(1.0, 0.0, 2.0).unwrap(),
+            BuildPose::default(),
+        )
+        .with_layer(
+            crate::LayerSide::Outer,
+            0.25,
+            crate::ConstructionMaterial::Rubber,
+            crate::MaterialAppearance::BAKED,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn layered_cylinder_mass_sums_band_densities() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnCylinder(layered_steel_wheel()))
+            .unwrap();
+        let properties = graph.compile().unwrap().compounds[0].mass_properties;
+        let density = |material: crate::ConstructionMaterial| material.properties().density_kg_m3;
+        let pi = core::f32::consts::PI;
+        let steel = density(crate::ConstructionMaterial::Steel) * pi * 0.25 * 2.0;
+        let rubber = density(crate::ConstructionMaterial::Rubber) * pi * (0.5625 - 0.25) * 2.0;
+        let axial = steel * 0.25 * 0.5 + rubber * (0.5625 + 0.25) * 0.5;
+        assert!((properties.mass - (steel + rubber)).abs() < 1.0e-3 * properties.mass);
+        assert!(properties.center_of_mass.abs_diff_eq(Vec3::ZERO, 1.0e-5));
+        assert!((properties.inertia.y_axis.y - axial).abs() < 1.0e-3 * axial);
+    }
+
+    #[test]
+    fn featured_layer_colliders_carry_their_band_material() {
+        let mut graph = ConstructionGraph::new();
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::SpawnCylinder(layered_steel_wheel()))
+            .unwrap()
+        else {
+            panic!("spawning a cylinder reports its part");
+        };
+        let owner = crate::SolidOwner::Part(part);
+        let rim = graph
+            .evaluated_solid(owner)
+            .unwrap()
+            .logical_edges
+            .iter()
+            .find(|edge| edge.closed && edge.convex)
+            .unwrap()
+            .key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(crate::ShapeFeature::new(
+                [crate::EdgeChainRef { owner, edge: rim }],
+                crate::EdgeTreatment::Fillet,
+                120,
+            )))
+            .unwrap();
+        let compiled = graph.compile().unwrap();
+        for material in [
+            crate::ConstructionMaterial::Steel,
+            crate::ConstructionMaterial::Rubber,
+        ] {
+            assert!(
+                compiled
+                    .colliders
+                    .iter()
+                    .any(|collider| collider.material_properties == material.properties()),
+                "{material:?} band has colliders"
+            );
+        }
     }
 }

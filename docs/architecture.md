@@ -100,12 +100,27 @@ Parts may only be placed on faces that are still flat: every cage vertex on that
 face resting on the grid. A shaped face is no longer an axis-aligned rectangle,
 so nothing could sit flush on it.
 
+A layered cylinder is one part and one solid. Its dimensions are the whole
+envelope, and ordered radial material bands only divide that envelope's
+material; the outermost band is the cylinder's own `material` and `appearance`.
+Chamfers and fillets replay on the envelope exactly as on a plain cylinder, so
+topology keys, clearance, and edge picking never see bands, and a feature cuts
+through as many bands as it reaches. Only then is each replayed cell split by
+the band boundaries. Inside one 15-degree wedge a boundary is a single chord
+plane, so both halves of a split share an identical face and stitch away as
+interior; wherever a feature removed an outer band the inner band's surface is
+exposed. Evaluated cells and surfaces carry their band, which selects density,
+contact material, and the material mesh they render in. `SetCylinder` replaces
+the envelope and bands in place, keeping the part's identity, pose, welds,
+bearings, and features, and is refused if any feature no longer replays.
+
 ## Persistence
 
 A saved creation is the authored graph and nothing derived from it: parts,
 welds, rigid links, bearings, drive wires with their limits and programs,
 transmission parent references, per-controller gearbox settings, the shape
-regions with their cage planes and displaced vertices, and the bearing rings the
+regions with their cage planes and displaced vertices, the radial material bands
+of layered cylinders, and the bearing rings the
 editor holds that no part hangs from yet. That set is the
 same one the undo history snapshots, which is the definition of "the whole
 creation". Compiled bodies, mass and inertia, loop topology, GPU buffers, and

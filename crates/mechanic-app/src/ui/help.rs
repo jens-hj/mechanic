@@ -291,6 +291,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     "Carriage face selected — click or drag to attach blocks on the 25 mm lattice".to_owned()
                 } else { "Green bearing attachment active — click or drag to connect blocks".to_owned() }
             }
+            (false, Tool::Layer, _, _, _) => {
+                "Press on a cylinder wall and drag out, or into the bore, to set layer thickness".to_owned()
+            }
             (false, Tool::Cylinder, _, _, Some(_)) => {
                 if linear_attachment {
                     "Carriage face selected — attach the cylinder on the 25 mm lattice; further attachments use this face".to_owned()
@@ -306,7 +309,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Click for one block or drag to place a welded sheet".to_owned()
             }
             (false, Tool::Cylinder, _, _, _) => {
-                "Hold on a flat face and drag; R cycles dimensions, F adds bends, wheel changes radius"
+                "Hold on a pipe end to extend it or on a pipe side to branch (R turns the branch); F bends, wheel sizes bends"
                     .to_owned()
             }
             (false, Tool::Weld, None, _, _) => "Left click selects the first object".to_owned(),
@@ -584,6 +587,7 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
         Some(
             Tool::Block
             | Tool::Cylinder
+            | Tool::Layer
             | Tool::ElectricEngine
             | Tool::Transmission
             | Tool::Seat

@@ -542,3 +542,44 @@ mod tests {
         );
     }
 }
+
+/// Disposable-world actions pass through the normal freeze transaction and repeat handler.
+#[derive(Default)]
+pub(crate) struct FreezeSequence {
+    started: Option<Instant>,
+    entered: bool,
+    released: bool,
+}
+impl FreezeSequence {
+    pub(crate) fn advance(&mut self) -> Option<(bool, bool, bool)> {
+        if !config().is_some_and(|_| std::env::var("MECHANIC_AUTO_FREEZE").as_deref() == Ok("1"))
+            || !crate::performance_capture::is_active()
+        {
+            return None;
+        }
+        let elapsed = self
+            .started
+            .get_or_insert_with(Instant::now)
+            .elapsed()
+            .as_secs_f32();
+        let toggle = if elapsed >= 2.0 && !self.entered {
+            self.entered = true;
+            true
+        } else if elapsed >= 40.0 && !self.released {
+            self.released = true;
+            true
+        } else {
+            false
+        };
+        let up = (2.1..2.3).contains(&elapsed) || (10.0..14.0).contains(&elapsed);
+        let down = (20.0..26.0).contains(&elapsed);
+        if toggle || up || down {
+            crate::performance_capture::record("freeze_input", || {
+                serde_json::json!({
+                    "toggle": toggle, "up": up, "down": down
+                })
+            });
+        }
+        Some((toggle, up, down))
+    }
+}

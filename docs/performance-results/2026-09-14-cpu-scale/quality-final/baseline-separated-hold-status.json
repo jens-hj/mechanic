@@ -1,0 +1,8 @@
+{
+  "status": "terminated_no_progress",
+  "pid": 90882,
+  "last_completed_tick": 480,
+  "blocked_tick": 481,
+  "seconds_since_last_tick_output": 281.5985417366028,
+  "reason": "No completed tick output for more than four minutes after second hold release. Raw partial replay retained; not a completed timing comparison."
+}

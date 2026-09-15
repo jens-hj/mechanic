@@ -1,0 +1,5 @@
+Command: cargo run -p mechanic-bench --bin edit-latency
+Before geometry caching, measured in this session:
+block: 100 boundary queries 1.679 ms
+fillet: 20 preview steps with 10 queries 26.817 ms
+junction: 100 boundary queries 635.268 ms

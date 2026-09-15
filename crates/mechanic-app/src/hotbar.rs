@@ -29,6 +29,7 @@ pub(crate) enum Tool {
     DimensionLink,
     Shape,
     Chroma,
+    Layer,
 }
 
 /// The four tools exposed by the primary hotbar.
@@ -69,22 +70,25 @@ pub(crate) enum MatterMode {
     Terrain,
     Manipulate,
     Chroma,
+    Layer,
 }
 
 impl MatterMode {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Block,
         Self::Cylinder,
         Self::Item,
         Self::Terrain,
         Self::Manipulate,
         Self::Chroma,
+        Self::Layer,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Block => "Block",
             Self::Cylinder => "Cylinder",
+            Self::Layer => "Layer",
             Self::Item => "Item Placer",
             Self::Terrain => "Terrain",
             Self::Manipulate => "Manipulate",
@@ -96,6 +100,7 @@ impl MatterMode {
         match self {
             Self::Block => "BLOCK",
             Self::Cylinder => "PIPE",
+            Self::Layer => "LAYER",
             Self::Item => "ITEMS",
             Self::Terrain => "TERRAIN",
             Self::Manipulate => "SHAPE",
@@ -299,6 +304,7 @@ impl Tool {
         match self {
             Self::Block => "Blocker Placer",
             Self::Cylinder => "Pipe / Cylinder",
+            Self::Layer => "Layer",
             Self::Bearing => "Bearing",
             Self::LinearBearing => "Linear Bearing",
             Self::Spring => "Spring",
@@ -360,6 +366,7 @@ impl SelectedTool {
             MainTool::MatterManipulator => match self.matter_mode {
                 MatterMode::Block => Some(Tool::Block),
                 MatterMode::Cylinder => Some(Tool::Cylinder),
+                MatterMode::Layer => Some(Tool::Layer),
                 MatterMode::Item => Some(self.item.editor_tool()),
                 MatterMode::Terrain => None,
                 MatterMode::Manipulate => Some(Tool::Shape),
@@ -389,6 +396,7 @@ impl SelectedTool {
         match tool {
             Tool::Block => self.select_mode(MatterMode::Block),
             Tool::Cylinder => self.select_mode(MatterMode::Cylinder),
+            Tool::Layer => self.select_mode(MatterMode::Layer),
             Tool::Shape => self.select_mode(MatterMode::Manipulate),
             Tool::Chroma => self.select_mode(MatterMode::Chroma),
             Tool::Weld => self.select_tool(MainTool::Welder),

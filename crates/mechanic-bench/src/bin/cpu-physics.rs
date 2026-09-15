@@ -25,6 +25,9 @@ const WALL: f32 = 5.0;
 #[path = "compiled-response/finite_support.rs"]
 mod finite_support;
 
+#[path = "cpu-physics/scale.rs"]
+mod scale;
+
 const ITERATIONS: usize = 256;
 const TOLERANCE: f64 = 1e-9;
 const GRAVITY: DVec3 = DVec3::new(0.0, -9.81, 0.0);
@@ -39,13 +42,38 @@ type RecordedBlock = (
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     let mut scenario = "reference-fixtures".to_owned();
+    let mut scale = scale::Options {
+        copies: 1,
+        connected: false,
+        warmup: 600,
+        ticks: 3600,
+        floor: false,
+        hold: false,
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--scenario" => scenario = args.next().ok_or("--scenario needs a value")?,
+            "--copies" => {
+                scale.copies = args.next().ok_or("--copies needs a value")?.parse()?;
+                if ![1, 2, 5, 10].contains(&scale.copies) {
+                    return Err("copies must be 1, 2, 5 or 10".into());
+                }
+            }
+            "--connected" => scale.connected = true,
+            "--hold" => scale.hold = true,
+            "--floor" => scale.floor = true,
+            "--warmup" => scale.warmup = args.next().ok_or("--warmup needs a value")?.parse()?,
+            "--ticks" => {
+                scale.ticks = args.next().ok_or("--ticks needs a value")?.parse()?;
+                if scale.ticks == 0 {
+                    return Err("ticks must be positive".into());
+                }
+            }
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
     match scenario.as_str() {
+        "builder-scale" => scale::run(&scale),
         "reference-fixtures" => reference_fixtures(),
         "car-drop" => car(false),
         "car-drive" => car(true),

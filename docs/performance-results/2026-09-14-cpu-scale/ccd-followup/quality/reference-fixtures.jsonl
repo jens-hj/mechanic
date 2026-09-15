@@ -1,0 +1,16 @@
+{"converged":true,"fixture":"cold_car_impact.ron","iterations":25,"law_violation":5.75549156944799e-12,"ms":0.657084,"reference_velocity_error":null,"residual":2.006631673002808e-11,"rows":15}
+{"converged":true,"fixture":"coupled_drive_contact.ron","iterations":104,"law_violation":1.2171340324496072e-12,"ms":8.39225,"reference_velocity_error":null,"residual":1.2171368758948186e-12,"rows":41}
+{"converged":false,"fixture":"endpoint_tick115_impact.ron","iterations":256,"law_violation":0.000013032369134968746,"ms":682.61825,"reference_velocity_error":null,"residual":0.000013032369134459424,"rows":240}
+{"converged":true,"fixture":"endpoint_tick37_force.ron","iterations":188,"law_violation":3.3259287251369285e-12,"ms":13.268167,"reference_velocity_error":null,"residual":3.3003163525691186e-11,"rows":41}
+{"converged":false,"fixture":"endpoint_tick94_impact.ron","iterations":256,"law_violation":0.00006832624935060316,"ms":1023.959958,"reference_velocity_error":null,"residual":3.835006582658216e-9,"rows":240}
+{"converged":true,"fixture":"event_retry_impact.ron","iterations":87,"law_violation":0.011468263661243917,"ms":12.270125,"reference_velocity_error":2.224555175484033e-14,"residual":1.0627281081538961e-11,"rows":50}
+{"converged":true,"fixture":"fixed_eight_stop_impact.ron","iterations":83,"law_violation":2.8569147048074228e-11,"ms":1.572209,"reference_velocity_error":null,"residual":5.261010865320086e-11,"rows":19}
+{"converged":false,"fixture":"fixed_eight_tick11_impact.ron","iterations":256,"law_violation":6.92093554133244e-7,"ms":1865.86375,"reference_velocity_error":null,"residual":6.920935539086487e-7,"rows":240}
+{"converged":true,"fixture":"late_cold_impact.ron","iterations":24,"law_violation":4.5863148348535e-11,"ms":3.190708,"reference_velocity_error":null,"residual":9.688234487667136e-11,"rows":55}
+{"converged":true,"fixture":"late_endpoint_impact.ron","iterations":256,"law_violation":2.404965115943014e-12,"ms":853.073459,"reference_velocity_error":5.904472562962004e-8,"residual":4.2434684723450364e-12,"rows":240}
+{"converged":true,"fixture":"later_settling_endpoint_impact.ron","iterations":105,"law_violation":8.801810642444785e-6,"ms":32.515083,"reference_velocity_error":null,"residual":8.067494299001183e-11,"rows":65}
+{"converged":true,"fixture":"post_drive_endpoint_impact.ron","iterations":248,"law_violation":2.9478619545386664e-10,"ms":799.924708,"reference_velocity_error":null,"residual":2.947861954538666e-10,"rows":240}
+{"converged":true,"fixture":"settling_endpoint_impact.ron","iterations":100,"law_violation":0.00010605642001082494,"ms":639.930458,"reference_velocity_error":null,"residual":8.494655518405904e-10,"rows":240}
+{"converged":true,"fixture":"slow_endpoint_impact.ron","iterations":232,"law_violation":8.721867672534245e-11,"ms":830.530875,"reference_velocity_error":2.1125030613688978e-9,"residual":3.8797445857348394e-10,"rows":240}
+{"converged":true,"fixture":"support_transition_impact.ron","iterations":61,"law_violation":0.00018163818703220702,"ms":389.319542,"reference_velocity_error":3.491414891448885e-6,"residual":1.0558623455169448e-11,"rows":240}
+{"converged":true,"fixture":"third_endpoint_impact.ron","iterations":234,"law_violation":4.261803132621367e-10,"ms":704.291083,"reference_velocity_error":5.4947935090865485e-9,"residual":6.712030820594055e-10,"rows":240}

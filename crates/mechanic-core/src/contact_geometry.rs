@@ -25,6 +25,17 @@ pub struct ContactPolytope {
     edges: Vec<DVec3>,
 }
 
+/// Reusable finite-triangle clipping polygons and the last exact convex extrusion.
+#[derive(Default, Debug)]
+pub struct TriangleClipScratch {
+    polygon: Vec<DVec3>,
+    clipped: Vec<DVec3>,
+    distances: Vec<f64>,
+    extruded: Option<ContactPolytope>,
+    extrusion_source: Option<ContactPolytope>,
+    extrusion_key: Option<(DVec3, f64)>,
+}
+
 /// One retained finite triangle support, with opposing points on both surfaces.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TriangleContactPoint {
@@ -194,6 +205,60 @@ impl ContactPolytope {
         })
     }
 
+    /// Updates transformed geometry while reusing its vertex, plane and edge buffers.
+    ///
+    /// # Errors
+    /// Rejects a non-finite translation or non-unit rotation before changing output.
+    pub fn transformed_into(
+        &self,
+        position: DVec3,
+        rotation: DQuat,
+        output: &mut Self,
+    ) -> Result<(), ContactGeometryError> {
+        if !position.is_finite() || !valid_rotation(rotation) {
+            return Err(ContactGeometryError);
+        }
+        let rotation = rotation.normalize();
+        output.vertices.clear();
+        output.vertices.extend(
+            self.vertices
+                .iter()
+                .map(|vertex| position + rotation * *vertex),
+        );
+        output.planes.clear();
+        output.planes.extend(self.planes.iter().map(|plane| {
+            let normal = rotation * plane.truncate();
+            normal.extend(plane.w + normal.dot(position))
+        }));
+        output.edges.clear();
+        output
+            .edges
+            .extend(self.edges.iter().map(|edge| rotation * *edge));
+        Ok(())
+    }
+
+    /// Bounds of transformed vertices without allocating transformed geometry.
+    ///
+    /// # Errors
+    /// Rejects a non-finite translation or non-unit rotation.
+    pub fn transformed_bounds(
+        &self,
+        position: DVec3,
+        rotation: DQuat,
+    ) -> Result<[DVec3; 2], ContactGeometryError> {
+        if !position.is_finite() || !valid_rotation(rotation) {
+            return Err(ContactGeometryError);
+        }
+        let rotation = rotation.normalize();
+        Ok(self.vertices.iter().fold(
+            [DVec3::INFINITY, DVec3::NEG_INFINITY],
+            |[lo, hi], &vertex| {
+                let point = position + rotation * vertex;
+                [lo.min(point), hi.max(point)]
+            },
+        ))
+    }
+
     /// Inclusive minimum/maximum of the exact transformed vertices.
     pub fn bounds(&self) -> [DVec3; 2] {
         self.vertices.iter().fold(
@@ -212,15 +277,50 @@ impl ContactPolytope {
         &self,
         triangle: [DVec3; 3],
     ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
+        self.triangle_contacts_with_scratch(triangle, &mut TriangleClipScratch::default())
+    }
+
+    /// Equivalent to [`Self::triangle_contacts`], retaining clipping polygon capacity.
+    ///
+    /// # Errors
+    /// Uses the same geometry and bound validation as [`Self::triangle_contacts`].
+    pub fn triangle_contacts_with_scratch(
+        &self,
+        triangle: [DVec3; 3],
+        scratch: &mut TriangleClipScratch,
+    ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
         let normal = triangle_normal(triangle)?;
-        let mut polygon = triangle.to_vec();
+        let TriangleClipScratch {
+            polygon,
+            clipped,
+            distances,
+            ..
+        } = scratch;
+        polygon.clear();
+        polygon.extend_from_slice(&triangle);
         for plane in &self.planes {
-            let mut clipped = Vec::with_capacity(polygon.len() + 1);
+            distances.clear();
+            distances.extend(
+                polygon
+                    .iter()
+                    .map(|&point| plane.truncate().dot(point) - plane.w),
+            );
+            // An interior face leaves the polygon and its vertex order intact.
+            // Distances are also shared by the two edges meeting each vertex.
+            if distances.iter().all(|&distance| distance <= 0.0) {
+                continue;
+            }
+            clipped.clear();
             for index in 0..polygon.len() {
+                let next = if index + 1 == polygon.len() {
+                    0
+                } else {
+                    index + 1
+                };
                 let a = polygon[index];
-                let b = polygon[(index + 1) % polygon.len()];
-                let da = plane.truncate().dot(a) - plane.w;
-                let db = plane.truncate().dot(b) - plane.w;
+                let b = polygon[next];
+                let da = distances[index];
+                let db = distances[next];
                 if da <= 0.0 {
                     clipped.push(a);
                 }
@@ -228,7 +328,7 @@ impl ContactPolytope {
                     clipped.push(a.lerp(b, da / (da - db)));
                 }
             }
-            polygon = clipped;
+            std::mem::swap(polygon, clipped);
             if polygon.is_empty() {
                 return Ok(Vec::new());
             }
@@ -284,7 +384,19 @@ impl ContactPolytope {
         &self,
         triangle: [DVec3; 3],
     ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
-        let mut points = self.triangle_contacts(triangle)?;
+        self.triangle_recovery_contacts_with_scratch(triangle, &mut TriangleClipScratch::default())
+    }
+
+    /// Equivalent to [`Self::triangle_recovery_contacts`], retaining clipping polygon capacity.
+    ///
+    /// # Errors
+    /// Uses the same geometry and bound validation as [`Self::triangle_recovery_contacts`].
+    pub fn triangle_recovery_contacts_with_scratch(
+        &self,
+        triangle: [DVec3; 3],
+        scratch: &mut TriangleClipScratch,
+    ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
+        let mut points = self.triangle_contacts_with_scratch(triangle, scratch)?;
         if points.is_empty() {
             return Ok(points);
         }
@@ -323,7 +435,20 @@ impl ContactPolytope {
         triangle: [DVec3; 3],
         margin: f64,
     ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
-        self.proximity_with_bound(triangle, margin, margin)
+        self.triangle_proximity_with_scratch(triangle, margin, &mut TriangleClipScratch::default())
+    }
+
+    /// Equivalent to [`Self::triangle_proximity`], retaining clipping polygon capacity.
+    ///
+    /// # Errors
+    /// Uses the same geometry and bound validation as [`Self::triangle_proximity`].
+    pub fn triangle_proximity_with_scratch(
+        &self,
+        triangle: [DVec3; 3],
+        margin: f64,
+        scratch: &mut TriangleClipScratch,
+    ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
+        self.proximity_with_bound(triangle, margin, margin, scratch)
     }
 
     /// Actual finite intersections, or opposing points within a numerical-zero
@@ -338,14 +463,31 @@ impl ContactPolytope {
         triangle: [DVec3; 3],
         maximum_gap: f64,
     ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
+        self.triangle_activation_contacts_with_scratch(
+            triangle,
+            maximum_gap,
+            &mut TriangleClipScratch::default(),
+        )
+    }
+
+    /// Equivalent to [`Self::triangle_activation_contacts`], retaining clipping polygon capacity.
+    ///
+    /// # Errors
+    /// Uses the same geometry and bound validation as [`Self::triangle_activation_contacts`].
+    pub fn triangle_activation_contacts_with_scratch(
+        &self,
+        triangle: [DVec3; 3],
+        maximum_gap: f64,
+        scratch: &mut TriangleClipScratch,
+    ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
         if !maximum_gap.is_finite() || maximum_gap <= 0.0 {
             return Err(ContactGeometryError);
         }
-        let points = self.triangle_contacts(triangle)?;
+        let points = self.triangle_contacts_with_scratch(triangle, scratch)?;
         if !points.is_empty() {
             return Ok(points);
         }
-        match self.proximity_with_bound(triangle, maximum_gap * 0.5, maximum_gap) {
+        match self.proximity_with_bound(triangle, maximum_gap * 0.5, maximum_gap, scratch) {
             // An empty inner search is not evidence that the outer half of the
             // activation window is empty. Certify unchanged finite hull vertices
             // there before returning an empty manifold. Failure to find a vertex
@@ -373,37 +515,69 @@ impl ContactPolytope {
         triangle: [DVec3; 3],
         margin: f64,
         maximum_gap: f64,
+        scratch: &mut TriangleClipScratch,
     ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
         if !margin.is_finite() || margin < 0.0 {
             return Err(ContactGeometryError);
         }
         if margin == 0.0 {
-            return self.triangle_contacts(triangle);
+            return self.triangle_contacts_with_scratch(triangle, scratch);
         }
         let normal = triangle_normal(triangle)?;
-        let mut extruded = self.clone();
-        extruded
-            .vertices
-            .extend(self.vertices.iter().map(|point| *point - margin * normal));
-        for plane in &mut extruded.planes {
-            plane.w += margin * (-plane.truncate().dot(normal)).max(0.0);
-        }
-        // Minkowski sum with a segment also has silhouette faces generated by
-        // each original edge crossed with the extrusion direction. Merely
-        // shifting existing planes overestimates oblique convex footprints.
-        for edge in &self.edges {
-            if let Some(axis) = edge.cross(normal).try_normalize() {
-                let [minimum, maximum] = project(&self.vertices, axis);
-                extruded.planes.push(axis.extend(maximum));
-                extruded.planes.push((-axis).extend(-minimum));
+        let same_source = scratch.extrusion_source.as_ref().is_some_and(|source| {
+            source.vertices == self.vertices
+                && source.planes == self.planes
+                && source.edges == self.edges
+        });
+        let reuse = same_source && scratch.extrusion_key == Some((normal, margin));
+        let mut extruded = scratch.extruded.take().unwrap_or_else(|| Self {
+            vertices: Vec::new(),
+            planes: Vec::new(),
+            edges: Vec::new(),
+        });
+        if !reuse {
+            // Adjacent coplanar triangles often use the same extrusion. Its cache
+            // key includes all source geometry, so a moved/reused collider or a
+            // changed normal or margin can never reuse stale clipping planes.
+            extruded.vertices.clone_from(&self.vertices);
+            extruded.planes.clone_from(&self.planes);
+            extruded.edges.clone_from(&self.edges);
+            extruded
+                .vertices
+                .extend(self.vertices.iter().map(|point| *point - margin * normal));
+            for plane in &mut extruded.planes {
+                plane.w += margin * (-plane.truncate().dot(normal)).max(0.0);
             }
+            // Minkowski sum with a segment also has silhouette faces generated by
+            // each original edge crossed with the extrusion direction. Merely
+            // shifting existing planes overestimates oblique convex footprints.
+            for edge in &self.edges {
+                if let Some(axis) = edge.cross(normal).try_normalize() {
+                    let [minimum, maximum] = project(&self.vertices, axis);
+                    extruded.planes.push(axis.extend(maximum));
+                    extruded.planes.push((-axis).extend(-minimum));
+                }
+            }
+            if extruded.vertices.iter().any(|point| !point.is_finite())
+                || extruded.planes.iter().any(|plane| !plane.is_finite())
+            {
+                scratch.extrusion_key = None;
+                return Err(ContactGeometryError);
+            }
+            if !same_source {
+                if let Some(source) = &mut scratch.extrusion_source {
+                    source.vertices.clone_from(&self.vertices);
+                    source.planes.clone_from(&self.planes);
+                    source.edges.clone_from(&self.edges);
+                } else {
+                    scratch.extrusion_source = Some(self.clone());
+                }
+            }
+            scratch.extrusion_key = Some((normal, margin));
         }
-        if extruded.vertices.iter().any(|point| !point.is_finite())
-            || extruded.planes.iter().any(|plane| !plane.is_finite())
-        {
-            return Err(ContactGeometryError);
-        }
-        let mut contacts = extruded.triangle_contacts(triangle)?;
+        let result = extruded.triangle_contacts_with_scratch(triangle, scratch);
+        scratch.extruded = Some(extruded);
+        let mut contacts = result?;
         if contacts.is_empty() {
             return Ok(contacts);
         }

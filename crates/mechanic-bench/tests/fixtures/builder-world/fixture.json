@@ -1,0 +1,10 @@
+{
+  "source": "/Users/jens/Library/Application Support/Mechanic/worlds/builder",
+  "files": {
+    "world.ron": "b4bbfe409e5676daed6dec3f07e8cb2d3697cc4ede227bb43b5de737c7394246",
+    "generations/20/world.ron": "2767a71feb8bd69ca23e7a027363965c9e232f610a915c4113d58a94430e946c",
+    "generations/20/garage.ron": "f2524aef00e1fc96b8a8c23fd60b55b17c349df6346dea23233b81edb2f1aea3"
+  },
+  "terrain": "Procedural terrain: generator version and seed in world.ron; no saved terrain edits.",
+  "generation": 20
+}

@@ -1,0 +1,176 @@
+{
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "warmup_ticks": 600,
+  "measured_ticks": 3600,
+  "repeats": 2,
+  "binaries": {
+    "baseline": {
+      "path": "/private/tmp/mechanic-cpu-baseline",
+      "sha256": "385bb4e3776a832379525b256f3ae3711427dfd536f2397c11f4d2e78698f54b"
+    },
+    "candidate": {
+      "path": "/private/tmp/mechanic-cpu-candidate-final",
+      "sha256": "30dbc198600e9589d38a337cf12eeba0823a69bd90c5c00224fbe93360f620e3"
+    }
+  },
+  "runs": [
+    {
+      "label": "1x-separated-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789398603.036936,
+      "elapsed_seconds": 32.97932696342468,
+      "exit_code": 0
+    },
+    {
+      "label": "1x-separated-candidate-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-final",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789398636.016644,
+      "elapsed_seconds": 22.604180097579956,
+      "exit_code": 0
+    },
+    {
+      "label": "1x-separated-candidate-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-final",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789398658.6211462,
+      "elapsed_seconds": 22.602139711380005,
+      "exit_code": 0
+    },
+    {
+      "label": "1x-separated-baseline-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789398681.223619,
+      "elapsed_seconds": 31.295297145843506,
+      "exit_code": 0
+    },
+    {
+      "label": "1x-connected-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600",
+        "--connected"
+      ],
+      "started_unix": 1789398712.519236,
+      "elapsed_seconds": 31.302124738693237,
+      "exit_code": 0
+    },
+    {
+      "label": "1x-connected-candidate-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-final",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600",
+        "--connected"
+      ],
+      "started_unix": 1789398743.821703,
+      "elapsed_seconds": 22.421778202056885,
+      "exit_code": 0
+    },
+    {
+      "label": "1x-connected-candidate-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-candidate-final",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600",
+        "--connected"
+      ],
+      "started_unix": 1789398766.243804,
+      "elapsed_seconds": 22.504393100738525,
+      "exit_code": 0
+    },
+    {
+      "label": "1x-connected-baseline-2",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600",
+        "--connected"
+      ],
+      "started_unix": 1789398788.7484741,
+      "elapsed_seconds": 31.371553897857666,
+      "exit_code": 0
+    },
+    {
+      "label": "2x-separated-baseline-1",
+      "command": [
+        "/private/tmp/mechanic-cpu-baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "600",
+        "--ticks",
+        "3600"
+      ],
+      "started_unix": 1789398820.120366,
+      "elapsed_seconds": 68.24079585075378,
+      "exit_code": 0
+    }
+  ]
+}

@@ -52,6 +52,24 @@ impl ContactPolytope {
         &self,
         other: &Self,
     ) -> Result<ConvexSeparation, ContactGeometryError> {
+        self.convex_separation_within(other, f64::INFINITY)?
+            .ok_or(ContactGeometryError)
+    }
+
+    /// Exact contact separation, skipping edge work when a face already proves
+    /// separation beyond the supplied margin. A retained result uses the same
+    /// feature selection as [`Self::convex_separation`].
+    ///
+    /// # Errors
+    /// Rejects invalid geometry or a NaN margin.
+    pub fn convex_separation_within(
+        &self,
+        other: &Self,
+        margin: f64,
+    ) -> Result<Option<ConvexSeparation>, ContactGeometryError> {
+        if margin.is_nan() {
+            return Err(ContactGeometryError);
+        }
         let mut face: Option<ConvexSeparation> = None;
         let mut consider_face = |axis: DVec3, separation: f64, feature| {
             if face.is_none_or(|best| separation > best.separation) {
@@ -67,6 +85,9 @@ impl ContactPolytope {
                 return Err(ContactGeometryError);
             };
             let gap = project(&other.vertices, normal)[0] - project(&self.vertices, normal)[1];
+            if gap > margin {
+                return Ok(None);
+            }
             consider_face(-normal, gap, ConvexFeature::OwnFace(row));
         }
         for (row, plane) in other.planes.iter().enumerate() {
@@ -74,6 +95,9 @@ impl ContactPolytope {
                 return Err(ContactGeometryError);
             };
             let gap = project(&self.vertices, normal)[0] - project(&other.vertices, normal)[1];
+            if gap > margin {
+                return Ok(None);
+            }
             consider_face(normal, gap, ConvexFeature::OtherFace(row));
         }
         let face = face.ok_or(ContactGeometryError)?;
@@ -103,10 +127,10 @@ impl ContactPolytope {
             return Err(ContactGeometryError);
         }
         let Some((axis, separation, own_row, other_row)) = edge else {
-            return Ok(face);
+            return Ok(Some(face));
         };
         if separation <= face.separation + EDGE_AXIS_BIAS {
-            return Ok(face);
+            return Ok(Some(face));
         }
         // Keep the edge axis and its tighter gap for distance bounds; only the
         // manifold comes from the aligned face.
@@ -122,24 +146,24 @@ impl ContactPolytope {
                 .filter(|(alignment, _)| *alignment >= EDGE_FACE_ALIGNMENT)
                 .max_by(|a, b| a.0.total_cmp(&b.0));
         if let Some((_, feature)) = aligned {
-            return Ok(ConvexSeparation {
+            return Ok(Some(ConvexSeparation {
                 axis,
                 separation,
                 feature,
-            });
+            }));
         }
         let own = support_edge(self, -axis, self.edges[own_row]);
         let theirs = support_edge(other, axis, other.edges[other_row]);
         let (Some(own), Some(theirs)) = (own, theirs) else {
             // A vertex, not an edge, realizes this axis on one side: the face
             // feature still describes that contact without inventing an edge.
-            return Ok(face);
+            return Ok(Some(face));
         };
-        Ok(ConvexSeparation {
+        Ok(Some(ConvexSeparation {
             axis,
             separation,
             feature: ConvexFeature::Edges(closest_segment_points(own, theirs)),
-        })
+        }))
     }
 
     /// Fan triangles of one face polygon, wound so each triangle's normal is the

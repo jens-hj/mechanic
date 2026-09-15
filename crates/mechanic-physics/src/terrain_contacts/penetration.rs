@@ -106,11 +106,15 @@ impl TerrainContactScene {
                 continue;
             }
             let motion_bound = motion.bounds()[collider.body];
-            let reach = (motion_bound.origin_speed + collider.radius).next_up();
-            let center = origin + motion.initial_poses()[collider.body].position;
+            let [minimum, maximum] = super::swept_bounds(
+                collider,
+                motion.initial_poses()[collider.body],
+                motion_bound,
+                0.0,
+            )?;
             let bounds = WorldBounds {
-                minimum: WorldPosition((center - DVec3::splat(reach)).map(f64::next_down)),
-                maximum: WorldPosition((center + DVec3::splat(reach)).map(f64::next_up)),
+                minimum: WorldPosition((origin + minimum).map(f64::next_down)),
+                maximum: WorldPosition((origin + maximum).map(f64::next_up)),
             };
             if !valid_bounds(bounds) {
                 return Err(PhysicsError::InvalidCollision);
@@ -230,18 +234,18 @@ impl TerrainContactScene {
         // midpoint's separating-axis overlap plus that sum bounds the whole path.
         let mut bounds = Vec::with_capacity(machine.colliders.len());
         for collider in &machine.colliders {
-            let reach = (motion.bounds()[collider.body].origin_speed + collider.radius).next_up();
-            let center = motion.initial_poses()[collider.body].position;
-            let corners = [
-                (center - DVec3::splat(reach)).map(f64::next_down),
-                (center + DVec3::splat(reach)).map(f64::next_up),
-            ];
+            let corners = super::swept_bounds(
+                collider,
+                motion.initial_poses()[collider.body],
+                motion.bounds()[collider.body],
+                0.0,
+            )?;
             if !corners[0].is_finite() || !corners[1].is_finite() {
                 return Err(PhysicsError::InvalidCollision);
             }
             bounds.push(corners);
         }
-        for [first, second] in machine.candidate_pairs(&bounds) {
+        for &[first, second] in machine.candidate_pairs(&bounds).iter() {
             query.collider_pair_candidates += 1;
             let colliders = [&machine.colliders[first], &machine.colliders[second]];
             let speed = colliders.iter().fold(0.0_f64, |sum, collider| {

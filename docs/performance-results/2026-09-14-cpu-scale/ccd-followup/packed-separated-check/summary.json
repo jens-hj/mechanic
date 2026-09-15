@@ -1,0 +1,34 @@
+{
+  "runs": {
+    "10x-separated-baseline-1": {
+      "closure_angle_rad": 2.1073424255447017e-08,
+      "closure_gap_m": 0.018527439215687926,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.0018844724145656855,
+      "outside_terrain_region": false,
+      "p95_ms": 29.972875,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-separated-candidate-1": {
+      "closure_angle_rad": 2.1073424255447017e-08,
+      "closure_gap_m": 0.018527439215687926,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.0018844724145656855,
+      "outside_terrain_region": false,
+      "p95_ms": 29.8355,
+      "rendering_measured": false,
+      "timing_gate": false
+    }
+  },
+  "comparisons": {
+    "10x-separated-candidate-1": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    }
+  }
+}

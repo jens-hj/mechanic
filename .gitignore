@@ -8,3 +8,7 @@
 
 /vendor/*/target
 __pycache__/
+
+# CPU scaling evidence is intentionally versioned.
+!/docs/performance-results/2026-09-14-cpu-scale/**/*.jsonl
+!/docs/performance-results/2026-09-14-cpu-scale/verification/*.log

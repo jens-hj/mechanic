@@ -7,7 +7,7 @@ use mechanic_core::{CompiledBearing, CompiledCreation, CoordinateDrive, DriveMod
 
 use super::{SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
 use crate::{
-    BodyPose, DynamicsFactor, MachineDynamics, MachineMotion, MachineState, PhysicsError,
+    BodyPose, DynamicsFactor, MachineKinematics, MachineMotion, MachineState, PhysicsError,
     TerrainContact, TerrainSweepHit, TerrainSweepOutcome,
     free_motion::advance_positions,
     joint_forces::{PassiveForce, drive_budget, drive_target},
@@ -21,7 +21,13 @@ pub(super) struct Machine<'a> {
     pub drives: &'a [CoordinateDrive],
     /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
     pub closure_passive: &'a [PassiveForce],
+    /// Generalized velocity rows of held bodies.
+    pub held: &'a [bool],
 }
+
+/// Generalized inertia added to a held body's rows, so rows touching it see an
+/// immovable body.
+const HELD_INERTIA: f64 = 1.0e12;
 
 /// One contact point, followed through its bodies' motion for the whole tick.
 pub(super) struct Contact {
@@ -80,9 +86,12 @@ impl Contact {
 
     fn rows(
         &self,
-        model: &MachineDynamics,
+        model: &MachineKinematics,
         factor: &DynamicsFactor,
-    ) -> Result<PointRows, PhysicsError> {
+        output: &mut PointRows,
+        jacobian: &mut [f64],
+        response: &mut Vec<f64>,
+    ) -> Result<(), PhysicsError> {
         let world = |body: usize, local: DVec3| {
             let pose = model.poses[body];
             pose.position + pose.rotation * local
@@ -100,24 +109,31 @@ impl Contact {
         let mut point = self.source;
         point.body_point = anchor;
         point.terrain_point = other;
-        let mut rows = Vec::with_capacity(5);
-        for direction in [self.source.normal, self.tangent_u, self.tangent_v] {
-            rows.push(Row::new(factor, point.point_row(model, direction)?)?);
+        let ranges = model.contact_ranges(&point);
+        let count = if self.rolling.is_some() { 5 } else { 3 };
+        output.rows.resize_with(count, Row::default);
+        for (row, direction) in [
+            self.source.normal,
+            self.tangent_u,
+            self.tangent_v,
+            self.tangent_u,
+            self.tangent_v,
+        ]
+        .into_iter()
+        .enumerate()
+        .take(count)
+        {
+            model.contact_row(&point, direction, row >= 3, jacobian)?;
+            output.rows[row].refresh_local(factor, jacobian, response, &ranges)?;
         }
-        if self.rolling.is_some() {
-            for direction in [self.tangent_u, self.tangent_v] {
-                rows.push(Row::new(factor, point.angular_row(model, direction)?)?);
-            }
-        }
-        Ok(PointRows {
-            rows,
-            separation,
-            moved: 0.0,
-        })
+        output.separation = separation;
+        output.moved = 0.0;
+        Ok(())
     }
 }
 
 /// A contact's rows at one substep's starting pose.
+#[derive(Default)]
 pub(super) struct PointRows {
     rows: Vec<Row>,
     separation: f64,
@@ -190,7 +206,7 @@ impl Block {
         let mut effective = [[0.0; 3]; 3];
         for (i, row) in rows.iter().enumerate() {
             for (j, other) in rows.iter().enumerate() {
-                effective[i][j] = dot(&row.jacobian, &other.response);
+                effective[i][j] = row.coupling(other);
             }
         }
         Self {
@@ -311,7 +327,7 @@ pub(super) struct Closure {
 impl Closure {
     fn new(
         creation: &CompiledCreation,
-        model: &MachineDynamics,
+        model: &MachineKinematics,
         factor: &DynamicsFactor,
         bearing: &CompiledBearing,
         settings: &SoftStepSettings,
@@ -326,10 +342,15 @@ impl Closure {
             }
             (row, reference)
         };
+        // Both bodies' rows act at the anchors' midpoint. Taken at each body's own
+        // anchor, a loaded loop's soft gap turns rigid motion of the whole loop,
+        // such as a cart pitching about its wheels, into a relative velocity: the
+        // redundant row survives with a gap-long lever and ratchets that motion.
+        let midpoint = 0.5 * (frame.anchor_a + frame.anchor_b);
         let relative = |direction: DVec3| -> Result<(Vec<f64>, f64), PhysicsError> {
             Ok(difference([
-                model.point_row(a, frame.anchor_a, direction)?,
-                model.point_row(b, frame.anchor_b, direction)?,
+                model.point_row(a, midpoint, direction)?,
+                model.point_row(b, midpoint, direction)?,
             ]))
         };
         let turning = |direction: DVec3| -> Result<(Vec<f64>, f64), PhysicsError> {
@@ -352,7 +373,7 @@ impl Closure {
                 if dot(&jacobian, &jacobian) <= 1e-10 * reference {
                     continue;
                 }
-                rows.push(Row::new(factor, jacobian)?);
+                rows.push(Row::new(factor, &jacobian)?);
                 errors.push(error.dot(direction));
             }
             Ok(Block::new(rows, errors))
@@ -375,8 +396,8 @@ impl Closure {
         let [lower, upper] = bearing.kind.bounds().map(f64::from);
         let stop = |gap: f64, sign: f64| -> Result<Option<(Row, f64)>, PhysicsError> {
             if gap.is_finite() && gap < settings.speculative {
-                let row = jacobian.iter().map(|value| sign * value).collect();
-                Ok(Some((Row::new(factor, row)?, gap)))
+                let row: Vec<f64> = jacobian.iter().map(|value| sign * value).collect();
+                Ok(Some((Row::new(factor, &row)?, gap)))
             } else {
                 Ok(None)
             }
@@ -484,35 +505,121 @@ pub(super) fn closure_errors(creation: &CompiledCreation, poses: &[BodyPose]) ->
         })
 }
 
+#[derive(Default)]
 struct Row {
-    jacobian: Vec<f64>,
-    response: Vec<f64>,
+    jacobian: Vec<(usize, f64)>,
+    response: Vec<(usize, f64)>,
     mass: f64,
 }
 
 impl Row {
-    fn new(factor: &DynamicsFactor, jacobian: Vec<f64>) -> Result<Self, PhysicsError> {
-        let mut response = jacobian.clone();
-        factor.solve(&mut response)?;
-        let inverse = dot(&jacobian, &response);
-        Ok(Self {
-            mass: if inverse > f64::EPSILON {
-                1.0 / inverse
-            } else {
-                0.0
-            },
-            jacobian,
-            response,
-        })
+    fn new(factor: &DynamicsFactor, jacobian: &[f64]) -> Result<Self, PhysicsError> {
+        let mut row = Self::default();
+        row.refresh(factor, jacobian, &mut Vec::new())?;
+        Ok(row)
+    }
+
+    fn refresh(
+        &mut self,
+        factor: &DynamicsFactor,
+        jacobian: &[f64],
+        response: &mut Vec<f64>,
+    ) -> Result<(), PhysicsError> {
+        response.clear();
+        response.extend_from_slice(jacobian);
+        factor.solve(response)?;
+        let inverse = dot(jacobian, response);
+        self.mass = if inverse > f64::EPSILON {
+            1.0 / inverse
+        } else {
+            0.0
+        };
+        self.jacobian.clear();
+        self.jacobian.extend(
+            jacobian
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, v)| *v != 0.0),
+        );
+        self.response.clear();
+        self.response.extend(
+            response
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, v)| *v != 0.0),
+        );
+        Ok(())
+    }
+
+    fn refresh_local(
+        &mut self,
+        factor: &DynamicsFactor,
+        jacobian: &[f64],
+        response: &mut Vec<f64>,
+        ranges: &[std::ops::Range<usize>],
+    ) -> Result<(), PhysicsError> {
+        response.resize(jacobian.len(), 0.0);
+        for range in ranges {
+            response[range.clone()].copy_from_slice(&jacobian[range.clone()]);
+        }
+        factor.solve_ranges(response, ranges)?;
+        let inverse = ranges
+            .iter()
+            .flat_map(Clone::clone)
+            .map(|row| jacobian[row] * response[row])
+            .sum::<f64>();
+        self.mass = if inverse > f64::EPSILON {
+            1.0 / inverse
+        } else {
+            0.0
+        };
+        self.jacobian.clear();
+        self.jacobian.extend(
+            ranges
+                .iter()
+                .flat_map(Clone::clone)
+                .map(|row| (row, jacobian[row]))
+                .filter(|(_, v)| *v != 0.0),
+        );
+        self.response.clear();
+        self.response.extend(
+            ranges
+                .iter()
+                .flat_map(Clone::clone)
+                .map(|row| (row, response[row]))
+                .filter(|(_, v)| *v != 0.0),
+        );
+        Ok(())
+    }
+
+    fn coupling(&self, other: &Self) -> f64 {
+        let mut response = other.response.iter().peekable();
+        self.jacobian
+            .iter()
+            .map(|&(row, value)| {
+                while response.peek().is_some_and(|&&(index, _)| index < row) {
+                    response.next();
+                }
+                response
+                    .peek()
+                    .filter(|&&(index, _)| *index == row)
+                    .map_or(0.0, |&&(_, v)| value * v)
+            })
+            .sum()
     }
 
     fn speed(&self, velocities: &[f64]) -> f64 {
-        dot(&self.jacobian, velocities)
+        self.jacobian
+            .iter()
+            .map(|&(row, value)| value * velocities[row])
+            .sum()
     }
 
     fn apply(&self, velocities: &mut [f64], impulse: f64) {
-        for (velocity, response) in velocities.iter_mut().zip(&self.response) {
-            *velocity += response * impulse;
+        for &(row, response) in &self.response {
+            velocities[row] += response * impulse;
         }
     }
 }
@@ -567,6 +674,35 @@ impl Soft {
     }
 }
 
+#[derive(Default)]
+pub(super) struct Scratch {
+    pub(super) points: Vec<PointRows>,
+    jacobian: Vec<f64>,
+    response: Vec<f64>,
+    factor: Option<DynamicsFactor>,
+    diagonal: Vec<f64>,
+}
+
+impl Scratch {
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.points.capacity() * size_of::<PointRows>()
+            + self
+                .points
+                .iter()
+                .flat_map(|point| &point.rows)
+                .map(|row| {
+                    (row.jacobian.capacity() + row.response.capacity()) * size_of::<(usize, f64)>()
+                })
+                .sum::<usize>()
+            + (self.jacobian.capacity() + self.response.capacity() + self.diagonal.capacity())
+                * size_of::<f64>()
+            + self
+                .factor
+                .as_ref()
+                .map_or(0, DynamicsFactor::retained_bytes)
+    }
+}
+
 /// Integrates forces, solves and advances positions over one substep.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One ordered substep with explicit inputs and work accounting.
 pub(super) fn substep(
@@ -579,22 +715,54 @@ pub(super) fn substep(
     settings: &SoftStepSettings,
     terrain: Option<SoftStepTerrain<'_>>,
     diagnostics: &mut SoftStepDiagnostics,
+    scratch: &mut Scratch,
 ) -> Result<Substep, PhysicsError> {
+    let dynamics_started = std::time::Instant::now();
     let creation = machine.creation;
-    let model = MachineDynamics::assemble(creation, &state.poses, &state.coordinates)?;
+    let model = MachineKinematics::assemble(creation, &state.poses, &state.coordinates)?;
     state.poses.clone_from(&model.poses);
-    let mut diagonal = vec![0.0; state.velocities.len()];
+    scratch.diagonal.resize(state.velocities.len(), 0.0);
+    scratch.diagonal.fill(0.0);
+    let diagonal = &mut scratch.diagonal;
     for (coordinate, &row) in creation.dynamics.coordinate_velocities.iter().enumerate() {
         diagonal[row] = machine.passive[coordinate].implicit_diagonal(dt);
     }
-    let factor = settings
-        .factorization
-        .factor(creation, &model, &state.coordinates, &diagonal)?;
+    for (value, _) in diagonal
+        .iter_mut()
+        .zip(machine.held)
+        .filter(|(_, held)| **held)
+    {
+        *value = HELD_INERTIA;
+    }
+    model.refactor(
+        settings.factorization,
+        &state.coordinates,
+        diagonal,
+        &mut scratch.factor,
+    )?;
+    let factor = scratch
+        .factor
+        .as_ref()
+        .ok_or(PhysicsError::InvalidDynamics)?;
 
-    let mut points = contacts
-        .iter()
-        .map(|contact| contact.rows(&model, &factor))
-        .collect::<Result<Vec<_>, _>>()?;
+    diagnostics.dynamics_ms += dynamics_started.elapsed().as_secs_f64() * 1000.0;
+    let rows_started = std::time::Instant::now();
+    if scratch.points.len() < contacts.len() {
+        scratch
+            .points
+            .resize_with(contacts.len(), PointRows::default);
+    }
+    scratch.jacobian.resize(state.velocities.len(), 0.0);
+    let points = &mut scratch.points[..contacts.len()];
+    for (contact, point) in contacts.iter().zip(points.iter_mut()) {
+        contact.rows(
+            &model,
+            factor,
+            point,
+            &mut scratch.jacobian,
+            &mut scratch.response,
+        )?;
+    }
     let mut closures = creation
         .dynamics
         .loops
@@ -603,7 +771,7 @@ pub(super) fn substep(
             Closure::new(
                 creation,
                 &model,
-                &factor,
+                factor,
                 &creation.bearings[pattern.bearing],
                 settings,
             )
@@ -618,7 +786,7 @@ pub(super) fn substep(
     }
     // Approach and slip before forces act decide restitution and the friction
     // mode, once per contact: at the tick's first substep or after a re-query.
-    for (contact, point) in contacts.iter_mut().zip(&points) {
+    for (contact, point) in contacts.iter_mut().zip(points.iter()) {
         if contact.fresh {
             contact.fresh = false;
             contact.approach = point.rows[0].speed(&state.velocities);
@@ -628,10 +796,12 @@ pub(super) fn substep(
                 > settings.stiction_speed;
         }
     }
-    for point in &points {
+    for point in points.iter() {
         diagnostics.maximum_penetration = diagnostics.maximum_penetration.max(-point.separation);
     }
 
+    diagnostics.rows_ms += rows_started.elapsed().as_secs_f64() * 1000.0;
+    let dynamics_started = std::time::Instant::now();
     // Gravity, gyroscopic bias and suspension, stiffened by the passive slope.
     let mut force = model.gravity_force(creation, gravity)?;
     let bias = model.inertial_bias(creation, &state.velocities)?;
@@ -659,14 +829,18 @@ pub(super) fn substep(
         *velocity += change;
     }
 
-    let (mut limits, drives) = joint_rows(machine, state, joints, &factor, dt, settings)?;
+    diagnostics.dynamics_ms += dynamics_started.elapsed().as_secs_f64() * 1000.0;
+    let rows_started = std::time::Instant::now();
+    let (mut limits, drives) = joint_rows(machine, state, joints, factor, dt, settings)?;
     diagnostics.rows = points.iter().map(|point| point.rows.len()).sum::<usize>()
         + limits.len()
         + drives.len()
         + closures.iter().map(Closure::len).sum::<usize>();
 
+    diagnostics.rows_ms += rows_started.elapsed().as_secs_f64() * 1000.0;
+    let constraints_started = std::time::Instant::now();
     // Warm start with the impulses the previous substep settled on.
-    for (contact, point) in contacts.iter().zip(&points) {
+    for (contact, point) in contacts.iter().zip(points.iter()) {
         for (row, &impulse) in point.rows.iter().zip(&contact.impulses) {
             row.apply(&mut state.velocities, impulse);
         }
@@ -713,7 +887,7 @@ pub(super) fn substep(
     for _ in 0..iterations {
         pass(
             contacts,
-            &points,
+            points,
             &limits,
             &drives,
             &closures,
@@ -725,10 +899,14 @@ pub(super) fn substep(
             settings,
         );
     }
+    diagnostics.constraints_ms += constraints_started.elapsed().as_secs_f64() * 1000.0;
+    let continuous_started = std::time::Instant::now();
     let (fraction, travelled, turned) = match terrain {
         Some(terrain) => continuous_fraction(creation, state, terrain, dt, settings, diagnostics),
         None => (1.0, Vec::new(), 0.0),
     };
+    diagnostics.continuous_ms += continuous_started.elapsed().as_secs_f64() * 1000.0;
+    let constraints_started = std::time::Instant::now();
     let advanced = fraction * dt;
     advance_positions(creation, state, advanced);
     for (coordinate, value) in state.coordinates.iter_mut().enumerate() {
@@ -737,7 +915,7 @@ pub(super) fn substep(
             *value = value.clamp(lower, upper);
         }
     }
-    for point in &mut points {
+    for point in points.iter_mut() {
         point.moved = advanced * point.rows[0].speed(&state.velocities);
     }
     for limit in &mut limits {
@@ -752,7 +930,7 @@ pub(super) fn substep(
     for _ in 0..relax_iterations {
         pass(
             contacts,
-            &points,
+            points,
             &limits,
             &drives,
             &closures,
@@ -767,8 +945,9 @@ pub(super) fn substep(
     for drive in &drives {
         diagnostics.drive_impulses[drive.coordinate] += joints.drive[drive.coordinate];
     }
+    diagnostics.constraints_ms += constraints_started.elapsed().as_secs_f64() * 1000.0;
     Ok(Substep {
-        points,
+        point_count: points.len(),
         travelled,
         turned,
         rewound: fraction < 1.0,
@@ -779,7 +958,7 @@ pub(super) fn substep(
 /// bound and the largest body rotation over the advanced part, and whether a
 /// continuous hit cut it short.
 pub(super) struct Substep {
-    pub points: Vec<PointRows>,
+    pub point_count: usize,
     pub travelled: Vec<f64>,
     pub turned: f64,
     pub rewound: bool,
@@ -832,6 +1011,14 @@ fn continuous_fraction(
             settings.continuous_evaluations,
         ) {
             Ok(query) => {
+                diagnostics.continuous_shape_transformations += query.shape_transformations;
+                diagnostics.continuous_shape_cache_hits += query.shape_cache_hits;
+                diagnostics.continuous_hierarchy_node_pair_tests += query.hierarchy_node_pair_tests;
+                diagnostics.continuous_pose_evaluations += query.pose_evaluations;
+                diagnostics.continuous_velocity_evaluations += query.velocity_evaluations;
+                diagnostics.continuous_separation_evaluations += query.separation_evaluations;
+                diagnostics.continuous_collider_pair_candidates += query.collider_pair_candidates;
+                diagnostics.continuous_triangle_candidates += query.triangle_candidates;
                 if let TerrainSweepOutcome::Impact(hit) | TerrainSweepOutcome::Unconverged(hit) =
                     query.outcome
                     && missed(
@@ -903,7 +1090,7 @@ fn joint_rows(
     let unit = |row: usize, sign: f64| {
         let mut jacobian = vec![0.0; size];
         jacobian[row] = sign;
-        Row::new(factor, jacobian)
+        Row::new(factor, &jacobian)
     };
     let mut limits = Vec::new();
     let mut drives = Vec::new();

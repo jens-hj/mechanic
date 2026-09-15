@@ -1,0 +1,17 @@
+   Compiling mechanic-core v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-core)
+   Compiling mechanic-world v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-world)
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 7.51s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 7 tests
+test terrain_contacts::penetration::tests::a_separated_body_below_a_finite_surface_does_not_get_a_penetration_hold ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::an_impact_above_the_threshold_rebounds_at_the_material_restitution ... ok
+test soft_step::tests::a_joint_limit_holds_against_a_stalled_motor ... ok
+test kinematics::tests::active_runtime_above_512_velocities_applies_off_centre_impulses_and_releases_holds ... ok
+test joint_machine::tests::coupled_surface_substeps_hold_static_load_and_apply_kinetic_deceleration ... ok
+test joint_machine::tests::terrain_ticks::contact_semantics::an_impact_below_the_threshold_stops_dead_for_every_substep_policy ... ok
+test joint_machine::tests::refreshed_terrain_manifolds_hold_a_free_body_without_velocity_or_pose_drift ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 183 filtered out; finished in 0.02s
+

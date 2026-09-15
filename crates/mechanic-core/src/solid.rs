@@ -147,6 +147,8 @@ pub struct SurfacePatch {
     pub smoothing_group: u32,
     /// Base patch whose texture projection this surface continues.
     pub uv_provenance: SurfacePatchKey,
+    /// Radial material band of a layered cylinder; zero for every other solid.
+    pub band: u8,
 }
 
 /// A complete logical edge and all of its tessellated boundary segments.
@@ -167,6 +169,8 @@ pub struct LogicalEdge {
 pub struct ConvexVolumeCell {
     /// Convex polyhedron in build space.
     pub piece: ConvexPiece,
+    /// Radial material band of a layered cylinder; zero for every other solid.
+    pub band: u8,
 }
 
 /// Evaluated result of a base solid plus its ordered features.
@@ -246,6 +250,8 @@ struct PolyFace {
 #[derive(Clone, Debug)]
 struct PolyCell {
     faces: Vec<PolyFace>,
+    // Radial material band of a layered cylinder; zero everywhere else.
+    band: u8,
 }
 
 #[derive(Clone)]
@@ -287,8 +293,12 @@ pub fn evaluate_part_solid(
 ) -> Result<EvaluatedSolid, SolidError> {
     let cells = match spec {
         PartSpec::Cuboid(cuboid) => pieces_to_cells(decompose_part(cuboid)),
-        PartSpec::Cylinder(cylinder) => cylinder_cells(cylinder),
+        PartSpec::Cylinder(cylinder) => {
+            let replayed = replay_features(cylinder_cells(cylinder), features)?;
+            return build_evaluated(&partition_cylinder_bands(replayed, cylinder));
+        }
         PartSpec::PipeBend(bend) => pipe_bend_cells(bend),
+        PartSpec::PipeJunction(junction) => pipe_junction_cells(junction),
         PartSpec::Controller(_)
         | PartSpec::Engine(_)
         | PartSpec::Transmission(_)
@@ -317,9 +327,16 @@ pub fn evaluate_region_solid(
 }
 
 fn evaluate(
-    mut cells: Vec<PolyCell>,
+    cells: Vec<PolyCell>,
     features: impl IntoIterator<Item = (ShapeFeatureId, ShapeFeature)>,
 ) -> Result<EvaluatedSolid, SolidError> {
+    build_evaluated(&replay_features(cells, features)?)
+}
+
+fn replay_features(
+    mut cells: Vec<PolyCell>,
+    features: impl IntoIterator<Item = (ShapeFeatureId, ShapeFeature)>,
+) -> Result<Vec<PolyCell>, SolidError> {
     for (feature_id, feature) in features {
         if feature.amount_ticks == 0 {
             return Err(SolidError::ZeroAmount);
@@ -354,6 +371,7 @@ fn evaluate(
             feature_id,
         )?;
         let mut planes_by_cell = BTreeMap::<usize, Vec<ClipPlane>>::new();
+        let profiles = vertex_profiles(feature.treatment, amount, &segments, &selected);
         for segment in segments
             .iter()
             .filter(|segment| selected.contains(&segment.key))
@@ -361,9 +379,7 @@ fn evaluate(
             append_edge_profile_planes(
                 feature_id,
                 feature.treatment,
-                amount,
-                &segments,
-                &selected,
+                &profiles,
                 segment,
                 &mut planes_by_cell,
             );
@@ -378,55 +394,185 @@ fn evaluate(
             );
         }
         clip_feature_cells(&mut cells, planes_by_cell, feature_id)?;
+        snap_to_profile_points(&mut cells, &profiles);
         cells.retain(|cell| cell_volume(cell) > EPSILON);
         if cells.is_empty() {
             return Err(SolidError::AmountTooLarge(feature_id));
         }
     }
-    build_evaluated(&cells)
+    Ok(cells)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn append_edge_profile_planes(
-    feature: ShapeFeatureId,
+/// Treatment cross-sections shared by every segment meeting at a chain vertex,
+/// keyed by segment half-edge and vertex.
+type VertexProfiles = BTreeMap<(u32, PointKey), Vec<DVec3>>;
+
+/// Computes each selected segment's cross-section at both of its endpoints.
+///
+/// As in Blender's bevel, boundary points are placed once per vertex and both
+/// strips meeting there reuse them. A chain crossing convex-cell seams, such as
+/// a cylinder rim with one wedge cell per segment, is then cut on either side
+/// of each seam along the same polyline, so the interior seam faces still
+/// cancel when the boundary is stitched. Sampling the profile per segment
+/// instead left each side with its own arc wherever exact symmetry was lost.
+fn vertex_profiles(
     treatment: EdgeTreatment,
     amount: f64,
     segments: &[EdgeSegment],
     selected: &BTreeSet<TopologyKey>,
+) -> VertexProfiles {
+    let mut incident = BTreeMap::<(TopologyKey, PointKey), Vec<(&EdgeSegment, DVec3)>>::new();
+    for segment in segments
+        .iter()
+        .filter(|segment| selected.contains(&segment.key))
+    {
+        for point in [segment.a, segment.b] {
+            incident
+                .entry((segment.key, point_key(point)))
+                .or_default()
+                .push((segment, point));
+        }
+    }
+    // One facet count per chain. Posed parts measure a right-angle rim a hair
+    // either side of 90°, and vertices that disagreed on the count could not
+    // be joined by strip facets.
+    let mut chain_facets = BTreeMap::<TopologyKey, usize>::new();
+    for segment in segments
+        .iter()
+        .filter(|segment| selected.contains(&segment.key))
+    {
+        let angle = segment
+            .first_normal
+            .dot(segment.second_normal)
+            .clamp(-1.0, 1.0)
+            .acos();
+        let count = chain_facets.entry(segment.key).or_insert(1);
+        *count = (*count).max(fillet_facets(angle));
+    }
+    // Inside a chain a vertex takes the mean of both segments' face normals,
+    // which on a faceted rim is the true surface normal there.
+    let mut chain_normals = BTreeMap::<(TopologyKey, PointKey), (DVec3, DVec3)>::new();
+    for (&(key, vertex_key), uses) in &incident {
+        if let [(first, _), (second, _)] = uses.as_slice() {
+            let first_normal = (first.first_normal + second.first_normal).normalize_or_zero();
+            let second_normal = (first.second_normal + second.second_normal).normalize_or_zero();
+            if first_normal != DVec3::ZERO && second_normal != DVec3::ZERO {
+                chain_normals.insert((key, vertex_key), (first_normal, second_normal));
+            }
+        }
+    }
+    let mut profiles = VertexProfiles::new();
+    for ((key, vertex_key), uses) in incident {
+        let facets = chain_facets.get(&key).copied().unwrap_or(1);
+        for (segment, vertex) in uses {
+            let (first_normal, second_normal) = chain_normals
+                .get(&(key, vertex_key))
+                .copied()
+                .or_else(|| {
+                    // An open chain ends at a vertex only one segment reaches.
+                    // Continuing the normals' turn past that segment ends a
+                    // curved rim on the surface normal at its last vertex, as
+                    // a whole rim would, instead of on its last facet's normal.
+                    let other = if point_key(segment.a) == vertex_key {
+                        segment.b
+                    } else {
+                        segment.a
+                    };
+                    chain_normals
+                        .get(&(key, point_key(other)))
+                        .map(|&(first, second)| {
+                            (
+                                slerp_unit(first, segment.first_normal, 2.0),
+                                slerp_unit(second, segment.second_normal, 2.0),
+                            )
+                        })
+                })
+                .unwrap_or((segment.first_normal, segment.second_normal));
+            if let Some(profile) = vertex_profile(
+                treatment,
+                amount,
+                facets,
+                vertex,
+                first_normal,
+                second_normal,
+            ) {
+                profiles.insert((segment.half_edge, vertex_key), profile);
+            }
+        }
+    }
+    profiles
+}
+
+/// Cross-section of a treatment at `vertex`, from the first face to the second.
+///
+/// A fillet samples its circular arc from one face tangency to the other; a
+/// chamfer is the straight cut between the two setback points.
+/// `facets` is shared by the whole chain so neighbouring profiles pair up
+/// step for step; chamfers ignore it.
+fn vertex_profile(
+    treatment: EdgeTreatment,
+    amount: f64,
+    facets: usize,
+    vertex: DVec3,
+    first_normal: DVec3,
+    second_normal: DVec3,
+) -> Option<Vec<DVec3>> {
+    let dot = first_normal.dot(second_normal).clamp(-1.0, 1.0);
+    let angle = dot.acos();
+    if !(1.0e-6..=core::f64::consts::PI - 1.0e-6).contains(&angle) {
+        return None;
+    }
+    Some(match treatment {
+        EdgeTreatment::Chamfer => {
+            let first_inward = -(second_normal - first_normal * dot).normalize();
+            let second_inward = -(first_normal - second_normal * dot).normalize();
+            vec![
+                vertex + first_inward * amount,
+                vertex + second_inward * amount,
+            ]
+        }
+        EdgeTreatment::Fillet => {
+            let facets = facets.max(1);
+            let centre = vertex - (first_normal + second_normal) * (amount / (1.0 + dot));
+            (0..=facets)
+                .map(|step| {
+                    centre
+                        + slerp_unit(first_normal, second_normal, step as f64 / facets as f64)
+                            * amount
+                })
+                .collect()
+        }
+    })
+}
+
+/// Facets a fillet needs across a dihedral `angle`, tolerating float noise
+/// so a right-angle edge always gets the same count.
+fn fillet_facets(angle: f64) -> usize {
+    ((angle.to_degrees() / FILLET_MAX_FACET_DEGREES - 1.0e-6).ceil() as usize).max(1)
+}
+
+fn append_edge_profile_planes(
+    feature: ShapeFeatureId,
+    treatment: EdgeTreatment,
+    profiles: &VertexProfiles,
     segment: &EdgeSegment,
     planes_by_cell: &mut BTreeMap<usize, Vec<ClipPlane>>,
 ) {
-    let dot = segment
-        .first_normal
-        .dot(segment.second_normal)
-        .clamp(-1.0, 1.0);
-    let angle = dot.acos();
-    if !(1.0e-6..=core::f64::consts::PI - 1.0e-6).contains(&angle) {
+    let (Some(start), Some(end)) = (
+        profiles.get(&(segment.half_edge, point_key(segment.a))),
+        profiles.get(&(segment.half_edge, point_key(segment.b))),
+    ) else {
+        return;
+    };
+    if start.len() != end.len() {
         return;
     }
-    let steps = match treatment {
-        EdgeTreatment::Chamfer => 1,
-        EdgeTreatment::Fillet => {
-            ((angle.to_degrees() / FILLET_MAX_FACET_DEGREES).ceil() as usize).max(1)
-        }
-    };
+    let steps = start.len() - 1;
+    let outward = segment.first_normal + segment.second_normal;
+    let planes = planes_by_cell.entry(segment.cell).or_default();
     for step_index in 0..steps {
-        let step = f64::from(u32::try_from(step_index).unwrap_or(u32::MAX));
-        let step_count = f64::from(u32::try_from(steps).unwrap_or(u32::MAX));
-        let normal = slerp_unit(
-            segment.first_normal,
-            segment.second_normal,
-            (step + 0.5) / step_count,
-        );
-        let edge_offset = normal.dot(segment.a);
-        let offset = match treatment {
-            EdgeTreatment::Chamfer => edge_offset - amount * (angle * 0.5).sin().max(EPSILON),
-            EdgeTreatment::Fillet => {
-                fillet_chord_offset(segment, normal, amount, angle / step_count, edge_offset)
-            }
-        };
         let profile_step = step_index + 1;
-        let smooth_with = if treatment == EdgeTreatment::Fillet {
+        let smooth_with: Vec<_> = if treatment == EdgeTreatment::Fillet {
             [
                 (step_index == 0).then_some(segment.first_family),
                 (step_index + 1 == steps).then_some(segment.second_family),
@@ -437,54 +583,87 @@ fn append_edge_profile_planes(
         } else {
             Vec::new()
         };
-        append_chain_clip_plane(
-            segments,
-            selected,
-            segment,
-            ClipPlane {
+        let facet = [
+            start[step_index],
+            start[step_index + 1],
+            end[step_index + 1],
+            end[step_index],
+        ];
+        for (normal, offset) in strip_facet_planes(facet, outward) {
+            planes.push(ClipPlane {
                 normal,
                 offset,
                 patch: generated_patch_key(feature, segment, profile_step),
                 family: generated_patch_family_key(feature, segment.key, profile_step),
                 smoothing_group: u32::from(treatment == EdgeTreatment::Fillet)
                     * feature.index().saturating_add(1),
-                smooth_with,
+                smooth_with: smooth_with.clone(),
                 uv_provenance: segment.uv_provenance,
-            },
-            planes_by_cell,
-        );
+            });
+        }
     }
 }
 
-fn append_chain_clip_plane(
-    segments: &[EdgeSegment],
-    selected: &BTreeSet<TopologyKey>,
-    source: &EdgeSegment,
-    plane: ClipPlane,
-    planes_by_cell: &mut BTreeMap<usize, Vec<ClipPlane>>,
-) {
-    if source.key.source == TopologySource::Base {
-        planes_by_cell.entry(source.cell).or_default().push(plane);
-        return;
+/// Outward clip planes through one strip quad between two vertex profiles.
+///
+/// Rotational and straight chains give planar quads. Otherwise the quad is
+/// split along the diagonal that keeps the pair convex seen from outside, so
+/// the solid remains the intersection of the half-spaces.
+fn strip_facet_planes(facet: [DVec3; 4], outward: DVec3) -> Vec<(DVec3, f64)> {
+    let plane = |points: [DVec3; 3]| {
+        let normal = (points[1] - points[0])
+            .cross(points[2] - points[0])
+            .normalize_or_zero();
+        let normal = if normal.dot(outward) < 0.0 {
+            -normal
+        } else {
+            normal
+        };
+        (normal, normal.dot(points[0]))
+    };
+    let newell = (0..4).fold(DVec3::ZERO, |sum, index| {
+        let current = facet[index];
+        let next = facet[(index + 1) % 4];
+        sum + DVec3::new(
+            (current.y - next.y) * (current.z + next.z),
+            (current.z - next.z) * (current.x + next.x),
+            (current.x - next.x) * (current.y + next.y),
+        )
+    });
+    if let Some(normal) = newell.try_normalize() {
+        let normal = if normal.dot(outward) < 0.0 {
+            -normal
+        } else {
+            normal
+        };
+        let offset = facet.iter().map(|point| normal.dot(*point)).sum::<f64>() * 0.25;
+        // Well under one stitch key, so a plane this far from a corner still
+        // meets the neighbouring cell's cut at the same key.
+        if facet
+            .iter()
+            .all(|point| (normal.dot(*point) - offset).abs() <= 1.0e-6)
+        {
+            return vec![(normal, offset)];
+        }
     }
-
-    // A generated circular chain crosses convex-cell seams. Give both cells at
-    // each seam the same adjacent profile planes so their shared face is cut
-    // identically instead of acquiring sub-micron T-junctions.
-    let endpoints = [point_key(source.a), point_key(source.b)];
-    let affected = segments
-        .iter()
-        .filter(|segment| selected.contains(&segment.key) && segment.key == source.key)
-        .filter(|segment| {
-            [point_key(segment.a), point_key(segment.b)]
+    for [first, second] in [[[0, 1, 2], [0, 2, 3]], [[0, 1, 3], [1, 2, 3]]] {
+        let triangles = [first, second].map(|indices| plane(indices.map(|index| facet[index])));
+        let opposite = [
+            facet[(0..4).find(|index| !first.contains(index)).unwrap_or(0)],
+            facet[(0..4).find(|index| !second.contains(index)).unwrap_or(0)],
+        ];
+        if triangles
+            .iter()
+            .zip(opposite)
+            .all(|((normal, offset), point)| normal.dot(point) - offset <= 1.0e-9)
+        {
+            return triangles
                 .into_iter()
-                .any(|point| endpoints.contains(&point))
-        })
-        .map(|segment| segment.cell)
-        .collect::<BTreeSet<_>>();
-    for cell in affected {
-        planes_by_cell.entry(cell).or_default().push(plane.clone());
+                .filter(|(normal, _)| *normal != DVec3::ZERO)
+                .collect();
+        }
     }
+    Vec::new()
 }
 
 fn append_fillet_junction_planes(
@@ -673,6 +852,46 @@ fn generated_junction_patch_key(
     }
 }
 
+/// Welds clipped vertices onto the vertex-profile points they were cut through.
+///
+/// Neighbouring cells reach the same profile point through different plane
+/// intersections, which can land either side of a stitch-key boundary. Blender
+/// avoids this by reusing one vertex; snapping both copies onto the shared
+/// point does the same here.
+fn snap_to_profile_points(cells: &mut [PolyCell], profiles: &VertexProfiles) {
+    const SNAP_DISTANCE: f64 = 1.0e-6;
+    let mut points = BTreeMap::<PointKey, Vec<DVec3>>::new();
+    for &point in profiles.values().flatten() {
+        let bucket = points.entry(point_key(point)).or_default();
+        if !bucket
+            .iter()
+            .any(|existing| existing.distance_squared(point) <= EPSILON * EPSILON)
+        {
+            bucket.push(point);
+        }
+    }
+    for vertex in cells
+        .iter_mut()
+        .flat_map(|cell| cell.faces.iter_mut())
+        .flat_map(|face| face.vertices.iter_mut())
+    {
+        let [x, y, z] = point_key(*vertex).0;
+        let nearest = (-1..=1)
+            .flat_map(|dx| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dz| [dx, dy, dz])))
+            .filter_map(|[dx, dy, dz]| points.get(&PointKey([x + dx, y + dy, z + dz])))
+            .flatten()
+            .copied()
+            .filter(|point| point.distance_squared(*vertex) <= SNAP_DISTANCE * SNAP_DISTANCE)
+            .min_by(|left, right| {
+                left.distance_squared(*vertex)
+                    .total_cmp(&right.distance_squared(*vertex))
+            });
+        if let Some(point) = nearest {
+            *vertex = point;
+        }
+    }
+}
+
 fn clip_feature_cells(
     cells: &mut [PolyCell],
     planes_by_cell: BTreeMap<usize, Vec<ClipPlane>>,
@@ -739,25 +958,6 @@ fn face_clearance(cell: &PolyCell, segment: &EdgeSegment, normal: DVec3, inward:
         .flat_map(|face| face.vertices.iter())
         .map(|vertex| inward.dot(*vertex - segment.a))
         .fold(0.0, f64::max)
-}
-
-/// Plane through one chord of the ideal circular fillet. Sampling the chord
-/// midpoint for its normal keeps each facet symmetric, while the chord itself
-/// includes the true tangent points at the two ends of the complete profile.
-fn fillet_chord_offset(
-    segment: &EdgeSegment,
-    normal: DVec3,
-    radius: f64,
-    facet_angle: f64,
-    edge_offset: f64,
-) -> f64 {
-    let normal_dot = segment
-        .first_normal
-        .dot(segment.second_normal)
-        .clamp(-1.0, 1.0);
-    let centre_projection = -radius * normal.dot(segment.first_normal + segment.second_normal)
-        / (1.0 + normal_dot).max(EPSILON);
-    edge_offset + centre_projection + radius * (facet_angle * 0.5).cos()
 }
 
 fn generated_patch_key(
@@ -876,7 +1076,10 @@ fn clip_cell(cell: &PolyCell, plane: ClipPlane) -> Option<PolyCell> {
             uv_provenance: plane.uv_provenance,
         });
     }
-    let result = PolyCell { faces };
+    let result = PolyCell {
+        faces,
+        band: cell.band,
+    };
     (result.faces.len() >= 4 && cell_volume(&result) > EPSILON).then_some(result)
 }
 
@@ -884,8 +1087,12 @@ fn build_evaluated(cells: &[PolyCell]) -> Result<EvaluatedSolid, SolidError> {
     let (stitched, _) = stitch(cells)?;
     let volume_cells = cells
         .iter()
-        .filter_map(poly_cell_to_convex)
-        .map(|piece| ConvexVolumeCell { piece })
+        .filter_map(|cell| {
+            poly_cell_to_convex(cell).map(|piece| ConvexVolumeCell {
+                piece,
+                band: cell.band,
+            })
+        })
         .collect::<Vec<_>>();
     if volume_cells.is_empty() {
         return Err(SolidError::ZeroVolume);
@@ -974,6 +1181,7 @@ fn stitch(cells: &[PolyCell]) -> Result<(Stitched, Vec<EdgeSegment>), SolidError
             half_edge: first_edge,
             smoothing_group: face.smoothing_group,
             uv_provenance: face.uv_provenance,
+            band: cells[cell_index].band,
         });
         surface_families.push(face.family);
         surface_continuity.push(face.smooth_with.clone());
@@ -1266,6 +1474,7 @@ fn cuboid_cell(center: Vec3, half: Vec3, rotation: Quat) -> PolyCell {
         [4, 5, 7, 6],
     ];
     PolyCell {
+        band: 0,
         faces: loops
             .into_iter()
             .enumerate()
@@ -1278,6 +1487,7 @@ fn cuboid_cell(center: Vec3, half: Vec3, rotation: Quat) -> PolyCell {
 
 fn convex_piece_cell(piece: ConvexPiece) -> PolyCell {
     PolyCell {
+        band: 0,
         faces: piece
             .faces
             .into_iter()
@@ -1369,6 +1579,98 @@ fn cylinder_cells(spec: crate::CylinderSpec) -> Vec<PolyCell> {
         .collect()
 }
 
+/// Divides a layered cylinder's replayed envelope cells into radial bands.
+///
+/// Features replay on the whole envelope first, so a chamfer or fillet cuts
+/// through every band it reaches. Inside one 15-degree wedge a band boundary
+/// is a single chord plane, the same polygon the wedge walls use, so both
+/// halves of a split share an identical face and stitch away as interior.
+fn partition_cylinder_bands(cells: Vec<PolyCell>, spec: crate::CylinderSpec) -> Vec<PolyCell> {
+    const SPLIT_TOLERANCE: f64 = 1.0e-6;
+    const BAND_INTERFACE_PATCH: u32 = 0x4000_0000;
+    let boundaries = (0..spec.band_count() - 1)
+        .filter_map(|index| spec.band(index))
+        .map(|band| f64::from(band.outer_diameter) * 0.5)
+        .collect::<Vec<_>>();
+    if boundaries.is_empty() {
+        return cells;
+    }
+    let rotation = spec.pose.rotation.quaternion().as_dquat();
+    let center = DVec3::from(spec.pose.translation());
+    let segments = f64::from(spec.dimensions.sweep_angle_degrees() / CYLINDER_SWEEP_STEP_DEGREES);
+    let sweep = f64::from(spec.dimensions.sweep_angle_radians());
+    let step = sweep / segments;
+    let start = -sweep * 0.5;
+    let mut banded = Vec::with_capacity(cells.len() * (boundaries.len() + 1));
+    for cell in cells {
+        let vertices = cell.faces.iter().flat_map(|face| face.vertices.iter());
+        let count = vertices.clone().count().max(1) as f64;
+        let local = rotation.inverse() * (vertices.copied().sum::<DVec3>() / count - center);
+        let segment = ((local.z.atan2(local.x) - start).rem_euclid(core::f64::consts::TAU) / step)
+            .floor()
+            .clamp(0.0, segments - 1.0);
+        let middle = start + step * (segment + 0.5);
+        let normal = rotation * DVec3::new(middle.cos(), 0.0, middle.sin());
+        let mut remaining = Some(cell);
+        for (band, &radius) in boundaries.iter().enumerate() {
+            let Some(piece) = remaining.take() else {
+                break;
+            };
+            let key = SurfacePatchKey {
+                source: TopologySource::Base,
+                local: BAND_INTERFACE_PATCH + band as u32,
+            };
+            let inside = ClipPlane {
+                normal,
+                offset: normal.dot(center) + radius * (step * 0.5).cos(),
+                patch: key,
+                family: key,
+                smoothing_group: 0,
+                smooth_with: Vec::new(),
+                uv_provenance: key,
+            };
+            let (nearest, farthest) = piece
+                .faces
+                .iter()
+                .flat_map(|face| face.vertices.iter())
+                .map(|vertex| normal.dot(*vertex) - inside.offset)
+                .fold(
+                    (f64::INFINITY, f64::NEG_INFINITY),
+                    |(low, high), distance| (low.min(distance), high.max(distance)),
+                );
+            let band = band as u8;
+            if farthest <= SPLIT_TOLERANCE {
+                banded.push(PolyCell { band, ..piece });
+                continue;
+            }
+            if nearest >= -SPLIT_TOLERANCE {
+                remaining = Some(piece);
+                continue;
+            }
+            let outside = ClipPlane {
+                normal: -inside.normal,
+                offset: -inside.offset,
+                ..inside.clone()
+            };
+            match (clip_cell(&piece, inside), clip_cell(&piece, outside)) {
+                (Some(inner), Some(outer)) => {
+                    banded.push(PolyCell { band, ..inner });
+                    remaining = Some(outer);
+                }
+                (Some(_), None) => banded.push(PolyCell { band, ..piece }),
+                (None, _) => remaining = Some(piece),
+            }
+        }
+        if let Some(piece) = remaining {
+            banded.push(PolyCell {
+                band: boundaries.len() as u8,
+                ..piece
+            });
+        }
+    }
+    banded
+}
+
 fn pipe_bend_cells(spec: PipeBendSpec) -> Vec<PolyCell> {
     let outer = f64::from(spec.dimensions.outer_diameter()) * 0.5;
     let inner = f64::from(spec.dimensions.inner_diameter()) * 0.5;
@@ -1429,6 +1731,71 @@ fn pipe_bend_cells(spec: PipeBendSpec) -> Vec<PolyCell> {
     cells
 }
 
+/// One convex cell per junction ray triangle: a pyramid to the centre when
+/// solid, or the shell between the bore and the outside when hollow.
+fn pipe_junction_cells(spec: crate::PipeJunctionSpec) -> Vec<PolyCell> {
+    let transform = |point: DVec3| {
+        DVec3::from(spec.pose.translation())
+            + DVec3::from(spec.pose.rotation.quaternion() * point.as_vec3())
+    };
+    let patch = |(face, surface): (crate::FaceKind, crate::PipeJunctionSurface)| {
+        junction_face_patch(face) + 6 * surface.index()
+    };
+    crate::pipe_junction::ray_triangles(spec)
+        .into_iter()
+        .map(|triangle| {
+            let outer_patch = patch(triangle.outer_surface);
+            let inner_patch = triangle
+                .inner_surface
+                .map_or(outer_patch, |surface| 18 + patch(surface));
+            shell_cell(
+                triangle.outer.map(transform).to_vec(),
+                triangle.inner.map(transform).to_vec(),
+                [outer_patch, inner_patch, 36],
+            )
+        })
+        .collect()
+}
+
+const fn junction_face_patch(face: crate::FaceKind) -> u32 {
+    match face {
+        crate::FaceKind::NegativeX => 0,
+        crate::FaceKind::PositiveX => 1,
+        crate::FaceKind::NegativeY => 2,
+        crate::FaceKind::PositiveY => 3,
+        crate::FaceKind::NegativeZ => 4,
+        crate::FaceKind::PositiveZ => 5,
+    }
+}
+
+/// Builds a convex cell between an outer and an inner polygon with matching
+/// vertex order. Coincident vertices collapse prisms into wedges or pyramids.
+/// Patches are `[outer, inner, sides]`.
+fn shell_cell(mut outer: Vec<DVec3>, mut inner: Vec<DVec3>, patches: [u32; 3]) -> PolyCell {
+    if polygon_normal(&outer).dot(inner[0] - outer[0]) > 0.0 {
+        outer.reverse();
+        inner.reverse();
+    }
+    let mut inner_face = inner.clone();
+    inner_face.reverse();
+    let mut faces = Vec::with_capacity(outer.len() + 2);
+    for (vertices, patch) in [(outer.clone(), patches[0]), (inner_face, patches[1])] {
+        let vertices = without_repeated_vertices(vertices);
+        if vertices.len() >= 3 {
+            faces.push(base_face(vertices, patch));
+        }
+    }
+    for index in 0..outer.len() {
+        let next = (index + 1) % outer.len();
+        let face =
+            without_repeated_vertices(vec![outer[next], outer[index], inner[index], inner[next]]);
+        if face.len() >= 3 {
+            faces.push(base_face(face, patches[2]));
+        }
+    }
+    PolyCell { faces, band: 0 }
+}
+
 fn prism_cell(
     mut bottom: Vec<DVec3>,
     mut top: Vec<DVec3>,
@@ -1454,10 +1821,23 @@ fn prism_cell(
         } else {
             side_patch + 2 + index as u32
         };
-        let face = vec![bottom[next], bottom[index], top[index], top[next]];
-        faces.push(base_face(face, local));
+        let face =
+            without_repeated_vertices(vec![bottom[next], bottom[index], top[index], top[next]]);
+        if face.len() >= 3 {
+            faces.push(base_face(face, local));
+        }
     }
-    PolyCell { faces }
+    PolyCell { faces, band: 0 }
+}
+
+/// Collapses vertices shared by a pinched profile, such as the crease of a
+/// pipe bend whose inner wall meets at the centre of curvature.
+fn without_repeated_vertices(mut face: Vec<DVec3>) -> Vec<DVec3> {
+    face.dedup_by(|next, previous| next.distance_squared(*previous) <= EPSILON * EPSILON);
+    if face.len() > 1 && face[0].distance_squared(face[face.len() - 1]) <= EPSILON * EPSILON {
+        face.pop();
+    }
+    face
 }
 
 fn poly_cell_to_convex(cell: &PolyCell) -> Option<ConvexPiece> {
@@ -1678,43 +2058,27 @@ mod tests {
     }
 
     #[test]
-    fn fillet_chords_end_at_the_exact_face_tangencies() {
-        let patch = SurfacePatchKey {
-            source: TopologySource::Base,
-            local: 0,
-        };
-        let segment = EdgeSegment {
-            key: TopologyKey {
-                source: TopologySource::Base,
-                local: 0,
-            },
-            half_edge: 0,
-            a: DVec3::ZERO,
-            b: DVec3::Z,
-            first_normal: DVec3::X,
-            second_normal: DVec3::Y,
-            first_family: patch,
-            second_family: patch,
-            uv_provenance: patch,
-            cell: 0,
-            convex: true,
-        };
+    fn vertex_profile_endpoints_are_face_tangencies() {
         let radius = 0.05;
-        let angle = core::f64::consts::FRAC_PI_2;
-        let facets = (angle.to_degrees() / FILLET_MAX_FACET_DEGREES).ceil() as usize;
-        let facet_angle = angle / facets as f64;
+        let profile = vertex_profile(
+            EdgeTreatment::Fillet,
+            radius,
+            fillet_facets(core::f64::consts::FRAC_PI_2),
+            DVec3::ZERO,
+            DVec3::X,
+            DVec3::Y,
+        )
+        .unwrap();
         let centre = DVec3::new(-radius, -radius, 0.0);
-        let first_tangent = centre + DVec3::X * radius;
-        let last_tangent = centre + DVec3::Y * radius;
 
-        let first_normal = slerp_unit(DVec3::X, DVec3::Y, 0.5 / facets as f64);
-        let first_offset = fillet_chord_offset(&segment, first_normal, radius, facet_angle, 0.0);
-        let last_normal = slerp_unit(DVec3::X, DVec3::Y, (facets as f64 - 0.5) / facets as f64);
-        let last_offset = fillet_chord_offset(&segment, last_normal, radius, facet_angle, 0.0);
-
-        assert!((first_normal.dot(first_tangent) - first_offset).abs() < EPSILON);
-        assert!((last_normal.dot(last_tangent) - last_offset).abs() < EPSILON);
-        assert_eq!(facets, 12);
+        assert_eq!(profile.len(), 13, "a right-angle fillet has twelve facets");
+        assert!(profile[0].abs_diff_eq(centre + DVec3::X * radius, EPSILON));
+        assert!(profile[12].abs_diff_eq(centre + DVec3::Y * radius, EPSILON));
+        assert!(
+            profile
+                .iter()
+                .all(|point| (point.distance(centre) - radius).abs() < EPSILON)
+        );
     }
 
     #[test]
@@ -2147,6 +2511,102 @@ mod tests {
     }
 
     #[test]
+    fn translated_and_rotated_cylinder_rims_accept_treatments() {
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        let poses = [
+            BuildPose::new(IVec3::new(1, 4, 0), GridRotation::default()),
+            BuildPose::new(IVec3::ZERO, GridRotation::new(0, 0, 3)),
+            BuildPose::new(IVec3::new(-3, 2, 7), GridRotation::new(1, 2, 0)),
+        ];
+        for pose in poses {
+            for (inner_diameter, sweep_degrees) in [(0.0, 360), (0.25, 360), (0.25, 90)] {
+                let dimensions = CylinderDimensions::new(0.5, inner_diameter, 0.5)
+                    .unwrap()
+                    .with_sweep_angle_degrees(sweep_degrees)
+                    .unwrap();
+                let spec = PartSpec::Cylinder(CylinderSpec::new(dimensions, pose));
+                let base = evaluate_part_solid(spec, []).unwrap();
+                let rims = base
+                    .logical_edges
+                    .iter()
+                    .filter(|edge| edge.convex && edge.half_edges.len() > 1)
+                    .map(|edge| edge.key)
+                    .collect::<Vec<_>>();
+                assert!(!rims.is_empty());
+                for edge in rims {
+                    for treatment in [EdgeTreatment::Chamfer, EdgeTreatment::Fillet] {
+                        let treated = evaluate_part_solid(
+                            spec,
+                            [(
+                                ShapeFeatureId::from_parts(0, 0),
+                                ShapeFeature::new([target(owner, edge)], treatment, 20),
+                            )],
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("{treatment:?} rejected a rim of {dimensions:?} at {pose:?}: {error}")
+                        });
+                        assert!(treated.volume() > 0.0 && treated.volume() < base.volume());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn posed_cylinder_fillet_vertices_lie_on_the_rim_torus() {
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        let spec = PartSpec::Cylinder(CylinderSpec::new(
+            CylinderDimensions::new(0.5, 0.0, 0.5).unwrap(),
+            BuildPose::new(IVec3::new(1, 4, 0), GridRotation::default()),
+        ));
+        let axis = DVec3::new(0.25, 1.0, 0.0);
+        let (outer_radius, half_length, fillet_radius) = (0.25, 0.25, 0.05);
+        let base = evaluate_part_solid(spec, []).unwrap();
+        for rim in base
+            .logical_edges
+            .iter()
+            .filter(|edge| edge.closed && edge.convex)
+        {
+            let feature = ShapeFeatureId::from_parts(0, 0);
+            let filleted = evaluate_part_solid(
+                spec,
+                [(
+                    feature,
+                    ShapeFeature::new([target(owner, rim.key)], EdgeTreatment::Fillet, 20),
+                )],
+            )
+            .unwrap();
+            let mut checked = 0;
+            for surface in filleted
+                .surfaces
+                .iter()
+                .filter(|surface| surface.key.source == TopologySource::Feature(feature))
+            {
+                let mut edge = surface.half_edge;
+                loop {
+                    let half_edge = filleted.half_edges[edge as usize];
+                    let offset = filleted.vertices[half_edge.origin as usize]
+                        .position
+                        .as_dvec3()
+                        - axis;
+                    let radial = offset.x.hypot(offset.z) - (outer_radius - fillet_radius);
+                    let axial = offset.y.abs() - (half_length - fillet_radius);
+                    assert!(
+                        (radial.hypot(axial) - fillet_radius).abs() < 1.0e-5,
+                        "fillet vertex {offset:?} is off the rim torus"
+                    );
+                    checked += 1;
+                    edge = half_edge.next;
+                    if edge == surface.half_edge {
+                        break;
+                    }
+                }
+            }
+            assert!(checked > 0);
+        }
+    }
+
+    #[test]
     fn hollow_sector_curved_rims_and_axial_cut_edges_accept_treatments() {
         let spec = cylinder_spec(0.25, 90);
         let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
@@ -2295,7 +2755,9 @@ mod tests {
     #[test]
     fn pipe_bend_generator_is_manifold_for_solid_and_hollow_profiles() {
         for dimensions in [
-            PipeBendDimensions::new(0.25, 0.0, 0.25).unwrap(),
+            PipeBendDimensions::new(0.20, 0.0, 2).unwrap(),
+            PipeBendDimensions::new(0.25, 0.0, 1).unwrap(),
+            PipeBendDimensions::new(0.25, 0.10, 1).unwrap(),
             PipeBendDimensions::default(),
         ] {
             let solid = evaluate_part_solid(
@@ -2306,5 +2768,103 @@ mod tests {
             assert!(!solid.cells.is_empty());
             assert!(solid.logical_edges.iter().any(|edge| edge.closed));
         }
+    }
+
+    #[test]
+    fn pipe_junction_generator_evaluates_every_arm_set_solid_and_hollow() {
+        use crate::{PipeArms, PipeJunctionDimensions, PipeJunctionSpec};
+        let (radius, reach) = (0.10_f64, 0.125_f64);
+        for inner in [0.0, 0.10] {
+            let bore = f64::from(inner) * 0.5;
+            for bits in [0b00_0001, 0b00_0011, 0b01_0011, 0b11_1111] {
+                let arms = PipeArms::from_bits(bits).unwrap();
+                let spec = PipeJunctionSpec::new(
+                    PipeJunctionDimensions::new(0.20, inner).unwrap(),
+                    arms,
+                    BuildPose::default(),
+                );
+                let solid = evaluate_part_solid(PartSpec::PipeJunction(spec), [])
+                    .unwrap_or_else(|error| panic!("bits {bits:06b}, inner {inner}: {error}"));
+                let volume = solid
+                    .cells
+                    .iter()
+                    .map(|cell| f64::from(cell.piece.volume))
+                    .sum::<f64>();
+                // A lone arm is a pipe capped by half the centre ball; opposite
+                // arms make one straight pipe across the cell.
+                let expected = match bits {
+                    0b00_0001 => {
+                        core::f64::consts::PI
+                            * ((radius * radius - bore * bore) * reach
+                                + (radius.powi(3) - bore.powi(3)) * 2.0 / 3.0)
+                    }
+                    0b00_0011 => {
+                        core::f64::consts::PI * (radius * radius - bore * bore) * 2.0 * reach
+                    }
+                    _ => continue,
+                };
+                assert!(
+                    (volume - expected).abs() < expected * 0.03,
+                    "bits {bits:06b}, inner {inner}: volume {volume} vs {expected}"
+                );
+            }
+        }
+    }
+
+    fn layered_wheel() -> (PartSpec, PartSpec) {
+        let core = CylinderSpec::new(
+            CylinderDimensions::new(1.0, 0.0, 0.5).unwrap(),
+            BuildPose::default(),
+        );
+        let layered = core
+            .with_layer(
+                crate::LayerSide::Outer,
+                0.25,
+                ConstructionMaterial::Rubber,
+                crate::MaterialAppearance::BAKED,
+            )
+            .unwrap();
+        let envelope = CylinderSpec::new(layered.dimensions, BuildPose::default());
+        (PartSpec::Cylinder(layered), PartSpec::Cylinder(envelope))
+    }
+
+    #[test]
+    fn layered_cylinder_band_interfaces_stitch_away() {
+        let (layered, envelope) = layered_wheel();
+        let plain = evaluate_part_solid(envelope, []).unwrap();
+        let banded = evaluate_part_solid(layered, []).unwrap();
+        assert!((banded.volume() - plain.volume()).abs() < 1.0e-4 * plain.volume());
+        assert_eq!(banded.logical_edges.len(), plain.logical_edges.len());
+        assert!(banded.cells.iter().any(|cell| cell.band == 0));
+        assert!(banded.cells.iter().any(|cell| cell.band == 1));
+    }
+
+    #[test]
+    fn fillet_deeper_than_the_outer_layer_cuts_through_both_bands() {
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        let (layered, envelope) = layered_wheel();
+        let rim = evaluate_part_solid(envelope, [])
+            .unwrap()
+            .logical_edges
+            .iter()
+            .find(|edge| edge.closed && edge.convex)
+            .unwrap()
+            .key;
+        let fillet = [(
+            ShapeFeatureId::from_parts(0, 0),
+            ShapeFeature::new([target(owner, rim)], EdgeTreatment::Fillet, 120),
+        )];
+        let plain = evaluate_part_solid(envelope, fillet.clone()).unwrap();
+        let banded = evaluate_part_solid(layered, fillet).unwrap();
+        assert!((banded.volume() - plain.volume()).abs() < 1.0e-4 * plain.volume());
+        assert_eq!(banded.logical_edges.len(), plain.logical_edges.len());
+        let rounded = |band| {
+            banded
+                .surfaces
+                .iter()
+                .any(|surface| surface.smoothing_group != 0 && surface.band == band)
+        };
+        assert!(rounded(0), "a 30 cm fillet reaches the steel core");
+        assert!(rounded(1), "the fillet also rounds the rubber");
     }
 }

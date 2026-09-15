@@ -19,9 +19,9 @@ use bevy_math::DVec3;
 use mechanic_core::{CompiledCreation, CoordinateDrive};
 
 use crate::{
-    CpuSnapshot, DriveCommand, DynamicsFactorization, ExternalImpulse, MachineCollisionGeometry,
-    MachineDynamics, MachineMotion, MachineState, PhysicsError, TICK_SECONDS,
-    TerrainContactFeature, TerrainContactScene,
+    BodyPose, CpuSnapshot, DriveCommand, DynamicsFactorization, ExternalImpulse,
+    MachineCollisionGeometry, MachineKinematics, MachineMotion, MachineState, PhysicsError,
+    TICK_SECONDS, TerrainContactFeature, TerrainContactScene,
     free_motion::apply_external_impulses,
     joint_forces::{PassiveForce, validate_drive},
     joint_machine::bounds,
@@ -177,6 +177,38 @@ pub struct SoftStepDiagnostics {
     pub query_ms: f64,
     /// Integration and solve time, in milliseconds.
     pub solve_ms: f64,
+    /// Kinematics, factorization and free-force response time.
+    pub dynamics_ms: f64,
+    /// Contact and joint constraint row preparation time.
+    pub rows_ms: f64,
+    /// Iterative constraint solve and warm-start time.
+    pub constraints_ms: f64,
+    /// Continuous collision query time.
+    pub continuous_ms: f64,
+    /// Continuous collision shape transformations.
+    pub continuous_shape_transformations: usize,
+    /// Continuous collision shape cache hits.
+    pub continuous_shape_cache_hits: usize,
+    /// Continuous collision hierarchy node pair tests.
+    pub continuous_hierarchy_node_pair_tests: usize,
+    /// Continuous collision pose evaluations.
+    pub continuous_pose_evaluations: usize,
+    /// Continuous collision velocity evaluations.
+    pub continuous_velocity_evaluations: usize,
+    /// Continuous collision separation evaluations.
+    pub continuous_separation_evaluations: usize,
+    /// Continuous collision collider pair candidates.
+    pub continuous_collider_pair_candidates: usize,
+    /// Continuous collision triangle candidates.
+    pub continuous_triangle_candidates: usize,
+    /// Finite terrain candidates across proximity and recovery queries.
+    pub triangle_candidates: usize,
+    /// Collider candidates across proximity and recovery queries.
+    pub collider_pair_candidates: usize,
+    /// Retained contact-row and articulated-factor arena capacity (not total allocation).
+    pub solver_scratch_bytes: usize,
+    /// Net growth of those retained arenas during this tick, in bytes.
+    pub solver_scratch_growth_bytes: usize,
     /// Signed drive impulses summed over the tick, in N·s or N·m·s.
     pub drive_impulses: Vec<f64>,
     /// Contact queries repeated within the tick because a collider outran its
@@ -210,12 +242,19 @@ pub struct CpuMachine {
     passive: Vec<PassiveForce>,
     drives: Vec<CoordinateDrive>,
     completed: CpuSnapshot,
+    candidate: MachineState,
+    rollback: MachineState,
+    scratch: solve::Scratch,
     diagnostics: SoftStepDiagnostics,
     warm: BTreeMap<TerrainContactFeature, [f64; 5]>,
     /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
     closure_passive: Vec<PassiveForce>,
     /// Loop-closure impulses carried into the next tick.
     closure_warm: Vec<[f64; 8]>,
+    /// Bodies held at their published pose, by body.
+    held: Vec<bool>,
+    /// Generalized velocity rows owned by held bodies.
+    held_rows: Vec<bool>,
 }
 
 impl CpuMachine {
@@ -241,7 +280,7 @@ impl CpuMachine {
             validate_drive(drive)?;
         }
         clamp_coordinates(&creation, &drives, &mut state);
-        let model = MachineDynamics::assemble(&creation, &state.poses, &state.coordinates)?;
+        let model = MachineKinematics::assemble(&creation, &state.poses, &state.coordinates)?;
         model.body_motions(&state.velocities)?;
         state.poses = model.poses;
         let passive = creation
@@ -257,11 +296,16 @@ impl CpuMachine {
             .map(|pattern| PassiveForce::from_kind(creation.bearings[pattern.bearing].kind))
             .collect::<Vec<_>>();
         Ok(Self {
+            held: vec![false; creation.compounds.len()],
+            held_rows: vec![false; state.velocities.len()],
             closure_warm: vec![[0.0; 8]; closure_passive.len()],
             closure_passive,
             creation,
             passive,
             drives,
+            candidate: state.clone(),
+            rollback: state.clone(),
+            scratch: solve::Scratch::default(),
             completed: CpuSnapshot {
                 tick: 0,
                 topology_generation,
@@ -280,6 +324,97 @@ impl CpuMachine {
     /// Work and quality of the last tick.
     pub fn diagnostics(&self) -> &SoftStepDiagnostics {
         &self.diagnostics
+    }
+
+    /// Holds whole mechanisms at prescribed poses. Held bodies stay at rest with
+    /// their joints at zero, and other bodies collide with them as immovable.
+    /// The mask replaces the previous one; a released body starts at rest from
+    /// its last held pose. Poses of bodies not held are ignored.
+    ///
+    /// # Errors
+    /// Rejects a wrong row count, a mask splitting one mechanism, or a held pose
+    /// that is not finite. Invalid input changes nothing.
+    pub fn hold(&mut self, held: &[bool], poses: &[BodyPose]) -> Result<(), PhysicsError> {
+        let bodies = self.creation.compounds.len();
+        if held.len() != bodies || poses.len() != bodies {
+            return Err(PhysicsError::InvalidCommand);
+        }
+        let mut components = BTreeMap::new();
+        for (parent, &holding) in self.creation.loop_topology.body_parents.iter().zip(held) {
+            if components
+                .insert(parent.component_index, holding)
+                .is_some_and(|prior| prior != holding)
+            {
+                return Err(PhysicsError::InvalidCommand);
+            }
+        }
+        if poses.iter().zip(held).any(|(pose, &holding)| {
+            holding
+                && !(pose.position.is_finite()
+                    && pose.rotation.is_finite()
+                    && pose.rotation.length_squared() > 0.0)
+        }) {
+            return Err(PhysicsError::InvalidCommand);
+        }
+
+        let dynamics = &self.creation.dynamics;
+        let state = &mut self.completed.state;
+        let mut rows = vec![false; state.velocities.len()];
+        for (body, (&holding, &was)) in held.iter().zip(&self.held).enumerate() {
+            if holding {
+                state.poses[body] = BodyPose {
+                    position: poses[body].position,
+                    rotation: poses[body].rotation.normalize(),
+                };
+            }
+            if holding || was {
+                for row in dynamics.body_velocities[body].clone() {
+                    rows[row] = holding;
+                    state.velocities[row] = 0.0;
+                }
+            }
+        }
+        for (coordinate, &bearing) in dynamics.coordinate_bearings.iter().enumerate() {
+            if held[self.creation.bearings[bearing].compound_a as usize] {
+                state.coordinates[coordinate] = 0.0;
+            }
+        }
+        if held != self.held.as_slice() {
+            self.closure_warm.fill([0.0; 8]);
+        }
+        self.held = held.to_vec();
+        self.held_rows = rows;
+        Ok(())
+    }
+
+    // Held bodies keep their prescribed pose and joint coordinates, at rest.
+    fn pin(&self, state: &mut MachineState) {
+        if !self.held.contains(&true) {
+            return;
+        }
+        let prescribed = &self.completed.state;
+        for (body, _) in self.held.iter().enumerate().filter(|(_, held)| **held) {
+            state.poses[body] = prescribed.poses[body];
+        }
+        for (coordinate, &bearing) in self
+            .creation
+            .dynamics
+            .coordinate_bearings
+            .iter()
+            .enumerate()
+        {
+            if self.held[self.creation.bearings[bearing].compound_a as usize] {
+                state.coordinates[coordinate] = prescribed.coordinates[coordinate];
+            }
+        }
+        for (velocity, _) in state
+            .velocities
+            .iter_mut()
+            .zip(&self.held_rows)
+            .filter(|(_, held)| **held)
+        {
+            *velocity = 0.0;
+        }
     }
 
     /// Advances and publishes one external tick.
@@ -336,16 +471,26 @@ impl CpuMachine {
         // Everything below publishes, degraded if necessary.
         self.drives = drives;
         let started = Instant::now();
+        let scratch_before = self.scratch.retained_bytes();
         let mut diagnostics = SoftStepDiagnostics {
             drive_impulses: vec![0.0; self.drives.len()],
             ..SoftStepDiagnostics::default()
         };
-        let mut state = self.completed.state.clone();
+        let mut state = std::mem::replace(
+            &mut self.candidate,
+            MachineState {
+                poses: Vec::new(),
+                coordinates: Vec::new(),
+                velocities: Vec::new(),
+            },
+        );
+        state.clone_from(&self.completed.state);
         if apply_external_impulses(&self.creation, &mut state, impulses, settings.factorization)
             .is_err()
         {
             diagnostics.degrade("external impulse");
         }
+        self.pin(&mut state);
         let (mut contacts, mut margins) = terrain.map_or_else(
             || (Vec::new(), Vec::new()),
             |terrain| {
@@ -360,13 +505,13 @@ impl CpuMachine {
             },
         );
         diagnostics.contacts = contacts.len();
-        diagnostics.query_ms = started.elapsed().as_secs_f64() * 1000.0;
 
         let machine = Machine {
             creation: &self.creation,
             passive: &self.passive,
             drives: &self.drives,
             closure_passive: &self.closure_passive,
+            held: &self.held_rows,
         };
         let mut joints = JointImpulses::new(self.drives.len(), self.closure_warm.clone());
         let dt = TICK_SECONDS / f64::from(settings.substeps);
@@ -382,9 +527,13 @@ impl CpuMachine {
                 diagnostics.requeries += 1;
                 // A collider outran its margin or a continuous hit cut the path
                 // short: query again from the current pose, keeping impulses.
-                match MachineDynamics::assemble(&self.creation, &state.poses, &state.coordinates) {
-                    Ok(model) => {
-                        state.poses = model.poses;
+                match MachineKinematics::reconstruct_poses(
+                    &self.creation,
+                    &state.poses,
+                    &state.coordinates,
+                ) {
+                    Ok(poses) => {
+                        state.poses = poses;
                         let warm = contacts
                             .iter()
                             .map(|contact| (contact.source.feature, contact.impulses))
@@ -404,7 +553,7 @@ impl CpuMachine {
                     Err(_) => diagnostics.degrade("contact query"),
                 }
             }
-            let before = state.clone();
+            self.rollback.clone_from(&state);
             let result = solve::substep(
                 &machine,
                 &mut state,
@@ -415,6 +564,7 @@ impl CpuMachine {
                 settings,
                 terrain,
                 &mut diagnostics,
+                &mut self.scratch,
             );
             match result {
                 Ok(outcome) if sane(&mut state, settings, &mut diagnostics) => {
@@ -426,29 +576,37 @@ impl CpuMachine {
                     }
                     turned += outcome.turned;
                     requery |= outcome.rewound || turned > settings.requery_angle;
-                    last = Some(outcome.points);
+                    last = Some(outcome.point_count);
                 }
                 Ok(_) | Err(_) => {
-                    state = before;
+                    state.clone_from(&self.rollback);
                     state.velocities.fill(0.0);
                     last = None;
                     diagnostics.degrade("numerical substep");
+                    self.pin(&mut state);
                     break;
                 }
             }
+            self.pin(&mut state);
         }
-        if let Some(points) = &last {
-            diagnostics.velocity_error =
-                solve::restitution(&mut contacts, points, &mut state.velocities, settings);
+        if let Some(count) = last {
+            diagnostics.velocity_error = solve::restitution(
+                &mut contacts,
+                &self.scratch.points[..count],
+                &mut state.velocities,
+                settings,
+            );
         }
-        match MachineDynamics::assemble(&self.creation, &state.poses, &state.coordinates) {
-            Ok(model) if sane(&mut state, settings, &mut diagnostics) => state.poses = model.poses,
+        match MachineKinematics::reconstruct_poses(&self.creation, &state.poses, &state.coordinates)
+        {
+            Ok(poses) if sane(&mut state, settings, &mut diagnostics) => state.poses = poses,
             Ok(_) | Err(_) => {
-                state = self.completed.state.clone();
+                state.clone_from(&self.completed.state);
                 state.velocities.fill(0.0);
                 diagnostics.degrade("final pose");
             }
         }
+        self.pin(&mut state);
         diagnostics.closures = self.closure_warm.len();
         (
             diagnostics.closure_position_error,
@@ -466,12 +624,14 @@ impl CpuMachine {
             .map(|contact| (contact.source.feature, contact.impulses))
             .collect();
         diagnostics.solve_ms = started.elapsed().as_secs_f64() * 1000.0 - diagnostics.query_ms;
+        diagnostics.solver_scratch_bytes = self.scratch.retained_bytes();
+        diagnostics.solver_scratch_growth_bytes = diagnostics
+            .solver_scratch_bytes
+            .saturating_sub(scratch_before);
         self.diagnostics = diagnostics;
-        self.completed = CpuSnapshot {
-            tick,
-            topology_generation: generation,
-            state,
-        };
+        self.candidate = std::mem::replace(&mut self.completed.state, state);
+        self.completed.tick = tick;
+        self.completed.topology_generation = generation;
         Ok(&self.completed)
     }
 
@@ -493,6 +653,7 @@ impl CpuMachine {
         // continuous sweep takes over from: a wide margin measures a tilted
         // collider's gap up its side faces, so most of a far manifold's points
         // would sit at the margin instead of on the corners that arrive.
+        let query_started = Instant::now();
         let colliders = terrain.geometry.collider_reach().len();
         let fall = 0.5 * gravity.length() * TICK_SECONDS * TICK_SECONDS;
         let displacement = state
@@ -539,6 +700,8 @@ impl CpuMachine {
             diagnostics.degrade("contact query");
             return (Vec::new(), vec![0.0; colliders]);
         };
+        diagnostics.triangle_candidates += query.triangle_candidates;
+        diagnostics.collider_pair_candidates += query.collider_pair_candidates;
         let mut points = query.contacts;
         // A clipped manifold only holds points where the collider crosses the
         // surface, all at zero gap; a tilted body's submerged corner lies inside
@@ -548,6 +711,8 @@ impl CpuMachine {
                 .scene
                 .recovery_contacts(terrain.geometry, &state.poses, terrain.origin)
         {
+            diagnostics.triangle_candidates += recovery.triangle_candidates;
+            diagnostics.collider_pair_candidates += recovery.collider_pair_candidates;
             for mut vertex in recovery.contacts {
                 if vertex.depth <= 0.0 {
                     continue;
@@ -573,6 +738,7 @@ impl CpuMachine {
             .into_iter()
             .map(|point| Contact::new(point, &state.poses, warm.get(&point.feature)))
             .collect();
+        diagnostics.query_ms += query_started.elapsed().as_secs_f64() * 1000.0;
         (contacts, margins)
     }
 }

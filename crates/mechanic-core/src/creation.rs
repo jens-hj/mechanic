@@ -22,10 +22,10 @@ use crate::{
     DriveLinkSpec, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
     DriveTarget, DriveTrigger, EdgeChainRef, EdgeTreatment, EngineKind, EngineSpec, FaceKind,
     FaceOwner, FaceRef, GearKeyChord, GraphError, GridDimension, GridRotation, InputSeatLinkSpec,
-    InputSpec, MaterialAppearance, PartId, PartSpec, PipeBendDimensionError, PipeBendDimensions,
-    PipeBendSpec, RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeFeature,
-    ShapeFeatureId, ShapeRegion, ShiftMode, SolidOwner, TopologyKey, TopologySource,
-    TransmissionSpec, WeldSpec,
+    InputSpec, MaterialAppearance, PartId, PartSpec, PipeArms, PipeBendDimensionError,
+    PipeBendDimensions, PipeBendSpec, PipeJunctionDimensions, PipeJunctionError, PipeJunctionSpec,
+    RigidLinkSpec, SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeFeature, ShapeFeatureId,
+    ShapeRegion, ShiftMode, SolidOwner, TopologyKey, TopologySource, TransmissionSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
@@ -105,6 +105,9 @@ pub enum CreationError {
     /// A pipe-bend dimension was out of range.
     #[error(transparent)]
     PipeBendDimension(#[from] PipeBendDimensionError),
+    /// A pipe-junction cross-section or opening set was invalid.
+    #[error(transparent)]
+    PipeJunction(#[from] PipeJunctionError),
     /// A bearing ring dimension was out of range.
     #[error(transparent)]
     BearingDimension(#[from] BearingDimensionError),
@@ -147,8 +150,19 @@ impl From<PoseDoc> for BuildPose {
     }
 }
 
-/// One construction part in its serialized form.
+/// One radial material band of a layered cylinder in its serialized form.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CylinderBandDoc {
+    /// Diameter of the band's outer boundary, in metres.
+    pub outer_diameter: f32,
+    /// Physical material.
+    pub material: ConstructionMaterial,
+    /// Color and finish treatment.
+    pub appearance: MaterialAppearance,
+}
+
+/// One construction part in its serialized form.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PartDoc {
     /// Rectangular cuboid, sized in quarter-metre grid units.
     Cuboid {
@@ -173,10 +187,13 @@ pub enum PartDoc {
         sweep_degrees: u16,
         /// Centre and orientation.
         pose: PoseDoc,
-        /// Physical material.
+        /// Outermost band physical material.
         material: ConstructionMaterial,
-        /// Color and finish treatment.
+        /// Outermost band color and finish treatment.
         appearance: MaterialAppearance,
+        /// Material bands inside the outermost one, innermost first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inner_bands: Vec<CylinderBandDoc>,
     },
     /// Cardinal 90-degree quarter-torus pipe bend.
     PipeBend {
@@ -184,9 +201,24 @@ pub enum PartDoc {
         outer_diameter: f32,
         /// Inner diameter in metres. Zero is solid.
         inner_diameter: f32,
-        /// Centreline radius in quarter-metre grid units.
-        radius_units: u8,
+        /// Side of the bend's square footprint, in blocks.
+        span_blocks: u8,
         /// Sharp-corner position and cardinal orientation.
+        pose: PoseDoc,
+        /// Physical material.
+        material: ConstructionMaterial,
+        /// Color and finish treatment.
+        appearance: MaterialAppearance,
+    },
+    /// Cube fitting joining pipe ends on any of its faces.
+    PipeJunction {
+        /// Outer diameter of each pipe end in metres.
+        outer_diameter: f32,
+        /// Bore diameter in metres. Zero is solid.
+        inner_diameter: f32,
+        /// Open faces as bits ordered +X, −X, +Y, −Y, +Z, −Z.
+        arms: u8,
+        /// Cube centre and cardinal orientation.
         pose: PoseDoc,
         /// Physical material.
         material: ConstructionMaterial,
@@ -696,6 +728,7 @@ impl CreationDocument {
                 PartDoc::Cuboid { pose, .. }
                 | PartDoc::Cylinder { pose, .. }
                 | PartDoc::PipeBend { pose, .. }
+                | PartDoc::PipeJunction { pose, .. }
                 | PartDoc::Controller { pose }
                 | PartDoc::Engine { pose, .. }
                 | PartDoc::Transmission { pose, .. }
@@ -988,7 +1021,7 @@ impl CreationDocument {
         let mut part_ids = vec![None; self.parts.len()];
         let mut transmission_children = vec![Vec::new(); self.parts.len()];
         let mut unresolved_transmissions = 0;
-        for (index, part) in self.parts.iter().copied().enumerate() {
+        for (index, part) in self.parts.iter().cloned().enumerate() {
             let PartDoc::Transmission { parent, .. } = part else {
                 let BuildOutcome::Spawned(id) = graph.apply(build_command(part)?)? else {
                     unreachable!("part {index} replay uses a spawn command")
@@ -1506,14 +1539,30 @@ fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
             pose: cylinder.pose.into(),
             material: cylinder.material,
             appearance: cylinder.appearance,
+            inner_bands: (0..cylinder.band_count() - 1)
+                .filter_map(|index| cylinder.band(index))
+                .map(|band| CylinderBandDoc {
+                    outer_diameter: band.outer_diameter,
+                    material: band.material,
+                    appearance: band.appearance,
+                })
+                .collect(),
         },
         PartSpec::PipeBend(bend) => PartDoc::PipeBend {
             outer_diameter: bend.dimensions.outer_diameter(),
             inner_diameter: bend.dimensions.inner_diameter(),
-            radius_units: bend.dimensions.radius_units(),
+            span_blocks: bend.dimensions.span_blocks(),
             pose: bend.pose.into(),
             material: bend.material,
             appearance: bend.appearance,
+        },
+        PartSpec::PipeJunction(junction) => PartDoc::PipeJunction {
+            outer_diameter: junction.dimensions.outer_diameter(),
+            inner_diameter: junction.dimensions.inner_diameter(),
+            arms: junction.arms.bits(),
+            pose: junction.pose.into(),
+            material: junction.material,
+            appearance: junction.appearance,
         },
         PartSpec::Controller(controller) => PartDoc::Controller {
             pose: controller.pose.into(),
@@ -1592,6 +1641,7 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
             pose,
             material,
             appearance,
+            inner_bands,
         } => BuildCommand::SpawnCylinder(
             CylinderSpec::new(
                 CylinderDimensions::new(
@@ -1603,22 +1653,39 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
                 pose.into(),
             )
             .with_material(material)
-            .with_appearance(appearance),
+            .with_appearance(appearance)
+            .with_inner_bands(inner_bands.iter().map(|band| crate::CylinderBand {
+                outer_diameter: band.outer_diameter,
+                material: band.material,
+                appearance: band.appearance,
+            }))?,
         ),
         PartDoc::PipeBend {
             outer_diameter,
             inner_diameter,
-            radius_units,
+            span_blocks,
             pose,
             material,
             appearance,
         } => BuildCommand::SpawnPipeBend(
             PipeBendSpec::new(
-                PipeBendDimensions::new(
-                    outer_diameter,
-                    inner_diameter,
-                    f32::from(radius_units) * crate::GRID_UNIT_METERS,
-                )?,
+                PipeBendDimensions::new(outer_diameter, inner_diameter, span_blocks)?,
+                pose.into(),
+            )
+            .with_material(material)
+            .with_appearance(appearance),
+        ),
+        PartDoc::PipeJunction {
+            outer_diameter,
+            inner_diameter,
+            arms,
+            pose,
+            material,
+            appearance,
+        } => BuildCommand::SpawnPipeJunction(
+            PipeJunctionSpec::new(
+                PipeJunctionDimensions::new(outer_diameter, inner_diameter)?,
+                PipeArms::from_bits(arms)?,
                 pose.into(),
             )
             .with_material(material)
@@ -2632,7 +2699,7 @@ mod tests {
         graph
             .apply(BuildCommand::SpawnPipeBend(
                 PipeBendSpec::new(
-                    PipeBendDimensions::new(0.75, 0.25, 1.0).unwrap(),
+                    PipeBendDimensions::new(0.75, 0.25, 4).unwrap(),
                     BuildPose::new(IVec3::new(4, 8, 12), GridRotation::new(1, 2, 3)),
                 )
                 .with_material(ConstructionMaterial::Aluminium),
@@ -2647,8 +2714,38 @@ mod tests {
             .find_map(|(_, part)| part.as_pipe_bend())
             .unwrap();
         assert_eq!(bend.material, ConstructionMaterial::Aluminium);
-        assert!((bend.dimensions.radius() - 1.0).abs() < f32::EPSILON);
+        assert_eq!(bend.dimensions.span_blocks(), 4);
+        assert!((bend.dimensions.radius() - 0.625).abs() < f32::EPSILON);
         assert!((bend.dimensions.inner_diameter() - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn current_version_round_trips_pipe_junctions() {
+        use crate::{FaceKind, PipeArms, PipeJunctionDimensions, PipeJunctionSpec};
+        let arms = PipeArms::single(FaceKind::NegativeY)
+            .with(FaceKind::PositiveX)
+            .with(FaceKind::PositiveZ);
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnPipeJunction(
+                PipeJunctionSpec::new(
+                    PipeJunctionDimensions::new(0.20, 0.10).unwrap(),
+                    arms,
+                    BuildPose::new(IVec3::new(4, 8, 12), GridRotation::new(1, 2, 3)),
+                )
+                .with_material(ConstructionMaterial::Aluminium),
+            ))
+            .unwrap();
+        let document = CreationDocument::from_graph(&graph, "Tee", &[]);
+        let loaded = round_trip(&document).into_graph().unwrap();
+        let junction = loaded
+            .graph
+            .parts()
+            .find_map(|(_, part)| part.as_pipe_junction())
+            .unwrap();
+        assert_eq!(junction.arms, arms);
+        assert_eq!(junction.material, ConstructionMaterial::Aluminium);
+        assert!((junction.dimensions.inner_diameter() - 0.10).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -3228,5 +3325,41 @@ mod tests {
         let compiled = restored.compile().unwrap();
         assert!(compiled.compounds[0].mass_properties.mass > 0.0);
         assert!(!compiled.colliders.is_empty());
+    }
+
+    #[test]
+    fn layered_cylinder_bands_survive_a_serialized_round_trip() {
+        let layered = CylinderSpec::new(
+            CylinderDimensions::new(1.0, 0.5, 0.5).unwrap(),
+            crate::BuildPose::default(),
+        )
+        .with_layer(
+            crate::LayerSide::Outer,
+            0.25,
+            ConstructionMaterial::Rubber,
+            crate::MaterialAppearance::BAKED,
+        )
+        .unwrap()
+        .with_layer(
+            crate::LayerSide::Inner,
+            0.1,
+            ConstructionMaterial::Rubber,
+            crate::MaterialAppearance::BAKED,
+        )
+        .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(crate::BuildCommand::SpawnCylinder(layered))
+            .unwrap();
+        let document = CreationDocument::from_graph(&graph, "Layers", &Vec::new());
+        let restored = round_trip(&document).into_graph().unwrap();
+        let bands = restored
+            .graph
+            .parts()
+            .find_map(|(_, spec)| spec.as_cylinder())
+            .unwrap()
+            .bands()
+            .collect::<Vec<_>>();
+        assert_eq!(bands, layered.bands().collect::<Vec<_>>());
     }
 }

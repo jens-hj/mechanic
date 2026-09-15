@@ -1,0 +1,38 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.02s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-ced37d44e4e3378f)
+
+running 30 tests
+test soft_step::tests::a_fast_impact_rebounds_near_the_material_restitution ... ok
+test soft_step::tests::a_box_leaving_the_floor_is_not_pulled_back ... ok
+test soft_step::tests::a_fast_spinning_bar_does_not_pass_through_the_floor ... ok
+test soft_step::tests::a_fast_cube_grazing_the_floor_stays_above_it ... ok
+test soft_step::tests::a_joint_limit_holds_against_a_stalled_motor ... ok
+test soft_step::tests::a_fast_cube_does_not_pass_through_a_steep_wall ... ok
+test soft_step::tests::a_four_bar_swings_under_gravity_and_stays_closed ... ok
+test soft_step::tests::a_box_dropped_on_the_floor_comes_to_rest_on_it ... ok
+test soft_step::tests::a_motor_spins_its_rotor_and_back_drives_the_floating_mount ... ok
+test soft_step::tests::a_fast_projectile_neither_passes_through_nor_pushes_its_target_through_the_floor ... ok
+test soft_step::tests::a_loop_seeded_open_closes_without_flying_apart ... ok
+test soft_step::tests::a_sliding_box_pushes_a_floating_box_and_keeps_momentum ... ok
+test soft_step::tests::a_slow_impact_does_not_bounce ... ok
+test soft_step::tests::a_preloaded_spring_reaches_its_authored_equilibrium ... ok
+test soft_step::tests::a_box_dropped_on_a_resting_box_comes_to_rest_on_top_of_it ... ok
+test soft_step::tests::a_held_box_stays_put_under_a_dropped_box_and_falls_once_released ... ok
+test soft_step::tests::a_rolling_wheel_does_not_gain_energy ... ok
+test soft_step::tests::invalid_input_is_refused_without_changing_state ... ok
+test soft_step::tests::a_very_fast_cube_never_ends_below_the_floor ... ok
+test soft_step::tests::a_long_multi_collider_body_settles_on_a_redundant_manifold ... ok
+test soft_step::tests::a_looped_machine_repeats_exactly_from_identical_inputs ... ok
+test soft_step::tests::two_parallel_suspensions_share_their_load ... ok
+test soft_step::tests::a_sprung_block_settles_at_its_spring_equilibrium ... ok
+test soft_step::tests::a_free_four_bar_lands_on_the_floor_and_stays_closed ... ok
+test soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest ... ok
+test soft_step::tests::captured_blocks_dropped_across_a_ledge_come_to_rest ... ok
+test soft_step::tests::a_car_crashing_into_a_wall_stays_in_front_of_it ... ok
+test soft_step::tests::the_saved_car_drives_forward_on_its_speed_drives ... ok
+test soft_step::tests::identical_inputs_repeat_exactly ... ok
+test soft_step::tests::the_saved_car_survives_a_cold_drop_and_settles ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 153 filtered out; finished in 0.38s
+

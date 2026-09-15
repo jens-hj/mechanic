@@ -16,6 +16,18 @@ spec.loader.exec_module(runner)
 
 
 class WorldIsolation(unittest.TestCase):
+    def test_freeze_capture_requires_accepted_movement_and_release(self):
+        def state(height, aligned=True):
+            return {"kind": "freeze_state", "data": {
+                "held": height is not None, "aligned": aligned, "height": height,
+            }}
+        records = [state(None, False), state(2.0, False), state(2.0), state(2.25), state(2.0), state(None, False)]
+        self.assertEqual(runner.freeze_rejections(records), [])
+        self.assertIn("scripted release did not clear the hold", runner.freeze_rejections(records[:-1]))
+        self.assertTrue(runner.freeze_rejections([]))
+        self.assertIn("scripted raise never changed the accepted target",
+                      runner.freeze_rejections([state(2.0), state(None, False)]))
+
     def test_failed_run_preserves_source_and_removes_only_its_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -32,6 +44,7 @@ class WorldIsolation(unittest.TestCase):
                 env = kwargs["env"]
                 self.assertEqual(env["MECHANIC_AUTO_WORLD_STORE"], str(root.resolve() / "output/world-store"))
                 self.assertNotIn("MECHANIC_PERF_CAPTURE_FROM_START", env)
+                self.assertEqual(env["MECHANIC_PHYSICS"], "cpu")
                 copy = Path(env["MECHANIC_AUTO_WORLD_STORE"]) / env["MECHANIC_AUTO_WORLD"]
                 self.assertNotEqual(copy, world)
                 self.assertIn(copy.name, (copy / "world.ron").read_text())
@@ -39,7 +52,7 @@ class WorldIsolation(unittest.TestCase):
                 raise subprocess.TimeoutExpired(command, 360)
             with patch.object(runner.subprocess, "run", side_effect=fail), patch.dict(runner.os.environ, {"MECHANIC_PERF_CAPTURE_FROM_START": "1"}):
                 with self.assertRaises(subprocess.TimeoutExpired):
-                    runner.run(binary, world, root / "output", assets)
+                    runner.run(binary, world, root / "output", assets, physics="cpu")
             self.assertEqual((world / "world.ron").read_text(), source)
             self.assertEqual((world / "blocks").read_bytes(), b"original blocks")
             self.assertEqual(list(root.glob("mechanic-auto-*")), [])

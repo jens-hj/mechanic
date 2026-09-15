@@ -1,0 +1,479 @@
+{
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "architecture": "arm64",
+  "warmup_ticks": 0,
+  "measured_ticks": 120,
+  "repeats": 3,
+  "assemblies": [
+    "connected"
+  ],
+  "binaries": {
+    "baseline": {
+      "path": "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+      "sha256": "75b6cf2222ba6ed5d80ed1d1e8af087c2c621ecd33904622c555efdccc13e16c"
+    },
+    "candidate": {
+      "path": "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+      "sha256": "854ea67c08976a7ca3aeb1779742447c1f0ad81011a73d3cf0a10ad0e0441f02"
+    }
+  },
+  "runs": [
+    {
+      "label": "1x-connected-baseline-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410183.0550551,
+      "elapsed_seconds": 2.1157000064849854,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "1x-connected-candidate-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410185.17117,
+      "elapsed_seconds": 2.1230549812316895,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "1x-connected-candidate-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410187.295049,
+      "elapsed_seconds": 2.1142189502716064,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "1x-connected-baseline-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410189.409646,
+      "elapsed_seconds": 2.0929019451141357,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "1x-connected-baseline-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410191.5028968,
+      "elapsed_seconds": 2.0684332847595215,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "1x-connected-candidate-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "1",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410193.5716422,
+      "elapsed_seconds": 2.0958218574523926,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "2x-connected-baseline-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410195.6678028,
+      "elapsed_seconds": 3.3163623809814453,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "2x-connected-candidate-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410198.984535,
+      "elapsed_seconds": 3.3513102531433105,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "2x-connected-candidate-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410202.3362482,
+      "elapsed_seconds": 3.319575786590576,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "2x-connected-baseline-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410205.656184,
+      "elapsed_seconds": 3.3146800994873047,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "2x-connected-baseline-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410208.971244,
+      "elapsed_seconds": 3.3347079753875732,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "2x-connected-candidate-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "2",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410212.306346,
+      "elapsed_seconds": 3.3463239669799805,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "5x-connected-baseline-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "5",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410215.653078,
+      "elapsed_seconds": 7.838610887527466,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "5x-connected-candidate-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "5",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410223.4920928,
+      "elapsed_seconds": 7.827109098434448,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "5x-connected-candidate-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "5",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410231.319603,
+      "elapsed_seconds": 7.832941055297852,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "5x-connected-baseline-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "5",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410239.15296,
+      "elapsed_seconds": 7.8245508670806885,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "5x-connected-baseline-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "5",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410246.9779541,
+      "elapsed_seconds": 7.806182861328125,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "5x-connected-candidate-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "5",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410254.7845702,
+      "elapsed_seconds": 7.802408933639526,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-connected-baseline-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410262.587383,
+      "elapsed_seconds": 19.49698781967163,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-connected-candidate-1",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410282.084863,
+      "elapsed_seconds": 18.889958143234253,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-connected-candidate-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410300.9752479,
+      "elapsed_seconds": 18.86222004890442,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-connected-baseline-2",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410319.8379369,
+      "elapsed_seconds": 19.504688262939453,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-connected-baseline-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/baseline",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410339.343041,
+      "elapsed_seconds": 19.45124101638794,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    },
+    {
+      "label": "10x-connected-candidate-3",
+      "command": [
+        "/Users/jens/repos/mechanic/.physics-reference/ccd-followup/candidate",
+        "--scenario",
+        "builder-scale",
+        "--copies",
+        "10",
+        "--warmup",
+        "0",
+        "--ticks",
+        "120",
+        "--connected"
+      ],
+      "started_unix": 1789410358.7947361,
+      "elapsed_seconds": 18.866313934326172,
+      "exit_code": 0,
+      "no_progress_timeout": false
+    }
+  ],
+  "no_progress_timeout_seconds": 300
+}

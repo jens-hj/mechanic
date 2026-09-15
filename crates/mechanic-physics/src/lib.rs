@@ -9,7 +9,9 @@
 mod free_motion;
 mod joint_forces;
 mod joint_machine;
+mod kinematics;
 mod machine;
+pub use kinematics::MachineKinematics;
 mod motion_path;
 mod response;
 mod soft_step;

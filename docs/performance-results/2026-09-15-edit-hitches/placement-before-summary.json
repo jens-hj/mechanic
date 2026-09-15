@@ -1,0 +1,67 @@
+{
+  "cpu_terrain_update": {
+    "count": 376,
+    "p95_ms": 0.448542,
+    "max_ms": 700.068875
+  },
+  "world_physics_install": {
+    "count": 12,
+    "p95_ms": 31.453500000000002,
+    "max_ms": 31.453500000000002
+  },
+  "static_mesh_rebuild": {
+    "count": 12,
+    "p95_ms": 0.006833,
+    "max_ms": 0.006833
+  },
+  "terrain_rebuilds": [
+    {
+      "changed_chunks": 752,
+      "duration_ms": 598.968709
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 651.512167
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 610.771333
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 700.068875
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 574.599625
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 541.3309589999999
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 599.796625
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 601.163666
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 411.058959
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 387.665042
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 374.177292
+    },
+    {
+      "changed_chunks": 752,
+      "duration_ms": 373.153542
+    }
+  ]
+}

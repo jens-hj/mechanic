@@ -1,0 +1,29 @@
+{
+  "cpu_terrain_update": {
+    "count": 424,
+    "p95_ms": 0.377,
+    "max_ms": 63.658207999999995
+  },
+  "world_physics_install": {
+    "count": 12,
+    "p95_ms": 16.252083,
+    "max_ms": 16.252083
+  },
+  "static_mesh_rebuild": {
+    "count": 12,
+    "p95_ms": 0.004875,
+    "max_ms": 0.004875
+  },
+  "placements": 12,
+  "terrain_rebuilds": [
+    {
+      "changed_chunks": 94,
+      "duration_ms": 63.658207999999995
+    },
+    {
+      "changed_chunks": 98,
+      "duration_ms": 56.382292
+    }
+  ],
+  "starting_bodies": 32
+}

@@ -1,0 +1,60 @@
+{
+  "runs": {
+    "10x-separated-baseline-1": {
+      "closure_angle_rad": 2.1073424255447017e-08,
+      "closure_gap_m": 0.018527439215687926,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.0018844724145656855,
+      "outside_terrain_region": false,
+      "p95_ms": 44.424749999999996,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-separated-baseline-2": {
+      "closure_angle_rad": 2.1073424255447017e-08,
+      "closure_gap_m": 0.018527439215687926,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.0018844724145656855,
+      "outside_terrain_region": false,
+      "p95_ms": 44.606334,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-separated-candidate-1": {
+      "closure_angle_rad": 2.1073424255447017e-08,
+      "closure_gap_m": 0.018527439215687926,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.0018844724145656855,
+      "outside_terrain_region": false,
+      "p95_ms": 30.131,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-separated-candidate-2": {
+      "closure_angle_rad": 2.1073424255447017e-08,
+      "closure_gap_m": 0.018527439215687926,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.0018844724145656855,
+      "outside_terrain_region": false,
+      "p95_ms": 30.078292,
+      "rendering_measured": false,
+      "timing_gate": false
+    }
+  },
+  "comparisons": {
+    "10x-separated-candidate-1": {
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "10x-separated-candidate-2": {
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    }
+  }
+}

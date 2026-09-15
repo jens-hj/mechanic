@@ -27,7 +27,9 @@ floating origin (world entry); after that, terrain still streaming ahead of a
 moving vehicle never holds physics.
 
 Closed mechanism loops run on the CPU route, such as a double wishbone closed
-with a Join weld. An invalid tick input hands the last published state to the GPU
+with a Join weld. A Dimension Link freeze holds its creation on both routes: held
+bodies get a huge generalized inertia, so everything else meets them as immovable,
+and their pose, joints and rest are restored after every substep. An invalid tick input hands the last published state to the GPU
 runtime, which keeps simulating until the next construction publication.
 
 ## Soft-step solver
@@ -96,6 +98,10 @@ from the same generalized point and angular Jacobians as contacts:
 - **Redundant directions are dropped.** A direction the tree already holds,
   such as a planar linkage's out-of-plane motion, cancels to rounding noise.
   Solving it flung a dropped four-bar to the speed limit on its first contact.
+- **Anchor rows act at the anchors' midpoint.** Taken at each body's own
+  anchor, a loaded loop's soft gap gave rigid motion of the whole loop a
+  gap-long lever, so the redundant row survived. The builder cart's strut
+  closures then held its tail up and slowly lifted it about the wheels.
 - **Softness.** 60 Hz with damping ratio 2, capped at a quarter of the
   substep rate. The relaxing pass is unbiased. A loop seeded open closes at no
   more than 3 m/s instead of snapping shut.

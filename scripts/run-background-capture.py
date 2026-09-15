@@ -43,8 +43,25 @@ def foreground_rejections(result):
     return errors
 
 
+def freeze_rejections(records):
+    states = [record["data"] for record in records if record.get("kind") == "freeze_state"]
+    heights = [state["height"] for state in states if state["held"]]
+    errors = []
+    if not any(state["held"] and state["aligned"] for state in states):
+        errors.append("scripted freeze never reached its aligned hold")
+    if not any(b > a for a, b in zip(heights, heights[1:])):
+        errors.append("scripted raise never changed the accepted target")
+    if not any(b < a for a, b in zip(heights, heights[1:])):
+        errors.append("scripted lower never changed the accepted target")
+    if not states or states[-1]["held"]:
+        errors.append("scripted release did not clear the hold")
+    return errors
+
+
 def run(binary, world, output, assets, drive=False, demonstration=False, place=None, straight=False,
-        foreground=False, identity=None, replay_ticks=None):
+        foreground=False, identity=None, replay_ticks=None, physics="gpu", freeze=False):
+    if physics not in ("gpu", "cpu"):
+        raise ValueError("physics must be gpu or cpu")
     binary, world, output, assets = [p.resolve() for p in (binary, world, output, assets)]
     if not binary.is_file() or not (world / "world.ron").is_file():
         raise ValueError("binary and world/world.ron must exist")
@@ -90,7 +107,7 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
         run_record = {
             "source_world": str(world), "temporary_world": str(copy),
             "manifest_sha256": hashlib.sha256(source.encode()).hexdigest(),
-            "binary": str(binary), "binary_sha256": digest(binary), "assets": str(assets),
+            "scripted_freeze": freeze, "physics_route": physics, "binary": str(binary), "binary_sha256": digest(binary), "assets": str(assets),
             "source_world_files_sha256": source_hashes,
             "assets_files_sha256": asset_hashes,
             "launcher_sha256": digest(Path(__file__)), "build_identity": build_identity,
@@ -105,14 +122,15 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
         for key in list(env):
             if key.startswith("MECHANIC_"):
                 del env[key]
-        env.update(MECHANIC_AUTO_WORLD=copy.name, MECHANIC_PERF_CAPTURE_DIR=str(output),
+        env.update(MECHANIC_PHYSICS=physics, MECHANIC_AUTO_WORLD=copy.name, MECHANIC_PERF_CAPTURE_DIR=str(output),
                    MECHANIC_AUTO_WORLD_STORE=str(store),
                    MECHANIC_AUTO_FOREGROUND="1" if foreground else "0",
                    MECHANIC_PERF_LABEL=world.name + ("-foreground" if foreground else "-background"), BEVY_ASSET_ROOT=str(assets),
                    MECHANIC_RENDER_EXPERIMENT="baseline", MECHANIC_AUTO_DRIVE="1" if drive else "0",
                    MECHANIC_AUTO_DRIVE_STRAIGHT="1" if straight else "0",
                    MECHANIC_AUTO_DRIVING_FRAMES="1" if demonstration else "0",
-                   MECHANIC_AUTO_PLACE=str(place) if place else "")
+                   MECHANIC_AUTO_PLACE=str(place) if place else "",
+                   MECHANIC_AUTO_FREEZE="1" if freeze else "0")
         if replay_ticks is not None:
             env["MECHANIC_AUTO_REPLAY_TICKS"] = str(replay_ticks)
         with (output / "app.log").open("w") as log:
@@ -125,6 +143,13 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
         records = [json.loads(line) for line in captures[0].read_text().splitlines()]
         if not records[-1].get("valid") or not captures[0].with_suffix(".png").is_file():
             raise ValueError("missing valid capture or screenshot")
+        if freeze:
+            errors = freeze_rejections(records)
+            (output / "freeze-protocol.json").write_text(json.dumps({
+                "passed": not errors, "rejections": errors,
+            }, indent=2))
+            if errors:
+                raise ValueError("; ".join(errors))
         # Scripted placements republish the scene, so the acceptance summary,
         # which requires one uninterrupted tick sequence, does not apply.
         if place is None:
@@ -134,6 +159,10 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
             result = json.loads(summary.stdout)[0]
             if result["metadata"].get("replay_ticks") != replay_ticks:
                 raise ValueError("application replay length differs from requested workload")
+            if result["physics_routes"] != [physics]:
+                raise ValueError("actual physics route differs from requested route")
+            if result["cpu_degraded_ticks"]:
+                raise ValueError("capture contains degraded CPU ticks")
             if not result["drain_complete"]:
                 raise ValueError("capture did not publish every submitted state")
             if drive and not result["driving_input"]["matches_submitted_ticks"]:
@@ -169,6 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--world", type=Path, required=True, help="Saved world directory")
     parser.add_argument("--output", type=Path, required=True, help="New results directory")
     parser.add_argument("--assets", type=Path, default=Path("crates/mechanic-app"))
+    parser.add_argument("--physics", choices=("gpu", "cpu"), default="gpu")
     parser.add_argument("--drive", action="store_true", help="Drive the sole input-linked seat during capture")
     parser.add_argument("--straight", action="store_true", help="Hold full throttle without scripted steering")
     parser.add_argument("--demonstration", action="store_true", help="Save driving frames every five seconds; perturbs frame timing")
@@ -176,7 +206,8 @@ if __name__ == "__main__":
     parser.add_argument("--foreground", action="store_true", help="Request focus and verify every measured frame at native resolution")
     parser.add_argument("--identity", type=Path, help="Source-matched build identity JSON")
     parser.add_argument("--replay-ticks", type=int, help="Replay exactly N contiguous 60 Hz ticks, retaining backlog, then drain publication")
+    parser.add_argument("--freeze", action="store_true", help="Freeze, raise, lower and release the linked creation")
     args = parser.parse_args()
     run(args.binary, args.world, args.output, args.assets,
         args.drive or args.straight, args.demonstration, args.place, args.straight,
-        args.foreground, args.identity, args.replay_ticks)
+        args.foreground, args.identity, args.replay_ticks, args.physics, args.freeze)

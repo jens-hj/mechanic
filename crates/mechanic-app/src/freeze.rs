@@ -2,12 +2,16 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
+#[path = "freeze_clearance.rs"]
+mod clearance;
+use clearance::ClearanceCache;
+
 use bevy::{
     ecs::system::SystemParam, input::mouse::AccumulatedMouseScroll, prelude::*,
     render::renderer::RenderQueue,
 };
 use mechanic_core::{ColliderShape, CompiledCreation, DimensionLinkId, LocalCollider, PartId};
-use mechanic_gpu::{GpuTransform, Obb};
+use mechanic_gpu::GpuTransform;
 use mechanic_world::FrozenCreationDoc;
 
 use crate::{
@@ -30,9 +34,28 @@ pub(crate) struct DimensionFreeze {
     release_requested: bool,
     repeat: HeightRepeat,
     vertical_movement: f32,
+    clearance: Option<ClearanceCache>,
+    aligned: bool,
+    translating: bool,
 }
 
 impl DimensionFreeze {
+    fn plan_height(
+        &mut self,
+        creation: &CompiledCreation,
+        endpoint: &[GpuTransform],
+        terrain: &impl TerrainProbe,
+    ) -> Option<VecDeque<Vec<GpuTransform>>> {
+        let cache = self
+            .clearance
+            .get_or_insert_with(|| ClearanceCache::new(creation, &self.held));
+        if self.aligned {
+            plan_external_cached(cache, creation, &self.held, &self.poses, endpoint, terrain)
+        } else {
+            plan_cached(cache, creation, &self.held, &self.poses, endpoint, terrain)
+        }
+    }
+
     /// Current held geometry in world space; callers cache by construction and pose revision.
     pub(crate) fn visual_snapshot(&self, simulation: &AppSimulation) -> Option<VisualSnapshot> {
         let record = self.record?;
@@ -195,6 +218,9 @@ impl DimensionFreeze {
             poses: replacement.transforms.clone(),
             revision: replacement.world_revision,
             waypoints: VecDeque::new(),
+            clearance: None,
+            aligned: false,
+            translating: false,
             ..self.clone()
         }
     }
@@ -251,14 +277,16 @@ impl DimensionFreeze {
         } else {
             simulation.transforms.clone()
         };
-        let blockers = obstacles(creation, &simulation.transforms, &held);
-        if !endpoint_clear(creation, &held, &target, &blockers, terrain) {
+        let mut clearance = ClearanceCache::new(creation, &held);
+        if !clearance.endpoint_clear(creation, &target)
+            || !external_endpoint_clear_cached(&clearance, creation, &target, terrain)
+        {
             return Err("Frozen target is obstructed in this construction generation".to_owned());
         }
         let waypoints = if restoring {
             VecDeque::new()
         } else {
-            plan(creation, &held, &poses, &target, &blockers, terrain)
+            plan_cached(&mut clearance, creation, &held, &poses, &target, terrain)
                 .ok_or("Construction edit leaves no safe path to the frozen target")?
         };
         Ok(Self {
@@ -267,6 +295,9 @@ impl DimensionFreeze {
             held,
             record: Some(record),
             revision: simulation.world_revision,
+            clearance: Some(clearance),
+            aligned: restoring,
+            translating: false,
             ..self.clone()
         })
     }
@@ -280,12 +311,7 @@ impl DimensionFreeze {
         if self.record.is_none() || self.revision != simulation.world_revision {
             return Ok(());
         }
-        if let Some(gpu) = &simulation.gpu {
-            gpu.set_body_holds(queue, &self.held)
-                .map_err(|e| e.to_string())?;
-            gpu.prescribe_held_poses(queue, &self.poses)
-                .map_err(|e| e.to_string())?;
-        }
+        apply_holds(simulation, queue, &self.held, &self.poses)?;
         self.overlay(simulation);
         Ok(())
     }
@@ -382,7 +408,9 @@ pub(crate) fn update(
     queue: Res<RenderQueue>,
     input: FreezeInput,
     mut fx: Option<ResMut<crate::tool_fx::ToolFx>>,
+    mut script: Local<crate::automation::FreezeSequence>,
 ) {
+    let _timing = crate::performance_capture::FreezeStage::new("total");
     frozen.vertical_movement = 0.0;
     if !simulation.is_running() {
         frozen.repeat.reset();
@@ -398,18 +426,22 @@ pub(crate) fn update(
     {
         frozen.release_requested = true;
     }
-    let accepts = input.selection.tool == Some(MainTool::Hammer)
-        && input.player.world_input_active()
-        && !input.overlay.blocks_keyboard()
-        && !input.wheel.open
-        && input.windows.iter().any(|w| w.focused);
+    let scripted = script.advance();
+    let accepts = scripted.is_some()
+        || input.selection.tool == Some(MainTool::Hammer)
+            && input.player.world_input_active()
+            && !input.overlay.blocks_keyboard()
+            && !input.wheel.open
+            && input.windows.iter().any(|w| w.focused);
     let actions = ActionInput::new(
         input.settings.controls(),
         &input.keyboard,
         &input.mouse,
         &input.scroll,
     );
-    if accepts && actions.just_pressed_for_tool(GameAction::FreezeCreation, MainTool::Hammer) {
+    if scripted.is_some_and(|keys| keys.0)
+        || (accepts && actions.just_pressed_for_tool(GameAction::FreezeCreation, MainTool::Hammer))
+    {
         if frozen.record.is_some() {
             frozen.release_requested = true;
             frozen.repeat.reset();
@@ -444,8 +476,14 @@ pub(crate) fn update(
     let steps = if accepts && !frozen.release_requested {
         frozen.repeat.advance(
             time.delta_secs(),
-            actions.pressed_for_tool(GameAction::RaiseFrozenCreation, MainTool::Hammer),
-            actions.pressed_for_tool(GameAction::LowerFrozenCreation, MainTool::Hammer),
+            scripted.map_or_else(
+                || actions.pressed_for_tool(GameAction::RaiseFrozenCreation, MainTool::Hammer),
+                |keys| keys.1,
+            ),
+            scripted.map_or_else(
+                || actions.pressed_for_tool(GameAction::LowerFrozenCreation, MainTool::Hammer),
+                |keys| keys.2,
+            ),
         )
     } else {
         frozen.repeat.reset();
@@ -474,20 +512,22 @@ pub(crate) fn update(
                 settled &= done;
             }
         }
-        if let Some(creation) = simulation.creation.as_ref() {
-            let obstacles = obstacles(creation, &simulation.transforms, &frozen.held);
-            if path_clear(
-                creation,
-                &frozen.held,
-                &frozen.poses,
-                &next,
-                &obstacles,
-                &*world,
-            ) {
-                if let Some(gpu) = &simulation.gpu
-                    && let Err(error) = gpu.prescribe_held_poses(&queue, &next)
-                {
-                    editor.feedback = Some(error.to_string());
+        if frozen.translating {
+            (next, settled) =
+                translated_step(&frozen.poses, target, &frozen.held, time.delta_secs());
+        }
+        let clear = simulation.creation.as_ref().map(|creation| {
+            let frozen = &mut *frozen;
+            let cache = frozen
+                .clearance
+                .get_or_insert_with(|| ClearanceCache::new(creation, &frozen.held));
+            (frozen.translating || cache.path_clear(creation, &frozen.poses, &next))
+                && external_path_clear_cached(cache, creation, &frozen.poses, &next, &*world)
+        });
+        match clear {
+            Some(true) => {
+                if let Err(error) = apply_holds(&mut simulation, &queue, &frozen.held, &next) {
+                    editor.feedback = Some(error);
                     return;
                 }
                 if let Some(body) = frozen.held.iter().position(|held| *held) {
@@ -497,11 +537,17 @@ pub(crate) fn update(
                 frozen.poses = next;
                 if settled {
                     frozen.waypoints.pop_front();
+                    if frozen.waypoints.is_empty() {
+                        frozen.aligned = true;
+                        frozen.translating = false;
+                    }
                 }
-            } else {
+            }
+            Some(false) => {
                 frozen.repeat.reset();
                 editor.feedback = Some("Freeze movement is obstructed".to_owned());
             }
+            None => {}
         }
     }
     frozen.overlay(&mut simulation);
@@ -515,14 +561,22 @@ pub(crate) fn update(
             editor.feedback = Some(error);
             return;
         }
-        if let Some(gpu) = &simulation.gpu
-            && let Err(error) = gpu.set_body_holds(&queue, &vec![false; frozen.held.len()])
-        {
-            editor.feedback = Some(error.to_string());
+        let released = vec![false; frozen.held.len()];
+        if let Err(error) = apply_holds(&mut simulation, &queue, &released, &frozen.poses) {
+            editor.feedback = Some(error);
             return;
         }
         frozen.reset();
         editor.feedback = Some("Linked creation released from rest".to_owned());
+    }
+    if scripted.is_some() {
+        crate::performance_capture::record("freeze_state", || {
+            serde_json::json!({
+                "held": frozen.record.is_some(), "aligned": frozen.aligned,
+                "translating": frozen.translating, "waypoints": frozen.waypoints.len(),
+                "feedback": editor.feedback, "height": frozen.record.map(|r| r.target.0.y),
+            })
+        });
     }
 }
 
@@ -534,6 +588,7 @@ fn begin(
     editor: &EditorState,
     queue: &RenderQueue,
 ) -> Result<(), String> {
+    let _timing = crate::performance_capture::FreezeStage::new("planning");
     let link = world
         .active_dimension_link()
         .ok_or("Activate a Dimension Link first")?;
@@ -570,7 +625,14 @@ fn begin(
     let center = position(poses[reference])
         + rotation * (pivot - creation.compounds[reference].root_translation);
     let heading = cardinal_heading(rotation);
-    let obstacles = obstacles(creation, &simulation.transforms, &held);
+    // Held parts move to the same arrangement whatever the target height.
+    let arranged = default_poses(creation, poses, &held, pivot, center, heading);
+    let mut clearance = ClearanceCache::new(creation, &held);
+    if !internal_clear_cached(&mut clearance, creation, poses, &arranged) {
+        return Err(
+            "Frozen parts would pass through each other on the way to their built pose".to_owned(),
+        );
+    }
     let base = world.local_to_global(center);
     for blocks in 0..=80 {
         let mut target = base;
@@ -587,7 +649,9 @@ fn begin(
             heading,
         );
         let terrain = &*world;
-        let Some(waypoints) = plan(creation, &held, poses, &endpoint, &obstacles, terrain) else {
+        let Some(waypoints) =
+            plan_external_cached(&clearance, creation, &held, poses, &endpoint, terrain)
+        else {
             continue;
         };
         let record = FrozenCreationDoc {
@@ -597,21 +661,39 @@ fn begin(
             construction_generation: 0,
         };
         world.persist_frozen_creation(Some(record), &graph.0, editor)?;
-        if let Some(gpu) = &simulation.gpu {
-            gpu.set_body_holds(queue, &held)
-                .map_err(|e| e.to_string())?;
-            gpu.prescribe_held_poses(queue, poses)
-                .map_err(|e| e.to_string())?;
-        }
+        let poses = poses.clone();
+        apply_holds(simulation, queue, &held, &poses)?;
         frozen.record = world.frozen_creation();
         frozen.revision = simulation.world_revision;
         frozen.held = held;
-        frozen.poses = poses.clone();
+        frozen.poses = poses;
         frozen.waypoints = waypoints;
+        frozen.clearance = Some(clearance);
+        frozen.aligned = false;
+        frozen.translating = false;
         frozen.overlay(simulation);
         return Ok(());
     }
     Err("No safe freeze alignment path within 20 m of upward clearance".to_owned())
+}
+
+/// Holds bodies on the GPU scene and, when it owns ticks, the CPU route.
+fn apply_holds(
+    simulation: &mut AppSimulation,
+    queue: &RenderQueue,
+    held: &[bool],
+    poses: &[GpuTransform],
+) -> Result<(), String> {
+    let _timing = crate::performance_capture::FreezeStage::new("hold");
+    if let Some(gpu) = &simulation.gpu {
+        gpu.set_body_holds(queue, held).map_err(|e| e.to_string())?;
+        gpu.prescribe_held_poses(queue, poses)
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(cpu) = simulation.cpu.as_mut() {
+        cpu.hold(held, poses)?;
+    }
+    Ok(())
 }
 
 fn change_height(
@@ -620,6 +702,7 @@ fn change_height(
     world: &mut WorldRuntime,
     delta: f32,
 ) -> Result<(), String> {
+    let _timing = crate::performance_capture::FreezeStage::new("planning");
     let mut record = frozen.record.ok_or("No frozen creation")?;
     record.target.0.y += f64::from(delta);
     let creation = simulation
@@ -628,22 +711,28 @@ fn change_height(
         .ok_or("Wait for world physics")?;
     let (_, pivot) = component(creation, &simulation.published_graph, record.link)
         .ok_or("Dimension Link was removed")?;
-    let mut endpoint = default_poses(
-        creation,
-        &frozen.poses,
-        &frozen.held,
-        pivot,
-        world.global_to_local(record.target),
-        record.heading,
-    );
-    let terrain = &*world;
-    let ground_clear = |poses: &[GpuTransform]| {
-        creation
-            .colliders
-            .iter()
-            .filter(|c| frozen.held[c.compound_index as usize])
-            .all(|c| terrain_clear(c, poses[c.compound_index as usize], 0.05, terrain))
+    let mut endpoint = if frozen.aligned {
+        translated(
+            frozen.waypoints.back().unwrap_or(&frozen.poses),
+            &frozen.held,
+            delta,
+        )
+    } else {
+        default_poses(
+            creation,
+            &frozen.poses,
+            &frozen.held,
+            pivot,
+            world.global_to_local(record.target),
+            record.heading,
+        )
     };
+    let terrain = &*world;
+    let cache = frozen
+        .clearance
+        .get_or_insert_with(|| ClearanceCache::new(creation, &frozen.held));
+    let ground_clear =
+        |poses: &[GpuTransform]| external_endpoint_clear_cached(cache, creation, poses, terrain);
     if delta < 0.0 && !ground_clear(&endpoint) {
         let raised = |lift: f32| {
             endpoint
@@ -667,19 +756,13 @@ fn change_height(
         record.target.0.y += f64::from(clear);
         endpoint = adjusted;
     }
-    let obstacles = obstacles(creation, &simulation.transforms, &frozen.held);
-    let waypoints = plan(
-        creation,
-        &frozen.held,
-        &frozen.poses,
-        &endpoint,
-        &obstacles,
-        &*world,
-    )
-    .ok_or("Height step is obstructed")?;
+    let waypoints = frozen
+        .plan_height(creation, &endpoint, &*world)
+        .ok_or("Height step is obstructed")?;
     world.set_frozen_target(record);
     frozen.record = world.frozen_creation();
     frozen.waypoints = waypoints;
+    frozen.translating = frozen.aligned;
     Ok(())
 }
 
@@ -687,6 +770,11 @@ fn change_height(
 fn minimum_clear_lift(maximum: f32, clear: impl Fn(f32) -> bool) -> Option<f32> {
     if !clear(maximum) {
         return None;
+    }
+    // The caller rejects adjustments smaller than this clearance tolerance.
+    // Avoid fourteen probes for every repeat while already at the floor.
+    if maximum > 1.0e-4 && !clear(maximum - 1.0e-4) {
+        return Some(maximum);
     }
     let (mut low, mut high) = (0.0, maximum);
     for _ in 0..14 {
@@ -769,85 +857,9 @@ fn sphere(collider: &LocalCollider, pose: GpuTransform) -> (Vec3, f32) {
     )
 }
 
-fn obstacles(creation: &CompiledCreation, poses: &[GpuTransform], held: &[bool]) -> Vec<Obb> {
-    creation
-        .colliders
-        .iter()
-        .filter(|c| !held[c.compound_index as usize])
-        .map(|c| {
-            let pose = poses[c.compound_index as usize];
-            let rotation = Quat::from_array(pose.rotation);
-            match &c.shape {
-                ColliderShape::Cuboid {
-                    local_rotation,
-                    half_extents,
-                } => Obb {
-                    center: position(pose) + rotation * c.local_center,
-                    orientation: rotation * *local_rotation,
-                    half_extents: *half_extents,
-                },
-                ColliderShape::Convex(shape) => {
-                    let (low, high) = shape.vertices.iter().fold(
-                        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
-                        |(low, high), &v| (low.min(v), high.max(v)),
-                    );
-                    Obb {
-                        center: position(pose) + rotation * ((low + high) * 0.5),
-                        orientation: rotation,
-                        half_extents: (high - low) * 0.5,
-                    }
-                }
-            }
-        })
-        .collect()
-}
-
-fn penetration(center: Vec3, radius: f32, obstacle: Obb) -> f32 {
-    let local = obstacle.orientation.conjugate() * (center - obstacle.center);
-    let outside = (local.abs() - obstacle.half_extents)
-        .max(Vec3::ZERO)
-        .length();
-    radius - outside
-}
-
-/// Candidate internal collider pairs obey the same collision exclusions as physics.
-fn held_pairs(creation: &CompiledCreation, held: &[bool]) -> Vec<(usize, usize)> {
-    let mut pairs = Vec::new();
-    for (a, first) in creation.colliders.iter().enumerate() {
-        if !held[first.compound_index as usize] {
-            continue;
-        }
-        for (b, second) in creation.colliders.iter().enumerate().skip(a + 1) {
-            if !held[second.compound_index as usize]
-                || first.compound_index == second.compound_index
-            {
-                continue;
-            }
-            let pair = [
-                first.compound_index.min(second.compound_index),
-                first.compound_index.max(second.compound_index),
-            ];
-            if creation.collision_suppression.binary_search(&pair).is_err() {
-                pairs.push((a, b));
-            }
-        }
-    }
-    pairs
-}
-
+#[cfg(test)]
 fn held_endpoint_clear(creation: &CompiledCreation, held: &[bool], poses: &[GpuTransform]) -> bool {
-    held_pairs(creation, held).into_iter().all(|(a, b)| {
-        let first = &creation.colliders[a];
-        let second = &creation.colliders[b];
-        let Ok(a) = crate::live_weld::geometry(first, poses[first.compound_index as usize]) else {
-            return false;
-        };
-        let Ok(b) = crate::live_weld::geometry(second, poses[second.compound_index as usize])
-        else {
-            return false;
-        };
-        crate::live_weld::penetration(&a, &b) <= 1.0e-4
-    })
+    ClearanceCache::new(creation, held).endpoint_clear(creation, poses)
 }
 
 fn collider_body_radius(collider: &LocalCollider) -> f32 {
@@ -892,6 +904,7 @@ fn swept_pair_depth(
     relative_translation: Vec3,
     rotation_bound: f32,
     half_interval: f32,
+    allowed: f32,
 ) -> f32 {
     let mut minimum = f32::INFINITY;
     for axis in a
@@ -920,63 +933,24 @@ fn swept_pair_depth(
         let (b_low, b_high) = interval(&b.vertices);
         let expansion = (relative_translation.dot(axis).abs() + rotation_bound) * half_interval;
         minimum = minimum.min((a_high - b_low).min(b_high - a_low) + expansion);
+        if minimum <= allowed {
+            return minimum;
+        }
     }
     minimum
 }
 
+/// Midpoint tests one held pair may spend proving a path clear.
+const MAX_PAIR_EVALUATIONS: usize = 4096;
+
+#[cfg(test)]
 fn held_path_clear(
     creation: &CompiledCreation,
     held: &[bool],
     start: &[GpuTransform],
     end: &[GpuTransform],
 ) -> bool {
-    for (a_index, b_index) in held_pairs(creation, held) {
-        let a = &creation.colliders[a_index];
-        let b = &creation.colliders[b_index];
-        let a_body = a.compound_index as usize;
-        let b_body = b.compound_index as usize;
-        let relative_translation = (position(end[b_body]) - position(start[b_body]))
-            - (position(end[a_body]) - position(start[a_body]));
-        let rotation_bound = rotation_travel(start[a_body], end[a_body]) * collider_body_radius(a)
-            + rotation_travel(start[b_body], end[b_body]) * collider_body_radius(b);
-        let Ok(initial_a) = crate::live_weld::geometry(a, start[a_body]) else {
-            return false;
-        };
-        let Ok(initial_b) = crate::live_weld::geometry(b, start[b_body]) else {
-            return false;
-        };
-        let allowed = crate::live_weld::penetration(&initial_a, &initial_b).max(0.0) + 1.0e-4;
-        let mut intervals = vec![(0.0, 1.0, 0_u8)];
-        while let Some((low, high, depth)) = intervals.pop() {
-            let midpoint = (low + high) * 0.5;
-            let Ok(mid_a) =
-                crate::live_weld::geometry(a, pose_at(start[a_body], end[a_body], midpoint))
-            else {
-                return false;
-            };
-            let Ok(mid_b) =
-                crate::live_weld::geometry(b, pose_at(start[b_body], end[b_body], midpoint))
-            else {
-                return false;
-            };
-            if swept_pair_depth(
-                &mid_a,
-                &mid_b,
-                relative_translation,
-                rotation_bound,
-                (high - low) * 0.5,
-            ) <= allowed
-            {
-                continue;
-            }
-            if crate::live_weld::penetration(&mid_a, &mid_b) > allowed || depth >= 24 {
-                return false;
-            }
-            intervals.push((midpoint, high, depth + 1));
-            intervals.push((low, midpoint, depth + 1));
-        }
-    }
-    true
+    ClearanceCache::new(creation, held).path_clear(creation, start, end)
 }
 
 trait TerrainProbe {
@@ -1132,123 +1106,212 @@ fn sampled_terrain_clear(
     geometry.vertices.iter().copied().all(clear)
 }
 
+#[cfg(test)]
 fn endpoint_clear(
     creation: &CompiledCreation,
     held: &[bool],
     poses: &[GpuTransform],
-    obstacles: &[Obb],
     terrain: &impl TerrainProbe,
 ) -> bool {
-    if !held_endpoint_clear(creation, held, poses) {
-        return false;
-    }
-    creation
-        .colliders
-        .iter()
-        .filter(|c| held[c.compound_index as usize])
-        .all(|c| {
-            let (center, radius) = sphere(c, poses[c.compound_index as usize]);
-            terrain_clear(c, poses[c.compound_index as usize], 0.05, terrain)
-                && obstacles
-                    .iter()
-                    .all(|&o| penetration(center, radius, o) <= 1.0e-4)
-        })
+    held_endpoint_clear(creation, held, poses)
+        && external_endpoint_clear(creation, held, poses, terrain)
 }
 
-/// Midpoint spheres inflated by a bound on translation and rotation cover the
-/// complete subsegment. Existing conservative overlaps may only decrease.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+/// Only terrain blocks a held creation; other bodies are pushed out of its way.
+#[cfg(test)]
+fn external_endpoint_clear(
+    creation: &CompiledCreation,
+    held: &[bool],
+    poses: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> bool {
+    external_endpoint_clear_cached(
+        &ClearanceCache::new(creation, held),
+        creation,
+        poses,
+        terrain,
+    )
+}
+
+fn external_endpoint_clear_cached(
+    cache: &ClearanceCache,
+    creation: &CompiledCreation,
+    poses: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> bool {
+    let _timing = crate::performance_capture::FreezeStage::new("terrain_endpoint");
+    cache.terrain_clear(poses, poses, 0.05, terrain, |index| {
+        let c = &creation.colliders[index];
+        terrain_clear(c, poses[c.compound_index as usize], 0.05, terrain)
+    })
+}
+
+#[cfg(test)]
 fn path_clear(
     creation: &CompiledCreation,
     held: &[bool],
     start: &[GpuTransform],
     end: &[GpuTransform],
-    obstacles: &[Obb],
     terrain: &impl TerrainProbe,
 ) -> bool {
-    if !held_path_clear(creation, held, start, end) {
-        return false;
-    }
-    for c in creation
-        .colliders
-        .iter()
-        .filter(|c| held[c.compound_index as usize])
-    {
-        let body = c.compound_index as usize;
-        let a = start[body];
-        let b = end[body];
-        let qa = Quat::from_array(a.rotation);
-        let qb = Quat::from_array(b.rotation);
-        let rotating = qa.dot(qb).abs() < 1.0 - 1.0e-7;
-        let travel =
-            position(a).distance(position(b)) + qa.angle_between(qb) * c.local_center.length();
-        let steps = (travel / 0.05).ceil().max(1.0) as u32;
-        let margin = travel / (2.0 * steps as f32);
-        let mut prior = sphere(c, a);
-        let initially_clear = terrain_clear(c, a, 0.05, terrain);
-        for step in 0..steps {
-            let amount = (step as f32 + 0.5) / steps as f32;
-            let midpoint = GpuTransform {
+    held_path_clear(creation, held, start, end)
+        && external_path_clear(creation, held, start, end, terrain)
+}
+
+/// Midpoint spheres inflated by a bound on translation and rotation cover the
+/// complete subsegment. Existing conservative terrain overlaps may only decrease.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+#[cfg(test)]
+fn external_path_clear(
+    creation: &CompiledCreation,
+    held: &[bool],
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> bool {
+    external_path_clear_cached(
+        &ClearanceCache::new(creation, held),
+        creation,
+        start,
+        end,
+        terrain,
+    )
+}
+
+fn external_path_clear_cached(
+    cache: &ClearanceCache,
+    creation: &CompiledCreation,
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> bool {
+    let _timing = crate::performance_capture::FreezeStage::new("terrain_path");
+    cache.terrain_clear(start, end, 0.05, terrain, |index| {
+        external_collider_path_clear(&creation.colliders[index], start, end, terrain)
+    })
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn external_collider_path_clear(
+    c: &LocalCollider,
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> bool {
+    let body = c.compound_index as usize;
+    let a = start[body];
+    let b = end[body];
+    let qa = Quat::from_array(a.rotation);
+    let qb = Quat::from_array(b.rotation);
+    let rotating = qa.dot(qb).abs() < 1.0 - 1.0e-7;
+    let travel = position(a).distance(position(b)) + qa.angle_between(qb) * c.local_center.length();
+    let steps = (travel / 0.05).ceil().max(1.0) as u32;
+    let margin = travel / (2.0 * steps as f32);
+    let mut prior = sphere(c, a);
+    let initially_clear = terrain_clear(c, a, 0.05, terrain);
+    for step in 0..steps {
+        let amount = (step as f32 + 0.5) / steps as f32;
+        let midpoint = GpuTransform {
+            position: position(a).lerp(position(b), amount).extend(0.0).to_array(),
+            rotation: qa.slerp(qb, amount).to_array(),
+        };
+        let (center, radius) = sphere(c, midpoint);
+        let Some(initial_depth) = terrain.penetration(prior.0, prior.1) else {
+            return false;
+        };
+        let allowed = if rotating {
+            0.0
+        } else {
+            initial_depth.max(0.0)
+        };
+        let terrain_safe = if initially_clear {
+            terrain_clear(c, midpoint, 0.05 + margin, terrain)
+        } else {
+            terrain
+                .penetration(center, radius + margin)
+                .is_some_and(|depth| depth <= allowed + 1.0e-4)
+        };
+        if !terrain_safe {
+            return false;
+        }
+        let amount = (step + 1) as f32 / steps as f32;
+        prior = sphere(
+            c,
+            GpuTransform {
                 position: position(a).lerp(position(b), amount).extend(0.0).to_array(),
                 rotation: qa.slerp(qb, amount).to_array(),
-            };
-            let (center, radius) = sphere(c, midpoint);
-            let Some(initial_depth) = terrain.penetration(prior.0, prior.1) else {
-                return false;
-            };
-            let allowed = if rotating {
-                0.0
-            } else {
-                initial_depth.max(0.0)
-            };
-            let terrain_safe = if initially_clear {
-                terrain_clear(c, midpoint, 0.05 + margin, terrain)
-            } else {
-                terrain
-                    .penetration(center, radius + margin)
-                    .is_some_and(|depth| depth <= allowed + 1.0e-4)
-            };
-            if !terrain_safe
-                || obstacles.iter().any(|&o| {
-                    penetration(center, radius + margin, o)
-                        > (if rotating {
-                            0.0
-                        } else {
-                            penetration(prior.0, prior.1, o).max(0.0)
-                        }) + 1.0e-4
-                })
-            {
-                return false;
-            }
-            let amount = (step + 1) as f32 / steps as f32;
-            prior = sphere(
-                c,
-                GpuTransform {
-                    position: position(a).lerp(position(b), amount).extend(0.0).to_array(),
-                    rotation: qa.slerp(qb, amount).to_array(),
-                },
-            );
-        }
+            },
+        );
     }
     true
 }
 
+#[cfg(test)]
 fn plan(
     creation: &CompiledCreation,
     held: &[bool],
     start: &[GpuTransform],
     end: &[GpuTransform],
-    obstacles: &[Obb],
     terrain: &impl TerrainProbe,
 ) -> Option<VecDeque<Vec<GpuTransform>>> {
-    if !endpoint_clear(creation, held, end, obstacles, terrain) {
+    if !internal_clear(creation, held, start, end) {
         return None;
     }
-    if path_clear(creation, held, start, end, obstacles, terrain) {
+    plan_external(creation, held, start, end, terrain)
+}
+
+/// Whether held parts can move from their `start` arrangement into `end`
+/// without passing through each other. Only their relative poses matter, so the
+/// answer holds for every target height and for a pure lift on the way.
+#[cfg(test)]
+fn internal_clear(
+    creation: &CompiledCreation,
+    held: &[bool],
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+) -> bool {
+    held_endpoint_clear(creation, held, end) && held_path_clear(creation, held, start, end)
+}
+
+/// The terrain half of [`plan`], for an internally clear move.
+#[cfg(test)]
+fn plan_external(
+    creation: &CompiledCreation,
+    held: &[bool],
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> Option<VecDeque<Vec<GpuTransform>>> {
+    plan_external_cached(
+        &ClearanceCache::new(creation, held),
+        creation,
+        held,
+        start,
+        end,
+        terrain,
+    )
+}
+
+fn plan_external_cached(
+    cache: &ClearanceCache,
+    creation: &CompiledCreation,
+    held: &[bool],
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> Option<VecDeque<Vec<GpuTransform>>> {
+    if !external_endpoint_clear_cached(cache, creation, end, terrain) {
+        return None;
+    }
+    if external_path_clear_cached(cache, creation, start, end, terrain) {
         return Some(VecDeque::from([end.to_vec()]));
     }
     // Lift without changing orientation before attempting to level the creation.
@@ -1273,9 +1336,9 @@ fn plan(
             pose
         })
         .collect::<Vec<_>>();
-    (path_clear(creation, held, start, &raised, obstacles, terrain)
-        && endpoint_clear(creation, held, &raised, obstacles, terrain)
-        && path_clear(creation, held, &raised, end, obstacles, terrain))
+    (external_path_clear_cached(cache, creation, start, &raised, terrain)
+        && external_endpoint_clear_cached(cache, creation, &raised, terrain)
+        && external_path_clear_cached(cache, creation, &raised, end, terrain))
     .then(|| VecDeque::from([raised, end.to_vec()]))
 }
 
@@ -1289,4 +1352,60 @@ pub(crate) fn weld_terrain_clear(
     pose: GpuTransform,
 ) -> bool {
     TerrainProbe::collider_clear(world, collider, pose, -0.001)
+}
+
+fn internal_clear_cached(
+    cache: &mut ClearanceCache,
+    creation: &CompiledCreation,
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+) -> bool {
+    cache.endpoint_clear(creation, end) && cache.path_clear(creation, start, end)
+}
+
+fn plan_cached(
+    cache: &mut ClearanceCache,
+    creation: &CompiledCreation,
+    held: &[bool],
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+    terrain: &impl TerrainProbe,
+) -> Option<VecDeque<Vec<GpuTransform>>> {
+    if !internal_clear_cached(cache, creation, start, end) {
+        return None;
+    }
+    plan_external_cached(cache, creation, held, start, end, terrain)
+}
+
+fn translated(poses: &[GpuTransform], held: &[bool], delta: f32) -> Vec<GpuTransform> {
+    poses
+        .iter()
+        .zip(held)
+        .map(|(&pose, &held)| {
+            let mut pose = pose;
+            if held {
+                pose.position[1] += delta;
+            }
+            pose
+        })
+        .collect()
+}
+
+fn translated_step(
+    start: &[GpuTransform],
+    end: &[GpuTransform],
+    held: &[bool],
+    dt: f32,
+) -> (Vec<GpuTransform>, bool) {
+    let Some(body) = held.iter().position(|held| *held) else {
+        return (start.to_vec(), true);
+    };
+    let (next, settled) = smooth_pose(start[body], end[body], dt);
+    if settled {
+        return (end.to_vec(), true);
+    }
+    (
+        translated(start, held, next.position[1] - start[body].position[1]),
+        false,
+    )
 }

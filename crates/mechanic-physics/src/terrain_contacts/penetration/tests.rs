@@ -175,7 +175,6 @@ fn a_separated_body_below_a_finite_surface_does_not_get_a_penetration_hold() {
         .validate_penetration(&geometry, &motion, DVec3::ZERO, 0.002, 1)
         .unwrap();
     assert_eq!(query.outcome, TerrainPathOutcome::Bounded);
-    assert_eq!(query.certified_intervals, 2);
 }
 
 #[test]

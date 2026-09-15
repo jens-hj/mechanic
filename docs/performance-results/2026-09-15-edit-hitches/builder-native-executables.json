@@ -1,0 +1,20 @@
+{
+  "before": {
+    "executable": "/private/tmp/mechanic-builder-before-app",
+    "executable_sha256": "ac0f35feddb09c21b1ac2ea1c0d5af9e4aa60bb5e9c876aea422d01fb9830f08",
+    "launcher": "#!/bin/sh\nexport MECHANIC_PERF_CAPTURE_FROM_START=1\nexec /tmp/mechanic-builder-before-app \"$@\"\n",
+    "launcher_sha256": "f5771e0e1278ad3d4f19ff9d48f5b9ae307b7f04618bd54fab7259101afba6ef"
+  },
+  "normals-only": {
+    "executable": "/Users/jens/repos/mechanic/target/release/mechanic-app",
+    "executable_sha256": "1d3d099758497511cb1d36c46d82d45c29606c075c5c17cffe7632c7c1d0bd18",
+    "launcher": "#!/bin/sh\nexport MECHANIC_PERF_CAPTURE_FROM_START=1\nexec /Users/jens/repos/mechanic/target/release/mechanic-app \"$@\"\n",
+    "launcher_sha256": "7d9202ab8c50f8a9b7791a5eedc5aa425dc36979284a1e05e78a16c0825cd8b4"
+  },
+  "after": {
+    "executable": "/Users/jens/repos/mechanic/target/release/mechanic-app",
+    "executable_sha256": "5e6831511b3f51960a7ba07c9f05f12336471fee9f91a48b1704c5fce76c04c4",
+    "launcher": "#!/bin/sh\nexport MECHANIC_PERF_CAPTURE_FROM_START=1\nexec /Users/jens/repos/mechanic/target/release/mechanic-app \"$@\"\n",
+    "launcher_sha256": "7d9202ab8c50f8a9b7791a5eedc5aa425dc36979284a1e05e78a16c0825cd8b4"
+  }
+}

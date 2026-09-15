@@ -12,7 +12,7 @@ use mechanic_gpu::{
     GpuExternalImpulse, GpuMechanismCoordinate, GpuMechanismDrive, GpuTransform, GpuVelocity,
 };
 use mechanic_physics::{
-    BodyPose, CpuMachine, DriveCommand, ExternalImpulse, MachineDynamics, MachineState,
+    BodyPose, CpuMachine, DriveCommand, ExternalImpulse, MachineKinematics, MachineState,
     PhysicsError, SoftStepSettings, SoftStepTerrain, TerrainContactScene,
 };
 use mechanic_world::{TerrainMeshChunk, TerrainNodeId};
@@ -57,6 +57,7 @@ pub(crate) fn selected() -> bool {
 
 /// One completed CPU tick, in exactly the form a GPU readback publishes.
 pub(crate) struct Completed {
+    pub(crate) sequence: u64,
     /// Body poses for the renderer and world walking.
     pub(crate) transforms: Vec<GpuTransform>,
     /// Body linear and angular velocity.
@@ -86,30 +87,45 @@ pub(crate) struct CpuRoute {
     degraded_ticks: u64,
 }
 
-impl CpuRoute {
-    /// Binds the CPU solver to a published creation, starting from the live body
-    /// and joint state the GPU route would have uploaded.
-    ///
-    /// # Errors
-    /// Returns a message naming what the CPU solver cannot run, so the caller can
-    /// refuse the publication instead of silently falling back to the GPU.
-    pub(crate) fn new(
-        creation: &CompiledCreation,
+/// Immutable construction collision data prepared alongside graph compilation.
+/// Live poses are supplied only when this revision is installed.
+pub(crate) struct PreparedRoute {
+    creation: CompiledCreation,
+    geometry: mechanic_physics::MachineCollisionGeometry,
+    generation: u64,
+}
+
+impl PreparedRoute {
+    pub(crate) fn new(creation: &CompiledCreation, generation: u64) -> Result<Self, String> {
+        let geometry = mechanic_physics::MachineCollisionGeometry::new(creation, generation)
+            .map_err(|error| unsupported(&error))?;
+        Ok(Self {
+            creation: creation.clone(),
+            geometry,
+            generation,
+        })
+    }
+
+    pub(crate) fn install(
+        self,
         generation: u64,
         base_tick: u64,
         transforms: &[GpuTransform],
         velocities: &[GpuVelocity],
         coordinates: &[GpuMechanismCoordinate],
-    ) -> Result<Self, String> {
-        let state = machine_state(creation, transforms, velocities, coordinates)?;
-        let geometry = mechanic_physics::MachineCollisionGeometry::new(creation, generation)
+    ) -> Result<CpuRoute, String> {
+        if self.generation != generation {
+            return Err(
+                "CPU collision preparation belongs to a different construction revision".to_owned(),
+            );
+        }
+        let state = machine_state(&self.creation, transforms, velocities, coordinates)?;
+        let machine = CpuMachine::new(self.creation.clone(), generation, state)
             .map_err(|error| unsupported(&error))?;
-        let machine = CpuMachine::new(creation.clone(), generation, state)
-            .map_err(|error| unsupported(&error))?;
-        Ok(Self {
+        Ok(CpuRoute {
             machine,
-            creation: creation.clone(),
-            geometry,
+            creation: self.creation,
+            geometry: self.geometry,
             scene: TerrainContactScene::default(),
             chunks: BTreeMap::new(),
             generation,
@@ -120,6 +136,43 @@ impl CpuRoute {
             settings: SoftStepSettings::default(),
             degraded_ticks: 0,
         })
+    }
+}
+
+impl CpuRoute {
+    /// Transfers the world-owned terrain cut across a construction publication.
+    /// Body state, contacts and construction collision geometry remain those of
+    /// the new route. The next publication still reconciles remeshed/removed chunks.
+    pub(crate) fn inherit_terrain(&mut self, previous: &mut Self) {
+        self.scene = std::mem::take(&mut previous.scene);
+        self.chunks = std::mem::take(&mut previous.chunks);
+        self.publication = previous.publication;
+        self.origin = previous.origin;
+        self.published = std::mem::take(&mut previous.published);
+    }
+
+    /// Binds the CPU solver to a published creation, starting from the live body
+    /// and joint state the GPU route would have uploaded.
+    ///
+    /// # Errors
+    /// Returns a message naming what the CPU solver cannot run, so the caller can
+    /// refuse the publication instead of silently falling back to the GPU.
+    #[cfg(test)]
+    pub(crate) fn new(
+        creation: &CompiledCreation,
+        generation: u64,
+        base_tick: u64,
+        transforms: &[GpuTransform],
+        velocities: &[GpuVelocity],
+        coordinates: &[GpuMechanismCoordinate],
+    ) -> Result<Self, String> {
+        PreparedRoute::new(creation, generation)?.install(
+            generation,
+            base_tick,
+            transforms,
+            velocities,
+            coordinates,
+        )
     }
 
     /// Brings the collision scene up to the terrain around the bodies. Called every
@@ -133,6 +186,7 @@ impl CpuRoute {
         chunks: impl IntoIterator<Item = &'a TerrainMeshChunk>,
         origin: DVec3,
     ) -> Result<(), String> {
+        let started = std::time::Instant::now();
         let chunks = chunks.into_iter().collect::<Vec<_>>();
         let current = chunks
             .iter()
@@ -140,6 +194,10 @@ impl CpuRoute {
             .collect::<BTreeMap<_, _>>();
         self.origin = origin;
         if self.published && current == self.chunks {
+            crate::performance_capture::record(
+                "cpu_terrain_update",
+                || serde_json::json!({"duration_ms":started.elapsed().as_secs_f64()*1000.0,"changed_chunks":0}),
+            );
             return Ok(());
         }
         let upserts = chunks
@@ -171,6 +229,10 @@ impl CpuRoute {
                 .map_err(|error| format!("cannot publish terrain to the CPU solver: {error}"))?;
             self.scene = scene;
         }
+        crate::performance_capture::record(
+            "cpu_terrain_update",
+            || serde_json::json!({"duration_ms":started.elapsed().as_secs_f64()*1000.0,"changed_chunks":upserts.len()+removed.len()}),
+        );
         self.chunks = current;
         self.published = true;
         Ok(())
@@ -195,6 +257,7 @@ impl CpuRoute {
         drives: &[GpuMechanismDrive],
         impulses: &[GpuExternalImpulse],
     ) -> Result<Completed, String> {
+        let started = std::time::Instant::now();
         tick.checked_sub(self.base_tick)
             .ok_or_else(|| format!("tick {tick} precedes this CPU publication"))?;
         // The app drops overdue ticks by skipping their labels. The CPU machine
@@ -248,7 +311,14 @@ impl CpuRoute {
         if self.machine.diagnostics().degraded {
             self.degraded_ticks += 1;
         }
-        self.published_state()
+        let publication_started = std::time::Instant::now();
+        let completed = self.published_state()?;
+        let publication_ms = publication_started.elapsed().as_secs_f64() * 1000.0;
+        crate::performance_capture::record("physics_cpu_tick", || {
+            let d = self.machine.diagnostics();
+            serde_json::json!({"tick": tick, "sequence": machine_tick, "route": "cpu", "duration_ms": started.elapsed().as_secs_f64()*1000.0, "conversion_ms": publication_ms, "query_ms": d.query_ms, "solve_ms": d.solve_ms, "dynamics_ms": d.dynamics_ms, "rows_ms": d.rows_ms, "constraints_ms": d.constraints_ms, "continuous_ms": d.continuous_ms,"continuous_shape_transformations":d.continuous_shape_transformations,"continuous_shape_cache_hits":d.continuous_shape_cache_hits,"continuous_hierarchy_node_pair_tests":d.continuous_hierarchy_node_pair_tests,"continuous_pose_evaluations":d.continuous_pose_evaluations,"continuous_velocity_evaluations":d.continuous_velocity_evaluations,"continuous_separation_evaluations":d.continuous_separation_evaluations,"continuous_collider_pair_candidates":d.continuous_collider_pair_candidates,"continuous_triangle_candidates":d.continuous_triangle_candidates, "degraded": d.degraded, "degraded_reason": d.degraded_reason, "contacts": d.contacts, "rows": d.rows, "triangle_candidates":d.triangle_candidates, "collider_pair_candidates":d.collider_pair_candidates,"solver_scratch_bytes":d.solver_scratch_bytes,"solver_scratch_growth_bytes":d.solver_scratch_growth_bytes})
+        });
+        Ok(completed)
     }
 
     /// Why a tick was refused. The soft-step solver only refuses invalid input.
@@ -260,6 +330,18 @@ impl CpuRoute {
         )
     }
 
+    /// Holds whole mechanisms at prescribed poses, like the GPU runtime's body
+    /// holds; poses of bodies not held are ignored.
+    ///
+    /// # Errors
+    /// Returns a message when the solver refuses the mask or a held pose.
+    pub(crate) fn hold(&mut self, held: &[bool], poses: &[GpuTransform]) -> Result<(), String> {
+        let poses = poses.iter().map(body_pose).collect::<Vec<_>>();
+        self.machine
+            .hold(held, &poses)
+            .map_err(|error| format!("the CPU solver refused a body hold: {error}"))
+    }
+
     /// Ticks since this route was built that fell back after numerical trouble.
     pub(crate) fn degraded_ticks(&self) -> u64 {
         self.degraded_ticks
@@ -268,11 +350,9 @@ impl CpuRoute {
     /// Converts the committed snapshot into the publication the renderer reads.
     fn published_state(&self) -> Result<Completed, String> {
         let state = &self.machine.snapshot().state;
-        let model = MachineDynamics::assemble(&self.creation, &state.poses, &state.coordinates)
-            .map_err(|error| format!("cannot reconstruct CPU body poses: {error}"))?;
-        let motions = model
-            .body_motions(&state.velocities)
-            .map_err(|error| format!("cannot reconstruct CPU body velocities: {error}"))?;
+        let motions =
+            MachineKinematics::published_motions(&self.creation, &state.poses, &state.velocities)
+                .map_err(|error| format!("cannot reconstruct CPU body velocities: {error}"))?;
         let transforms = state
             .poses
             .iter()
@@ -307,6 +387,7 @@ impl CpuRoute {
             })
             .collect();
         Ok(Completed {
+            sequence: self.machine.snapshot().tick,
             transforms,
             velocities,
             coordinates,
@@ -343,23 +424,7 @@ fn machine_state(
             coordinates.len()
         ));
     }
-    let poses = transforms
-        .iter()
-        .map(|transform| BodyPose {
-            position: DVec3::new(
-                f64::from(transform.position[0]),
-                f64::from(transform.position[1]),
-                f64::from(transform.position[2]),
-            ),
-            rotation: DQuat::from_xyzw(
-                f64::from(transform.rotation[0]),
-                f64::from(transform.rotation[1]),
-                f64::from(transform.rotation[2]),
-                f64::from(transform.rotation[3]),
-            )
-            .normalize(),
-        })
-        .collect();
+    let poses = transforms.iter().map(body_pose).collect();
     // Rows are assigned in preorder, not body order, so only the elimination tree
     // states how many generalized velocities the creation has.
     let mut rates = vec![0.0; creation.dynamics.elimination_parent.len()];
@@ -393,6 +458,23 @@ fn machine_state(
             .collect(),
         velocities: rates,
     })
+}
+
+fn body_pose(transform: &GpuTransform) -> BodyPose {
+    BodyPose {
+        position: DVec3::new(
+            f64::from(transform.position[0]),
+            f64::from(transform.position[1]),
+            f64::from(transform.position[2]),
+        ),
+        rotation: DQuat::from_xyzw(
+            f64::from(transform.rotation[0]),
+            f64::from(transform.rotation[1]),
+            f64::from(transform.rotation[2]),
+            f64::from(transform.rotation[3]),
+        )
+        .normalize(),
+    }
 }
 
 /// Gravity the GPU runtime applies, in metres per second squared.
@@ -639,6 +721,42 @@ mod tests {
     }
 
     #[test]
+    fn prepared_collision_installs_latest_body_state_and_rejects_another_revision() {
+        let (creation, mut transforms, mut velocities) = dropped_cube(0.5);
+        let prepared = PreparedRoute::new(&creation, 7).unwrap();
+        // The old simulation continues moving while geometry is prepared.
+        transforms[0].position = [3.0, 2.0, -1.0, 0.0];
+        velocities[0].linear = [0.6, 0.0, 0.0, 0.0];
+        let mut route = prepared
+            .install(7, 40, &transforms, &velocities, &[])
+            .unwrap();
+        let published = route.published_state().unwrap();
+        assert!(
+            bevy::math::Vec4::from_array(published.transforms[0].position)
+                .abs_diff_eq(bevy::math::Vec4::from_array(transforms[0].position), 1.0e-6)
+        );
+        assert!(
+            bevy::math::Vec4::from_array(published.velocities[0].linear)
+                .abs_diff_eq(bevy::math::Vec4::from_array(velocities[0].linear), 1.0e-6)
+        );
+        route.publish_terrain([], DVec3::ZERO).unwrap();
+        let next = route.step(41, DVec3::ZERO, &[], &[]).unwrap();
+        assert!((next.transforms[0].position[0] - 3.01).abs() < 1.0e-5);
+        assert!(
+            PreparedRoute::new(&creation, 7)
+                .unwrap()
+                .install(8, 40, &transforms, &velocities, &[])
+                .is_err()
+        );
+        assert!(
+            PreparedRoute::new(&creation, 7)
+                .unwrap()
+                .install(7, 40, &[], &velocities, &[])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn a_cube_published_on_the_floor_settles_and_keeps_publishing_ticks() {
         let (creation, transforms, velocities) = dropped_cube(0.502);
         let mut route = CpuRoute::new(&creation, 7, 0, &transforms, &velocities, &[]).unwrap();
@@ -672,6 +790,42 @@ mod tests {
         );
         assert!((resting.transforms[0].position[1] - 0.5).abs() < 0.005);
         assert_eq!(route.degraded_ticks(), 0);
+    }
+
+    #[test]
+    fn construction_publication_keeps_terrain_and_still_applies_remeshes_and_removals() {
+        let (creation, transforms, velocities) = dropped_cube(0.502);
+        let mut previous = CpuRoute::new(&creation, 7, 0, &transforms, &velocities, &[]).unwrap();
+        previous.publish_terrain([&floor()], DVec3::ZERO).unwrap();
+        let publication = previous.publication;
+        let mut replacement =
+            CpuRoute::new(&creation, 8, 10, &transforms, &velocities, &[]).unwrap();
+        replacement.inherit_terrain(&mut previous);
+        assert!(replacement.is_ready());
+        assert!(!previous.is_ready());
+        replacement
+            .publish_terrain([&floor()], DVec3::ZERO)
+            .unwrap();
+        assert_eq!(
+            replacement.publication, publication,
+            "unchanged terrain must not be rebuilt after an edit"
+        );
+        let resting = replacement.step(11, gravity(), &[], &[]).unwrap();
+        assert!(resting.transforms[0].position[1] > 0.49);
+
+        let mut remeshed = floor();
+        remeshed.generation += 1;
+        replacement
+            .publish_terrain([&remeshed], DVec3::ZERO)
+            .unwrap();
+        assert_eq!(replacement.publication, publication + 1);
+        replacement.publish_terrain([], DVec3::ZERO).unwrap();
+        for tick in 12..=31 {
+            let state = replacement.step(tick, gravity(), &[], &[]).unwrap();
+            if tick == 31 {
+                assert!(state.transforms[0].position[1] < 0.4);
+            }
+        }
     }
 
     #[test]

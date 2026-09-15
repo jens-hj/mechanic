@@ -1,0 +1,3 @@
+   Compiling mechanic-physics v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-physics)
+   Compiling mechanic-app v0.1.0 (/Users/jens/repos/mechanic/crates/mechanic-app)
+    Finished `release` profile [optimized] target(s) in 4m 05s

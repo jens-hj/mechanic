@@ -1,0 +1,11 @@
+2026-09-14T22:15:21.098231Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-09-14T22:15:21.181514Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-09-14T22:15:21.181563Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-09-14T22:15:21.347726Z  INFO bevy_winit::system: Creating new window Mechanic — construction and simulation prototype (62v0)
+2026-09-14T22:15:21.800817Z  INFO mechanic_app::automation: Automatic capture: mechanic-auto-232b30fabc1744958e759c11a53532a0 (foreground requested: false)
+2026-09-14T22:15:21.938129Z  INFO mechanic_app::automation: Automation waiting: phase Loading notice None progress TerrainReadiness { resolved: 0, total: 0 } running false backlog 0 resolved 0/0
+2026-09-14T22:15:24.114744Z  INFO mechanic_app::automation: Automation waiting: phase Loading notice None progress TerrainReadiness { resolved: 8, total: 36 } running false backlog 3383 resolved 8/36
+2026-09-14T22:15:27.335346Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 3321 resolved 36/36
+2026-09-14T22:15:28.992985Z ERROR mechanic_app: Simulation stopped: physics tick 13 reported flags 4
+2026-09-14T22:15:29.018719Z ERROR mechanic_app::automation: Automatic capture stopped with physics failure: physics tick 13 reported flags 4
+2026-09-14T22:15:29.020683Z  WARN bevy_winit::state: Skipped event Destroyed for unknown winit Window Id WindowId(524486329600)

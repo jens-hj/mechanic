@@ -1,0 +1,5 @@
+{
+  "crates/mechanic-app/src/freeze.rs": "ed431fddd5d7d9c0a114cb40ab2ff3ec20e4937972f899f98186b1ee25f50465",
+  "crates/mechanic-app/src/automation.rs": "1fe02229feb96b4834ba0f4b2cb76d7bcc152dfb06b9706a29f88733f37472ac",
+  "crates/mechanic-app/src/performance_capture.rs": "2e9b810816d0adc04cce69019dd9c8ee3c9864eb518542afcdc911014ae72f00"
+}

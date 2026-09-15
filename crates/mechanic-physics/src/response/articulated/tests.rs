@@ -1,4 +1,5 @@
 use super::*;
+use crate::DynamicsFactor;
 use crate::{ConstraintBlock, ContactFriction, ImpulseBounds, solve_constraints};
 use bevy_math::{DQuat, IVec3, Vec3};
 use mechanic_core::{

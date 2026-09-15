@@ -1,0 +1,6 @@
+{
+  "status": "Exploratory cold samples; no warmed 10x or foreground acceptance claim.",
+  "builder-initial.jsonl": "Initial matrix-free/local response implementation, before exact bounds/face rejection/tighter sweeps.",
+  "builder-tight-sweep.jsonl": "Tighter swept bounds and face rejection; before final pooling/publication changes.",
+  "block-pile-baseline.jsonl": "Original runtime including uncommitted freeze/hold work."
+}

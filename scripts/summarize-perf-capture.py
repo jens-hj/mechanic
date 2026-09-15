@@ -39,6 +39,56 @@ def summarize(path):
     def stats(kind, field):
         samples = values(kind, field)
         return {"count": len(samples), "p50": percentile(samples, 50), "p95": percentile(samples, 95), "p99": percentile(samples, 99)}
+    freeze_stages = {}
+    freeze_work = False
+    input_kind = None
+    toggle_count = 0
+    input_operations = {}
+    for event in events:
+        if event.get("phase") != "measurement":
+            continue
+        if event["kind"] == "freeze_input":
+            if event["data"].get("toggle"):
+                toggle_count += 1
+                input_kind = "entry" if toggle_count == 1 else "release"
+            else:
+                input_kind = "height"
+        if event["kind"] != "freeze_stage":
+            continue
+        stage, ms = event["data"]["stage"], event["data"]["ms"]
+        freeze_stages.setdefault(stage, []).append(ms)
+        if stage == "total":
+            if freeze_work:
+                freeze_stages.setdefault("active_total", []).append(ms)
+                if input_kind != "release":
+                    freeze_stages.setdefault("active_movement_total", []).append(ms)
+            if input_kind:
+                input_operations.setdefault(input_kind, []).append(ms)
+            freeze_work = False
+            input_kind = None
+        else:
+            freeze_work = True
+    freeze_stats = {stage: {"count": len(samples), "p95": percentile(samples, 95), "max": max(samples)}
+                    for stage, samples in freeze_stages.items()}
+    # Rendering pipelines can delay Bevy's published frame delta. Measure the
+    # cadence at the same update point instead of guessing that pipeline delay.
+    input_frame_ms, input_processing_ms = [], []
+    input_pending = previous_input = False
+    previous_start = None
+    for event in events:
+        if event.get("phase") != "measurement":
+            continue
+        if event["kind"] == "freeze_input":
+            input_pending = True
+        elif event["kind"] == "freeze_stage" and event["data"]["stage"] == "total":
+            start = event.get("elapsed_ms", 0) - event["data"]["ms"]
+            if previous_input and previous_start is not None:
+                input_frame_ms.append(start - previous_start)
+            if input_pending:
+                input_processing_ms.append(event["data"]["ms"])
+            previous_start, previous_input, input_pending = start, input_pending, False
+    def hitch_stats(samples):
+        return {"count": len(samples), "p95": percentile(samples, 95), "max": max(samples, default=None)}
     # Ordinals follow the actual submissions, including those made before capture.
     # A completion's scheduler tick gap belongs to its submission interval, not
     # the frame interval in which its delayed readback happens to arrive.
@@ -95,10 +145,24 @@ def summarize(path):
         "drain_duration_seconds": duration - submission_duration,
         "drain_complete": not pending and not missing_publications,
         "drained_readbacks": sum(e["phase"] == "drain" for e in groups.get("physics_readback", [])),
+        "physics_routes": sorted({e["data"].get("route", "gpu") for e in groups.get("physics_readback", [])}),
+        "cpu_degraded_ticks": sum(values("physics_cpu_tick", "degraded")),
+        "cpu_tick_ms": stats("physics_cpu_tick", "duration_ms"),
+        "complete_cpu_tick_ms": stats("physics_readback", "complete_cpu_tick_ms"),
+        "cpu_terrain_updates_ms": stats("cpu_terrain_update", "duration_ms"),
+        "cpu_stages_ms": {field: stats("physics_cpu_tick", field) for field in ("query_ms", "solve_ms", "dynamics_ms", "rows_ms", "constraints_ms", "continuous_ms", "conversion_ms")},
+        "cpu_publication_ms": stats("physics_readback", "publication_ms"),
+        "cpu_solver_scratch": {field: stats("physics_cpu_tick", field) for field in ("solver_scratch_bytes", "solver_scratch_growth_bytes")},
+        "cpu_candidates": {field: stats("physics_cpu_tick", field) for field in ("triangle_candidates", "collider_pair_candidates")},
         "fps": 1000 * len(frames) / sum(frames) if frames else None,
         "completed_tps": len(groups.get("physics_readback", [])) / metadata["duration_seconds"],
         "submitted_tps": len(groups.get("physics_submit", [])) / submission_duration,
         "frame_ms": stats("frame", "frame_ms"),
+        "freeze_stages_ms": freeze_stats,
+        "freeze_input_update_interval_ms": hitch_stats(input_frame_ms),
+        "freeze_input_processing_ms": hitch_stats(input_processing_ms),
+        "freeze_input_operations_ms": {kind: hitch_stats(samples) for kind, samples in input_operations.items()},
+        "frame_max_ms": max(frames, default=None),
         "queue_submission_ms": stats("physics_submit", "submission_ms"),
         "readback_latency_ms": stats("physics_readback", "latency_ms"),
         "submission_to_callbacks_ms": stats("physics_readback", "submission_to_callbacks_ms"),

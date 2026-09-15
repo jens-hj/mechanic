@@ -1,0 +1,342 @@
+{
+  "runs": {
+    "10x-connected-baseline-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 133.863541,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-connected-baseline-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 134.016167,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-connected-baseline-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 134.33758400000002,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-connected-candidate-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 139.304958,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-connected-candidate-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 139.5385,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "10x-connected-candidate-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03738994082528267,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.016681461828182975,
+      "outside_terrain_region": false,
+      "p95_ms": 138.45974999999999,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "1x-connected-baseline-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 8.948083,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "1x-connected-baseline-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 8.487458,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "1x-connected-baseline-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 8.452792,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "1x-connected-candidate-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 9.523916,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "1x-connected-candidate-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 9.026375,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "1x-connected-candidate-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.040736598080536736,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.009881595534694476,
+      "outside_terrain_region": false,
+      "p95_ms": 9.206042,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "2x-connected-baseline-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03745627999081508,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.011100691844932786,
+      "outside_terrain_region": false,
+      "p95_ms": 18.004792,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "2x-connected-baseline-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03745627999081508,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.011100691844932786,
+      "outside_terrain_region": false,
+      "p95_ms": 18.078833,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "2x-connected-baseline-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03745627999081508,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.011100691844932786,
+      "outside_terrain_region": false,
+      "p95_ms": 18.062915999999998,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "2x-connected-candidate-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03745627999081508,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.011100691844932786,
+      "outside_terrain_region": false,
+      "p95_ms": 18.46175,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "2x-connected-candidate-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03745627999081508,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.011100691844932786,
+      "outside_terrain_region": false,
+      "p95_ms": 19.423375,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "2x-connected-candidate-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03745627999081508,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.011100691844932786,
+      "outside_terrain_region": false,
+      "p95_ms": 19.210791,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "5x-connected-baseline-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03657160730561151,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.010018060445033061,
+      "outside_terrain_region": false,
+      "p95_ms": 56.346624999999996,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "5x-connected-baseline-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03657160730561151,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.010018060445033061,
+      "outside_terrain_region": false,
+      "p95_ms": 54.642083,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "5x-connected-baseline-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03657160730561151,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.010018060445033061,
+      "outside_terrain_region": false,
+      "p95_ms": 53.362041999999995,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "5x-connected-candidate-1": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03657160730561151,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.010018060445033061,
+      "outside_terrain_region": false,
+      "p95_ms": 57.769166,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "5x-connected-candidate-2": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03657160730561151,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.010018060445033061,
+      "outside_terrain_region": false,
+      "p95_ms": 55.774917,
+      "rendering_measured": false,
+      "timing_gate": false
+    },
+    "5x-connected-candidate-3": {
+      "closure_angle_rad": 0.0,
+      "closure_gap_m": 0.03657160730561151,
+      "degraded_ticks": 0,
+      "kind": "summary",
+      "maximum_penetration_m": 0.010018060445033061,
+      "outside_terrain_region": false,
+      "p95_ms": 56.4275,
+      "rendering_measured": false,
+      "timing_gate": false
+    }
+  },
+  "comparisons": {
+    "10x-connected-candidate-1": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "10x-connected-candidate-2": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "10x-connected-candidate-3": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "1x-connected-candidate-1": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "1x-connected-candidate-2": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "1x-connected-candidate-3": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "2x-connected-candidate-1": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "2x-connected-candidate-2": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "2x-connected-candidate-3": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "5x-connected-candidate-1": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "5x-connected-candidate-2": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    },
+    "5x-connected-candidate-3": {
+      "matching_replay_state_hashes": true,
+      "quality_within_baseline_tolerances": true,
+      "headless_gate_passed": false,
+      "app_scheduler_and_rendering_verified": false
+    }
+  }
+}
