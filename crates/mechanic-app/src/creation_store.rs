@@ -275,6 +275,7 @@ mod tests {
                     },
                     material: mechanic_core::ConstructionMaterial::Steel,
                     appearance: mechanic_core::MaterialAppearance::BAKED,
+                    layers: Vec::new(),
                 })
                 .collect(),
             regions: Vec::new(),

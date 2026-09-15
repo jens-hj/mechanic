@@ -647,7 +647,12 @@ fn compile_graph(
             if covered.contains(&part) {
                 continue;
             }
-            if graph.owner_has_shape_features(crate::SolidOwner::Part(part)) {
+            // Layered cuboids collide per band. An unfeatured layered cylinder
+            // keeps its envelope colliders and analytic rolling contact, which
+            // only its outer wall's material ever touches.
+            if graph.owner_has_shape_features(crate::SolidOwner::Part(part))
+                || (spec.is_layered() && spec.as_cylinder().is_none())
+            {
                 let solid = graph
                     .evaluated_solid_shared(crate::SolidOwner::Part(part))
                     .expect("committed feature geometry replays");
@@ -1605,7 +1610,7 @@ fn calculate_mass_properties<'a>(
     let contributions = parts
         .filter(|(id, _)| !covered.contains(id))
         .map(|(id, spec)| {
-            if graph.owner_has_shape_features(crate::SolidOwner::Part(id)) {
+            if graph.owner_has_shape_features(crate::SolidOwner::Part(id)) || spec.is_layered() {
                 let solid = graph
                     .evaluated_solid_shared(crate::SolidOwner::Part(id))
                     .expect("committed feature geometry replays");
@@ -1737,46 +1742,34 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
             cuboid_mass_properties(spec, spec.material.properties().density_kg_m3)
         }
         PartSpec::Cylinder(spec) => {
+            // An annular sector about local Y. Layered cylinders take their mass
+            // from the evaluated bands instead.
             let length = spec.dimensions.axial_length();
             let sweep = spec.dimensions.sweep_angle_radians();
+            let outer = spec.dimensions.outer_diameter() * 0.5;
+            let inner = spec.dimensions.inner_diameter() * 0.5;
+            let radial_squared = outer * outer + inner * inner;
+            let mass = spec.material.properties().density_kg_m3
+                * sweep
+                * (outer * outer - inner * inner)
+                * length
+                * 0.5;
+            let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
+                / (3.0 * sweep * (outer * outer - inner * inner));
+            let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
+            let radial_perpendicular = radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
             let axial_variance = length * length / 12.0;
-            // Each band is an annular sector about the same axis. Sum their
-            // moments about the axis midpoint, then move to the shared centre.
-            let (mass, first_moment, origin_inertia) = spec.bands().enumerate().fold(
-                (0.0, 0.0, Vec3::ZERO),
-                |(mass, first_moment, inertia), (index, band)| {
-                    let outer = band.outer_diameter * 0.5;
-                    let inner = spec.band_inner_diameter(index) * 0.5;
-                    let radial_squared = outer * outer + inner * inner;
-                    let band_mass = band.material.properties().density_kg_m3
-                        * sweep
-                        * (outer * outer - inner * inner)
-                        * length
-                        * 0.5;
-                    let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
-                        / (3.0 * sweep * (outer * outer - inner * inner));
-                    let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
-                    let radial_perpendicular =
-                        radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
-                    (
-                        mass + band_mass,
-                        first_moment + band_mass * center_x,
-                        inertia
-                            + band_mass
-                                * Vec3::new(
-                                    axial_variance + radial_perpendicular,
-                                    radial_parallel + radial_perpendicular,
-                                    radial_parallel + axial_variance,
-                                ),
-                    )
-                },
-            );
-            let center_x = first_moment / mass;
-            let shift = mass * center_x * center_x;
+            let shift = center_x * center_x;
             PartMassProperties {
                 mass,
                 local_center: Vec3::new(center_x, 0.0, 0.0),
-                local_inertia: Mat3::from_diagonal(origin_inertia - Vec3::new(0.0, shift, shift)),
+                local_inertia: Mat3::from_diagonal(
+                    mass * Vec3::new(
+                        axial_variance + radial_perpendicular,
+                        radial_parallel + radial_perpendicular - shift,
+                        radial_parallel + axial_variance - shift,
+                    ),
+                ),
             }
         }
         PartSpec::PipeBend(spec) => pipe_bend_mass_properties(spec),
@@ -2194,34 +2187,22 @@ const AUTHORED_CONTACT_PROPERTIES: MaterialProperties = MaterialProperties {
     youngs_modulus_pa: 200.0e9,
 };
 
-/// Contact material of one evaluated cell band. Only layered cylinders have
-/// more than band zero; every other part answers with its own material.
+/// Contact material of one evaluated cell band. Only layered parts have more
+/// than band zero; authored parts answer with their fixed properties.
 fn band_contact_properties(spec: PartSpec, band: u8) -> MaterialProperties {
-    match spec {
-        PartSpec::Cylinder(cylinder) => cylinder
-            .band(usize::from(band))
-            .map_or(cylinder.material, |band| band.material)
-            .properties(),
-        PartSpec::Cuboid(_) | PartSpec::PipeBend(_) | PartSpec::PipeJunction(_) => {
-            contact_properties(spec)
-        }
-        PartSpec::Controller(_)
-        | PartSpec::Engine(_)
-        | PartSpec::Transmission(_)
-        | PartSpec::Servo(_)
-        | PartSpec::Seat(_)
-        | PartSpec::Input(_)
-        | PartSpec::DimensionLink(_) => MaterialProperties {
+    spec.band(band).map_or(
+        MaterialProperties {
             density_kg_m3: CUBOID_DENSITY_KG_M3,
             ..AUTHORED_CONTACT_PROPERTIES
         },
-    }
+        |(material, _)| material.properties(),
+    )
 }
 
 fn contact_properties(spec: PartSpec) -> MaterialProperties {
     match spec {
         PartSpec::Cuboid(cuboid) => cuboid.material.properties(),
-        PartSpec::Cylinder(cylinder) => cylinder.material.properties(),
+        PartSpec::Cylinder(cylinder) => cylinder.outer_contact_material().properties(),
         PartSpec::PipeBend(bend) => bend.material.properties(),
         PartSpec::PipeJunction(junction) => junction.material.properties(),
         PartSpec::Controller(_)
@@ -2590,8 +2571,8 @@ mod tests {
         CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveLimits, DriveLinkSpec,
         DriveMode, DriveProgram, DriveState, DriveTarget, EdgeChainRef, EdgeTreatment, EngineKind,
         EngineSpec, FaceKind, FaceRef, GearSelection, GridRotation, PIPE_BEND_COLLIDER_COUNT,
-        PartId, PipeBendDimensions, PipeBendSpec, RigidLinkSpec, ShapeFeature, SolidOwner,
-        TopologyError, WeldSpec,
+        PartId, PartSpec, PipeBendDimensions, PipeBendSpec, RigidLinkSpec, ShapeFeature,
+        SolidOwner, TopologyError, WeldSpec,
     };
     use bevy_math::{Mat3, Quat};
 
@@ -4380,7 +4361,7 @@ mod tests {
             BuildPose::default(),
         )
         .with_layer(
-            crate::LayerSide::Outer,
+            crate::LayerFace::OuterWall,
             0.25,
             crate::ConstructionMaterial::Rubber,
             crate::MaterialAppearance::BAKED,
@@ -4400,9 +4381,66 @@ mod tests {
         let steel = density(crate::ConstructionMaterial::Steel) * pi * 0.25 * 2.0;
         let rubber = density(crate::ConstructionMaterial::Rubber) * pi * (0.5625 - 0.25) * 2.0;
         let axial = steel * 0.25 * 0.5 + rubber * (0.5625 + 0.25) * 0.5;
+        // Bands are 24-sided prisms, a percent or two under the true circle.
+        assert!((properties.mass - (steel + rubber)).abs() < 0.02 * properties.mass);
+        assert!(properties.center_of_mass.abs_diff_eq(Vec3::ZERO, 1.0e-4));
+        assert!((properties.inertia.y_axis.y - axial).abs() < 0.04 * axial);
+    }
+
+    #[test]
+    fn layered_cuboid_mass_sums_band_densities() {
+        let core = CuboidSpec::new([4, 4, 4], BuildPose::default()).unwrap();
+        let layered = PartSpec::Cuboid(core)
+            .with_layer(
+                crate::LayerFace::Face(crate::FaceKind::PositiveY),
+                0.25,
+                crate::ConstructionMaterial::Rubber,
+                crate::MaterialAppearance::BAKED,
+            )
+            .unwrap()
+            .as_cuboid()
+            .unwrap();
+        let mut graph = ConstructionGraph::new();
+        graph.apply(BuildCommand::Spawn(layered)).unwrap();
+        let compiled = graph.compile().unwrap();
+        let properties = compiled.compounds[0].mass_properties;
+        let steel = crate::ConstructionMaterial::Steel
+            .properties()
+            .density_kg_m3;
+        let rubber = crate::ConstructionMaterial::Rubber
+            .properties()
+            .density_kg_m3
+            * 0.25;
         assert!((properties.mass - (steel + rubber)).abs() < 1.0e-3 * properties.mass);
-        assert!(properties.center_of_mass.abs_diff_eq(Vec3::ZERO, 1.0e-5));
-        assert!((properties.inertia.y_axis.y - axial).abs() < 1.0e-3 * axial);
+        // The core's centre sits at y = 0, the layer's at 0.625 m.
+        let center_y = rubber * 0.625 / (steel + rubber);
+        assert!((properties.center_of_mass.y - center_y).abs() < 1.0e-3);
+        for material in [
+            crate::ConstructionMaterial::Steel,
+            crate::ConstructionMaterial::Rubber,
+        ] {
+            assert!(
+                compiled
+                    .colliders
+                    .iter()
+                    .any(|collider| collider.material_properties == material.properties()),
+                "{material:?} band has colliders"
+            );
+        }
+    }
+
+    #[test]
+    fn layered_wheel_keeps_analytic_contact_with_its_tyre_material() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::SpawnCylinder(layered_steel_wheel()))
+            .unwrap();
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.cylinders.len(), 1);
+        assert!((compiled.cylinders[0].outer_radius - 0.75).abs() < 1.0e-4);
+        assert!(compiled.colliders.iter().all(|collider| {
+            collider.material_properties == crate::ConstructionMaterial::Rubber.properties()
+        }));
     }
 
     #[test]

@@ -428,9 +428,10 @@ pub(crate) fn update_material_wheel(
     let interactive_panel =
         menu.is_open() || panel.is_open() || overlay.blocks_pointer() || overlay.blocks_keyboard();
     let current = match (selection.tool, selection.matter_mode) {
-        (Some(MainTool::MatterManipulator), MatterMode::Block | MatterMode::Cylinder) => {
-            Some(Some(WheelChoice::ConstructionMaterial(material.0)))
-        }
+        (
+            Some(MainTool::MatterManipulator),
+            MatterMode::Block | MatterMode::Cylinder | MatterMode::Layer,
+        ) => Some(Some(WheelChoice::ConstructionMaterial(material.0))),
         (Some(MainTool::MatterManipulator), MatterMode::Item) => {
             Some(Some(WheelChoice::Item(selection.item)))
         }

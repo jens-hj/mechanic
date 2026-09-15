@@ -761,7 +761,7 @@ pub(crate) fn clamp_into_region(
     clamped
 }
 
-fn project_onto_plane(
+pub(crate) fn project_onto_plane(
     ray_origin: Vec3,
     ray_direction: Vec3,
     plane_point: Vec3,

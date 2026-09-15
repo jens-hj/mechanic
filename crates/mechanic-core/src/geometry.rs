@@ -390,16 +390,21 @@ impl BuildPose {
 }
 
 /// Editable cuboid dimensions and build pose.
+///
+/// A layered cuboid is one solid. `dimensions` are its grid-aligned core, while
+/// `pose` and [`CuboidSpec::size_meters`] describe the whole envelope including
+/// every [`MaterialLayer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CuboidSpec {
-    /// Validated x/y/z dimensions.
+    /// Validated x/y/z core dimensions.
     pub dimensions: [GridDimension; 3],
-    /// Cuboid centre and orientation.
+    /// Envelope centre and orientation.
     pub pose: BuildPose,
-    /// Material used for appearance, mass, and contact response.
+    /// Core material used for appearance, mass, and contact response.
     pub material: ConstructionMaterial,
-    /// Independent color and finish treatment.
+    /// Core color and finish treatment.
     pub appearance: MaterialAppearance,
+    layers: MaterialLayers,
 }
 
 /// Invalid load-bearing cylinder dimensions.
@@ -428,23 +433,17 @@ pub enum CylinderDimensionError {
     /// The retained angular sector was outside the supported stepped range.
     #[error("cylinder sweep angle must be between 15 and 360 degrees in 15-degree increments")]
     SweepAngleOutOfRange,
-    /// A material band boundary left a band thinner than the minimum wall.
-    #[error("each cylinder material layer must be at least 0.05 m across in diameter")]
-    BandOutOfRange,
-    /// The cylinder already carries the maximum number of material layers.
-    #[error("a cylinder holds at most {MAX_CYLINDER_BANDS} material layers")]
-    TooManyBands,
-    /// An inner layer needs a bore to line.
-    #[error("only a hollow cylinder can take a layer inside its bore")]
-    BoreRequired,
 }
 
 /// Validated dimensions for a solid or hollow cylinder.
+///
+/// Authored cylinders have quarter-metre lengths; only end-cap material layers
+/// lengthen an envelope off that grid, in whole position ticks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CylinderDimensions {
     outer_diameter: f32,
     inner_diameter: f32,
-    axial_length: GridDimension,
+    axial_length_ticks: u16,
     sweep_angle_degrees: u16,
 }
 
@@ -492,14 +491,49 @@ impl CylinderDimensions {
         let units = (1..=MAX_GRID_UNITS)
             .find(|&units| (f32::from(units) - rounded_units).abs() < 1.0e-5)
             .ok_or(CylinderDimensionError::AxialLengthOutOfRange)?;
-        let axial_length =
-            GridDimension::new(units).map_err(|_| CylinderDimensionError::AxialLengthOutOfRange)?;
-        Ok(Self {
+        Self::validated(
             outer_diameter,
             inner_diameter,
-            axial_length,
+            u16::from(units) * GRID_UNIT_TICKS,
+            MAX_CYLINDER_SWEEP_DEGREES,
+        )
+    }
+
+    /// Validates a whole envelope, including an off-grid tick length.
+    fn validated(
+        outer_diameter: f32,
+        inner_diameter: f32,
+        axial_length_ticks: u16,
+        sweep_angle_degrees: u16,
+    ) -> Result<Self, CylinderDimensionError> {
+        if !outer_diameter.is_finite() {
+            return Err(CylinderDimensionError::NonFiniteOuterDiameter);
+        }
+        if !(MIN_CYLINDER_OUTER_DIAMETER..=MAX_CYLINDER_OUTER_DIAMETER + 1.0e-4)
+            .contains(&outer_diameter)
+        {
+            return Err(CylinderDimensionError::OuterDiameterOutOfRange);
+        }
+        if !inner_diameter.is_finite() {
+            return Err(CylinderDimensionError::NonFiniteInnerDiameter);
+        }
+        if inner_diameter < 0.0
+            || inner_diameter > outer_diameter - MIN_CYLINDER_DIAMETER_GAP + 1.0e-4
+        {
+            return Err(CylinderDimensionError::InnerDiameterOutOfRange);
+        }
+        if !(GRID_UNIT_TICKS..=u16::from(MAX_GRID_UNITS) * GRID_UNIT_TICKS)
+            .contains(&axial_length_ticks)
+        {
+            return Err(CylinderDimensionError::AxialLengthOutOfRange);
+        }
+        Self {
+            outer_diameter,
+            inner_diameter,
+            axial_length_ticks,
             sweep_angle_degrees: MAX_CYLINDER_SWEEP_DEGREES,
-        })
+        }
+        .with_sweep_angle_degrees(sweep_angle_degrees)
     }
 
     /// Sets the retained angular sector centred on local positive X.
@@ -534,12 +568,18 @@ impl CylinderDimensions {
 
     /// Axial length in metres.
     pub fn axial_length(self) -> f32 {
-        self.axial_length.meters()
+        f32::from(self.axial_length_ticks) * POSITION_TICK_METERS
     }
 
-    /// Axial length in quarter-metre grid units.
+    /// Axial length in whole quarter-metre grid units, rounded down.
+    #[allow(clippy::cast_possible_truncation)] // At most 32 units.
     pub const fn axial_length_units(self) -> u8 {
-        self.axial_length.units()
+        (self.axial_length_ticks / GRID_UNIT_TICKS) as u8
+    }
+
+    /// Axial length in position ticks.
+    pub const fn axial_length_ticks(self) -> u16 {
+        self.axial_length_ticks
     }
 
     /// Retained angular sector in degrees, centred on local positive X.
@@ -558,61 +598,261 @@ impl Default for CylinderDimensions {
         Self {
             outer_diameter: Self::DEFAULT_OUTER_DIAMETER,
             inner_diameter: Self::DEFAULT_INNER_DIAMETER,
-            axial_length: GridDimension(1),
+            axial_length_ticks: GRID_UNIT_TICKS,
             sweep_angle_degrees: MAX_CYLINDER_SWEEP_DEGREES,
         }
     }
 }
 
-/// Largest number of radial material bands one cylinder carries.
-pub const MAX_CYLINDER_BANDS: usize = 4;
+/// Position ticks in one quarter-metre grid unit.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 100 ticks.
+const GRID_UNIT_TICKS: u16 = POSITION_TICKS_PER_GRID_UNIT as u16;
 
-/// One radial material band of a layered cylinder.
+/// Most material layers one part carries over its core.
+pub const MAX_PART_LAYERS: usize = 4;
+
+/// Thinnest material layer, in metres.
+pub const MIN_LAYER_THICKNESS_METERS: f32 = 0.01;
+
+/// Surface a material layer grows from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum LayerFace {
+    /// A flat cuboid face or cylinder end cap, growing outward along its normal.
+    Face(FaceKind),
+    /// A cylinder's curved outer wall, growing its outer diameter.
+    OuterWall,
+    /// A hollow cylinder's bore, shrinking its inner diameter.
+    Bore,
+}
+
+/// One material layer laid over a part's envelope at the time it was added.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CylinderBand {
-    /// Diameter of the band's outer boundary, in metres.
-    pub outer_diameter: f32,
+pub struct MaterialLayer {
+    /// Surface the layer was laid on.
+    pub face: LayerFace,
+    /// Thickness in metres, along the face normal or the radius.
+    pub thickness: f32,
     /// Material used for appearance, mass, and contact response.
     pub material: ConstructionMaterial,
     /// Independent color and finish treatment.
     pub appearance: MaterialAppearance,
 }
 
-impl CylinderBand {
+impl MaterialLayer {
     const UNUSED: Self = Self {
-        outer_diameter: 0.0,
+        face: LayerFace::OuterWall,
+        thickness: 0.0,
         material: ConstructionMaterial::Steel,
         appearance: MaterialAppearance::BAKED,
     };
 }
 
-/// Curved wall of a cylinder that takes a new material layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum LayerSide {
-    /// Around the outer wall, growing the outer diameter.
-    Outer,
-    /// Inside the bore, shrinking the inner diameter.
-    Inner,
+/// A part's material layers, oldest first.
+///
+/// A layered part is still one solid. Its envelope already includes every
+/// layer; the layers only divide that envelope's material. The part's own
+/// material is band zero, and layer `i` is band `i + 1`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MaterialLayers {
+    layers: [MaterialLayer; MAX_PART_LAYERS],
+    count: u8,
+}
+
+impl MaterialLayers {
+    /// No layers: the whole part is its own material.
+    pub const NONE: Self = Self {
+        layers: [MaterialLayer::UNUSED; MAX_PART_LAYERS],
+        count: 0,
+    };
+
+    /// Number of layers.
+    pub const fn len(self) -> usize {
+        self.count as usize
+    }
+
+    /// Whether there are no layers.
+    pub const fn is_empty(self) -> bool {
+        self.count == 0
+    }
+
+    /// Layer `index`, oldest first.
+    pub const fn get(self, index: usize) -> Option<MaterialLayer> {
+        if index < self.len() {
+            Some(self.layers[index])
+        } else {
+            None
+        }
+    }
+
+    /// Every layer, oldest first.
+    pub fn iter(self) -> impl DoubleEndedIterator<Item = MaterialLayer> {
+        self.layers.into_iter().take(self.len())
+    }
+
+    fn pushed(mut self, layer: MaterialLayer) -> Result<Self, LayerError> {
+        let len = self.len();
+        let slot = self.layers.get_mut(len).ok_or(LayerError::TooManyLayers)?;
+        *slot = layer;
+        self.count += 1;
+        Ok(self)
+    }
+
+    fn with_appearance(mut self, index: usize, appearance: MaterialAppearance) -> Option<Self> {
+        let len = self.len();
+        self.layers[..len].get_mut(index)?.appearance = appearance;
+        Some(self)
+    }
+}
+
+/// Invalid material layer.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum LayerError {
+    /// The part already carries the maximum number of layers.
+    #[error("a part holds at most {MAX_PART_LAYERS} material layers")]
+    TooManyLayers,
+    /// The layer is thinner than the minimum or off the 5 mm step of flat layers.
+    #[error("a material layer must be at least 1 cm thick, and a flat layer a whole 5 mm step")]
+    ThicknessOutOfRange,
+    /// A bore layer needs a bore to line.
+    #[error("only a hollow cylinder can take a layer inside its bore")]
+    BoreRequired,
+    /// The part has no such layerable surface.
+    #[error("this surface cannot take a material layer")]
+    UnsupportedFace,
+    /// The layered envelope would outgrow the largest part.
+    #[error("a layered part must stay within 8 m")]
+    TooLarge,
+    /// The layered cylinder envelope is invalid.
+    #[error(transparent)]
+    Cylinder(#[from] CylinderDimensionError),
+}
+
+/// Part-local space owned by one layer: beyond the envelope it was laid on.
+///
+/// Later layers win where regions overlap, which is exactly the corner a later
+/// layer's full face covers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LayerRegion {
+    /// Points with `sign * local[axis] > distance`.
+    Beyond {
+        /// Local axis index.
+        axis: usize,
+        /// Outward direction along that axis, `1.0` or `-1.0`.
+        sign: f32,
+        /// Distance of the earlier face from the part centre.
+        distance: f32,
+    },
+    /// Points farther than this radius from the local Y axis.
+    OutsideRadius(f32),
+    /// Points nearer than this radius to the local Y axis.
+    InsideRadius(f32),
+}
+
+impl LayerRegion {
+    /// Whether a part-local point lies in this layer's region.
+    pub fn contains(self, local: Vec3) -> bool {
+        match self {
+            Self::Beyond {
+                axis,
+                sign,
+                distance,
+            } => sign * local[axis] > distance,
+            Self::OutsideRadius(radius) => Vec2::new(local.x, local.z).length() > radius,
+            Self::InsideRadius(radius) => Vec2::new(local.x, local.z).length() < radius,
+        }
+    }
+}
+
+/// Part-local envelope unwound one layer at a time.
+#[derive(Clone, Copy)]
+struct LayerEnvelope {
+    minimum: Vec3,
+    maximum: Vec3,
+    outer_radius: f32,
+    inner_radius: f32,
+}
+
+fn unwind_layer_regions(mut envelope: LayerEnvelope, layers: MaterialLayers) -> Vec<LayerRegion> {
+    let mut regions = layers
+        .iter()
+        .rev()
+        .map(|layer| match layer.face {
+            LayerFace::Face(face) => {
+                let axis = face.axis().index();
+                if face.sign() > 0.0 {
+                    envelope.maximum[axis] -= layer.thickness;
+                    LayerRegion::Beyond {
+                        axis,
+                        sign: 1.0,
+                        distance: envelope.maximum[axis],
+                    }
+                } else {
+                    envelope.minimum[axis] += layer.thickness;
+                    LayerRegion::Beyond {
+                        axis,
+                        sign: -1.0,
+                        distance: -envelope.minimum[axis],
+                    }
+                }
+            }
+            LayerFace::OuterWall => {
+                envelope.outer_radius -= layer.thickness;
+                LayerRegion::OutsideRadius(envelope.outer_radius)
+            }
+            LayerFace::Bore => {
+                envelope.inner_radius += layer.thickness;
+                LayerRegion::InsideRadius(envelope.inner_radius)
+            }
+        })
+        .collect::<Vec<_>>();
+    regions.reverse();
+    regions
+}
+
+/// Validates a layer thickness; flat layers also return their even tick count,
+/// so the half-thickness centre shift stays on the position grid.
+#[allow(clippy::cast_possible_truncation)] // Checked against the 8 m envelope first.
+fn layer_thickness_ticks(thickness: f32, flat: bool) -> Result<i32, LayerError> {
+    if !thickness.is_finite() || thickness < MIN_LAYER_THICKNESS_METERS - 1.0e-5 {
+        return Err(LayerError::ThicknessOutOfRange);
+    }
+    if thickness > MAX_CYLINDER_OUTER_DIAMETER {
+        return Err(LayerError::TooLarge);
+    }
+    let ticks = thickness / POSITION_TICK_METERS;
+    let rounded = ticks.round();
+    if flat && ((ticks - rounded).abs() > 1.0e-3 || rounded as i32 % 2 != 0) {
+        return Err(LayerError::ThicknessOutOfRange);
+    }
+    Ok(rounded as i32)
+}
+
+/// Moves a pose along one of its rotated local axes by whole ticks.
+#[allow(clippy::cast_possible_truncation)] // Cardinal rotations keep whole ticks.
+fn shifted_pose(pose: BuildPose, local_ticks: Vec3) -> BuildPose {
+    let shift = (pose.rotation.quaternion() * local_ticks).round();
+    BuildPose::from_position_ticks(
+        pose.translation_position_ticks()
+            + IVec3::new(shift.x as i32, shift.y as i32, shift.z as i32),
+        pose.rotation,
+    )
 }
 
 /// Editable cylinder dimensions and build pose. Its axis is local Y.
 ///
-/// A layered cylinder is still one solid: `dimensions` is its whole envelope,
-/// and radial material bands only divide that envelope's material. `material`
-/// and `appearance` belong to the outermost band; any bands inside it are held
-/// innermost first.
+/// A layered cylinder is still one solid: `dimensions` and `pose` describe its
+/// whole envelope, and [`MaterialLayers`] only divide that envelope's material.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CylinderSpec {
     /// Validated solid or hollow envelope dimensions.
     pub dimensions: CylinderDimensions,
-    /// Cylinder centre and cardinal orientation.
+    /// Envelope centre and cardinal orientation.
     pub pose: BuildPose,
-    /// Outermost band material used for appearance, mass, and contact response.
+    /// Core material used for appearance, mass, and contact response.
     pub material: ConstructionMaterial,
-    /// Outermost band color and finish treatment.
+    /// Core color and finish treatment.
     pub appearance: MaterialAppearance,
-    inner_bands: [CylinderBand; MAX_CYLINDER_BANDS - 1],
-    inner_band_count: u8,
+    layers: MaterialLayers,
 }
 
 impl CylinderSpec {
@@ -623,166 +863,171 @@ impl CylinderSpec {
             pose,
             material: ConstructionMaterial::Steel,
             appearance: MaterialAppearance::BAKED,
-            inner_bands: [CylinderBand::UNUSED; MAX_CYLINDER_BANDS - 1],
-            inner_band_count: 0,
+            layers: MaterialLayers::NONE,
         }
     }
 
-    /// Number of radial material bands, at least one.
-    pub const fn band_count(self) -> usize {
-        self.inner_band_count as usize + 1
+    /// Material layers over the core, oldest first.
+    pub const fn layers(self) -> MaterialLayers {
+        self.layers
     }
 
-    /// Band `index`, counted from the innermost, or `None` past the outermost.
-    pub const fn band(self, index: usize) -> Option<CylinderBand> {
-        let inner = self.inner_band_count as usize;
-        if index < inner {
-            Some(self.inner_bands[index])
-        } else if index == inner {
-            Some(CylinderBand {
-                outer_diameter: self.dimensions.outer_diameter(),
-                material: self.material,
-                appearance: self.appearance,
-            })
-        } else {
-            None
-        }
+    /// Material of the outermost curved wall, which meets the world.
+    pub fn outer_contact_material(self) -> ConstructionMaterial {
+        self.layers
+            .iter()
+            .rev()
+            .find(|layer| layer.face == LayerFace::OuterWall)
+            .map_or(self.material, |layer| layer.material)
     }
 
-    /// Every band, innermost first.
-    pub fn bands(self) -> impl Iterator<Item = CylinderBand> {
-        (0..self.band_count()).filter_map(move |index| self.band(index))
-    }
-
-    /// Inner boundary diameter of band `index`.
-    pub fn band_inner_diameter(self, index: usize) -> f32 {
-        index
-            .checked_sub(1)
-            .and_then(|previous| self.band(previous))
-            .map_or(self.dimensions.inner_diameter(), |band| band.outer_diameter)
-    }
-
-    /// Band whose radial span contains `radius`, clamped to the envelope.
-    pub fn band_at_radius(self, radius: f32) -> usize {
-        (0..self.band_count() - 1)
-            .find(|&index| {
-                self.band(index)
-                    .is_some_and(|band| radius <= band.outer_diameter * 0.5)
-            })
-            .unwrap_or(self.band_count() - 1)
-    }
-
-    /// Replaces the bands inside the outermost one, innermost first.
+    /// Adds a material layer to the outer wall, bore, or one end cap.
+    ///
+    /// A bore layer thicker than the bore's radius fills it to a solid core. An
+    /// end-cap layer lengthens the cylinder and moves its centre outward by half
+    /// the thickness, so the opposite cap stays put.
     ///
     /// # Errors
     ///
-    /// Returns [`CylinderDimensionError::TooManyBands`] or
-    /// [`CylinderDimensionError::BandOutOfRange`] when the bands do not fit
-    /// the envelope in order with a full wall each.
-    pub fn with_inner_bands(
-        mut self,
-        bands: impl IntoIterator<Item = CylinderBand>,
-    ) -> Result<Self, CylinderDimensionError> {
-        self.inner_bands = [CylinderBand::UNUSED; MAX_CYLINDER_BANDS - 1];
-        self.inner_band_count = 0;
-        for band in bands {
-            let slot = self
-                .inner_bands
-                .get_mut(usize::from(self.inner_band_count))
-                .ok_or(CylinderDimensionError::TooManyBands)?;
-            *slot = band;
-            self.inner_band_count += 1;
-        }
-        self.validate_bands()?;
-        Ok(self)
-    }
-
-    /// Checks every band is ordered and at least a minimum wall across.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CylinderDimensionError::BandOutOfRange`] otherwise.
-    pub fn validate_bands(self) -> Result<(), CylinderDimensionError> {
-        for (index, band) in self.bands().enumerate() {
-            let inner = self.band_inner_diameter(index);
-            if !band.outer_diameter.is_finite()
-                || band.outer_diameter - inner < MIN_CYLINDER_DIAMETER_GAP - 1.0e-4
-            {
-                return Err(CylinderDimensionError::BandOutOfRange);
-            }
-        }
-        Ok(())
-    }
-
-    /// Adds a full-length material layer `thickness` metres thick to one wall.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CylinderDimensionError`] when the grown envelope is out of
-    /// range, the cylinder already has the most bands, or an inner layer has
-    /// no bore to line.
+    /// Returns [`LayerError`] when the thickness, face, layer count, or grown
+    /// envelope is invalid.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )] // Validated tick lengths within 8 m.
     pub fn with_layer(
         self,
-        side: LayerSide,
+        face: LayerFace,
         thickness: f32,
         material: ConstructionMaterial,
         appearance: MaterialAppearance,
-    ) -> Result<Self, CylinderDimensionError> {
-        if self.band_count() >= MAX_CYLINDER_BANDS {
-            return Err(CylinderDimensionError::TooManyBands);
-        }
-        let outer = self.dimensions.outer_diameter();
-        let inner = self.dimensions.inner_diameter();
-        let length = self.dimensions.axial_length();
-        let sweep = self.dimensions.sweep_angle_degrees();
-        let mut bands = self.bands().collect::<Vec<_>>();
-        let (outer, inner) = match side {
-            LayerSide::Outer => {
-                let grown = outer + 2.0 * thickness;
-                bands.push(CylinderBand {
-                    outer_diameter: grown,
-                    material,
-                    appearance,
-                });
-                (grown, inner)
-            }
-            LayerSide::Inner => {
-                if inner <= 0.0 {
-                    return Err(CylinderDimensionError::BoreRequired);
-                }
-                bands.insert(
-                    0,
-                    CylinderBand {
-                        outer_diameter: inner,
-                        material,
-                        appearance,
-                    },
-                );
-                (outer, (inner - 2.0 * thickness).max(0.0))
-            }
+    ) -> Result<Self, LayerError> {
+        let dimensions = self.dimensions;
+        let layer = |thickness| MaterialLayer {
+            face,
+            thickness,
+            material,
+            appearance,
         };
-        let dimensions =
-            CylinderDimensions::new(outer, inner, length)?.with_sweep_angle_degrees(sweep)?;
-        let outermost = bands.pop().ok_or(CylinderDimensionError::BandOutOfRange)?;
-        Self {
+        let validated = |outer, inner, ticks| {
+            CylinderDimensions::validated(outer, inner, ticks, dimensions.sweep_angle_degrees)
+        };
+        let (dimensions, pose, layers) = match face {
+            LayerFace::OuterWall => {
+                layer_thickness_ticks(thickness, false)?;
+                let layers = self.layers.pushed(layer(thickness))?;
+                let outer = dimensions.outer_diameter + 2.0 * thickness;
+                if outer > MAX_CYLINDER_OUTER_DIAMETER + 1.0e-4 {
+                    return Err(LayerError::TooLarge);
+                }
+                (
+                    validated(
+                        outer,
+                        dimensions.inner_diameter,
+                        dimensions.axial_length_ticks,
+                    )?,
+                    self.pose,
+                    layers,
+                )
+            }
+            LayerFace::Bore => {
+                layer_thickness_ticks(thickness, false)?;
+                if dimensions.inner_diameter <= 0.0 {
+                    return Err(LayerError::BoreRequired);
+                }
+                let inner = (dimensions.inner_diameter - 2.0 * thickness).max(0.0);
+                let layers = self
+                    .layers
+                    .pushed(layer((dimensions.inner_diameter - inner) * 0.5))?;
+                (
+                    validated(
+                        dimensions.outer_diameter,
+                        inner,
+                        dimensions.axial_length_ticks,
+                    )?,
+                    self.pose,
+                    layers,
+                )
+            }
+            LayerFace::Face(cap @ (FaceKind::PositiveY | FaceKind::NegativeY)) => {
+                let ticks = layer_thickness_ticks(thickness, true)?;
+                let layers = self
+                    .layers
+                    .pushed(layer(ticks as f32 * POSITION_TICK_METERS))?;
+                let length = i32::from(dimensions.axial_length_ticks) + ticks;
+                if length > i32::from(MAX_GRID_UNITS) * POSITION_TICKS_PER_GRID_UNIT {
+                    return Err(LayerError::TooLarge);
+                }
+                (
+                    validated(
+                        dimensions.outer_diameter,
+                        dimensions.inner_diameter,
+                        length as u16,
+                    )?,
+                    shifted_pose(self.pose, Vec3::Y * cap.sign() * (ticks / 2) as f32),
+                    layers,
+                )
+            }
+            LayerFace::Face(_) => return Err(LayerError::UnsupportedFace),
+        };
+        Ok(Self {
             dimensions,
-            material: outermost.material,
-            appearance: outermost.appearance,
+            pose,
+            layers,
             ..self
-        }
-        .with_inner_bands(bands)
+        })
     }
 
-    /// Returns the cylinder with one band's appearance replaced.
+    /// The core this cylinder's layers were laid on.
     #[must_use]
-    pub fn with_band_appearance(mut self, index: usize, appearance: MaterialAppearance) -> Self {
-        if index + 1 == self.band_count() {
-            self.appearance = appearance;
-        } else if let Some(band) = self.inner_bands[..self.inner_band_count as usize].get_mut(index)
-        {
-            band.appearance = appearance;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )] // Unwinds validated ticks within 8 m.
+    pub fn without_layers(self) -> Self {
+        let mut outer = self.dimensions.outer_diameter;
+        let mut inner = self.dimensions.inner_diameter;
+        let mut length = i32::from(self.dimensions.axial_length_ticks);
+        let mut shift = 0;
+        for layer in self.layers.iter() {
+            match layer.face {
+                LayerFace::OuterWall => outer -= 2.0 * layer.thickness,
+                LayerFace::Bore => inner += 2.0 * layer.thickness,
+                LayerFace::Face(face) => {
+                    let ticks = (layer.thickness / POSITION_TICK_METERS).round() as i32;
+                    length -= ticks;
+                    shift += ticks / 2 * face.sign() as i32;
+                }
+            }
         }
-        self
+        Self {
+            dimensions: CylinderDimensions {
+                outer_diameter: outer,
+                inner_diameter: if inner < 1.0e-5 { 0.0 } else { inner },
+                axial_length_ticks: length.max(0) as u16,
+                ..self.dimensions
+            },
+            pose: shifted_pose(self.pose, Vec3::Y * -(shift as f32)),
+            layers: MaterialLayers::NONE,
+            ..self
+        }
+    }
+
+    /// Each layer's part-local region, oldest first.
+    pub fn layer_regions(self) -> Vec<LayerRegion> {
+        let half_length = self.dimensions.axial_length() * 0.5;
+        let outer = self.dimensions.outer_diameter * 0.5;
+        unwind_layer_regions(
+            LayerEnvelope {
+                minimum: Vec3::new(-outer, -half_length, -outer),
+                maximum: Vec3::new(outer, half_length, outer),
+                outer_radius: outer,
+                inner_radius: self.dimensions.inner_diameter * 0.5,
+            },
+            self.layers,
+        )
     }
 
     /// Uses an explicit construction material.
@@ -1465,6 +1710,160 @@ impl PartSpec {
         }
     }
 
+    /// Material layers over an ordinary part's core; none for other parts.
+    pub const fn material_layers(self) -> MaterialLayers {
+        match self {
+            Self::Cuboid(spec) => spec.layers,
+            Self::Cylinder(spec) => spec.layers,
+            Self::PipeBend(_)
+            | Self::PipeJunction(_)
+            | Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_)
+            | Self::DimensionLink(_) => MaterialLayers::NONE,
+        }
+    }
+
+    /// Whether the part carries any material layer.
+    pub const fn is_layered(self) -> bool {
+        !self.material_layers().is_empty()
+    }
+
+    /// Material and appearance of one band: zero is the core, `i + 1` layer `i`.
+    pub fn band(self, band: u8) -> Option<(ConstructionMaterial, MaterialAppearance)> {
+        let core = match self {
+            Self::Cuboid(spec) => (spec.material, spec.appearance),
+            Self::Cylinder(spec) => (spec.material, spec.appearance),
+            Self::PipeBend(spec) => (spec.material, spec.appearance),
+            Self::PipeJunction(spec) => (spec.material, spec.appearance),
+            Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_)
+            | Self::DimensionLink(_) => return None,
+        };
+        match band.checked_sub(1) {
+            None => Some(core),
+            Some(index) => self
+                .material_layers()
+                .get(usize::from(index))
+                .map(|layer| (layer.material, layer.appearance)),
+        }
+    }
+
+    /// Returns the part with one band's appearance replaced, or `None` when the
+    /// band does not exist.
+    pub fn with_band_appearance(self, band: u8, appearance: MaterialAppearance) -> Option<Self> {
+        let Some(index) = band.checked_sub(1) else {
+            return self.with_appearance(appearance);
+        };
+        let index = usize::from(index);
+        match self {
+            Self::Cuboid(mut spec) => {
+                spec.layers = spec.layers.with_appearance(index, appearance)?;
+                Some(Self::Cuboid(spec))
+            }
+            Self::Cylinder(mut spec) => {
+                spec.layers = spec.layers.with_appearance(index, appearance)?;
+                Some(Self::Cylinder(spec))
+            }
+            Self::PipeBend(_)
+            | Self::PipeJunction(_)
+            | Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_)
+            | Self::DimensionLink(_) => None,
+        }
+    }
+
+    /// Adds a material layer to a cuboid face or a cylinder wall, bore, or cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayerError::UnsupportedFace`] for parts that take no layers, or
+    /// the cuboid or cylinder layer error.
+    pub fn with_layer(
+        self,
+        face: LayerFace,
+        thickness: f32,
+        material: ConstructionMaterial,
+        appearance: MaterialAppearance,
+    ) -> Result<Self, LayerError> {
+        match self {
+            Self::Cuboid(spec) => spec
+                .with_layer(face, thickness, material, appearance)
+                .map(Self::Cuboid),
+            Self::Cylinder(spec) => spec
+                .with_layer(face, thickness, material, appearance)
+                .map(Self::Cylinder),
+            Self::PipeBend(_)
+            | Self::PipeJunction(_)
+            | Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Input(_)
+            | Self::DimensionLink(_) => Err(LayerError::UnsupportedFace),
+        }
+    }
+
+    /// The core an ordinary part's layers were laid on; other parts unchanged.
+    #[must_use]
+    pub fn without_layers(self) -> Self {
+        match self {
+            Self::Cuboid(spec) => Self::Cuboid(spec.without_layers()),
+            Self::Cylinder(spec) => Self::Cylinder(spec.without_layers()),
+            other => other,
+        }
+    }
+
+    /// Whether two parts are the same core, differing at most in their layers.
+    pub fn shares_core_with(self, other: Self) -> bool {
+        match (self.without_layers(), other.without_layers()) {
+            (Self::Cylinder(first), Self::Cylinder(second)) => {
+                let (a, b) = (first.dimensions, second.dimensions);
+                first.pose == second.pose
+                    && first.material == second.material
+                    && a.axial_length_ticks == b.axial_length_ticks
+                    && a.sweep_angle_degrees == b.sweep_angle_degrees
+                    && (a.outer_diameter - b.outer_diameter).abs() < 1.0e-4
+                    && (a.inner_diameter - b.inner_diameter).abs() < 1.0e-4
+            }
+            (Self::Cuboid(first), Self::Cuboid(second)) => {
+                Self::Cuboid(first.with_appearance(second.appearance)) == Self::Cuboid(second)
+            }
+            _ => false,
+        }
+    }
+
+    /// Each layer's part-local region, oldest first.
+    pub fn layer_regions(self) -> Vec<LayerRegion> {
+        match self {
+            Self::Cuboid(spec) => spec.layer_regions(),
+            Self::Cylinder(spec) => spec.layer_regions(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Band owning a part-local point: the newest layer whose region contains
+    /// it, or the core.
+    #[allow(clippy::cast_possible_truncation)] // At most MAX_PART_LAYERS.
+    pub fn band_at_local_point(self, local: Vec3) -> u8 {
+        self.layer_regions()
+            .iter()
+            .rposition(|region| region.contains(local))
+            .map_or(0, |index| index as u8 + 1)
+    }
+
     /// Returns an ordinary construction part with a replacement appearance.
     pub(crate) const fn with_appearance(self, appearance: MaterialAppearance) -> Option<Self> {
         match self {
@@ -1732,6 +2131,7 @@ impl CuboidSpec {
             pose,
             material: ConstructionMaterial::Steel,
             appearance: MaterialAppearance::BAKED,
+            layers: MaterialLayers::NONE,
         })
     }
 
@@ -1749,12 +2149,102 @@ impl CuboidSpec {
         self
     }
 
-    /// Cuboid side lengths in metres.
+    /// Envelope side lengths in metres, including every layer.
     pub fn size_meters(self) -> Vec3 {
-        Vec3::new(
+        let mut size = Vec3::new(
             self.dimensions[0].meters(),
             self.dimensions[1].meters(),
             self.dimensions[2].meters(),
+        );
+        for layer in self.layers.iter() {
+            if let LayerFace::Face(face) = layer.face {
+                size[face.axis().index()] += layer.thickness;
+            }
+        }
+        size
+    }
+
+    /// Material layers over the core, oldest first.
+    pub const fn layers(self) -> MaterialLayers {
+        self.layers
+    }
+
+    /// Adds a flat material layer to one face, moving the centre outward by
+    /// half the thickness so the opposite face stays put.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayerError`] when the face is not flat, the thickness is not a
+    /// whole 5 mm step of at least 1 cm, the part has the most layers, or the
+    /// envelope would exceed 8 m.
+    #[allow(clippy::cast_precision_loss)] // Tick counts within 8 m.
+    pub fn with_layer(
+        self,
+        face: LayerFace,
+        thickness: f32,
+        material: ConstructionMaterial,
+        appearance: MaterialAppearance,
+    ) -> Result<Self, LayerError> {
+        let LayerFace::Face(kind) = face else {
+            return Err(LayerError::UnsupportedFace);
+        };
+        let ticks = layer_thickness_ticks(thickness, true)?;
+        let thickness = ticks as f32 * POSITION_TICK_METERS;
+        let layers = self.layers.pushed(MaterialLayer {
+            face,
+            thickness,
+            material,
+            appearance,
+        })?;
+        if self.size_meters()[kind.axis().index()] + thickness
+            > f32::from(MAX_GRID_UNITS) * GRID_UNIT_METERS + 1.0e-4
+        {
+            return Err(LayerError::TooLarge);
+        }
+        Ok(Self {
+            pose: shifted_pose(
+                self.pose,
+                kind.axis().unit() * kind.sign() * (ticks / 2) as f32,
+            ),
+            layers,
+            ..self
+        })
+    }
+
+    /// The grid-aligned core this cuboid's layers were laid on.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // Whole ticks within 8 m.
+    pub fn without_layers(self) -> Self {
+        let shift = self
+            .layers
+            .iter()
+            .filter_map(|layer| match layer.face {
+                LayerFace::Face(face) => Some(
+                    face.axis().unit()
+                        * face.sign()
+                        * ((layer.thickness / POSITION_TICK_METERS).round() as i32 / 2) as f32,
+                ),
+                LayerFace::OuterWall | LayerFace::Bore => None,
+            })
+            .sum::<Vec3>();
+        Self {
+            pose: shifted_pose(self.pose, -shift),
+            layers: MaterialLayers::NONE,
+            ..self
+        }
+    }
+
+    /// Each layer's part-local region, oldest first.
+    pub fn layer_regions(self) -> Vec<LayerRegion> {
+        let half = self.size_meters() * 0.5;
+        unwind_layer_regions(
+            LayerEnvelope {
+                minimum: -half,
+                maximum: half,
+                outer_radius: 0.0,
+                inner_radius: 0.0,
+            },
+            self.layers,
         )
     }
 }
@@ -2011,8 +2501,9 @@ mod tests {
     use super::{
         BuildPose, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensionError,
         CylinderDimensions, CylinderSpec, DimensionLinkId, DimensionLinkSpec, EngineKind,
-        EngineSpec, FaceKind, GridRotation, InputSpec, PipeBendDimensionError, PipeBendDimensions,
-        PipeBendSpec, SeatSpec, ServoSpec, cuboid_face, pipe_bend_face, snap_world_to_grid,
+        EngineSpec, FaceKind, GridRotation, InputSpec, LayerError, LayerFace, PartSpec,
+        PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, SeatSpec, ServoSpec, cuboid_face,
+        pipe_bend_face, snap_world_to_grid,
     };
 
     #[test]
@@ -2349,20 +2840,20 @@ mod tests {
         assert!(((outlet.center - spec.pose.translation()).length() - 0.375).abs() < 1.0e-5);
     }
 
-    fn layer_core(outer: f32, inner: f32) -> CylinderSpec {
-        CylinderSpec::new(
+    fn layer_core(outer: f32, inner: f32) -> PartSpec {
+        PartSpec::Cylinder(CylinderSpec::new(
             CylinderDimensions::new(outer, inner, 0.5).unwrap(),
             BuildPose::default(),
-        )
+        ))
     }
 
     fn rubber_layer(
-        spec: CylinderSpec,
-        side: super::LayerSide,
+        spec: PartSpec,
+        face: LayerFace,
         thickness: f32,
-    ) -> Result<CylinderSpec, CylinderDimensionError> {
+    ) -> Result<PartSpec, LayerError> {
         spec.with_layer(
-            side,
+            face,
             thickness,
             ConstructionMaterial::Rubber,
             crate::MaterialAppearance::BAKED,
@@ -2371,53 +2862,134 @@ mod tests {
 
     #[test]
     fn outer_layer_grows_the_envelope_and_keeps_the_core_band() {
-        let layered = rubber_layer(layer_core(1.0, 0.0), super::LayerSide::Outer, 0.25).unwrap();
-        assert!((layered.dimensions.outer_diameter() - 1.5).abs() < 1.0e-5);
-        assert_eq!(layered.band_count(), 2);
-        let core = layered.band(0).unwrap();
-        assert_eq!(core.material, ConstructionMaterial::Steel);
-        assert!((core.outer_diameter - 1.0).abs() < 1.0e-5);
-        assert_eq!(layered.material, ConstructionMaterial::Rubber);
-        assert_eq!(layered.band_at_radius(0.4), 0);
-        assert_eq!(layered.band_at_radius(0.6), 1);
+        let layered = rubber_layer(layer_core(1.0, 0.0), LayerFace::OuterWall, 0.25).unwrap();
+        let cylinder = layered.as_cylinder().unwrap();
+        assert!((cylinder.dimensions.outer_diameter() - 1.5).abs() < 1.0e-5);
+        assert_eq!(cylinder.material, ConstructionMaterial::Steel);
+        assert_eq!(
+            cylinder.outer_contact_material(),
+            ConstructionMaterial::Rubber
+        );
+        assert_eq!(layered.band_at_local_point(Vec3::new(0.4, 0.0, 0.0)), 0);
+        assert_eq!(layered.band_at_local_point(Vec3::new(0.6, 0.0, 0.0)), 1);
+        assert!(layered.shares_core_with(layer_core(1.0, 0.0)));
     }
 
     #[test]
     fn bore_layer_can_fill_to_a_solid_core() {
         let pipe = layer_core(1.0, 0.5);
-        let lined = rubber_layer(pipe, super::LayerSide::Inner, 0.1).unwrap();
-        assert!((lined.dimensions.inner_diameter() - 0.3).abs() < 1.0e-5);
-        assert_eq!(
-            lined.band(0).unwrap().material,
-            ConstructionMaterial::Rubber
+        let lined = rubber_layer(pipe, LayerFace::Bore, 0.1).unwrap();
+        let dimensions = lined.as_cylinder().unwrap().dimensions;
+        assert!((dimensions.inner_diameter() - 0.3).abs() < 1.0e-5);
+        assert_eq!(lined.band_at_local_point(Vec3::new(0.2, 0.0, 0.0)), 1);
+        assert_eq!(lined.band_at_local_point(Vec3::new(0.3, 0.0, 0.0)), 0);
+        let cored = rubber_layer(pipe, LayerFace::Bore, 0.25).unwrap();
+        assert!(
+            cored
+                .as_cylinder()
+                .unwrap()
+                .dimensions
+                .inner_diameter()
+                .abs()
+                < f32::EPSILON
         );
-        assert_eq!(lined.material, ConstructionMaterial::Steel);
-        let cored = rubber_layer(pipe, super::LayerSide::Inner, 0.25).unwrap();
-        assert!(cored.dimensions.inner_diameter().abs() < f32::EPSILON);
+        assert!(cored.shares_core_with(pipe));
         assert_eq!(
-            rubber_layer(layer_core(1.0, 0.0), super::LayerSide::Inner, 0.1),
-            Err(CylinderDimensionError::BoreRequired)
+            rubber_layer(layer_core(1.0, 0.0), LayerFace::Bore, 0.1),
+            Err(LayerError::BoreRequired)
         );
     }
 
     #[test]
-    fn bands_thinner_than_the_wall_minimum_are_rejected() {
-        let thin = super::CylinderBand {
-            outer_diameter: 0.98,
-            material: ConstructionMaterial::Rubber,
-            appearance: crate::MaterialAppearance::BAKED,
-        };
-        assert_eq!(
-            layer_core(1.0, 0.0).with_inner_bands([thin]),
-            Err(CylinderDimensionError::BandOutOfRange)
+    fn face_layer_grows_the_cuboid_and_shifts_its_centre_outward() {
+        let block = PartSpec::Cuboid(
+            CuboidSpec::new(
+                [2, 2, 2],
+                BuildPose::from_position_ticks(IVec3::new(0, 100, 0), GridRotation::default()),
+            )
+            .unwrap(),
         );
-        let mut layered = layer_core(0.5, 0.0);
-        for _ in 1..super::MAX_CYLINDER_BANDS {
-            layered = rubber_layer(layered, super::LayerSide::Outer, 0.05).unwrap();
+        let layered = rubber_layer(block, LayerFace::Face(FaceKind::PositiveY), 0.05).unwrap();
+        let cuboid = layered.as_cuboid().unwrap();
+        assert!(
+            cuboid
+                .size_meters()
+                .abs_diff_eq(Vec3::new(0.5, 0.55, 0.5), 1.0e-5)
+        );
+        assert_eq!(
+            cuboid.pose.translation_position_ticks(),
+            IVec3::new(0, 110, 0)
+        );
+        assert_eq!(cuboid.without_layers(), block.as_cuboid().unwrap());
+        assert_eq!(layered.band_at_local_point(Vec3::new(0.0, 0.26, 0.0)), 1);
+        assert_eq!(layered.band_at_local_point(Vec3::new(0.0, 0.2, 0.0)), 0);
+        assert_eq!(
+            rubber_layer(block, LayerFace::Face(FaceKind::PositiveY), 0.0125),
+            Err(LayerError::ThicknessOutOfRange),
+            "a flat layer keeps the centre on whole ticks"
+        );
+        assert_eq!(
+            rubber_layer(block, LayerFace::OuterWall, 0.25),
+            Err(LayerError::UnsupportedFace)
+        );
+    }
+
+    #[test]
+    fn cap_layer_lengthens_the_cylinder_off_grid() {
+        let layered = rubber_layer(
+            layer_core(1.0, 0.0),
+            LayerFace::Face(FaceKind::NegativeY),
+            0.01,
+        )
+        .unwrap();
+        let cylinder = layered.as_cylinder().unwrap();
+        assert_eq!(cylinder.dimensions.axial_length_ticks(), 204);
+        assert_eq!(
+            cylinder.pose.translation_position_ticks(),
+            IVec3::new(0, -2, 0)
+        );
+        assert_eq!(layered.band_at_local_point(Vec3::new(0.0, -0.253, 0.0)), 1);
+        assert!(layered.shares_core_with(layer_core(1.0, 0.0)));
+        assert_eq!(
+            rubber_layer(
+                layer_core(1.0, 0.0),
+                LayerFace::Face(FaceKind::PositiveX),
+                0.25
+            ),
+            Err(LayerError::UnsupportedFace)
+        );
+    }
+
+    #[test]
+    fn later_layers_own_the_corners_they_cover() {
+        let cap = rubber_layer(
+            layer_core(1.0, 0.0),
+            LayerFace::Face(FaceKind::PositiveY),
+            0.25,
+        )
+        .unwrap();
+        let tyre = cap
+            .with_layer(
+                LayerFace::OuterWall,
+                0.25,
+                ConstructionMaterial::Concrete,
+                crate::MaterialAppearance::BAKED,
+            )
+            .unwrap();
+        // The wall layer spans the lengthened cylinder, cap zone included.
+        let corner = Vec3::new(0.6, 0.3, 0.0);
+        assert_eq!(tyre.band_at_local_point(corner - Vec3::Y * 0.125), 2);
+        assert_eq!(
+            tyre.band_at_local_point(Vec3::new(0.2, 0.3, 0.0) - Vec3::Y * 0.125),
+            1
+        );
+        let mut many = layer_core(0.5, 0.0);
+        for _ in 0..super::MAX_PART_LAYERS {
+            many = rubber_layer(many, LayerFace::OuterWall, 0.05).unwrap();
         }
         assert_eq!(
-            rubber_layer(layered, super::LayerSide::Outer, 0.05),
-            Err(CylinderDimensionError::TooManyBands)
+            rubber_layer(many, LayerFace::OuterWall, 0.05),
+            Err(LayerError::TooManyLayers)
         );
     }
 }

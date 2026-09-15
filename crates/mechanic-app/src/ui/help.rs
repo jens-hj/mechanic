@@ -171,7 +171,10 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     let controls = settings.controls();
     let rotate = controls.label(GameAction::Rotate);
     let selector_controls = match (selection.tool, selection.matter_mode) {
-        (Some(MainTool::MatterManipulator), MatterMode::Block | MatterMode::Cylinder) => {
+        (
+            Some(MainTool::MatterManipulator),
+            MatterMode::Block | MatterMode::Cylinder | MatterMode::Layer,
+        ) => {
             format!(
                 "     {}  Choose material",
                 controls.label(GameAction::MaterialWheel)
@@ -292,7 +295,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 } else { "Green bearing attachment active — click or drag to connect blocks".to_owned() }
             }
             (false, Tool::Layer, _, _, _) => {
-                "Press on a cylinder wall and drag out, or into the bore, to set layer thickness".to_owned()
+                "Press a face, wall, or bore and drag out to thicken or back to thin — Shift 5 cm, Shift+Ctrl 1 cm".to_owned()
             }
             (false, Tool::Cylinder, _, _, Some(_)) => {
                 if linear_attachment {

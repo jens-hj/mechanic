@@ -247,6 +247,8 @@ impl CellGrid {
 /// corners at `centre ± dimensions`, so every corner is an integer half-grid
 /// coordinate.
 pub fn part_cells(spec: CuboidSpec) -> CellGrid {
+    // Material layers sit off the grid; only the core has cells.
+    let spec = spec.without_layers();
     let world_dimensions = world_grid_dimensions(spec);
     let minimum_ticks = spec.pose.translation_position_ticks()
         - world_dimensions * POSITION_TICKS_PER_HALF_GRID_UNIT;

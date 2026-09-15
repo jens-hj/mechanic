@@ -352,9 +352,9 @@ pub enum PendingOperation {
 pub enum AppearanceTarget {
     /// One ordinary construction part.
     Part(PartId),
-    /// One radial material band of a layered cylinder, counted from the innermost.
-    CylinderBand {
-        /// Layered cylinder.
+    /// One material band of a layered part: zero is the core, `i + 1` layer `i`.
+    PartBand {
+        /// Layered part.
         part: PartId,
         /// Band index.
         band: u8,
@@ -387,13 +387,13 @@ pub enum BuildCommand {
         /// Replacement appearance.
         appearance: MaterialAppearance,
     },
-    /// Replace a cylinder's envelope and material bands in place, keeping its
-    /// part identity, pose, features, and connections.
-    SetCylinder {
-        /// Cylinder being reshaped.
+    /// Replace a cuboid's or cylinder's material layers in place, keeping its
+    /// part identity, core, features, and connections.
+    SetLayers {
+        /// Part being layered.
         part: PartId,
-        /// Replacement with the same pose.
-        spec: CylinderSpec,
+        /// Replacement sharing the part's core.
+        spec: PartSpec,
     },
     /// Remove one bearing while leaving its endpoint parts intact.
     RemoveBearing(BearingId),
@@ -568,8 +568,8 @@ pub enum BuildOutcome {
     ShapeFeatureUpdated,
     /// A part or region appearance changed.
     AppearanceUpdated,
-    /// A cylinder's envelope or material bands changed.
-    CylinderUpdated,
+    /// A part's material layers changed.
+    LayersUpdated,
     /// A pending operation was recorded.
     Pending,
     /// A pending operation was cancelled, or there was nothing to cancel.
@@ -579,15 +579,18 @@ pub enum BuildOutcome {
 /// Validation failure. Failed commands leave the graph byte-for-byte equivalent.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum GraphError {
-    /// Cylinder material bands do not fit the cylinder envelope.
+    /// A material layer does not fit its part.
     #[error(transparent)]
-    CylinderBands(crate::CylinderDimensionError),
-    /// A cylinder-only edit named another kind of part.
-    #[error("part {0:?} is not a cylinder")]
-    NotCylinder(PartId),
-    /// A cylinder reshape tried to move the cylinder.
-    #[error("reshaping cylinder {0:?} cannot change its pose")]
-    CylinderMoved(PartId),
+    Layer(#[from] crate::LayerError),
+    /// A layer edit changed more of a part than its material layers.
+    #[error("part {0:?} can only change its material layers")]
+    LayerCoreChanged(PartId),
+    /// Material layers and shaped regions cannot be combined.
+    #[error("part {0:?} cannot combine material layers with a shaped region")]
+    LayeredPartInRegion(PartId),
+    /// An appearance edit named a material band the part does not have.
+    #[error("part {0:?} has no material band {1}")]
+    MissingBand(PartId, u8),
     /// A rail already has an attachment on a different carriage face.
     #[error("a linear carriage can only have one occupied attachment face")]
     LinearCarriageOccupied,
@@ -2199,6 +2202,9 @@ impl ConstructionGraph {
             if self.owner_has_shape_features(SolidOwner::Part(part)) {
                 return Err(GraphError::FeaturedPartInRegion(part));
             }
+            if self.parts.get(part).is_some_and(|spec| spec.is_layered()) {
+                return Err(GraphError::LayeredPartInRegion(part));
+            }
             let whole = self
                 .parts
                 .get(part)
@@ -2297,7 +2303,6 @@ impl ConstructionGraph {
                 Ok(BuildOutcome::Spawned(id))
             }
             BuildCommand::SpawnCylinder(spec) => {
-                spec.validate_bands().map_err(GraphError::CylinderBands)?;
                 let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
             }
@@ -2365,22 +2370,21 @@ impl ConstructionGraph {
                         .region_of(part)
                         .map_or(AppearanceTarget::Part(part), AppearanceTarget::Region),
                     AppearanceTarget::Region(region) => AppearanceTarget::Region(region),
-                    band @ AppearanceTarget::CylinderBand { .. } => band,
+                    band @ AppearanceTarget::PartBand { .. } => band,
                 };
                 match target {
-                    AppearanceTarget::CylinderBand { part, band } => {
-                        let cylinder = self.cylinder(part)?;
-                        if usize::from(band) >= cylinder.band_count() {
-                            return Err(GraphError::CylinderBands(
-                                crate::CylinderDimensionError::BandOutOfRange,
-                            ));
-                        }
+                    AppearanceTarget::PartBand { part, band } => {
+                        let replacement = self
+                            .parts
+                            .get(part)
+                            .copied()
+                            .ok_or(GraphError::MissingPart(part))?
+                            .with_band_appearance(band, appearance)
+                            .ok_or(GraphError::MissingBand(part, band))?;
                         *self
                             .parts
                             .get_mut(part)
-                            .expect("the validated part remains live") = PartSpec::Cylinder(
-                            cylinder.with_band_appearance(usize::from(band), appearance),
-                        );
+                            .expect("the validated part remains live") = replacement;
                     }
                     AppearanceTarget::Part(id) => {
                         let spec = self
@@ -2815,19 +2819,26 @@ impl ConstructionGraph {
                 self.pending = None;
                 Ok(BuildOutcome::ShapeFeatureAdded(id))
             }
-            BuildCommand::SetCylinder { part, spec } => {
-                if self.cylinder(part)?.pose != spec.pose {
-                    return Err(GraphError::CylinderMoved(part));
+            BuildCommand::SetLayers { part, spec } => {
+                let current = self
+                    .parts
+                    .get(part)
+                    .copied()
+                    .ok_or(GraphError::MissingPart(part))?;
+                if !current.shares_core_with(spec) {
+                    return Err(GraphError::LayerCoreChanged(part));
                 }
-                spec.validate_bands().map_err(GraphError::CylinderBands)?;
+                if self.region_of(part).is_some() {
+                    return Err(GraphError::LayeredPartInRegion(part));
+                }
                 *self
                     .parts
                     .get_mut(part)
-                    .expect("the validated part remains live") = PartSpec::Cylinder(spec);
+                    .expect("the validated part remains live") = spec;
                 let owner = SolidOwner::Part(part);
                 self.validate_shape_owner_replay(owner)?;
                 self.validate_shape_owner_connections(owner)?;
-                Ok(BuildOutcome::CylinderUpdated)
+                Ok(BuildOutcome::LayersUpdated)
             }
             BuildCommand::SetShapeFeatureAmount {
                 feature,
@@ -2969,10 +2980,11 @@ impl ConstructionGraph {
             let PartSpec::Cuboid(cuboid) = part else {
                 return Ok(None);
             };
-            Ok(
-                (face.patch.is_none() && cuboid.pose.rotation == crate::GridRotation::default())
-                    .then_some(cuboid),
-            )
+            // Layered cuboids leave the grid, so they take the general check.
+            Ok((face.patch.is_none()
+                && cuboid.pose.rotation == crate::GridRotation::default()
+                && cuboid.layers().is_empty())
+            .then_some(cuboid))
         };
 
         match (spec.first.owner, spec.second.owner) {
@@ -3296,14 +3308,6 @@ impl ConstructionGraph {
             }
         }
         Ok(())
-    }
-
-    fn cylinder(&self, part: PartId) -> Result<CylinderSpec, GraphError> {
-        match self.parts.get(part).copied() {
-            Some(PartSpec::Cylinder(cylinder)) => Ok(cylinder),
-            Some(_) => Err(GraphError::NotCylinder(part)),
-            None => Err(GraphError::MissingPart(part)),
-        }
     }
 
     fn face_is_on_owner(&self, face: FaceRef, owner: SolidOwner) -> bool {
@@ -5598,25 +5602,29 @@ mod tests {
         (graph, part, spec)
     }
 
-    #[test]
-    fn layering_a_cylinder_keeps_its_welds_and_features() {
-        let (mut graph, part, spec) = grounded_filleted_cylinder();
-        let layered = spec
+    fn rubber_layer(spec: impl Into<PartSpec>, face: crate::LayerFace, thickness: f32) -> PartSpec {
+        spec.into()
             .with_layer(
-                crate::LayerSide::Outer,
-                0.25,
+                face,
+                thickness,
                 ConstructionMaterial::Rubber,
                 MaterialAppearance::BAKED,
             )
-            .unwrap();
+            .unwrap()
+    }
+
+    #[test]
+    fn layering_a_cylinder_keeps_its_welds_and_features() {
+        let (mut graph, part, spec) = grounded_filleted_cylinder();
+        let layered = rubber_layer(spec, crate::LayerFace::OuterWall, 0.25);
         assert_eq!(
-            graph.apply(BuildCommand::SetCylinder {
+            graph.apply(BuildCommand::SetLayers {
                 part,
                 spec: layered
             }),
-            Ok(BuildOutcome::CylinderUpdated)
+            Ok(BuildOutcome::LayersUpdated)
         );
-        assert_eq!(graph.part(part), Some(&PartSpec::Cylinder(layered)));
+        assert_eq!(graph.part(part), Some(&layered));
         assert_eq!(graph.weld_count(), 1);
         let solid = graph
             .evaluated_solid(crate::SolidOwner::Part(part))
@@ -5626,35 +5634,95 @@ mod tests {
     }
 
     #[test]
-    fn a_cylinder_reshape_that_breaks_its_features_is_rejected() {
+    fn a_layer_edit_that_reshapes_the_core_is_rejected() {
         let (mut graph, part, spec) = grounded_filleted_cylinder();
         let narrow = CylinderSpec::new(CylinderDimensions::new(0.5, 0.0, 0.5).unwrap(), spec.pose);
+        assert_eq!(
+            graph.apply(BuildCommand::SetLayers {
+                part,
+                spec: narrow.into()
+            }),
+            Err(GraphError::LayerCoreChanged(part))
+        );
+        assert_eq!(graph.part(part), Some(&PartSpec::Cylinder(spec)));
+    }
+
+    #[test]
+    fn a_layer_that_breaks_feature_replay_is_rejected() {
+        let (mut graph, part, spec) = grounded_filleted_cylinder();
+        // A bottom-cap layer buries the welded face under rubber.
+        let capped = rubber_layer(spec, crate::LayerFace::Face(FaceKind::NegativeY), 0.25);
         assert!(
             graph
-                .apply(BuildCommand::SetCylinder { part, spec: narrow })
+                .apply(BuildCommand::SetLayers { part, spec: capped })
                 .is_err()
         );
         assert_eq!(graph.part(part), Some(&PartSpec::Cylinder(spec)));
-        let moved = CylinderSpec::new(spec.dimensions, BuildPose::default());
+    }
+
+    #[test]
+    fn layering_a_cuboid_keeps_welds_on_other_faces() {
+        let mut graph = ConstructionGraph::new();
+        let spec = cube_at(0);
+        let part = spawn(&mut graph, spec);
+        graph
+            .apply(BuildCommand::Weld(WeldSpec {
+                first: FaceRef::part(part, FaceKind::NegativeY),
+                second: FaceRef::ground(),
+            }))
+            .unwrap();
+        let layered = rubber_layer(spec, crate::LayerFace::Face(FaceKind::PositiveX), 0.05);
         assert_eq!(
-            graph.apply(BuildCommand::SetCylinder { part, spec: moved }),
-            Err(GraphError::CylinderMoved(part))
+            graph.apply(BuildCommand::SetLayers {
+                part,
+                spec: layered
+            }),
+            Ok(BuildOutcome::LayersUpdated)
+        );
+        assert_eq!(graph.weld_count(), 1);
+        let solid = graph
+            .evaluated_solid(crate::SolidOwner::Part(part))
+            .unwrap();
+        assert_eq!(
+            solid.logical_edges.len(),
+            12,
+            "the layer seam is not a selectable edge"
+        );
+        assert!(solid.cells.iter().any(|cell| cell.band == 1));
+        assert!(solid.surfaces.iter().any(|surface| surface.band == 1));
+    }
+
+    #[test]
+    fn layered_blocks_cannot_join_a_region() {
+        let mut graph = ConstructionGraph::new();
+        let spec = cube_at(0);
+        let part = spawn(&mut graph, spec);
+        let layered = rubber_layer(spec, crate::LayerFace::Face(FaceKind::PositiveY), 0.05);
+        graph
+            .apply(BuildCommand::SetLayers {
+                part,
+                spec: layered,
+            })
+            .unwrap();
+        let cells = crate::part_cells(spec);
+        let region = crate::ShapeRegion::new(
+            cells.corner_half_units(IVec3::ZERO, 0),
+            cells.counts(),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        assert_eq!(
+            graph.apply(BuildCommand::AddRegion(region)),
+            Err(GraphError::LayeredPartInRegion(part))
         );
     }
 
     #[test]
-    fn painting_one_cylinder_band_leaves_the_others() {
+    fn painting_one_material_band_leaves_the_others() {
         let (mut graph, part, spec) = grounded_filleted_cylinder();
-        let layered = spec
-            .with_layer(
-                crate::LayerSide::Outer,
-                0.25,
-                ConstructionMaterial::Rubber,
-                MaterialAppearance::BAKED,
-            )
-            .unwrap();
+        let layered = rubber_layer(spec, crate::LayerFace::OuterWall, 0.25);
         graph
-            .apply(BuildCommand::SetCylinder {
+            .apply(BuildCommand::SetLayers {
                 part,
                 spec: layered,
             })
@@ -5665,23 +5733,19 @@ mod tests {
         };
         graph
             .apply(BuildCommand::SetAppearance {
-                target: AppearanceTarget::CylinderBand { part, band: 0 },
+                target: AppearanceTarget::PartBand { part, band: 1 },
                 appearance: paint,
             })
             .unwrap();
-        let Some(PartSpec::Cylinder(painted)) = graph.part(part).copied() else {
-            panic!("the part is still a cylinder");
-        };
-        assert_eq!(painted.band(0).unwrap().appearance, paint);
-        assert_eq!(painted.appearance, MaterialAppearance::BAKED);
+        let painted = graph.part(part).copied().unwrap();
+        assert_eq!(painted.band(1).unwrap().1, paint);
+        assert_eq!(painted.band(0).unwrap().1, MaterialAppearance::BAKED);
         assert_eq!(
             graph.apply(BuildCommand::SetAppearance {
-                target: AppearanceTarget::CylinderBand { part, band: 2 },
+                target: AppearanceTarget::PartBand { part, band: 2 },
                 appearance: paint,
             }),
-            Err(GraphError::CylinderBands(
-                crate::CylinderDimensionError::BandOutOfRange
-            ))
+            Err(GraphError::MissingBand(part, 2))
         );
     }
 }

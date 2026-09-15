@@ -269,7 +269,10 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
     let material_hover = handles.material_hover;
     let brush = handles.chroma;
     let selected_material = handles.material;
-    let material_mode = matches!(matter_mode, MatterMode::Block | MatterMode::Cylinder);
+    let material_mode = matches!(
+        matter_mode,
+        MatterMode::Block | MatterMode::Cylinder | MatterMode::Layer
+    );
     let controls = handles.controls;
     let shortcut = move || {
         controls.with(|bindings| {

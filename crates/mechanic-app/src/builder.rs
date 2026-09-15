@@ -1290,7 +1290,7 @@ pub(crate) enum PlacementError {
     SameObject,
     ObjectsDoNotTouch,
     CurvedSurface,
-    NotCurvedWall,
+    NotLayerSurface,
     TransmissionOutputOnly,
     EmptyBlockBatch,
     BlocksOverlap,
@@ -1323,8 +1323,8 @@ impl fmt::Display for PlacementError {
             Self::CurvedSurface => {
                 formatter.write_str("curved cylinder walls are not connection faces")
             }
-            Self::NotCurvedWall => {
-                formatter.write_str("point at the curved wall or bore of a full cylinder")
+            Self::NotLayerSurface => {
+                formatter.write_str("point at a flat face, or a full cylinder's wall or bore")
             }
             Self::TransmissionOutputOnly => formatter.write_str(
                 "transmissions attach only to an engine or chain-tail positive-Z output",
@@ -2261,175 +2261,541 @@ pub(crate) fn stage_bearing_block_batch_in_bounds(
 /// Radial slack for a hit to count as lying on a cylinder wall. Walls are
 /// drawn and picked as facets whose chords sit slightly inside the true radius.
 const LAYER_WALL_TOLERANCE_METERS: f32 = 0.01;
-/// Thickness increment chosen by a radial layer drag.
-const LAYER_THICKNESS_STEP_METERS: f32 = 0.05;
+/// Slack for a hit to count as lying on a flat face or end cap.
+const LAYER_FACE_TOLERANCE_METERS: f32 = 2.0e-3;
+/// Ray-to-pull alignment beyond which a drag's projected distance is
+/// ill-conditioned, so each frame may move only one step.
+const LAYER_DRAG_STABILITY: f32 = 0.25;
 
-/// The cylinder wall a new material layer grows from.
+/// One part taking a layer on one of its own faces.
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LayerMember {
+    pub(crate) part: PartId,
+    pub(crate) spec: PartSpec,
+    pub(crate) face: mechanic_core::LayerFace,
+}
+
+/// A surface a new material layer grows from.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayerTarget {
     pub(crate) part: PartId,
-    pub(crate) cylinder: CylinderSpec,
-    pub(crate) side: mechanic_core::LayerSide,
-    /// Picked wall point in the cylinder's own axis frame.
-    pub(crate) local_point: Vec3,
+    pub(crate) spec: PartSpec,
+    pub(crate) face: mechanic_core::LayerFace,
+    /// Construction frame the part is authored in.
+    pub(crate) frame: mechanic_core::ConstructionFrame,
+    /// Picked surface point in world space.
+    pub(crate) anchor: Vec3,
+    /// World direction a thicker layer grows toward.
+    pub(crate) normal: Vec3,
+    /// Every part the layer covers, the picked part first. A block face
+    /// brings the whole flat surface it continues.
+    pub(crate) members: Vec<LayerMember>,
 }
 
-fn cylinder_axis_point(
-    cylinder: CylinderSpec,
+/// A block face as an axis-aligned rectangle in its construction frame.
+#[derive(Clone, Copy)]
+struct FaceRect {
+    plane: f32,
+    minimum: [f32; 2],
+    maximum: [f32; 2],
+}
+
+/// Slack for block faces to count as one plane or as sharing an edge.
+const LAYER_PLANE_TOLERANCE_METERS: f32 = 1.0e-4;
+
+impl FaceRect {
+    /// The slab `reach` metres thick on this face, along world `axis`.
+    fn slab(self, axis: usize, reach: f32) -> (Vec3, Vec3) {
+        let mut low = Vec3::ZERO;
+        let mut high = Vec3::ZERO;
+        low[axis] = self.plane.min(self.plane + reach);
+        high[axis] = self.plane.max(self.plane + reach);
+        for (index, tangent) in [(axis + 1) % 3, (axis + 2) % 3].into_iter().enumerate() {
+            low[tangent] = self.minimum[index];
+            high[tangent] = self.maximum[index];
+        }
+        (low, high)
+    }
+
+    /// Whether two coplanar faces share an edge, not merely a corner.
+    fn touches_edge(self, other: Self) -> bool {
+        let overlap = [0, 1].map(|index| {
+            self.maximum[index].min(other.maximum[index])
+                - self.minimum[index].max(other.minimum[index])
+        });
+        overlap
+            .iter()
+            .all(|&length| length >= -LAYER_PLANE_TOLERANCE_METERS)
+            && overlap
+                .iter()
+                .any(|&length| length > LAYER_PLANE_TOLERANCE_METERS)
+    }
+}
+
+/// Index of the cardinal axis a unit direction points along.
+fn cardinal_axis_index(direction: Vec3) -> usize {
+    if direction.x.abs() > 0.5 {
+        0
+    } else if direction.y.abs() > 0.5 {
+        1
+    } else {
+        2
+    }
+}
+
+/// A block taking a layer on whichever of its faces points along `normal`.
+fn block_layer_member(part: PartId, spec: CuboidSpec, normal: Vec3) -> LayerMember {
+    let local = spec.pose.rotation.quaternion().inverse() * normal;
+    let axis = cardinal_axis_index(local);
+    LayerMember {
+        part,
+        spec: PartSpec::Cuboid(spec),
+        face: mechanic_core::LayerFace::Face(face_kind_on_axis(axis, local[axis] > 0.0)),
+    }
+}
+
+/// A part's rigid body: everything welded or rigidly linked to it.
+fn rigid_body(graph: &ConstructionGraph, part: PartId) -> HashSet<PartId> {
+    let mut neighbours = std::collections::HashMap::<PartId, Vec<PartId>>::new();
+    let links = graph
+        .welds()
+        .filter_map(|(_, weld)| match (weld.first.owner, weld.second.owner) {
+            (FaceOwner::Part(first), FaceOwner::Part(second)) => Some((first, second)),
+            _ => None,
+        })
+        .chain(
+            graph
+                .rigid_links()
+                .map(|(_, link)| (link.first, link.second)),
+        );
+    for (first, second) in links {
+        neighbours.entry(first).or_default().push(second);
+        neighbours.entry(second).or_default().push(first);
+    }
+    let mut body = HashSet::from([part]);
+    let mut pending = vec![part];
+    while let Some(current) = pending.pop() {
+        for &next in neighbours.get(&current).into_iter().flatten() {
+            if body.insert(next) {
+                pending.push(next);
+            }
+        }
+    }
+    body
+}
+
+/// Parts outside `excluded` that may reach the box from `minimum` to
+/// `maximum` in `frame`, each with its transform into that frame. Parts in
+/// other frames are always kept, since their bounds are not comparable.
+fn nearby_obstacles(
+    graph: &ConstructionGraph,
     frame: mechanic_core::ConstructionFrame,
-    point: Vec3,
-) -> Vec3 {
-    cylinder.pose.rotation.quaternion().inverse()
-        * (frame.inverse().point(point) - cylinder.pose.translation())
+    excluded: &HashSet<PartId>,
+    minimum: Vec3,
+    maximum: Vec3,
+) -> Vec<(PartSpec, mechanic_core::ConstructionFrame)> {
+    let into_frame = frame.inverse();
+    graph
+        .parts()
+        .filter(|(other, _)| !excluded.contains(other))
+        .filter_map(|(other, spec)| {
+            let other_frame = graph.part_frame(other)?;
+            if other_frame == frame {
+                let (low, high) = part_world_bounds(*spec);
+                if (low - maximum).cmpgt(Vec3::splat(CONTACT_EPSILON)).any()
+                    || (minimum - high).cmpgt(Vec3::splat(CONTACT_EPSILON)).any()
+                {
+                    return None;
+                }
+            }
+            Some((*spec, into_frame.compose(other_frame)))
+        })
+        .collect()
 }
 
-/// Resolves a hit on a full cylinder's outer wall or bore into a layer target.
+/// Every block face continuing the picked block's flat face: coplanar, facing
+/// the same way, joined edge to edge, on the same rigid body and construction
+/// frame, and not covered by another part.
+fn flat_surface_members(
+    graph: &ConstructionGraph,
+    part: PartId,
+    cuboid: CuboidSpec,
+    frame: mechanic_core::ConstructionFrame,
+    local_normal: Vec3,
+) -> Vec<LayerMember> {
+    let normal = cuboid.pose.rotation.quaternion() * local_normal;
+    let axis = cardinal_axis_index(normal);
+    let positive = normal[axis] > 0.0;
+    let tangents = [(axis + 1) % 3, (axis + 2) % 3];
+    let rect = |spec: CuboidSpec| {
+        let (minimum, maximum) = part_world_bounds(PartSpec::Cuboid(spec));
+        FaceRect {
+            plane: if positive {
+                maximum[axis]
+            } else {
+                minimum[axis]
+            },
+            minimum: tangents.map(|tangent| minimum[tangent]),
+            maximum: tangents.map(|tangent| maximum[tangent]),
+        }
+    };
+    let member = |part, spec| block_layer_member(part, spec, normal);
+
+    let body = rigid_body(graph, part);
+    let start = rect(cuboid);
+    let mut candidates = vec![(part, cuboid, start)];
+    candidates.extend(graph.parts().filter_map(|(other, spec)| {
+        let PartSpec::Cuboid(other_cuboid) = *spec else {
+            return None;
+        };
+        let face = rect(other_cuboid);
+        (other != part
+            && body.contains(&other)
+            && graph.region_of(other).is_none()
+            && graph.part_frame(other) == Some(frame)
+            && (face.plane - start.plane).abs() <= LAYER_PLANE_TOLERANCE_METERS)
+            .then_some((other, other_cuboid, face))
+    }));
+    if candidates.len() == 1 {
+        return vec![member(part, cuboid)];
+    }
+
+    // Parts that could sit on the surface: anything near its footprint.
+    let reach = if positive {
+        MIN_LAYER_COVER_METERS
+    } else {
+        -MIN_LAYER_COVER_METERS
+    };
+    let (footprint_minimum, footprint_maximum) = candidates.iter().fold(
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+        |(minimum, maximum), (_, _, face)| {
+            let (low, high) = face.slab(axis, reach);
+            (minimum.min(low), maximum.max(high))
+        },
+    );
+    let candidate_parts = candidates
+        .iter()
+        .map(|(candidate, _, _)| *candidate)
+        .collect::<HashSet<_>>();
+    let obstacles = nearby_obstacles(
+        graph,
+        frame,
+        &candidate_parts,
+        footprint_minimum,
+        footprint_maximum,
+    );
+    let covered = |candidate: LayerMember| {
+        candidate
+            .spec
+            .with_layer(
+                candidate.face,
+                MIN_LAYER_COVER_METERS,
+                mechanic_core::ConstructionMaterial::Steel,
+                mechanic_core::MaterialAppearance::BAKED,
+            )
+            .is_ok_and(|layered| {
+                obstacles.iter().any(|&(obstacle, relative)| {
+                    parts_overlap_with_frame(layered, obstacle, relative)
+                })
+            })
+    };
+
+    let mut reached = vec![false; candidates.len()];
+    reached[0] = true;
+    let mut members = vec![member(part, cuboid)];
+    let mut frontier = vec![0];
+    while let Some(index) = frontier.pop() {
+        let face = candidates[index].2;
+        for (next, &(other, other_cuboid, other_face)) in candidates.iter().enumerate() {
+            if reached[next] || !face.touches_edge(other_face) {
+                continue;
+            }
+            reached[next] = true;
+            let candidate = member(other, other_cuboid);
+            if !covered(candidate) {
+                members.push(candidate);
+                frontier.push(next);
+            }
+        }
+    }
+    members
+}
+
+/// Thickness probing whether a flat surface block is covered.
+const MIN_LAYER_COVER_METERS: f32 = mechanic_core::MIN_LAYER_THICKNESS_METERS;
+
+const fn face_kind_on_axis(axis: usize, positive: bool) -> FaceKind {
+    match (axis, positive) {
+        (0, true) => FaceKind::PositiveX,
+        (0, false) => FaceKind::NegativeX,
+        (1, true) => FaceKind::PositiveY,
+        (1, false) => FaceKind::NegativeY,
+        (_, true) => FaceKind::PositiveZ,
+        (_, false) => FaceKind::NegativeZ,
+    }
+}
+
+/// Resolves a hit on a cuboid face, or on a full cylinder's outer wall, bore,
+/// or end cap, into a layer target. Rounded and chamfered surfaces lie off
+/// every such surface and take no layer.
 pub(crate) fn layer_target_from_hit(
     graph: &ConstructionGraph,
     hit: SurfaceHit,
 ) -> Result<LayerTarget, PlacementError> {
     let FaceOwner::Part(part) = hit.face.owner else {
-        return Err(PlacementError::NotCurvedWall);
+        return Err(PlacementError::NotLayerSurface);
     };
-    let Some(PartSpec::Cylinder(cylinder)) = graph.part(part).copied() else {
-        return Err(PlacementError::NotCurvedWall);
-    };
+    if graph.region_of(part).is_some() {
+        return Err(PlacementError::NotLayerSurface);
+    }
+    let spec = graph
+        .part(part)
+        .copied()
+        .ok_or(PlacementError::NotLayerSurface)?;
     let frame = graph
         .part_frame(part)
-        .ok_or(PlacementError::NotCurvedWall)?;
-    if cylinder.dimensions.sweep_angle_degrees() != 360 {
-        return Err(PlacementError::NotCurvedWall);
-    }
-    let local_point = cylinder_axis_point(cylinder, frame, hit.point);
-    let radius = Vec2::new(local_point.x, local_point.z).length();
-    if local_point.y.abs() > cylinder.dimensions.axial_length() * 0.5 - 1.0e-3 {
-        return Err(PlacementError::NotCurvedWall);
-    }
-    let tolerance = LAYER_WALL_TOLERANCE_METERS + radius * 0.02;
-    let outer = cylinder.dimensions.outer_diameter() * 0.5;
-    let inner = cylinder.dimensions.inner_diameter() * 0.5;
-    let side = if (radius - outer).abs() <= tolerance {
-        mechanic_core::LayerSide::Outer
-    } else if inner > 0.0 && (radius - inner).abs() <= tolerance {
-        mechanic_core::LayerSide::Inner
-    } else {
-        return Err(PlacementError::NotCurvedWall);
+        .ok_or(PlacementError::NotLayerSurface)?;
+    let pose = spec.pose();
+    let local = pose.rotation.quaternion().inverse()
+        * (frame.inverse().point(hit.point) - pose.translation());
+    let (face, local_normal) = match spec {
+        PartSpec::Cuboid(cuboid) => {
+            let half = cuboid.size_meters() * 0.5;
+            let gap = |axis: usize| (half[axis] - local[axis].abs()).abs();
+            let axis = (0..3)
+                .min_by(|&first, &second| gap(first).total_cmp(&gap(second)))
+                .expect("a cuboid has three axes");
+            if gap(axis) > LAYER_FACE_TOLERANCE_METERS {
+                return Err(PlacementError::NotLayerSurface);
+            }
+            let positive = local[axis] > 0.0;
+            let mut normal = Vec3::ZERO;
+            normal[axis] = if positive { 1.0 } else { -1.0 };
+            (
+                mechanic_core::LayerFace::Face(face_kind_on_axis(axis, positive)),
+                normal,
+            )
+        }
+        PartSpec::Cylinder(cylinder) if cylinder.dimensions.sweep_angle_degrees() == 360 => {
+            let radius = Vec2::new(local.x, local.z).length();
+            let outer = cylinder.dimensions.outer_diameter() * 0.5;
+            let inner = cylinder.dimensions.inner_diameter() * 0.5;
+            let half_length = cylinder.dimensions.axial_length() * 0.5;
+            let wall_tolerance = LAYER_WALL_TOLERANCE_METERS + radius * 0.02;
+            let radial = Vec3::new(local.x, 0.0, local.z).normalize_or_zero();
+            let cap_gap = (local.y.abs() - half_length).abs();
+            let wall_gap = (radius - outer).abs();
+            let bore_gap = if inner > 0.0 {
+                (radius - inner).abs()
+            } else {
+                f32::INFINITY
+            };
+            let within_length = local.y.abs() <= half_length + LAYER_FACE_TOLERANCE_METERS;
+            if cap_gap <= LAYER_FACE_TOLERANCE_METERS
+                && cap_gap <= wall_gap.min(bore_gap)
+                && radius <= outer + wall_tolerance
+                && radius + wall_tolerance >= inner
+            {
+                let positive = local.y > 0.0;
+                (
+                    mechanic_core::LayerFace::Face(face_kind_on_axis(1, positive)),
+                    Vec3::Y * if positive { 1.0 } else { -1.0 },
+                )
+            } else if within_length && wall_gap <= wall_tolerance && wall_gap <= bore_gap {
+                (mechanic_core::LayerFace::OuterWall, radial)
+            } else if within_length && bore_gap <= wall_tolerance {
+                (mechanic_core::LayerFace::Bore, -radial)
+            } else {
+                return Err(PlacementError::NotLayerSurface);
+            }
+        }
+        _ => return Err(PlacementError::NotLayerSurface),
+    };
+    let members = match spec {
+        PartSpec::Cuboid(cuboid) => flat_surface_members(graph, part, cuboid, frame, local_normal),
+        _ => vec![LayerMember { part, spec, face }],
     };
     Ok(LayerTarget {
         part,
-        cylinder,
-        side,
-        local_point,
+        spec,
+        face,
+        frame,
+        anchor: hit.point,
+        normal: frame
+            .vector(pose.rotation.quaternion() * local_normal)
+            .normalize_or_zero(),
+        members,
     })
 }
 
-/// Layer thickness where the pointer ray passes closest to the radial line
-/// through the picked wall point, snapped to 5 cm.
-pub(crate) fn layer_thickness_from_ray(
-    graph: &ConstructionGraph,
-    target: LayerTarget,
-    ray_origin: Vec3,
-    ray_direction: Vec3,
-) -> f32 {
-    let frame = graph
-        .part_frame(target.part)
-        .unwrap_or(mechanic_core::ConstructionFrame::IDENTITY);
-    let origin = cylinder_axis_point(target.cylinder, frame, ray_origin);
-    let direction = target.cylinder.pose.rotation.quaternion().inverse()
-        * frame.inverse().vector(ray_direction);
-    let radial = Vec3::new(target.local_point.x, 0.0, target.local_point.z).normalize_or_zero();
-    let offset = Vec3::new(0.0, target.local_point.y, 0.0) - origin;
-    let along = radial.dot(direction);
-    let denominator = direction.length_squared() - along * along;
-    let outer = target.cylinder.dimensions.outer_diameter() * 0.5;
-    let inner = target.cylinder.dimensions.inner_diameter() * 0.5;
-    let radius = if denominator.abs() <= 1.0e-6 {
-        Vec2::new(target.local_point.x, target.local_point.z).length()
-    } else {
-        (along * direction.dot(offset) - direction.length_squared() * radial.dot(offset))
-            / denominator
-    };
-    let (thickness, maximum) = match target.side {
-        mechanic_core::LayerSide::Outer => (
-            radius - outer,
-            ((mechanic_core::MAX_CYLINDER_OUTER_DIAMETER * 0.5 - outer)
-                / LAYER_THICKNESS_STEP_METERS)
-                .floor()
-                * LAYER_THICKNESS_STEP_METERS,
-        ),
-        mechanic_core::LayerSide::Inner => (inner - radius, inner),
-    };
-    ((thickness / LAYER_THICKNESS_STEP_METERS).round() * LAYER_THICKNESS_STEP_METERS)
-        .min(maximum)
-        .max(LAYER_THICKNESS_STEP_METERS)
+/// One press-and-drag choosing a new layer's thickness along the surface
+/// normal, committed only on release.
+///
+/// Like a Shape amount drag, pointer motion is measured on a plane through
+/// the anchor that contains the normal and faces the camera, and accumulates
+/// relative to the press, so dragging out thickens and dragging back thins.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LayerDrag {
+    pub(crate) target: LayerTarget,
+    pub(crate) material: mechanic_core::ConstructionMaterial,
+    pub(crate) appearance: mechanic_core::MaterialAppearance,
+    /// Snapped thickness shown now and committed on release, in metres.
+    pub(crate) thickness: f32,
+    drag_plane_normal: Vec3,
+    last_drag_value: f32,
+    raw_thickness: f32,
 }
 
-/// The target cylinder with a new full-length layer.
-pub(crate) fn layered_cylinder(
-    target: LayerTarget,
+impl LayerDrag {
+    pub(crate) fn begin(
+        target: LayerTarget,
+        material: mechanic_core::ConstructionMaterial,
+        appearance: mechanic_core::MaterialAppearance,
+        thickness: f32,
+        ray_origin: Vec3,
+        ray_direction: Vec3,
+    ) -> Self {
+        let pull = target.normal;
+        let anchor = target.anchor;
+        let drag_plane_normal = (ray_direction - pull * ray_direction.dot(pull))
+            .try_normalize()
+            .unwrap_or_else(|| pull.any_orthonormal_vector());
+        let projected = crate::shape_tool::project_onto_plane(
+            ray_origin,
+            ray_direction,
+            anchor,
+            drag_plane_normal,
+        )
+        .unwrap_or(anchor);
+        Self {
+            target,
+            material,
+            appearance,
+            thickness,
+            drag_plane_normal,
+            last_drag_value: (projected - anchor).dot(pull),
+            raw_thickness: thickness,
+        }
+    }
+
+    /// Follows the pointer ray and snaps to the active placement step, never
+    /// thinner than one step.
+    pub(crate) fn update(&mut self, grid: PlacementGrid, ray_origin: Vec3, ray_direction: Vec3) {
+        let step = grid.step_meters();
+        let pull = self.target.normal;
+        if let Some(projected) = crate::shape_tool::project_onto_plane(
+            ray_origin,
+            ray_direction,
+            self.target.anchor,
+            self.drag_plane_normal,
+        ) {
+            let drag_value = (projected - self.target.anchor).dot(pull);
+            let mut delta = drag_value - self.last_drag_value;
+            self.last_drag_value = drag_value;
+            let alignment = ray_direction.normalize_or_zero().dot(pull).abs();
+            if 1.0 - alignment * alignment < LAYER_DRAG_STABILITY {
+                delta = delta.clamp(-step, step);
+            }
+            self.raw_thickness = (self.raw_thickness + delta).max(0.0);
+        }
+        self.thickness = ((self.raw_thickness / step).round() * step).max(step);
+    }
+
+    /// Drops pointer distance past the thickest layer that fit, so holding
+    /// beyond a neighbour does not retry the refused layer every frame.
+    pub(crate) const fn discard_rejected_excess(&mut self, accepted: f32) {
+        self.raw_thickness = accepted;
+        self.thickness = accepted;
+    }
+}
+
+/// Every member of the target with a new layer, the picked part first.
+pub(crate) fn layered_parts(
+    target: &LayerTarget,
     thickness: f32,
     material: mechanic_core::ConstructionMaterial,
     appearance: mechanic_core::MaterialAppearance,
-) -> Result<CylinderSpec, PlacementError> {
+) -> Result<Vec<(PartId, PartSpec)>, PlacementError> {
     target
-        .cylinder
-        .with_layer(target.side, thickness, material, appearance)
-        .map_err(|error| PlacementError::Graph(error.to_string()))
+        .members
+        .iter()
+        .map(|member| {
+            member
+                .spec
+                .with_layer(member.face, thickness, material, appearance)
+                .map(|spec| (member.part, spec))
+                .map_err(|error| PlacementError::Graph(error.to_string()))
+        })
+        .collect()
 }
 
-/// Checks a layered cylinder against bounds and every other part, comparing
-/// in the cylinder's own construction frame.
-pub(crate) fn validate_cylinder_layer(
+/// Checks layered parts against bounds and every part outside the layer,
+/// comparing in the target's construction frame.
+pub(crate) fn validate_layered_parts(
     graph: &ConstructionGraph,
-    target: LayerTarget,
-    spec: CylinderSpec,
+    target: &LayerTarget,
+    layered: &[(PartId, PartSpec)],
     bounds: PlacementBounds,
 ) -> Result<(), PlacementError> {
-    let frame = graph
-        .part_frame(target.part)
-        .ok_or(PlacementError::NotCurvedWall)?;
-    if frame == mechanic_core::ConstructionFrame::IDENTITY {
-        let (minimum, maximum) = part_world_bounds(PartSpec::Cylinder(spec));
+    let mut minimum = Vec3::splat(f32::INFINITY);
+    let mut maximum = Vec3::splat(f32::NEG_INFINITY);
+    for &(_, spec) in layered {
+        let (low, high) = part_world_bounds(spec);
+        minimum = minimum.min(low);
+        maximum = maximum.max(high);
+    }
+    if target.frame == mechanic_core::ConstructionFrame::IDENTITY {
         validate_world_bounds(minimum, maximum, bounds)?;
     }
-    let into_layer = frame.inverse();
+    let into_layer = target.frame.inverse();
     for (part, existing) in graph.parts() {
-        if part == target.part {
+        if layered.iter().any(|&(member, _)| member == part) {
             continue;
         }
         let existing_frame = graph
             .part_frame(part)
             .expect("validated parts have construction frames");
-        if parts_overlap_with_frame(
-            PartSpec::Cylinder(spec),
-            *existing,
-            into_layer.compose(existing_frame),
-        ) {
+        if existing_frame == target.frame {
+            // Most parts are nowhere near the layer; skip them cheaply.
+            let (low, high) = part_world_bounds(*existing);
+            if (low - maximum).cmpgt(Vec3::splat(CONTACT_EPSILON)).any()
+                || (minimum - high).cmpgt(Vec3::splat(CONTACT_EPSILON)).any()
+            {
+                continue;
+            }
+        }
+        let relative = into_layer.compose(existing_frame);
+        if layered
+            .iter()
+            .any(|&(_, spec)| parts_overlap_with_frame(spec, *existing, relative))
+        {
             return Err(PlacementError::OverlapsPart(part));
         }
     }
     Ok(())
 }
 
-/// Adds a layer to the target cylinder in place, keeping its connections.
-pub(crate) fn stage_cylinder_layer(
+/// Adds a layer to every target member in place in one edit, keeping their
+/// connections.
+pub(crate) fn stage_layer(
     graph: &ConstructionGraph,
-    target: LayerTarget,
+    target: &LayerTarget,
     thickness: f32,
     material: mechanic_core::ConstructionMaterial,
     appearance: mechanic_core::MaterialAppearance,
     bounds: PlacementBounds,
-) -> Result<(ConstructionGraph, CylinderSpec), PlacementError> {
-    let spec = layered_cylinder(target, thickness, material, appearance)?;
-    validate_cylinder_layer(graph, target, spec, bounds)?;
+) -> Result<(ConstructionGraph, Vec<(PartId, PartSpec)>), PlacementError> {
+    let layered = layered_parts(target, thickness, material, appearance)?;
+    validate_layered_parts(graph, target, &layered, bounds)?;
     let mut staged = graph.begin_edit();
     staged
-        .apply(BuildCommand::SetCylinder {
-            part: target.part,
-            spec,
-        })
+        .apply_batch(
+            layered
+                .iter()
+                .map(|&(part, spec)| BuildCommand::SetLayers { part, spec }),
+        )
         .map_err(|error| PlacementError::Graph(error.to_string()))?;
-    Ok((staged.finish(), spec))
+    Ok((staged.finish(), layered))
 }
 
 pub(crate) fn validate_cylinder_candidate_in_bounds(
@@ -10892,53 +11258,156 @@ mod tests {
         (graph, part)
     }
 
-    fn wall_hit(part: PartId, point: Vec3) -> super::SurfaceHit {
+    fn surface_hit(part: PartId, point: Vec3, face: FaceKind) -> super::SurfaceHit {
         super::SurfaceHit {
             distance: 1.0,
             point,
-            face: FaceRef::part(part, FaceKind::PositiveX),
+            face: FaceRef::part(part, face),
         }
     }
 
+    fn spawn_block(graph: &mut ConstructionGraph, x_ticks: i32) -> PartId {
+        let block = CuboidSpec::new(
+            [2, 2, 2],
+            BuildPose::from_position_ticks([x_ticks, 100, 0].into(), GridRotation::default()),
+        )
+        .unwrap();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(block)).unwrap() else {
+            panic!("spawning a block reports its part");
+        };
+        part
+    }
+
     #[test]
-    fn layer_host_classifies_outer_wall_bore_and_rejects_caps() {
-        let (graph, part) = layer_test_graph(None);
-        let outer = super::layer_target_from_hit(&graph, wall_hit(part, Vec3::new(0.5, 1.0, 0.0)));
-        assert_eq!(outer.unwrap().side, mechanic_core::LayerSide::Outer);
-        let bore = super::layer_target_from_hit(&graph, wall_hit(part, Vec3::new(0.0, 1.2, 0.25)));
-        assert_eq!(bore.unwrap().side, mechanic_core::LayerSide::Inner);
+    fn layer_host_accepts_faces_caps_walls_and_rejects_fillet_surfaces() {
+        let (mut graph, pipe) = layer_test_graph(None);
+        let target = |graph: &ConstructionGraph, part, point, face| {
+            super::layer_target_from_hit(graph, surface_hit(part, point, face))
+        };
+        let outer = target(&graph, pipe, Vec3::new(0.5, 1.0, 0.0), FaceKind::PositiveX).unwrap();
+        assert_eq!(outer.face, mechanic_core::LayerFace::OuterWall);
+        assert!(outer.normal.abs_diff_eq(Vec3::X, 1.0e-5));
+        let bore = target(&graph, pipe, Vec3::new(0.0, 1.2, 0.25), FaceKind::PositiveX).unwrap();
+        assert_eq!(bore.face, mechanic_core::LayerFace::Bore);
+        assert!(bore.normal.abs_diff_eq(Vec3::NEG_Z, 1.0e-5));
+        let cap = target(&graph, pipe, Vec3::new(0.4, 1.5, 0.0), FaceKind::PositiveY).unwrap();
         assert_eq!(
-            super::layer_target_from_hit(&graph, wall_hit(part, Vec3::new(0.4, 1.5, 0.0))),
-            Err(PlacementError::NotCurvedWall)
+            cap.face,
+            mechanic_core::LayerFace::Face(FaceKind::PositiveY)
+        );
+
+        let block = spawn_block(&mut graph, 800);
+        let top = target(&graph, block, Vec3::new(2.0, 0.5, 0.1), FaceKind::PositiveY).unwrap();
+        assert_eq!(
+            top.face,
+            mechanic_core::LayerFace::Face(FaceKind::PositiveY)
+        );
+        assert!(top.normal.abs_diff_eq(Vec3::Y, 1.0e-5));
+
+        // Round the block's top +X edge, then aim at the middle of the fillet.
+        let owner = mechanic_core::SolidOwner::Part(block);
+        let solid = graph.evaluated_solid(owner).unwrap();
+        let edge = solid
+            .logical_edges
+            .iter()
+            .find(|edge| {
+                edge.half_edges.iter().all(|&half_edge| {
+                    let origin = solid.half_edges[half_edge as usize].origin;
+                    let position = solid.vertices[origin as usize].position;
+                    position.x > 2.2 && position.y > 0.45
+                })
+            })
+            .unwrap()
+            .key;
+        graph
+            .apply(BuildCommand::AddShapeFeature(
+                mechanic_core::ShapeFeature::new(
+                    [mechanic_core::EdgeChainRef { owner, edge }],
+                    mechanic_core::EdgeTreatment::Fillet,
+                    40,
+                ),
+            ))
+            .unwrap();
+        let rounded = Vec3::new(2.15, 0.4, 0.0) + Vec3::new(1.0, 1.0, 0.0).normalize() * 0.1;
+        assert_eq!(
+            target(&graph, block, rounded, FaceKind::PositiveX),
+            Err(PlacementError::NotLayerSurface)
         );
     }
 
     #[test]
-    fn radial_drag_snaps_layer_thickness_to_five_centimetres() {
-        let (graph, part) = layer_test_graph(None);
-        let target =
-            super::layer_target_from_hit(&graph, wall_hit(part, Vec3::new(0.5, 1.0, 0.0))).unwrap();
-        let thickness = |x: f32| {
-            super::layer_thickness_from_ray(&graph, target, Vec3::new(x, 1.0, 5.0), Vec3::NEG_Z)
+    fn dragging_out_thickens_and_back_thins_by_the_modifier_step() {
+        let (graph, pipe) = layer_test_graph(None);
+        let cap = super::layer_target_from_hit(
+            &graph,
+            surface_hit(pipe, Vec3::new(0.4, 1.5, 0.0), FaceKind::PositiveY),
+        )
+        .unwrap();
+        // Looking sideways at the top cap, so pointer height is pull distance.
+        let ray = |y: f32| (Vec3::new(0.4, y, 5.0), Vec3::NEG_Z);
+        let (origin, direction) = ray(1.5);
+        let mut drag = super::LayerDrag::begin(
+            cap,
+            ConstructionMaterial::Rubber,
+            mechanic_core::MaterialAppearance::BAKED,
+            0.25,
+            origin,
+            direction,
+        );
+        let mut step = |grid, y| {
+            let (origin, direction) = ray(y);
+            drag.update(grid, origin, direction);
+            drag.thickness
         };
-        assert!((thickness(0.62) - 0.10).abs() < 1.0e-5);
-        assert!((thickness(0.64) - 0.15).abs() < 1.0e-5);
+        assert!((step(super::PlacementGrid::Centimetres25, 1.8) - 0.5).abs() < 1.0e-4);
+        assert!((step(super::PlacementGrid::Centimetres5, 1.62) - 0.35).abs() < 1.0e-4);
+        assert!((step(super::PlacementGrid::Centimetres1, 1.543) - 0.29).abs() < 1.0e-4);
         assert!(
-            (thickness(0.4) - 0.05).abs() < 1.0e-5,
+            (step(super::PlacementGrid::Centimetres25, 1.0) - 0.25).abs() < 1.0e-4,
             "never thinner than one step"
         );
     }
 
     #[test]
-    fn outer_layer_that_would_hit_a_neighbour_is_refused() {
-        let (graph, part) = layer_test_graph(Some(400));
-        let target =
-            super::layer_target_from_hit(&graph, wall_hit(part, Vec3::new(-0.5, 1.0, 0.0)))
-                .unwrap();
+    fn head_on_drag_advances_at_most_one_step_per_frame() {
+        let (graph, pipe) = layer_test_graph(None);
+        let cap = super::layer_target_from_hit(
+            &graph,
+            surface_hit(pipe, Vec3::new(0.4, 1.5, 0.0), FaceKind::PositiveY),
+        )
+        .unwrap();
+        // Nearly straight down the cap normal: projected distance swings wildly.
+        let direction = Vec3::new(0.0, -1.0, 0.05).normalize();
+        let mut drag = super::LayerDrag::begin(
+            cap,
+            ConstructionMaterial::Rubber,
+            mechanic_core::MaterialAppearance::BAKED,
+            0.25,
+            Vec3::new(0.4, 5.0, -1.0),
+            direction,
+        );
+        drag.update(
+            super::PlacementGrid::Centimetres25,
+            Vec3::new(0.4, 5.0, -0.5),
+            direction,
+        );
+        assert!((drag.thickness - 0.5).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn face_layer_that_would_hit_a_neighbour_is_refused() {
+        let mut graph = ConstructionGraph::new();
+        let block = spawn_block(&mut graph, 0);
+        spawn_block(&mut graph, 300);
+        let side = super::layer_target_from_hit(
+            &graph,
+            surface_hit(block, Vec3::new(0.25, 0.25, 0.0), FaceKind::PositiveX),
+        )
+        .unwrap();
         let rubber = |thickness| {
-            super::stage_cylinder_layer(
+            super::stage_layer(
                 &graph,
-                target,
+                &side,
                 thickness,
                 ConstructionMaterial::Rubber,
                 mechanic_core::MaterialAppearance::BAKED,
@@ -10946,8 +11415,83 @@ mod tests {
             )
         };
         assert!(matches!(rubber(0.3), Err(PlacementError::OverlapsPart(_))));
-        let (layered, spec) = rubber(0.1).unwrap();
-        assert_eq!(layered.part(part), Some(&PartSpec::Cylinder(spec)));
-        assert_eq!(spec.band_count(), 2);
+        let (layered, parts) = rubber(0.1).unwrap();
+        assert_eq!(parts.len(), 1);
+        let (_, spec) = parts[0];
+        assert_eq!(layered.part(block), Some(&spec));
+        assert!((spec.as_cuboid().unwrap().size_meters().x - 0.6).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn layer_spreads_over_the_whole_uncovered_flat_surface_of_one_body() {
+        let mut graph = ConstructionGraph::new();
+        let mut unit = |x: i32, y: i32, z: i32| {
+            let block = CuboidSpec::new(
+                [1, 1, 1],
+                BuildPose::from_position_ticks([x, y, z].into(), GridRotation::default()),
+            )
+            .unwrap();
+            let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::Spawn(block)).unwrap()
+            else {
+                panic!("spawning a block reports its part");
+            };
+            part
+        };
+        // A welded 2×2 slab with a block standing on one corner, and a loose
+        // block lying flush against it.
+        let corner = unit(0, 50, 0);
+        let right = unit(100, 50, 0);
+        let back = unit(0, 50, 100);
+        let far = unit(100, 50, 100);
+        let cover = unit(0, 150, 0);
+        let loose = unit(200, 50, 0);
+        for (first, face, second) in [
+            (corner, FaceKind::PositiveX, right),
+            (back, FaceKind::PositiveX, far),
+            (corner, FaceKind::PositiveZ, back),
+            (right, FaceKind::PositiveZ, far),
+            (corner, FaceKind::PositiveY, cover),
+        ] {
+            graph
+                .apply(BuildCommand::Weld(mechanic_core::WeldSpec {
+                    first: FaceRef::part(first, face),
+                    second: FaceRef::part(second, face.opposite()),
+                }))
+                .unwrap();
+        }
+        let top = super::layer_target_from_hit(
+            &graph,
+            surface_hit(right, Vec3::new(0.25, 0.25, 0.05), FaceKind::PositiveY),
+        )
+        .unwrap();
+        let members = top
+            .members
+            .iter()
+            .map(|member| member.part)
+            .collect::<Vec<_>>();
+        assert_eq!(members[0], right, "the picked block leads");
+        let mut sorted = members.clone();
+        sorted.sort();
+        let mut expected = vec![right, back, far];
+        expected.sort();
+        assert_eq!(sorted, expected, "covered and loose blocks stay out");
+
+        let (layered, parts) = super::stage_layer(
+            &graph,
+            &top,
+            0.05,
+            ConstructionMaterial::Rubber,
+            mechanic_core::MaterialAppearance::BAKED,
+            PlacementBounds::Garage,
+        )
+        .unwrap();
+        assert_eq!(parts.len(), 3);
+        for part in [right, back, far] {
+            assert!(layered.part(part).unwrap().is_layered());
+        }
+        for part in [corner, cover, loose] {
+            assert!(!layered.part(part).unwrap().is_layered());
+        }
+        assert_eq!(layered.weld_count(), graph.weld_count());
     }
 }

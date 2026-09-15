@@ -51,11 +51,11 @@ pub(crate) enum GameAction {
     LowerFrozenCreation,
     MatterBlock,
     MatterCylinder,
+    MatterLayer,
     MatterItem,
     MatterTerrain,
     MatterManipulate,
     MatterChroma,
-    MatterLayer,
     ClearPipette,
     Rotate,
     PipeTurn,
@@ -123,11 +123,11 @@ impl GameAction {
         Self::ToolHammer,
         Self::MatterBlock,
         Self::MatterCylinder,
+        Self::MatterLayer,
         Self::MatterItem,
         Self::MatterTerrain,
         Self::MatterManipulate,
         Self::MatterChroma,
-        Self::MatterLayer,
         Self::ClearPipette,
         Self::Rotate,
         Self::PipeTurn,
@@ -177,6 +177,7 @@ impl GameAction {
     pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 7] = [
         (Self::MatterBlock, crate::hotbar::MatterMode::Block),
         (Self::MatterCylinder, crate::hotbar::MatterMode::Cylinder),
+        (Self::MatterLayer, crate::hotbar::MatterMode::Layer),
         (Self::MatterItem, crate::hotbar::MatterMode::Item),
         (Self::MatterTerrain, crate::hotbar::MatterMode::Terrain),
         (
@@ -184,7 +185,6 @@ impl GameAction {
             crate::hotbar::MatterMode::Manipulate,
         ),
         (Self::MatterChroma, crate::hotbar::MatterMode::Chroma),
-        (Self::MatterLayer, crate::hotbar::MatterMode::Layer),
     ];
 
     pub(crate) const fn for_tool(tool: crate::hotbar::MainTool) -> Self {
@@ -1414,6 +1414,10 @@ mod tests {
         let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
         assert!(input.just_pressed(GameAction::MatterBlock));
         assert!(!input.just_pressed(GameAction::ToolMatterManipulator));
+        assert_eq!(
+            controls.binding(GameAction::MatterLayer).0[0],
+            Some(InputChord::key(KeyCode::Digit3).with_shift())
+        );
     }
 
     #[test]

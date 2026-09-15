@@ -100,27 +100,39 @@ Parts may only be placed on faces that are still flat: every cage vertex on that
 face resting on the grid. A shaped face is no longer an axis-aligned rectangle,
 so nothing could sit flush on it.
 
-A layered cylinder is one part and one solid. Its dimensions are the whole
-envelope, and ordered radial material bands only divide that envelope's
-material; the outermost band is the cylinder's own `material` and `appearance`.
-Chamfers and fillets replay on the envelope exactly as on a plain cylinder, so
-topology keys, clearance, and edge picking never see bands, and a feature cuts
-through as many bands as it reaches. Only then is each replayed cell split by
-the band boundaries. Inside one 15-degree wedge a boundary is a single chord
-plane, so both halves of a split share an identical face and stitch away as
-interior; wherever a feature removed an outer band the inner band's surface is
-exposed. Evaluated cells and surfaces carry their band, which selects density,
-contact material, and the material mesh they render in. `SetCylinder` replaces
-the envelope and bands in place, keeping the part's identity, pose, welds,
-bearings, and features, and is refused if any feature no longer replays.
+A layered part is one part and one solid. Cuboids take material layers on any
+face; full cylinders on the outer wall, the bore, or either end cap. A part's
+pose and envelope already include every layer, and an ordered stack of layers
+(face, thickness, material, appearance) only divides that envelope's material.
+The part's own `material` and `appearance` are its core, band zero; layer `i`
+is band `i + 1`. A flat layer moves the centre outward by half its thickness so
+the opposite face stays put, which is why flat layers are whole 5 mm steps. A
+cuboid's grid dimensions stay its core, and a cap layer may lengthen a cylinder
+off the quarter-metre grid.
+
+Chamfers and fillets replay on the envelope exactly as on a plain part, so
+topology keys, clearance, and edge picking never see layers, and a feature cuts
+through as many layers as it reaches. Only then is each replayed cell split:
+unwinding the stack gives each layer the region beyond the envelope it was laid
+on, and later layers own the corners they cover. A flat boundary is one plane;
+inside one 15-degree wedge a wall or bore boundary is a single chord plane. Both
+halves of a split share an identical face and stitch away as interior, and
+wherever a feature removed a layer the band beneath is exposed. Evaluated cells
+and surfaces carry their band, which selects density, contact material, and the
+material mesh they render in. Layered parts always render and weigh from their
+evaluated solid; an unfeatured layered cylinder keeps its envelope colliders and
+analytic rolling contact in its outermost wall material. `SetLayers` replaces a
+part's layers in place, keeping its identity, core, welds, bearings, and
+features, and is refused if any feature or connection no longer holds. Layers
+sit off the construction grid, so layered blocks never join a shaped region.
 
 ## Persistence
 
 A saved creation is the authored graph and nothing derived from it: parts,
 welds, rigid links, bearings, drive wires with their limits and programs,
 transmission parent references, per-controller gearbox settings, the shape
-regions with their cage planes and displaced vertices, the radial material bands
-of layered cylinders, and the bearing rings the
+regions with their cage planes and displaced vertices, each part's core and the
+material layers replayed over it, and the bearing rings the
 editor holds that no part hangs from yet. That set is the
 same one the undo history snapshots, which is the definition of "the whole
 creation". Compiled bodies, mass and inertia, loop topology, GPU buffers, and

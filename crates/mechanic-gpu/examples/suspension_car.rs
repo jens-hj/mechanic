@@ -28,6 +28,7 @@ fn block(doc: &mut CreationDocument, dimensions: [u8; 3], pose: PoseDoc) -> u32 
             MaterialColor::Dye(MaterialDye::new([36, 126, 218], 0.8).unwrap()),
             MaterialFinish::Painted,
         ),
+        layers: Vec::new(),
     });
     doc.part_frames.push(0);
     id
@@ -139,7 +140,7 @@ fn main() -> Result<()> {
                 },
                 material: ConstructionMaterial::Rubber,
                 appearance: MaterialAppearance::default(),
-                inner_bands: Vec::new(),
+                layers: Vec::new(),
             });
             doc.part_frames.push(0);
             axles.push(bearing(

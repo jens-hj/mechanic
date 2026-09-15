@@ -532,27 +532,14 @@ struct PointerSample {
 
 /// Thickness of the first layer before a drag has chosen one, in metres.
 const DEFAULT_LAYER_THICKNESS_METERS: f32 = 0.25;
-/// Screen distance a press travels before it drags a layer's thickness.
-const LAYER_DRAG_THRESHOLD_PIXELS: f32 = 6.0;
 
-/// Wall the Layer tool points at and the cylinder it would become.
-#[derive(Clone, Copy, Debug)]
+/// Surface the Layer tool points at and the parts it would become.
+#[derive(Clone, Debug)]
 struct LayerPreview {
     target: crate::builder::LayerTarget,
-    spec: mechanic_core::CylinderSpec,
+    layered: Vec<(PartId, PartSpec)>,
     material: ConstructionMaterial,
     appearance: MaterialAppearance,
-}
-
-/// A radial drag choosing a new layer's thickness.
-#[derive(Clone, Copy, Debug)]
-struct LayerDrag {
-    target: crate::builder::LayerTarget,
-    material: ConstructionMaterial,
-    appearance: MaterialAppearance,
-    thickness: f32,
-    press: Vec2,
-    dragged: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4195,7 +4182,7 @@ struct EditorState {
     /// Wall the Layer tool is pointed at and the layer it would add.
     layer_preview: Option<LayerPreview>,
     /// Radial layer drag in progress.
-    layer_drag: Option<LayerDrag>,
+    layer_drag: Option<crate::builder::LayerDrag>,
     /// Last committed layer thickness in metres; zero until the first layer.
     layer_thickness: f32,
     delete_drag: Option<DeleteDrag>,
@@ -4348,7 +4335,7 @@ enum ConstructionPreviewMeshKey {
     Block(u64),
     Pipe(Vec<PartSpec>),
     Branch(mechanic_core::PipeJunctionSpec, mechanic_core::CylinderSpec),
-    Layer(mechanic_core::CylinderSpec),
+    Layer(Vec<PartSpec>),
 }
 
 fn sync_preview_mesh<K: PartialEq>(
@@ -8489,35 +8476,35 @@ fn refresh_tool_preview_with_cylinder(
             })
         }
         (Tool::Layer, _) => {
-            let drag = state.layer_drag;
-            let thickness =
-                drag.map_or_else(|| state.next_layer_thickness(), |drag| drag.thickness);
-            let target = match drag {
-                Some(drag) => Some(Ok(drag.target)),
-                None => state
-                    .hovered
-                    .map(|hit| crate::builder::layer_target_from_hit(graph, hit)),
+            let (thickness, target) = match &state.layer_drag {
+                Some(drag) => (drag.thickness, Some(Ok(drag.target.clone()))),
+                None => (
+                    state.next_layer_thickness(),
+                    state
+                        .hovered
+                        .map(|hit| crate::builder::layer_target_from_hit(graph, hit)),
+                ),
             };
             match target {
                 None => None,
                 Some(Err(error)) => Some(error),
                 Some(Ok(target)) => {
-                    match crate::builder::layered_cylinder(target, thickness, material, appearance)
-                    {
-                        Ok(spec) => {
+                    match crate::builder::layered_parts(&target, thickness, material, appearance) {
+                        Ok(layered) => {
+                            let error = crate::builder::validate_layered_parts(
+                                graph,
+                                &target,
+                                &layered,
+                                state.placement_bounds,
+                            )
+                            .err();
                             state.layer_preview = Some(LayerPreview {
                                 target,
-                                spec,
+                                layered,
                                 material,
                                 appearance,
                             });
-                            crate::builder::validate_cylinder_layer(
-                                graph,
-                                target,
-                                spec,
-                                state.placement_bounds,
-                            )
-                            .err()
+                            error
                         }
                         Err(error) => Some(error),
                     }
@@ -9535,107 +9522,138 @@ fn logical_chain_endpoints(
         .collect()
 }
 
-/// Drags a full-length material layer out of a cylinder wall, or into its bore.
+/// Presses on a part surface and drags a new material layer out along its
+/// normal: out thickens, back thins, in the active placement-grid step.
 fn handle_layer_actions(
     actions: &ButtonInput<GameAction>,
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
 ) {
-    if let Some(mut drag) = state.layer_drag {
-        if !drag.dragged
-            && state
-                .pointer_position
-                .is_some_and(|cursor| cursor.distance(drag.press) > LAYER_DRAG_THRESHOLD_PIXELS)
-        {
-            drag.dragged = true;
+    let grid = active_placement_grid(actions);
+    if let Some(mut drag) = state.layer_drag.take() {
+        if let Some((origin, direction)) = state.pointer_ray {
+            let previous = drag.thickness;
+            drag.update(grid, origin, direction);
+            if drag.thickness > previous
+                && checked_layer(graph, &drag, drag.thickness, state.placement_bounds).is_err()
+                && checked_layer(graph, &drag, previous, state.placement_bounds).is_ok()
+            {
+                drag.discard_rejected_excess(previous);
+            }
         }
-        if drag.dragged
-            && let Some((origin, direction)) = state.pointer_ray
-        {
-            drag.thickness =
-                crate::builder::layer_thickness_from_ray(graph, drag.target, origin, direction);
+        state.feedback = Some(
+            match checked_layer(graph, &drag, drag.thickness, state.placement_bounds) {
+                Ok(layered) => layer_feedback(&drag, &layered, grid),
+                Err(error) => error.to_string(),
+            },
+        );
+        if !actions.just_released(GameAction::Primary) {
+            state.layer_drag = Some(drag);
+            return;
         }
-        state.layer_drag = Some(drag);
-        let layered = crate::builder::layered_cylinder(
-            drag.target,
+        let previous = EditorSnapshot::capture(graph, state);
+        match crate::builder::stage_layer(
+            graph,
+            &drag.target,
             drag.thickness,
             drag.material,
             drag.appearance,
-        )
-        .and_then(|spec| {
-            crate::builder::validate_cylinder_layer(
-                graph,
-                drag.target,
-                spec,
-                state.placement_bounds,
-            )
-            .map(|()| spec)
-        });
-        state.feedback = Some(match layered {
-            Ok(spec) => layer_feedback(drag, spec),
-            Err(error) => error.to_string(),
-        });
-        if actions.just_released(GameAction::Primary) {
-            state.layer_drag = None;
-            let previous = EditorSnapshot::capture(graph, state);
-            match crate::builder::stage_cylinder_layer(
-                graph,
-                drag.target,
-                drag.thickness,
-                drag.material,
-                drag.appearance,
-                state.placement_bounds,
-            ) {
-                Ok((staged, spec)) => {
-                    *graph = staged;
-                    history.commit(previous);
-                    state.layer_thickness = drag.thickness;
-                    state.construction_mesh_dirty = true;
-                    clear_hover(state);
-                    state.feedback = Some(layer_feedback(drag, spec));
-                }
-                Err(error) => state.feedback = Some(error.to_string()),
+            state.placement_bounds,
+        ) {
+            Ok((staged, layered)) => {
+                *graph = staged;
+                history.commit(previous);
+                state.layer_thickness = drag.thickness;
+                state.construction_mesh_dirty = true;
+                clear_hover(state);
+                state.feedback = Some(layer_feedback(&drag, &layered, grid));
             }
+            Err(error) => state.feedback = Some(error.to_string()),
         }
         return;
     }
     if !actions.just_pressed(GameAction::Primary) {
         return;
     }
-    let Some(preview) = state.layer_preview else {
+    let Some(preview) = state.layer_preview.clone() else {
         state.feedback = Some(state.preview_error.as_ref().map_or_else(
-            || "Point at the curved wall or bore of a full cylinder".to_owned(),
+            || "Point at a flat face, or a full cylinder's wall or bore".to_owned(),
             ToString::to_string,
         ));
         return;
     };
-    let Some(press) = state.pointer_position else {
-        state.feedback = Some("Pointer position is unavailable".to_owned());
+    let Some((origin, direction)) = state.pointer_ray else {
+        state.feedback = Some("Pointer ray is unavailable".to_owned());
         return;
     };
-    state.layer_drag = Some(LayerDrag {
-        target: preview.target,
-        material: preview.material,
-        appearance: preview.appearance,
-        thickness: state.next_layer_thickness(),
-        press,
-        dragged: false,
-    });
+    state.layer_drag = Some(crate::builder::LayerDrag::begin(
+        preview.target,
+        preview.material,
+        preview.appearance,
+        state.next_layer_thickness(),
+        origin,
+        direction,
+    ));
 }
 
-fn layer_feedback(drag: LayerDrag, spec: mechanic_core::CylinderSpec) -> String {
+/// The dragged parts with a layer `thickness` thick, if they fit.
+fn checked_layer(
+    graph: &ConstructionGraph,
+    drag: &crate::builder::LayerDrag,
+    thickness: f32,
+    bounds: crate::builder::PlacementBounds,
+) -> Result<Vec<(PartId, PartSpec)>, crate::builder::PlacementError> {
+    let layered =
+        crate::builder::layered_parts(&drag.target, thickness, drag.material, drag.appearance)?;
+    crate::builder::validate_layered_parts(graph, &drag.target, &layered, bounds).map(|()| layered)
+}
+
+fn layer_feedback(
+    drag: &crate::builder::LayerDrag,
+    layered: &[(PartId, PartSpec)],
+    grid: crate::builder::PlacementGrid,
+) -> String {
+    let Some(&(_, spec)) = layered.first() else {
+        return String::new();
+    };
     let centimetres = drag.thickness * 100.0;
     let material = drag.material.label();
-    match drag.target.side {
-        mechanic_core::LayerSide::Outer => format!(
-            "{centimetres:.0} cm {material} layer → outer diameter {:.2} m",
-            spec.dimensions.outer_diameter()
+    let step = if layered.len() > 1 {
+        format!("{} blocks, {} steps", layered.len(), grid.label())
+    } else {
+        format!("{} steps", grid.label())
+    };
+    match (drag.target.face, spec) {
+        (mechanic_core::LayerFace::OuterWall, PartSpec::Cylinder(cylinder)) => format!(
+            "{centimetres:.0} cm {material} layer → outer diameter {:.2} m ({step})",
+            cylinder.dimensions.outer_diameter()
         ),
-        mechanic_core::LayerSide::Inner => format!(
-            "{centimetres:.0} cm {material} bore layer → inner diameter {:.2} m",
-            spec.dimensions.inner_diameter()
+        (mechanic_core::LayerFace::Bore, PartSpec::Cylinder(cylinder)) => format!(
+            "{centimetres:.0} cm {material} bore layer → inner diameter {:.2} m ({step})",
+            cylinder.dimensions.inner_diameter()
         ),
+        (mechanic_core::LayerFace::Face(face), _) => {
+            use mechanic_core::FaceKind;
+            let (axis, label) = match face {
+                FaceKind::PositiveX => (0, "+X"),
+                FaceKind::NegativeX => (0, "-X"),
+                FaceKind::PositiveY => (1, "+Y"),
+                FaceKind::NegativeY => (1, "-Y"),
+                FaceKind::PositiveZ => (2, "+Z"),
+                FaceKind::NegativeZ => (2, "-Z"),
+            };
+            let depth = match spec {
+                PartSpec::Cylinder(cylinder) => cylinder.dimensions.axial_length(),
+                _ => spec
+                    .as_cuboid()
+                    .map_or(0.0, |cuboid| cuboid.size_meters()[axis]),
+            };
+            format!(
+                "{centimetres:.0} cm {material} layer on {label} face → {depth:.2} m deep ({step})"
+            )
+        }
+        _ => format!("{centimetres:.0} cm {material} layer ({step})"),
     }
 }
 
@@ -11108,17 +11126,14 @@ fn appearance_target(graph: &ConstructionGraph, state: &EditorState) -> Option<A
     };
     let spec = graph.part(part)?;
     spec.appearance()?;
-    if let PartSpec::Cylinder(cylinder) = *spec
-        && cylinder.band_count() > 1
-    {
-        // A layered cylinder paints the band under the pointer: its distance
-        // from the axis names the band for walls and end faces alike.
-        let local = cylinder.pose.rotation.quaternion().inverse()
-            * (graph.part_frame(part)?.inverse().point(hit.point) - cylinder.pose.translation());
-        let band = cylinder.band_at_radius(Vec2::new(local.x, local.z).length());
-        return Some(AppearanceTarget::CylinderBand {
+    if spec.is_layered() {
+        // A layered part paints the band under the pointer.
+        let pose = spec.pose();
+        let local = pose.rotation.quaternion().inverse()
+            * (graph.part_frame(part)?.inverse().point(hit.point) - pose.translation());
+        return Some(AppearanceTarget::PartBand {
             part,
-            band: u8::try_from(band).ok()?,
+            band: spec.band_at_local_point(local),
         });
     }
     Some(
@@ -11135,11 +11150,10 @@ fn target_appearance(
     match target {
         AppearanceTarget::Part(part) => graph.part(part)?.appearance(),
         AppearanceTarget::Region(region) => Some(graph.region(region)?.appearance()),
-        AppearanceTarget::CylinderBand { part, band } => graph
+        AppearanceTarget::PartBand { part, band } => graph
             .part(part)?
-            .as_cylinder()?
-            .band(usize::from(band))
-            .map(|band| band.appearance),
+            .band(band)
+            .map(|(_, appearance)| appearance),
     }
 }
 
@@ -14061,30 +14075,34 @@ fn update_previews(
             }
         }
         (Some(Tool::Layer), _) => {
-            // A drag follows the pointer off the cylinder, so it previews
-            // from the drag itself rather than from the hovered wall.
-            let layered = state.layer_drag.map_or_else(
-                || state.layer_preview.map(|preview| preview.spec),
-                |drag| {
-                    crate::builder::layered_cylinder(
-                        drag.target,
-                        drag.thickness,
-                        drag.material,
-                        drag.appearance,
-                    )
-                    .ok()
-                },
-            );
-            if let Some(spec) = layered {
+            // A drag follows the pointer off the part, so it previews from
+            // the drag itself rather than from the hovered surface.
+            let layered = match &state.layer_drag {
+                Some(drag) => crate::builder::layered_parts(
+                    &drag.target,
+                    drag.thickness,
+                    drag.material,
+                    drag.appearance,
+                )
+                .ok()
+                .map(|layered| (drag.target.frame, layered)),
+                None => state
+                    .layer_preview
+                    .as_ref()
+                    .map(|preview| (preview.target.frame, preview.layered.clone())),
+            };
+            if let Some((frame, layered)) = layered {
+                let specs = layered.iter().map(|&(_, spec)| spec).collect::<Vec<_>>();
                 sync_preview_mesh(
                     &mut meshes,
                     &visuals.block_drag_preview_mesh,
                     &mut rendered_revisions.construction,
-                    ConstructionPreviewMeshKey::Layer(spec),
-                    || combined_parts_mesh_scaled(&[PartSpec::Cylinder(spec)], 1.004),
+                    ConstructionPreviewMeshKey::Layer(specs.clone()),
+                    || layer_preview_mesh(&specs),
                 );
                 action.0.0 = visuals.block_drag_preview_mesh.clone();
-                *action.1 = Transform::default();
+                *action.1 = Transform::from_translation(frame.translation())
+                    .with_rotation(frame.rotation());
                 action.3.0 = action_material.clone();
                 *action.2 = Visibility::Visible;
             } else {
@@ -14783,17 +14801,13 @@ fn combined_construction_mesh_filtered(
         if graph.region_of(part).is_some() {
             continue;
         }
-        if let PartSpec::Cylinder(cylinder) = *spec
-            && cylinder.band_count() > 1
-        {
-            append_cylinder_bands(
+        if spec.is_layered() {
+            append_layered_part(
                 graph,
                 BuildTransform::IDENTITY,
                 part,
-                cylinder,
+                *spec,
                 material,
-                pipe_texture_offsets.get(&part).copied().unwrap_or_default(),
-                pipe_end_faces(part, &welded_pipe_ends),
                 &mut positions,
                 &mut normals,
                 &mut uvs,
@@ -15082,28 +15096,22 @@ fn append_cuboid_texture_coordinates(
     }
 }
 
-/// Every material an ordinary part draws with: each band of a layered cylinder.
+/// Every material an ordinary part draws with: its core and each layer.
 fn ordinary_materials(spec: PartSpec) -> impl Iterator<Item = ConstructionMaterial> {
-    let bands = spec
-        .as_cylinder()
+    ordinary_material(spec)
         .into_iter()
-        .flat_map(mechanic_core::CylinderSpec::bands)
-        .map(|band| band.material);
-    ordinary_material(spec).into_iter().chain(bands)
+        .chain(spec.material_layers().iter().map(|layer| layer.material))
 }
 
-/// Draws a layered cylinder band by band into `material`'s mesh. A featured
-/// cylinder emits the evaluated surfaces of each band; otherwise each band is
-/// its own tube, whose walls against neighbouring bands stay enclosed.
+/// Draws a layered part band by band into `material`'s mesh from its
+/// evaluated solid, colouring each band with its own appearance.
 #[allow(clippy::too_many_arguments)]
-fn append_cylinder_bands(
+fn append_layered_part(
     graph: &ConstructionGraph,
     placement: BuildTransform,
     part: PartId,
-    cylinder: mechanic_core::CylinderSpec,
+    spec: PartSpec,
     material: Option<ConstructionMaterial>,
-    texture_offset: PipeTextureOffset,
-    end_faces: PipeEndFaces,
     positions: &mut Vec<[f32; 3]>,
     normals: &mut Vec<[f32; 3]>,
     uvs: &mut Vec<[f32; 2]>,
@@ -15111,54 +15119,29 @@ fn append_cylinder_bands(
     colors: &mut Vec<[f32; 4]>,
     indices: &mut Vec<u32>,
 ) {
-    let owner = mechanic_core::SolidOwner::Part(part);
-    let solid = graph.owner_has_shape_features(owner).then(|| {
-        graph
-            .evaluated_solid_shared(owner)
-            .expect("committed feature geometry replays")
-    });
-    for (index, band) in cylinder.bands().enumerate() {
-        if material.is_some_and(|wanted| wanted != band.material) {
+    let solid = graph
+        .evaluated_solid_shared(mechanic_core::SolidOwner::Part(part))
+        .expect("committed layer geometry evaluates");
+    for band in (0..=spec.material_layers().len()).filter_map(|band| u8::try_from(band).ok()) {
+        let Some((band_material, appearance)) = spec.band(band) else {
+            continue;
+        };
+        if material.is_some_and(|wanted| wanted != band_material) {
             continue;
         }
         let first_vertex = positions.len();
-        if let Some(solid) = &solid {
-            append_evaluated_band(
-                solid,
-                placement,
-                u8::try_from(index).ok(),
-                positions,
-                normals,
-                uvs,
-                tangents,
-                indices,
-            );
-        } else {
-            let dimensions = CylinderDimensions::new(
-                band.outer_diameter,
-                cylinder.band_inner_diameter(index),
-                cylinder.dimensions.axial_length(),
-            )
-            .and_then(|dimensions| {
-                dimensions.with_sweep_angle_degrees(cylinder.dimensions.sweep_angle_degrees())
-            })
-            .expect("validated bands are valid cylinders");
-            append_textured_part(
-                PartSpec::Cylinder(mechanic_core::CylinderSpec::new(dimensions, cylinder.pose)),
-                placement.point(graph.part_position(part).expect("part exists")),
-                placement.rotation * graph.part_rotation(part).expect("part exists"),
-                placement.with_frame(graph.part_frame(part).expect("part exists")),
-                texture_offset,
-                end_faces,
-                positions,
-                normals,
-                uvs,
-                tangents,
-                indices,
-            );
-        }
+        append_evaluated_band(
+            &solid,
+            placement,
+            Some(band),
+            positions,
+            normals,
+            uvs,
+            tangents,
+            indices,
+        );
         colors.extend(std::iter::repeat_n(
-            chroma::encode_appearance(band.appearance),
+            chroma::encode_appearance(appearance),
             positions.len() - first_vertex,
         ));
     }
@@ -15555,6 +15538,134 @@ fn block_bounds_preview_mesh(minimum: Vec3, maximum: Vec3) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// Ghost of a layer edit: the exterior skin of the layered parts as one shape.
+///
+/// A flat surface spreads the layer over many blocks, and drawing each block
+/// would show every wall between them through the translucent ghost. Faces
+/// that touch another member are dropped, so it reads like a block-sheet drag.
+/// Parts that are not axis-aligned boxes keep their own full shells.
+fn layer_preview_mesh(specs: &[PartSpec]) -> Mesh {
+    let boxes = specs
+        .iter()
+        .map(|&spec| {
+            let cuboid = spec.as_cuboid()?;
+            let rotation = cuboid.pose.rotation.quaternion();
+            [Vec3::X, Vec3::Y, Vec3::Z]
+                .into_iter()
+                .all(|axis| (rotation * axis).abs().max_element() > 1.0 - 1e-4)
+                .then(|| part_world_bounds(spec))
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(boxes) = boxes else {
+        return combined_parts_mesh_scaled(specs, 1.004);
+    };
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut indices = Vec::new();
+    for (index, &(minimum, maximum)) in boxes.iter().enumerate() {
+        for axis in 0..3 {
+            for positive in [false, true] {
+                let plane = if positive {
+                    maximum[axis]
+                } else {
+                    minimum[axis]
+                };
+                let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+                let mut pieces = vec![([minimum[u], minimum[v]], [maximum[u], maximum[v]])];
+                for (other, &(other_minimum, other_maximum)) in boxes.iter().enumerate() {
+                    // A neighbour hides this face where it fills the space just
+                    // beyond it.
+                    let beyond = if positive {
+                        plane + LAYER_PREVIEW_CONTACT_METERS
+                    } else {
+                        plane - LAYER_PREVIEW_CONTACT_METERS
+                    };
+                    if other == index
+                        || beyond <= other_minimum[axis]
+                        || beyond >= other_maximum[axis]
+                    {
+                        continue;
+                    }
+                    let cutter = (
+                        [other_minimum[u], other_minimum[v]],
+                        [other_maximum[u], other_maximum[v]],
+                    );
+                    pieces = pieces
+                        .into_iter()
+                        .flat_map(|piece| subtract_rectangle(piece, cutter))
+                        .collect();
+                }
+                let normal = if positive { 1.0 } else { -1.0 };
+                for (low, high) in pieces {
+                    let corner = |a: f32, b: f32| {
+                        let mut point = Vec3::ZERO;
+                        point[axis] = plane - normal * BLOCK_SHEET_PREVIEW_INSET_METERS;
+                        point[u] = a;
+                        point[v] = b;
+                        point.to_array()
+                    };
+                    let base =
+                        u32::try_from(positions.len()).expect("prototype mesh fits 32-bit indices");
+                    positions.extend([
+                        corner(low[0], low[1]),
+                        corner(high[0], low[1]),
+                        corner(high[0], high[1]),
+                        corner(low[0], high[1]),
+                    ]);
+                    let mut face_normal = [0.0; 3];
+                    face_normal[axis] = normal;
+                    normals.extend([face_normal; 4]);
+                    // (u, v, axis) is right-handed, so counter-clockwise in
+                    // (u, v) faces +axis.
+                    if positive {
+                        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                    } else {
+                        indices.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+                    }
+                }
+            }
+        }
+    }
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(Indices::U32(indices))
+}
+
+/// How far past a face a neighbour must reach to count as touching it.
+const LAYER_PREVIEW_CONTACT_METERS: f32 = 1e-4;
+
+/// The parts of `piece` outside `cutter`, as at most four rectangles.
+fn subtract_rectangle(
+    piece: ([f32; 2], [f32; 2]),
+    cutter: ([f32; 2], [f32; 2]),
+) -> Vec<([f32; 2], [f32; 2])> {
+    let (low, high) = piece;
+    let cut_low = [low[0].max(cutter.0[0]), low[1].max(cutter.0[1])];
+    let cut_high = [high[0].min(cutter.1[0]), high[1].min(cutter.1[1])];
+    let epsilon = LAYER_PREVIEW_CONTACT_METERS;
+    if cut_high[0] - cut_low[0] <= epsilon || cut_high[1] - cut_low[1] <= epsilon {
+        return vec![piece];
+    }
+    let mut rest = Vec::new();
+    if cut_low[0] - low[0] > epsilon {
+        rest.push((low, [cut_low[0], high[1]]));
+    }
+    if high[0] - cut_high[0] > epsilon {
+        rest.push(([cut_high[0], low[1]], high));
+    }
+    if cut_low[1] - low[1] > epsilon {
+        rest.push(([cut_low[0], low[1]], [cut_high[0], cut_low[1]]));
+    }
+    if high[1] - cut_high[1] > epsilon {
+        rest.push(([cut_low[0], cut_high[1]], [cut_high[0], high[1]]));
+    }
+    rest
+}
+
 #[derive(Clone, Copy)]
 enum SimulationMeshKind {
     Static,
@@ -15722,17 +15833,13 @@ fn combined_simulation_mesh_filtered(
         }
         let frame = graph.part_frame(part).expect("part exists");
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
-        if let PartSpec::Cylinder(cylinder) = spec
-            && cylinder.band_count() > 1
-        {
-            append_cylinder_bands(
+        if spec.is_layered() {
+            append_layered_part(
                 graph,
                 placement,
                 part,
-                cylinder,
+                spec,
                 material,
-                texture_offset,
-                pipe_end_faces(part, &welded_pipe_ends),
                 &mut positions,
                 &mut normals,
                 &mut uvs,
@@ -21455,7 +21562,7 @@ mod rendering_tests {
             &mut meshes,
             &handle,
             &mut rendered,
-            ConstructionPreviewMeshKey::Layer(moved),
+            ConstructionPreviewMeshKey::Layer(vec![PartSpec::Cylinder(moved)]),
             || combined_parts_mesh_scaled(&[PartSpec::Cylinder(moved)], 1.004),
         );
         assert_ne!(positions(meshes.get(&handle).unwrap()), pipe_positions);
@@ -26071,36 +26178,71 @@ mod creation_file_tests {
     }
 
     use mechanic_core::{
-        AppearanceTarget, BuildCommand, BuildOutcome, ConstructionMaterial, CylinderDimensions,
-        MaterialAppearance, PartId,
+        AppearanceTarget, BuildCommand, BuildOutcome, ConstructionMaterial, MaterialAppearance,
+        PartId,
     };
 
-    fn layered_steel_pipe() -> (ConstructionGraph, PartId) {
+    /// A 1 m steel block resting on the ground with a 25 cm rubber top layer.
+    #[test]
+    fn layer_ghost_over_a_block_slab_draws_only_its_outer_skin() {
+        let block = |x: i32| {
+            mechanic_core::PartSpec::Cuboid(
+                mechanic_core::CuboidSpec::new(
+                    [4, 4, 4],
+                    mechanic_core::BuildPose::from_position_ticks(
+                        [x, 200, 0].into(),
+                        mechanic_core::GridRotation::default(),
+                    ),
+                )
+                .unwrap(),
+            )
+            .with_layer(
+                mechanic_core::LayerFace::Face(mechanic_core::FaceKind::PositiveY),
+                0.25,
+                ConstructionMaterial::Rubber,
+                MaterialAppearance::BAKED,
+            )
+            .unwrap()
+        };
+        let mesh = super::layer_preview_mesh(&[block(0), block(400)]);
+        let Some(super::Indices::U32(indices)) = mesh.indices() else {
+            panic!("the ghost has 32-bit indices");
+        };
+        // Two touching boxes keep five faces each; the shared wall is gone.
+        assert_eq!(indices.len(), 10 * 6);
+    }
+
+    fn layered_steel_block() -> (ConstructionGraph, PartId) {
         let mut graph = ConstructionGraph::new();
-        let pipe = mechanic_core::CylinderSpec::new(
-            CylinderDimensions::new(1.0, 0.5, 1.0).unwrap(),
-            mechanic_core::BuildPose::from_position_ticks(
-                [0, 400, 0].into(),
-                mechanic_core::GridRotation::default(),
-            ),
+        let block = mechanic_core::PartSpec::Cuboid(
+            mechanic_core::CuboidSpec::new(
+                [4, 4, 4],
+                mechanic_core::BuildPose::from_position_ticks(
+                    [0, 200, 0].into(),
+                    mechanic_core::GridRotation::default(),
+                ),
+            )
+            .unwrap(),
         )
         .with_layer(
-            mechanic_core::LayerSide::Outer,
+            mechanic_core::LayerFace::Face(mechanic_core::FaceKind::PositiveY),
             0.25,
             ConstructionMaterial::Rubber,
             MaterialAppearance::BAKED,
         )
         .unwrap();
-        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::SpawnCylinder(pipe)).unwrap()
+        let BuildOutcome::Spawned(part) = graph
+            .apply(BuildCommand::Spawn(block.as_cuboid().unwrap()))
+            .unwrap()
         else {
-            panic!("spawning a cylinder reports its part");
+            panic!("spawning a block reports its part");
         };
         (graph, part)
     }
 
     #[test]
     fn layered_part_renders_into_each_band_material_mesh() {
-        let (graph, _) = layered_steel_pipe();
+        let (graph, _) = layered_steel_block();
         for material in [ConstructionMaterial::Steel, ConstructionMaterial::Rubber] {
             let mesh = super::combined_material_construction_mesh(&graph, None, material);
             assert!(mesh.count_vertices() > 0, "{material:?} band is drawn");
@@ -26122,22 +26264,22 @@ mod creation_file_tests {
 
     #[test]
     fn chroma_paints_only_the_hovered_band() {
-        let (graph, part) = layered_steel_pipe();
+        let (graph, part) = layered_steel_block();
         let mut state = super::EditorState::default();
         let hit = |point| crate::builder::SurfaceHit {
             distance: 1.0,
             point,
-            face: mechanic_core::FaceRef::part(part, mechanic_core::FaceKind::PositiveY),
+            face: mechanic_core::FaceRef::part(part, mechanic_core::FaceKind::PositiveZ),
         };
-        state.hovered = Some(hit(Vec3::new(0.0, 1.5, 0.4)));
+        state.hovered = Some(hit(Vec3::new(0.0, 0.9, 0.5)));
         assert_eq!(
             super::appearance_target(&graph, &state),
-            Some(AppearanceTarget::CylinderBand { part, band: 0 })
+            Some(AppearanceTarget::PartBand { part, band: 0 })
         );
-        state.hovered = Some(hit(Vec3::new(0.0, 1.5, 0.7)));
+        state.hovered = Some(hit(Vec3::new(0.0, 1.1, 0.5)));
         assert_eq!(
             super::appearance_target(&graph, &state),
-            Some(AppearanceTarget::CylinderBand { part, band: 1 })
+            Some(AppearanceTarget::PartBand { part, band: 1 })
         );
     }
 }

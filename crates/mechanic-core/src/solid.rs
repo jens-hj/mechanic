@@ -293,10 +293,7 @@ pub fn evaluate_part_solid(
 ) -> Result<EvaluatedSolid, SolidError> {
     let cells = match spec {
         PartSpec::Cuboid(cuboid) => pieces_to_cells(decompose_part(cuboid)),
-        PartSpec::Cylinder(cylinder) => {
-            let replayed = replay_features(cylinder_cells(cylinder), features)?;
-            return build_evaluated(&partition_cylinder_bands(replayed, cylinder));
-        }
+        PartSpec::Cylinder(cylinder) => cylinder_cells(cylinder),
         PartSpec::PipeBend(bend) => pipe_bend_cells(bend),
         PartSpec::PipeJunction(junction) => pipe_junction_cells(junction),
         PartSpec::Controller(_)
@@ -307,6 +304,9 @@ pub fn evaluate_part_solid(
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => return Err(SolidError::AuthoredPart),
     };
+    if spec.is_layered() {
+        return build_evaluated(&partition_layers(replay_features(cells, features)?, spec));
+    }
     evaluate(cells, features)
 }
 
@@ -1579,94 +1579,125 @@ fn cylinder_cells(spec: crate::CylinderSpec) -> Vec<PolyCell> {
         .collect()
 }
 
-/// Divides a layered cylinder's replayed envelope cells into radial bands.
+/// Divides a layered part's replayed envelope cells into material bands.
 ///
 /// Features replay on the whole envelope first, so a chamfer or fillet cuts
-/// through every band it reaches. Inside one 15-degree wedge a band boundary
-/// is a single chord plane, the same polygon the wedge walls use, so both
-/// halves of a split share an identical face and stitch away as interior.
-fn partition_cylinder_bands(cells: Vec<PolyCell>, spec: crate::CylinderSpec) -> Vec<PolyCell> {
+/// through every layer it reaches. Each layer then claims whatever lies beyond
+/// the envelope it was laid on, later layers winning. A flat layer's boundary
+/// is one plane. Inside one 15-degree wedge a wall or bore boundary is a single
+/// chord plane, the same polygon the wedge walls use. Either way both halves
+/// of a split share an identical face and stitch away as interior.
+#[allow(clippy::too_many_lines)] // One split per layer reads better whole.
+fn partition_layers(cells: Vec<PolyCell>, spec: PartSpec) -> Vec<PolyCell> {
     const SPLIT_TOLERANCE: f64 = 1.0e-6;
     const BAND_INTERFACE_PATCH: u32 = 0x4000_0000;
-    let boundaries = (0..spec.band_count() - 1)
-        .filter_map(|index| spec.band(index))
-        .map(|band| f64::from(band.outer_diameter) * 0.5)
-        .collect::<Vec<_>>();
-    if boundaries.is_empty() {
+    let regions = spec.layer_regions();
+    if regions.is_empty() {
         return cells;
     }
-    let rotation = spec.pose.rotation.quaternion().as_dquat();
-    let center = DVec3::from(spec.pose.translation());
-    let segments = f64::from(spec.dimensions.sweep_angle_degrees() / CYLINDER_SWEEP_STEP_DEGREES);
-    let sweep = f64::from(spec.dimensions.sweep_angle_radians());
-    let step = sweep / segments;
-    let start = -sweep * 0.5;
-    let mut banded = Vec::with_capacity(cells.len() * (boundaries.len() + 1));
+    let pose = spec.pose();
+    let rotation = pose.rotation.quaternion().as_dquat();
+    let center = DVec3::from(pose.translation());
+    let wedges = spec.as_cylinder().map(|cylinder| {
+        let segments =
+            f64::from(cylinder.dimensions.sweep_angle_degrees() / CYLINDER_SWEEP_STEP_DEGREES);
+        let sweep = f64::from(cylinder.dimensions.sweep_angle_radians());
+        (segments, sweep / segments, -sweep * 0.5)
+    });
+    let mut banded = Vec::with_capacity(cells.len() * (regions.len() + 1));
     for cell in cells {
-        let vertices = cell.faces.iter().flat_map(|face| face.vertices.iter());
-        let count = vertices.clone().count().max(1) as f64;
-        let local = rotation.inverse() * (vertices.copied().sum::<DVec3>() / count - center);
-        let segment = ((local.z.atan2(local.x) - start).rem_euclid(core::f64::consts::TAU) / step)
-            .floor()
-            .clamp(0.0, segments - 1.0);
-        let middle = start + step * (segment + 0.5);
-        let normal = rotation * DVec3::new(middle.cos(), 0.0, middle.sin());
-        let mut remaining = Some(cell);
-        for (band, &radius) in boundaries.iter().enumerate() {
-            let Some(piece) = remaining.take() else {
-                break;
+        // The radial direction through the middle of this cell's wedge.
+        let wedge = wedges.map(|(segments, step, start)| {
+            let vertices = cell.faces.iter().flat_map(|face| face.vertices.iter());
+            let count = vertices.clone().count().max(1) as f64;
+            let local = rotation.inverse() * (vertices.copied().sum::<DVec3>() / count - center);
+            let segment = ((local.z.atan2(local.x) - start).rem_euclid(core::f64::consts::TAU)
+                / step)
+                .floor()
+                .clamp(0.0, segments - 1.0);
+            let middle = start + step * (segment + 0.5);
+            (
+                rotation * DVec3::new(middle.cos(), 0.0, middle.sin()),
+                (step * 0.5).cos(),
+            )
+        });
+        let chord = |radius: f32| {
+            let (radial, chord_scale) = wedge.expect("only cylinders have wall or bore layers");
+            (radial, radial.dot(center) + f64::from(radius) * chord_scale)
+        };
+        let mut pieces = vec![cell];
+        for (index, region) in regions.iter().enumerate() {
+            let band = index as u8 + 1;
+            // The kept side of this plane, `normal · x <= offset`, lies
+            // outside the layer's region.
+            let (normal, offset) = match *region {
+                crate::LayerRegion::Beyond {
+                    axis,
+                    sign,
+                    distance,
+                } => {
+                    let normal =
+                        rotation * ([DVec3::X, DVec3::Y, DVec3::Z][axis] * f64::from(sign));
+                    (normal, normal.dot(center) + f64::from(distance))
+                }
+                crate::LayerRegion::OutsideRadius(radius) => chord(radius),
+                crate::LayerRegion::InsideRadius(radius) => {
+                    let (radial, offset) = chord(radius);
+                    (-radial, -offset)
+                }
             };
             let key = SurfacePatchKey {
                 source: TopologySource::Base,
-                local: BAND_INTERFACE_PATCH + band as u32,
+                local: BAND_INTERFACE_PATCH + index as u32,
             };
-            let inside = ClipPlane {
+            let outside = ClipPlane {
                 normal,
-                offset: normal.dot(center) + radius * (step * 0.5).cos(),
+                offset,
                 patch: key,
                 family: key,
                 smoothing_group: 0,
                 smooth_with: Vec::new(),
                 uv_provenance: key,
             };
-            let (nearest, farthest) = piece
-                .faces
-                .iter()
-                .flat_map(|face| face.vertices.iter())
-                .map(|vertex| normal.dot(*vertex) - inside.offset)
-                .fold(
-                    (f64::INFINITY, f64::NEG_INFINITY),
-                    |(low, high), distance| (low.min(distance), high.max(distance)),
-                );
-            let band = band as u8;
-            if farthest <= SPLIT_TOLERANCE {
-                banded.push(PolyCell { band, ..piece });
-                continue;
-            }
-            if nearest >= -SPLIT_TOLERANCE {
-                remaining = Some(piece);
-                continue;
-            }
-            let outside = ClipPlane {
-                normal: -inside.normal,
-                offset: -inside.offset,
-                ..inside.clone()
-            };
-            match (clip_cell(&piece, inside), clip_cell(&piece, outside)) {
-                (Some(inner), Some(outer)) => {
-                    banded.push(PolyCell { band, ..inner });
-                    remaining = Some(outer);
+            let mut split = Vec::with_capacity(pieces.len() + 1);
+            for piece in pieces {
+                let (nearest, farthest) = piece
+                    .faces
+                    .iter()
+                    .flat_map(|face| face.vertices.iter())
+                    .map(|vertex| normal.dot(*vertex) - offset)
+                    .fold(
+                        (f64::INFINITY, f64::NEG_INFINITY),
+                        |(low, high), distance| (low.min(distance), high.max(distance)),
+                    );
+                if farthest <= SPLIT_TOLERANCE {
+                    split.push(piece);
+                    continue;
                 }
-                (Some(_), None) => banded.push(PolyCell { band, ..piece }),
-                (None, _) => remaining = Some(piece),
+                if nearest >= -SPLIT_TOLERANCE {
+                    split.push(PolyCell { band, ..piece });
+                    continue;
+                }
+                let beyond = ClipPlane {
+                    normal: -normal,
+                    offset: -offset,
+                    ..outside.clone()
+                };
+                match (
+                    clip_cell(&piece, outside.clone()),
+                    clip_cell(&piece, beyond),
+                ) {
+                    (Some(kept), Some(claimed)) => {
+                        split.push(kept);
+                        split.push(PolyCell { band, ..claimed });
+                    }
+                    (Some(_), None) => split.push(piece),
+                    (None, _) => split.push(PolyCell { band, ..piece }),
+                }
             }
+            pieces = split;
         }
-        if let Some(piece) = remaining {
-            banded.push(PolyCell {
-                band: boundaries.len() as u8,
-                ..piece
-            });
-        }
+        banded.extend(pieces);
     }
     banded
 }
@@ -2818,7 +2849,7 @@ mod tests {
         );
         let layered = core
             .with_layer(
-                crate::LayerSide::Outer,
+                crate::LayerFace::OuterWall,
                 0.25,
                 ConstructionMaterial::Rubber,
                 crate::MaterialAppearance::BAKED,
@@ -2866,5 +2897,85 @@ mod tests {
         };
         assert!(rounded(0), "a 30 cm fillet reaches the steel core");
         assert!(rounded(1), "the fillet also rounds the rubber");
+    }
+
+    fn rubber(spec: PartSpec, face: crate::LayerFace, thickness: f32) -> PartSpec {
+        spec.with_layer(
+            face,
+            thickness,
+            ConstructionMaterial::Rubber,
+            crate::MaterialAppearance::BAKED,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cap_and_wall_layer_interfaces_stitch_away() {
+        let core = PartSpec::Cylinder(CylinderSpec::new(
+            CylinderDimensions::new(1.0, 0.5, 0.5).unwrap(),
+            BuildPose::default(),
+        ));
+        let layered = rubber(
+            rubber(
+                rubber(core, crate::LayerFace::Face(FaceKind::PositiveY), 0.1),
+                crate::LayerFace::OuterWall,
+                0.25,
+            ),
+            crate::LayerFace::Bore,
+            0.05,
+        );
+        let cylinder = layered.as_cylinder().unwrap();
+        let envelope = PartSpec::Cylinder(CylinderSpec::new(cylinder.dimensions, cylinder.pose));
+        let plain = evaluate_part_solid(envelope, []).unwrap();
+        let banded = evaluate_part_solid(layered, []).unwrap();
+        assert!((banded.volume() - plain.volume()).abs() < 1.0e-4 * plain.volume());
+        assert_eq!(banded.logical_edges.len(), plain.logical_edges.len());
+        for band in 0..=3 {
+            assert!(
+                banded.cells.iter().any(|cell| cell.band == band),
+                "band {band} has cells"
+            );
+        }
+    }
+
+    #[test]
+    fn fillet_deeper_than_a_face_layer_cuts_through_both_bands() {
+        let owner = SolidOwner::Part(crate::PartId::from_parts(0, 0));
+        let core = PartSpec::Cuboid(CuboidSpec::new([4, 4, 4], BuildPose::default()).unwrap());
+        let layered = rubber(core, crate::LayerFace::Face(FaceKind::PositiveY), 0.25);
+        let envelope = PartSpec::Cuboid(CuboidSpec::new([4, 5, 4], layered.pose()).unwrap());
+        let plain_base = evaluate_part_solid(envelope, []).unwrap();
+        // The top edge along x on the +z side.
+        let top_edge = plain_base
+            .logical_edges
+            .iter()
+            .find(|edge| {
+                edge.half_edges.iter().all(|&half_edge| {
+                    let origin = plain_base.half_edges[half_edge as usize].origin;
+                    let position = plain_base.vertices[origin as usize].position;
+                    position.y > 0.6 && position.z > 0.4
+                })
+            })
+            .unwrap()
+            .key;
+        let fillet = [(
+            ShapeFeatureId::from_parts(0, 0),
+            ShapeFeature::new([target(owner, top_edge)], EdgeTreatment::Fillet, 120),
+        )];
+        let plain = evaluate_part_solid(envelope, fillet.clone()).unwrap();
+        let banded = evaluate_part_solid(layered, fillet).unwrap();
+        assert!((banded.volume() - plain.volume()).abs() < 1.0e-4 * plain.volume());
+        assert_eq!(banded.logical_edges.len(), plain.logical_edges.len());
+        let rounded = |band| {
+            banded
+                .surfaces
+                .iter()
+                .any(|surface| surface.smoothing_group != 0 && surface.band == band)
+        };
+        assert!(
+            rounded(0),
+            "a 30 cm fillet reaches the core under a 25 cm layer"
+        );
+        assert!(rounded(1), "the fillet also rounds the layer");
     }
 }

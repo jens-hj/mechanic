@@ -39,9 +39,9 @@ pub use contact_geometry::{
 };
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, ConstructionFrameDoc,
-    CreationDocument, CreationError, CylinderBandDoc, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc,
-    DriveProgramDoc, DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc,
-    GearboxConfigDoc, InputSeatLinkDoc, LoadedCreation, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc,
+    CreationDocument, CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc,
+    DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc,
+    InputSeatLinkDoc, LoadedCreation, MaterialLayerDoc, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc,
     SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc,
     WeldDoc,
 };
@@ -65,12 +65,13 @@ pub use gearbox::{
 };
 pub use geometry::{
     Axis, BuildPose, CYLINDER_SWEEP_STEP_DEGREES, ConstructionMaterial, ControllerSpec, CuboidSpec,
-    CylinderBand, CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError,
-    DimensionLinkId, DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef,
-    GRID_UNIT_METERS, GridDimension, GridRotation, InputSpec, LayerSide, MAX_CYLINDER_BANDS,
-    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS,
+    CylinderDimensionError, CylinderDimensions, CylinderSpec, DimensionError, DimensionLinkId,
+    DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS,
+    GridDimension, GridRotation, InputSpec, LayerError, LayerFace, LayerRegion,
+    MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS, MAX_PART_LAYERS,
     MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES,
-    MaterialProperties, PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, POSITION_TICK_METERS,
+    MIN_LAYER_THICKNESS_METERS, MaterialLayer, MaterialLayers, MaterialProperties,
+    PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, POSITION_TICK_METERS,
     POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartSpec, PipeArms,
     PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, PipeJunctionDimensions,
     PipeJunctionError, PipeJunctionSpec, SeatSpec, ServoSpec, TransmissionSpec, snap_world_to_grid,

@@ -66,22 +66,22 @@ pub(crate) enum MatterMode {
     #[default]
     Block,
     Cylinder,
+    Layer,
     Item,
     Terrain,
     Manipulate,
     Chroma,
-    Layer,
 }
 
 impl MatterMode {
     pub(crate) const ALL: [Self; 7] = [
         Self::Block,
         Self::Cylinder,
+        Self::Layer,
         Self::Item,
         Self::Terrain,
         Self::Manipulate,
         Self::Chroma,
-        Self::Layer,
     ];
 
     pub(crate) const fn label(self) -> &'static str {

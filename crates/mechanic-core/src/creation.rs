@@ -102,6 +102,9 @@ pub enum CreationError {
     /// A cylinder dimension was out of range.
     #[error(transparent)]
     CylinderDimension(#[from] CylinderDimensionError),
+    /// A saved material layer does not fit its part.
+    #[error(transparent)]
+    Layer(#[from] crate::LayerError),
     /// A pipe-bend dimension was out of range.
     #[error(transparent)]
     PipeBendDimension(#[from] PipeBendDimensionError),
@@ -150,11 +153,13 @@ impl From<PoseDoc> for BuildPose {
     }
 }
 
-/// One radial material band of a layered cylinder in its serialized form.
+/// One material layer in its serialized form.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CylinderBandDoc {
-    /// Diameter of the band's outer boundary, in metres.
-    pub outer_diameter: f32,
+pub struct MaterialLayerDoc {
+    /// Surface the layer was laid on.
+    pub face: crate::LayerFace,
+    /// Thickness in metres.
+    pub thickness: f32,
     /// Physical material.
     pub material: ConstructionMaterial,
     /// Color and finish treatment.
@@ -166,34 +171,37 @@ pub struct CylinderBandDoc {
 pub enum PartDoc {
     /// Rectangular cuboid, sized in quarter-metre grid units.
     Cuboid {
-        /// Integer x/y/z side lengths.
+        /// Integer x/y/z core side lengths.
         dimensions: [u8; 3],
-        /// Centre and orientation.
+        /// Core centre and orientation.
         pose: PoseDoc,
-        /// Physical material.
+        /// Core physical material.
         material: ConstructionMaterial,
-        /// Color and finish treatment.
+        /// Core color and finish treatment.
         appearance: MaterialAppearance,
+        /// Material layers replayed over the core, oldest first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        layers: Vec<MaterialLayerDoc>,
     },
     /// Solid or hollow cylinder whose axis is local Y.
     Cylinder {
-        /// Outer diameter in metres.
+        /// Core outer diameter in metres.
         outer_diameter: f32,
-        /// Inner diameter in metres. Zero is solid.
+        /// Core inner diameter in metres. Zero is solid.
         inner_diameter: f32,
-        /// Axial length in quarter-metre grid units.
+        /// Core axial length in quarter-metre grid units.
         length_units: u8,
         /// Retained angular sector in degrees.
         sweep_degrees: u16,
-        /// Centre and orientation.
+        /// Core centre and orientation.
         pose: PoseDoc,
-        /// Outermost band physical material.
+        /// Core physical material.
         material: ConstructionMaterial,
-        /// Outermost band color and finish treatment.
+        /// Core color and finish treatment.
         appearance: MaterialAppearance,
-        /// Material bands inside the outermost one, innermost first.
+        /// Material layers replayed over the core, oldest first.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        inner_bands: Vec<CylinderBandDoc>,
+        layers: Vec<MaterialLayerDoc>,
     },
     /// Cardinal 90-degree quarter-torus pipe bend.
     PipeBend {
@@ -1523,31 +1531,55 @@ fn resolve_edge_chain(
     })
 }
 
+fn layer_docs(layers: crate::MaterialLayers) -> Vec<MaterialLayerDoc> {
+    layers
+        .iter()
+        .map(|layer| MaterialLayerDoc {
+            face: layer.face,
+            thickness: layer.thickness,
+            material: layer.material,
+            appearance: layer.appearance,
+        })
+        .collect()
+}
+
+/// Replays saved layers over a part's core.
+fn with_layer_docs(spec: PartSpec, layers: &[MaterialLayerDoc]) -> Result<PartSpec, CreationError> {
+    layers.iter().try_fold(spec, |spec, layer| {
+        Ok(spec.with_layer(
+            layer.face,
+            layer.thickness,
+            layer.material,
+            layer.appearance,
+        )?)
+    })
+}
+
 fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
     match spec {
-        PartSpec::Cuboid(cuboid) => PartDoc::Cuboid {
-            dimensions: cuboid.dimensions.map(GridDimension::units),
-            pose: cuboid.pose.into(),
-            material: cuboid.material,
-            appearance: cuboid.appearance,
-        },
-        PartSpec::Cylinder(cylinder) => PartDoc::Cylinder {
-            outer_diameter: cylinder.dimensions.outer_diameter(),
-            inner_diameter: cylinder.dimensions.inner_diameter(),
-            length_units: cylinder.dimensions.axial_length_units(),
-            sweep_degrees: cylinder.dimensions.sweep_angle_degrees(),
-            pose: cylinder.pose.into(),
-            material: cylinder.material,
-            appearance: cylinder.appearance,
-            inner_bands: (0..cylinder.band_count() - 1)
-                .filter_map(|index| cylinder.band(index))
-                .map(|band| CylinderBandDoc {
-                    outer_diameter: band.outer_diameter,
-                    material: band.material,
-                    appearance: band.appearance,
-                })
-                .collect(),
-        },
+        PartSpec::Cuboid(cuboid) => {
+            let core = cuboid.without_layers();
+            PartDoc::Cuboid {
+                dimensions: core.dimensions.map(GridDimension::units),
+                pose: core.pose.into(),
+                material: core.material,
+                appearance: core.appearance,
+                layers: layer_docs(cuboid.layers()),
+            }
+        }
+        PartSpec::Cylinder(cylinder) => {
+            let core = cylinder.without_layers();
+            PartDoc::Cylinder {
+                outer_diameter: core.dimensions.outer_diameter(),
+                inner_diameter: core.dimensions.inner_diameter(),
+                length_units: core.dimensions.axial_length_units(),
+                sweep_degrees: core.dimensions.sweep_angle_degrees(),
+                pose: core.pose.into(),
+                material: core.material,
+                appearance: core.appearance,
+                layers: layer_docs(cylinder.layers()),
+            }
+        }
         PartSpec::PipeBend(bend) => PartDoc::PipeBend {
             outer_diameter: bend.dimensions.outer_diameter(),
             inner_diameter: bend.dimensions.inner_diameter(),
@@ -1628,11 +1660,16 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
             pose,
             material,
             appearance,
-        } => BuildCommand::Spawn(
-            CuboidSpec::new(dimensions, pose.into())?
+            layers,
+        } => {
+            let core = CuboidSpec::new(dimensions, pose.into())?
                 .with_material(material)
-                .with_appearance(appearance),
-        ),
+                .with_appearance(appearance);
+            match with_layer_docs(PartSpec::Cuboid(core), &layers)? {
+                PartSpec::Cuboid(cuboid) => BuildCommand::Spawn(cuboid),
+                _ => unreachable!("layers keep the part kind"),
+            }
+        }
         PartDoc::Cylinder {
             outer_diameter,
             inner_diameter,
@@ -1641,9 +1678,9 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
             pose,
             material,
             appearance,
-            inner_bands,
-        } => BuildCommand::SpawnCylinder(
-            CylinderSpec::new(
+            layers,
+        } => {
+            let core = CylinderSpec::new(
                 CylinderDimensions::new(
                     outer_diameter,
                     inner_diameter,
@@ -1653,13 +1690,12 @@ fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
                 pose.into(),
             )
             .with_material(material)
-            .with_appearance(appearance)
-            .with_inner_bands(inner_bands.iter().map(|band| crate::CylinderBand {
-                outer_diameter: band.outer_diameter,
-                material: band.material,
-                appearance: band.appearance,
-            }))?,
-        ),
+            .with_appearance(appearance);
+            match with_layer_docs(PartSpec::Cylinder(core), &layers)? {
+                PartSpec::Cylinder(cylinder) => BuildCommand::SpawnCylinder(cylinder),
+                _ => unreachable!("layers keep the part kind"),
+            }
+        }
         PartDoc::PipeBend {
             outer_diameter,
             inner_diameter,
@@ -2851,6 +2887,7 @@ mod tests {
             },
             material: crate::ConstructionMaterial::Steel,
             appearance: crate::MaterialAppearance::BAKED,
+            layers: Vec::new(),
         };
 
         assert!(matches!(
@@ -3328,38 +3365,59 @@ mod tests {
     }
 
     #[test]
-    fn layered_cylinder_bands_survive_a_serialized_round_trip() {
-        let layered = CylinderSpec::new(
+    fn material_layers_survive_a_serialized_round_trip() {
+        let rubber = |spec: PartSpec, face, thickness| {
+            spec.with_layer(
+                face,
+                thickness,
+                ConstructionMaterial::Rubber,
+                crate::MaterialAppearance::BAKED,
+            )
+            .unwrap()
+        };
+        let pipe = PartSpec::Cylinder(CylinderSpec::new(
             CylinderDimensions::new(1.0, 0.5, 0.5).unwrap(),
-            crate::BuildPose::default(),
-        )
-        .with_layer(
-            crate::LayerSide::Outer,
-            0.25,
-            ConstructionMaterial::Rubber,
-            crate::MaterialAppearance::BAKED,
-        )
-        .unwrap()
-        .with_layer(
-            crate::LayerSide::Inner,
-            0.1,
-            ConstructionMaterial::Rubber,
-            crate::MaterialAppearance::BAKED,
-        )
-        .unwrap();
+            crate::BuildPose::from_position_ticks(
+                IVec3::new(0, 400, 0),
+                crate::GridRotation::default(),
+            ),
+        ));
+        let pipe = rubber(
+            rubber(
+                rubber(pipe, crate::LayerFace::OuterWall, 0.25),
+                crate::LayerFace::Bore,
+                0.1,
+            ),
+            crate::LayerFace::Face(crate::FaceKind::PositiveY),
+            0.01,
+        );
+        let block = rubber(
+            PartSpec::Cuboid(cuboid([2, 2, 2], IVec3::new(8, 1, 0))),
+            crate::LayerFace::Face(crate::FaceKind::NegativeX),
+            0.05,
+        );
         let mut graph = ConstructionGraph::new();
         graph
-            .apply(crate::BuildCommand::SpawnCylinder(layered))
+            .apply(crate::BuildCommand::SpawnCylinder(
+                pipe.as_cylinder().unwrap(),
+            ))
+            .unwrap();
+        graph
+            .apply(crate::BuildCommand::Spawn(block.as_cuboid().unwrap()))
             .unwrap();
         let document = CreationDocument::from_graph(&graph, "Layers", &Vec::new());
-        let restored = round_trip(&document).into_graph().unwrap();
-        let bands = restored
-            .graph
-            .parts()
-            .find_map(|(_, spec)| spec.as_cylinder())
-            .unwrap()
-            .bands()
-            .collect::<Vec<_>>();
-        assert_eq!(bands, layered.bands().collect::<Vec<_>>());
+        let restored = round_trip(&document).into_graph().unwrap().graph;
+        let mut parts = restored.parts().map(|(_, spec)| *spec);
+        let restored_pipe = parts.find(|spec| spec.as_cylinder().is_some()).unwrap();
+        assert!(restored_pipe.shares_core_with(pipe));
+        assert_eq!(restored_pipe.material_layers().len(), 3);
+        assert_eq!(restored_pipe.pose(), pipe.pose());
+        assert_eq!(
+            restored
+                .parts()
+                .map(|(_, spec)| *spec)
+                .find(|spec| spec.as_cylinder().is_none()),
+            Some(block)
+        );
     }
 }
