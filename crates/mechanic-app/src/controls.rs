@@ -635,10 +635,42 @@ fn key_label(key: KeyCode) -> String {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ActionBinding(pub(crate) [Option<InputChord>; 2]);
 
-/// All gameplay bindings. Missing actions are filled from defaults after loading.
+/// All gameplay bindings.
+///
+/// Only bindings the player changed are saved. Every other action follows the
+/// shipped defaults, so a later change to a default reaches existing settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "SavedControls", from = "SavedControls")]
 pub(crate) struct Controls {
     bindings: HashMap<GameAction, ActionBinding>,
+}
+
+/// The saved form of [`Controls`]: just the bindings that differ from defaults.
+#[derive(Serialize, Deserialize)]
+struct SavedControls {
+    #[serde(default)]
+    bindings: HashMap<GameAction, ActionBinding>,
+}
+
+impl From<Controls> for SavedControls {
+    fn from(controls: Controls) -> Self {
+        let defaults = Controls::default();
+        Self {
+            bindings: controls
+                .bindings
+                .into_iter()
+                .filter(|&(action, binding)| defaults.bindings.get(&action) != Some(&binding))
+                .collect(),
+        }
+    }
+}
+
+impl From<SavedControls> for Controls {
+    fn from(saved: SavedControls) -> Self {
+        let mut controls = Self::default();
+        controls.bindings.extend(saved.bindings);
+        controls
+    }
 }
 
 impl Default for Controls {

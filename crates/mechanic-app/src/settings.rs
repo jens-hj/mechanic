@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::controls::{Controls, GameAction, InputChord};
 use crate::creation_store::CreationStore;
 
-const SETTINGS_VERSION: u32 = 1;
+const SETTINGS_VERSION: u32 = 2;
 #[cfg(test)]
 const SETTINGS_FILE: &str = "settings.ron";
 pub(crate) const DEFAULT_CAMERA_FOV_DEGREES: f32 = 45.0;
@@ -225,13 +225,53 @@ mod tests {
     }
 
     #[test]
-    fn old_fov_only_document_loads_default_controls() {
+    fn fov_only_document_loads_default_controls() {
         let temporary = TempDir::new();
         let path = temporary.0.join(SETTINGS_FILE);
-        fs::write(&path, "(version:1,camera_fov_degrees:65.0)").expect("old fixture writes");
+        fs::write(&path, "(version:2,camera_fov_degrees:65.0)").expect("fixture writes");
         let settings = AppSettings::from_path(path);
         assert_eq!(settings.camera_fov_degrees(), 65.0);
         assert_eq!(settings.controls().label(GameAction::Rotate), "R");
+    }
+
+    #[test]
+    fn settings_that_pinned_every_binding_fall_back_to_current_defaults() {
+        let temporary = TempDir::new();
+        let path = temporary.0.join(SETTINGS_FILE);
+        fs::write(
+            &path,
+            "(version:1,camera_fov_degrees:65.0,controls:(bindings:{MatterItem:((Some((key:Digit3,shift:true))),None)}))",
+        )
+        .expect("fixture writes");
+        assert_eq!(
+            AppSettings::from_path(path)
+                .controls()
+                .label(GameAction::MatterItem),
+            "Shift+4"
+        );
+    }
+
+    #[test]
+    fn only_bindings_the_player_changed_are_saved() {
+        let temporary = TempDir::new();
+        let path = temporary.0.join(SETTINGS_FILE);
+        let mut settings = AppSettings::from_path(path.clone());
+        settings
+            .set_camera_fov_degrees(75.0)
+            .expect("settings save");
+        let untouched = fs::read_to_string(&path).expect("settings written");
+        assert!(!untouched.contains("MatterItem"), "{untouched}");
+
+        settings
+            .set_binding(
+                GameAction::Rotate,
+                0,
+                Some(InputChord::key(bevy::prelude::KeyCode::KeyT)),
+            )
+            .expect("binding saves");
+        let changed = fs::read_to_string(&path).expect("settings written");
+        assert!(changed.contains("Rotate"), "{changed}");
+        assert!(!changed.contains("MatterItem"), "{changed}");
     }
 
     #[test]
