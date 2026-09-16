@@ -59,7 +59,7 @@ def freeze_rejections(records):
 
 
 def run(binary, world, output, assets, drive=False, demonstration=False, place=None, straight=False,
-        foreground=False, identity=None, replay_ticks=None, physics="gpu", freeze=False, hammer=None):
+        foreground=False, identity=None, replay_ticks=None, physics="cpu", freeze=False, hammer=None):
     if physics not in ("gpu", "cpu"):
         raise ValueError("physics must be gpu or cpu")
     binary, world, output, assets = [p.resolve() for p in (binary, world, output, assets)]
@@ -200,7 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("--world", type=Path, required=True, help="Saved world directory")
     parser.add_argument("--output", type=Path, required=True, help="New results directory")
     parser.add_argument("--assets", type=Path, default=Path("crates/mechanic-app"))
-    parser.add_argument("--physics", choices=("gpu", "cpu"), default="gpu")
+    parser.add_argument("--physics", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--drive", action="store_true", help="Drive the sole input-linked seat during capture")
     parser.add_argument("--straight", action="store_true", help="Hold full throttle without scripted steering")
     parser.add_argument("--demonstration", action="store_true", help="Save driving frames every five seconds; perturbs frame timing")

@@ -1,4 +1,4 @@
-//! Optional CPU solver route, selected with `MECHANIC_PHYSICS=cpu`.
+//! Default CPU solver route; `MECHANIC_PHYSICS=gpu` selects the GPU runtime.
 //!
 //! The GPU runtime stays resident and keeps owning drive resolution and every
 //! buffer the renderer reads; this route replaces the tick itself, stepping
@@ -22,18 +22,18 @@ use std::sync::{Arc, OnceLock};
 /// Which solver advances published ticks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Route {
-    /// The shipping GPU runtime.
-    #[default]
+    /// The GPU runtime.
     Gpu,
-    /// The experimental CPU solver.
+    /// The CPU solver.
+    #[default]
     Cpu,
 }
 
-/// Reads the route from an explicit setting, defaulting to the GPU runtime.
+/// Reads the route from an explicit setting, defaulting to the CPU solver.
 pub(crate) fn route_from(value: Option<&str>) -> Route {
     match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("cpu") => Route::Cpu,
-        _ => Route::Gpu,
+        Some("gpu") => Route::Gpu,
+        _ => Route::Cpu,
     }
 }
 
@@ -325,7 +325,7 @@ impl CpuRoute {
     fn failure(&self, tick: u64, error: &PhysicsError) -> String {
         format!(
             "the CPU solver refused tick {tick}: {error} ({} earlier ticks degraded). \
-             This is the experimental route; MECHANIC_PHYSICS=gpu runs the shipping solver.",
+             Set MECHANIC_PHYSICS=gpu to run the GPU solver.",
             self.degraded_ticks
         )
     }
@@ -398,8 +398,8 @@ impl CpuRoute {
 /// Names what the CPU solver cannot run, in the user's terms.
 fn unsupported(error: &PhysicsError) -> String {
     format!(
-        "MECHANIC_PHYSICS=cpu cannot run this creation because the CPU solver rejected it: \
-         {error}. Unset the variable, or set MECHANIC_PHYSICS=gpu, to run the shipping solver."
+        "the CPU solver cannot run this creation: {error}. \
+         Set MECHANIC_PHYSICS=gpu to run the GPU solver."
     )
 }
 
@@ -504,13 +504,13 @@ mod tests {
     }
 
     #[test]
-    fn only_an_explicit_cpu_setting_leaves_the_gpu_route() {
-        assert_eq!(route_from(None), Route::Gpu);
-        assert_eq!(route_from(Some("")), Route::Gpu);
-        assert_eq!(route_from(Some("gpu")), Route::Gpu);
-        assert_eq!(route_from(Some("nonsense")), Route::Gpu);
+    fn only_an_explicit_gpu_setting_leaves_the_cpu_route() {
+        assert_eq!(route_from(None), Route::Cpu);
+        assert_eq!(route_from(Some("")), Route::Cpu);
         assert_eq!(route_from(Some("cpu")), Route::Cpu);
-        assert_eq!(route_from(Some(" CPU ")), Route::Cpu);
+        assert_eq!(route_from(Some("nonsense")), Route::Cpu);
+        assert_eq!(route_from(Some("gpu")), Route::Gpu);
+        assert_eq!(route_from(Some(" GPU ")), Route::Gpu);
     }
 
     #[test]
@@ -987,10 +987,9 @@ mod tests {
     fn an_unsupported_creation_is_refused_with_a_message_naming_the_route() {
         let message = unsupported(&PhysicsError::InvalidCollision);
         assert!(
-            message.contains("MECHANIC_PHYSICS=cpu cannot run"),
+            message.contains("the CPU solver cannot run this creation"),
             "{message}"
         );
-        assert!(message.contains("the CPU solver rejected it"), "{message}");
         assert!(message.contains("MECHANIC_PHYSICS=gpu"), "{message}");
     }
 

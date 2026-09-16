@@ -346,8 +346,8 @@ mod debug_frame_freeze_tests {
 #[derive(Resource, Default)]
 struct AppSimulation {
     gpu: Option<GpuPhysics>,
-    /// Experimental CPU solver, present only under `MECHANIC_PHYSICS=cpu`. The
-    /// GPU scene stays resident; this replaces only the tick that publishes state.
+    /// CPU solver, absent only under `MECHANIC_PHYSICS=gpu`. The GPU scene
+    /// stays resident; this replaces only the tick that publishes state.
     cpu: Option<Box<cpu_physics::CpuRoute>>,
     creation: Option<CompiledCreation>,
     /// Exact graph snapshot represented by `creation` and the live GPU scene.
@@ -3692,7 +3692,7 @@ fn advance_simulation(
             usize::try_from(ticks.end.saturating_sub(ticks.start)).unwrap_or(usize::MAX);
         let physics_started = std::time::Instant::now();
         let mut cpu_timings = mechanic_gpu::GpuSubmissionTimings::default();
-        // The experimental route owns the tick itself. Taking it out of the
+        // The CPU route owns the tick itself. Taking it out of the
         // resource keeps the published state, drives and impulses borrowable while
         // it steps; it is restored before returning, including on failure.
         let mut cpu_route = simulation.cpu.take();

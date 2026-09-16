@@ -451,13 +451,13 @@ cargo run -p mechanic-bench --release -- --scenario player_collision --seconds 3
 cargo run -p mechanic-bench --release -- --scenario test2_car --seconds 30 --warmup 5
 ```
 
-`MECHANIC_PHYSICS=cpu cargo run -p mechanic-app` runs published ticks on the
-experimental CPU solver instead of the GPU runtime. The GPU scene stays resident
-and keeps owning terrain preparation, drive resolution and every buffer the
-renderer reads; only the tick changes. Creations with closed mechanism loops are
-refused. World physics never pauses: a tick the CPU route cannot complete hands
-the last published state to the GPU runtime. See [CPU physics](docs/physics-cpu.md).
-Anything other than `cpu` selects the GPU runtime.
+`cargo run -p mechanic-app` runs published ticks on the CPU solver by default;
+`MECHANIC_PHYSICS=gpu cargo run -p mechanic-app` runs them on the GPU runtime
+instead. The GPU scene stays resident and keeps owning terrain preparation, drive
+resolution and every buffer the renderer reads; only the tick changes. World
+physics never pauses: a tick the CPU route cannot complete hands the last
+published state to the GPU runtime. See [CPU physics](docs/physics-cpu.md).
+Anything other than `gpu` selects the CPU solver.
 
 Benchmark output is machine-readable JSONL. The four-bar cases prove correction
 and explicit rejection but do not unlock editor work. A scale gate only passes

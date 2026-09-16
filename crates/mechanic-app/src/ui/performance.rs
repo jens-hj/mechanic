@@ -164,7 +164,7 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
             Row {
                 label: "Physics solver",
                 value: match snapshot.physics_route {
-                    Some(crate::cpu_physics::Route::Cpu) => "CPU (experimental)",
+                    Some(crate::cpu_physics::Route::Cpu) => "CPU",
                     Some(crate::cpu_physics::Route::Gpu) => "GPU",
                     None => "Inactive",
                 }
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn physics_solver_identifies_the_route_independently_of_render_gpu_timing() {
         for (route, expected) in [
-            (Some(crate::cpu_physics::Route::Cpu), "CPU (experimental)"),
+            (Some(crate::cpu_physics::Route::Cpu), "CPU"),
             (Some(crate::cpu_physics::Route::Gpu), "GPU"),
             (None, "Inactive"),
         ] {

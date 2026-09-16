@@ -15,10 +15,10 @@ corners, and vertex activation. It works as a checker, not a runtime.
 
 ## Selecting the route
 
-`MECHANIC_PHYSICS=cpu cargo run -p mechanic-app` steps ticks on the CPU. The GPU
-scene stays resident and keeps owning drive resolution and every buffer the
-renderer reads; only the tick changes. Anything other than `cpu` selects the GPU
-runtime.
+`cargo run -p mechanic-app` steps ticks on the CPU by default. The GPU scene
+stays resident and keeps owning drive resolution and every buffer the renderer
+reads; only the tick changes. `MECHANIC_PHYSICS=gpu` selects the GPU runtime;
+any other value keeps the CPU route.
 
 The CPU contact scene updates every frame from the terrain chunks around the
 bodies, publishing only chunks that appeared, remeshed or left. It never waits

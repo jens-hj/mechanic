@@ -2,8 +2,8 @@
 
 Design of the reduced-coordinate machine model shared by the CPU solvers. How
 the two CPU solvers use it, and how to select them, is in
-[CPU physics](physics-cpu.md). The GPU runtime remains the default application
-solver.
+[CPU physics](physics-cpu.md). The soft-step CPU solver is the default
+application solver.
 
 ## Compiled schedule
 

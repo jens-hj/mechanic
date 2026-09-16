@@ -3,9 +3,9 @@
 ## Ownership
 
 Shared compiled dynamics schedules and body-frame inertia live in
-`mechanic-core`. `mechanic-physics` owns the CPU solvers; the GPU runtime stays
-the application default. Terrain ownership stays in `mechanic-world`, and GPU
-code and ABI stay in `mechanic-gpu`. The machine model is described in
+`mechanic-core`. `mechanic-physics` owns the CPU solvers, which run the
+application by default; `MECHANIC_PHYSICS=gpu` selects the GPU runtime. Terrain
+ownership stays in `mechanic-world`, and GPU code and ABI stay in `mechanic-gpu`. The machine model is described in
 [compiled machine dynamics](compiled-machine-dynamics.md), and the CPU solvers
 in [CPU physics](physics-cpu.md).
 
