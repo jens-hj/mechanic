@@ -1,0 +1,4030 @@
+(
+    version: 17,
+    name: "double wishbone 2",
+    parts: [
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, 400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, 300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, 200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, 100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, -100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, -200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, -300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, -400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, -600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3350, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3450, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, 400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, 300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, 200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, 100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, -100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, -200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, -300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, -400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, -600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3450, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, 400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, 300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, 200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, 100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, -100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, -200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, -300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, -400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, -600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3450, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, 400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, 300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, 200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, 100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, 0),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, -100),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, -200),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, -300),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, -400),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, -500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, -600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (-500, 3450, 750),
+                rotation: (1, 0, 2),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 2,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-300, 3450, 750),
+                rotation: (0, 0, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 2,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-300, 3350, 750),
+                rotation: (0, 0, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 2,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (600, 3450, 750),
+                rotation: (0, 0, 3),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 2,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (600, 3350, 750),
+                rotation: (0, 0, 3),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (450, 3350, 770),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-150, 3350, 770),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 2,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (400, 3450, 750),
+                rotation: (0, 0, 3),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (200, 3450, 750),
+                rotation: (1, 2, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (350, 3350, 750),
+                rotation: (0, 0, 3),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (200, 3350, 750),
+                rotation: (1, 2, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 2,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-100, 3450, 750),
+                rotation: (0, 0, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (100, 3450, 750),
+                rotation: (1, 0, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (100, 3350, 750),
+                rotation: (1, 0, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (-500, 3350, 750),
+                rotation: (1, 0, 2),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3350, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3350, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3350, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3450, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (300, 3450, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (200, 3450, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (100, 3450, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (0, 3450, -700),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-50, 3350, 750),
+                rotation: (0, 0, 1),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (800, 3350, 750),
+                rotation: (1, 2, 2),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        PipeBend(
+            outer_diameter: 0.15,
+            inner_diameter: 0.0,
+            radius_units: 1,
+            pose: (
+                translation_ticks: (800, 3450, 750),
+                rotation: (1, 2, 2),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-480, 3350, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-480, 3450, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (780, 3350, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (780, 3450, 600),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (450, 3350, 670),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-150, 3350, 670),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (460, 3597, 560),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (40, 3497, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (40, 3597, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-60, 3497, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-60, 3597, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-160, 3597, 560),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (460, 3597, 660),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (-160, 3597, 660),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (360, 3597, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (360, 3497, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (260, 3597, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cuboid(
+            dimensions: (1, 1, 1),
+            pose: (
+                translation_ticks: (260, 3497, 500),
+                rotation: (0, 0, 0),
+            ),
+            material: Steel,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.2,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (880, 3350, 600),
+                rotation: (0, 0, 3),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 0.2,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-580, 3350, 600),
+                rotation: (0, 0, 1),
+            ),
+            material: Aluminium,
+            appearance: (
+                color: Dye((
+                    target_rgb: (244, 244, 242),
+                    structure: 1.0,
+                )),
+                finish: Anodised,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 1.2,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (-680, 3350, 600),
+                rotation: (0, 0, 1),
+            ),
+            material: Rubber,
+            appearance: (
+                color: Baked,
+                finish: Baked,
+            ),
+        ),
+        Cylinder(
+            outer_diameter: 1.2,
+            inner_diameter: 0.0,
+            length_units: 1,
+            sweep_degrees: 360,
+            pose: (
+                translation_ticks: (980, 3350, 600),
+                rotation: (0, 0, 3),
+            ),
+            material: Rubber,
+            appearance: (
+                color: Baked,
+                finish: Baked,
+            ),
+        ),
+        DimensionLink(
+            id: (1),
+            pose: (
+                translation_ticks: (150, 3450, -600),
+                rotation: (0, 0, 0),
+            ),
+        ),
+    ],
+    frames: [
+        (
+            translation: (0.0, 0.0, 0.0),
+            rotation: (0.0, 0.0, 0.0, 1.0),
+        ),
+    ],
+    part_frames: [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ],
+    region_frames: [],
+    welds: [
+        (
+            first: (
+                owner: Part(65),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(66),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(62),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(79),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(64),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(63),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(60),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(61),
+                face: PositiveX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(61),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(65),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(58),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(62),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(59),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(63),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(56),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(57),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(57),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(67),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(80),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(60),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(70),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(58),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(85),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(84),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(81),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(59),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(92),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(90),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(83),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(82),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(89),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(90),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(91),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(92),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(93),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(92),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(103),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(100),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(102),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(101),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(91),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(89),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(98),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(96),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(99),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(97),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(97),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(96),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(99),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(98),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(104),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(26),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(89),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(28),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(55),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(41),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(55),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(54),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(54),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(40),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(54),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(53),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(53),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(39),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(53),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(52),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(52),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(38),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(52),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(51),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(51),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(37),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(51),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(50),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(50),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(36),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(50),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(49),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(49),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(35),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(49),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(48),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(48),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(34),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(48),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(47),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(47),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(33),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(47),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(46),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(46),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(32),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(46),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(45),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(45),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(31),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(45),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(44),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(44),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(30),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(44),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(43),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(43),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(29),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(73),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(15),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(71),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(43),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(41),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(27),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(41),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(40),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(40),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(26),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(40),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(39),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(39),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(25),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(39),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(38),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(38),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(24),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(38),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(37),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(37),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(23),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(37),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(36),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(36),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(22),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(36),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(35),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(35),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(21),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(35),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(34),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(34),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(20),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(34),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(33),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(33),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(19),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(33),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(32),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(32),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(18),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(32),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(31),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(31),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(17),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(31),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(30),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(30),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(16),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(30),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(29),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(29),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(15),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(14),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(74),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(72),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(71),
+                face: PositiveX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(27),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(13),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(27),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(26),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(26),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(12),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(26),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(25),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(25),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(11),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(25),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(24),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(24),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(10),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(24),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(23),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(23),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(9),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(23),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(22),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(22),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(8),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(22),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(21),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(21),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(7),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(21),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(20),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(20),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(6),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(20),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(19),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(19),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(5),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(19),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(18),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(18),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(4),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(18),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(17),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(17),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(3),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(17),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(16),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(16),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(2),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(16),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(15),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(15),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(1),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(73),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(14),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(28),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(14),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(13),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(12),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(12),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(11),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(11),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(10),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(10),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(9),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(9),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(8),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(8),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(7),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(7),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(6),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(6),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(5),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(5),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(4),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(4),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(3),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(3),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(2),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(2),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(1),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(1),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(0),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(88),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(96),
+                face: PositiveX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(71),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(42),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(73),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(0),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(72),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(73),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(74),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(0),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(72),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(28),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(28),
+                face: NegativeX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(42),
+                face: PositiveX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(72),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(29),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(97),
+                face: PositiveZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(74),
+                face: NegativeZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(79),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(69),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(78),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(77),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(77),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(76),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(76),
+                face: PositiveX,
+                patch: None,
+            ),
+            second: (
+                owner: Part(75),
+                face: NegativeX,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(75),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(13),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(76),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(27),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(77),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(41),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(78),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(55),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(68),
+                face: PositiveY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(67),
+                face: NegativeY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(104),
+                face: NegativeY,
+                patch: None,
+            ),
+            second: (
+                owner: Part(40),
+                face: PositiveY,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(104),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(76),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+        (
+            first: (
+                owner: Part(104),
+                face: NegativeZ,
+                patch: None,
+            ),
+            second: (
+                owner: Part(77),
+                face: PositiveZ,
+                patch: None,
+            ),
+        ),
+    ],
+    rigid_links: [],
+    bearings: [
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(72),
+                face: PositiveZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(69),
+                face: NegativeX,
+                patch: None,
+            ),
+            anchor: (0.25, 8.375, 1.625),
+            axis: (0.0, 0.0, 1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(28),
+                face: PositiveZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(68),
+                face: NegativeX,
+                patch: None,
+            ),
+            anchor: (0.25, 8.625, 1.625),
+            axis: (0.0, 0.0, 1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(73),
+                face: PositiveZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(66),
+                face: NegativeX,
+                patch: None,
+            ),
+            anchor: (0.5, 8.375, 1.625),
+            axis: (0.0, 0.0, 1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(14),
+                face: PositiveZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(64),
+                face: NegativeX,
+                patch: None,
+            ),
+            anchor: (0.5, 8.625, 1.625),
+            axis: (0.0, 0.0, 1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(70),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(82),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (-1.25, 8.375, 1.625),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(56),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(83),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (-1.25, 8.625, 1.625),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(80),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(84),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (2.0, 8.375, 1.625),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(81),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(85),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (2.0, 8.625, 1.625),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(61),
+                face: NegativeZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(86),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (1.125, 8.375, 1.8),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(62),
+                face: NegativeZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(87),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (-0.375, 8.375, 1.8),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.6,
+                    od: 0.16,
+                    id: 0.12,
+                    coils: 8,
+                    preload: -0.000000029802322,
+                )),
+                shock: Some((
+                    length: 0.6,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.23249999,
+                    compression: 1.0,
+                    rebound: 1.6,
+                )),
+                bump_stop: None,
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.36750004,
+            )),
+            source: (
+                owner: Part(87),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(95),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (-0.39999998, 8.5, 1.65),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.22500001,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.6,
+                    od: 0.16,
+                    id: 0.12,
+                    coils: 8,
+                    preload: 0.0,
+                )),
+                shock: Some((
+                    length: 0.6,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.2325,
+                    compression: 1.0,
+                    rebound: 1.6,
+                )),
+                bump_stop: None,
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.3675,
+            )),
+            source: (
+                owner: Part(86),
+                face: PositiveY,
+                patch: None,
+            ),
+            target: (
+                owner: Part(94),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (1.15, 8.5, 1.65),
+            axis: (0.0, 1.0, 0.0),
+            outer_diameter: 0.22500001,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(95),
+                face: NegativeZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(93),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (-0.39999998, 8.992499, 1.525),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(94),
+                face: NegativeZ,
+                patch: None,
+            ),
+            target: (
+                owner: Part(88),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (1.15, 8.992499, 1.525),
+            axis: (0.0, 0.0, -1.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(84),
+                face: PositiveX,
+                patch: None,
+            ),
+            target: (
+                owner: Part(100),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (2.0749998, 8.375, 1.5),
+            axis: (1.0, 0.0, 0.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            source: (
+                owner: Part(82),
+                face: NegativeX,
+                patch: None,
+            ),
+            target: (
+                owner: Part(101),
+                face: NegativeY,
+                patch: None,
+            ),
+            anchor: (-1.3249999, 8.375, 1.5),
+            axis: (-1.0, 0.0, 0.0),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+    ],
+    drive_links: [],
+    input_seat_links: [],
+    seat_controller_links: [],
+    gearbox_configs: [],
+    regions: [],
+    shape_features: [],
+    sockets: [
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(28),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (0.25, 8.625, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(14),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (0.5, 8.625, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(73),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (0.5, 8.375, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(72),
+                face: PositiveZ,
+                patch: None,
+            ),
+            anchor: (0.25, 8.375, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(81),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (2.0, 8.625, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(80),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (2.0, 8.375, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(70),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (-1.25, 8.375, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(56),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (-1.25, 8.625, 1.625),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(62),
+                face: NegativeZ,
+                patch: None,
+            ),
+            anchor: (-0.375, 8.375, 1.8),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(61),
+                face: NegativeZ,
+                patch: None,
+            ),
+            anchor: (1.125, 8.375, 1.8),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.6,
+                    od: 0.16,
+                    id: 0.12,
+                    coils: 8,
+                    preload: 0.0,
+                )),
+                shock: Some((
+                    length: 0.6,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.2325,
+                    compression: 1.0,
+                    rebound: 1.6,
+                )),
+                bump_stop: None,
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.3675,
+            )),
+            axis: (0.0, 1.0, 0.0),
+            source: (
+                owner: Part(86),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (1.15, 8.5, 1.65),
+            outer_diameter: 0.22500001,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Suspension((
+                spring: Some((
+                    length: 0.6,
+                    od: 0.16,
+                    id: 0.12,
+                    coils: 8,
+                    preload: -0.000000029802322,
+                )),
+                shock: Some((
+                    length: 0.6,
+                    od: 0.1,
+                    body_end: Source,
+                    starting_compression: 0.23249999,
+                    compression: 1.0,
+                    rebound: 1.6,
+                )),
+                bump_stop: None,
+                appearances: ((
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                ), (
+                    color: Baked,
+                    finish: Baked,
+                )),
+                mount_envelope: 0.16,
+                initial_length: 0.36750004,
+            )),
+            axis: (0.0, 1.0, 0.0),
+            source: (
+                owner: Part(87),
+                face: PositiveY,
+                patch: None,
+            ),
+            anchor: (-0.39999998, 8.5, 1.65),
+            outer_diameter: 0.22500001,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(84),
+                face: PositiveX,
+                patch: None,
+            ),
+            anchor: (2.0749998, 8.375, 1.5),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(82),
+                face: NegativeX,
+                patch: None,
+            ),
+            anchor: (-1.3249999, 8.375, 1.5),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(94),
+                face: NegativeZ,
+                patch: None,
+            ),
+            anchor: (1.15, 8.992499, 1.525),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+        (
+            kind: Rotational,
+            axis: (0.0, 0.0, 0.0),
+            source: (
+                owner: Part(95),
+                face: NegativeZ,
+                patch: None,
+            ),
+            anchor: (-0.39999998, 8.992499, 1.525),
+            outer_diameter: 0.1,
+            inner_diameter: 0.0,
+        ),
+    ],
+)

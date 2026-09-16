@@ -1,0 +1,27 @@
+{
+  "binaries": {
+    "baseline": "/private/tmp/mechanic-motion-baseline-final",
+    "candidate": "/private/tmp/mechanic-motion-candidate-final"
+  },
+  "sha256": {
+    "baseline": "28a68f6153203e5a6aa41b1fe1ff08672e3e4fc681675d29016c3c3890ee2e93",
+    "candidate": "53b39c7dc5b7ffa1c780f431968525c2105834eb3644d49ba180858fd8147dc2"
+  },
+  "warmup": 120,
+  "ticks": 600,
+  "pairs": 3,
+  "order": [
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ]
+  ]
+}

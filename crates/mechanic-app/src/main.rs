@@ -3735,7 +3735,7 @@ fn advance_simulation(
                     state.drive_rows_dirty = false;
                 }
             }
-            match pending_hammer_impulse(&simulation, &mut hammer) {
+            match pending_hammer_impulse(&simulation, &mut hammer, tick) {
                 Ok(Some(impulse)) => world_runtime.queue_player_reaction(impulse),
                 Ok(None) => {}
                 Err(error) => {
@@ -13071,7 +13071,11 @@ fn handle_hammer_actions(
 fn pending_hammer_impulse(
     simulation: &AppSimulation,
     hammer: &mut HammerInteraction,
+    tick: u64,
 ) -> Result<Option<GpuExternalImpulse>, String> {
+    if hammer.pending.is_none() {
+        hammer.pending = automation::hammer_impact(simulation, tick);
+    }
     let Some(impact) = hammer.pending.as_mut() else {
         return Ok(None);
     };

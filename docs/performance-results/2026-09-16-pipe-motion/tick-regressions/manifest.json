@@ -1,0 +1,27 @@
+{
+  "binaries": {
+    "baseline": "/private/tmp/mechanic-pipe-before",
+    "candidate": "/Users/jens/repos/mechanic/target/release/cpu-physics"
+  },
+  "sha256": {
+    "baseline": "a3e13b65340b36b30c992af2a97f331c29b8f2a2c78a090d361d697d06cabcfa",
+    "candidate": "1dda0ef0fcc6f36fe53c117274b84311b8ab04825a21f06754f6ec2b1a572b59"
+  },
+  "warmup": 120,
+  "ticks": 600,
+  "pairs": 3,
+  "order": [
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ]
+  ]
+}

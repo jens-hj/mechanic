@@ -1,0 +1,82 @@
+[
+  {
+    "scene": "alone",
+    "speed": 0.0,
+    "same_state": true
+  },
+  {
+    "scene": "alone",
+    "speed": 1.0,
+    "same_state": true
+  },
+  {
+    "scene": "alone",
+    "speed": 10.0,
+    "same_state": true
+  },
+  {
+    "scene": "alone",
+    "speed": 40.0,
+    "same_state": true
+  },
+  {
+    "scene": "wishbone",
+    "speed": 0.0,
+    "same_state": true
+  },
+  {
+    "scene": "wishbone",
+    "speed": 1.0,
+    "same_state": true
+  },
+  {
+    "scene": "wishbone",
+    "speed": 10.0,
+    "same_state": true
+  },
+  {
+    "scene": "wishbone",
+    "speed": 40.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-with",
+    "speed": 0.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-with",
+    "speed": 1.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-with",
+    "speed": 10.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-with",
+    "speed": 40.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-without",
+    "speed": 0.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-without",
+    "speed": 1.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-without",
+    "speed": 10.0,
+    "same_state": true
+  },
+  {
+    "scene": "builder-without",
+    "speed": 40.0,
+    "same_state": true
+  }
+]

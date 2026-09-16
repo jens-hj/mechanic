@@ -17,6 +17,8 @@ use mechanic_world::{
 use crate::{BodyPose, PhysicsError};
 
 mod broadphase;
+mod groups;
+pub(crate) use groups::ContactGroups;
 mod penetration;
 pub use penetration::{TerrainPathFailure, TerrainPathOutcome, TerrainPathQuery};
 mod sweep;
@@ -170,13 +172,19 @@ struct Collider {
     radius: f64,
 }
 
+// Frequently traversed motion data stays separate from the larger shape records.
+struct MotionCollider {
+    row: usize,
+    body: usize,
+    assembly: usize,
+    radius: f64,
+}
+
 impl MachineCollisionGeometry {
     /// Body and conservative radius about the body origin of every collider row,
     /// in row order.
     pub(crate) fn collider_reach(&self) -> impl ExactSizeIterator<Item = (usize, f64)> + '_ {
-        self.colliders
-            .iter()
-            .map(|collider| (collider.body, collider.radius))
+        self.reach.iter().copied()
     }
 }
 
@@ -185,9 +193,17 @@ pub struct MachineCollisionGeometry {
     generation: u64,
     bodies: usize,
     colliders: Vec<Collider>,
+    reach: Vec<(usize, f64)>,
+    motion_colliders: Vec<MotionCollider>,
     // Sorted body pairs joined by a bearing, which never collide with each other.
     suppressed: Vec<[usize; 2]>,
     body_colliders: Vec<Vec<usize>>,
+    body_bounds: Vec<[DVec3; 2]>,
+    body_radii: Vec<f64>,
+    pub(crate) assemblies: Vec<usize>,
+    pub(crate) assembly_count: usize,
+    pub(crate) internal_collisions: Vec<bool>,
+    pub(crate) moving_assemblies: Vec<usize>,
     collider_trees: Vec<broadphase::Tree>,
     body_tree: broadphase::Tree,
     pair_scratch: Mutex<PairScratch>,
@@ -205,6 +221,7 @@ impl MachineCollisionGeometry {
     ///
     /// # Errors
     /// Rejects invalid compiled geometry or body references.
+    #[allow(clippy::too_many_lines)] // Compile immutable geometry and both hierarchy levels together.
     pub fn new(
         creation: &CompiledCreation,
         topology_generation: u64,
@@ -278,12 +295,65 @@ impl MachineCollisionGeometry {
                 .collect(),
             &body_positions,
         );
+        let body_bounds = body_colliders
+            .iter()
+            .map(|rows| {
+                rows.iter()
+                    .fold([DVec3::INFINITY, DVec3::NEG_INFINITY], |[lo, hi], &row| {
+                        [lo.min(local_bounds[row][0]), hi.max(local_bounds[row][1])]
+                    })
+            })
+            .collect();
+        let body_radii = body_colliders
+            .iter()
+            .map(|rows| {
+                rows.iter()
+                    .map(|&row| colliders[row].radius)
+                    .fold(0.0, f64::max)
+            })
+            .collect();
+        let mut assemblies = vec![usize::MAX; creation.compounds.len()];
+        let mut assembly_count = 0;
+        for component in &creation.loop_topology.mechanism_components {
+            for &body in component {
+                *assemblies
+                    .get_mut(body as usize)
+                    .ok_or(PhysicsError::InvalidCollision)? = assembly_count;
+            }
+            assembly_count += 1;
+        }
+        for assembly in &mut assemblies {
+            if *assembly == usize::MAX {
+                *assembly = assembly_count;
+                assembly_count += 1;
+            }
+        }
+        let reach = colliders.iter().map(|c| (c.body, c.radius)).collect();
+        let motion_colliders = colliders
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.moving)
+            .map(|(row, c)| MotionCollider {
+                row,
+                body: c.body,
+                assembly: assemblies[c.body],
+                radius: c.radius,
+            })
+            .collect();
         let mut geometry = Self {
             generation: topology_generation,
             bodies: creation.compounds.len(),
             colliders,
+            reach,
+            motion_colliders,
             suppressed,
             body_colliders,
+            body_bounds,
+            body_radii,
+            assemblies,
+            assembly_count,
+            internal_collisions: vec![false; assembly_count],
+            moving_assemblies: Vec::new(),
             collider_trees,
             body_tree,
             pair_scratch: Mutex::new(PairScratch::default()),
@@ -294,6 +364,29 @@ impl MachineCollisionGeometry {
         geometry.suppressed.extend(flush);
         geometry.suppressed.sort_unstable();
         geometry.suppressed.dedup();
+        let mut members = vec![Vec::new(); assembly_count];
+        for (body, &assembly) in geometry.assemblies.iter().enumerate() {
+            if !geometry.body_colliders[body].is_empty() {
+                members[assembly].push(body);
+            }
+        }
+        for (assembly, bodies) in members.iter().enumerate() {
+            if bodies
+                .iter()
+                .any(|&body| !creation.compounds[body].is_static)
+            {
+                geometry.moving_assemblies.push(assembly);
+            }
+            geometry.internal_collisions[assembly] = bodies.iter().enumerate().any(|(row, &a)| {
+                bodies[row + 1..].iter().any(|&b| {
+                    geometry
+                        .suppressed
+                        .binary_search(&[a.min(b), a.max(b)])
+                        .is_err()
+                        && (!creation.compounds[a].is_static || !creation.compounds[b].is_static)
+                })
+            });
+        }
         Ok(geometry)
     }
 
@@ -362,10 +455,90 @@ impl MachineCollisionGeometry {
         Ok(flush)
     }
 
+    // Transform only eight aggregate corners per body. The speed envelope is
+    // over the actual generalized path, including ancestor and suspension motion.
+    fn body_path_bounds(
+        &self,
+        motion: &crate::MachineMotion<'_>,
+        padding: f64,
+    ) -> Result<Vec<[DVec3; 2]>, PhysicsError> {
+        self.body_bounds
+            .iter()
+            .enumerate()
+            .map(|(body, local)| {
+                if self.body_colliders[body].is_empty() {
+                    return Ok(*local);
+                }
+                let pose = motion.initial_poses()[body];
+                let mut bounds = [DVec3::INFINITY, DVec3::NEG_INFINITY];
+                for x in [local[0].x, local[1].x] {
+                    for y in [local[0].y, local[1].y] {
+                        for z in [local[0].z, local[1].z] {
+                            let point = pose.position + pose.rotation * DVec3::new(x, y, z);
+                            bounds[0] = bounds[0].min(point);
+                            bounds[1] = bounds[1].max(point);
+                        }
+                    }
+                }
+                let bound = motion.bounds()[body];
+                let radius = self.body_radii[body];
+                let travel = DVec3::splat((bound.point_speed(radius) + padding).next_up());
+                let reach = DVec3::splat((bound.origin_speed + radius + padding).next_up());
+                let result = [
+                    (bounds[0] - travel)
+                        .max(pose.position - reach)
+                        .map(f64::next_down),
+                    (bounds[1] + travel)
+                        .min(pose.position + reach)
+                        .map(f64::next_up),
+                ];
+                if result.iter().all(|b| b.is_finite()) {
+                    Ok(result)
+                } else {
+                    Err(PhysicsError::InvalidCollision)
+                }
+            })
+            .collect()
+    }
+
+    fn body_candidates(&self, bounds: &[[DVec3; 2]]) -> Vec<[usize; 2]> {
+        let mut nodes = Vec::new();
+        let mut stack = Vec::new();
+        let mut found = Vec::new();
+        let mut pairs = Vec::new();
+        self.body_tree.refit(bounds, &mut nodes);
+        for (a, &body_bounds) in bounds.iter().enumerate() {
+            if self.body_colliders[a].is_empty() {
+                continue;
+            }
+            found.clear();
+            self.body_tree
+                .query(&nodes, body_bounds, &mut stack, &mut found);
+            for &b in &found {
+                if b > a
+                    && self.suppressed.binary_search(&[a, b]).is_err()
+                    && (self.colliders[self.body_colliders[a][0]].moving
+                        || self.colliders[self.body_colliders[b][0]].moving)
+                {
+                    pairs.push([a, b]);
+                }
+            }
+        }
+        pairs
+    }
+
     // Collider pairs that may touch within `bounds`, in sorted order: on
     // different bodies, at least one moving, and not joined by a bearing.
     // Body traversal rejects suppressed pairs before immutable collider trees.
     fn candidate_pairs(&self, bounds: &[[DVec3; 2]]) -> CandidatePairs<'_> {
+        self.candidate_pairs_groups(bounds, None)
+    }
+
+    fn candidate_pairs_groups(
+        &self,
+        bounds: &[[DVec3; 2]],
+        groups: Option<&ContactGroups>,
+    ) -> CandidatePairs<'_> {
         let mut scratch = self
             .pair_scratch
             .lock()
@@ -375,6 +548,7 @@ impl MachineCollisionGeometry {
             body_nodes,
             body_candidates,
             trees,
+            refitted,
             stack,
             pairs,
             pair_stack,
@@ -392,9 +566,8 @@ impl MachineCollisionGeometry {
         pairs.clear();
         *node_pair_tests = 0;
         trees.resize_with(self.bodies, Vec::new);
-        for (tree, output) in self.collider_trees.iter().zip(trees.iter_mut()) {
-            tree.refit(bounds, output);
-        }
+        refitted.resize(self.bodies, false);
+        refitted.fill(false);
         for a in 0..self.bodies {
             if self.body_colliders[a].is_empty() {
                 continue;
@@ -404,12 +577,21 @@ impl MachineCollisionGeometry {
                 .query(body_nodes, body_bounds[a], stack, body_candidates);
             for &b in body_candidates.iter().filter(|&&b| b > a) {
                 let body_pair = [a.min(b), a.max(b)];
-                if self.suppressed.binary_search(&body_pair).is_ok()
+                if groups.is_some_and(|g| !g.includes(self, a, Some(b)))
+                    || self.suppressed.binary_search(&body_pair).is_ok()
                     || !(self.colliders[self.body_colliders[a][0]].moving
                         || self.colliders[self.body_colliders[b][0]].moving)
                     || !overlaps(body_bounds[a], body_bounds[b])
                 {
                     continue;
+                }
+                // Whole-body rejection comes first: unrelated distant bodies
+                // do not need their detailed collider hierarchy rebuilt.
+                for body in [a, b] {
+                    if !refitted[body] {
+                        self.collider_trees[body].refit(bounds, &mut trees[body]);
+                        refitted[body] = true;
+                    }
                 }
                 *node_pair_tests += self.collider_trees[a].pairs(
                     &trees[a],
@@ -557,17 +739,32 @@ impl TerrainContactScene {
         )
     }
 
-    /// Like [`Self::proximity`], with one margin per compiled collider row, so a
-    /// fast collider reaches far without widening the query for resting ones. A
-    /// collider pair uses the larger of its two margins.
-    pub(crate) fn proximity_margins(
+    pub(crate) fn proximity_groups(
         &self,
         machine: &MachineCollisionGeometry,
         poses: &[BodyPose],
         origin: DVec3,
         margins: &[f64],
+        groups: Option<&ContactGroups>,
     ) -> Result<TerrainContactQuery, PhysicsError> {
-        self.query(machine, poses, origin, margins, QueryKind::Surface)
+        self.query_groups(machine, poses, origin, margins, QueryKind::Surface, groups)
+    }
+
+    pub(crate) fn recovery_groups(
+        &self,
+        machine: &MachineCollisionGeometry,
+        poses: &[BodyPose],
+        origin: DVec3,
+        groups: Option<&ContactGroups>,
+    ) -> Result<TerrainContactQuery, PhysicsError> {
+        self.query_groups(
+            machine,
+            poses,
+            origin,
+            &vec![CONTACT_ACTIVATION_DISTANCE; machine.colliders.len()],
+            QueryKind::Recovery,
+            groups,
+        )
     }
 
     // Preserve actual intersection manifolds. Only separated pairs need the
@@ -611,6 +808,7 @@ impl TerrainContactScene {
         cache: &mut PoseCache,
         origin: DVec3,
         margins: &[f64],
+        groups: Option<&ContactGroups>,
     ) -> Result<(), PhysicsError> {
         cache
             .terrain_candidates
@@ -645,7 +843,10 @@ impl TerrainContactScene {
         } = &mut *scratch;
         trees.resize_with(machine.bodies, Vec::new);
         for (body, rows) in machine.body_colliders.iter().enumerate() {
-            if rows.is_empty() || !machine.colliders[rows[0]].moving {
+            if rows.is_empty()
+                || !machine.colliders[rows[0]].moving
+                || groups.is_some_and(|g| !g.includes(machine, body, None))
+            {
                 continue;
             }
             let [minimum, maximum] =
@@ -690,7 +891,6 @@ impl TerrainContactScene {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)] // Ordered broadphase, narrowphase, and reduction with explicit counts.
     fn query(
         &self,
         machine: &MachineCollisionGeometry,
@@ -698,6 +898,19 @@ impl TerrainContactScene {
         origin: DVec3,
         margins: &[f64],
         kind: QueryKind,
+    ) -> Result<TerrainContactQuery, PhysicsError> {
+        self.query_groups(machine, poses, origin, margins, kind, None)
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    fn query_groups(
+        &self,
+        machine: &MachineCollisionGeometry,
+        poses: &[BodyPose],
+        origin: DVec3,
+        margins: &[f64],
+        kind: QueryKind,
+        groups: Option<&ContactGroups>,
     ) -> Result<TerrainContactQuery, PhysicsError> {
         if poses.len() != machine.bodies
             || !origin.is_finite()
@@ -714,10 +927,11 @@ impl TerrainContactScene {
             .lock()
             .map_err(|_| PhysicsError::InvalidCollision)?;
         cache.update(machine, poses)?;
-        self.prepare_terrain_candidates(machine, &mut cache, origin, margins)?;
+        self.prepare_terrain_candidates(machine, &mut cache, origin, margins, groups)?;
         let shapes = &cache;
         for (collider_row, collider) in machine.colliders.iter().enumerate() {
-            if !collider.moving {
+            if !collider.moving || groups.is_some_and(|g| !g.includes(machine, collider.body, None))
+            {
                 continue;
             }
             let margin = margins[collider_row];
@@ -857,7 +1071,16 @@ impl TerrainContactScene {
                 ]
             })
             .collect::<Vec<_>>();
-        for &[first, second] in machine.candidate_pairs(&bounds).iter() {
+        for &[first, second] in machine.candidate_pairs_groups(&bounds, groups).iter() {
+            if groups.is_some_and(|g| {
+                !g.includes(
+                    machine,
+                    machine.colliders[first].body,
+                    Some(machine.colliders[second].body),
+                )
+            }) {
+                continue;
+            }
             result.collider_pair_candidates += 1;
             let reach = match kind {
                 // The faster collider's margin already covers its own travel.
@@ -1328,6 +1551,7 @@ struct PairScratch {
     body_nodes: Vec<[DVec3; 2]>,
     body_candidates: Vec<usize>,
     trees: Vec<Vec<[DVec3; 2]>>,
+    refitted: Vec<bool>,
     stack: Vec<usize>,
     candidates: Vec<usize>,
     node_pair_tests: usize,
@@ -1343,19 +1567,225 @@ fn swept_bounds(
     pose: BodyPose,
     motion: crate::MotionBound,
     tolerance: f64,
-) -> Result<[DVec3; 2], PhysicsError> {
-    let [minimum, maximum] = collider
-        .local
-        .transformed_bounds(pose.position, pose.rotation)
-        .map_err(|_| PhysicsError::InvalidCollision)?;
+    [minimum, maximum]: [DVec3; 2],
+) -> [DVec3; 2] {
     let travel = DVec3::splat((motion.point_speed(collider.radius) + tolerance).next_up());
     let reach = DVec3::splat((motion.origin_speed + collider.radius + tolerance).next_up());
-    Ok([
+    [
         (minimum - travel)
             .max(pose.position - reach)
             .map(f64::next_down),
         (maximum + travel)
             .min(pose.position + reach)
             .map(f64::next_up),
+    ]
+}
+
+// Tighten the general path envelope with a directional translation, an
+// acceleration-bounded endpoint chord, and (for long fixed-axis paths) a full
+// circle. Each independently encloses the whole motion, including many turns.
+fn path_bounds(
+    collider: &Collider,
+    path: &crate::MachineMotion<'_>,
+    tolerance: f64,
+) -> Result<[DVec3; 2], PhysicsError> {
+    path_bounds_from(collider, path, tolerance, None)
+}
+
+// The optional bound must belong to the exact initial pose and this collider.
+fn path_bounds_from(
+    collider: &Collider,
+    path: &crate::MachineMotion<'_>,
+    tolerance: f64,
+    initial_bounds: Option<[DVec3; 2]>,
+) -> Result<[DVec3; 2], PhysicsError> {
+    let pose = path.initial_poses()[collider.body];
+    let bound = path.bounds()[collider.body];
+    let start = match initial_bounds {
+        Some(bounds) => bounds,
+        None => collider
+            .local
+            .transformed_bounds(pose.position, pose.rotation)
+            .map_err(|_| PhysicsError::InvalidCollision)?,
+    };
+    let fallback = swept_bounds(collider, pose, bound, tolerance, start);
+    // If travel is already below the query padding, the general speed bound
+    // is tight enough. Retain that conservative envelope instead of calculating
+    // endpoint rotations for every slowly settling piece elsewhere in a scene.
+    if bound.point_speed(collider.radius) <= tolerance {
+        return Ok(fallback);
+    }
+    // Every material point follows its endpoint chord to within A / 8 over a
+    // unit interval when its acceleration magnitude is bounded by A. This
+    // encloses the whole trajectory, including articulated ancestors, rather
+    // than assuming matching endpoint orientations imply no intervening turn.
+    // Unlike a speed-radius expansion, the error shrinks quadratically with
+    // substep duration. That matters for finely decomposed pipes near bodies.
+    let acceleration = bound.point_acceleration(collider.radius);
+    let chord = if bound.angular_speed != 0.0 && acceleration.is_finite() {
+        let end_pose = path.final_poses()[collider.body];
+        let end = collider
+            .local
+            .transformed_bounds(end_pose.position, end_pose.rotation)
+            .map_err(|_| PhysicsError::InvalidCollision)?;
+        let deviation = DVec3::splat((acceleration * 0.125).next_up());
+        Some([
+            start[0].min(end[0]) - deviation,
+            start[1].max(end[1]) + deviation,
+        ])
+    } else {
+        None
+    };
+    let mut result = [DVec3::INFINITY, DVec3::NEG_INFINITY];
+    if bound.angular_speed == 0.0 {
+        let delta = path.final_poses()[collider.body].position - pose.position;
+        result = [
+            start[0] + delta.min(DVec3::ZERO),
+            start[1] + delta.max(DVec3::ZERO),
+        ];
+    } else if let Some(chord) = chord.filter(|_| bound.angular_speed <= 1.0) {
+        // For short arcs the chord certificate is already tight; avoid building
+        // an additional full-circle envelope for every small pipe sector.
+        result = chord;
+    } else if let Some((pivot, axis, delta)) = path.fixed_rotation(collider.body) {
+        let [lo, hi] = collider.bounds;
+        for x in [lo.x, hi.x] {
+            for y in [lo.y, hi.y] {
+                for z in [lo.z, hi.z] {
+                    let offset = pose.position + pose.rotation * DVec3::new(x, y, z) - pivot;
+                    let parallel = axis * axis.dot(offset);
+                    let radial = offset - parallel;
+                    let tangent = axis.cross(radial);
+                    let extent = (radial * radial + tangent * tangent).map(f64::sqrt);
+                    let center = pivot + parallel;
+                    result[0] = result[0].min(center - extent + delta.min(DVec3::ZERO));
+                    result[1] = result[1].max(center + extent + delta.max(DVec3::ZERO));
+                }
+            }
+        }
+    } else if let Some(chord) = chord {
+        result = chord;
+    } else {
+        return Ok(fallback);
+    }
+    if let Some(chord) = chord {
+        result = [result[0].max(chord[0]), result[1].min(chord[1])];
+    }
+    // Cover roundoff in transforms, projection, and cancellation around a pivot.
+    let scale = pose
+        .position
+        .abs()
+        .max(result[0].abs())
+        .max(result[1].abs())
+        .max_element()
+        + collider.radius
+        + bound.origin_speed
+        + 1.0;
+    let padding = DVec3::splat(tolerance + 128.0 * f64::EPSILON * scale);
+    Ok([
+        (result[0] - padding).map(f64::next_down).max(fallback[0]),
+        (result[1] + padding).map(f64::next_up).min(fallback[1]),
     ])
 }
+
+// A broadphase-only proof of empty space. Scoped to a single tick by the caller;
+// generations and origin are still checked so a changed scene cannot reuse it.
+#[cfg(test)]
+pub(crate) struct EmptyContactRegion {
+    bounds: Vec<[DVec3; 2]>,
+    terrain_generation: u64,
+    topology_generation: u64,
+    origin: DVec3,
+}
+
+#[cfg(test)]
+impl EmptyContactRegion {
+    pub(crate) fn contains(
+        &self,
+        scene: &TerrainContactScene,
+        geometry: &MachineCollisionGeometry,
+        poses: &[BodyPose],
+        origin: DVec3,
+        margins: &[f64],
+    ) -> bool {
+        if self.terrain_generation != scene.generation
+            || self.topology_generation != geometry.generation
+            || self.origin != origin
+            || self.bounds.len() != geometry.colliders.len()
+            || margins.len() != self.bounds.len()
+            || poses.len() != geometry.bodies
+        {
+            return false;
+        }
+        geometry
+            .colliders
+            .iter()
+            .zip(&self.bounds)
+            .zip(margins)
+            .all(|((collider, region), &margin)| {
+                let pose = poses[collider.body];
+                collider
+                    .local
+                    .transformed_bounds(pose.position, pose.rotation)
+                    .is_ok_and(|bounds| {
+                        let padding = DVec3::splat(margin);
+                        (bounds[0] - padding)
+                            .map(f64::next_down)
+                            .cmpge(region[0])
+                            .all()
+                            && (bounds[1] + padding)
+                                .map(f64::next_up)
+                                .cmple(region[1])
+                                .all()
+                    })
+            })
+    }
+}
+
+impl TerrainContactScene {
+    #[cfg(test)]
+    pub(crate) fn empty_contact_region(
+        &self,
+        geometry: &MachineCollisionGeometry,
+        motion: &crate::MachineMotion<'_>,
+        origin: DVec3,
+        padding: f64,
+    ) -> Option<EmptyContactRegion> {
+        if geometry.generation != motion.generation() || !origin.is_finite() {
+            return None;
+        }
+        let bounds = geometry
+            .colliders
+            .iter()
+            .map(|collider| {
+                let b = path_bounds(collider, motion, padding).ok()?;
+                (b[0].is_finite() && b[1].is_finite()).then_some(b)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        for (collider, b) in geometry.colliders.iter().zip(&bounds) {
+            if collider.moving
+                && !self
+                    .index
+                    .bounds_candidates(WorldBounds {
+                        minimum: WorldPosition((origin + b[0]).map(f64::next_down)),
+                        maximum: WorldPosition((origin + b[1]).map(f64::next_up)),
+                    })
+                    .is_empty()
+            {
+                return None;
+            }
+        }
+        if geometry.candidate_pairs(&bounds).iter().next().is_some() {
+            return None;
+        }
+        Some(EmptyContactRegion {
+            bounds,
+            terrain_generation: self.generation,
+            topology_generation: geometry.generation,
+            origin,
+        })
+    }
+}
+
+#[cfg(test)]
+mod path_bounds_tests;

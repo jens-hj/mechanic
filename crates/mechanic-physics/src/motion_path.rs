@@ -254,6 +254,44 @@ impl<'a> MachineMotion<'a> {
         &self.bounds
     }
 
+    // A fixed world axis and a linearly translating pivot. Refuse moving
+    // ancestor axes; their general articulated bound remains authoritative.
+    pub(crate) fn fixed_rotation(&self, body: usize) -> Option<(DVec3, DVec3, DVec3)> {
+        let topology = self.creation.loop_topology.body_parents[body];
+        let rows = self.creation.dynamics.body_velocities[body].clone();
+        if topology.is_root {
+            if rows.is_empty() {
+                return None;
+            }
+            let d = &self.displacement[rows];
+            let axis = DVec3::new(d[3], d[4], d[5]).try_normalize()?;
+            return Some((
+                self.start[body].position,
+                axis,
+                DVec3::new(d[0], d[1], d[2]),
+            ));
+        }
+        let parent = topology.parent_body as usize;
+        if self.bounds[parent].angular_speed != 0.0 {
+            return None;
+        }
+        let bearing = self.creation.bearings[self.creation.dynamics.body_bearings[body]?];
+        if bearing.kind.is_translational() {
+            return None;
+        }
+        let (anchor, axis) = if topology.bearing_direction == 0 {
+            (bearing.local_anchor_a, bearing.local_axis_a)
+        } else {
+            (bearing.local_anchor_b, bearing.local_axis_b)
+        };
+        let pose = self.start[parent];
+        Some((
+            pose.position + pose.rotation * anchor.as_dvec3(),
+            (pose.rotation * axis.as_dvec3()).normalize(),
+            self.end[parent].position - pose.position,
+        ))
+    }
+
     // Exact spatial derivative of the prescribed generalized drift, at body
     // origins (not centers of mass). Traversal does not assemble inertia/Jacobians.
     pub(crate) fn velocities_at_poses(&self, poses: &[BodyPose]) -> Vec<ContactVelocity> {

@@ -1,0 +1,3586 @@
+[
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 1,
+      "tick": 1
+    },
+    "elapsed_ms": 37.147875,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 2,
+      "tick": 2
+    },
+    "elapsed_ms": 38.954833,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9963369369506836,
+        0.14820566773414612
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 3,
+      "tick": 3
+    },
+    "elapsed_ms": 90.08862500000001,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9963369369506836,
+        0.14820566773414612
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 4,
+      "tick": 4
+    },
+    "elapsed_ms": 91.879166,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.958392381668091,
+        0.4979134500026703
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 5,
+      "tick": 5
+    },
+    "elapsed_ms": 127.29712500000001,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.958392381668091,
+        0.4979134500026703
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 6,
+      "tick": 6
+    },
+    "elapsed_ms": 138.201416,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8110480308532715,
+        1.0478594303131104
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 7,
+      "tick": 7
+    },
+    "elapsed_ms": 150.318458,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8110480308532715,
+        1.0478594303131104
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 8,
+      "tick": 8
+    },
+    "elapsed_ms": 175.88320800000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.4290146827697754,
+        1.7606499195098877
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 9,
+      "tick": 9
+    },
+    "elapsed_ms": 203.73554099999998,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.4290146827697754,
+        1.7606499195098877
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 10,
+      "tick": 10
+    },
+    "elapsed_ms": 214.338875,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.6519449949264526,
+        2.504211902618408
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 11,
+      "tick": 11
+    },
+    "elapsed_ms": 240.45825000000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.6519449949264526,
+        2.504211902618408
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 12,
+      "tick": 12
+    },
+    "elapsed_ms": 253.81425000000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.36711618304252625,
+        2.9774529933929443
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 13,
+      "tick": 13
+    },
+    "elapsed_ms": 303.43287499999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.36711618304252625,
+        2.9774529933929443
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 14,
+      "tick": 14
+    },
+    "elapsed_ms": 365.982458,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.2880676984786987,
+        2.709406852722168
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 15,
+      "tick": 15
+    },
+    "elapsed_ms": 420.879583,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.2880676984786987,
+        2.709406852722168
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 16,
+      "tick": 16
+    },
+    "elapsed_ms": 490.55674999999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.6898000240325928,
+        1.328524112701416
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 17,
+      "tick": 17
+    },
+    "elapsed_ms": 546.041333,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.6898000240325928,
+        1.328524112701416
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 18,
+      "tick": 18
+    },
+    "elapsed_ms": 599.377041,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.8726351261138916,
+        -0.8648505210876465
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 19,
+      "tick": 19
+    },
+    "elapsed_ms": 669.2867500000001,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.8726351261138916,
+        -0.8648505210876465
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 20,
+      "tick": 20
+    },
+    "elapsed_ms": 724.40575,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.3672256469726562,
+        -2.6703360080718994
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 21,
+      "tick": 21
+    },
+    "elapsed_ms": 766.813,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.3672256469726562,
+        -2.6703360080718994
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 22,
+      "tick": 22
+    },
+    "elapsed_ms": 821.335166,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.06367027759552,
+        -2.8051042556762695
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 23,
+      "tick": 23
+    },
+    "elapsed_ms": 858.374333,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.06367027759552,
+        -2.8051042556762695
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 24,
+      "tick": 24
+    },
+    "elapsed_ms": 893.538166,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8244988918304443,
+        -1.0110421180725098
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 25,
+      "tick": 25
+    },
+    "elapsed_ms": 943.695333,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8244988918304443,
+        -1.0110421180725098
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 26,
+      "tick": 26
+    },
+    "elapsed_ms": 979.165125,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.5200424194335938,
+        1.6276936531066895
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 27,
+      "tick": 27
+    },
+    "elapsed_ms": 1013.539375,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.5200424194335938,
+        1.6276936531066895
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 28,
+      "tick": 28
+    },
+    "elapsed_ms": 1057.893083,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -0.019945353269577026,
+        2.9999334812164307
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 29,
+      "tick": 29
+    },
+    "elapsed_ms": 1094.13775,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -0.019945353269577026,
+        2.9999334812164307
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 30,
+      "tick": 30
+    },
+    "elapsed_ms": 1129.022958,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.6925196647644043,
+        1.3230035305023193
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 31,
+      "tick": 31
+    },
+    "elapsed_ms": 1170.258625,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.6925196647644043,
+        1.3230035305023193
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 32,
+      "tick": 32
+    },
+    "elapsed_ms": 1205.2555,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.2305684089660645,
+        -2.006131649017334
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 33,
+      "tick": 33
+    },
+    "elapsed_ms": 1240.248416,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.2305684089660645,
+        -2.006131649017334
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 34,
+      "tick": 34
+    },
+    "elapsed_ms": 1282.3800410000001,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.1453073024749756,
+        -2.772773027420044
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 35,
+      "tick": 35
+    },
+    "elapsed_ms": 1316.931083,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.1453073024749756,
+        -2.772773027420044
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 36,
+      "tick": 36
+    },
+    "elapsed_ms": 1351.60875,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9897332191467285,
+        0.24798157811164856
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 37,
+      "tick": 37
+    },
+    "elapsed_ms": 1399.10525,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9897332191467285,
+        0.24798157811164856
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 38,
+      "tick": 38
+    },
+    "elapsed_ms": 1434.53925,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.4703616499900818,
+        2.962897300720215
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 39,
+      "tick": 39
+    },
+    "elapsed_ms": 1469.57175,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.4703616499900818,
+        2.962897300720215
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 40,
+      "tick": 40
+    },
+    "elapsed_ms": 1515.759125,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.8686697483062744,
+        0.8779144883155823
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 41,
+      "tick": 41
+    },
+    "elapsed_ms": 1549.9257499999999,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.8686697483062744,
+        0.8779144883155823
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 42,
+      "tick": 42
+    },
+    "elapsed_ms": 1583.948833,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.0596829652786255,
+        -2.806612014770508
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 43,
+      "tick": 43
+    },
+    "elapsed_ms": 1625.8883750000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.0596829652786255,
+        -2.806612014770508
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 44,
+      "tick": 44
+    },
+    "elapsed_ms": 1660.9335,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.772958993911743,
+        -1.144857406616211
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 45,
+      "tick": 45
+    },
+    "elapsed_ms": 1694.755791,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.772958993911743,
+        -1.144857406616211
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 46,
+      "tick": 46
+    },
+    "elapsed_ms": 1741.7786660000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.0829503536224365,
+        2.7977166175842285
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 47,
+      "tick": 47
+    },
+    "elapsed_ms": 1775.606666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.0829503536224365,
+        2.7977166175842285
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 48,
+      "tick": 48
+    },
+    "elapsed_ms": 1809.700666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.9063615798950195,
+        0.7436819672584534
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 49,
+      "tick": 49
+    },
+    "elapsed_ms": 1855.1064159999999,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.9063615798950195,
+        0.7436819672584534
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 50,
+      "tick": 50
+    },
+    "elapsed_ms": 1889.43675,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.1747431457042694,
+        -2.9949066638946533
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 51,
+      "tick": 51
+    },
+    "elapsed_ms": 1923.897208,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.1747431457042694,
+        -2.9949066638946533
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 52,
+      "tick": 52
+    },
+    "elapsed_ms": 1965.493041,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.957902431488037,
+        0.5008127093315125
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 53,
+      "tick": 53
+    },
+    "elapsed_ms": 2000.1281660000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.957902431488037,
+        0.5008127093315125
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 54,
+      "tick": 54
+    },
+    "elapsed_ms": 2035.1037500000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.3443862199783325,
+        2.6819069385528564
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 55,
+      "tick": 55
+    },
+    "elapsed_ms": 2079.0155,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.3443862199783325,
+        2.6819069385528564
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 56,
+      "tick": 56
+    },
+    "elapsed_ms": 2113.132916,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.9701683521270752,
+        -2.2623960971832275
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 57,
+      "tick": 57
+    },
+    "elapsed_ms": 2147.825625,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.9701683521270752,
+        -2.2623960971832275
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 58,
+      "tick": 58
+    },
+    "elapsed_ms": 2190.218958,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8800582885742188,
+        -0.8397998809814453
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 59,
+      "tick": 59
+    },
+    "elapsed_ms": 2224.3272909999996,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8800582885742188,
+        -0.8397998809814453
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 60,
+      "tick": 60
+    },
+    "elapsed_ms": 2258.109916,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -0.6149880886077881,
+        2.936289072036743
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 61,
+      "tick": 61
+    },
+    "elapsed_ms": 2300.042958,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -0.6149880886077881,
+        2.936289072036743
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 62,
+      "tick": 62
+    },
+    "elapsed_ms": 2334.2996249999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.11149263381958,
+        -2.1311028003692627
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 63,
+      "tick": 63
+    },
+    "elapsed_ms": 2368.525208,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.11149263381958,
+        -2.1311028003692627
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 64,
+      "tick": 64
+    },
+    "elapsed_ms": 2411.4292499999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9657061100006104,
+        -0.45231547951698303
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 65,
+      "tick": 65
+    },
+    "elapsed_ms": 2446.879208,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9657061100006104,
+        -0.45231547951698303
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 66,
+      "tick": 66
+    },
+    "elapsed_ms": 2481.7960000000003,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.5414143800735474,
+        2.573721170425415
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 67,
+      "tick": 67
+    },
+    "elapsed_ms": 2524.055333,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.5414143800735474,
+        2.573721170425415
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 68,
+      "tick": 68
+    },
+    "elapsed_ms": 2557.836666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.7485041618347168,
+        -2.905123233795166
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 69,
+      "tick": 69
+    },
+    "elapsed_ms": 2591.993375,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.7485041618347168,
+        -2.905123233795166
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 70,
+      "tick": 70
+    },
+    "elapsed_ms": 2637.937875,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.5295400619506836,
+        1.612894058227539
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 71,
+      "tick": 71
+    },
+    "elapsed_ms": 2672.370625,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.5295400619506836,
+        1.612894058227539
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 72,
+      "tick": 72
+    },
+    "elapsed_ms": 2706.651833,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.9836926460266113,
+        0.3123762011528015
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 73,
+      "tick": 73
+    },
+    "elapsed_ms": 2753.1235,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.9836926460266113,
+        0.3123762011528015
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 74,
+      "tick": 74
+    },
+    "elapsed_ms": 2787.3011659999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.278534412384033,
+        -1.9514816999435425
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 75,
+      "tick": 75
+    },
+    "elapsed_ms": 2820.6827080000003,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.278534412384033,
+        -1.9514816999435425
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 76,
+      "tick": 76
+    },
+    "elapsed_ms": 2862.361666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.9120862483978271,
+        2.8579885959625244
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 77,
+      "tick": 77
+    },
+    "elapsed_ms": 2897.108083,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.9120862483978271,
+        2.8579885959625244
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 78,
+      "tick": 78
+    },
+    "elapsed_ms": 2931.379083,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.4707740843296051,
+        -2.962831735610962
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 79,
+      "tick": 79
+    },
+    "elapsed_ms": 2973.2411660000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -0.4707740843296051,
+        -2.962831735610962
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 80,
+      "tick": 80
+    },
+    "elapsed_ms": 3007.3795410000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.6445519924163818,
+        2.509073495864868
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 81,
+      "tick": 81
+    },
+    "elapsed_ms": 3041.353208,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.6445519924163818,
+        2.509073495864868
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 82,
+      "tick": 82
+    },
+    "elapsed_ms": 3084.382583,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.385751962661743,
+        -1.8188426494598389
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 83,
+      "tick": 83
+    },
+    "elapsed_ms": 3118.877625,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.385751962661743,
+        -1.8188426494598389
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 84,
+      "tick": 84
+    },
+    "elapsed_ms": 3152.0225,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8020262718200684,
+        1.071751356124878
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 85,
+      "tick": 85
+    },
+    "elapsed_ms": 3193.873666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.8020262718200684,
+        1.071751356124878
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 86,
+      "tick": 86
+    },
+    "elapsed_ms": 3228.0158330000004,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.9654438495635986,
+        -0.45403003692626953
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 87,
+      "tick": 87
+    },
+    "elapsed_ms": 3263.5741660000003,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.9654438495635986,
+        -0.45403003692626953
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 88,
+      "tick": 88
+    },
+    "elapsed_ms": 3309.393041,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.999997854232788,
+        0.003711999859660864
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 89,
+      "tick": 89
+    },
+    "elapsed_ms": 3344.3995,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.999997854232788,
+        0.003711999859660864
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 90,
+      "tick": 90
+    },
+    "elapsed_ms": 3378.825666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.989450216293335,
+        0.25137293338775635
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 91,
+      "tick": 91
+    },
+    "elapsed_ms": 3426.416333,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.989450216293335,
+        0.25137293338775635
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 92,
+      "tick": 92
+    },
+    "elapsed_ms": 3460.7221250000002,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9844226837158203,
+        -0.3053283393383026
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 93,
+      "tick": 93
+    },
+    "elapsed_ms": 3495.194166,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.9844226837158203,
+        -0.3053283393383026
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 94,
+      "tick": 94
+    },
+    "elapsed_ms": 3537.2913329999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.995260238647461,
+        0.16857333481311798
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 95,
+      "tick": 95
+    },
+    "elapsed_ms": 3571.863583,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.995260238647461,
+        0.16857333481311798
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 96,
+      "tick": 96
+    },
+    "elapsed_ms": 3605.695916,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.995293140411377,
+        0.16799187660217285
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 97,
+      "tick": 97
+    },
+    "elapsed_ms": 3651.1955829999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.995293140411377,
+        0.16799187660217285
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 98,
+      "tick": 98
+    },
+    "elapsed_ms": 3686.3504580000003,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.9177818298339844,
+        -0.6975312829017639
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 99,
+      "tick": 99
+    },
+    "elapsed_ms": 3721.183958,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.9177818298339844,
+        -0.6975312829017639
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 100,
+      "tick": 100
+    },
+    "elapsed_ms": 3768.522625,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.6672377586364746,
+        1.373260259628296
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 101,
+      "tick": 101
+    },
+    "elapsed_ms": 3803.180666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.6672377586364746,
+        1.373260259628296
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 102,
+      "tick": 102
+    },
+    "elapsed_ms": 3836.937875,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.115166425704956,
+        -2.1274566650390625
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 103,
+      "tick": 103
+    },
+    "elapsed_ms": 3882.378291,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.115166425704956,
+        -2.1274566650390625
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 104,
+      "tick": 104
+    },
+    "elapsed_ms": 3916.0227499999996,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.2058097124099731,
+        2.747002601623535
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 105,
+      "tick": 105
+    },
+    "elapsed_ms": 3950.2252909999997,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.2058097124099731,
+        2.747002601623535
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 106,
+      "tick": 106
+    },
+    "elapsed_ms": 3995.727666,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.09772548079490662,
+        -2.9984078407287598
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 107,
+      "tick": 107
+    },
+    "elapsed_ms": 4029.32725,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.09772548079490662,
+        -2.9984078407287598
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 108,
+      "tick": 108
+    },
+    "elapsed_ms": 4063.16775,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.5220685005187988,
+        2.5852091312408447
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 109,
+      "tick": 109
+    },
+    "elapsed_ms": 4106.819125,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.5220685005187988,
+        2.5852091312408447
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 110,
+      "tick": 110
+    },
+    "elapsed_ms": 4142.079416,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.6834239959716797,
+        -1.3413572311401367
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 111,
+      "tick": 111
+    },
+    "elapsed_ms": 4175.963541,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.6834239959716797,
+        -1.3413572311401367
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 112,
+      "tick": 112
+    },
+    "elapsed_ms": 4218.124208,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.955660581588745,
+        -0.5138781070709229
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 113,
+      "tick": 113
+    },
+    "elapsed_ms": 4251.76375,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -2.955660581588745,
+        -0.5138781070709229
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 114,
+      "tick": 114
+    },
+    "elapsed_ms": 4286.076166,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.9305667877197266,
+        2.2962822914123535
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 115,
+      "tick": 115
+    },
+    "elapsed_ms": 4327.596082999999,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        1.9305667877197266,
+        2.2962822914123535
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 116,
+      "tick": 116
+    },
+    "elapsed_ms": 4361.2486659999995,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.22032272815704346,
+        -2.991898775100708
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 117,
+      "tick": 117
+    },
+    "elapsed_ms": 4395.911875000001,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        0.22032272815704346,
+        -2.991898775100708
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 118,
+      "tick": 118
+    },
+    "elapsed_ms": 4439.783458,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.3544809818267822,
+        1.859144687652588
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 119,
+      "tick": 119
+    },
+    "elapsed_ms": 4474.2498749999995,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -2.3544809818267822,
+        1.859144687652588
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 120,
+      "tick": 120
+    },
+    "elapsed_ms": 4508.832,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.919919967651367,
+        0.6885250806808472
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 121,
+      "tick": 121
+    },
+    "elapsed_ms": 4554.0255,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.919919967651367,
+        0.6885250806808472
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 122,
+      "tick": 122
+    },
+    "elapsed_ms": 4588.710708,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.090272307395935,
+        -2.7948713302612305
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 123,
+      "tick": 123
+    },
+    "elapsed_ms": 4623.265166,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        -1.090272307395935,
+        -2.7948713302612305
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 124,
+      "tick": 124
+    },
+    "elapsed_ms": 4665.843916,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -1.8246585130691528,
+        2.381307363510132
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 125,
+      "tick": 125
+    },
+    "elapsed_ms": 4699.802333,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        -0.0,
+        -1.8246585130691528,
+        2.381307363510132
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 126,
+      "tick": 126
+    },
+    "elapsed_ms": 4733.736290999999,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.951483726501465,
+        0.5373490452766418
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 127,
+      "tick": 127
+    },
+    "elapsed_ms": 4784.837750000001,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  },
+  {
+    "data": {
+      "body": 18,
+      "body_local_impulse": true,
+      "delivery_ticks": 1,
+      "impulse_per_tick": [
+        0.0,
+        2.951483726501465,
+        0.5373490452766418
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 128,
+      "requested_impulse": [
+        0.0,
+        3.0,
+        0.0
+      ],
+      "strike": 128,
+      "tick": 128
+    },
+    "elapsed_ms": 4818.762458,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  }
+]

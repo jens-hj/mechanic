@@ -1,0 +1,37 @@
+2026-09-16T10:34:29.259229Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-09-16T10:34:29.295345Z  WARN mechanic_app::settings: could not load settings from /Users/jens/Library/Application Support/mechanic/settings.ron: unsupported settings version 1
+2026-09-16T10:34:29.304108Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-09-16T10:34:29.304163Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-09-16T10:34:29.466561Z  INFO bevy_winit::system: Creating new window Mechanic — construction and simulation prototype (62v0)
+2026-09-16T10:34:30.007005Z  INFO mechanic_app::automation: Automatic capture: mechanic-auto-bf107dc139c34f0d99852d878099a8ff (foreground requested: true)
+2026-09-16T10:34:30.111688Z  INFO mechanic_app::automation: Automation waiting: phase Loading notice None progress TerrainReadiness { resolved: 0, total: 0 } running false backlog 0 resolved 0/0
+2026-09-16T10:34:32.123267Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 3302 resolved 36/36
+2026-09-16T10:34:34.128528Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 3029 resolved 36/36
+2026-09-16T10:34:36.140024Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 2795 resolved 36/36
+2026-09-16T10:34:38.161779Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 2571 resolved 36/36
+2026-09-16T10:34:40.211426Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 2371 resolved 36/36
+2026-09-16T10:34:42.236437Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 2181 resolved 36/36
+2026-09-16T10:34:44.261347Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 1993 resolved 36/36
+2026-09-16T10:34:46.267169Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 1809 resolved 36/36
+2026-09-16T10:34:48.274875Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 1627 resolved 36/36
+2026-09-16T10:34:50.291857Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 1443 resolved 36/36
+2026-09-16T10:34:52.315640Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 1261 resolved 36/36
+2026-09-16T10:34:54.344964Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 1081 resolved 36/36
+2026-09-16T10:34:56.349420Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 903 resolved 36/36
+2026-09-16T10:34:58.379927Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 721 resolved 36/36
+2026-09-16T10:35:00.400849Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 543 resolved 36/36
+2026-09-16T10:35:02.407280Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 363 resolved 36/36
+2026-09-16T10:35:04.436696Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 181 resolved 36/36
+2026-09-16T10:35:06.443640Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 13 resolved 36/36
+2026-09-16T10:35:08.468126Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 0 resolved 36/36
+2026-09-16T10:35:10.471102Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 0 resolved 36/36
+2026-09-16T10:35:12.489930Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 0 resolved 36/36
+2026-09-16T10:35:14.503957Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 0 resolved 36/36
+2026-09-16T10:35:16.533127Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 0 resolved 36/36
+2026-09-16T10:35:18.538281Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 0 resolved 36/36
+2026-09-16T10:35:20.566471Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 0 resolved 36/36
+2026-09-16T10:35:21.598026Z  INFO mechanic_app::performance_capture: Performance capture started (replay ticks: None; wall-time capture otherwise)
+2026-09-16T10:36:21.698111Z  INFO mechanic_app::performance_capture: Performance capture: /Users/jens/repos/mechanic/docs/performance-results/2026-09-16-fast-motion/foreground-driving/capture-1789554981613001000-12856.jsonl
+2026-09-16T10:36:21.700521Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 36, total: 36 } running true backlog 2929 resolved 0/37
+2026-09-16T10:36:21.906688Z  INFO mechanic_app::automation: Automatic screenshot saved: /Users/jens/repos/mechanic/docs/performance-results/2026-09-16-fast-motion/foreground-driving/capture-1789554981613001000-12856.png
+2026-09-16T10:36:21.924216Z  WARN bevy_winit::state: Skipped event Destroyed for unknown winit Window Id WindowId(536138466560)

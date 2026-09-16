@@ -1,0 +1,446 @@
+{
+  "alone": {
+    "metadata": {
+      "background": null,
+      "bodies": 6,
+      "colliders": 437,
+      "kind": "metadata",
+      "pipe_coordinate": 0,
+      "static_bodies": 5,
+      "static_colliders": 229,
+      "terrain": "diagnostic y=4 plane; intersecting authored parts anchored",
+      "warmup": 120
+    },
+    "speeds": {
+      "0.0": {
+        "constraints_ms": 0.1169450000000001,
+        "contacts": 0,
+        "continuous_ms": 8.180244000000005,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 2.0298259999999972,
+        "final_speed": 2.498764484965823,
+        "p50_ms": 0.038875,
+        "p95_ms": 0.041667,
+        "query_ms": 11.593719000000023,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 0,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.050917000000000004,
+          0.038875,
+          0.038875
+        ]
+      },
+      "1.0": {
+        "constraints_ms": 0.11527200000000007,
+        "contacts": 0,
+        "continuous_ms": 8.001541999999999,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 1.9527430000000003,
+        "final_speed": 1.270324689583464,
+        "p50_ms": 0.038458,
+        "p95_ms": 0.040375,
+        "query_ms": 11.518612000000008,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 0,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.041124999999999995,
+          0.038375,
+          0.038458
+        ]
+      },
+      "10.0": {
+        "constraints_ms": 0.11282800000000005,
+        "contacts": 0,
+        "continuous_ms": 8.021962999999998,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 1.9194439999999984,
+        "final_speed": 1.3872745271012275,
+        "p50_ms": 0.038666,
+        "p95_ms": 0.05875,
+        "query_ms": 14.264558000000024,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 141,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.038666,
+          0.0385,
+          0.038666
+        ]
+      },
+      "40.0": {
+        "constraints_ms": 0.12256700000000006,
+        "contacts": 0,
+        "continuous_ms": 92.85029900000005,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 2.0606039999999974,
+        "final_speed": 38.2332845312282,
+        "p50_ms": 0.269542,
+        "p95_ms": 0.285166,
+        "query_ms": 66.24573100000003,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 438,
+        "sweeps": 2400,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.2695,
+          0.269542,
+          0.270708
+        ]
+      }
+    }
+  },
+  "wishbone": {
+    "metadata": {
+      "background": "docs/performance-results/2026-09-16-wishbone/wishbone-instance.ron",
+      "bodies": 19,
+      "colliders": 2200,
+      "kind": "metadata",
+      "pipe_coordinate": 12,
+      "static_bodies": 5,
+      "static_colliders": 229,
+      "terrain": "diagnostic y=4 plane; intersecting authored parts anchored",
+      "warmup": 120
+    },
+    "speeds": {
+      "0.0": {
+        "constraints_ms": 23.464987999999984,
+        "contacts": 21241,
+        "continuous_ms": 47.04292600000003,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 13.375065,
+        "final_speed": 2.498764484965823,
+        "p50_ms": 1.638083,
+        "p95_ms": 1.7949579999999998,
+        "query_ms": 680.6959089999999,
+        "query_pairs": 7425,
+        "query_triangles": 45058,
+        "requeries": 1536,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          1.651542,
+          1.6369589999999998,
+          1.638083
+        ]
+      },
+      "1.0": {
+        "constraints_ms": 23.50784300000003,
+        "contacts": 21241,
+        "continuous_ms": 47.13116800000002,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 13.432259000000002,
+        "final_speed": 1.270324689583464,
+        "p50_ms": 1.644167,
+        "p95_ms": 1.796,
+        "query_ms": 681.6056120000005,
+        "query_pairs": 7425,
+        "query_triangles": 45058,
+        "requeries": 1536,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          1.639833,
+          1.644167,
+          1.64475
+        ]
+      },
+      "10.0": {
+        "constraints_ms": 23.691593000000005,
+        "contacts": 21074,
+        "continuous_ms": 46.94981699999993,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 13.439771000000023,
+        "final_speed": 1.3872745271012275,
+        "p50_ms": 1.6412499999999999,
+        "p95_ms": 1.791167,
+        "query_ms": 685.9922610000003,
+        "query_pairs": 6873,
+        "query_triangles": 45194,
+        "requeries": 1552,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          1.641375,
+          1.6412499999999999,
+          1.636208
+        ]
+      },
+      "40.0": {
+        "constraints_ms": 23.113362999999996,
+        "contacts": 21156,
+        "continuous_ms": 581.8500530000003,
+        "continuous_pairs": 0,
+        "continuous_triangles": 24000,
+        "degraded_ticks": 0,
+        "dynamics_ms": 13.442344000000015,
+        "final_speed": 38.2332845312282,
+        "p50_ms": 2.553792,
+        "p95_ms": 2.832125,
+        "query_ms": 766.2531680000002,
+        "query_pairs": 9655,
+        "query_triangles": 50756,
+        "requeries": 1800,
+        "sweeps": 2400,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          2.553792,
+          2.5503750000000003,
+          2.55425
+        ]
+      }
+    }
+  },
+  "builder-with": {
+    "metadata": {
+      "background": "docs/performance-results/2026-09-16-wishbone/builder-instance-171.ron",
+      "bodies": 29,
+      "colliders": 3950,
+      "kind": "metadata",
+      "pipe_coordinate": 13,
+      "static_bodies": 14,
+      "static_colliders": 1739,
+      "terrain": "diagnostic y=4 plane; intersecting authored parts anchored",
+      "warmup": 120
+    },
+    "speeds": {
+      "0.0": {
+        "constraints_ms": 23.41660299999999,
+        "contacts": 21103,
+        "continuous_ms": 75.32294299999994,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 14.990718999999988,
+        "final_speed": 2.498764484965823,
+        "p50_ms": 1.901875,
+        "p95_ms": 2.047291,
+        "query_ms": 786.6168790000003,
+        "query_pairs": 7077,
+        "query_triangles": 45082,
+        "requeries": 1544,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          1.8994170000000001,
+          1.901875,
+          1.907125
+        ]
+      },
+      "1.0": {
+        "constraints_ms": 23.416779999999992,
+        "contacts": 21103,
+        "continuous_ms": 75.00577999999997,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 15.071844000000008,
+        "final_speed": 1.270324689583464,
+        "p50_ms": 1.901166,
+        "p95_ms": 2.048084,
+        "query_ms": 786.3927810000002,
+        "query_pairs": 7077,
+        "query_triangles": 45082,
+        "requeries": 1544,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          1.897416,
+          1.901166,
+          1.9061670000000002
+        ]
+      },
+      "10.0": {
+        "constraints_ms": 23.66167999999997,
+        "contacts": 21175,
+        "continuous_ms": 75.01587100000003,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 15.087716000000006,
+        "final_speed": 1.3872745271012275,
+        "p50_ms": 1.908666,
+        "p95_ms": 2.06775,
+        "query_ms": 796.3411040000008,
+        "query_pairs": 7101,
+        "query_triangles": 45410,
+        "requeries": 1560,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          1.908666,
+          1.91,
+          1.9075
+        ]
+      },
+      "40.0": {
+        "constraints_ms": 23.041699,
+        "contacts": 21156,
+        "continuous_ms": 760.9768540000005,
+        "continuous_pairs": 0,
+        "continuous_triangles": 24000,
+        "degraded_ticks": 0,
+        "dynamics_ms": 15.096834999999981,
+        "final_speed": 38.2332845312282,
+        "p50_ms": 3.064542,
+        "p95_ms": 3.368167,
+        "query_ms": 883.8437620000003,
+        "query_pairs": 9655,
+        "query_triangles": 50756,
+        "requeries": 1800,
+        "sweeps": 2400,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          3.067667,
+          3.064542,
+          3.0596669999999997
+        ]
+      }
+    }
+  },
+  "builder-without": {
+    "metadata": {
+      "background": "docs/performance-results/2026-09-16-wishbone/builder-instance-172.ron",
+      "bodies": 16,
+      "colliders": 2187,
+      "kind": "metadata",
+      "pipe_coordinate": 1,
+      "static_bodies": 14,
+      "static_colliders": 1739,
+      "terrain": "diagnostic y=4 plane; intersecting authored parts anchored",
+      "warmup": 120
+    },
+    "speeds": {
+      "0.0": {
+        "constraints_ms": 0.12657900000000005,
+        "contacts": 0,
+        "continuous_ms": 38.05949700000005,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 3.6956589999999996,
+        "final_speed": 2.498764484965823,
+        "p50_ms": 0.133292,
+        "p95_ms": 0.193,
+        "query_ms": 39.51549800000004,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 63,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.13325,
+          0.133292,
+          0.13333299999999998
+        ]
+      },
+      "1.0": {
+        "constraints_ms": 0.12941899999999998,
+        "contacts": 0,
+        "continuous_ms": 37.91162800000006,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 3.6785569999999983,
+        "final_speed": 1.270324689583464,
+        "p50_ms": 0.133208,
+        "p95_ms": 0.192791,
+        "query_ms": 39.53209300000006,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 63,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.133208,
+          0.133125,
+          0.136458
+        ]
+      },
+      "10.0": {
+        "constraints_ms": 0.12644500000000006,
+        "contacts": 0,
+        "continuous_ms": 37.949373000000044,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 3.720918999999998,
+        "final_speed": 1.3872745271012275,
+        "p50_ms": 0.13333299999999998,
+        "p95_ms": 0.19837500000000002,
+        "query_ms": 46.70858300000001,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 184,
+        "sweeps": 0,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.133292,
+          0.13333299999999998,
+          0.134083
+        ]
+      },
+      "40.0": {
+        "constraints_ms": 0.14976699999999987,
+        "contacts": 0,
+        "continuous_ms": 270.67915100000033,
+        "continuous_pairs": 0,
+        "continuous_triangles": 0,
+        "degraded_ticks": 0,
+        "dynamics_ms": 3.9035269999999955,
+        "final_speed": 38.2332845312282,
+        "p50_ms": 0.880583,
+        "p95_ms": 0.955125,
+        "query_ms": 249.34594600000003,
+        "query_pairs": 0,
+        "query_triangles": 0,
+        "requeries": 438,
+        "sweeps": 2400,
+        "ticks": 600,
+        "repeatable_state": true,
+        "p50_runs_ms": [
+          0.88125,
+          0.879666,
+          0.880583
+        ]
+      }
+    }
+  }
+}

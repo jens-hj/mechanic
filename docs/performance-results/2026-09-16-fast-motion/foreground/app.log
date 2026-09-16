@@ -1,0 +1,4 @@
+
+thread 'main' (2962802) panicked at vendor/bevy_render/src/renderer/mod.rs:287:36:
+Unable to find a GPU! Make sure you have installed required drivers!
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

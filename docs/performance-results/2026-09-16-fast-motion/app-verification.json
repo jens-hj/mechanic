@@ -1,0 +1,20 @@
+{
+  "adapter": "Apple M1 Pro / Metal",
+  "fps": 31.716734174678134,
+  "completed_tps": 59.97071287162645,
+  "cpu_tick_ms": {
+    "count": 3599,
+    "p50": 1.578875,
+    "p95": 6.475042,
+    "p99": 8.667792
+  },
+  "cpu_degraded_ticks": 0,
+  "driving_input": {
+    "count": 3599,
+    "matches_submitted_ticks": true,
+    "first_script_tick": 0,
+    "last_script_tick": 3598
+  },
+  "foreground_protocol_passed": true,
+  "camera_note": "Automation suppresses manual camera input. The idle builder camera stays fixed in world space; scripted driving seats the player and the view follows the car."
+}

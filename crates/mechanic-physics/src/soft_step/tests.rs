@@ -1052,3 +1052,102 @@ fn a_two_wheeled_cart_tips_its_tail_onto_the_floor() {
         );
     }
 }
+
+#[test]
+fn fast_free_rotor_keeps_spinning_while_its_static_base_stays_fixed() {
+    let creation = rotor(true);
+    let row = creation.dynamics.coordinate_velocities[0];
+    let mut initial = MachineState::at_rest(&creation);
+    for pose in &mut initial.poses {
+        pose.position.y += 3.0;
+    }
+    initial.velocities[row] = 400.0;
+    let root = creation
+        .compounds
+        .iter()
+        .position(|body| body.is_static)
+        .unwrap();
+    let fixed = initial.poses[root];
+    let mut world = World::new(creation, initial);
+    for _ in 0..30 {
+        let state = world.tick(DVec3::ZERO);
+        assert_eq!(state.poses[root], fixed);
+        assert!((state.velocities[row] - 400.0).abs() < 1e-6);
+        assert!(!world.machine.diagnostics().degraded);
+    }
+}
+
+#[test]
+fn spinning_pipe_preserves_distant_wishbone_support_and_free_rotation() {
+    use mechanic_core::{PipeBendDimensions, PipeBendSpec};
+    let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
+        "../../../mechanic-bench/tests/fixtures/driven_car_instance.ron"
+    ))
+    .unwrap();
+    let mut loaded = instance.creation.into_graph().unwrap();
+    let root = spawn(&mut loaded.graph, IVec3::new(8160, 5000, 0), [4, 4, 4]);
+    let BuildOutcome::Spawned(pipe) = loaded
+        .graph
+        .apply(BuildCommand::SpawnPipeBend(PipeBendSpec::new(
+            PipeBendDimensions::new(1.0, 0.6, 6).unwrap(),
+            BuildPose::from_position_ticks(IVec3::new(8000, 4400, 0), GridRotation::default()),
+        )))
+        .unwrap()
+    else {
+        panic!("pipe expected")
+    };
+    loaded
+        .graph
+        .apply(BuildCommand::AddBearing(BearingSpec::new(
+            FaceRef::part(root, FaceKind::NegativeY),
+            FaceRef::part(pipe, FaceKind::PositiveY),
+            Vec3::new(20.4, 12.0, 0.0),
+            Vec3::NEG_Y,
+        )))
+        .unwrap();
+    let creation = loaded
+        .graph
+        .compile_with_suspension_sockets([root], &loaded.sockets)
+        .unwrap();
+    let pipe_body = creation
+        .colliders
+        .iter()
+        .find(|c| c.source_part == pipe)
+        .unwrap()
+        .compound_index;
+    let coordinate = creation
+        .bearings
+        .iter()
+        .find(|b| b.compound_a == pipe_body || b.compound_b == pipe_body)
+        .unwrap()
+        .coordinate_index
+        .unwrap() as usize;
+    let row = creation.dynamics.coordinate_velocities[coordinate];
+    let initial = lifted(&creation, 0.001);
+    let mut settled = World::new(creation.clone(), initial);
+    for _ in 0..120 {
+        settled.tick(GRAVITY);
+    }
+    let initial = settled.machine.snapshot().state.clone();
+    let mut spinning = initial.clone();
+    spinning.velocities[row] = 200.0;
+    let mut slow = World::new(creation.clone(), initial);
+    let mut fast = World::new(creation, spinning);
+    for _ in 0..120 {
+        let expected = slow.tick(GRAVITY);
+        let actual = fast.tick(GRAVITY);
+        assert!((actual.velocities[row] - 200.0).abs() < 1e-5);
+        for (a, b) in actual
+            .poses
+            .iter()
+            .zip(&expected.poses)
+            .filter(|(a, _)| a.position.x < 10.0)
+        {
+            assert!(
+                a.position.distance(b.position) < 0.02,
+                "distant support changed"
+            );
+        }
+        assert!(clearance(fast.creation(), &actual) > -0.03);
+    }
+}

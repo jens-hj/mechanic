@@ -1,0 +1,27 @@
+{
+  "binaries": {
+    "baseline": "/Users/jens/repos/mechanic/.physics-reference/assembly-local-baseline/cpu-physics",
+    "candidate": "/Users/jens/repos/mechanic/target/release/cpu-physics"
+  },
+  "sha256": {
+    "baseline": "e6546e003b15aa9c9db545c4735d09f8ad8e284955c14ef6bc0d7d9217d487ce",
+    "candidate": "1ba6903b408f13454f074cbb266f4cf1cd77f5168ac20a4f7708d805c44015f9"
+  },
+  "warmup": 120,
+  "ticks": 600,
+  "pairs": 3,
+  "order": [
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ]
+  ]
+}

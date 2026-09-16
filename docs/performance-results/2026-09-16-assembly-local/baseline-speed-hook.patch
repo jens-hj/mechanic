@@ -1,0 +1,20 @@
+--- crates/mechanic-bench/src/bin/cpu-physics/pipe_motion.rs
++++ crates/mechanic-bench/src/bin/cpu-physics/pipe_motion.rs
+@@ -126,7 +126,16 @@
+         "{}",
+         json!({"kind":"metadata","background":background,"colliders":creation.colliders.len(),"bodies":creation.compounds.len(),"static_bodies":creation.compounds.iter().filter(|body| body.is_static).count(),"static_colliders":creation.compounds.iter().filter(|body| body.is_static).map(|body| body.collider_range.len()).sum::<usize>(),"pipe_coordinate":bearing.coordinate_index,"warmup":options.warmup,"terrain":"diagnostic y=4 plane; intersecting authored parts anchored"})
+     );
+-    for speed in [0.0, 1.0, 10.0, 40.0] {
++    let speeds = std::env::var("MECHANIC_PIPE_SPEEDS").map_or_else(
++        |_| Ok(vec![0.0, 1.0, 10.0, 40.0]),
++        |value| {
++            value
++                .split(',')
++                .map(str::parse::<f64>)
++                .collect::<Result<Vec<_>, _>>()
++        },
++    )?;
++    for speed in speeds {
+         let mut state = settled.snapshot().state.clone();
+         state.velocities[row] = speed;
+         let mut machine = CpuMachine::new(creation.clone(), 1, state)?;

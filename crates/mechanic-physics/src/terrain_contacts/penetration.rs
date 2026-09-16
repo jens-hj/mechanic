@@ -106,12 +106,7 @@ impl TerrainContactScene {
                 continue;
             }
             let motion_bound = motion.bounds()[collider.body];
-            let [minimum, maximum] = super::swept_bounds(
-                collider,
-                motion.initial_poses()[collider.body],
-                motion_bound,
-                0.0,
-            )?;
+            let [minimum, maximum] = super::path_bounds(collider, motion, 0.0)?;
             let bounds = WorldBounds {
                 minimum: WorldPosition((origin + minimum).map(f64::next_down)),
                 maximum: WorldPosition((origin + maximum).map(f64::next_up)),
@@ -234,12 +229,7 @@ impl TerrainContactScene {
         // midpoint's separating-axis overlap plus that sum bounds the whole path.
         let mut bounds = Vec::with_capacity(machine.colliders.len());
         for collider in &machine.colliders {
-            let corners = super::swept_bounds(
-                collider,
-                motion.initial_poses()[collider.body],
-                motion.bounds()[collider.body],
-                0.0,
-            )?;
+            let corners = super::path_bounds(collider, motion, 0.0)?;
             if !corners[0].is_finite() || !corners[1].is_finite() {
                 return Err(PhysicsError::InvalidCollision);
             }

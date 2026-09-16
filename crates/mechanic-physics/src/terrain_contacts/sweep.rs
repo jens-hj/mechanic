@@ -74,6 +74,10 @@ pub struct TerrainSweepQuery {
     pub maximum_point_displacement: f64,
     /// Collider pairs on different bodies whose swept bounds overlap.
     pub collider_pair_candidates: usize,
+    /// Collider paths prepared after conservative body rejection.
+    pub detailed_preparations: usize,
+    /// Finite initial supports reused only at their exact queried poses.
+    pub cached_supports: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -107,6 +111,8 @@ impl TerrainContactScene {
             maximum_evaluations_per_triangle,
             false,
             None,
+            None,
+            &[],
         )
     }
 
@@ -129,6 +135,8 @@ impl TerrainContactScene {
             maximum_evaluations_per_triangle,
             true,
             None,
+            None,
+            &[],
         )
     }
 
@@ -158,6 +166,32 @@ impl TerrainContactScene {
             maximum_evaluations_per_triangle,
             true,
             slow,
+            None,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sweep_contact_groups(
+        &self,
+        machine: &MachineCollisionGeometry,
+        motion: &MachineMotion<'_>,
+        origin: DVec3,
+        tolerance: f64,
+        maximum_evaluations_per_triangle: usize,
+        groups: &super::ContactGroups,
+        supported: &[super::TerrainContactFeature],
+    ) -> Result<TerrainSweepQuery, PhysicsError> {
+        self.sweep_internal(
+            machine,
+            motion,
+            origin,
+            tolerance,
+            maximum_evaluations_per_triangle,
+            true,
+            None,
+            Some(groups),
+            supported,
         )
     }
 
@@ -171,6 +205,8 @@ impl TerrainContactScene {
         maximum_evaluations_per_triangle: usize,
         exclude_initial_supports: bool,
         slow: Option<SlowContactMotion<'_>>,
+        groups: Option<&super::ContactGroups>,
+        supported: &[super::TerrainContactFeature],
     ) -> Result<TerrainSweepQuery, PhysicsError> {
         if machine.generation != motion.generation()
             || machine.bodies != motion.initial_poses().len()
@@ -206,10 +242,15 @@ impl TerrainContactScene {
             velocity_evaluations: 0,
             maximum_point_displacement: 0.0,
             collider_pair_candidates: 0,
+            detailed_preparations: 0,
+            cached_supports: 0,
         };
-        for collider in &machine.colliders {
-            if collider.moving {
-                let displacement = motion.bounds()[collider.body].point_speed(collider.radius);
+        for (body, &radius) in machine.body_radii.iter().enumerate() {
+            if machine.body_colliders[body]
+                .first()
+                .is_some_and(|&row| machine.colliders[row].moving)
+            {
+                let displacement = motion.bounds()[body].point_speed(radius);
                 if !displacement.is_finite() {
                     return Err(PhysicsError::InvalidCollision);
                 }
@@ -223,7 +264,7 @@ impl TerrainContactScene {
             .cache
             .lock()
             .map_err(|_| PhysicsError::InvalidCollision)?;
-        cache.update(machine, motion.initial_poses())?;
+
         let mut scratch = machine
             .sweep_scratch
             .lock()
@@ -232,6 +273,156 @@ impl TerrainContactScene {
             shapes: [first_shape, second_shape],
             clipping,
         } = &mut *scratch;
+        let body_bounds = machine.body_path_bounds(motion, tolerance)?;
+        let mut prepare = vec![false; machine.bodies];
+        let mut body_terrain = vec![Vec::new(); machine.bodies];
+        for (body, bounds) in body_bounds.iter().enumerate() {
+            if machine.body_colliders[body].is_empty() {
+                continue;
+            }
+            let world = WorldBounds {
+                minimum: WorldPosition((origin + bounds[0]).map(f64::next_down)),
+                maximum: WorldPosition((origin + bounds[1]).map(f64::next_up)),
+            };
+            if !valid_bounds(world) {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            if groups.is_none_or(|g| g.includes(machine, body, None))
+                && machine.colliders[machine.body_colliders[body][0]].moving
+            {
+                body_terrain[body] = self.index.bounds_candidates(world);
+                prepare[body] = !body_terrain[body].is_empty();
+            }
+        }
+        for [a, b] in machine.body_candidates(&body_bounds) {
+            if groups.is_some_and(|g| !g.includes(machine, a, Some(b))) {
+                continue;
+            }
+            prepare[a] = true;
+            prepare[b] = true;
+        }
+        if reuse_start() && !prepare.iter().any(|&body| body) {
+            return Ok(query);
+        }
+        // The body hierarchy rejects distant assemblies. Within surviving
+        // bodies, first use the cheap speed envelope to reject individual
+        // colliders before computing endpoint/curvature bounds.
+        let mut starts = vec![None; machine.colliders.len()];
+        let coarse = machine
+            .colliders
+            .iter()
+            .enumerate()
+            .map(|(row, collider)| {
+                if !prepare[collider.body] {
+                    return Ok(body_bounds[collider.body]);
+                }
+                let pose = motion.initial_poses()[collider.body];
+                let start = if cache.poses.get(collider.body) == Some(&pose) {
+                    cache.bounds[row]
+                } else {
+                    collider
+                        .local
+                        .transformed_bounds(pose.position, pose.rotation)
+                        .map_err(|_| PhysicsError::InvalidCollision)?
+                };
+                starts[row] = Some(start);
+                Ok(super::swept_bounds(
+                    collider,
+                    pose,
+                    motion.bounds()[collider.body],
+                    tolerance,
+                    start,
+                ))
+            })
+            .collect::<Result<Vec<_>, PhysicsError>>()?;
+        let mut detailed = vec![false; machine.colliders.len()];
+        for (row, collider) in machine.colliders.iter().enumerate() {
+            if collider.moving && groups.is_none_or(|g| g.includes(machine, collider.body, None)) {
+                let bounds = WorldBounds {
+                    minimum: WorldPosition((origin + coarse[row][0]).map(f64::next_down)),
+                    maximum: WorldPosition((origin + coarse[row][1]).map(f64::next_up)),
+                };
+                if !valid_bounds(bounds) {
+                    return Err(PhysicsError::InvalidCollision);
+                }
+                detailed[row] = body_terrain[collider.body].iter().any(|node| {
+                    let chunk = &self.chunks[node].geometry;
+                    let chunk_bounds = chunk
+                        .triangle_bvh
+                        .nodes
+                        .first()
+                        .map_or(chunk.bounds, |node| node.bounds);
+                    super::overlaps(
+                        [bounds.minimum.0, bounds.maximum.0],
+                        [chunk_bounds.minimum.0, chunk_bounds.maximum.0],
+                    )
+                });
+            }
+        }
+        {
+            let pairs = machine.candidate_pairs_groups(&coarse, groups);
+            query.hierarchy_node_pair_tests += pairs.scratch.node_pair_tests;
+            for &[a, b] in pairs.iter() {
+                detailed[a] = true;
+                detailed[b] = true;
+            }
+        }
+        let bounds = machine
+            .colliders
+            .iter()
+            .enumerate()
+            .map(|(row, collider)| {
+                if !detailed[row] && reuse_start() {
+                    return Ok(coarse[row]);
+                }
+                query.detailed_preparations += 1;
+                super::path_bounds_from(collider, motion, tolerance, starts[row])
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut terrain_candidates = Vec::with_capacity(bounds.len());
+        for (collider, &[minimum, maximum]) in machine.colliders.iter().zip(&bounds) {
+            let world = WorldBounds {
+                minimum: WorldPosition((origin + minimum).map(f64::next_down)),
+                maximum: WorldPosition((origin + maximum).map(f64::next_up)),
+            };
+            if !valid_bounds(world) {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            terrain_candidates.push(
+                if collider.moving
+                    && groups.is_none_or(|g| g.includes(machine, collider.body, None))
+                {
+                    if reuse_start() {
+                        body_terrain[collider.body]
+                            .iter()
+                            .copied()
+                            .filter(|node| {
+                                let chunk = &self.chunks[node].geometry;
+                                let chunk_bounds = chunk
+                                    .triangle_bvh
+                                    .nodes
+                                    .first()
+                                    .map_or(chunk.bounds, |node| node.bounds);
+                                super::overlaps(
+                                    [world.minimum.0, world.maximum.0],
+                                    [chunk_bounds.minimum.0, chunk_bounds.maximum.0],
+                                )
+                            })
+                            .collect()
+                    } else {
+                        self.index.bounds_candidates(world)
+                    }
+                } else {
+                    Vec::new()
+                },
+            );
+        }
+        let candidates = machine.candidate_pairs_groups(&bounds, groups);
+        query.hierarchy_node_pair_tests += candidates.scratch.node_pair_tests;
+        if candidates.iter().next().is_none() && terrain_candidates.iter().all(Vec::is_empty) {
+            return Ok(query);
+        }
+        cache.update(machine, motion.initial_poses())?;
         let initial_velocities = std::sync::OnceLock::new();
         let mut earliest: Option<TerrainSweepHit> = None;
         for (collider_row, collider) in machine.colliders.iter().enumerate() {
@@ -249,6 +440,9 @@ impl TerrainContactScene {
                 query.slow_contact_deferrals += 1;
                 continue;
             }
+            if terrain_candidates[collider_row].is_empty() {
+                continue;
+            }
             let bound = motion.bounds()[collider.body];
             // Zero accumulated angular speed proves all ancestors are fixed in
             // rotation. Matching endpoint quaternions would miss complete turns.
@@ -256,26 +450,15 @@ impl TerrainContactScene {
                 motion.final_poses()[collider.body].position
                     - motion.initial_poses()[collider.body].position
             });
-            let [minimum, maximum] = super::swept_bounds(
-                collider,
-                motion.initial_poses()[collider.body],
-                bound,
-                tolerance,
-            )?;
+            let [minimum, maximum] = bounds[collider_row];
             let bounds = WorldBounds {
                 minimum: WorldPosition((origin + minimum).map(f64::next_down)),
                 maximum: WorldPosition((origin + maximum).map(f64::next_up)),
             };
-            if !valid_bounds(bounds) {
-                return Err(PhysicsError::InvalidCollision);
-            }
             let speed = bound.point_speed(collider.radius);
-            if !speed.is_finite() {
-                return Err(PhysicsError::InvalidCollision);
-            }
-            let chunks = self.index.bounds_candidates(bounds);
+            let chunks = &terrain_candidates[collider_row];
             query.chunk_candidates += chunks.len();
-            for node in chunks {
+            for &node in chunks {
                 let chunk = &self.chunks[&node].geometry;
                 for triangle_row in chunk.bounds_candidates(bounds) {
                     let triangle =
@@ -285,6 +468,15 @@ impl TerrainContactScene {
                                 chunk.origin.0 - origin
                                     + Vec3::from_array(chunk.vertices[index as usize]).as_dvec3()
                             });
+                    // BVH leaves batch triangles; their shared node bounds do
+                    // not prove that this individual triangle is reachable.
+                    let triangle_bounds = triangle.iter().fold(
+                        [DVec3::INFINITY, DVec3::NEG_INFINITY],
+                        |[lo, hi], &point| [lo.min(point), hi.max(point)],
+                    );
+                    if !super::overlaps([minimum, maximum], triangle_bounds) {
+                        continue;
+                    }
                     if (triangle[1] - triangle[0])
                         .cross(triangle[2] - triangle[0])
                         .try_normalize()
@@ -293,6 +485,22 @@ impl TerrainContactScene {
                         continue;
                     }
                     query.triangle_candidates += 1;
+                    if exclude_initial_supports
+                        && reuse_start()
+                        && supported.iter().any(|feature| {
+                            feature.touches(
+                                collider_row,
+                                ContactTarget::Terrain {
+                                    node,
+                                    triangle: triangle_row,
+                                },
+                            )
+                        })
+                    {
+                        query.supported_pairs += 1;
+                        query.cached_supports += 1;
+                        continue;
+                    }
                     let end = earliest.map_or(1.0, |hit| hit.fraction);
                     if let Some(translation) = translation {
                         let shape = if reuse_start() {
@@ -436,23 +644,18 @@ impl TerrainContactScene {
         // axis gap is a lower bound on distance, and distance closes no faster
         // than both colliders' point-speed bounds together, so advancing by that
         // sum stays conservative with both sides moving.
-        let mut bounds = Vec::with_capacity(machine.colliders.len());
-        for collider in &machine.colliders {
-            let corners = super::swept_bounds(
-                collider,
-                motion.initial_poses()[collider.body],
-                motion.bounds()[collider.body],
-                tolerance,
-            )?;
-            if !corners[0].is_finite() || !corners[1].is_finite() {
-                return Err(PhysicsError::InvalidCollision);
-            }
-            bounds.push(corners);
-        }
-        let candidates = machine.candidate_pairs(&bounds);
-        query.hierarchy_node_pair_tests += candidates.scratch.node_pair_tests;
         for &[first, second] in candidates.iter() {
             query.collider_pair_candidates += 1;
+            if exclude_initial_supports
+                && reuse_start()
+                && supported
+                    .iter()
+                    .any(|feature| feature.touches(first, ContactTarget::Collider(second)))
+            {
+                query.supported_pairs += 1;
+                query.cached_supports += 1;
+                continue;
+            }
             let colliders = [&machine.colliders[first], &machine.colliders[second]];
             if let Some(slow) = &slow
                 && colliders.iter().all(|collider| {

@@ -1,0 +1,5 @@
+{
+  "type": "CalledProcessError",
+  "message": "Command '['/Users/jens/repos/mechanic/target/release/mechanic-app']' returned non-zero exit status 101.",
+  "acceptance_passed": false
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "data": {
+      "body": 1,
+      "body_local_impulse": false,
+      "delivery_ticks": 12,
+      "impulse_per_tick": [
+        0.0,
+        3.2374331951141357,
+        0.0
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "repeat": 1,
+      "requested_impulse": [
+        0.0,
+        200.0,
+        0.0
+      ],
+      "strike": 1,
+      "tick": 1
+    },
+    "elapsed_ms": 33.879,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  }
+]

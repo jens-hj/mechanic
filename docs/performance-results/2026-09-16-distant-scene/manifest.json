@@ -1,0 +1,16 @@
+{
+  "binaries": {
+    "before": {
+      "path": "/private/tmp/mechanic-distant-before",
+      "sha256": "c765b498fa3ef8a2643dc2ae01234ac479f9dd93825f91ab13faee4676fd6a16"
+    },
+    "after": {
+      "path": "/Users/jens/repos/mechanic/target/release/cpu-physics",
+      "sha256": "9cb38dfc60ba836d3db5cf864f2e41155f2c3d963ce368eb040a18a08ff33b3b"
+    }
+  },
+  "warmup": 120,
+  "ticks": 600,
+  "pairs": 3,
+  "scene_offset_m": 20
+}

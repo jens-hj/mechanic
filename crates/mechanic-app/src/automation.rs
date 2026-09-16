@@ -583,3 +583,76 @@ impl FreezeSequence {
         Some((toggle, up, down))
     }
 }
+
+/// Submit reproducible hammer strikes during a capture in an isolated world.
+/// The normal hammer delivery calculation determines the per-tick impulses.
+pub(crate) fn hammer_impact(
+    simulation: &crate::AppSimulation,
+    tick: u64,
+) -> Option<crate::HammerImpact> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    #[derive(serde::Deserialize)]
+    struct Strike {
+        body_index: u32,
+        local_point: [f32; 3],
+        impulse: [f32; 3],
+        repeat: Option<u32>,
+        #[serde(default)]
+        body_local_impulse: bool,
+    }
+    static STRIKE: OnceLock<Option<Strike>> = OnceLock::new();
+    static DELIVERED: AtomicU32 = AtomicU32::new(0);
+    if !enabled() || world_store().is_none() || !crate::performance_capture::is_active() {
+        return None;
+    }
+    let strike = STRIKE
+        .get_or_init(|| {
+            std::env::var("MECHANIC_AUTO_HAMMER").ok().map(|value| {
+                serde_json::from_str::<Strike>(&value)
+                    .expect("MECHANIC_AUTO_HAMMER requires body_index, local_point and impulse")
+            })
+        })
+        .as_ref()?;
+    let creation = simulation.creation.as_ref()?;
+    let transform = *simulation.transforms.get(strike.body_index as usize)?;
+    let point = Vec3::from_array(strike.local_point);
+    let impulse = Vec3::from_array(strike.impulse);
+    let impulse = if strike.body_local_impulse {
+        Quat::from_array(transform.rotation) * impulse
+    } else {
+        impulse
+    };
+    let repeat = strike.repeat.unwrap_or(1);
+    assert!(
+        (1..=3600).contains(&repeat),
+        "scripted hammer repeat must be 1..=3600"
+    );
+    assert!(
+        point.is_finite() && impulse.is_finite(),
+        "scripted hammer must be finite"
+    );
+    assert!(
+        !creation.compounds[strike.body_index as usize].is_static,
+        "scripted hammer target is fixed"
+    );
+    let ordinal = DELIVERED
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |delivered| {
+            (delivered < repeat).then_some(delivered + 1)
+        })
+        .ok()?;
+    let (ticks, per_tick) =
+        crate::hammer_delivery(creation, transform, strike.body_index, point, impulse);
+    crate::performance_capture::record("scripted_hammer", || {
+        serde_json::json!({
+            "tick": tick, "body": strike.body_index, "local_point": strike.local_point,
+            "requested_impulse": strike.impulse, "delivery_ticks": ticks, "impulse_per_tick": per_tick.to_array(),
+            "strike": ordinal + 1, "repeat": repeat, "body_local_impulse": strike.body_local_impulse,
+        })
+    });
+    Some(crate::HammerImpact {
+        body_index: strike.body_index,
+        local_point: point,
+        impulse_per_tick: per_tick,
+        remaining_ticks: ticks,
+    })
+}

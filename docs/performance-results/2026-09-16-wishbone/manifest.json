@@ -1,0 +1,21 @@
+{
+  "binary_sha256": "e6546e003b15aa9c9db545c4735d09f8ad8e284955c14ef6bc0d7d9217d487ce",
+  "command": [
+    "target/release/cpu-physics",
+    "--scenario",
+    "pipe-scene",
+    "--instance",
+    "docs/performance-results/2026-09-16-distant-scene/new-instance-8.ron",
+    "--warmup",
+    "120",
+    "--ticks",
+    "600"
+  ],
+  "scenes": {
+    "alone": "None",
+    "wishbone": "docs/performance-results/2026-09-16-wishbone/wishbone-instance.ron",
+    "builder-with": "docs/performance-results/2026-09-16-wishbone/builder-instance-171.ron",
+    "builder-without": "docs/performance-results/2026-09-16-wishbone/builder-instance-172.ron"
+  },
+  "runs": 3
+}

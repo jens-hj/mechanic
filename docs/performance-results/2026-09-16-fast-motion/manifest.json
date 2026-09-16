@@ -1,0 +1,45 @@
+{
+  "baseline_commit": "36ba7418f28db08953d98eb16c4100f8dbbdee02",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+  "baseline_note": "HEAD physics plus the new benchmark harness and zero-valued empty_contact_reuses diagnostic field; isolated source copy in /tmp/mechanic-motion-baseline-source.",
+  "baseline_binary_sha256": "28a68f6153203e5a6aa41b1fe1ff08672e3e4fc681675d29016c3c3890ee2e93",
+  "protocol": {
+    "warmup_ticks": 120,
+    "measured_ticks": 600,
+    "paired_runs": 3,
+    "scenario": "fast-motion",
+    "profile": "release",
+    "gravity": "zero for rotor/translation; -9.81 Y for vehicle",
+    "profiling_during_timings": false
+  },
+  "candidate_binary_sha256": "53b39c7dc5b7ffa1c780f431968525c2105834eb3644d49ba180858fd8147dc2",
+  "baseline_target_directory": "/tmp/mechanic-motion-baseline-target",
+  "candidate_target_directory": "/Users/jens/repos/mechanic/target",
+  "platform": "Darwin 27.0.0 arm64",
+  "quality_timing_note": "Quality JSONL timings are diagnostic only; release compilation overlapped quality checks.",
+  "verification": {
+    "cpu_tests": {
+      "command": "cargo test --release -p mechanic-physics --lib",
+      "passed": 196,
+      "failed": 0
+    },
+    "clippy": {
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "passed": true
+    },
+    "format": {
+      "command": "cargo fmt --all -- --check",
+      "passed": true
+    },
+    "soft_step_after_query_gate": {
+      "command": "cargo test --release -p mechanic-physics soft_step",
+      "passed": 32,
+      "failed": 0
+    }
+  },
+  "long_protocol": {
+    "warmup_ticks": 120,
+    "measured_ticks": 3000,
+    "paired_runs": 3
+  }
+}

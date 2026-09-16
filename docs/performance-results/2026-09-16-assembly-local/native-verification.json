@@ -1,0 +1,71 @@
+{
+  "Pipe / fast": {
+    "identical_initial_state_camera_terrain": true,
+    "identical_hammer_deliveries": true,
+    "terrain_layout_matches": true,
+    "strikes": 128,
+    "baseline": {
+      "continuous_sweeps": 2316,
+      "mean_stages_ms": {
+        "query_ms": 0.7987740683333333,
+        "continuous_ms": 2.3986697483333335,
+        "dynamics_ms": 0.008627948333333333,
+        "constraints_ms": 0.0009016283333333334
+      }
+    },
+    "candidate": {
+      "continuous_sweeps": 2323,
+      "mean_stages_ms": {
+        "query_ms": 0.13251166,
+        "continuous_ms": 0.05520693833333333,
+        "dynamics_ms": 0.006750531666666667,
+        "constraints_ms": 0.0007657116666666666
+      },
+      "detailed_preparations": 0,
+      "refreshed_groups": 20440,
+      "reused_groups": 39560,
+      "certificate_failures": 0
+    },
+    "compact_motion_preserves_all_publications": true
+  },
+  "Builder / fast": {
+    "identical_initial_state_camera_terrain": true,
+    "identical_hammer_deliveries": true,
+    "terrain_layout_matches": false,
+    "strikes": 128,
+    "baseline": {
+      "continuous_sweeps": 2356,
+      "mean_stages_ms": {
+        "query_ms": 3.6788995583333333,
+        "continuous_ms": 29.552462956666666,
+        "dynamics_ms": 0.04197502,
+        "constraints_ms": 0.08681608333333334
+      }
+    },
+    "candidate": {
+      "continuous_sweeps": 2375,
+      "mean_stages_ms": {
+        "query_ms": 3.191712648333333,
+        "continuous_ms": 0.33153126666666666,
+        "dynamics_ms": 0.03225981333333334,
+        "constraints_ms": 0.05538827166666666
+      },
+      "detailed_preparations": 4116,
+      "refreshed_groups": 70052,
+      "reused_groups": 124948,
+      "certificate_failures": 0
+    },
+    "compact_motion_preserves_all_publications": true
+  },
+  "Pipe / slow": {
+    "identical_initial_state_camera_terrain": true,
+    "identical_hammer_deliveries": true,
+    "terrain_layout_matches": false,
+    "strikes": 1
+  },
+  "slow_builder_paired_ratios": [
+    1.0426206827876574,
+    1.04330092870601,
+    1.0163729134458335
+  ]
+}

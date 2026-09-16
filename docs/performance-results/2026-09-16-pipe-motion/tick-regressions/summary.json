@@ -1,0 +1,508 @@
+[
+  {
+    "scenario": "rotor",
+    "unrelated": 0,
+    "speed": 0.0,
+    "baseline_p50_ms": 0.006959,
+    "candidate_p50_ms": 0.006875,
+    "baseline_p95_ms": 0.007333999999999999,
+    "candidate_p95_ms": 0.006959,
+    "p50_ratios": [
+      0.9424827586206895,
+      1.0061466412995757,
+      0.9998563011927001
+    ],
+    "p95_ratios": [
+      0.8978064516129032,
+      1.0001437194596148,
+      1.005590400872648
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 0,
+    "speed": 1.0,
+    "baseline_p50_ms": 0.0067079999999999996,
+    "candidate_p50_ms": 0.006459,
+    "baseline_p95_ms": 0.007084,
+    "candidate_p95_ms": 0.007083,
+    "p50_ratios": [
+      0.9511117655720808,
+      0.9938493849384938,
+      0.9627310673822302
+    ],
+    "p95_ratios": [
+      0.9393979578305265,
+      1.024146905725853,
+      0.9292772444946359
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 0,
+    "speed": 8.696763593918249,
+    "baseline_p50_ms": 0.007083,
+    "candidate_p50_ms": 0.00725,
+    "baseline_p95_ms": 0.007292,
+    "candidate_p95_ms": 0.007958000000000002,
+    "p50_ratios": [
+      1.0059296908089792,
+      1.065814053743354,
+      1.0
+    ],
+    "p95_ratios": [
+      1.0456664838178826,
+      1.1437241379310343,
+      0.9998743560748841
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 0,
+    "speed": 8.87245578773478,
+    "baseline_p50_ms": 0.008834,
+    "candidate_p50_ms": 0.009000000000000001,
+    "baseline_p95_ms": 0.009541000000000001,
+    "candidate_p95_ms": 0.00975,
+    "p50_ratios": [
+      1.0,
+      1.0285714285714287,
+      1.0281865519583426
+    ],
+    "p95_ratios": [
+      0.961038961038961,
+      1.04,
+      1.0219054606435383
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 0,
+    "speed": 500.0,
+    "baseline_p50_ms": 0.008749999999999999,
+    "candidate_p50_ms": 0.009290999999999999,
+    "baseline_p95_ms": 0.009333000000000001,
+    "candidate_p95_ms": 0.010083,
+    "p50_ratios": [
+      1.0618285714285713,
+      1.0627246376811597,
+      1.0707573870712102
+    ],
+    "p95_ratios": [
+      1.0708368734069669,
+      1.072651903567143,
+      1.0804671595414121
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 32,
+    "speed": 0.0,
+    "baseline_p50_ms": 0.020084,
+    "candidate_p50_ms": 0.019958,
+    "baseline_p95_ms": 0.021292,
+    "candidate_p95_ms": 0.021917,
+    "p50_ratios": [
+      0.9937263493328021,
+      1.0064069968473508,
+      0.9938017553428868
+    ],
+    "p95_ratios": [
+      0.8651561204752695,
+      0.974339515249253,
+      1.1310820965620891
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 32,
+    "speed": 1.0,
+    "baseline_p50_ms": 0.02,
+    "candidate_p50_ms": 0.019875,
+    "baseline_p95_ms": 0.022208000000000002,
+    "candidate_p95_ms": 0.021208,
+    "p50_ratios": [
+      0.993736847379497,
+      0.99375,
+      0.9958586967368528
+    ],
+    "p95_ratios": [
+      0.9919518072289156,
+      0.7977730965994584,
+      0.9700108069164265
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 32,
+    "speed": 8.696763593918249,
+    "baseline_p50_ms": 0.0255,
+    "candidate_p50_ms": 0.025332999999999998,
+    "baseline_p95_ms": 0.027917,
+    "candidate_p95_ms": 0.027125,
+    "p50_ratios": [
+      0.985294117647059,
+      0.9935219512195124,
+      0.9966951253098318
+    ],
+    "p95_ratios": [
+      1.0015090001077858,
+      0.9701257298420318,
+      0.9672990514228657
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 32,
+    "speed": 8.87245578773478,
+    "baseline_p50_ms": 0.045417,
+    "candidate_p50_ms": 0.045375,
+    "baseline_p95_ms": 0.050041999999999996,
+    "candidate_p95_ms": 0.051415999999999996,
+    "p50_ratios": [
+      0.9990726839176898,
+      1.0009027456679216,
+      0.9881960929503234
+    ],
+    "p95_ratios": [
+      1.027456936173614,
+      0.8851461859345425,
+      1.1717948717948719
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "rotor",
+    "unrelated": 32,
+    "speed": 500.0,
+    "baseline_p50_ms": 0.045708,
+    "candidate_p50_ms": 0.045916,
+    "baseline_p95_ms": 0.053333,
+    "candidate_p95_ms": 0.054416,
+    "p50_ratios": [
+      1.0045506257110353,
+      1.006405896935261,
+      0.9999782414760984
+    ],
+    "p95_ratios": [
+      1.012506328164551,
+      0.9961739130434782,
+      1.1155311720698255
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 0,
+    "speed": 0.0,
+    "baseline_p50_ms": 0.005542,
+    "candidate_p50_ms": 0.0052499999999999995,
+    "baseline_p95_ms": 0.006,
+    "candidate_p95_ms": 0.005542,
+    "p50_ratios": [
+      0.9397329483940815,
+      0.9848430169613858,
+      0.9333333333333331
+    ],
+    "p95_ratios": [
+      0.8958333333333334,
+      0.9779424739721193,
+      0.9445
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 0,
+    "speed": 1.0,
+    "baseline_p50_ms": 0.005292000000000001,
+    "candidate_p50_ms": 0.0052499999999999995,
+    "baseline_p95_ms": 0.005915999999999999,
+    "candidate_p95_ms": 0.005625000000000001,
+    "p50_ratios": [
+      0.9920000000000001,
+      1.0076951264199339,
+      0.9920634920634919
+    ],
+    "p95_ratios": [
+      0.9922466309765554,
+      0.9861392832995269,
+      0.9439503272361136
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 0,
+    "speed": 11.879999999999999,
+    "baseline_p50_ms": 0.005834000000000001,
+    "candidate_p50_ms": 0.00575,
+    "baseline_p95_ms": 0.00625,
+    "candidate_p95_ms": 0.005917,
+    "p50_ratios": [
+      0.9785738772711688,
+      0.9998285910181692,
+      0.9857706154637408
+    ],
+    "p95_ratios": [
+      0.9590662502054909,
+      1.0,
+      0.94672
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 0,
+    "speed": 12.119999999999997,
+    "baseline_p50_ms": 0.006833,
+    "candidate_p50_ms": 0.006834,
+    "baseline_p95_ms": 0.007417,
+    "candidate_p95_ms": 0.007542,
+    "p50_ratios": [
+      0.9585345072422607,
+      1.000146348602371,
+      1.0182567726737337
+    ],
+    "p95_ratios": [
+      0.9567981318111054,
+      1.0280436834299582,
+      1.0402758620689654
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 0,
+    "speed": 500.0,
+    "baseline_p50_ms": 0.006791,
+    "candidate_p50_ms": 0.006833,
+    "baseline_p95_ms": 0.007167,
+    "candidate_p95_ms": 0.007375,
+    "p50_ratios": [
+      0.993890909090909,
+      1.0435301132975552,
+      0.9939625975555882
+    ],
+    "p95_ratios": [
+      0.9944714131607335,
+      1.0406027626622019,
+      1.0180714182449038
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 32,
+    "speed": 0.0,
+    "baseline_p50_ms": 0.018875000000000003,
+    "candidate_p50_ms": 0.018917,
+    "baseline_p95_ms": 0.02075,
+    "candidate_p95_ms": 0.019833,
+    "p50_ratios": [
+      1.006651766709238,
+      0.9824736842105263,
+      1.0044503311258277
+    ],
+    "p95_ratios": [
+      0.9558072289156626,
+      0.9506745562130179,
+      0.993736847379497
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 32,
+    "speed": 1.0,
+    "baseline_p50_ms": 0.019125,
+    "candidate_p50_ms": 0.019208,
+    "baseline_p95_ms": 0.020375,
+    "candidate_p95_ms": 0.020874999999999998,
+    "p50_ratios": [
+      1.0285263157894737,
+      0.993478374289143,
+      1.0043398692810457
+    ],
+    "p95_ratios": [
+      1.026601226993865,
+      1.0224322868198068,
+      1.0337721518987342
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 32,
+    "speed": 11.879999999999999,
+    "baseline_p50_ms": 0.025167000000000002,
+    "candidate_p50_ms": 0.025292000000000002,
+    "baseline_p95_ms": 0.027291,
+    "candidate_p95_ms": 0.027,
+    "p50_ratios": [
+      1.008237623762376,
+      0.9850598005324432,
+      1.0083323366423473
+    ],
+    "p95_ratios": [
+      0.989337144113444,
+      0.9243700530099486,
+      1.3008000000000002
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 32,
+    "speed": 12.119999999999997,
+    "baseline_p50_ms": 0.045333,
+    "candidate_p50_ms": 0.045333,
+    "baseline_p95_ms": 0.051417,
+    "candidate_p95_ms": 0.050166,
+    "p50_ratios": [
+      1.0138121546961325,
+      0.9944852535680411,
+      0.9999779415008601
+    ],
+    "p95_ratios": [
+      0.9756695256432698,
+      1.0608770186819396,
+      0.9265244311537946
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "translation",
+    "unrelated": 32,
+    "speed": 500.0,
+    "baseline_p50_ms": 0.045167000000000006,
+    "candidate_p50_ms": 0.045667,
+    "baseline_p95_ms": 0.050124999999999996,
+    "candidate_p95_ms": 0.051583,
+    "p50_ratios": [
+      1.0156751610689219,
+      1.0,
+      1.0009205479452055
+    ],
+    "p95_ratios": [
+      1.032527322951279,
+      1.011630922693267,
+      0.9890510309549253
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "vehicle",
+    "unrelated": 0,
+    "speed": 0.0,
+    "baseline_p50_ms": 0.208875,
+    "candidate_p50_ms": 0.208875,
+    "baseline_p95_ms": 0.243875,
+    "candidate_p95_ms": 0.247083,
+    "p50_ratios": [
+      1.0111607890017933,
+      0.9932208258527827,
+      1.0052119427119428
+    ],
+    "p95_ratios": [
+      1.0509586276488398,
+      0.9762501281394156,
+      1.015410980015041
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "vehicle",
+    "unrelated": 0,
+    "speed": 1.0,
+    "baseline_p50_ms": 0.268583,
+    "candidate_p50_ms": 0.26879200000000003,
+    "baseline_p95_ms": 0.32937500000000003,
+    "candidate_p95_ms": 0.326125,
+    "p50_ratios": [
+      0.9912050718036455,
+      1.0024834036405876,
+      1.0074964766559718
+    ],
+    "p95_ratios": [
+      1.0101191650853887,
+      0.9948915293215791,
+      0.9745984310795667
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  },
+  {
+    "scenario": "vehicle",
+    "unrelated": 0,
+    "speed": 100.0,
+    "baseline_p50_ms": 0.27329200000000003,
+    "candidate_p50_ms": 0.273667,
+    "baseline_p95_ms": 0.362833,
+    "candidate_p95_ms": 0.359416,
+    "p50_ratios": [
+      0.9925269899359561,
+      0.9983319220691436,
+      1.0013721587166837
+    ],
+    "p95_ratios": [
+      1.0032132276954875,
+      0.9905824442649924,
+      0.9923751080955232
+    ],
+    "matching_states": true,
+    "baseline_degraded_ticks": 0,
+    "candidate_degraded_ticks": 0
+  }
+]

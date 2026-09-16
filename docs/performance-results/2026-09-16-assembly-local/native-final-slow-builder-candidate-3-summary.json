@@ -1,0 +1,493 @@
+[
+  {
+    "file": "/Users/jens/repos/mechanic/.physics-reference/assembly-local-native-thin-slow-builder-candidate-3/capture-1789578813376985000-24394.jsonl",
+    "metadata": {
+      "adapter": "WgpuWrapper(AdapterInfo { name: \"Apple M1 Pro\", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"\", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })",
+      "automated_background": false,
+      "bodies": 23,
+      "capture_from_start": false,
+      "dynamic_bodies": 14,
+      "executable": "/Users/jens/repos/mechanic/target/release/mechanic-app",
+      "experiment": "Baseline",
+      "f3": true,
+      "foreground_requested": true,
+      "generalized_velocities": 19,
+      "initial_camera_matrix": [
+        -1.0,
+        0.0,
+        8.742277657347586e-08,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        -8.742277657347586e-08,
+        0.0,
+        -1.0,
+        0.0,
+        5.0,
+        5.650090217590332,
+        -5.0,
+        1.0
+      ],
+      "initial_state_hash": "44e53ad0876d050b",
+      "initial_terrain_fingerprint": "d30e47af2e003ba5",
+      "initial_terrain_layout_fingerprint": "83356a328f91f08f",
+      "label": "builder-foreground",
+      "present_mode": "AutoNoVsync",
+      "replay_ticks": 600,
+      "requested_physics_route": "Cpu",
+      "start_completed_tick": 0,
+      "start_submitted_tick": 0,
+      "terrain_pass_partition": false
+    },
+    "duration_seconds": 10.01563825,
+    "submission_duration_seconds": 10.015638084,
+    "drain_duration_seconds": 1.6599999952404687e-07,
+    "drain_complete": true,
+    "drained_readbacks": 0,
+    "physics_routes": [
+      "cpu"
+    ],
+    "cpu_degraded_ticks": 0,
+    "cpu_tick_ms": {
+      "count": 600,
+      "p50": 3.584917,
+      "p95": 5.352,
+      "p99": 16.030833
+    },
+    "complete_cpu_tick_ms": {
+      "count": 600,
+      "p50": 3.607042,
+      "p95": 5.3852079999999996,
+      "p99": 16.050667
+    },
+    "cpu_terrain_updates_ms": {
+      "count": 271,
+      "p50": 0.261125,
+      "p95": 0.344583,
+      "p99": 0.39629200000000003
+    },
+    "cpu_stages_ms": {
+      "query_ms": {
+        "count": 600,
+        "p50": 3.010042,
+        "p95": 4.606666000000001,
+        "p99": 14.714499
+      },
+      "solve_ms": {
+        "count": 600,
+        "p50": 0.5686660000000003,
+        "p95": 0.7137919999999995,
+        "p99": 3.6333750000000005
+      },
+      "dynamics_ms": {
+        "count": 600,
+        "p50": 0.032375,
+        "p95": 0.047832999999999994,
+        "p99": 0.058290999999999996
+      },
+      "rows_ms": {
+        "count": 600,
+        "p50": 0.3319169999999999,
+        "p95": 0.463291,
+        "p99": 0.8495429999999999
+      },
+      "constraints_ms": {
+        "count": 600,
+        "p50": 0.051584,
+        "p95": 0.076043,
+        "p99": 0.12537500000000001
+      },
+      "continuous_ms": {
+        "count": 600,
+        "p50": 0.10300100000000001,
+        "p95": 0.134292,
+        "p99": 2.948208
+      },
+      "conversion_ms": {
+        "count": 600,
+        "p50": 0.001542,
+        "p95": 0.002542,
+        "p99": 0.005625000000000001
+      }
+    },
+    "cpu_publication_ms": {
+      "count": 600,
+      "p50": 0.0055,
+      "p95": 0.009290999999999999,
+      "p99": 0.016167
+    },
+    "cpu_solver_scratch": {
+      "solver_scratch_bytes": {
+        "count": 600,
+        "p50": 480560,
+        "p95": 480560,
+        "p99": 480560
+      },
+      "solver_scratch_growth_bytes": {
+        "count": 600,
+        "p50": 0,
+        "p95": 0,
+        "p99": 19544
+      }
+    },
+    "cpu_candidates": {
+      "triangle_candidates": {
+        "count": 600,
+        "p50": 1984,
+        "p95": 2110,
+        "p99": 2152
+      },
+      "collider_pair_candidates": {
+        "count": 600,
+        "p50": 48,
+        "p95": 96,
+        "p99": 73121
+      }
+    },
+    "fps": 27.092269670581178,
+    "completed_tps": 59.906317003811516,
+    "submitted_tps": 59.90631799670368,
+    "frame_ms": {
+      "count": 271,
+      "p50": 36.649750000000004,
+      "p95": 46.416875000000005,
+      "p99": 49.951916
+    },
+    "freeze_stages_ms": {
+      "total": {
+        "count": 271,
+        "p95": 0.004583,
+        "max": 0.02325
+      }
+    },
+    "freeze_input_update_interval_ms": {
+      "count": 0,
+      "p95": null,
+      "max": null
+    },
+    "freeze_input_processing_ms": {
+      "count": 0,
+      "p95": null,
+      "max": null
+    },
+    "freeze_input_operations_ms": {},
+    "frame_max_ms": 66.746667,
+    "queue_submission_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "readback_latency_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "submission_to_callbacks_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "callback_to_publication_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "callbacks_during_poll_counts": {
+      "true": 0,
+      "false": 0
+    },
+    "physics_poll_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "physics_poll_outcomes": {
+      "completed": 0,
+      "empty": 0,
+      "error": 0
+    },
+    "acquire_ms": {
+      "count": 271,
+      "p50": 29.081083,
+      "p95": 37.107167000000004,
+      "p99": 42.178042
+    },
+    "render_cpu_ms": {
+      "count": 271,
+      "p50": 4.390916,
+      "p95": 4.837292,
+      "p99": 5.156709
+    },
+    "physics_gpu_ms": {
+      "count": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "physics_terrain_stages_ms": {
+      "terrain_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "rotational_sweep_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "terrain_recovery_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "recovery_projection_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "contact_solver_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "terrain_publication": {
+      "preparation_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "publication_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "latency_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "uploaded_bytes": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "reused_chunks": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "uploaded_chunks": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "terrain_uploaded_bytes": 0,
+    "physics_cpu_stages_ms": {
+      "encoding_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "finalization_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "submission_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "readback_setup_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "render_gpu_ms": {
+      "tracked_span_ms": {
+        "count": 271,
+        "p50": 35.433458,
+        "p95": 37.592875,
+        "p99": 37.865917
+      },
+      "prepass_ms": {
+        "count": 271,
+        "p50": 0.561167,
+        "p95": 2.332958,
+        "p99": 2.667333
+      },
+      "opaque_ms": {
+        "count": 271,
+        "p50": 28.638333,
+        "p95": 30.8345,
+        "p99": 31.762042
+      },
+      "terrain_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "opaque_other_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "transparent_ms": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "xray_ms": {
+        "count": 271,
+        "p50": 0.795625,
+        "p95": 1.560125,
+        "p99": 2.003333
+      },
+      "other_ms": {
+        "count": 271,
+        "p50": 0.748959,
+        "p95": 1.717333,
+        "p99": 1.963125
+      }
+    },
+    "terrain_passes_per_sample": {
+      "count": 271,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0
+    },
+    "render_gpu_sample_age_ms": {
+      "count": 271,
+      "p50": 110.17420899999999,
+      "p95": 118.70450000000001,
+      "p99": 126.80749999999999
+    },
+    "in_flight_slots": {
+      "count": 271,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0
+    },
+    "focused_frame_counts": {
+      "true": 271,
+      "false": 0
+    },
+    "dropped_ticks": 0,
+    "completed_interval_skipped_ticks": 0,
+    "boundary_readbacks": 0,
+    "pending_at_capture_end": 0,
+    "backlog_start_end": [
+      0,
+      0
+    ],
+    "settings_seen": {
+      "f3": [
+        "true"
+      ],
+      "present_mode": [
+        "\"AutoNoVsync\""
+      ],
+      "window_pixels": [
+        "[4112, 2524]"
+      ],
+      "target_pixels": [
+        "[4112, 2524]"
+      ],
+      "viewport_pixels": [
+        "[4112, 2524]"
+      ],
+      "msaa": [
+        "4"
+      ]
+    },
+    "terrain_busy_frames": 0,
+    "terrain_readiness_holds": 0,
+    "driving_input": {
+      "count": 0,
+      "matches_submitted_ticks": false,
+      "first_script_tick": null,
+      "last_script_tick": null
+    },
+    "physics_error_flags": [
+      0
+    ],
+    "observed_execution_masks": [],
+    "physics_execution": {
+      "integrated_bodies": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "published_bodies": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "validated_bearings": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "planned_solver_sweeps": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "executed_solver_sweeps": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "anchor_residual_m": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      },
+      "axis_residual_deg": {
+        "count": 0,
+        "p50": null,
+        "p95": null,
+        "p99": null
+      }
+    },
+    "gpu_samples": 271,
+    "gpu_status_counts": {
+      "Complete": 271
+    },
+    "gpu_samples_originating_before_capture": 3
+  }
+]

@@ -1,0 +1,27 @@
+[
+  {
+    "data": {
+      "body": 18,
+      "delivery_ticks": 12,
+      "impulse_per_tick": [
+        0.0,
+        8.261117935180664,
+        0.0
+      ],
+      "local_point": [
+        -0.25,
+        0.0,
+        -0.375
+      ],
+      "requested_impulse": [
+        0.0,
+        200.0,
+        0.0
+      ],
+      "tick": 3
+    },
+    "elapsed_ms": 34.593625,
+    "kind": "scripted_hammer",
+    "phase": "measurement"
+  }
+]

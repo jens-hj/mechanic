@@ -1,0 +1,36 @@
+{
+  "binaries": {
+    "baseline": {
+      "path": "/Users/jens/repos/mechanic/.physics-reference/assembly-local-baseline/cpu-physics-speeds",
+      "sha256": "75ec9aa643c26267b92f0a3c436d3705b89ad285db32cf76f6ebd870dc91b240"
+    },
+    "candidate": {
+      "path": "/Users/jens/repos/mechanic/target/release/cpu-physics",
+      "sha256": "1ba6903b408f13454f074cbb266f4cf1cd77f5168ac20a4f7708d805c44015f9"
+    }
+  },
+  "fixtures": {
+    "docs/performance-results/2026-09-16-distant-scene/new-instance-8.ron": "fa96d4a033f12df12e3e2e66ed759ad0ccf200b1425728b52e11c8f8174932ce",
+    "docs/performance-results/2026-09-16-wishbone/wishbone-instance.ron": "63b29abd535fd530e8ad21540a03acef1252cece2e0d388becc22878fce9f184",
+    "docs/performance-results/2026-09-16-wishbone/builder-instance-171.ron": "ad1c0767c10b0434417c47832098e8c1a3931dfd2f293982c585a33102615c57",
+    "docs/performance-results/2026-09-16-wishbone/builder-instance-172.ron": "eb2003400479f93ceb4034ff88a65fef632c95697e4307ac38ab9f2499bb8ffd"
+  },
+  "speeds": "27.45689028418055,28.011574936386214",
+  "pairs": 3,
+  "warmup": 120,
+  "ticks": 600,
+  "order": [
+    [
+      "baseline",
+      "candidate"
+    ],
+    [
+      "candidate",
+      "baseline"
+    ],
+    [
+      "baseline",
+      "candidate"
+    ]
+  ]
+}

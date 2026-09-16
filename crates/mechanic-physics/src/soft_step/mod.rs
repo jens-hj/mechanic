@@ -214,6 +214,18 @@ pub struct SoftStepDiagnostics {
     /// Contact queries repeated within the tick because a collider outran its
     /// margin or a continuous hit cut a substep short.
     pub requeries: usize,
+    /// Empty contact queries reused inside a conservatively cleared region.
+    pub empty_contact_reuses: usize,
+    /// Contact ownership groups refreshed during this tick.
+    pub refreshed_contact_groups: usize,
+    /// Contact ownership groups retained across substeps.
+    pub reused_contact_groups: usize,
+    /// Detailed collider paths prepared after coarse rejection.
+    pub detailed_sweep_preparations: usize,
+    /// Initial finite supports reused at unchanged queried poses.
+    pub continuous_cached_supports: usize,
+    /// Tick-local empty-region proofs that failed validation.
+    pub clearance_certificate_failures: usize,
     /// Substeps swept for collisions the contact margins could miss.
     pub continuous_sweeps: usize,
     /// Swept substeps cut short before a collision the contacts would miss.
@@ -245,6 +257,7 @@ pub struct CpuMachine {
     candidate: MachineState,
     rollback: MachineState,
     scratch: solve::Scratch,
+    contact_groups: Option<crate::terrain_contacts::ContactGroups>,
     diagnostics: SoftStepDiagnostics,
     warm: BTreeMap<TerrainContactFeature, [f64; 5]>,
     /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
@@ -306,6 +319,7 @@ impl CpuMachine {
             candidate: state.clone(),
             rollback: state.clone(),
             scratch: solve::Scratch::default(),
+            contact_groups: None,
             completed: CpuSnapshot {
                 tick: 0,
                 topology_generation,
@@ -491,7 +505,7 @@ impl CpuMachine {
             diagnostics.degrade("external impulse");
         }
         self.pin(&mut state);
-        let (mut contacts, mut margins) = terrain.map_or_else(
+        let (mut contacts, margins) = terrain.map_or_else(
             || (Vec::new(), Vec::new()),
             |terrain| {
                 self.contacts(
@@ -500,6 +514,7 @@ impl CpuMachine {
                     settings,
                     gravity,
                     &self.warm,
+                    None,
                     &mut diagnostics,
                 )
             },
@@ -516,17 +531,24 @@ impl CpuMachine {
         let mut joints = JointImpulses::new(self.drives.len(), self.closure_warm.clone());
         let dt = TICK_SECONDS / f64::from(settings.substeps);
         let mut last = None;
-        // Each collider's travel, and the largest body rotation, since the last
-        // contact query.
-        let mut travelled = vec![0.0; margins.len()];
-        let mut turned = 0.0;
-        let mut requery = false;
+        let group_count = terrain.map_or(0, |t| t.geometry.assembly_count);
+        let mut groups = if let Some(mut groups) = self.contact_groups.take() {
+            if let Some(terrain) = terrain {
+                groups.reset_moving(terrain.geometry, &margins, settings.speculative);
+            } else {
+                groups.reset(0, &margins, settings.speculative);
+            }
+            groups
+        } else {
+            crate::terrain_contacts::ContactGroups::new(group_count, &margins, settings.speculative)
+        };
+        let mut regions = (0..terrain.map_or(0, |t| t.geometry.assembly_count))
+            .map(|_| None)
+            .collect::<Vec<_>>();
+        let mut tried_regions = vec![false; regions.len()];
+        diagnostics.refreshed_contact_groups = groups.len();
         for _ in 0..settings.substeps {
-            if let Some(terrain) = terrain.filter(|_| requery) {
-                requery = false;
-                diagnostics.requeries += 1;
-                // A collider outran its margin or a continuous hit cut the path
-                // short: query again from the current pose, keeping impulses.
+            if let Some(terrain) = terrain.filter(|_| groups.invalid_count() > 0) {
                 match MachineKinematics::reconstruct_poses(
                     &self.creation,
                     &state.poses,
@@ -534,24 +556,127 @@ impl CpuMachine {
                 ) {
                     Ok(poses) => {
                         state.poses = poses;
-                        let warm = contacts
-                            .iter()
-                            .map(|contact| (contact.source.feature, contact.impulses))
-                            .collect::<BTreeMap<_, _>>();
-                        (contacts, margins) = self.contacts(
-                            terrain,
-                            &state,
-                            settings,
-                            gravity,
-                            &warm,
-                            &mut diagnostics,
-                        );
-                        travelled.fill(0.0);
-                        turned = 0.0;
-                        diagnostics.contacts = diagnostics.contacts.max(contacts.len());
+                        if (0..regions.len()).any(|assembly| {
+                            groups.needs_refresh(assembly)
+                                && (regions[assembly].is_some() || !tried_regions[assembly])
+                                && !contacts.iter().any(|c| {
+                                    terrain.geometry.assemblies[c.source.body] == assembly
+                                        || c.source.other_body.is_some_and(|b| {
+                                            terrain.geometry.assemblies[b] == assembly
+                                        })
+                                })
+                        }) {
+                            let clearance_started = Instant::now();
+                            let displacement = state
+                                .velocities
+                                .iter()
+                                .map(|v| v * TICK_SECONDS)
+                                .collect::<Vec<_>>();
+                            let zero = vec![0.0; displacement.len()];
+                            if let (Ok(predicted), Ok(current)) = (
+                                MachineMotion::new(
+                                    &self.creation,
+                                    terrain.topology_generation,
+                                    &state,
+                                    &displacement,
+                                ),
+                                MachineMotion::new(
+                                    &self.creation,
+                                    terrain.topology_generation,
+                                    &state,
+                                    &zero,
+                                ),
+                            ) {
+                                let padding =
+                                    margins.iter().copied().fold(settings.speculative, f64::max);
+                                for assembly in 0..regions.len() {
+                                    if !groups.needs_refresh(assembly) {
+                                        continue;
+                                    }
+                                    if contacts.iter().any(|c| {
+                                        terrain.geometry.assemblies[c.source.body] == assembly
+                                            || c.source.other_body.is_some_and(|b| {
+                                                terrain.geometry.assemblies[b] == assembly
+                                            })
+                                    }) {
+                                        continue;
+                                    }
+                                    if !tried_regions[assembly] {
+                                        tried_regions[assembly] = true;
+                                        regions[assembly] = terrain.scene.assembly_clearance(
+                                            terrain.geometry,
+                                            &predicted,
+                                            terrain.origin,
+                                            padding + settings.continuous_travel,
+                                            assembly,
+                                        );
+                                    }
+                                    if let Some(region) = &regions[assembly] {
+                                        if region.contains(
+                                            terrain.scene,
+                                            terrain.geometry,
+                                            &current,
+                                            terrain.origin,
+                                            padding,
+                                        ) {
+                                            let reused = groups.reuse_assembly(assembly);
+                                            diagnostics.empty_contact_reuses +=
+                                                usize::from(reused > 0);
+                                        } else {
+                                            diagnostics.clearance_certificate_failures += 1;
+                                            regions[assembly] = None;
+                                        }
+                                    }
+                                }
+                            }
+                            diagnostics.query_ms +=
+                                clearance_started.elapsed().as_secs_f64() * 1000.0;
+                        }
+                        let invalid = groups.invalid_count();
+                        diagnostics.reused_contact_groups += groups.len() - invalid;
+                        diagnostics.refreshed_contact_groups += invalid;
+                        if invalid > 0 {
+                            diagnostics.requeries += 1;
+                            let warm = contacts
+                                .iter()
+                                .map(|contact| (contact.source.feature, contact.impulses))
+                                .collect();
+                            let (refreshed, new_margins) = self.contacts(
+                                terrain,
+                                &state,
+                                settings,
+                                gravity,
+                                &warm,
+                                Some((&groups, &margins)),
+                                &mut diagnostics,
+                            );
+                            contacts.retain(|contact| {
+                                !groups.includes(
+                                    terrain.geometry,
+                                    contact.source.body,
+                                    contact.source.other_body,
+                                )
+                            });
+                            contacts.extend(refreshed);
+                            contacts.sort_by_key(|contact| {
+                                (
+                                    contact.source.feature.corner >= SUBMERGED_CORNERS,
+                                    contact.source.feature,
+                                )
+                            });
+                            groups.refreshed(
+                                terrain.geometry,
+                                &margins,
+                                &new_margins,
+                                settings.speculative,
+                            );
+                            diagnostics.contacts = diagnostics.contacts.max(contacts.len());
+                        }
                     }
                     Err(_) => diagnostics.degrade("contact query"),
                 }
+            } else {
+                diagnostics.reused_contact_groups += groups.len();
             }
             self.rollback.clone_from(&state);
             let result = solve::substep(
@@ -563,19 +688,26 @@ impl CpuMachine {
                 dt,
                 settings,
                 terrain,
+                &groups,
                 &mut diagnostics,
                 &mut self.scratch,
             );
             match result {
                 Ok(outcome) if sane(&mut state, settings, &mut diagnostics) => {
-                    for ((total, travel), margin) in
-                        travelled.iter_mut().zip(&outcome.travelled).zip(&margins)
-                    {
-                        *total += travel;
-                        requery |= *total > margin - settings.speculative;
+                    if outcome.rewound {
+                        for region in &mut regions {
+                            *region = None;
+                        }
+                        tried_regions.fill(true);
                     }
-                    turned += outcome.turned;
-                    requery |= outcome.rewound || turned > settings.requery_angle;
+                    if let Some(terrain) = terrain {
+                        groups.advance_measured(
+                            terrain.geometry,
+                            &outcome.motion,
+                            settings.requery_angle,
+                            outcome.rewound,
+                        );
+                    }
                     last = Some(outcome.point_count);
                 }
                 Ok(_) | Err(_) => {
@@ -628,6 +760,7 @@ impl CpuMachine {
         diagnostics.solver_scratch_growth_bytes = diagnostics
             .solver_scratch_bytes
             .saturating_sub(scratch_before);
+        self.contact_groups = Some(groups);
         self.diagnostics = diagnostics;
         self.candidate = std::mem::replace(&mut self.completed.state, state);
         self.completed.tick = tick;
@@ -637,6 +770,7 @@ impl CpuMachine {
 
     // Contacts at the current pose, and the margin each collider row was queried
     // with.
+    #[allow(clippy::too_many_arguments)] // Query context and per-group selection share one fallback policy.
     fn contacts(
         &self,
         terrain: SoftStepTerrain<'_>,
@@ -644,6 +778,7 @@ impl CpuMachine {
         settings: &SoftStepSettings,
         gravity: DVec3,
         warm: &BTreeMap<TerrainContactFeature, [f64; 5]>,
+        selection: Option<(&crate::terrain_contacts::ContactGroups, &[f64])>,
         diagnostics: &mut SoftStepDiagnostics,
     ) -> (Vec<Contact>, Vec<f64>) {
         // A query serves until a collider outruns its margin. Each collider
@@ -653,6 +788,7 @@ impl CpuMachine {
         // continuous sweep takes over from: a wide margin measures a tilted
         // collider's gap up its side faces, so most of a far manifold's points
         // would sit at the margin instead of on the corners that arrive.
+        let groups = selection.map(|(groups, _)| groups);
         let query_started = Instant::now();
         let colliders = terrain.geometry.collider_reach().len();
         let fall = 0.5 * gravity.length() * TICK_SECONDS * TICK_SECONDS;
@@ -661,7 +797,9 @@ impl CpuMachine {
             .iter()
             .map(|velocity| 1.25 * TICK_SECONDS * velocity)
             .collect::<Vec<_>>();
-        let reach = if let Ok(motion) = MachineMotion::new(
+        let reach = if let Some((_, margins)) = selection {
+            margins.to_vec()
+        } else if let Ok(motion) = MachineMotion::new(
             &self.creation,
             terrain.topology_generation,
             state,
@@ -687,13 +825,20 @@ impl CpuMachine {
         let Some((query, margins)) = [
             reach,
             vec![settings.speculative; colliders],
+            vec![settings.speculative * 0.5; colliders],
             vec![0.0; colliders],
         ]
         .into_iter()
         .find_map(|margins| {
             terrain
                 .scene
-                .proximity_margins(terrain.geometry, &state.poses, terrain.origin, &margins)
+                .proximity_groups(
+                    terrain.geometry,
+                    &state.poses,
+                    terrain.origin,
+                    &margins,
+                    groups,
+                )
                 .ok()
                 .map(|query| (query, margins))
         }) else {
@@ -709,7 +854,7 @@ impl CpuMachine {
         if let Ok(recovery) =
             terrain
                 .scene
-                .recovery_contacts(terrain.geometry, &state.poses, terrain.origin)
+                .recovery_groups(terrain.geometry, &state.poses, terrain.origin, groups)
         {
             diagnostics.triangle_candidates += recovery.triangle_candidates;
             diagnostics.collider_pair_candidates += recovery.collider_pair_candidates;
@@ -734,6 +879,7 @@ impl CpuMachine {
                 }
             }
         }
+        points.sort_by_key(|point| (point.feature.corner >= SUBMERGED_CORNERS, point.feature));
         let contacts = points
             .into_iter()
             .map(|point| Contact::new(point, &state.poses, warm.get(&point.feature)))

@@ -1,0 +1,16 @@
+{
+  "snapshot_sha256": "8e178c7f2c43e96fe38b20c91294b46196816c935e37b20cbed569ffe7defb43",
+  "binaries": {
+    "before": {
+      "path": "/tmp/mechanic-pipe-before",
+      "sha256": "a3e13b65340b36b30c992af2a97f331c29b8f2a2c78a090d361d697d06cabcfa"
+    },
+    "after": {
+      "path": "target/release/cpu-physics",
+      "sha256": "f26ae873c04d6174b0712fa9ffc68852130905d37b69d9e66e25fcf2c34442e8"
+    }
+  },
+  "warmup": 3,
+  "samples": 12,
+  "runs": 3
+}

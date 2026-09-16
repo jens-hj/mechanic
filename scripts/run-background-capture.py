@@ -59,7 +59,7 @@ def freeze_rejections(records):
 
 
 def run(binary, world, output, assets, drive=False, demonstration=False, place=None, straight=False,
-        foreground=False, identity=None, replay_ticks=None, physics="gpu", freeze=False):
+        foreground=False, identity=None, replay_ticks=None, physics="gpu", freeze=False, hammer=None):
     if physics not in ("gpu", "cpu"):
         raise ValueError("physics must be gpu or cpu")
     binary, world, output, assets = [p.resolve() for p in (binary, world, output, assets)]
@@ -107,7 +107,7 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
         run_record = {
             "source_world": str(world), "temporary_world": str(copy),
             "manifest_sha256": hashlib.sha256(source.encode()).hexdigest(),
-            "scripted_freeze": freeze, "physics_route": physics, "binary": str(binary), "binary_sha256": digest(binary), "assets": str(assets),
+            "scripted_freeze": freeze, "scripted_hammer": hammer, "physics_route": physics, "binary": str(binary), "binary_sha256": digest(binary), "assets": str(assets),
             "source_world_files_sha256": source_hashes,
             "assets_files_sha256": asset_hashes,
             "launcher_sha256": digest(Path(__file__)), "build_identity": build_identity,
@@ -131,6 +131,8 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
                    MECHANIC_AUTO_DRIVING_FRAMES="1" if demonstration else "0",
                    MECHANIC_AUTO_PLACE=str(place) if place else "",
                    MECHANIC_AUTO_FREEZE="1" if freeze else "0")
+        if hammer is not None:
+            env["MECHANIC_AUTO_HAMMER"] = json.dumps(hammer)
         if replay_ticks is not None:
             env["MECHANIC_AUTO_REPLAY_TICKS"] = str(replay_ticks)
         with (output / "app.log").open("w") as log:
@@ -206,8 +208,9 @@ if __name__ == "__main__":
     parser.add_argument("--foreground", action="store_true", help="Request focus and verify every measured frame at native resolution")
     parser.add_argument("--identity", type=Path, help="Source-matched build identity JSON")
     parser.add_argument("--replay-ticks", type=int, help="Replay exactly N contiguous 60 Hz ticks, retaining backlog, then drain publication")
+    parser.add_argument("--hammer", type=json.loads, help="Capture hammer JSON: body_index, local_point, impulse; optional repeat and body_local_impulse")
     parser.add_argument("--freeze", action="store_true", help="Freeze, raise, lower and release the linked creation")
     args = parser.parse_args()
     run(args.binary, args.world, args.output, args.assets,
         args.drive or args.straight, args.demonstration, args.place, args.straight,
-        args.foreground, args.identity, args.replay_ticks, args.physics, args.freeze)
+        args.foreground, args.identity, args.replay_ticks, args.physics, args.freeze, args.hammer)

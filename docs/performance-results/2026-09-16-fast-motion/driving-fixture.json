@@ -1,0 +1,6 @@
+{
+  "terrain_manifest": "crates/mechanic-bench/tests/fixtures/builder-world/world.ron",
+  "instance_source": "crates/mechanic-bench/tests/fixtures/driven_car_instance.ron",
+  "instance_sha256": "35813978e895d6f2783eb4a654ce24bb8422485ebf3568d5ad0caa823e2958d3",
+  "edits": "Copy builder-world terrain; replace only generations/20/world.ron with driven_car_instance.ron; rename the disposable manifest and place fixed camera at (0, 4.000090136718749, -8). No source fixture or user world is edited."
+}

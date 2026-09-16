@@ -1,0 +1,10 @@
+{
+  "foreground-native/capture-1789554768855553000-12725.jsonl.gz": {
+    "uncompressed_sha256": "e231b0e39b342ef22e27002b2a05c56ff41203c72dbd4aff09074ad355010b48",
+    "uncompressed_bytes": 7352838
+  },
+  "foreground-driving/capture-1789554981613001000-12856.jsonl.gz": {
+    "uncompressed_sha256": "6bf543369f7933b03332d4ed9980dbb6a8357b2725b4763b6a96e73f499fbe60",
+    "uncompressed_bytes": 8760927
+  }
+}

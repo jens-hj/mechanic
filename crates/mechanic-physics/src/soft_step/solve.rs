@@ -8,7 +8,7 @@ use mechanic_core::{CompiledBearing, CompiledCreation, CoordinateDrive, DriveMod
 use super::{SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
 use crate::{
     BodyPose, DynamicsFactor, MachineKinematics, MachineMotion, MachineState, PhysicsError,
-    TerrainContact, TerrainSweepHit, TerrainSweepOutcome,
+    TerrainContact, TerrainContactFeature, TerrainSweepHit, TerrainSweepOutcome,
     free_motion::advance_positions,
     joint_forces::{PassiveForce, drive_budget, drive_target},
     joint_machine::bounds,
@@ -34,6 +34,8 @@ pub(super) struct Contact {
     pub source: TerrainContact,
     /// Accumulated normal, two tangent and two rolling impulses per substep.
     pub impulses: [f64; 5],
+    queried_pose: BodyPose,
+    other_queried_pose: Option<BodyPose>,
     local: DVec3,
     other_local: Option<DVec3>,
     anchor: DVec3,
@@ -66,6 +68,8 @@ impl Contact {
             .distance(poses[source.body].position)
             .max(1e-3);
         Self {
+            queried_pose: poses[source.body],
+            other_queried_pose: source.other_body.map(|body| poses[body]),
             impulses: warm.copied().unwrap_or_default(),
             local: local(source.body, source.body_point),
             other_local: source
@@ -82,6 +86,17 @@ impl Contact {
             fresh: true,
             source,
         }
+    }
+
+    // Only a finite contact queried at these exact poses certifies initial
+    // support. A retained anchor or a speculative row alone cannot do so.
+    fn initial_support(&self, poses: &[BodyPose]) -> Option<TerrainContactFeature> {
+        (self.source.feature.corner < super::SUBMERGED_CORNERS
+            && self.source.separation
+                <= self.source.feature.obstacle.target().activation_distance()
+            && self.queried_pose == poses[self.source.body]
+            && self.other_queried_pose == self.source.other_body.map(|body| poses[body]))
+        .then_some(self.source.feature)
     }
 
     fn rows(
@@ -714,6 +729,7 @@ pub(super) fn substep(
     dt: f64,
     settings: &SoftStepSettings,
     terrain: Option<SoftStepTerrain<'_>>,
+    coverage: &crate::terrain_contacts::ContactGroups,
     diagnostics: &mut SoftStepDiagnostics,
     scratch: &mut Scratch,
 ) -> Result<Substep, PhysicsError> {
@@ -901,9 +917,18 @@ pub(super) fn substep(
     }
     diagnostics.constraints_ms += constraints_started.elapsed().as_secs_f64() * 1000.0;
     let continuous_started = std::time::Instant::now();
-    let (fraction, travelled, turned) = match terrain {
-        Some(terrain) => continuous_fraction(creation, state, terrain, dt, settings, diagnostics),
-        None => (1.0, Vec::new(), 0.0),
+    let (fraction, motion) = match terrain {
+        Some(terrain) => continuous_fraction(
+            creation,
+            state,
+            terrain,
+            dt,
+            settings,
+            coverage,
+            contacts,
+            diagnostics,
+        ),
+        None => (1.0, Vec::new()),
     };
     diagnostics.continuous_ms += continuous_started.elapsed().as_secs_f64() * 1000.0;
     let constraints_started = std::time::Instant::now();
@@ -948,8 +973,7 @@ pub(super) fn substep(
     diagnostics.constraints_ms += constraints_started.elapsed().as_secs_f64() * 1000.0;
     Ok(Substep {
         point_count: points.len(),
-        travelled,
-        turned,
+        motion,
         rewound: fraction < 1.0,
     })
 }
@@ -959,23 +983,25 @@ pub(super) fn substep(
 /// continuous hit cut it short.
 pub(super) struct Substep {
     pub point_count: usize,
-    pub travelled: Vec<f64>,
-    pub turned: f64,
+    pub motion: Vec<[f64; 4]>,
     pub rewound: bool,
 }
 
 // The fraction of the substep positions may advance, stopping short of a
 // collision the soft contacts would miss, with each collider's travel bound and
-// the largest body rotation over that fraction. Only colliders travelling far
-// within the substep are swept.
+// the largest body rotation over that fraction. Sweep assemblies whose trial
+// path exceeds either the activation threshold or proven contact coverage.
+#[allow(clippy::too_many_arguments)] // The query needs both motion and current contact coverage.
 fn continuous_fraction(
     creation: &CompiledCreation,
     state: &MachineState,
     terrain: SoftStepTerrain<'_>,
     dt: f64,
     settings: &SoftStepSettings,
+    coverage: &crate::terrain_contacts::ContactGroups,
+    contacts: &[Contact],
     diagnostics: &mut SoftStepDiagnostics,
-) -> (f64, Vec<f64>, f64) {
+) -> (f64, Vec<[f64; 4]>) {
     let displacement = state
         .velocities
         .iter()
@@ -985,32 +1011,46 @@ fn continuous_fraction(
         MachineMotion::new(creation, terrain.topology_generation, state, &displacement)
     else {
         diagnostics.degrade("continuous path");
-        return (1.0, Vec::new(), 0.0);
+        return (1.0, Vec::new());
     };
-    let reach = terrain.geometry.collider_reach().collect::<Vec<_>>();
-    let travelled = reach
-        .iter()
-        .map(|&(body, radius)| motion.bounds()[body].point_speed(radius))
-        .collect::<Vec<_>>();
-    let turned = reach
-        .iter()
-        .map(|&(body, _)| motion.bounds()[body].angular_speed)
-        .fold(0.0_f64, f64::max);
+    let mut measured = coverage.measure(terrain.geometry, motion.bounds());
     let mut fraction = 1.0;
-    if settings.continuous
-        && travelled
-            .iter()
-            .any(|&travel| travel > settings.continuous_travel)
-    {
+    if settings.continuous {
+        if coverage.covers_trial(
+            terrain.geometry,
+            &measured,
+            settings.continuous_travel,
+            settings.requery_angle,
+        ) {
+            return (fraction, measured);
+        }
+        let mut required = coverage.clone();
+        required.advance_measured(terrain.geometry, &measured, settings.requery_angle, false);
+        required.require_measured(
+            &measured,
+            settings.continuous_travel,
+            settings.requery_angle,
+        );
+        if !required.needs_sweep(terrain.geometry) {
+            return (fraction, measured);
+        }
         diagnostics.continuous_sweeps += 1;
-        match terrain.scene.sweep_new_contacts(
+        let supported = contacts
+            .iter()
+            .filter_map(|contact| contact.initial_support(motion.initial_poses()))
+            .collect::<Vec<_>>();
+        match terrain.scene.sweep_contact_groups(
             terrain.geometry,
             &motion,
             terrain.origin,
             settings.continuous_tolerance,
             settings.continuous_evaluations,
+            &required,
+            &supported,
         ) {
             Ok(query) => {
+                diagnostics.detailed_sweep_preparations += query.detailed_preparations;
+                diagnostics.continuous_cached_supports += query.cached_supports;
                 diagnostics.continuous_shape_transformations += query.shape_transformations;
                 diagnostics.continuous_shape_cache_hits += query.shape_cache_hits;
                 diagnostics.continuous_hierarchy_node_pair_tests += query.hierarchy_node_pair_tests;
@@ -1025,7 +1065,11 @@ fn continuous_fraction(
                         terrain,
                         motion.final_poses(),
                         hit,
-                        reach.get(hit.collider).map_or(0.0, |&(_, radius)| radius),
+                        terrain
+                            .geometry
+                            .collider_reach()
+                            .nth(hit.collider)
+                            .map_or(0.0, |(_, radius)| radius),
                         settings,
                     )
                 {
@@ -1047,11 +1091,12 @@ fn continuous_fraction(
             Err(_) => diagnostics.degrade("continuous sweep"),
         }
     }
-    let travelled = travelled
-        .into_iter()
-        .map(|travel| travel * fraction)
-        .collect();
-    (fraction, travelled, turned * fraction)
+    for group in &mut measured {
+        for value in group {
+            *value *= fraction;
+        }
+    }
+    (fraction, measured)
 }
 
 // Whether the contact rows would miss a swept arrival: at the end of the path

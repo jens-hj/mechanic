@@ -28,6 +28,12 @@ mod finite_support;
 #[path = "cpu-physics/scale.rs"]
 mod scale;
 
+#[path = "cpu-physics/motion.rs"]
+mod motion;
+
+#[path = "cpu-physics/pipe_motion.rs"]
+mod pipe_motion;
+
 const ITERATIONS: usize = 256;
 const TOLERANCE: f64 = 1e-9;
 const GRAVITY: DVec3 = DVec3::new(0.0, -9.81, 0.0);
@@ -42,6 +48,8 @@ type RecordedBlock = (
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
     let mut scenario = "reference-fixtures".to_owned();
+    let mut instance = None;
+    let mut background = None;
     let mut scale = scale::Options {
         copies: 1,
         connected: false,
@@ -53,6 +61,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--scenario" => scenario = args.next().ok_or("--scenario needs a value")?,
+            "--instance" => instance = Some(args.next().ok_or("--instance needs a value")?),
+            "--background" => background = Some(args.next().ok_or("--background needs a value")?),
             "--copies" => {
                 scale.copies = args.next().ok_or("--copies needs a value")?.parse()?;
                 if ![1, 2, 5, 10].contains(&scale.copies) {
@@ -74,6 +84,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     match scenario.as_str() {
         "builder-scale" => scale::run(&scale),
+        "fast-motion" => motion::run(&scale),
+        "pipe-motion" => pipe_motion::run(
+            instance.as_deref().ok_or("pipe-motion needs --instance")?,
+            &scale,
+        ),
+        "pipe-scene" => pipe_motion::scene_ticks(
+            instance.as_deref().ok_or("pipe-scene needs --instance")?,
+            background.as_deref(),
+            &scale,
+        ),
         "reference-fixtures" => reference_fixtures(),
         "car-drop" => car(false),
         "car-drive" => car(true),
