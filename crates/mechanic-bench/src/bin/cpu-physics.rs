@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut instance = None;
     let mut background = None;
     let mut soil = false;
+    let mut block_width = 8;
     let mut scale = scale::Options {
         copies: 1,
         connected: false,
@@ -77,6 +78,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             "--connected" => scale.connected = true,
+            "--block-width" => {
+                block_width = args.next().ok_or("--block-width needs a value")?.parse()?;
+            }
             "--soil" => soil = true,
             "--hold" => scale.hold = true,
             "--floor" => scale.floor = true,
@@ -90,8 +94,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             other => return Err(format!("unknown argument {other}").into()),
         }
     }
-    if soil && scenario != "world-drive" {
-        return Err("--soil is supported only by --scenario world-drive".into());
+    if soil && !matches!(scenario.as_str(), "world-drive" | "large-surface") {
+        return Err("--soil requires world-drive or large-surface".into());
     }
     match scenario.as_str() {
         "builder-scale" => scale::run(&scale),
@@ -112,6 +116,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "fast-impacts" => fast_impacts(),
         "four-bar" => four_bar(),
         "wheel-roll" => rolling::run(),
+        "large-surface" => world_drive::large_surface(&scale, soil, block_width),
         "world-drive" => world_drive::run(
             instance
                 .as_deref()
@@ -121,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
-             block-pile, fast-impacts, four-bar, wheel-roll or world-drive"
+             block-pile, fast-impacts, four-bar, wheel-roll, large-surface or world-drive"
         )
         .into()),
     }

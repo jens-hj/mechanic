@@ -423,6 +423,22 @@ impl ContactPolytope {
         Ok(points)
     }
 
+    /// Returns only actual penetrating convex vertices certified inside a finite
+    /// triangle. Use this to augment an already reduced surface manifold without
+    /// reintroducing every clipped triangle intersection as a constraint.
+    ///
+    /// # Errors
+    /// Rejects invalid triangles or failed intersection geometry.
+    pub fn triangle_buried_vertices_with_scratch(
+        &self,
+        triangle: [DVec3; 3],
+        scratch: &mut TriangleClipScratch,
+    ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
+        let mut points = self.triangle_recovery_contacts_with_scratch(triangle, scratch)?;
+        points.retain(|point| point.depth > 0.0 && self.vertices.contains(&point.body_point));
+        Ok(points)
+    }
+
     /// Finds opposing finite surface points within a nonnegative normal gap.
     /// The collider is extruded toward the triangle by `margin`, including its
     /// silhouette planes. Tangential faces are not inflated, so a nearby hole or

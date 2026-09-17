@@ -246,6 +246,7 @@ pub(super) fn run(
         machine.step(GRAVITY, &settings, &[], &commands, Some(step))?;
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
         window.record(elapsed, machine.diagnostics());
+        let soil_started = Instant::now();
         if soil {
             for load in machine.terrain_loads() {
                 pending_soil.accumulate(
@@ -298,10 +299,13 @@ pub(super) fn run(
                 }
             }
         }
+        let soil_ms = soil_started.elapsed().as_secs_f64() * 1000.0;
+        *window.work.entry("soil_ms").or_default() += soil_ms;
         let total_elapsed = tick_started.elapsed().as_secs_f64() * 1000.0;
         window.total_samples.push(total_elapsed);
         if tick > options.warmup {
             measured.record(elapsed, machine.diagnostics());
+            *measured.work.entry("soil_ms").or_default() += soil_ms;
             measured.total_samples.push(total_elapsed);
         }
         if tick % 60 == 0 {
@@ -422,4 +426,54 @@ impl Window {
         }
         record
     }
+}
+
+/// Large steel footprint on generated ground, using the normal world replay.
+pub(super) fn large_surface(
+    options: &scale::Options,
+    soil: bool,
+    block_width: u8,
+) -> Result<(), Box<dyn Error>> {
+    use mechanic_core::{
+        BuildCommand, BuildPose, ConstructionGraph, ConstructionMaterial, CreationDocument,
+        CuboidSpec,
+    };
+    use mechanic_world::{WorldCreationInstanceDoc, WorldDocument, WorldPoseDoc, WorldSeed};
+    let root = std::env::temp_dir().join(format!("mechanic-large-surface-{}", std::process::id()));
+    let store = WorldStore::new(&root);
+    let field = TerrainField::new(WorldSeed(91));
+    let mut graph = ConstructionGraph::new();
+    graph.apply(BuildCommand::Spawn(
+        CuboidSpec::new([block_width; 3], BuildPose::default())?
+            .with_material(ConstructionMaterial::Steel),
+    ))?;
+    let mut world = WorldDocument::new("Large surface", WorldSeed(91), field.safe_spawn());
+    let instance = WorldCreationInstanceDoc {
+        id: 1,
+        creation: CreationDocument::from_graph(&graph, "Steel cube", &[]),
+        root_pose: WorldPoseDoc {
+            translation: WorldPosition(DVec3::new(
+                0.0,
+                field.surface_height(0.0, 0.0) + f64::from(block_width) * 0.125 + 0.2,
+                0.0,
+            )),
+            ..WorldPoseDoc::default()
+        },
+        joint_coordinates: Vec::new(),
+    };
+    let garage = WorldCreationInstanceDoc {
+        id: 2,
+        creation: CreationDocument::from_graph(&ConstructionGraph::new(), "Garage", &[]),
+        root_pose: WorldPoseDoc::default(),
+        joint_coordinates: Vec::new(),
+    };
+    store.save_space_pair(&mut world, &instance, &garage)?;
+    run(
+        store
+            .directory_for(&world.name)
+            .to_str()
+            .ok_or("invalid temporary path")?,
+        options,
+        soil,
+    )
 }

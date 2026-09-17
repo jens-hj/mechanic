@@ -1426,3 +1426,53 @@ fn reported_impact_load_includes_the_rebound_impulse() {
     }
     panic!("the body never rebounded");
 }
+
+#[test]
+fn a_large_cube_settles_on_finely_meshed_generated_ground() {
+    use mechanic_world::{
+        BrickCoord, TerrainField, TerrainMeshRequest, TerrainNodeId, TerrainOctree,
+        TerrainTransitionMask, WorldPosition, WorldSeed, mesh_chunk,
+    };
+    let field = TerrainField::new(WorldSeed(91));
+    let surface = field.surface_height(0.0, 0.0);
+    let mut graph = ConstructionGraph::new();
+    spawn(&mut graph, IVec3::ZERO, [8; 3]);
+    let creation = graph.compile().unwrap();
+    let mut state = MachineState::at_rest(&creation);
+    state.poses[0].position.y = surface + 1.01;
+    let mut world = World::new(creation, state);
+    world.scene = TerrainContactScene::default();
+    let centre = WorldPosition(DVec3::Y * surface).cell().unwrap().brick();
+    let edits = TerrainOctree::default().snapshot();
+    let mut chunks = Vec::new();
+    for z in -1..=1 {
+        for y in -1..=1 {
+            for x in -1..=1 {
+                chunks.push(std::sync::Arc::new(
+                    mesh_chunk(
+                        &field,
+                        &edits,
+                        TerrainMeshRequest {
+                            node: TerrainNodeId::leaf(BrickCoord::new(
+                                centre.x + x,
+                                centre.y + y,
+                                centre.z + z,
+                            )),
+                            generation: 1,
+                            transition_mask: TerrainTransitionMask::NONE,
+                        },
+                    )
+                    .collision_chunk(),
+                ));
+            }
+        }
+    }
+    world.scene.publish(1, &chunks, &[]).unwrap();
+    for _ in 0..180 {
+        world.tick(GRAVITY);
+    }
+    let state = &world.machine.snapshot().state;
+    assert!(deepest_overlap(&world, state) < 0.005);
+    assert!(state.poses[0].position.y > surface + 0.95);
+    assert!(fastest(state) < 0.05);
+}

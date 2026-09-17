@@ -690,6 +690,7 @@ enum QueryKind {
     Surface,
     Activation,
     Recovery,
+    BuriedVertices,
 }
 
 // How a solid cylinder meets terrain. The soft-step solver rolls it on the exact
@@ -836,7 +837,7 @@ impl TerrainContactScene {
             poses,
             origin,
             &vec![CONTACT_ACTIVATION_DISTANCE; machine.colliders.len()],
-            (QueryKind::Recovery, CylinderContact::Omitted),
+            (QueryKind::BuriedVertices, CylinderContact::Omitted),
             groups,
         )
     }
@@ -1057,7 +1058,8 @@ impl TerrainContactScene {
             // A triangle beside a cylinder's lowest line waits until every point
             // on that line is known: a deeper one of its group discards all of
             // its flank points (see `rolling_supports`).
-            let flanks = round.is_some() && !matches!(kind, QueryKind::Recovery);
+            let flanks =
+                round.is_some() && !matches!(kind, QueryKind::Recovery | QueryKind::BuriedVertices);
             let mut supports = Vec::new();
             let candidates = &shapes.terrain_candidates[collider_row];
             result.chunk_candidates += candidates.len();
@@ -1216,7 +1218,7 @@ impl TerrainContactScene {
                         result.activation_features.push(contact.feature);
                         activation_recorded = true;
                     }
-                    if matches!(kind, QueryKind::Recovery) {
+                    if matches!(kind, QueryKind::Recovery | QueryKind::BuriedVertices) {
                         result.contacts.push(contact);
                     } else if matches!(opposing, Opposing::Cylinder(_)) {
                         rolling.push(contact);
@@ -1251,7 +1253,9 @@ impl TerrainContactScene {
         // axis per pair selects the single face or edge that supplies the normal.
         let reach = |row: usize| match kind {
             QueryKind::Surface => margins[row],
-            QueryKind::Activation | QueryKind::Recovery => PAIR_ACTIVATION_DISTANCE,
+            QueryKind::Activation | QueryKind::Recovery | QueryKind::BuriedVertices => {
+                PAIR_ACTIVATION_DISTANCE
+            }
         };
         let bounds = shapes
             .bounds
@@ -1278,7 +1282,9 @@ impl TerrainContactScene {
             let reach = match kind {
                 // The faster collider's margin already covers its own travel.
                 QueryKind::Surface => margins[first].max(margins[second]),
-                QueryKind::Activation | QueryKind::Recovery => PAIR_ACTIVATION_DISTANCE,
+                QueryKind::Activation | QueryKind::Recovery | QueryKind::BuriedVertices => {
+                    PAIR_ACTIVATION_DISTANCE
+                }
             };
             let first_shape = shapes.shape(machine, poses, first)?;
             let second_shape = shapes.shape(machine, poses, second)?;
@@ -1338,7 +1344,7 @@ impl TerrainContactScene {
                     result.activation_features.push(contact.feature);
                     activation_recorded = true;
                 }
-                if matches!(kind, QueryKind::Recovery) {
+                if matches!(kind, QueryKind::Recovery | QueryKind::BuriedVertices) {
                     result.contacts.push(contact);
                 } else {
                     reduce_support(
@@ -1420,6 +1426,9 @@ fn surface_points_with_scratch(
         QueryKind::Activation => activation_points_with_scratch(shape, triangle, window, scratch),
         QueryKind::Surface => shape
             .triangle_proximity_with_scratch(triangle, margin, scratch)
+            .map_err(|_| PhysicsError::InvalidCollision),
+        QueryKind::BuriedVertices => shape
+            .triangle_buried_vertices_with_scratch(triangle, scratch)
             .map_err(|_| PhysicsError::InvalidCollision),
         QueryKind::Recovery => {
             let points = shape

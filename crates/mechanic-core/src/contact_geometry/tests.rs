@@ -422,3 +422,33 @@ fn split_recovery_retains_a_tilted_box_vertex_without_changing_its_contact_manif
             .is_empty()
     );
 }
+
+#[test]
+fn buried_vertex_query_does_not_reintroduce_interior_triangle_supports() {
+    let shape = cube()
+        .transformed(DVec3::Y * 0.499, DQuat::IDENTITY)
+        .unwrap();
+    let triangle = floor().map(|point| point * 0.01);
+    assert!(
+        !shape
+            .triangle_recovery_contacts(triangle)
+            .unwrap()
+            .is_empty()
+    );
+    let mut scratch = TriangleClipScratch::default();
+    assert!(
+        shape
+            .triangle_buried_vertices_with_scratch(triangle, &mut scratch)
+            .unwrap()
+            .is_empty()
+    );
+    let vertices = shape
+        .triangle_buried_vertices_with_scratch(floor(), &mut scratch)
+        .unwrap();
+    assert_eq!(vertices.len(), 4);
+    assert!(
+        vertices
+            .iter()
+            .all(|point| (point.depth - 0.001).abs() < 1e-9)
+    );
+}

@@ -1,0 +1,197 @@
+{
+  "baseline_commit": "c82718427f8a35204f2dea9d8962f577b568215b",
+  "cpu": "Intel Core i5-12600K",
+  "compiler": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "profile": "release",
+  "world_seed": 91,
+  "warmup_ticks": 60,
+  "measured_ticks": 120,
+  "runs": [
+    {
+      "file": "1m-rigid-after.jsonl",
+      "sha256": "9fd9f86e110e58da23f33a490a22a7d46c665c29dfab14b0f9e2169f7f91cf0d",
+      "version": "after",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "4",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120"
+      ]
+    },
+    {
+      "file": "1m-rigid-before.jsonl",
+      "sha256": "11f2140c35ccd5dfd0b0574a8b5387911b1b1ca0344dc666479655aae5619bd7",
+      "version": "before",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "4",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120"
+      ]
+    },
+    {
+      "file": "1m-soil-after.jsonl",
+      "sha256": "1ed846a5bd5f457c138cefdc5bde8c88d918b1ec0c307e2a3e9e7bcb7626c6ea",
+      "version": "after",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "4",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120",
+        "--soil"
+      ]
+    },
+    {
+      "file": "1m-soil-before.jsonl",
+      "sha256": "1f7bccbc0630b21f459f489bb6ca68348a908fcdc035110b1cb9ba0889fc84f5",
+      "version": "before",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "4",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120",
+        "--soil"
+      ]
+    },
+    {
+      "file": "2m-rigid-after.jsonl",
+      "sha256": "2e6e335583b3bc83dbe45bfc73d92b8c934296a210768b3347a26d0a8ed3d47b",
+      "version": "after",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "8",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120"
+      ]
+    },
+    {
+      "file": "2m-rigid-before.jsonl",
+      "sha256": "a657813885712bc29bb66336080b7901d45d0857eecb3dc28036d2e491ee0cec",
+      "version": "before",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "8",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120"
+      ]
+    },
+    {
+      "file": "2m-soil-after.jsonl",
+      "sha256": "9047593c3a48b5b566f87b4b388809049e100c7c485baaab05074390fb45cc00",
+      "version": "after",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "8",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120",
+        "--soil"
+      ]
+    },
+    {
+      "file": "2m-soil-before.jsonl",
+      "sha256": "d715290f6d02149eb3949a9405bf1c601f4bed13b1eb20bb2dbfca846b9dda27",
+      "version": "before",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "8",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120",
+        "--soil"
+      ]
+    },
+    {
+      "file": "4m-rigid-after.jsonl",
+      "sha256": "9efa763b8330d7fd6b6b999a86da76776f0d2ec271d270e142b896932cdc9b57",
+      "version": "after",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "16",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120"
+      ]
+    },
+    {
+      "file": "4m-rigid-before.jsonl",
+      "sha256": "54fd634535f72c7ccaa3e3501fb876e091065f9c67bd49547de28471ed50d36c",
+      "version": "before",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "16",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120"
+      ]
+    },
+    {
+      "file": "4m-soil-after.jsonl",
+      "sha256": "580d36e0169b06fc499f27ff0a38f84943cc1b23331c4cd42c92e395aee41198",
+      "version": "after",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "16",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120",
+        "--soil"
+      ]
+    },
+    {
+      "file": "4m-soil-before.jsonl",
+      "sha256": "11dc166f0a31613dcb4c367bdb6b4a806d06af577daaa2a47b670ca43c898544",
+      "version": "before",
+      "args": [
+        "--scenario",
+        "large-surface",
+        "--block-width",
+        "16",
+        "--warmup",
+        "60",
+        "--ticks",
+        "120",
+        "--soil"
+      ]
+    }
+  ]
+}

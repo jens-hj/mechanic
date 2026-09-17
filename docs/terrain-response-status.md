@@ -126,6 +126,12 @@ queue saturation, foundation invalidation and persisted world reload.
 See [the CPU soil replay report](performance-results/2026-09-17-soil/REPORT.md)
 for measured results and remaining validation limits.
 
+The [large steel cube replay](performance-results/2026-09-18-large-surface/REPORT.md)
+reproduces a separate CPU contact explosion. Buried-vertex augmentation now
+keeps actual convex vertices instead of reintroducing every clipped triangle
+intersection. A 2 m rigid-terrain cube improves from 36.8 to 9.6 ms physics p95
+on an i5-12600K; soil remeshing and varied-surface contact counts remain costly.
+
 ## Open work
 
 1. Articulated rotational CCD and crossings that start in overlap.
