@@ -1360,3 +1360,44 @@ fn spinning_pipe_preserves_distant_wishbone_support_and_free_rotation() {
         assert!(clearance(fast.creation(), &actual) > -0.03);
     }
 }
+
+#[test]
+fn a_resting_body_reports_terrain_normal_load_matching_its_weight() {
+    for substeps in [2, 8] {
+        let mut world = box_above_floor(0.01, 0.0);
+        world.settings.substeps = substeps;
+        for _ in 0..120 {
+            world.tick(GRAVITY);
+        }
+        let expected = world
+            .creation()
+            .compounds
+            .iter()
+            .map(|body| f64::from(body.mass_properties.mass))
+            .sum::<f64>()
+            * 9.81
+            * crate::TICK_SECONDS;
+        let impulse = world
+            .machine
+            .terrain_loads()
+            .iter()
+            .map(|load| load.normal_impulse)
+            .sum::<f64>();
+        assert!(
+            (impulse / expected - 1.0).abs() < 0.1,
+            "substeps={substeps}: {impulse} vs {expected}"
+        );
+        assert!(
+            world
+                .machine
+                .terrain_loads()
+                .iter()
+                .all(|load| (0.05..=0.3).contains(&load.patch_radius) && load.normal.y > 0.99)
+        );
+        world
+            .machine
+            .step(DVec3::ZERO, &world.settings, &[], &[], None)
+            .unwrap();
+        assert!(world.machine.terrain_loads().is_empty());
+    }
+}

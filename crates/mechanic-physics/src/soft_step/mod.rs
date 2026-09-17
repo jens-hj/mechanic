@@ -248,6 +248,19 @@ impl SoftStepDiagnostics {
     }
 }
 
+/// Terrain-facing load integrated over the last accepted simulation tick.
+#[derive(Clone, Copy, Debug)]
+pub struct TerrainLoad {
+    /// Contact position relative to the terrain query's floating origin.
+    pub point: DVec3,
+    /// Outward unit terrain normal.
+    pub normal: DVec3,
+    /// Normal impulse summed across the tick's accepted substeps, in N s.
+    pub normal_impulse: f64,
+    /// Estimated circular support radius, in metres.
+    pub patch_radius: f64,
+}
+
 /// CPU machine stepped by the soft-step solver. Tree joints are exact by
 /// reconstruction; contacts, drives, joint limits and loop-closing bearings are
 /// soft rows.
@@ -262,6 +275,9 @@ pub struct CpuMachine {
     contact_groups: Option<crate::terrain_contacts::ContactGroups>,
     diagnostics: SoftStepDiagnostics,
     warm: BTreeMap<TerrainContactFeature, [f64; 5]>,
+    terrain_loads: Vec<TerrainLoad>,
+    load_features: Vec<(TerrainContactFeature, usize)>,
+    load_order: Vec<usize>,
     /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
     closure_passive: Vec<PassiveForce>,
     /// Loop-closure impulses carried into the next tick.
@@ -329,7 +345,15 @@ impl CpuMachine {
             },
             diagnostics: SoftStepDiagnostics::default(),
             warm: BTreeMap::new(),
+            terrain_loads: Vec::new(),
+            load_features: Vec::new(),
+            load_order: Vec::new(),
         })
+    }
+
+    /// Terrain loads for the last accepted tick; empty after a degraded tick.
+    pub fn terrain_loads(&self) -> &[TerrainLoad] {
+        &self.terrain_loads
     }
 
     /// Last published state.
@@ -484,6 +508,8 @@ impl CpuMachine {
             drives[command.coordinate] = command.drive;
         }
 
+        self.terrain_loads.clear();
+        self.load_features.clear();
         // Everything below publishes, degraded if necessary.
         self.drives = drives;
         let started = Instant::now();
@@ -710,6 +736,13 @@ impl CpuMachine {
                             outcome.rewound,
                         );
                     }
+                    collect_terrain_loads(
+                        &contacts,
+                        &self.held,
+                        &mut self.terrain_loads,
+                        &mut self.load_features,
+                        &mut self.load_order,
+                    );
                     last = Some(outcome.point_count);
                 }
                 Ok(_) | Err(_) => {
@@ -753,6 +786,9 @@ impl CpuMachine {
             joints.closures
         };
 
+        if diagnostics.degraded {
+            self.terrain_loads.clear();
+        }
         self.warm = contacts
             .iter()
             .map(|contact| (contact.source.feature, contact.impulses))
@@ -937,4 +973,84 @@ fn sane(
         }
     }
     true
+}
+
+// Reuse all three vectors. Manifold numbers are local to each collider, so the
+// collider is part of the grouping key even when several colliders share a body.
+fn collect_terrain_loads(
+    contacts: &[Contact],
+    held: &[bool],
+    loads: &mut Vec<TerrainLoad>,
+    features: &mut Vec<(TerrainContactFeature, usize)>,
+    order: &mut Vec<usize>,
+) {
+    order.clear();
+    order.extend(
+        contacts
+            .iter()
+            .enumerate()
+            .filter(|(_, contact)| {
+                matches!(
+                    contact.source.feature.obstacle,
+                    crate::ContactObstacle::Terrain { .. }
+                ) && !held[contact.source.body]
+            })
+            .map(|(index, _)| index),
+    );
+    order.sort_unstable_by_key(|&index| {
+        let source = contacts[index].source;
+        (source.body, source.feature.collider, source.manifold)
+    });
+    let mut start = 0;
+    while start < order.len() {
+        let first = contacts[order[start]].source;
+        let mut end = start + 1;
+        while end < order.len() {
+            let next = contacts[order[end]].source;
+            if (next.body, next.feature.collider, next.manifold)
+                != (first.body, first.feature.collider, first.manifold)
+            {
+                break;
+            }
+            end += 1;
+        }
+        let group = &order[start..end];
+        let mut distance = 0.0;
+        let mut pairs = 0_u32;
+        for (i, &a) in group.iter().enumerate() {
+            for &b in &group[i + 1..] {
+                distance += contacts[a]
+                    .source
+                    .terrain_point
+                    .distance(contacts[b].source.terrain_point);
+                pairs += 1;
+            }
+        }
+        let radius = if pairs == 0 {
+            mechanic_world::TERRAIN_CELL_METERS
+        } else {
+            (0.5 * distance / f64::from(pairs)).clamp(mechanic_world::TERRAIN_CELL_METERS, 0.3)
+        };
+        for &index in group {
+            let contact = &contacts[index];
+            let impulse = contact.impulses[0];
+            if !impulse.is_finite() || impulse <= 0.0 {
+                continue;
+            }
+            let source = contact.source;
+            match features.binary_search_by_key(&source.feature, |&(feature, _)| feature) {
+                Ok(index) => loads[features[index].1].normal_impulse += impulse,
+                Err(index) => {
+                    features.insert(index, (source.feature, loads.len()));
+                    loads.push(TerrainLoad {
+                        point: source.terrain_point,
+                        normal: source.normal,
+                        normal_impulse: impulse,
+                        patch_radius: radius,
+                    });
+                }
+            }
+        }
+        start = end;
+    }
 }

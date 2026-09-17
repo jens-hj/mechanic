@@ -34,7 +34,9 @@ pub use response::{
     ConstraintBlock, ConstraintSolution, ContactFriction, DENSE_CONTACT_ROWS, DynamicsFactor,
     DynamicsFactorization, ImpulseBounds, PreparedConstraints, solve_constraints,
 };
-pub use soft_step::{CpuMachine, SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
+pub use soft_step::{
+    CpuMachine, SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain, TerrainLoad,
+};
 pub use terrain_contacts::{
     ContactObstacle, ContactTarget, MachineCollisionGeometry, TerrainContact,
     TerrainContactFeature, TerrainContactQuery, TerrainContactScene, TerrainImpactConstraints,
