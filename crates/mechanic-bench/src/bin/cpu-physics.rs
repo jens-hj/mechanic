@@ -233,6 +233,7 @@ fn run(
     let mut samples = Vec::new();
     let (mut deepest, mut settled, mut degraded) = (0.0_f64, 0.0_f64, 0_u64);
     let (mut closure_gap, mut closure_angle) = (0.0_f64, 0.0_f64);
+    let (mut continuous, mut sweeps) = (0.0, 0);
     let mut reasons = std::collections::BTreeMap::<&str, u64>::new();
     for tick in 1..=ticks {
         let terrain = SoftStepTerrain {
@@ -246,6 +247,8 @@ fn run(
         samples.push(started.elapsed().as_secs_f64() * 1000.0);
         let diagnostics = machine.diagnostics();
         degraded += u64::from(diagnostics.degraded);
+        continuous += diagnostics.continuous_ms;
+        sweeps += diagnostics.continuous_sweeps;
         closure_gap = closure_gap.max(diagnostics.closure_position_error);
         closure_angle = closure_angle.max(diagnostics.closure_angle_error);
         if let Some(reason) = diagnostics.degraded_reason {
@@ -266,6 +269,8 @@ fn run(
         "ticks": ticks,
         "p50_ms": percentile(50),
         "p95_ms": percentile(95),
+        "continuous_mean_ms": continuous / f64::from(u32::try_from(ticks)?),
+        "continuous_sweeps": sweeps,
         "deepest_m": deepest,
         "settled_m": settled,
         "degraded_ticks": degraded,

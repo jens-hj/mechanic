@@ -64,7 +64,9 @@ Each 60 Hz tick:
 
    Contacts are queried again before the next substep when a collider has
    travelled past its margin, a body has turned more than 0.25 rad, or the sweep
-   cut the substep short. Impulses carry over by contact feature.
+   cut the substep short. Impulses carry over by contact feature. Against
+   terrain, a cylinder's turn about its own axis counts as neither travel nor
+   turn (see [Rolling cylinders](#rolling-cylinders)).
 5. Applies restitution to contacts that arrived faster than 1 m/s.
 6. Publishes. Non-finite results restore the substep start with zero velocity,
    and speeds are clamped to 500. Both mark the tick `degraded`.
@@ -139,13 +141,24 @@ meets terrain with the exact cylinder instead (`ContactCylinder`):
 - **Manifold.** A triangle beside the lowest line reports its own nearest point
   higher up the flank. As a group corner it held the wheel ahead of or behind
   its axle and braked it, so a flank point is kept only where no lowest-line
-  point of its group lies at or below it: at a kerb or in a crease.
-- **Rolling anchor.** A side contact keeps its place relative to the contact
-  normal rather than the material, so between queries it stays under the axle
-  as the wheel turns. A material anchor lifts off the circle by `r(1 − cos θ)`.
+  point of its group lies at or below it: at a kerb or in a crease. A group
+  also keeps its deepest point when every corner is shallower. A cap tipping
+  flat has its lowest rim point between two corner directions; without it the
+  disc sank 5.8 mm.
+- **Anchors.** Every terrain contact keeps its place relative to the contact
+  normal and the axis rather than the material. A side contact stays under the
+  axle as the wheel turns, and a cap's rim points stay where they touch as it
+  spins. A material anchor lifts off the circle by `r(1 − cos θ)`.
+- **Spin.** Turning about its own axis moves none of a cylinder, so terrain
+  contact budgets and sweeps bound it by its centre's speed and its axis's turn
+  rate. The spin is a root body's angular displacement or a revolute bearing's
+  turn; the rest of the body's rotation still counts.
 - **Envelope.** The prism still bounds the cylinder for broadphase, sweeps,
   clearance certificates and contact with other bodies. A sweep hit on the
-  prism cuts a substep only if the exact cylinder would end buried.
+  prism cuts a substep only if the exact cylinder would end buried, and a
+  sweep advances at the cylinder's speed, since the prism's gap never exceeds
+  the cylinder's. Budgets against other bodies still count spin, because the
+  prism's corners turn.
 - The exact reference solver keeps the prism: its event search and sweep
   certificates are built on that polytope.
 
@@ -160,6 +173,7 @@ terrain triangles for 600 ticks (release build, Intel i5-12600K):
 | Flat, 5 m/s, circle | 0.5 mm | 86% | 46.4 m | 7 mm | 0.018 ms |
 | 5 cm swells, 5 m/s, prism | toppled | 0% | 13.5 m | 0.35 m | 0.065 ms |
 | 5 cm swells, 5 m/s, circle | 2.2 mm | 86% | 46.2 m | 9 mm | 0.019 ms |
+| Flat, 15 m/s, circle | 0.5 mm | 95% | 146.4 m | 0.55 m | 0.034 ms |
 
 The saved car, before and after:
 
@@ -172,6 +186,16 @@ The saved car, before and after:
 
 Rubber on rock rolls with a 5 mm resistance length, which alone leaves about
 35% of 1 m/s and 87% of 5 m/s after ten seconds.
+
+Counting spin as travel swept a 5 m/s wheel about twice a tick. Ignoring it,
+with the same ride and speed kept:
+
+| Case | Sweeps in 600 ticks | Mean sweep time | p50 tick |
+| --- | --- | --- | --- |
+| Flat, 5 m/s | 1323 → 0 | 0.14 → 0.001 ms | 0.16 → 0.03 ms |
+| 5 cm swells, 5 m/s | 1311 → 0 | 0.13 → 0.001 ms | 0.15 → 0.03 ms |
+| Flat, 15 m/s | 2400 → 2400 | 0.38 → 0.32 ms | 0.41 → 0.35 ms |
+| `car-drive` | 1327 → 1327 | 0.041 → 0.017 ms | 0.17 → 0.12 ms |
 
 ### Fast collisions
 
@@ -234,9 +258,13 @@ Known limits:
   the car covers only 2.4 m in 9 s, though it sits about 1 mm deep. Rolling on
   circles helped (0.9 m on the prism); wheel friction and load under drive
   torque need investigating next.
-- **A fast-spinning wheel pays for sweeps.** Spin counts as collider travel
-  even though it does not move a cylinder's surface, so a wheel rolling at
-  5 m/s spends about 0.13 ms of its 0.15 ms tick in continuous sweeps.
+- **Fast travel still sweeps every substep.** A wheel rolling at 15 m/s moves
+  its axle 6 cm per substep and spends about 0.32 ms of its 0.35 ms tick in
+  sweeps. `car-drive` still sweeps about twice a tick, at 0.017 ms.
+- **Fast spin in flight grows.** A 0.95 m steel wheel spinning at 150 rad/s
+  that leaves the floor with a few rad/s of wobble gains wobble every tick and
+  reaches the speed clamp within about 15 ticks. The gyroscopic bias is applied
+  once per substep, which at that speed is 0.6 rad of turn.
 
 ## Exact reference solver
 
@@ -272,6 +300,7 @@ cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario reference-
 The soft-step scenarios print one JSONL record:
 
 - p50/p95 tick time
+- mean sweep time and sweep count
 - deepest and settled penetration
 - degraded ticks
 - horizontal travel and fastest final speed
@@ -281,7 +310,8 @@ penetration, `tunnelled` (a collider ended more than one block past a surface),
 degraded ticks, re-queries and continuous hits.
 
 `wheel-roll` prints one record per floor and speed with the axle height range,
-speed kept, lateral drift, axle tilt, and mean query, sweep and solve time.
+speed kept, lateral drift, axle tilt, mean query, sweep and solve time, and
+sweep and re-query counts.
 
 `reference-fixtures` prints one record per captured exact-solver solve: rows,
 convergence, residual, iterations, time and worst contact-law violation.

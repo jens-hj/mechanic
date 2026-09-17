@@ -33,6 +33,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     for (floor, height, speed) in [
         ("flat", &flat as &dyn Fn(f64) -> f64, 1.0),
         ("flat", &flat, 5.0),
+        ("flat", &flat, 15.0),
         ("wavy", &wavy, 5.0),
     ] {
         roll(floor, height, speed)?;
@@ -144,7 +145,7 @@ fn percentile(samples: &mut [f64], fraction: usize) -> f64 {
 // balanced hierarchy over consecutive cells.
 #[allow(clippy::cast_possible_truncation)] // Metre coordinates well inside f32.
 fn tessellated(height: &dyn Fn(f64) -> f64) -> Arc<TerrainCollisionChunk> {
-    const COLUMNS: u32 = 128;
+    const COLUMNS: u32 = 400;
     const ROWS: u32 = 32;
     let [x0, z0] = [-4.0, -8.0];
     let mut weights = [0.0; TerrainMaterial::COUNT];
