@@ -1,0 +1,20 @@
+{
+  "cpu": "12th Gen Intel Core i5-12600K",
+  "platform": "Linux-7.2.6-x86_64-with-glibc2.42",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "creation_sha256": "5522ce6bb8538ee4c9bfc6fca9ba0698a3da5d2ef11351676e7038833589c56e",
+  "world_seed": 91,
+  "warmup_ticks": 300,
+  "measured_ticks": 600,
+  "commands": [
+    "cargo run -p mechanic-bench --release --bin suspension-world -- --write-world /tmp/mechanic-soil-worlds",
+    "target/release/cpu-physics --scenario world-drive --instance /tmp/mechanic-soil-worlds/suspension-performance --warmup 300 --ticks 600",
+    "target/release/cpu-physics --scenario world-drive --soil --instance /tmp/mechanic-soil-worlds/suspension-performance --warmup 300 --ticks 600"
+  ],
+  "kernel_coverage_complete": false,
+  "recorded_utc": "2026-09-17T22:22:08.747037+00:00",
+  "binary_sha256": "886af7bb99ae2ce3259ee2d5116a7dc50fcb40886b3c77b8853f7d2fefb5cf92",
+  "app_adapter": "AMD Radeon RX 9070 XT (RADV GFX1201), Mesa 26.2.2, Vulkan",
+  "runs_sequential": true,
+  "concurrent_compilation": false
+}

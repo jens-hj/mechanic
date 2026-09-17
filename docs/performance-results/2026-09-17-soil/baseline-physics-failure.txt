@@ -1,0 +1,36 @@
+   Compiling mechanic-physics v0.1.0 (/home/j/repos/mechanic/crates/mechanic-physics)
+    Finished `test` profile [optimized + debuginfo] target(s) in 6.75s
+     Running unittests src/lib.rs (target/debug/deps/mechanic_physics-43fffeeca9cc7fd8)
+
+running 1 test
+test soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest ... FAILED
+
+failures:
+
+---- soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest stdout ----
+
+thread 'soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest' (332) panicked at crates/mechanic-physics/src/soft_step/tests.rs:1115:5:
+MachineState { poses: [BodyPose { position: DVec3(1.2474088374617383, 0.12312119960921328, -1.372908506061932), rotation: DQuat(0.0001192127540634132, -0.0029940258356527085, 9.279680184012484e-5, 0.9999955064830884) }, BodyPose { position: DVec3(1.234924711932939, 0.3699537635177452, -1.451046602960548), rotation: DQuat(0.06687391303013442, -0.030199768317066014, 0.020925837221041497, 0.997084732149797) }, BodyPose { position: DVec3(0.2826301074655939, 0.12372838240229792, -1.0600746058226749), rotation: DQuat(0.14704500925504366, -0.6916971688321799, 0.6916543669308489, 0.14678906154144292) }], coordinates: [], velocities: [0.002330457390133801, 0.012261549980022927, -0.0022805612926666613, -0.011404706918049337, 9.864196870714066e-5, -0.03400978532350028, 0.04615608329128315, -0.06845599828229113, 0.020681877633559505, -0.2530682028609534, -0.0766201344292416, -0.3937452472831501, 9.86532669274008e-5, 0.00038786834506737575, -0.00010069511059433895, -1.860117839719202e-5, -0.0009442156415543638, 0.0004961014240425519] }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: mechanic_physics::soft_step::tests::captured_blocks_come_to_rest
+   3: mechanic_physics::soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest
+             at ./src/soft_step/tests.rs:1127:5
+   4: mechanic_physics::soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest::{closure#0}
+             at ./src/soft_step/tests.rs:1126:56
+   5: <mechanic_physics::soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /nix/store/l4x3l9wccwl5rmwkd4amx6rd75h5xl3l-rust-default-1.97.1/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+   6: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    soft_step::tests::captured_blocks_landing_on_each_other_come_to_rest
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.15s
+
+error: test failed, to rerun pass `-p mechanic-physics --lib`

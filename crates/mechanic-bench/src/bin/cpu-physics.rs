@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut scenario = "reference-fixtures".to_owned();
     let mut instance = None;
     let mut background = None;
+    let mut soil = false;
     let mut scale = scale::Options {
         copies: 1,
         connected: false,
@@ -76,6 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             "--connected" => scale.connected = true,
+            "--soil" => soil = true,
             "--hold" => scale.hold = true,
             "--floor" => scale.floor = true,
             "--warmup" => scale.warmup = args.next().ok_or("--warmup needs a value")?.parse()?,
@@ -87,6 +89,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             other => return Err(format!("unknown argument {other}").into()),
         }
+    }
+    if soil && scenario != "world-drive" {
+        return Err("--soil is supported only by --scenario world-drive".into());
     }
     match scenario.as_str() {
         "builder-scale" => scale::run(&scale),
@@ -112,6 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_deref()
                 .ok_or("world-drive needs --instance <world directory>")?,
             &scale,
+            soil,
         ),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \

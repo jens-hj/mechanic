@@ -20,16 +20,33 @@ use mechanic_world::{
 /// Terrain meshed around each moving body, in bricks.
 const REACH_BRICKS: i32 = 2;
 
-#[allow(clippy::too_many_lines)]
-pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<dyn Error>> {
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation)] // Replay protocol; terrain samples use f32.
+pub(super) fn run(
+    directory: &str,
+    options: &scale::Options,
+    soil: bool,
+) -> Result<(), Box<dyn Error>> {
     let directory = Path::new(directory);
     let store = WorldStore::new(directory.parent().ok_or("world directory has no parent")?);
     let world = store.load_world(directory)?;
     let (instance, _) = store
         .load_space_pair(&world)?
         .ok_or("world has no construction")?;
+    let origin = instance.root_pose.translation.0;
+    let rotation = instance.root_pose.rotation;
+    if bevy_math::Quat::from_array(rotation)
+        .angle_between(bevy_math::Quat::IDENTITY)
+        .abs()
+        > 1.0e-6
+        || !instance.joint_coordinates.is_empty()
+    {
+        return Err(
+            "world-drive currently requires an unrotated instance with default joint coordinates"
+                .into(),
+        );
+    }
     let loaded = instance.creation.into_graph()?;
-    let edits = store.load_octree(&world.name)?;
+    let mut edits = store.load_octree(&world.name)?;
     let field = TerrainField::new(world.seed);
     let terrain = TerrainScene {
         field: &field,
@@ -43,7 +60,7 @@ pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<d
     for collider in &loose.colliders {
         let body = &loose.compounds[collider.compound_index as usize];
         let [low, high] = ContactPolytope::from_collider(collider)?.transformed_bounds(
-            body.root_translation.as_dvec3(),
+            body.root_translation.as_dvec3() + origin,
             body.root_rotation.as_dquat(),
         )?;
         let entry = bounds
@@ -118,21 +135,31 @@ pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<d
         .collect::<Vec<_>>();
     println!(
         "{}",
-        json!({"kind":"metadata","world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup})
+        json!({"kind":"metadata","soil":soil,"kernel_coverage_complete":false,"world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup})
     );
 
     let mut scene = TerrainContactScene::default();
     let mut meshed = BTreeMap::<BrickCoord, Arc<_>>::new();
     let mut publication = 0;
+    let mut pending_soil = mechanic_world::SoilAccumulator::default();
+    let mut invalidated = std::collections::BTreeSet::new();
+    let mut probes = BTreeMap::<mechanic_world::WorldCell, f64>::new();
+    let mut remeshes = 0_u64;
+    let mut remesh_ms = 0.0;
+    let mut sunk_metres = 0.0;
+    let mut maximum_rut = 0.0_f64;
     let settings = SoftStepSettings::default();
     let mut machine = CpuMachine::new(creation.clone(), 1, MachineState::at_rest(&creation))?;
     let mut window = Window::default();
+    let mut measured = Window::default();
+    let mut measured_remeshes = 0_u64;
     for tick in 1..=options.warmup + options.ticks {
+        let tick_started = Instant::now();
         let state = &machine.snapshot().state;
         let wanted = dynamic
             .iter()
             .flat_map(|&body| {
-                let centre = WorldPosition(state.poses[body].position)
+                let centre = WorldPosition(origin + state.poses[body].position)
                     .cell()
                     .map(mechanic_world::WorldCell::brick);
                 centre.into_iter().flat_map(|brick| {
@@ -155,7 +182,7 @@ pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<d
             .collect::<Vec<_>>();
         let missing = wanted
             .iter()
-            .filter(|brick| !meshed.contains_key(brick))
+            .filter(|brick| !meshed.contains_key(brick) || invalidated.contains(*brick))
             .copied()
             .collect::<Vec<_>>();
         if !missing.is_empty() || !removed.is_empty() {
@@ -163,20 +190,24 @@ pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<d
             let snapshot = edits.snapshot();
             let mut upserts = Vec::new();
             for brick in missing {
-                let chunk = Arc::new(
-                    mesh_chunk(
-                        &field,
-                        &snapshot,
-                        TerrainMeshRequest {
-                            node: TerrainNodeId::leaf(brick),
-                            generation: publication,
-                            transition_mask: TerrainTransitionMask::NONE,
-                        },
-                    )
-                    .collision_chunk(),
-                );
+                let started = Instant::now();
+                let remesh = invalidated.remove(&brick);
+                let chunk = Arc::new(mesh_chunk(
+                    &field,
+                    &snapshot,
+                    TerrainMeshRequest {
+                        node: TerrainNodeId::leaf(brick),
+                        generation: publication,
+                        transition_mask: TerrainTransitionMask::NONE,
+                    },
+                ));
                 meshed.insert(brick, Arc::clone(&chunk));
-                upserts.push(chunk);
+                upserts.push(Arc::new(chunk.collision_chunk()));
+                if remesh {
+                    remeshes += 1;
+                    measured_remeshes += u64::from(tick > options.warmup);
+                    remesh_ms += started.elapsed().as_secs_f64() * 1000.0;
+                }
             }
             for brick in &removed {
                 meshed.remove(brick);
@@ -209,12 +240,70 @@ pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<d
             scene: &scene,
             geometry: &geometry,
             topology_generation: 1,
-            origin: DVec3::ZERO,
+            origin,
         };
         let started = Instant::now();
         machine.step(GRAVITY, &settings, &[], &commands, Some(step))?;
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
         window.record(elapsed, machine.diagnostics());
+        if soil {
+            for load in machine.terrain_loads() {
+                pending_soil.accumulate(
+                    &edits,
+                    &field,
+                    mechanic_world::SoilPatch {
+                        centre: WorldPosition(origin + load.point),
+                        normal: load.normal,
+                        radius: load.patch_radius,
+                        pressure_pa: (load.normal_impulse
+                            / (mechanic_physics::TICK_SECONDS
+                                * std::f64::consts::PI
+                                * load.patch_radius.powi(2)))
+                            as f32,
+                        seconds: mechanic_physics::TICK_SECONDS as f32,
+                    },
+                )?;
+            }
+            if tick % 6 == 0 {
+                let ready = pending_soil.take_ready();
+                for compression in &ready {
+                    probes.entry(compression.cell).or_insert_with(|| {
+                        meshed
+                            .get(&compression.cell.brick())
+                            .and_then(|mesh| {
+                                mesh.raycast(
+                                    WorldPosition(compression.cell.centre().0 + DVec3::Y * 0.2),
+                                    -DVec3::Y,
+                                    0.5,
+                                )
+                            })
+                            .map_or(f64::NAN, |hit| hit.position.0.y)
+                    });
+                }
+                let outcome = edits.compress_cells(&field, &ready);
+                sunk_metres += outcome.sunk_metres;
+                // Match streaming: leaf sampling/gradient halos include adjacent bricks.
+                for brick in outcome.changed_brick_coordinates() {
+                    for z in -1..=1 {
+                        for y in -1..=1 {
+                            for x in -1..=1 {
+                                let neighbor =
+                                    BrickCoord::new(brick.x + x, brick.y + y, brick.z + z);
+                                if meshed.contains_key(&neighbor) {
+                                    invalidated.insert(neighbor);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let total_elapsed = tick_started.elapsed().as_secs_f64() * 1000.0;
+        window.total_samples.push(total_elapsed);
+        if tick > options.warmup {
+            measured.record(elapsed, machine.diagnostics());
+            measured.total_samples.push(total_elapsed);
+        }
         if tick % 60 == 0 {
             let state = &machine.snapshot().state;
             let motions =
@@ -223,13 +312,42 @@ pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<d
                 .iter()
                 .map(|&body| motions[body].linear.length())
                 .fold(0.0, f64::max);
-            println!(
-                "{}",
-                window.report(tick, speed, meshed.len(), tick > options.warmup)
-            );
+            for (cell, baseline) in &probes {
+                if let Some(hit) = meshed.get(&cell.brick()).and_then(|mesh| {
+                    mesh.raycast(
+                        WorldPosition(cell.centre().0 + DVec3::Y * 0.2),
+                        -DVec3::Y,
+                        0.5,
+                    )
+                }) {
+                    maximum_rut = maximum_rut.max(baseline - hit.position.0.y);
+                }
+            }
+            let mut report = window.report(tick, speed, meshed.len(), tick > options.warmup);
+            report["soil"] = json!(soil);
+            report["maximum_rut_depth_m"] = json!(maximum_rut);
+            report["summed_cell_displacement_m"] = json!(sunk_metres);
+            report["remesh_count"] = json!(remeshes);
+            report["remesh_ms"] = json!(remesh_ms);
+            report["kernel_coverage_complete"] = json!(false);
+            println!("{report}");
+            remeshes = 0;
+            remesh_ms = 0.0;
             window = Window::default();
         }
     }
+    let mut summary = measured.report(options.warmup + options.ticks, 0.0, meshed.len(), true);
+    summary
+        .as_object_mut()
+        .expect("report is an object")
+        .remove("fastest_body_m_s");
+    summary["kind"] = json!("summary");
+    summary["measured_ticks"] = json!(options.ticks);
+    summary["soil"] = json!(soil);
+    summary["maximum_rut_depth_m"] = json!(maximum_rut);
+    summary["remesh_count"] = json!(measured_remeshes);
+    summary["kernel_coverage_complete"] = json!(false);
+    println!("{summary}");
     Ok(())
 }
 
@@ -237,6 +355,7 @@ pub(super) fn run(directory: &str, options: &scale::Options) -> Result<(), Box<d
 #[derive(Default)]
 struct Window {
     samples: Vec<f64>,
+    total_samples: Vec<f64>,
     work: BTreeMap<&'static str, f64>,
     degraded: u64,
 }
@@ -284,6 +403,7 @@ impl Window {
 
     fn report(&mut self, tick: u64, speed: f64, chunks: usize, driving: bool) -> serde_json::Value {
         self.samples.sort_by(f64::total_cmp);
+        self.total_samples.sort_by(f64::total_cmp);
         #[allow(clippy::cast_precision_loss)]
         let count = self.samples.len() as f64;
         let mut record = json!({
@@ -291,6 +411,8 @@ impl Window {
             "driving": driving,
             "fastest_body_m_s": speed,
             "terrain_chunks": chunks,
+            "p95_ms": self.samples[(self.samples.len() * 95 / 100).min(self.samples.len() - 1)],
+            "total_tick_p95_ms": self.total_samples[(self.total_samples.len() * 95 / 100).min(self.total_samples.len() - 1)],
             "p50_ms": self.samples[self.samples.len() / 2],
             "max_ms": self.samples.last(),
             "degraded_ticks": self.degraded,

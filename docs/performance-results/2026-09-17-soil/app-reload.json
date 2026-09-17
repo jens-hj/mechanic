@@ -1,0 +1,12 @@
+{
+  "initial_v3_bricks": 135,
+  "initial_compacted_cells": 3477,
+  "cells_retaining_compaction_after_restart": 3477,
+  "cells_losing_compaction": 0,
+  "reload_exit_code": 0,
+  "reload_streaming_resolved": 142,
+  "reload_streaming_total": 142,
+  "reload_streaming_backlog": 0,
+  "first_capture_missing_assets": true,
+  "reload_asset_root": "/home/j/repos/mechanic/crates/mechanic-app"
+}

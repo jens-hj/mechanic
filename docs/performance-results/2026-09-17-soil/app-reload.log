@@ -1,0 +1,11 @@
+WARNING: radv is not a conformant Vulkan implementation, testing use only.
+2026-09-17T22:21:04.652350Z  INFO bevy_render::renderer: AdapterInfo { name: "AMD Radeon RX 9070 XT (RADV GFX1201)", vendor: 4098, device: 30032, device_type: DiscreteGpu, device_pci_bus_id: "0000:03:00.0", driver: "radv", driver_info: "Mesa 26.2.2", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 64, transient_saves_memory: false }
+2026-09-17T22:21:04.750585Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-09-17T22:21:04.750616Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-09-17T22:21:04.751013Z  INFO bevy_winit::system: Creating new window Mechanic — construction and simulation prototype (62v0)
+2026-09-17T22:21:04.775101Z  INFO mechanic_app::automation: Automatic capture: Suspension performance (foreground requested: false)
+2026-09-17T22:21:04.876853Z  INFO mechanic_app::automation: Automation waiting: phase Loading notice None progress TerrainReadiness { resolved: 0, total: 0 } running false backlog 0 resolved 0/0
+2026-09-17T22:21:05.143330Z  INFO mechanic_app::performance_capture: Performance capture started (replay ticks: None; wall-time capture otherwise)
+2026-09-17T22:22:05.200046Z  INFO mechanic_app::performance_capture: Performance capture: /tmp/mechanic-soil-app-tzyd9fls/reload-capture/capture-1789683725143971729-34973.jsonl
+2026-09-17T22:22:05.200387Z  INFO mechanic_app::automation: Automation waiting: phase Playing notice None progress TerrainReadiness { resolved: 142, total: 142 } running true backlog 0 resolved 142/142
+2026-09-17T22:22:05.312859Z  INFO mechanic_app::automation: Automatic screenshot saved: /tmp/mechanic-soil-app-tzyd9fls/reload-capture/capture-1789683725143971729-34973.png

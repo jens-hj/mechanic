@@ -1,8 +1,9 @@
 # Terrain response status
 
 Firm ground, permanent deformation and physical clumps make up one feature. It
-is incomplete: milestone 1 (rigid ground contact) is partly done, and soil,
-deformation and clumps have not started.
+is incomplete: rigid ground contact is partly done; persistent soil compaction
+and pressure response now run on the CPU route. Material transfer and clumps
+have not started.
 
 ## GPU terrain contact path
 
@@ -67,14 +68,73 @@ World simulation uploads the published terrain cut before tick submission:
 
 Both the GPU and CPU routes receive the same accepted cut.
 
+## Persistent soil response (CPU)
+
+CPU contacts report normal impulse integrated over accepted substeps. The world
+converts pressure into quantised plastic displacement and hardening for surface
+cover, sand and soil. Rock, iron and graphite remain rigid. Each column yields
+only its exposed cell; a collapsed cell lets the next cell receive pressure.
+Compacted samples retain continuous signed distances during meshing; binary
+excavation and fill retain bounded occupancy reconstruction. This prevents a
+sub-millimetre first load from snapping a procedural surface to the cell grid.
+The response is game tuning, not measured soil data. Only upward-facing ground
+(normal Y at least 0.25) compacts; walls and ceilings remain rigid.
+
+The app accumulates displacement without promoting terrain. Cells cross a 2 mm
+commit threshold and enter the existing asynchronous edit worker at most every
+six CPU ticks. One commit delivers at most 12.5 mm per cell. The accumulator is
+bounded to 16,384 cells; saturation or a full edit queue drops pending pressure.
+Accumulated loads carry the original sample so a later excavation, fill or
+compression causes stale loads to be discarded. Normal edit publication,
+foundation refresh and autosave also apply to soil.
+
+`MECHANIC_SOIL=off` disables app deformation. The GPU route does not produce
+soil loads. Both routes read brick format **v3**, which adds one compaction byte
+per RLE record while retaining an eight-byte in-memory sample. Earlier brick
+versions are rejected; regenerate terrain-bearing pre-production worlds. The
+builder-world fixture has no terrain bricks and needs no format replacement.
+
+Compression removes volume without conserving material or producing berms.
+There are no clumps, material transfers or atomic terrain/body publication.
+The outstanding driving and collision work below remains open; this change does
+not claim those gates or a scale gate.
+
+The headless replay uses a fresh suspension-car world:
+
+```sh
+cargo run -p mechanic-bench --release --bin suspension-world -- \
+  --write-world /tmp/mechanic-soil-worlds
+cargo run -p mechanic-bench --release --bin cpu-physics -- \
+  --scenario world-drive --soil \
+  --instance /tmp/mechanic-soil-worlds/suspension-performance \
+  --warmup 300 --ticks 600
+```
+
+Omit `--soil` for a rigid comparison. Replay edits remain in memory. JSONL
+reports measured mesh rut depth, summed cell displacement, remesh count/time,
+solver p95, and total tick p95 including synchronous benchmark meshing. Every
+record keeps `kernel_coverage_complete: false`. The replay respects the saved
+instance translation; rotated instances and saved joint coordinates are
+explicitly unsupported.
+
+World tests cover light loads, hardening, repeated passes, rigid minerals,
+collapse, stale accumulated loads, malformed patches, exact RLE persistence,
+and meshed surface height after reload. The CPU load test checks resting weight
+with two different substep counts. The app integration test checks cadence,
+queue saturation, foundation invalidation and persisted world reload.
+
+See [the CPU soil replay report](performance-results/2026-09-17-soil/REPORT.md)
+for measured results and remaining validation limits.
+
 ## Open work
 
 1. Articulated rotational CCD and crossings that start in overlap.
 2. Profile the serial position solve on representative published terrain.
 3. Stable scripted driving of the suspension car on generated terrain. The
    installed car still overturns in the scripted sequence.
-4. Then, in order:
-   - persistent soil state and pressure response
+4. Soil follow-up: remesh performance, a close-up visual rut demonstration, and
+   a compact GPU load readback.
+5. Then, in order:
    - material transfers and runtime clumps
    - atomic terrain/body publication
    - the 256-clump benchmark and a visual demonstration
