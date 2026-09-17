@@ -398,10 +398,12 @@ fn clearance_never_exceeds_the_distance_or_a_contact_separation() {
             - radius * (normal - normal.dot(cylinder.axis()) * cylinder.axis()).length()
             - half_length * normal.dot(cylinder.axis()).abs();
         let column = cylinder.column_clearance(triangle, normal, lowest);
+        let sphere = cylinder.sphere_clearance(triangle, normal);
         for point in cylinder.triangle_contacts(triangle, 10.0).unwrap() {
+            let gap = separation_of(&point).max(0.0);
             assert!(
-                column <= separation_of(&point).max(0.0),
-                "case {case}: column clearance {column} above contact {point:?}"
+                column <= gap && sphere <= gap,
+                "case {case}: clearance {column} or {sphere} above contact {point:?}"
             );
         }
     }

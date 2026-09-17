@@ -174,7 +174,10 @@ impl ContactCylinder {
             - self.radius * spread
             - self.half_length * alignment.abs()
             - plane;
-        if lowest > margin || self.column_clearance(triangle, normal, lowest) > margin {
+        if lowest > margin
+            || self.sphere_clearance(triangle, normal) > margin
+            || self.column_clearance(triangle, normal, lowest) > margin
+        {
             return Ok(Vec::new());
         }
         let mut candidates = Vec::with_capacity(8);
@@ -256,6 +259,31 @@ impl ContactCylinder {
         let plane = height.abs() - reach;
         // Rounding in the tests above stays far below a micrometre.
         (axis.max(caps).max(plane) - CLEARANCE_ROUNDING).max(0.0)
+    }
+
+    // A cheaper, looser lower bound on every contact's separation, from a sphere
+    // around the triangle. It holds only while the axis is above the triangle's
+    // plane, where the column under the triangle is no nearer than the triangle.
+    fn sphere_clearance(&self, triangle: [DVec3; 3], normal: DVec3) -> f64 {
+        let ends = [
+            self.center - self.half_length * self.axis,
+            self.center + self.half_length * self.axis,
+        ];
+        if ends.iter().any(|&end| normal.dot(end - triangle[0]) <= 0.0) {
+            return 0.0;
+        }
+        let middle = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+        let spread = triangle
+            .iter()
+            .map(|&vertex| vertex.distance(middle))
+            .fold(0.0, f64::max);
+        let offset = middle - self.center;
+        let along = self
+            .axis
+            .dot(offset)
+            .clamp(-self.half_length, self.half_length);
+        let distance = (offset - along * self.axis).length();
+        (distance - spread - self.radius - CLEARANCE_ROUNDING).max(0.0)
     }
 
     // A lower bound on every contact's separation. A contact is where a column
