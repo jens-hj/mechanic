@@ -8,7 +8,7 @@ use std::{
 use bevy_math::{DVec3, Vec3};
 use mechanic_core::{
     CompiledCreation, ContactCylinder, ContactPolytope, ConvexFeature, ConvexSeparation,
-    MaterialProperties, TriangleContactPoint,
+    MaterialProperties, TriangleContactPoint, TriangleSupport,
 };
 use mechanic_world::{
     TerrainCollisionChunk, TerrainNodeId, TerrainSpatialIndex, WorldBounds, WorldPosition,
@@ -1048,6 +1048,14 @@ impl TerrainContactScene {
             }
             let mut groups = Vec::<SupportGroup>::new();
             let mut rolling = Vec::new();
+            let round = shapes.rounds[collider_row]
+                .as_ref()
+                .filter(|_| cylinders == CylinderContact::Analytic);
+            // A triangle beside a cylinder's lowest line waits until every point
+            // on that line is known: a deeper one of its group discards all of
+            // its flank points (see `rolling_supports`).
+            let flanks = round.is_some() && !matches!(kind, QueryKind::Recovery);
+            let mut supports = Vec::new();
             let candidates = &shapes.terrain_candidates[collider_row];
             result.chunk_candidates += candidates.len();
             for &node in candidates {
@@ -1082,29 +1090,29 @@ impl TerrainContactScene {
                     {
                         continue;
                     }
-                    let round = shapes.rounds[collider_row]
-                        .as_ref()
-                        .filter(|_| cylinders == CylinderContact::Analytic);
-                    let (points, opposing) = if let Some(cylinder) = round {
+                    let support = if let Some(cylinder) = round {
                         // Every query kind reports true depths here, so a
                         // recovery query needs no separate buried vertices.
-                        let points = cylinder
-                            .triangle_contacts(triangle, margin)
-                            .map_err(|_| PhysicsError::InvalidCollision)?;
-                        (points, Opposing::Cylinder(cylinder))
+                        let support = if flanks {
+                            cylinder.triangle_support(triangle, margin)
+                        } else {
+                            cylinder
+                                .triangle_contacts(triangle, margin)
+                                .map(TriangleSupport::Points)
+                        };
+                        support.map_err(|_| PhysicsError::InvalidCollision)?
                     } else {
                         let shape = shapes.shape(machine, poses, collider_row)?;
-                        let points = surface_points_with_scratch(
+                        TriangleSupport::Points(surface_points_with_scratch(
                             shape,
                             triangle,
                             kind,
                             margin,
                             CONTACT_ACTIVATION_DISTANCE,
                             &mut shapes.clipping.borrow_mut(),
-                        )?;
-                        (points, Opposing::Polytope(shape))
+                        )?)
                     };
-                    if points.is_empty() {
+                    if matches!(&support, TriangleSupport::Points(points) if points.is_empty()) {
                         continue;
                     }
                     let surface = chunk
@@ -1119,49 +1127,104 @@ impl TerrainContactScene {
                         f64::from(material.restitution).max(surface[2]),
                         (f64::from(material.rolling_resistance) * surface[3]).sqrt(),
                     ];
-                    let mut activation_recorded = false;
-                    for (corner, point) in points.into_iter().enumerate() {
-                        result.unreduced_points += 1;
-                        let contact = TerrainContact {
-                            feature: TerrainContactFeature {
-                                topology_generation: machine.generation,
-                                collider: collider_row,
-                                obstacle: ContactObstacle::Terrain {
-                                    node,
-                                    geometry_generation: chunk.generation,
-                                    publication_generation: published.publication,
-                                    triangle: row,
-                                },
-                                corner,
-                            },
-                            body: collider.body,
-                            other_body: None,
-                            manifold: 0,
-                            terrain_point: point.triangle_point,
-                            body_point: point.body_point,
+                    supports.push((node, published, row, triangle, response, support));
+                }
+            }
+            let lines = round.filter(|_| flanks).map_or_else(Vec::new, |cylinder| {
+                supports
+                    .iter()
+                    .filter_map(|(.., response, support)| match support {
+                        TriangleSupport::Points(points) => Some((response, points)),
+                        TriangleSupport::Flank(_) => None,
+                    })
+                    .flat_map(|(&response, points)| {
+                        points.iter().map(move |point| (response, point))
+                    })
+                    .filter(|(_, point)| on_lowest_line(cylinder, point.normal, point.body_point))
+                    .map(|(response, point)| {
+                        let surface = Surface {
                             normal: point.normal,
-                            depth: point.depth,
-                            separation: (point.body_point - point.triangle_point).dot(point.normal),
+                            distance: point.normal.dot(point.triangle_point),
                             response,
                         };
-                        if !activation_recorded && contact.separation <= CONTACT_ACTIVATION_DISTANCE
+                        (
+                            surface,
+                            (point.body_point - point.triangle_point).dot(point.normal),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            for (node, published, row, triangle, response, support) in supports {
+                let points = match (support, round) {
+                    (TriangleSupport::Points(points), _) => points,
+                    (TriangleSupport::Flank(bound), Some(cylinder)) => {
+                        let normal = (triangle[1] - triangle[0])
+                            .cross(triangle[2] - triangle[0])
+                            .normalize();
+                        let flank = Surface {
+                            normal,
+                            distance: normal.dot(triangle[0]),
+                            response,
+                        };
+                        if bound > CONTACT_ACTIVATION_DISTANCE
+                            && lines.iter().any(|&(line, separation)| {
+                                separation <= bound && same_support(line, flank, center).is_some()
+                            })
                         {
-                            result.activation_features.push(contact.feature);
-                            activation_recorded = true;
+                            continue;
                         }
-                        if matches!(kind, QueryKind::Recovery) {
-                            result.contacts.push(contact);
-                        } else if matches!(opposing, Opposing::Cylinder(_)) {
-                            rolling.push(contact);
-                        } else {
-                            reduce_support(
-                                &mut groups,
-                                &mut result.contacts,
-                                contact,
-                                opposing,
-                                center,
-                            );
-                        }
+                        cylinder
+                            .triangle_contacts(triangle, margin)
+                            .map_err(|_| PhysicsError::InvalidCollision)?
+                    }
+                    (TriangleSupport::Flank(_), None) => continue,
+                };
+                let chunk = &published.geometry;
+                let opposing = match round {
+                    Some(cylinder) => Opposing::Cylinder(cylinder),
+                    None => Opposing::Polytope(shapes.shape(machine, poses, collider_row)?),
+                };
+                let mut activation_recorded = false;
+                for (corner, point) in points.into_iter().enumerate() {
+                    result.unreduced_points += 1;
+                    let contact = TerrainContact {
+                        feature: TerrainContactFeature {
+                            topology_generation: machine.generation,
+                            collider: collider_row,
+                            obstacle: ContactObstacle::Terrain {
+                                node,
+                                geometry_generation: chunk.generation,
+                                publication_generation: published.publication,
+                                triangle: row,
+                            },
+                            corner,
+                        },
+                        body: collider.body,
+                        other_body: None,
+                        manifold: 0,
+                        terrain_point: point.triangle_point,
+                        body_point: point.body_point,
+                        normal: point.normal,
+                        depth: point.depth,
+                        separation: (point.body_point - point.triangle_point).dot(point.normal),
+                        response,
+                    };
+                    if !activation_recorded && contact.separation <= CONTACT_ACTIVATION_DISTANCE {
+                        result.activation_features.push(contact.feature);
+                        activation_recorded = true;
+                    }
+                    if matches!(kind, QueryKind::Recovery) {
+                        result.contacts.push(contact);
+                    } else if matches!(opposing, Opposing::Cylinder(_)) {
+                        rolling.push(contact);
+                    } else {
+                        reduce_support(
+                            &mut groups,
+                            &mut result.contacts,
+                            contact,
+                            opposing,
+                            center,
+                        );
                     }
                 }
             }
@@ -1443,14 +1506,9 @@ fn rolling_supports(
     cylinder: &ContactCylinder,
     center: DVec3,
 ) -> Vec<TerrainContact> {
-    const ON_LINE: f64 = 1e-6;
     let on_line = points
         .iter()
-        .map(|point| {
-            cylinder
-                .lowest_line_distance(point.normal, point.body_point)
-                .is_none_or(|distance| distance <= ON_LINE)
-        })
+        .map(|point| on_lowest_line(cylinder, point.normal, point.body_point))
         .collect::<Vec<_>>();
     points
         .iter()
@@ -1459,35 +1517,50 @@ fn rolling_supports(
             line || !points.iter().zip(&on_line).any(|(other, &other_line)| {
                 other_line
                     && other.separation <= point.separation
-                    && same_support(
-                        other.normal,
-                        other.normal.dot(other.terrain_point),
-                        other.response,
-                        point,
-                        center,
-                    )
-                    .is_some()
+                    && same_support(Surface::of(other), Surface::of(point), center).is_some()
             })
         })
         .map(|(point, _)| *point)
         .collect()
 }
 
-// Whether `contact` joins the support group with this plane and response, and
-// if so whether only because the surface curves.
-fn same_support(
+// Whether a point lies on a cylinder side's lowest line toward a surface, or
+// the cylinder stands on an end.
+fn on_lowest_line(cylinder: &ContactCylinder, normal: DVec3, point: DVec3) -> bool {
+    const ON_LINE: f64 = 1e-6;
+    cylinder
+        .lowest_line_distance(normal, point)
+        .is_none_or(|distance| distance <= ON_LINE)
+}
+
+// A contact's surface plane and response.
+#[derive(Clone, Copy)]
+struct Surface {
     normal: DVec3,
     distance: f64,
     response: [f64; 4],
-    contact: &TerrainContact,
-    center: DVec3,
-) -> Option<bool> {
-    let own = contact.normal.dot(contact.terrain_point);
-    let parallel = (normal - contact.normal).abs().max_element() < 1e-6;
-    let separation = ((contact.normal - normal).dot(center) - own + distance).abs();
-    let nearby = !parallel && normal.dot(contact.normal) > 0.995 && separation < 0.025;
+}
+
+impl Surface {
+    fn of(contact: &TerrainContact) -> Self {
+        Self {
+            normal: contact.normal,
+            distance: contact.normal.dot(contact.terrain_point),
+            response: contact.response,
+        }
+    }
+}
+
+// Whether a contact on `surface` joins the support group of `group`, and if so
+// whether only because the surface curves.
+fn same_support(group: Surface, surface: Surface, center: DVec3) -> Option<bool> {
+    let (normal, distance) = (group.normal, group.distance);
+    let own = surface.distance;
+    let parallel = (normal - surface.normal).abs().max_element() < 1e-6;
+    let separation = ((surface.normal - normal).dot(center) - own + distance).abs();
+    let nearby = !parallel && normal.dot(surface.normal) > 0.995 && separation < 0.025;
     (((parallel && (own - distance).abs() < 1e-5) || nearby)
-        && response.map(f64::to_bits) == contact.response.map(f64::to_bits))
+        && group.response.map(f64::to_bits) == surface.response.map(f64::to_bits))
     .then_some(nearby)
 }
 
@@ -1500,13 +1573,12 @@ fn reduce_support(
 ) {
     let distance = contact.normal.dot(contact.terrain_point);
     for group in groups.iter_mut() {
-        if let Some(nearby) = same_support(
-            group.normal,
-            group.distance,
-            group.response,
-            &contact,
-            center,
-        ) {
+        let own = Surface {
+            normal: group.normal,
+            distance: group.distance,
+            response: group.response,
+        };
+        if let Some(nearby) = same_support(own, Surface::of(&contact), center) {
             group.curved |= nearby;
             if let Some(deepest) = &mut group.deepest
                 && contact.separation < deepest.separation

@@ -13,6 +13,10 @@ use bevy_math::{DQuat, DVec3};
 // GPU route's `CYLINDER_MANIFOLD_ALIGNMENT`. Above it the side supports.
 const END_ON_ALIGNMENT: f64 = 0.05;
 
+// How far aside of a triangle the lowest line must pass, in metres, for none of
+// the triangle's points to count as on it.
+const FLANK_GAP: f64 = 1e-5;
+
 // Subtracted from a clearance bound to cover its rounding, in metres.
 const CLEARANCE_ROUNDING: f64 = 1e-6;
 
@@ -21,6 +25,17 @@ const PARALLEL: f64 = 1e-18;
 
 // Height differences within this are one support level, in metres.
 const LEVEL: f64 = 1e-9;
+
+/// What a triangle supports on a cylinder.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TriangleSupport {
+    /// Every contact point within the margin.
+    Points(Vec<TriangleContactPoint>),
+    /// The side's lowest line passes wide of the triangle: every point it
+    /// supports lies more than 10 µm off that line and no nearer the surface
+    /// than this separation. [`ContactCylinder::triangle_contacts`] finds them.
+    Flank(f64),
+}
 
 /// A solid capped cylinder in one coordinate frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,6 +177,34 @@ impl ContactCylinder {
         triangle: [DVec3; 3],
         margin: f64,
     ) -> Result<Vec<TriangleContactPoint>, ContactGeometryError> {
+        match self.triangle_points(triangle, margin, false)? {
+            TriangleSupport::Points(points) => Ok(points),
+            TriangleSupport::Flank(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// The contact points against a triangle, as [`Self::triangle_contacts`],
+    /// unless the side's lowest line passes wide of it. Then every point the
+    /// triangle supports lies up the side, off that line, and only a lower
+    /// bound on their separation is returned: a caller already holding a
+    /// deeper point on the line may not need them.
+    ///
+    /// # Errors
+    /// Rejects non-finite or zero-area triangles and invalid margins.
+    pub fn triangle_support(
+        &self,
+        triangle: [DVec3; 3],
+        margin: f64,
+    ) -> Result<TriangleSupport, ContactGeometryError> {
+        self.triangle_points(triangle, margin, true)
+    }
+
+    fn triangle_points(
+        &self,
+        triangle: [DVec3; 3],
+        margin: f64,
+        flank: bool,
+    ) -> Result<TriangleSupport, ContactGeometryError> {
         if !margin.is_finite() || margin < 0.0 {
             return Err(ContactGeometryError);
         }
@@ -174,32 +217,51 @@ impl ContactCylinder {
             - self.radius * spread
             - self.half_length * alignment.abs()
             - plane;
-        if lowest > margin
-            || self.sphere_clearance(triangle, normal) > margin
-            || self.column_clearance(triangle, normal, lowest) > margin
-        {
-            return Ok(Vec::new());
+        let none = || Ok(TriangleSupport::Points(Vec::new()));
+        if lowest > margin {
+            return none();
+        }
+        let sphere = self.sphere_clearance(triangle, normal);
+        if sphere > margin {
+            return none();
+        }
+        let column = self.column_clearance(triangle, normal, lowest);
+        if column > margin {
+            return none();
         }
         let mut candidates = Vec::with_capacity(8);
         if spread >= END_ON_ALIGNMENT {
             let generator = self.center - self.radius * (radial / spread);
-            let reached = self
-                .clip_generator(triangle, normal, generator)
-                .map(|[start, end]| {
-                    for t in if end - start > LEVEL {
-                        vec![start, end]
-                    } else {
-                        vec![0.5 * (start + end)]
-                    } {
-                        let body_point = generator + t * self.axis;
-                        candidates.push(point(body_point, normal, normal.dot(body_point) - plane));
-                    }
-                    // The deepest part of the generator: all of it when level,
-                    // otherwise the end nearer the surface.
-                    2.0 * self.half_length * alignment.abs() <= LEVEL
-                        || (alignment > 0.0 && start <= -self.half_length + LEVEL / alignment)
-                        || (alignment < 0.0 && end >= self.half_length + LEVEL / alignment)
-                });
+            // A point on the lowest line lies over the line's own segment, so
+            // one over a triangle this far aside is off it.
+            if flank
+                && self
+                    .clip_generator(triangle, normal, generator, FLANK_GAP)
+                    .is_none()
+            {
+                return Ok(TriangleSupport::Flank(lowest.max(sphere).max(column)));
+            }
+            let reached =
+                self.clip_generator(triangle, normal, generator, 0.0)
+                    .map(|[start, end]| {
+                        for t in if end - start > LEVEL {
+                            vec![start, end]
+                        } else {
+                            vec![0.5 * (start + end)]
+                        } {
+                            let body_point = generator + t * self.axis;
+                            candidates.push(point(
+                                body_point,
+                                normal,
+                                normal.dot(body_point) - plane,
+                            ));
+                        }
+                        // The deepest part of the generator: all of it when level,
+                        // otherwise the end nearer the surface.
+                        2.0 * self.half_length * alignment.abs() <= LEVEL
+                            || (alignment > 0.0 && start <= -self.half_length + LEVEL / alignment)
+                            || (alignment < 0.0 && end >= self.half_length + LEVEL / alignment)
+                    });
             if reached != Some(true) {
                 self.lowest_over_boundary(triangle, normal, plane, &mut candidates);
             }
@@ -225,7 +287,7 @@ impl ContactCylinder {
             self.boundary_candidates(triangle, normal, plane, &mut candidates);
         }
         candidates.retain(|point| separation(point) <= margin);
-        Ok(reduce(candidates, normal))
+        Ok(TriangleSupport::Points(reduce(candidates, normal)))
     }
 
     /// A lower bound on the distance to a triangle, zero where they may touch.
@@ -387,19 +449,20 @@ impl ContactCylinder {
     }
 
     // The generator's parameter interval whose points project into the
-    // triangle. Every edge plane contains the normal, so projection along it
+    // triangle, widened outward by `widen` metres. Every edge plane contains the normal, so projection along it
     // leaves each edge test unchanged.
     fn clip_generator(
         &self,
         triangle: [DVec3; 3],
         normal: DVec3,
         generator: DVec3,
+        widen: f64,
     ) -> Option<[f64; 2]> {
         let [mut start, mut end] = [-self.half_length, self.half_length];
         for edge in 0..3 {
             let from = triangle[edge];
             let inward = normal.cross(triangle[(edge + 1) % 3] - from);
-            let offset = inward.dot(generator - from);
+            let offset = inward.dot(generator - from) + widen * inward.length();
             let rate = inward.dot(self.axis);
             if rate.abs() <= 1e-12 * inward.length() {
                 if offset < 0.0 {

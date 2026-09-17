@@ -409,3 +409,40 @@ fn clearance_never_exceeds_the_distance_or_a_contact_separation() {
     }
     assert!(separated > 60, "only {separated} separated cases");
 }
+
+#[test]
+fn a_flank_triangle_supports_only_points_off_the_lowest_line_and_above_its_bound() {
+    let mut stream = Stream(13);
+    let mut flanks = 0;
+    for case in 0..400 {
+        let radius = stream.range(0.1, 1.0);
+        let half_length = stream.range(0.05, 0.6);
+        let cylinder =
+            ContactCylinder::new(DVec3::ZERO, stream.unit(), radius, half_length).unwrap();
+        let center = stream.unit() * stream.range(0.0, radius + half_length);
+        let size = stream.range(0.05, 1.0);
+        let triangle = [0, 1, 2].map(|_| center + stream.unit() * size);
+        if triangle_normal(triangle).is_err() {
+            continue;
+        }
+        let normal = triangle_normal(triangle).unwrap();
+        let points = cylinder.triangle_contacts(triangle, 10.0).unwrap();
+        match cylinder.triangle_support(triangle, 10.0).unwrap() {
+            TriangleSupport::Points(supported) => assert_eq!(supported, points, "case {case}"),
+            TriangleSupport::Flank(bound) => {
+                flanks += usize::from(!points.is_empty());
+                for point in &points {
+                    assert!(
+                        bound <= separation_of(point).max(0.0),
+                        "case {case}: {bound} {point:?}"
+                    );
+                    let off = cylinder
+                        .lowest_line_distance(normal, point.body_point)
+                        .unwrap();
+                    assert!(off > 1e-6, "case {case}: {off} off the line {point:?}");
+                }
+            }
+        }
+    }
+    assert!(flanks > 20, "only {flanks} flank cases with points");
+}

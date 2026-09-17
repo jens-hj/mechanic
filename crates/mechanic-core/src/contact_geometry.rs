@@ -9,7 +9,7 @@ mod cylinder;
 mod envelope;
 mod pair;
 mod quadratic;
-pub use cylinder::{ContactCylinder, CylinderAnchor};
+pub use cylinder::{ContactCylinder, CylinderAnchor, TriangleSupport};
 pub use pair::{ConvexFeature, ConvexSeparation};
 pub use quadratic::ContactVelocity;
 

@@ -36,7 +36,7 @@ pub use compile::{
 pub use contact_geometry::{
     ContactCylinder, ContactGeometryError, ContactPolytope, ContactVelocity, ConvexFeature,
     ConvexSeparation, CylinderAnchor, RigidContactSweep, SweepOutcome, TriangleClipScratch,
-    TriangleContactPoint,
+    TriangleContactPoint, TriangleSupport,
 };
 pub use creation::{
     BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION, ConstructionFrameDoc,
