@@ -32,30 +32,38 @@ fn ratio(distance: f64, allowance: f64) -> f64 {
     }
 }
 
-// Terrain and body-pair travel, rotation and fast flags are kept apart: a
-// cylinder meets terrain as a circle, which its turn about its own axis doesn't
-// move, but meets other bodies as the prism around it, which it does.
+// Terrain, internal and cross-assembly travel, rotation and fast flags are
+// kept apart: a cylinder meets terrain as a circle, which its turn about its
+// own axis doesn't move, but meets other bodies as the prism around it, which
+// it does; and a tree root carries its whole assembly without changing any
+// distance within it.
 #[derive(Clone, Default)]
 struct Assembly {
     terrain: Validity,
     internal: Validity,
     pairs: Validity,
-    fast: [bool; 2],
-    motion: [[f64; 3]; 2],
+    fast: [bool; 3],
+    motion: [[f64; 3]; 3],
 }
 
-/// An assembly's measured motion over one trial path, against terrain and
-/// against other bodies: contact-budget travel, swept-coverage travel,
-/// rotation, and absolute travel.
+/// An assembly's measured motion over one trial path, against terrain, within
+/// itself and against other assemblies: contact-budget travel, swept-coverage
+/// travel, rotation, and absolute travel.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Measured {
     terrain: [f64; 4],
+    internal: [f64; 4],
     bodies: [f64; 4],
 }
 
 impl Measured {
     pub(crate) fn scale(&mut self, fraction: f64) {
-        for value in self.terrain.iter_mut().chain(&mut self.bodies) {
+        for value in self
+            .terrain
+            .iter_mut()
+            .chain(&mut self.internal)
+            .chain(&mut self.bodies)
+        {
             *value *= fraction;
         }
     }
@@ -148,7 +156,7 @@ impl ContactGroups {
                 Some(b) => (
                     &first.pairs,
                     Some(&self.assemblies[b].pairs),
-                    first.fast[1] || self.assemblies[b].fast[1],
+                    first.fast[2] || self.assemblies[b].fast[2],
                 ),
             };
             return fast
@@ -240,6 +248,11 @@ impl ContactGroups {
             let rate = self.rates[collider.row];
             let bound = bounds[collider.body];
             let distance = bound.point_speed(collider.radius);
+            let within = if geometry.tree_frames[collider.assembly] {
+                motion.tree_bounds()[collider.body].point_speed(collider.radius)
+            } else {
+                distance
+            };
             let [surface, turn] = super::terrain_motion(
                 collider.round.as_ref(),
                 collider.radius,
@@ -252,6 +265,7 @@ impl ContactGroups {
             }
             for (bound, distance) in [
                 (&mut measured.terrain, surface),
+                (&mut measured.internal, within),
                 (&mut measured.bodies, distance),
             ] {
                 if distance == 0.0 {
@@ -265,6 +279,8 @@ impl ContactGroups {
         for (body, bound) in bounds.iter().enumerate() {
             let measured = &mut measured[geometry.assemblies[body]];
             measured.bodies[2] = measured.bodies[2].max(bound.angular_speed);
+            // Contact normals stay fixed in the world, so the root's turn counts.
+            measured.internal[2] = measured.bodies[2];
             if !geometry.round_bodies[body] {
                 measured.terrain[2] = measured.terrain[2].max(bound.angular_speed);
             }
@@ -280,9 +296,8 @@ impl ContactGroups {
         rewound: bool,
     ) {
         for (assembly, measured) in self.assemblies.iter_mut().zip(measured) {
-            let [terrain, bodies] = [measured.terrain, measured.bodies]
+            assembly.motion = [measured.terrain, measured.internal, measured.bodies]
                 .map(|[travel, sweep, rotation, _]| [travel, sweep, rotation]);
-            assembly.motion = [terrain, bodies];
         }
         self.integrate(geometry, angle, rewound);
     }
@@ -290,8 +305,14 @@ impl ContactGroups {
     pub(crate) fn require_measured(&mut self, measured: &[Measured], threshold: f64, angle: f64) {
         self.sweep = Some(angle);
         for (assembly, motion) in self.assemblies.iter_mut().zip(measured) {
-            assembly.fast[0] |= motion.terrain[3] > threshold;
-            assembly.fast[1] |= motion.bodies[3] > threshold;
+            for (fast, travel) in
+                assembly
+                    .fast
+                    .iter_mut()
+                    .zip([motion.terrain, motion.internal, motion.bodies])
+            {
+                *fast |= travel[3] > threshold;
+            }
         }
     }
 
@@ -306,7 +327,7 @@ impl ContactGroups {
         rewound: bool,
     ) {
         for assembly in &mut self.assemblies {
-            assembly.motion = [[0.0; 3]; 2];
+            assembly.motion = [[0.0; 3]; 3];
         }
         for ((collider, &distance), rate) in geometry
             .colliders
@@ -333,10 +354,10 @@ impl ContactGroups {
     fn integrate(&mut self, geometry: &MachineCollisionGeometry, angle: f64, rewound: bool) {
         for &row in &geometry.moving_assemblies {
             let assembly = &mut self.assemblies[row];
-            let [terrain, bodies] = assembly.motion;
+            let [terrain, within, bodies] = assembly.motion;
             for (group, participants, internal, [distance, sweep_distance, rotation]) in [
                 (&mut assembly.terrain, 1.0, false, terrain),
-                (&mut assembly.internal, 2.0, true, bodies),
+                (&mut assembly.internal, 2.0, true, within),
                 (&mut assembly.pairs, 1.0, false, bodies),
             ] {
                 if internal && !geometry.internal_collisions[row] {
@@ -405,18 +426,18 @@ impl ContactGroups {
         let mut largest = [0.0_f64; 2];
         for &row in &geometry.moving_assemblies {
             let assembly = &self.assemblies[row];
-            let [terrain_fast, bodies_fast] = assembly.fast;
+            let [terrain_fast, internal_fast, pairs_fast] = assembly.fast;
             if terrain_fast
                 || assembly.terrain.angle > angle
                 || assembly.terrain.sweep_travel > 1.0
                 || (geometry.internal_collisions[row]
-                    && (bodies_fast
+                    && (internal_fast
                         || assembly.internal.angle > angle
                         || assembly.internal.sweep_travel > 1.0))
             {
                 return true;
             }
-            if self.assemblies.len() > 1 && (bodies_fast || assembly.pairs.angle > angle) {
+            if self.assemblies.len() > 1 && (pairs_fast || assembly.pairs.angle > angle) {
                 return true;
             }
             let travel = assembly.pairs.sweep_travel;
@@ -445,9 +466,13 @@ impl ContactGroups {
             let internal = geometry.internal_collisions[row];
             let Measured {
                 terrain: [_, terrain_extra, terrain_rotation, terrain_distance],
+                internal: [_, internal_extra, internal_rotation, internal_distance],
                 bodies: [_, extra, rotation, distance],
             } = measured[row];
-            if terrain_distance > threshold || ((internal || paired) && distance > threshold) {
+            if terrain_distance > threshold
+                || (internal && internal_distance > threshold)
+                || (paired && distance > threshold)
+            {
                 return false;
             }
             for (group, participants, collides, extra, rotation) in [
@@ -458,7 +483,13 @@ impl ContactGroups {
                     terrain_extra,
                     terrain_rotation,
                 ),
-                (&assembly.internal, 2.0, internal, extra, rotation),
+                (
+                    &assembly.internal,
+                    2.0,
+                    internal,
+                    internal_extra,
+                    internal_rotation,
+                ),
             ] {
                 if !collides {
                     continue;

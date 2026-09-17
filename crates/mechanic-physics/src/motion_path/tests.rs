@@ -161,6 +161,48 @@ fn authored_car_spatial_derivatives_and_acceleration_bounds_cover_reconstructed_
 }
 
 #[test]
+fn tree_bounds_cover_motion_relative_to_the_tree_root() {
+    let creation = authored_car();
+    let (initial, displacement) = tumbling_car(&creation);
+    let motion = MachineMotion::new(&creation, 7, &initial, &displacement).unwrap();
+    let root_of = |mut body: usize| {
+        while !creation.loop_topology.body_parents[body].is_root {
+            body = creation.loop_topology.body_parents[body].parent_body as usize;
+        }
+        body
+    };
+    let rooted = |poses: &[BodyPose], body: usize, local: DVec3| {
+        let root = poses[root_of(body)];
+        let pose = poses[body];
+        root.rotation.inverse() * (pose.position + pose.rotation * local - root.position)
+    };
+    let start = motion.initial_poses();
+    let mut moved_roots = 0;
+    for body in 0..start.len() {
+        let bound = motion.tree_bounds()[body];
+        if root_of(body) == body {
+            assert!(bound.point_speed(1.0) <= 0.0, "root {body}: {bound:?}");
+            moved_roots += usize::from(motion.bounds()[body].point_speed(1.0) > 0.0);
+        }
+    }
+    assert!(moved_roots > 0, "the path moves no root");
+    for step in 1..=64 {
+        let fraction = f64::from(step) / 64.0;
+        let poses = motion.poses_at(fraction).unwrap();
+        for body in 0..poses.len() {
+            for local in [DVec3::ZERO, DVec3::new(0.3, -0.4, 0.2)] {
+                let moved = rooted(&poses, body, local).distance(rooted(start, body, local));
+                let bound = motion.tree_bounds()[body].point_speed(local.length().next_up());
+                assert!(
+                    moved <= bound * fraction + 1e-9,
+                    "body {body} at {fraction}: moved {moved} in the root frame, bound {bound}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn symmetric_shape_bounds_cover_their_sampled_centres_and_axes() {
     let creation = authored_car();
     let (initial, displacement) = tumbling_car(&creation);

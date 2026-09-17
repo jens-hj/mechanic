@@ -125,6 +125,7 @@ pub struct MachineMotion<'a> {
     end: Vec<BodyPose>,
     preparation_pose_evaluations: usize,
     bounds: Vec<MotionBound>,
+    tree_bounds: Vec<MotionBound>,
     spins: Vec<Spin>,
 }
 
@@ -157,6 +158,7 @@ impl<'a> MachineMotion<'a> {
         let start =
             MachineDynamics::reconstruct_poses(creation, &beginning.poses, &beginning.coordinates)?;
         let mut bounds = vec![MotionBound::default(); start.len()];
+        let mut tree_bounds = vec![MotionBound::default(); start.len()];
         let mut spins = vec![Spin::default(); start.len()];
         for &body in &creation.dynamics.preorder {
             let topology = creation.loop_topology.body_parents[body];
@@ -218,19 +220,14 @@ impl<'a> MachineMotion<'a> {
                 );
                 let axis_length = upper_length(axis.as_dvec3());
                 let reach = upper_add(upper_length(bind), upper_product(extent, axis_length));
-                spins[body] = Spin {
-                    pivot_speed: upper_add(
+                let slide = |inherited: MotionBound| MotionBound {
+                    origin_speed: upper_add(
                         upper_add(
                             inherited.origin_speed,
                             upper_product(inherited.angular_speed, reach),
                         ),
                         upper_product(change, axis_length),
                     ),
-                    tumble: inherited.angular_speed,
-                    ..Spin::default()
-                };
-                bounds[body] = MotionBound {
-                    origin_speed: spins[body].pivot_speed,
                     angular_speed: inherited.angular_speed,
                     angular_acceleration: inherited.angular_acceleration,
                     origin_acceleration: upper_add(
@@ -244,10 +241,16 @@ impl<'a> MachineMotion<'a> {
                         ),
                     ),
                 };
+                bounds[body] = slide(inherited);
+                tree_bounds[body] = slide(tree_bounds[parent]);
+                spins[body] = Spin {
+                    pivot_speed: bounds[body].origin_speed,
+                    tumble: inherited.angular_speed,
+                    ..Spin::default()
+                };
             } else {
                 let child_reach = upper_length(child_anchor.as_dvec3());
                 let reach = upper_add(upper_length(parent_anchor.as_dvec3()), child_reach);
-                let angular_speed = upper_add(inherited.angular_speed, change);
                 // The bearing axis and pivot are fixed in both bodies whatever
                 // the angle, so the starting poses give them in the child.
                 let [parent_pose, child_pose] = [start[parent], start[body]];
@@ -277,34 +280,39 @@ impl<'a> MachineMotion<'a> {
                     ),
                     tumble: inherited.angular_speed,
                 };
-                let angular_acceleration = upper_add(
-                    inherited.angular_acceleration,
-                    upper_product(inherited.angular_speed, change),
-                );
-                bounds[body] = MotionBound {
-                    origin_speed: upper_add(
-                        upper_add(
-                            inherited.origin_speed,
-                            upper_product(inherited.angular_speed, reach),
-                        ),
-                        upper_product(change, child_reach),
-                    ),
-                    angular_speed,
-                    angular_acceleration,
-                    origin_acceleration: upper_add(
-                        inherited.point_acceleration(upper_length(parent_anchor.as_dvec3())),
-                        upper_product(
+                let turn = |inherited: MotionBound| {
+                    let angular_speed = upper_add(inherited.angular_speed, change);
+                    let angular_acceleration = upper_add(
+                        inherited.angular_acceleration,
+                        upper_product(inherited.angular_speed, change),
+                    );
+                    MotionBound {
+                        origin_speed: upper_add(
                             upper_add(
-                                angular_acceleration,
-                                upper_product(angular_speed, angular_speed),
+                                inherited.origin_speed,
+                                upper_product(inherited.angular_speed, reach),
                             ),
-                            child_reach,
+                            upper_product(change, child_reach),
                         ),
-                    ),
+                        angular_speed,
+                        angular_acceleration,
+                        origin_acceleration: upper_add(
+                            inherited.point_acceleration(upper_length(parent_anchor.as_dvec3())),
+                            upper_product(
+                                upper_add(
+                                    angular_acceleration,
+                                    upper_product(angular_speed, angular_speed),
+                                ),
+                                child_reach,
+                            ),
+                        ),
+                    }
                 };
+                bounds[body] = turn(inherited);
+                tree_bounds[body] = turn(tree_bounds[parent]);
             }
         }
-        if bounds.iter().any(|bound| {
+        if bounds.iter().chain(&tree_bounds).any(|bound| {
             !bound.point_speed(0.0).is_finite() || !bound.point_acceleration(0.0).is_finite()
         }) {
             return Err(PhysicsError::InvalidDynamics);
@@ -318,6 +326,7 @@ impl<'a> MachineMotion<'a> {
             end: Vec::new(),
             preparation_pose_evaluations: 1,
             bounds,
+            tree_bounds,
             spins,
         };
         path.end = path.poses_at(1.0)?;
@@ -350,6 +359,12 @@ impl<'a> MachineMotion<'a> {
     /// Body-indexed conservative motion bounds over the complete path.
     pub fn bounds(&self) -> &[MotionBound] {
         &self.bounds
+    }
+
+    /// Body-indexed bounds in the frame of each body's tree root. A root carries
+    /// its whole tree rigidly, which changes no distance within that tree.
+    pub(crate) fn tree_bounds(&self) -> &[MotionBound] {
+        &self.tree_bounds
     }
 
     /// Body-indexed turns about each body's own axis over the complete path.

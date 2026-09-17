@@ -373,3 +373,47 @@ fn finite_support_reuse_matches_fresh_initial_support_queries() {
         }
     }
 }
+
+#[test]
+fn a_car_moving_as_one_keeps_its_internal_contacts_but_not_its_terrain_contacts() {
+    let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
+        "../../../mechanic-bench/tests/fixtures/driven_car_instance.ron"
+    ))
+    .unwrap();
+    let loaded = instance.creation.into_graph().unwrap();
+    let creation = loaded
+        .graph
+        .compile_with_suspension_sockets([], &loaded.sockets)
+        .unwrap();
+    let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
+    let assembly = (0..geometry.assembly_count)
+        .find(|&assembly| geometry.internal_collisions[assembly])
+        .expect("the car's bodies can touch each other");
+    let bodies = (0..geometry.bodies)
+        .filter(|&body| {
+            geometry.assemblies[body] == assembly && !geometry.body_colliders[body].is_empty()
+        })
+        .collect::<Vec<_>>();
+    let state = MachineState::at_rest(&creation);
+    let root = bodies
+        .iter()
+        .copied()
+        .find(|&body| creation.loop_topology.body_parents[body].is_root)
+        .unwrap();
+    // A root carrying the car 30 cm forward and turning it a little.
+    let mut displacement = vec![0.0; state.velocities.len()];
+    let rows = creation.dynamics.body_velocities[root].clone();
+    displacement[rows.start] = 0.3;
+    displacement[rows.start + 4] = 0.05;
+    let motion = MachineMotion::new(&creation, 7, &state, &displacement).unwrap();
+    let margins = vec![0.07; geometry.colliders.len()];
+    let mut groups = ContactGroups::new(geometry.assembly_count, &margins, 0.02);
+    let measured = groups.measure(&geometry, &motion);
+    groups.advance_measured(&geometry, &measured, 0.25, false);
+    assert!(groups.includes(&geometry, root, None));
+    for &body in &bodies {
+        for &other in &bodies {
+            assert!(!groups.includes(&geometry, body, Some(other)));
+        }
+    }
+}

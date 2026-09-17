@@ -232,6 +232,9 @@ pub struct MachineCollisionGeometry {
     pub(crate) assemblies: Vec<usize>,
     pub(crate) assembly_count: usize,
     pub(crate) internal_collisions: Vec<bool>,
+    // Assemblies with at most one moving tree root, whose bodies' root-frame
+    // motion bounds every distance between them.
+    pub(crate) tree_frames: Vec<bool>,
     pub(crate) moving_assemblies: Vec<usize>,
     collider_trees: Vec<broadphase::Tree>,
     body_tree: broadphase::Tree,
@@ -393,6 +396,7 @@ impl MachineCollisionGeometry {
             assemblies,
             assembly_count,
             internal_collisions: vec![false; assembly_count],
+            tree_frames: vec![true; assembly_count],
             moving_assemblies: Vec::new(),
             collider_trees,
             body_tree,
@@ -404,6 +408,15 @@ impl MachineCollisionGeometry {
         geometry.suppressed.extend(flush);
         geometry.suppressed.sort_unstable();
         geometry.suppressed.dedup();
+        let mut roots = vec![0_usize; assembly_count];
+        for (body, parents) in creation.loop_topology.body_parents.iter().enumerate() {
+            if parents.is_root && !creation.compounds[body].is_static {
+                roots[geometry.assemblies[body]] += 1;
+            }
+        }
+        for (frame, roots) in geometry.tree_frames.iter_mut().zip(roots) {
+            *frame = roots <= 1;
+        }
         let mut members = vec![Vec::new(); assembly_count];
         for (body, &assembly) in geometry.assemblies.iter().enumerate() {
             if !geometry.body_colliders[body].is_empty() {
