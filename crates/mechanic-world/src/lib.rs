@@ -11,7 +11,9 @@ mod material_response;
 mod mesh;
 mod persistence;
 mod query;
+mod soil;
 mod streaming;
+pub use soil::{SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
 mod transvoxel;
 
 pub use construction_collision::{

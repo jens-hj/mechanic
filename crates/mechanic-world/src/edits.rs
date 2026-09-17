@@ -12,9 +12,11 @@ use bevy_math::{DVec3, IVec3};
 use thiserror::Error;
 
 use crate::{
-    BRICK_EDGE_CELLS, BrickCoord, TERRAIN_CELL_METERS, TerrainField, TerrainMaterial,
-    TerrainSample, WORLD_HALF_EXTENT_METERS, WorldCell, WorldPosition,
+    BRICK_EDGE_CELLS, BrickCoord, SoilCompression, SoilPatch, SoilResponse, TERRAIN_CELL_METERS,
+    TerrainField, TerrainMaterial, TerrainSample, WORLD_HALF_EXTENT_METERS, WorldCell,
+    WorldPosition,
     generation::TerrainColumnSample,
+    soil::{COMPACTION_STEP_METRES, MAX_SOIL_DEPTH_METRES},
 };
 
 const BRICK_CELL_COUNT: usize = 32 * 32 * 32;
@@ -30,10 +32,14 @@ pub const REMOVED_CELL_CUBIC_METERS: f64 = 0.000_125;
 pub const REMOVED_CELL_LITRES: f64 = 0.125;
 
 /// Material-specific result of one terrain brush operation.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TerrainEditOutcome {
     removed_cells: [u64; TerrainMaterial::COUNT],
     added_cells: [u64; TerrainMaterial::COUNT],
+    /// Cells compressed, indexed by stable material code.
+    pub compressed_cells: [u64; TerrainMaterial::COUNT],
+    /// Sum of delivered cell displacements, not maximum surface rut depth.
+    pub sunk_metres: f64,
     /// Number of 32³ bricks whose density changed.
     pub changed_bricks: usize,
     changed_brick_coordinates: Vec<BrickCoord>,
@@ -128,7 +134,13 @@ impl TerrainEditOutcome {
 
     /// Total number of cells changed by this operation.
     pub const fn total_changed_cells(&self) -> u64 {
-        self.total_removed_cells() + self.total_added_cells()
+        let mut compressed = 0;
+        let mut index = 0;
+        while index < TerrainMaterial::COUNT {
+            compressed += self.compressed_cells[index];
+            index += 1;
+        }
+        self.total_removed_cells() + self.total_added_cells() + compressed
     }
 
     /// Stable coordinates of bricks whose samples changed in this operation.
@@ -205,6 +217,33 @@ impl TerrainBrick {
             maximum_density,
             revision: 0,
         }
+    }
+
+    #[allow(clippy::cast_sign_loss)] // Depth is finite and positive before quantisation.
+    fn compress(&mut self, local: IVec3, depth: f32) -> Option<f32> {
+        let index = local_index(local)?;
+        let sample = &mut self.cells[index];
+        let before = sample.density;
+        let bounded = before.min(-EMPTY_DENSITY);
+        let depth = depth
+            .min(MAX_SOIL_DEPTH_METRES)
+            .min(bounded - EMPTY_DENSITY);
+        if !depth.is_finite() || depth < COMPACTION_STEP_METRES {
+            return None;
+        }
+        let steps = (depth / COMPACTION_STEP_METRES).floor();
+        let depth = steps * COMPACTION_STEP_METRES;
+        sample.density = (bounded - depth).max(EMPTY_DENSITY);
+        sample.compaction = sample.compaction.saturating_add(steps as u8);
+        self.minimum_density = self.minimum_density.min(sample.density);
+        if before >= self.maximum_density {
+            self.maximum_density = self
+                .cells
+                .iter()
+                .map(|cell| cell.density)
+                .fold(f32::NEG_INFINITY, f32::max);
+        }
+        Some(depth)
     }
 
     fn set_empty(&mut self, local: IVec3) -> Option<TerrainMaterial> {
@@ -601,6 +640,124 @@ impl TerrainOctree {
             self.insert_brick(TerrainBrick::promote(field, coordinate));
         }
         self.brick(coordinate).expect("promoted brick was inserted")
+    }
+
+    /// Applies a pressure patch to the exposed cells of upward-facing terrain.
+    ///
+    /// # Errors
+    /// Rejects invalid patches and world-boundary overlap before promoting bricks.
+    pub fn compress_patch(
+        &mut self,
+        field: &TerrainField,
+        patch: SoilPatch,
+    ) -> Result<TerrainEditOutcome, TerrainEditError> {
+        let cells = self.soil_compressions(field, patch)?;
+        Ok(self.compress_cells(field, &cells))
+    }
+
+    pub(crate) fn soil_compressions(
+        &self,
+        field: &TerrainField,
+        patch: SoilPatch,
+    ) -> Result<Vec<SoilCompression>, TerrainEditError> {
+        patch.validate()?;
+        let mut cells = Vec::new();
+        if patch.normal.y < 0.25 {
+            return Ok(cells);
+        }
+        // Include a short vertical search below a stale contact mesh. Each column
+        // yields only its first exposed sample, never the whole supporting volume.
+        let extent = DVec3::new(
+            patch.radius,
+            patch.radius + TERRAIN_CELL_METERS * 2.0,
+            patch.radius,
+        );
+        let minimum = cell_containing(patch.centre.0 - extent);
+        let maximum = cell_containing(patch.centre.0 + extent);
+        for z in minimum.z..=maximum.z {
+            for x in minimum.x..=maximum.x {
+                let position = WorldCell::new(x, minimum.y, z).centre();
+                let column = field.sample_column(position.0.x, position.0.z);
+                for y in (minimum.y..=maximum.y).rev() {
+                    let cell = WorldCell::new(x, y, z);
+                    let sample = self.sample_cell_in_column(field, cell, column);
+                    if sample.density <= EMPTY_DENSITY + COMPACTION_STEP_METRES
+                        || (!sample.is_solid() && sample.compaction == 0)
+                    {
+                        continue;
+                    }
+                    let offset = cell.centre().0 - patch.centre.0;
+                    let tangent = offset - patch.normal * offset.dot(patch.normal);
+                    if tangent.length_squared() <= patch.radius * patch.radius {
+                        let depth = SoilResponse::for_material(sample.material).depth(
+                            sample.compaction,
+                            patch.pressure_pa,
+                            patch.seconds,
+                        );
+                        if depth > 0.0 {
+                            cells.push(SoilCompression {
+                                cell,
+                                sample,
+                                depth,
+                            });
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(cells)
+    }
+
+    /// Commits accumulated per-cell displacements, dropping loads for changed samples.
+    /// This preserves async edit ordering without applying old loads to new material.
+    pub fn compress_cells(
+        &mut self,
+        field: &TerrainField,
+        cells: &[SoilCompression],
+    ) -> TerrainEditOutcome {
+        let mut by_leaf = BTreeMap::<BrickCoord, Vec<&SoilCompression>>::new();
+        for cell in cells {
+            if cell.depth.is_finite()
+                && cell.depth >= COMPACTION_STEP_METRES
+                && SoilResponse::for_material(cell.sample.material)
+                    .bearing_capacity_pa
+                    .is_finite()
+                && cell.cell.centre().is_inside_world()
+                && self.sample_cell(field, cell.cell) == cell.sample
+            {
+                by_leaf.entry(cell.cell.brick()).or_default().push(cell);
+            }
+        }
+        let mut outcome = TerrainEditOutcome::default();
+        for (coordinate, cells) in by_leaf {
+            let mut brick = self
+                .brick(coordinate)
+                .cloned()
+                .unwrap_or_else(|| TerrainBrick::promote(field, coordinate));
+            let mut changed = false;
+            for cell in cells {
+                if brick.sample(cell.cell.local_in_brick()) != Some(cell.sample) {
+                    continue;
+                }
+                if let Some(depth) = brick.compress(cell.cell.local_in_brick(), cell.depth) {
+                    outcome.compressed_cells[cell.sample.material.code() as usize] += 1;
+                    outcome.sunk_metres += f64::from(depth);
+                    changed = true;
+                }
+            }
+            if changed {
+                brick.revision = self.next_revision;
+                self.insert_brick(brick);
+                self.dirty.insert(TerrainNodeId::leaf(coordinate));
+                outcome.changed_brick_coordinates.push(coordinate);
+            }
+        }
+        outcome.changed_bricks = outcome.changed_brick_coordinates.len();
+        if outcome.changed_bricks > 0 {
+            self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        }
+        outcome
     }
 
     /// Subtracts a spherical brush and reports only cells that became empty.
@@ -1240,6 +1397,11 @@ fn classify_node(
 /// Invalid terrain brush operation.
 #[derive(Clone, Copy, Debug, Error, PartialEq)]
 pub enum TerrainEditError {
+    /// Soil patch geometry, pressure or duration is invalid.
+    #[error(
+        "soil patch must have finite geometry, a unit normal, a 0.05–0.3 m radius and a duration within 0–1 s"
+    )]
+    InvalidSoilPatch,
     /// Radius must use the prototype's 0.10–2.00 m range.
     #[error("terrain brush radius {0} m is outside 0.10 through 2.00 m")]
     InvalidRadius(f64),
@@ -1752,5 +1914,210 @@ mod tests {
                 assert_eq!(&decoded, original, "{material:?}");
             }
         }
+    }
+    fn soil_fixture(
+        material: TerrainMaterial,
+    ) -> (
+        TerrainField,
+        TerrainOctree,
+        crate::SoilPatch,
+        crate::WorldCell,
+    ) {
+        let field = TerrainField::new(WorldSeed(8));
+        let coordinate = crate::BrickCoord::new(0, 100, 0);
+        let mut brick = super::TerrainBrick::promote(&field, coordinate);
+        for z in 0..32 {
+            for y in 0..32 {
+                for x in 0..32 {
+                    brick.cells[super::local_index(bevy_math::IVec3::new(x, y, z)).unwrap()] =
+                        crate::TerrainSample {
+                            density: if y <= 16 {
+                                -super::EMPTY_DENSITY
+                            } else {
+                                super::EMPTY_DENSITY
+                            },
+                            material,
+                            compaction: 0,
+                        };
+                }
+            }
+        }
+        brick.minimum_density = super::EMPTY_DENSITY;
+        brick.maximum_density = -super::EMPTY_DENSITY;
+        let mut terrain = TerrainOctree::default();
+        terrain.insert_brick(brick);
+        let cell = crate::WorldCell::new(8, 3216, 8);
+        let patch = crate::SoilPatch {
+            centre: crate::WorldPosition(cell.centre().0 + DVec3::Y * 0.025),
+            normal: DVec3::Y,
+            radius: 0.1,
+            pressure_pa: 80_000.0,
+            seconds: 0.1,
+        };
+        (field, terrain, patch, cell)
+    }
+
+    #[test]
+    fn light_load_on_soil_leaves_the_surface_unchanged() {
+        let (field, mut terrain, mut patch, cell) = soil_fixture(TerrainMaterial::Soil);
+        let before = terrain.sample_cell(&field, cell);
+        patch.pressure_pa = 20_000.0;
+        assert_eq!(
+            terrain
+                .compress_patch(&field, patch)
+                .unwrap()
+                .total_changed_cells(),
+            0
+        );
+        assert_eq!(terrain.sample_cell(&field, cell), before);
+        assert_eq!(terrain.dirty_leaves().count(), 0);
+    }
+
+    #[test]
+    fn sustained_overload_sinks_soil_and_then_stops_when_it_compacts() {
+        let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
+        let before = terrain.sample_cell(&field, cell);
+        for _ in 0..100 {
+            terrain.compress_patch(&field, patch).unwrap();
+        }
+        let compacted = terrain.sample_cell(&field, cell);
+        assert!(before.density - compacted.density > 0.001);
+        for _ in 0..100 {
+            terrain.compress_patch(&field, patch).unwrap();
+        }
+        assert_eq!(terrain.sample_cell(&field, cell), compacted);
+    }
+
+    #[test]
+    fn rock_does_not_deform_under_any_pressure() {
+        for material in [
+            TerrainMaterial::Rock,
+            TerrainMaterial::Iron,
+            TerrainMaterial::Graphite,
+        ] {
+            let (field, mut terrain, mut patch, cell) = soil_fixture(material);
+            let before = terrain.sample_cell(&field, cell);
+            patch.pressure_pa = f32::MAX;
+            let count = terrain.promoted_brick_count();
+            assert_eq!(
+                terrain
+                    .compress_patch(&field, patch)
+                    .unwrap()
+                    .changed_bricks,
+                0
+            );
+            assert_eq!(terrain.promoted_brick_count(), count);
+            assert_eq!(terrain.sample_cell(&field, cell), before);
+            assert_eq!(terrain.dirty_leaves().count(), 0);
+        }
+    }
+
+    #[test]
+    fn a_second_pass_over_compacted_soil_sinks_less_than_the_first() {
+        let (field, mut terrain, patch, _) = soil_fixture(TerrainMaterial::Soil);
+        let first = terrain.compress_patch(&field, patch).unwrap().sunk_metres;
+        let second = terrain.compress_patch(&field, patch).unwrap().sunk_metres;
+        assert!(first > second && second > 0.0);
+    }
+
+    #[test]
+    fn a_fully_collapsed_cell_passes_further_sinking_to_the_cell_below() {
+        let (field, mut terrain, mut patch, cell) = soil_fixture(TerrainMaterial::Soil);
+        patch.pressure_pa = 1.0e9;
+        for _ in 0..5 {
+            terrain.compress_patch(&field, patch).unwrap();
+        }
+        assert!(
+            terrain.sample_cell(&field, cell).density
+                <= super::EMPTY_DENSITY + super::COMPACTION_STEP_METRES
+        );
+        terrain.compress_patch(&field, patch).unwrap();
+        let below = crate::WorldCell::new(cell.x, cell.y - 1, cell.z);
+        assert!(terrain.sample_cell(&field, below).compaction > 0);
+    }
+
+    #[test]
+    fn compacted_brick_rle_round_trips_exactly() {
+        let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
+        terrain.compress_patch(&field, patch).unwrap();
+        let brick = terrain.brick(cell.brick()).unwrap();
+        assert_eq!(decode_brick(&encode_brick(brick)).unwrap(), *brick);
+        assert_eq!(std::mem::size_of::<crate::TerrainSample>(), 8);
+        let mut old = encode_brick(brick);
+        old[4..6].copy_from_slice(&2_u16.to_le_bytes());
+        assert_eq!(
+            decode_brick(&old),
+            Err(super::BrickDecodeError::UnsupportedHeader)
+        );
+    }
+
+    #[test]
+    fn soil_accumulation_defers_edits_and_discards_stale_loads() {
+        let (field, mut terrain, mut patch, cell) = soil_fixture(TerrainMaterial::Soil);
+        patch.seconds = 1.0 / 60.0;
+        let mut pending = crate::SoilAccumulator::default();
+        pending.accumulate(&terrain, &field, patch).unwrap();
+        assert!(pending.take_ready().is_empty());
+        for _ in 0..15 {
+            pending.accumulate(&terrain, &field, patch).unwrap();
+        }
+        let ready = pending.take_ready();
+        assert!(!ready.is_empty());
+        assert_eq!(terrain.sample_cell(&field, cell).compaction, 0);
+        assert!(terrain.compress_cells(&field, &ready).changed_bricks > 0);
+        assert_eq!(terrain.compress_cells(&field, &ready).changed_bricks, 0);
+    }
+
+    #[test]
+    fn invalid_soil_pressure_does_not_promote_bricks() {
+        let field = TerrainField::new(WorldSeed(8));
+        let mut terrain = TerrainOctree::default();
+        let patch = crate::SoilPatch {
+            centre: WorldPosition(DVec3::ZERO),
+            normal: DVec3::Y,
+            radius: 0.1,
+            pressure_pa: f32::NAN,
+            seconds: 0.1,
+        };
+        assert_eq!(
+            terrain.compress_patch(&field, patch),
+            Err(TerrainEditError::InvalidSoilPatch)
+        );
+        assert_eq!(terrain.promoted_brick_count(), 0);
+    }
+    #[test]
+    fn compression_lowers_the_meshed_surface_and_survives_reload() {
+        let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
+        let height = |terrain: &TerrainOctree| {
+            crate::mesh_chunk(
+                &field,
+                &terrain.snapshot(),
+                crate::TerrainMeshRequest {
+                    node: super::TerrainNodeId::leaf(cell.brick()),
+                    generation: 1,
+                    transition_mask: crate::TerrainTransitionMask::NONE,
+                },
+            )
+            .raycast(
+                crate::WorldPosition(cell.centre().0 + DVec3::Y * 0.2),
+                -DVec3::Y,
+                0.5,
+            )
+            .unwrap()
+            .position
+            .0
+            .y
+        };
+        let before = height(&terrain);
+        for _ in 0..100 {
+            terrain.compress_patch(&field, patch).unwrap();
+        }
+        let after = height(&terrain);
+        assert!(before - after > 0.0005, "{before} -> {after}");
+        let mut loaded = TerrainOctree::default();
+        loaded.insert_saved_brick(
+            decode_brick(&encode_brick(terrain.brick(cell.brick()).unwrap())).unwrap(),
+        );
+        assert!((height(&loaded) - after).abs() < 1.0e-6);
     }
 }
