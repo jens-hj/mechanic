@@ -273,7 +273,7 @@ fn support_edge(polytope: &ContactPolytope, direction: DVec3, edge: DVec3) -> Op
 }
 
 // Closest points between two segments, first segment's point first.
-fn closest_segment_points(first: [DVec3; 2], second: [DVec3; 2]) -> [DVec3; 2] {
+pub(super) fn closest_segment_points(first: [DVec3; 2], second: [DVec3; 2]) -> [DVec3; 2] {
     let along_first = first[1] - first[0];
     let along_second = second[1] - second[0];
     let offset = first[0] - second[0];

@@ -13,6 +13,9 @@ use bevy_math::{DQuat, DVec3};
 // GPU route's `CYLINDER_MANIFOLD_ALIGNMENT`. Above it the side supports.
 const END_ON_ALIGNMENT: f64 = 0.05;
 
+// Subtracted from a clearance bound to cover its rounding, in metres.
+const CLEARANCE_ROUNDING: f64 = 1e-6;
+
 // Squared lengths below this are treated as parallel directions.
 const PARALLEL: f64 = 1e-18;
 
@@ -171,7 +174,7 @@ impl ContactCylinder {
             - self.radius * spread
             - self.half_length * alignment.abs()
             - plane;
-        if lowest > margin {
+        if lowest > margin || self.column_clearance(triangle, normal, lowest) > margin {
             return Ok(Vec::new());
         }
         let mut candidates = Vec::with_capacity(8);
@@ -220,6 +223,76 @@ impl ContactCylinder {
         }
         candidates.retain(|point| separation(point) <= margin);
         Ok(reduce(candidates, normal))
+    }
+
+    /// A lower bound on the distance to a triangle, zero where they may touch.
+    ///
+    /// Costs a few segment tests, so it can reject a triangle before an exact
+    /// contact search or sweep. The cylinder lies within its radius of the axis
+    /// segment, between its cap planes, and on one side of its lowest and
+    /// highest points along the triangle normal; each gives a bound, and on a
+    /// wheel above a surface the axis bound is its exact gap.
+    pub fn triangle_clearance(&self, triangle: [DVec3; 3]) -> f64 {
+        let Ok(normal) = triangle_normal(triangle) else {
+            return 0.0;
+        };
+        let ends = [
+            self.center - self.half_length * self.axis,
+            self.center + self.half_length * self.axis,
+        ];
+        let axis = segment_triangle_distance(ends, triangle, normal) - self.radius;
+        let [low, high] = triangle.iter().fold(
+            [f64::INFINITY, f64::NEG_INFINITY],
+            |[low, high], &vertex| {
+                let axial = self.axis.dot(vertex - self.center);
+                [low.min(axial), high.max(axial)]
+            },
+        );
+        let caps = (low - self.half_length).max(-self.half_length - high);
+        let alignment = self.axis.dot(normal);
+        let reach = self.radius * (normal - alignment * self.axis).length()
+            + self.half_length * alignment.abs();
+        let height = normal.dot(self.center - triangle[0]);
+        let plane = height.abs() - reach;
+        // Rounding in the tests above stays far below a micrometre.
+        (axis.max(caps).max(plane) - CLEARANCE_ROUNDING).max(0.0)
+    }
+
+    // A lower bound on every contact's separation. A contact is where a column
+    // down the triangle normal enters the cylinder, so a cylinder anywhere below
+    // the triangle is buried in it: beneath the plane only the axis's sideways
+    // distance from the triangle counts.
+    fn column_clearance(&self, triangle: [DVec3; 3], normal: DVec3, lowest: f64) -> f64 {
+        if lowest >= 0.0 {
+            return self.triangle_clearance(triangle);
+        }
+        let plane = normal.dot(triangle[0]);
+        let ends = [
+            self.center - self.half_length * self.axis,
+            self.center + self.half_length * self.axis,
+        ];
+        let heights = ends.map(|end| normal.dot(end) - plane);
+        let floor = |point: DVec3| point - (normal.dot(point) - plane) * normal;
+        let distance = match heights {
+            [first, second] if first > 0.0 && second > 0.0 => {
+                segment_triangle_distance(ends, triangle, normal)
+            }
+            [first, second] if first <= 0.0 && second <= 0.0 => {
+                segment_triangle_distance(ends.map(floor), triangle, normal)
+            }
+            [first, second] => {
+                let crossing = ends[0] + (ends[1] - ends[0]) * (first / (first - second));
+                let [above, below] = if first > 0.0 {
+                    ends
+                } else {
+                    [ends[1], ends[0]]
+                };
+                segment_triangle_distance([above, crossing], triangle, normal).min(
+                    segment_triangle_distance([floor(below), crossing], triangle, normal),
+                )
+            }
+        };
+        (distance - self.radius - CLEARANCE_ROUNDING).max(0.0)
     }
 
     /// The anchor of a contact at `body_point`, on the side or a cap, against a
@@ -489,6 +562,36 @@ fn point(body_point: DVec3, normal: DVec3, separation: f64) -> TriangleContactPo
 
 fn separation(point: &TriangleContactPoint) -> f64 {
     (point.body_point - point.triangle_point).dot(point.normal)
+}
+
+// Distance between a segment and a triangle. Apart from a crossing, the
+// closest pair has an endpoint over the triangle or a point on one of its edges.
+fn segment_triangle_distance(segment: [DVec3; 2], triangle: [DVec3; 3], normal: DVec3) -> f64 {
+    let plane = normal.dot(triangle[0]);
+    let heights = segment.map(|end| normal.dot(end) - plane);
+    if heights[0] * heights[1] < 0.0 {
+        let crossing =
+            segment[0] + (segment[1] - segment[0]) * (heights[0] / (heights[0] - heights[1]));
+        if inside(triangle, normal, crossing) {
+            return 0.0;
+        }
+    }
+    let over = segment
+        .iter()
+        .zip(heights)
+        .filter(|&(&end, height)| inside(triangle, normal, end - height * normal))
+        .map(|(_, height)| height.abs());
+    let edges = (0..3).map(|edge| {
+        let side = [triangle[edge], triangle[(edge + 1) % 3]];
+        if (segment[1] - segment[0]).length_squared() <= PARALLEL {
+            let along = side[1] - side[0];
+            let t = (along.dot(segment[0] - side[0]) / along.length_squared()).clamp(0.0, 1.0);
+            return segment[0].distance(side[0] + t * along);
+        }
+        let [a, b] = super::pair::closest_segment_points(segment, side);
+        a.distance(b)
+    });
+    over.chain(edges).fold(f64::INFINITY, f64::min)
 }
 
 fn inside(triangle: [DVec3; 3], normal: DVec3, point: DVec3) -> bool {

@@ -509,6 +509,16 @@ impl TerrainContactScene {
                         continue;
                     }
                     let end = earliest.map_or(1.0, |hit| hit.fraction);
+                    // A cylinder out of reach for the rest of the path cannot end
+                    // buried, whatever its prism touches on the way.
+                    let beyond = |clearance: f64, remaining: f64| {
+                        clearance > tolerance && clearance > speed * remaining
+                    };
+                    if let Some(cylinder) = &cache.rounds[collider_row]
+                        && beyond(cylinder.triangle_clearance(triangle), end)
+                    {
+                        continue;
+                    }
                     if let Some(translation) = translation {
                         let shape = if reuse_start() {
                             starting_shape(
@@ -574,6 +584,22 @@ impl TerrainContactScene {
                             &sampled
                         };
                         let pose = poses[collider.body];
+                        let clearance = if fraction == 0.0 {
+                            cache.rounds[collider_row]
+                                .map(|cylinder| cylinder.triangle_clearance(triangle))
+                        } else {
+                            collider
+                                .round
+                                .map(|round| round.transformed(pose.position, pose.rotation))
+                                .transpose()
+                                .map_err(|_| PhysicsError::InvalidCollision)?
+                                .map(|cylinder| cylinder.triangle_clearance(triangle))
+                        };
+                        if fraction > 0.0
+                            && clearance.is_some_and(|clearance| beyond(clearance, end - fraction))
+                        {
+                            break;
+                        }
                         let shape = if fraction == 0.0 && reuse_start() {
                             starting_shape(&cache, machine, poses, collider_row, &mut query)?
                         } else {
@@ -591,9 +617,11 @@ impl TerrainContactScene {
                         {
                             break;
                         }
+                        // Both bound the cylinder's distance: the prism contains it.
                         let separation = shape
                             .triangle_separation(triangle)
-                            .map_err(|_| PhysicsError::InvalidCollision)?;
+                            .map_err(|_| PhysicsError::InvalidCollision)?
+                            .max(clearance.unwrap_or(f64::NEG_INFINITY));
                         query.separation_evaluations += 1;
                         let hit = TerrainSweepHit {
                             collider: collider_row,

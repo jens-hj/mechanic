@@ -322,3 +322,88 @@ fn contacts_are_real_surface_points_and_never_miss_a_lower_one() {
     }
     assert!(compared > 60, "only {compared} cases met the cylinder");
 }
+
+// Distance from a point to the solid cylinder.
+fn point_distance(cylinder: &ContactCylinder, point: DVec3) -> f64 {
+    let offset = point - cylinder.center();
+    let axial = cylinder.axis().dot(offset);
+    let radial = (offset - axial * cylinder.axis()).length();
+    (axial.abs() - cylinder.half_length())
+        .max(0.0)
+        .hypot((radial - cylinder.radius()).max(0.0))
+}
+
+#[test]
+fn a_wheel_over_level_ground_has_its_exact_clearance() {
+    // Triangles with an edge along the ground ahead of the wheel and beside its cap.
+    let ahead = [
+        DVec3::new(0.3, 0.0, -1.0),
+        DVec3::new(0.3, 0.0, 1.0),
+        DVec3::new(0.6, 0.0, 0.0),
+    ];
+    let beside = [
+        DVec3::new(1.0, 0.0, HALF_LENGTH + 0.1),
+        DVec3::new(-1.0, 0.0, HALF_LENGTH + 0.1),
+        DVec3::new(0.0, 0.0, 1.0),
+    ];
+    for height in [0.0, -0.001] {
+        let expected = (RADIUS + height).hypot(0.3) - RADIUS;
+        let clearance = wheel(height).triangle_clearance(ahead);
+        assert!(
+            (clearance - expected).abs() < 2e-6,
+            "{clearance} ≠ {expected}"
+        );
+        let clearance = wheel(height).triangle_clearance(beside);
+        assert!((clearance - 0.1).abs() < 2e-6, "{clearance}");
+    }
+    let floor = super::super::tests::floor();
+    assert!(wheel(-0.001).triangle_clearance(floor) <= 0.0);
+    assert!((wheel(0.2).triangle_clearance(floor) - 0.2).abs() < 2e-6);
+}
+
+#[test]
+fn clearance_never_exceeds_the_distance_or_a_contact_separation() {
+    const GRID: usize = 64;
+    let mut stream = Stream(11);
+    let mut separated = 0;
+    for case in 0..200 {
+        let radius = stream.range(0.1, 1.0);
+        let half_length = stream.range(0.05, 0.6);
+        let cylinder =
+            ContactCylinder::new(DVec3::ZERO, stream.unit(), radius, half_length).unwrap();
+        let center = stream.unit() * stream.range(0.0, 2.0 * (radius + half_length));
+        let size = stream.range(0.1, 2.0);
+        let triangle = [0, 1, 2].map(|_| center + stream.unit() * size);
+        if triangle_normal(triangle).is_err() {
+            continue;
+        }
+        let clearance = cylinder.triangle_clearance(triangle);
+        separated += usize::from(clearance > 0.0);
+        #[allow(clippy::cast_precision_loss)] // Small grid counts.
+        let sampled = (0..=GRID)
+            .flat_map(|i| (0..=GRID - i).map(move |j| [i, j]))
+            .map(|[i, j]| {
+                let [s, t] = [i as f64 / GRID as f64, j as f64 / GRID as f64];
+                let point =
+                    triangle[0] + s * (triangle[1] - triangle[0]) + t * (triangle[2] - triangle[0]);
+                point_distance(&cylinder, point)
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            clearance <= sampled,
+            "case {case}: clearance {clearance} above distance {sampled}"
+        );
+        let normal = triangle_normal(triangle).unwrap();
+        let lowest = normal.dot(cylinder.center() - triangle[0])
+            - radius * (normal - normal.dot(cylinder.axis()) * cylinder.axis()).length()
+            - half_length * normal.dot(cylinder.axis()).abs();
+        let column = cylinder.column_clearance(triangle, normal, lowest);
+        for point in cylinder.triangle_contacts(triangle, 10.0).unwrap() {
+            assert!(
+                column <= separation_of(&point).max(0.0),
+                "case {case}: column clearance {column} above contact {point:?}"
+            );
+        }
+    }
+    assert!(separated > 60, "only {separated} separated cases");
+}
