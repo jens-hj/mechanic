@@ -5,9 +5,11 @@ use bevy_math::{DQuat, DVec3, DVec4};
 use crate::{ColliderShape, LocalCollider};
 
 mod activation;
+mod cylinder;
 mod envelope;
 mod pair;
 mod quadratic;
+pub use cylinder::{ContactCylinder, CylinderSideAnchor};
 pub use pair::{ConvexFeature, ConvexSeparation};
 pub use quadratic::ContactVelocity;
 
