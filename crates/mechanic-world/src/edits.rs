@@ -224,7 +224,7 @@ impl TerrainBrick {
         let index = local_index(local)?;
         let sample = &mut self.cells[index];
         let before = sample.density;
-        let bounded = before.min(-EMPTY_DENSITY);
+        let bounded = before;
         let depth = depth
             .min(MAX_SOIL_DEPTH_METRES)
             .min(bounded - EMPTY_DENSITY);
@@ -255,6 +255,7 @@ impl TerrainBrick {
         let removed = sample.material;
         let removed_density = sample.density;
         sample.density = EMPTY_DENSITY;
+        sample.compaction = 0;
         self.minimum_density = self.minimum_density.min(EMPTY_DENSITY);
         if removed_density >= self.maximum_density {
             self.maximum_density = self
@@ -2119,5 +2120,49 @@ mod tests {
             decode_brick(&encode_brick(terrain.brick(cell.brick()).unwrap())).unwrap(),
         );
         assert!((height(&loaded) - after).abs() < 1.0e-6);
+    }
+    #[test]
+    fn a_small_soil_load_moves_procedural_surface_continuously_downward() {
+        let field = TerrainField::new(WorldSeed(91));
+        for x in [0.0, 0.13, 0.27, 0.41] {
+            let mut terrain = TerrainOctree::default();
+            let centre = WorldPosition(DVec3::new(x, field.surface_height(x, 0.0), 0.0));
+            let node = super::TerrainNodeId::leaf(centre.cell().unwrap().brick());
+            let height = |terrain: &TerrainOctree| {
+                crate::mesh_chunk(
+                    &field,
+                    &terrain.snapshot(),
+                    crate::TerrainMeshRequest {
+                        node,
+                        generation: 1,
+                        transition_mask: crate::TerrainTransitionMask::NONE,
+                    },
+                )
+                .raycast(WorldPosition(centre.0 + DVec3::Y * 0.2), -DVec3::Y, 0.5)
+                .unwrap()
+                .position
+                .0
+                .y
+            };
+            let before = height(&terrain);
+            let outcome = terrain
+                .compress_patch(
+                    &field,
+                    crate::SoilPatch {
+                        centre,
+                        normal: DVec3::Y,
+                        radius: 0.15,
+                        pressure_pa: 30_000.0,
+                        seconds: 1.0 / 60.0,
+                    },
+                )
+                .unwrap();
+            assert!(outcome.total_changed_cells() > 0);
+            let displacement = before - height(&terrain);
+            assert!(
+                (0.00001..0.0005).contains(&displacement),
+                "x={x}: moved {displacement} m"
+            );
+        }
     }
 }

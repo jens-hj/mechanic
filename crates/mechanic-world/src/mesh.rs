@@ -1539,7 +1539,13 @@ fn lattice_sample_from_cells(
 }
 
 fn blend_lattice_samples(samples: [TerrainSample; 8], edited: [bool; 8]) -> LatticeSample {
-    let reconstructing_edit = edited.into_iter().any(core::convert::identity);
+    // Plastic compaction retains continuous signed distances. Binary brushes
+    // need bounded occupancy reconstruction; applying it to a tiny soil load
+    // would snap the previously procedural surface on its very first commit.
+    let reconstructing_edit = samples
+        .iter()
+        .zip(edited)
+        .any(|(sample, edited)| edited && sample.compaction == 0);
     let half_cell = TERRAIN_CELL_METERS as f32 * 0.5;
     let mut density = 0.0;
     let mut material = TerrainMaterial::Rock;
