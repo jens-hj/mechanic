@@ -58,7 +58,9 @@ Each 60 Hz tick:
    - runs one biased Gauss–Seidel pass over drive, limit and contact rows
      (8 when a contact arrived faster than 5 cm per substep)
    - sweeps colliders travelling more than 5 cm in the substep, and stops short
-     of an arrival that would end more than 1 cm deep
+     of an arrival that would end more than 1 cm deep. A recovery query at the
+     end of the substep runs first: when no contact there is that deep, no
+     arrival could cut the substep and the sweep is skipped
    - advances positions
    - runs one unbiased relaxing pass (8 after a fast arrival)
 
@@ -66,7 +68,11 @@ Each 60 Hz tick:
    travelled past its margin, a body has turned more than 0.25 rad, or the sweep
    cut the substep short. Impulses carry over by contact feature. Against
    terrain, a cylinder's turn about its own axis counts as neither travel nor
-   turn (see [Rolling cylinders](#rolling-cylinders)).
+   turn (see [Rolling cylinders](#rolling-cylinders)). Between bodies of one
+   construction, travel is measured in its root body's frame, since carrying
+   the whole construction changes no distance inside it, and each body keeps
+   its own budget, so a spinning wheel refreshes only its own pairs. Rotation
+   still counts in the world, because contact normals stay fixed there.
 5. Applies restitution to contacts that arrived faster than 1 m/s.
 6. Publishes. Non-finite results restore the substep start with zero velocity,
    and speeds are clamped to 500. Both mark the tick `degraded`.
@@ -159,6 +165,16 @@ meets terrain with the exact cylinder instead (`ContactCylinder`):
   sweep advances at the cylinder's speed, since the prism's gap never exceeds
   the cylinder's. Budgets against other bodies still count spin, because the
   prism's corners turn.
+- **Culling.** A triangle is rejected before any exact contact or sweep step
+  by a lower bound on its distance: the cylinder lies within its radius of its
+  axis segment, between its cap planes, and within its reach of the triangle's
+  plane. A sphere around the triangle tries the axis bound first. Contacts
+  count a cylinder under a triangle as buried in it, so beneath the plane only
+  the axis's sideways distance counts there.
+- **Flanks.** Where the lowest line passes more than 10 µm aside of a triangle,
+  its points would all be flank points. Such a triangle is resolved only if no
+  point on the lowest line of its support group lies at or below the bound on
+  its separation; otherwise the manifold would discard every point it found.
 - The exact reference solver keeps the prism: its event search and sweep
   certificates are built on that polytope.
 
@@ -196,6 +212,26 @@ with the same ride and speed kept:
 | 5 cm swells, 5 m/s | 1311 → 0 | 0.13 → 0.001 ms | 0.15 → 0.03 ms |
 | Flat, 15 m/s | 2400 → 2400 | 0.38 → 0.32 ms | 0.41 → 0.35 ms |
 | `car-drive` | 1327 → 1327 | 0.041 → 0.017 ms | 0.17 → 0.12 ms |
+
+### Driving on fine terrain
+
+`world-drive` replays a saved world: its construction with terrain foundations
+anchored, meshed 5 cm terrain around every moving body, and the throttle held.
+The saved "double wishbone 2" car has 21 bodies, 3,848 colliders and 1.5–1.6 m
+wheels. Every change above kept its speed and contacts identical; release build,
+Intel i5-12600K, one-second windows:
+
+| Speed | p50 tick | Mean query | Mean continuous | Sweeps per tick |
+| --- | --- | --- | --- | --- |
+| 5.4 m/s | 9.5 → 7.0 ms | 8.0 → 5.5 ms | 1.1 → 1.3 ms | 4 → 0 |
+| 10.9 m/s | 23.8 → 8.3 ms | 8.7 → 5.4 ms | 15.4 → 2.5 ms | 4 → 0 |
+| 14.9 m/s | 58.5 → 12.8 ms | 13.5 → 8.4 ms | 44.7 → 3.9 ms | 4 → 0 |
+| 18.0 m/s | 79.0 → 15.3 ms | 16.7 → 10.2 ms | 59.9 → 4.5 ms | 4 → 0 |
+
+Each sweep had checked every wheel against the few hundred triangles under it,
+though a rolling wheel never arrives buried. The internal body pairs, mostly
+wishbone pipes against each other, were re-queried every substep because the
+whole car moved and its wheels spun.
 
 ### Fast collisions
 
@@ -258,9 +294,11 @@ Known limits:
   the car covers only 2.4 m in 9 s, though it sits about 1 mm deep. Rolling on
   circles helped (0.9 m on the prism); wheel friction and load under drive
   torque need investigating next.
-- **Fast travel still sweeps every substep.** A wheel rolling at 15 m/s moves
-  its axle 6 cm per substep and spends about 0.32 ms of its 0.35 ms tick in
-  sweeps. `car-drive` still sweeps about twice a tick, at 0.017 ms.
+- **Fast travel still re-queries terrain every substep.** From about 5 m/s the
+  saved wishbone car queries its contacts every substep, and above 12 m/s,
+  5 cm per substep, the end-of-substep recovery check runs every substep too.
+  At 18 m/s it still takes about 15 ms per tick, close to the 16.7 ms a 60 Hz
+  tick allows.
 - **Fast spin in flight grows.** A 0.95 m steel wheel spinning at 150 rad/s
   that leaves the floor with a few rad/s of wobble gains wobble every tick and
   reaches the speed clamp within about 15 ticks. The gyroscopic bias is applied
@@ -294,6 +332,7 @@ cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario block-pile
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario fast-impacts
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario four-bar
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario wheel-roll
+cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario world-drive --instance <world directory>
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario reference-fixtures
 ```
 
@@ -312,6 +351,12 @@ degraded ticks, re-queries and continuous hits.
 `wheel-roll` prints one record per floor and speed with the axle height range,
 speed kept, lateral drift, axle tilt, mean query, sweep and solve time, and
 sweep and re-query counts.
+
+`world-drive` takes a saved world's directory, such as
+`~/.local/share/Mechanic/worlds/test`. It prints the construction's size, then
+one record per simulated second with the fastest body's speed, p50 and maximum
+tick time, and mean query, continuous and solve time, sweeps, re-queries,
+candidate triangles and pairs, and contacts.
 
 `reference-fixtures` prints one record per captured exact-solver solve: rows,
 convergence, residual, iterations, time and worst contact-law violation.
