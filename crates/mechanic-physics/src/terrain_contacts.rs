@@ -933,40 +933,43 @@ impl TerrainContactScene {
             ..
         } = &mut *scratch;
         trees.resize_with(machine.bodies, Vec::new);
-        for (body, rows) in machine.body_colliders.iter().enumerate() {
-            if rows.is_empty()
-                || !machine.colliders[rows[0]].moving
-                || groups.is_some_and(|g| !g.includes(machine, body, None))
-            {
-                continue;
-            }
-            let [minimum, maximum] =
-                rows.iter()
-                    .fold([DVec3::INFINITY, DVec3::NEG_INFINITY], |[lo, hi], &row| {
-                        [
-                            lo.min(cache.terrain_bounds[row][0]),
-                            hi.max(cache.terrain_bounds[row][1]),
-                        ]
-                    });
-            let bounds = WorldBounds {
-                minimum: WorldPosition(minimum),
-                maximum: WorldPosition(maximum),
-            };
-            if !valid_bounds(bounds) {
-                return Err(PhysicsError::InvalidCollision);
-            }
-            let nodes = self.index.bounds_candidates(bounds);
-            if nodes.is_empty() {
-                continue;
-            }
-            machine.collider_trees[body].refit(&cache.terrain_bounds, &mut trees[body]);
-            for node in nodes {
+        let reaches = terrain_reaches(machine, &cache.terrain_bounds, groups)?;
+        let Some(reach) = reaches
+            .iter()
+            .map(|&(_, bounds)| bounds)
+            .reduce(|a, b| WorldBounds {
+                minimum: WorldPosition(a.minimum.0.min(b.minimum.0)),
+                maximum: WorldPosition(a.maximum.0.max(b.maximum.0)),
+            })
+        else {
+            return Ok(());
+        };
+        // One index traversal serves every body; each keeps the nodes whose
+        // indexed mesh bounds it overlaps, in the index's order.
+        let nodes = self
+            .index
+            .bounds_candidates(reach)
+            .into_iter()
+            .map(|node| {
                 let chunk = &self.chunks[&node].geometry;
                 let bounds = chunk
                     .triangle_bvh
                     .nodes
                     .first()
                     .map_or(chunk.bounds, |node| node.bounds);
+                (node, bounds)
+            })
+            .collect::<Vec<_>>();
+        for (body, reach) in reaches {
+            let mut refitted = false;
+            for &(node, bounds) in &nodes {
+                if !reach.intersects(bounds) {
+                    continue;
+                }
+                if !refitted {
+                    machine.collider_trees[body].refit(&cache.terrain_bounds, &mut trees[body]);
+                    refitted = true;
+                }
                 candidates.clear();
                 machine.collider_trees[body].query(
                     &trees[body],
@@ -1354,6 +1357,37 @@ impl TerrainContactScene {
         result.contacts.sort_by_key(|contact| contact.feature);
         Ok(result)
     }
+}
+
+// Each moving body the query covers, with the bounds of its colliders' reach.
+fn terrain_reaches(
+    machine: &MachineCollisionGeometry,
+    reaches: &[[DVec3; 2]],
+    groups: Option<&ContactGroups>,
+) -> Result<Vec<(usize, WorldBounds)>, PhysicsError> {
+    let mut bodies = Vec::new();
+    for (body, rows) in machine.body_colliders.iter().enumerate() {
+        if rows.is_empty()
+            || !machine.colliders[rows[0]].moving
+            || groups.is_some_and(|g| !g.includes(machine, body, None))
+        {
+            continue;
+        }
+        let [minimum, maximum] = rows
+            .iter()
+            .fold([DVec3::INFINITY, DVec3::NEG_INFINITY], |[lo, hi], &row| {
+                [lo.min(reaches[row][0]), hi.max(reaches[row][1])]
+            });
+        let bounds = WorldBounds {
+            minimum: WorldPosition(minimum),
+            maximum: WorldPosition(maximum),
+        };
+        if !valid_bounds(bounds) {
+            return Err(PhysicsError::InvalidCollision);
+        }
+        bodies.push((body, bounds));
+    }
+    Ok(bodies)
 }
 
 // Finite points of one convex against one triangle for the requested query.
