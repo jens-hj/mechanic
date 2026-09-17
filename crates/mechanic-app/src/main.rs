@@ -3784,6 +3784,7 @@ fn advance_simulation(
                 world_runtime.clear_player_reactions();
                 match stepped {
                     Ok(completed) => {
+                        cpu.accumulate_soil(&mut world_runtime);
                         let publication_started = std::time::Instant::now();
                         let sequence = completed.sequence;
                         performance_capture::record(

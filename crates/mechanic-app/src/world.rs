@@ -185,8 +185,9 @@ struct TerrainEditCommand {
     operation: TerrainEditOperation,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum TerrainEditOperation {
+    Compress(mechanic_world::SoilCompression),
     Add(TerrainMaterial),
     Remove,
 }
@@ -376,6 +377,8 @@ pub(crate) struct WorldRuntime {
     brush_radius: f64,
     last_brush_edit: Option<TerrainStrokeSample>,
     pending_terrain_edits: VecDeque<TerrainEditCommand>,
+    pending_soil: mechanic_world::SoilAccumulator,
+    soil_ticks: u8,
     terrain_edit_task: Option<Task<Result<TerrainEditTaskResult, String>>>,
     terrain_edit_error: Option<String>,
     removed_cells: [u64; TerrainMaterial::COUNT],
@@ -427,6 +430,42 @@ pub(crate) struct WorldRuntime {
 }
 
 impl WorldRuntime {
+    /// Accumulates global CPU loads, submitting thresholded cells at 10 Hz.
+    pub(crate) fn accumulate_soil(
+        &mut self,
+        patches: impl Iterator<Item = mechanic_world::SoilPatch>,
+    ) {
+        if self.terrain_edit_error.is_some()
+            || self.pending_terrain_edits.len() >= MAX_PENDING_TERRAIN_EDITS
+        {
+            self.pending_soil.clear();
+            return;
+        }
+        for patch in patches {
+            let _ = self
+                .pending_soil
+                .accumulate(&self.edits, &self.field, patch);
+        }
+        self.soil_ticks += 1;
+        if self.soil_ticks < 6 {
+            return;
+        }
+        self.soil_ticks = 0;
+        let ready = self.pending_soil.take_ready();
+        if self.pending_terrain_edits.len().saturating_add(ready.len()) > MAX_PENDING_TERRAIN_EDITS
+        {
+            self.pending_soil.clear();
+            return;
+        }
+        self.pending_terrain_edits
+            .extend(ready.into_iter().map(|compression| TerrainEditCommand {
+                centre: compression.cell.centre(),
+                radius_metres: 0.05,
+                previous: None,
+                operation: TerrainEditOperation::Compress(compression),
+            }));
+    }
+
     pub(crate) const fn frozen_creation(&self) -> Option<mechanic_world::FrozenCreationDoc> {
         self.document.frozen_creation
     }
@@ -867,6 +906,8 @@ impl FromWorld for WorldRuntime {
             brush_radius: 0.5,
             last_brush_edit: None,
             pending_terrain_edits: VecDeque::new(),
+            pending_soil: mechanic_world::SoilAccumulator::default(),
+            soil_ticks: 0,
             terrain_edit_task: None,
             terrain_edit_error: None,
             removed_cells: [0; TerrainMaterial::COUNT],
@@ -1144,6 +1185,8 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.autosave = AutosaveState::default();
     runtime.last_brush_edit = None;
     runtime.pending_terrain_edits.clear();
+    runtime.pending_soil.clear();
+    runtime.soil_ticks = 0;
     runtime.terrain_edit_task = None;
     runtime.terrain_edit_error = None;
     runtime.removed_cells = [0; TerrainMaterial::COUNT];
@@ -1907,6 +1950,8 @@ fn spawn_world_terrain(
     runtime.terrain_streamer = TerrainStreamer::default();
     runtime.terrain_selection_task = None;
     runtime.pending_terrain_edits.clear();
+    runtime.pending_soil.clear();
+    runtime.soil_ticks = 0;
     runtime.terrain_edit_task = None;
     runtime.terrain_edit_error = None;
     runtime.last_brush_edit = None;
@@ -2147,6 +2192,8 @@ fn leave_world(
     runtime.terrain_streamer = TerrainStreamer::default();
     runtime.terrain_selection_task = None;
     runtime.pending_terrain_edits.clear();
+    runtime.pending_soil.clear();
+    runtime.soil_ticks = 0;
     runtime.terrain_edit_task = None;
     runtime.terrain_edit_error = None;
     runtime.last_brush_edit = None;
@@ -2716,8 +2763,21 @@ fn execute_terrain_edit_batch(
 ) -> Result<TerrainEditTaskResult, String> {
     let started = std::time::Instant::now();
     let mut outcomes = Vec::with_capacity(batch.len());
-    for command in batch {
+    let mut commands = batch.into_iter().peekable();
+    while let Some(command) = commands.next() {
         outcomes.push(match command.operation {
+            TerrainEditOperation::Compress(first) => {
+                let mut cells = vec![first];
+                while let Some(TerrainEditCommand {
+                    operation: TerrainEditOperation::Compress(next),
+                    ..
+                }) = commands.peek()
+                {
+                    cells.push(*next);
+                    commands.next();
+                }
+                terrain.compress_cells(field, &cells)
+            }
             TerrainEditOperation::Remove => terrain
                 .excavate_sphere_delta(
                     field,
@@ -2800,6 +2860,8 @@ fn coordinate_terrain_edits(
             }
             Err(error) => {
                 runtime.pending_terrain_edits.clear();
+                runtime.pending_soil.clear();
+                runtime.soil_ticks = 0;
                 runtime.terrain_edit_error = Some(error.clone());
                 editor.feedback = Some(format!("Terrain editing disabled: {error}"));
             }
@@ -6046,5 +6108,56 @@ mod tests {
             ready_obsolete_nodes(&obsolete, &children, &published),
             obsolete
         );
+    }
+    #[test]
+    fn soil_commits_on_sixth_tick_and_survives_world_reload() {
+        let temporary = TempWorldStore::new();
+        let store = WorldStore::new(&temporary.0);
+        let document = store.create_world("Soil", Some(91)).unwrap();
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        runtime.store = store;
+        install_world(&mut runtime, document).unwrap();
+        let patch = mechanic_world::SoilPatch {
+            centre: WorldPosition(DVec3::new(0.0, runtime.field.surface_height(0.0, 0.0), 0.0)),
+            normal: DVec3::Y,
+            radius: 0.1,
+            pressure_pa: 1.0e6,
+            seconds: 1.0 / 60.0,
+        };
+        for _ in 0..5 {
+            runtime.accumulate_soil(std::iter::once(patch));
+        }
+        assert!(runtime.pending_terrain_edits.is_empty());
+        runtime.accumulate_soil(std::iter::once(patch));
+        assert!(!runtime.pending_terrain_edits.is_empty());
+        let commands = runtime.pending_terrain_edits.drain(..).collect();
+        let result =
+            super::execute_terrain_edit_batch(runtime.edits.clone(), &runtime.field, commands)
+                .unwrap();
+        assert!(super::commit_terrain_edit_result(&mut runtime, result).0);
+        assert!(!runtime.pending_foundation_edit.is_empty());
+        let store = WorldStore::new(&temporary.0);
+        let name = runtime.document.name.clone();
+        store.save_dirty_leaves(&name, &mut runtime.edits).unwrap();
+        let reloaded = store.load_octree(&name).unwrap();
+        for brick in runtime.edits.snapshot().bricks() {
+            assert_eq!(Some(brick), reloaded.brick(brick.coordinate()));
+        }
+        let command = super::TerrainEditCommand {
+            centre: patch.centre,
+            radius_metres: 0.1,
+            previous: None,
+            operation: TerrainEditOperation::Remove,
+        };
+        runtime.pending_terrain_edits =
+            std::iter::repeat_n(command, super::MAX_PENDING_TERRAIN_EDITS).collect();
+        runtime.accumulate_soil(std::iter::once(patch));
+        assert_eq!(
+            runtime.pending_terrain_edits.len(),
+            super::MAX_PENDING_TERRAIN_EDITS
+        );
+        assert!(runtime.pending_soil.take_ready().is_empty());
     }
 }

@@ -140,6 +140,28 @@ impl PreparedRoute {
 }
 
 impl CpuRoute {
+    /// Feed accepted CPU loads to world-owned compaction using this query's origin.
+    #[allow(clippy::cast_possible_truncation)] // World density and pressure use f32.
+    pub(crate) fn accumulate_soil(&self, world: &mut crate::world::WorldRuntime) {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        if !*ENABLED.get_or_init(|| {
+            !std::env::var("MECHANIC_SOIL")
+                .is_ok_and(|value| value.trim().eq_ignore_ascii_case("off"))
+        }) {
+            return;
+        }
+        world.accumulate_soil(self.machine.terrain_loads().iter().map(|load| {
+            let area = std::f64::consts::PI * load.patch_radius.powi(2);
+            mechanic_world::SoilPatch {
+                centre: mechanic_world::WorldPosition(self.origin + load.point),
+                normal: load.normal,
+                radius: load.patch_radius,
+                pressure_pa: (load.normal_impulse / (mechanic_physics::TICK_SECONDS * area)) as f32,
+                seconds: mechanic_physics::TICK_SECONDS as f32,
+            }
+        }));
+    }
+
     /// Transfers the world-owned terrain cut across a construction publication.
     /// Body state, contacts and construction collision geometry remain those of
     /// the new route. The next publication still reconciles remeshed/removed chunks.
