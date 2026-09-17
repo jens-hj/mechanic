@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, error::Error, fs, path::Path, sync::Arc, time::
 
 use bevy_math::{DVec3, IVec3};
 use mechanic_core::{
-    BuildCommand, BuildPose, CompiledCreation, ConstructionGraph, ContactPolytope, CuboidSpec,
-    DriveMode, GridRotation,
+    BuildCommand, BuildPose, CompiledCreation, ConstructionGraph, ContactCylinder, ContactPolytope,
+    CuboidSpec, DriveMode, GridRotation,
 };
 use mechanic_physics::{
     ConstraintBlock, ConstraintSolution, ContactFriction, CpuMachine, DriveCommand, DynamicsFactor,
@@ -285,10 +285,27 @@ fn lowest_point(creation: &CompiledCreation, state: &MachineState) -> Result<f64
     Ok(extent(creation, state)?[0].y)
 }
 
-// Corners of the box around every collider.
+// Corners of the box around every collider, taking a solid cylinder as the
+// circle the CPU route rolls it on rather than its sixteen boxes.
 fn extent(creation: &CompiledCreation, state: &MachineState) -> Result<[DVec3; 2], Box<dyn Error>> {
     let mut extent = [DVec3::INFINITY, DVec3::NEG_INFINITY];
-    for collider in &creation.colliders {
+    for cylinder in &creation.cylinders {
+        let pose = state.poses[cylinder.compound_index as usize];
+        let world =
+            ContactCylinder::from_compiled(cylinder)?.transformed(pose.position, pose.rotation)?;
+        for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
+            extent[0] = extent[0].min(world.support(-axis));
+            extent[1] = extent[1].max(world.support(axis));
+        }
+    }
+    for (row, collider) in creation.colliders.iter().enumerate() {
+        let rolled = creation.cylinders.iter().any(|cylinder| {
+            let first = cylinder.first_collider as usize;
+            (first..first + mechanic_core::CYLINDER_COLLIDER_COUNT).contains(&row)
+        });
+        if rolled {
+            continue;
+        }
         let pose = state.poses[collider.compound_index as usize];
         let [minimum, maximum] = ContactPolytope::from_collider(collider)?
             .transformed(pose.position, pose.rotation)?

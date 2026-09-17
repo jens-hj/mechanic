@@ -74,6 +74,7 @@ fn roll(floor: &str, height: &dyn Fn(f64) -> f64, speed: f64) -> Result<(), Box<
     let (mut ticks, mut queries) = (Vec::new(), Vec::new());
     let (mut lowest, mut highest) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut triangles, mut contacts, mut requeries, mut hits, mut degraded) = (0, 0, 0, 0, 0);
+    let (mut sweeps, mut continuous, mut dynamics, mut constraints) = (0, 0.0, 0.0, 0.0);
     for tick in 1..=TICKS {
         let terrain = SoftStepTerrain {
             scene: &scene,
@@ -91,6 +92,10 @@ fn roll(floor: &str, height: &dyn Fn(f64) -> f64, speed: f64) -> Result<(), Box<
         requeries += diagnostics.requeries;
         hits += diagnostics.continuous_hits;
         degraded += usize::from(diagnostics.degraded);
+        sweeps += diagnostics.continuous_sweeps;
+        continuous += diagnostics.continuous_ms;
+        dynamics += diagnostics.dynamics_ms;
+        constraints += diagnostics.constraints_ms;
         if tick > SETTLE {
             let axle = machine.snapshot().state.poses[0].position;
             let ride = axle.y - height(axle.x);
@@ -116,6 +121,10 @@ fn roll(floor: &str, height: &dyn Fn(f64) -> f64, speed: f64) -> Result<(), Box<
         "p95_ms": percentile(&mut ticks, 95),
         "query_mean_ms": queries.iter().sum::<f64>() / TICKS as f64,
         "query_p95_ms": percentile(&mut queries, 95),
+        "continuous_mean_ms": continuous / TICKS as f64,
+        "dynamics_mean_ms": dynamics / TICKS as f64,
+        "constraints_mean_ms": constraints / TICKS as f64,
+        "continuous_sweeps": sweeps,
         "triangle_candidates": triangles,
         "mean_contacts": contacts as f64 / TICKS as f64,
         "requeries": requeries,

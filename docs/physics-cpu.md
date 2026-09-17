@@ -48,7 +48,9 @@ Each 60 Hz tick:
    fall under gravity, and how far its body can carry it in a tick (ancestor
    rotation and suspension travel included), capped at 5 cm. Submerged collider
    vertices from the recovery query are added, since a clipped manifold misses
-   a tilted body's buried corner; one beside a clipped point replaces it.
+   a tilted body's buried corner; one beside a clipped point replaces it. A
+   solid cylinder meets terrain as its exact circle and needs no buried
+   vertices (see [Rolling cylinders](#rolling-cylinders)).
 4. Runs 4 substeps. Each one:
    - factors `M + implicit suspension slope`
    - integrates gravity, gyroscopic bias and suspension force
@@ -122,6 +124,55 @@ More iterations didn't change the car. 8 substeps made the landing deeper. The
 captured ledge blocks rock slightly (≤0.2 rad/s) whatever the settings, so the
 defaults stay at 4 substeps × 1 iteration.
 
+### Rolling cylinders
+
+A solid full cylinder compiles to sixteen tangent boxes. Collided as that
+prism, a 1 m wheel's axle rose and fell 1 cm every 20 cm and every facet landing
+took speed, so a free wheel stopped or toppled within seconds. The soft step
+meets terrain with the exact cylinder instead (`ContactCylinder`):
+
+- **Contacts.** Against each triangle the side supports along its lowest line,
+  clipped to the triangle; a cylinder on an end supplies rim points. Where the
+  lowest points lie outside the triangle, the lowest point over its edges and
+  corners is found exactly, so a kerb edge holds the wheel. Every point carries
+  its true depth.
+- **Manifold.** A triangle beside the lowest line reports its own nearest point
+  higher up the flank. As a group corner it held the wheel ahead of or behind
+  its axle and braked it, so a flank point is kept only where no lowest-line
+  point of its group lies at or below it: at a kerb or in a crease.
+- **Rolling anchor.** A side contact keeps its place relative to the contact
+  normal rather than the material, so between queries it stays under the axle
+  as the wheel turns. A material anchor lifts off the circle by `r(1 − cos θ)`.
+- **Envelope.** The prism still bounds the cylinder for broadphase, sweeps,
+  clearance certificates and contact with other bodies. A sweep hit on the
+  prism cuts a substep only if the exact cylinder would end buried.
+- The exact reference solver keeps the prism: its event search and sweep
+  certificates are built on that polytope.
+
+`wheel-roll` rolls a free 1 m wheel (aluminium core, rubber tyre) across 0.5 m
+terrain triangles for 600 ticks (release build, Intel i5-12600K):
+
+| Case | Axle height range | Speed kept | Travelled | Lateral drift | Mean query |
+| --- | --- | --- | --- | --- | --- |
+| Flat, 1 m/s, prism | 10.9 mm | 0% | 2.2 m | 1.7 mm | 0.037 ms |
+| Flat, 1 m/s, circle | 0.4 mm | 28% | 6.4 m | 0.1 mm | 0.010 ms |
+| Flat, 5 m/s, prism | 143 mm | 4% | 17.6 m | 4.1 m | 0.039 ms |
+| Flat, 5 m/s, circle | 0.5 mm | 86% | 46.4 m | 7 mm | 0.018 ms |
+| 5 cm swells, 5 m/s, prism | toppled | 0% | 13.5 m | 0.35 m | 0.065 ms |
+| 5 cm swells, 5 m/s, circle | 2.2 mm | 86% | 46.2 m | 9 mm | 0.019 ms |
+
+The saved car, before and after:
+
+| | Prism | Circle |
+| --- | --- | --- |
+| `car-drop` p50 / p95 tick | 0.31 / 0.33 ms | 0.09 / 0.10 ms |
+| `car-drop` deepest penetration | 1.3 mm | 1.4 mm |
+| `car-drive` p50 / p95 tick | 0.32 / 0.41 ms | 0.17 / 0.19 ms |
+| `car-drive` travel in 9 s | 0.9 m | 2.4 m |
+
+Rubber on rock rolls with a 5 mm resistance length, which alone leaves about
+35% of 1 m/s and 87% of 5 m/s after ten seconds.
+
 ### Fast collisions
 
 Speed is handled in three layers, as in Box2D v3:
@@ -180,8 +231,12 @@ Known limits:
   (`block-pile`) cost about 15.5 ms per tick at p95. Independent bodies should
   become separate islands.
 - **Traction under drive is poor.** In `car-drive` the wheels reach 8 rad/s but
-  the car covers only 1.4 m in 9 s, and sits about 1 cm deep while driving.
-  Wheel friction and load under drive torque need investigating next.
+  the car covers only 2.4 m in 9 s, though it sits about 1 mm deep. Rolling on
+  circles helped (0.9 m on the prism); wheel friction and load under drive
+  torque need investigating next.
+- **A fast-spinning wheel pays for sweeps.** Spin counts as collider travel
+  even though it does not move a cylinder's surface, so a wheel rolling at
+  5 m/s spends about 0.13 ms of its 0.15 ms tick in continuous sweeps.
 
 ## Exact reference solver
 
@@ -210,6 +265,7 @@ cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario car-drive
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario block-pile
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario fast-impacts
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario four-bar
+cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario wheel-roll
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario reference-fixtures
 ```
 
@@ -223,6 +279,9 @@ The soft-step scenarios print one JSONL record:
 `fast-impacts` prints one record per case with p50/p95 tick time, deepest
 penetration, `tunnelled` (a collider ended more than one block past a surface),
 degraded ticks, re-queries and continuous hits.
+
+`wheel-roll` prints one record per floor and speed with the axle height range,
+speed kept, lateral drift, axle tilt, and mean query, sweep and solve time.
 
 `reference-fixtures` prints one record per captured exact-solver solve: rows,
 convergence, residual, iterations, time and worst contact-law violation.
