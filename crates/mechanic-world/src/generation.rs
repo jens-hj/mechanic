@@ -81,6 +81,8 @@ pub struct TerrainSample {
     pub density: f32,
     /// Material the cell carries when density is positive.
     pub material: TerrainMaterial,
+    /// Accumulated plastic compaction over half a cell.
+    pub compaction: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -404,6 +406,7 @@ impl TerrainField {
     ) -> TerrainSample {
         if !position.is_inside_world() {
             return TerrainSample {
+                compaction: 0,
                 density: -1.0,
                 material: TerrainMaterial::Rock,
             };
@@ -440,6 +443,7 @@ impl TerrainField {
             TerrainMaterial::Rock
         };
         TerrainSample {
+            compaction: 0,
             density: density as f32,
             material,
         }

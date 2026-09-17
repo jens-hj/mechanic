@@ -20,7 +20,7 @@ use crate::{
 const BRICK_CELL_COUNT: usize = 32 * 32 * 32;
 const EMPTY_DENSITY: f32 = -0.5 * TERRAIN_CELL_METERS as f32;
 const BRICK_MAGIC: [u8; 4] = *b"MECB";
-const BRICK_FORMAT_VERSION: u16 = 2;
+const BRICK_FORMAT_VERSION: u16 = 3;
 const OCTREE_DEPTH: u8 = 27;
 const ROOT_MINIMUM_BRICK: i32 = -(1 << 26);
 
@@ -236,7 +236,11 @@ impl TerrainBrick {
             return false;
         }
         let previous_density = sample.density;
-        *sample = TerrainSample { density, material };
+        *sample = TerrainSample {
+            density,
+            material,
+            compaction: 0,
+        };
         self.maximum_density = self.maximum_density.max(density);
         if previous_density <= self.minimum_density {
             self.minimum_density = self
@@ -1283,6 +1287,7 @@ pub fn encode_brick(brick: &TerrainBrick) -> Vec<u8> {
         bytes.extend_from_slice(&u16::try_from(run).unwrap_or(u16::MAX).to_le_bytes());
         bytes.extend_from_slice(&sample.density.to_bits().to_le_bytes());
         bytes.push(sample.material.code());
+        bytes.push(sample.compaction);
         index += run;
     }
     bytes
@@ -1308,6 +1313,7 @@ pub fn decode_brick(bytes: &[u8]) -> Result<TerrainBrick, BrickDecodeError> {
     while cursor < bytes.len() {
         let run = usize::from(read_u16(bytes, cursor)?);
         let density = f32::from_bits(read_u32(bytes, cursor + 2)?);
+        let compaction = *bytes.get(cursor + 7).ok_or(BrickDecodeError::Truncated)?;
         let code = *bytes.get(cursor + 6).ok_or(BrickDecodeError::Truncated)?;
         let material =
             TerrainMaterial::from_code(code).ok_or(BrickDecodeError::UnknownMaterial(code))?;
@@ -1315,10 +1321,14 @@ pub fn decode_brick(bytes: &[u8]) -> Result<TerrainBrick, BrickDecodeError> {
             return Err(BrickDecodeError::InvalidCellCount(cells.len() + run));
         }
         cells.extend(std::iter::repeat_n(
-            TerrainSample { density, material },
+            TerrainSample {
+                density,
+                material,
+                compaction,
+            },
             run,
         ));
-        cursor += 7;
+        cursor += 8;
     }
     if cells.len() != BRICK_CELL_COUNT {
         return Err(BrickDecodeError::InvalidCellCount(cells.len()));
@@ -1715,7 +1725,9 @@ mod tests {
             .next()
             .expect("the cut changes a brick")
             .coordinates;
-        let original = edits.brick(coordinate).unwrap();
+        let mut original = edits.brick(coordinate).unwrap().clone();
+        original.cells[0].compaction = 173;
+        let original = &original;
         let decoded = decode_brick(&encode_brick(original)).expect("payload is valid");
         assert_eq!(&decoded, original);
     }

@@ -1462,6 +1462,7 @@ fn coarse_sample_in_columns(
     if minimum_promoted < direct.sample.density {
         LatticeSample {
             sample: TerrainSample {
+                compaction: 0,
                 density: minimum_promoted,
                 material: direct.sample.material,
             },
@@ -1483,6 +1484,7 @@ fn lattice_sample_in_columns(
     // smooth procedural interpolation; only neighborhoods containing a real
     // edit are reconstructed as bounded cell occupancies.
     let mut samples = [TerrainSample {
+        compaction: 0,
         density: 0.0,
         material: TerrainMaterial::Rock,
     }; 8];
@@ -1517,6 +1519,7 @@ fn lattice_sample_from_cells(
     upper_z: i32,
 ) -> LatticeSample {
     let mut samples = [TerrainSample {
+        compaction: 0,
         density: 0.0,
         material: TerrainMaterial::Rock,
     }; 8];
@@ -1560,6 +1563,7 @@ fn blend_lattice_samples(samples: [TerrainSample; 8], edited: [bool; 8]) -> Latt
     }
     LatticeSample {
         sample: TerrainSample {
+            compaction: 0,
             density: density / 8.0,
             material,
         },
@@ -2054,10 +2058,12 @@ mod tests {
     #[test]
     fn authored_addition_uses_solid_material_without_changing_procedural_cover() {
         let dirt = TerrainSample {
+            compaction: 0,
             density: 0.05,
             material: TerrainMaterial::Soil,
         };
         let procedural_air = TerrainSample {
+            compaction: 0,
             density: -0.05,
             material: TerrainMaterial::SurfaceCover,
         };
