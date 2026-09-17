@@ -100,24 +100,34 @@ fn motion_bounds_round_outward_and_reject_invalid_radius_inputs() {
     assert!(bound.point_acceleration(0.3) >= 0.012);
 }
 
-#[test]
-fn authored_car_spatial_derivatives_and_acceleration_bounds_cover_reconstructed_motion() {
+fn authored_car() -> CompiledCreation {
     let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
         "../../../mechanic-bench/tests/fixtures/driven_car_instance.ron"
     ))
     .unwrap();
     let loaded = instance.creation.into_graph().unwrap();
-    let creation = loaded
+    loaded
         .graph
         .compile_with_suspension_sockets([], &loaded.sockets)
-        .unwrap();
-    let mut initial = MachineState::at_rest(&creation);
+        .unwrap()
+}
+
+// The authored car with its joints displaced, and a path moving every row.
+fn tumbling_car(creation: &CompiledCreation) -> (MachineState, Vec<f64>) {
+    let mut initial = MachineState::at_rest(creation);
     for (i, q) in initial.coordinates.iter_mut().enumerate() {
         *q = if i % 2 == 0 { 0.07 } else { -0.11 };
     }
     let displacement = (0..initial.velocities.len())
         .map(|i| if i % 2 == 0 { 0.6 } else { -0.4 })
         .collect::<Vec<_>>();
+    (initial, displacement)
+}
+
+#[test]
+fn authored_car_spatial_derivatives_and_acceleration_bounds_cover_reconstructed_motion() {
+    let creation = authored_car();
+    let (initial, displacement) = tumbling_car(&creation);
     let motion = MachineMotion::new(&creation, 7, &initial, &displacement).unwrap();
     // Derivative checks use a forward finite difference and its rigorous
     // acceleration-based truncation bound. Additional 1e-8 covers cancellation
@@ -148,4 +158,82 @@ fn authored_car_spatial_derivatives_and_acceleration_bounds_cover_reconstructed_
             }
         }
     }
+}
+
+#[test]
+fn symmetric_shape_bounds_cover_their_sampled_centres_and_axes() {
+    let creation = authored_car();
+    let (initial, displacement) = tumbling_car(&creation);
+    let motion = MachineMotion::new(&creation, 7, &initial, &displacement).unwrap();
+    let start = motion.initial_poses();
+    let samples = (1..=64)
+        .map(|step| {
+            let fraction = f64::from(step) / 64.0;
+            (fraction, motion.poses_at(fraction).unwrap())
+        })
+        .collect::<Vec<_>>();
+    for (body, spin) in motion.spins().iter().enumerate() {
+        let axis = if spin.axis == DVec3::ZERO {
+            DVec3::X
+        } else {
+            spin.axis
+        };
+        let across = axis.any_orthonormal_vector();
+        for (centre, symmetry) in [
+            (spin.pivot + 0.2 * axis, axis),
+            (spin.pivot + 0.3 * across - 0.1 * axis, axis),
+            (spin.pivot + 0.2 * axis, (axis + 0.5 * across).normalize()),
+        ] {
+            let [speed, turn] = spin.symmetric(centre, symmetry, 0.0);
+            let placed = |pose: BodyPose| {
+                (
+                    pose.position + pose.rotation * centre,
+                    pose.rotation * symmetry,
+                )
+            };
+            let (first_centre, first_axis) = placed(start[body]);
+            for (fraction, poses) in &samples {
+                let (centre, axis) = placed(poses[body]);
+                let moved = centre.distance(first_centre);
+                assert!(
+                    moved <= speed * fraction + 1e-9,
+                    "body {body} at {fraction}: centre moved {moved}, bound {speed}"
+                );
+                // The sine of the angle turned never exceeds the angle.
+                let turned = axis.cross(first_axis).length();
+                assert!(
+                    turned <= turn * fraction + 1e-9,
+                    "body {body} at {fraction}: axis turned {turned}, bound {turn}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_wheel_spinning_on_a_still_car_moves_no_shape_about_its_axle() {
+    let creation = authored_car();
+    let initial = MachineState::at_rest(&creation);
+    let mut spinning = 0;
+    for (body, row) in creation.dynamics.body_bearings.iter().enumerate() {
+        let Some(bearing) = row.map(|row| creation.bearings[row]) else {
+            continue;
+        };
+        let Some(coordinate) = bearing.coordinate_index else {
+            continue;
+        };
+        if bearing.kind.is_translational() {
+            continue;
+        }
+        // 400 rad/s over one 1/240 s substep, with the rest of the car still.
+        let mut displacement = vec![0.0; initial.velocities.len()];
+        displacement[creation.dynamics.coordinate_velocities[coordinate as usize]] = 400.0 / 240.0;
+        let motion = MachineMotion::new(&creation, 7, &initial, &displacement).unwrap();
+        let spin = motion.spins()[body];
+        let [speed, turn] = spin.symmetric(spin.pivot + 0.1 * spin.axis, spin.axis, 0.5);
+        assert!(motion.bounds()[body].point_speed(0.5) > 0.8);
+        assert!(speed < 1e-9 && turn < 1e-12, "body {body}: {speed} {turn}");
+        spinning += 1;
+    }
+    assert!(spinning > 0);
 }

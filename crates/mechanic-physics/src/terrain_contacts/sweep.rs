@@ -455,7 +455,14 @@ impl TerrainContactScene {
                 minimum: WorldPosition((origin + minimum).map(f64::next_down)),
                 maximum: WorldPosition((origin + maximum).map(f64::next_up)),
             };
-            let speed = bound.point_speed(collider.radius);
+            // A prism's gap never exceeds its cylinder's, which closes no faster
+            // than the cylinder's centre and axis move it.
+            let [speed, _] = super::terrain_motion(
+                collider.round.as_ref(),
+                collider.radius,
+                bound,
+                motion.spins()[collider.body],
+            );
             let chunks = &terrain_candidates[collider_row];
             query.chunk_candidates += chunks.len();
             for &node in chunks {

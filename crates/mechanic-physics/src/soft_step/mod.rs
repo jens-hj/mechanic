@@ -73,8 +73,10 @@ pub struct SoftStepSettings {
     /// metres; deeper or missed arrivals cut the substep short.
     pub continuous_depth: f64,
     /// Body rotation since the last contact query, in radians, after which
-    /// contacts are queried again. Anchors are fixed on the body, so a spinning
-    /// wheel's queried points turn away from the surface it approaches.
+    /// contacts are queried again. Anchors are fixed on the body, so a turning
+    /// body's queried points move away from the surface they measure. A
+    /// cylinder's terrain contacts stay put as it turns about its own axis, so
+    /// that turn doesn't count against terrain.
     pub requery_angle: f64,
     /// Biased and relaxing passes for substeps holding a contact that arrived
     /// faster than `continuous_travel` per substep.

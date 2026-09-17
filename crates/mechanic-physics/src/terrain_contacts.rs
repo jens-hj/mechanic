@@ -18,7 +18,7 @@ use crate::{BodyPose, PhysicsError};
 
 mod broadphase;
 mod groups;
-pub(crate) use groups::ContactGroups;
+pub(crate) use groups::{ContactGroups, Measured};
 mod penetration;
 pub use penetration::{TerrainPathFailure, TerrainPathOutcome, TerrainPathQuery};
 mod sweep;
@@ -182,6 +182,24 @@ struct MotionCollider {
     body: usize,
     assembly: usize,
     radius: f64,
+    round: Option<ContactCylinder>,
+}
+
+// Bounds on how fast a collider's surface moves against terrain along a path,
+// and how fast it turns. A cylinder meets terrain as a circle, so its turn
+// about its own axis counts as neither.
+fn terrain_motion(
+    round: Option<&ContactCylinder>,
+    radius: f64,
+    bound: crate::MotionBound,
+    spin: crate::motion_path::Spin,
+) -> [f64; 2] {
+    let point = [bound.point_speed(radius), bound.angular_speed];
+    round.map_or(point, |cylinder| {
+        let reach = cylinder.radius().hypot(cylinder.half_length()).next_up();
+        let [speed, turn] = spin.symmetric(cylinder.center(), cylinder.axis(), reach);
+        [speed.min(point[0]), turn.min(point[1])]
+    })
 }
 
 impl MachineCollisionGeometry {
@@ -209,6 +227,8 @@ pub struct MachineCollisionGeometry {
     body_colliders: Vec<Vec<usize>>,
     body_bounds: Vec<[DVec3; 2]>,
     body_radii: Vec<f64>,
+    // Bodies whose colliders are all cylinders.
+    round_bodies: Vec<bool>,
     pub(crate) assemblies: Vec<usize>,
     pub(crate) assembly_count: usize,
     pub(crate) internal_collisions: Vec<bool>,
@@ -352,7 +372,12 @@ impl MachineCollisionGeometry {
                 body: c.body,
                 assembly: assemblies[c.body],
                 radius: c.radius,
+                round: c.round,
             })
+            .collect();
+        let round_bodies = body_colliders
+            .iter()
+            .map(|rows| !rows.is_empty() && rows.iter().all(|&row| colliders[row].round.is_some()))
             .collect();
         let mut geometry = Self {
             generation: topology_generation,
@@ -364,6 +389,7 @@ impl MachineCollisionGeometry {
             body_colliders,
             body_bounds,
             body_radii,
+            round_bodies,
             assemblies,
             assembly_count,
             internal_collisions: vec![false; assembly_count],

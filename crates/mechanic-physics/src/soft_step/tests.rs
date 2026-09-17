@@ -1036,6 +1036,30 @@ fn a_wheel_tipping_onto_its_face_stays_on_the_floor() {
 }
 
 #[test]
+fn a_wheel_spinning_on_its_face_stays_on_the_floor() {
+    // Spinning 60 rad/s, it may hop as it slaps flat, but never sinks.
+    let deepest = deepest_clearance(&mut face_down_wheel(60.0), 60);
+    assert!(deepest > -0.004, "lowest point {deepest} m below the floor");
+}
+
+#[test]
+fn a_fast_spinning_wheel_dropped_on_the_floor_lands_on_it() {
+    let (creation, mut state) = rolling_wheel(0.0);
+    state.poses[0].position.y += 0.3;
+    state.velocities[1] = -15.0;
+    state.velocities[5] = -40.0;
+    let mut world = World::new(creation, state);
+    for tick in 1..=30 {
+        let state = world.tick(GRAVITY);
+        let clearance = clearance(world.creation(), &state);
+        assert!(
+            clearance > -0.01,
+            "tick {tick}: {clearance} m below the floor"
+        );
+    }
+}
+
+#[test]
 fn a_rolling_wheel_does_not_gain_energy() {
     let (creation, state) = rolling_wheel(1.0);
     let properties = creation.compounds[0].mass_properties;

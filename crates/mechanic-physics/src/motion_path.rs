@@ -60,6 +60,58 @@ impl MotionBound {
     }
 }
 
+/// How a body turns about one of its own axes over a path: a root body about
+/// its angular displacement, a child about its revolute bearing. A shape
+/// symmetric about that axis fills the same space however far the body turns.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Spin {
+    // Body-local unit axis, zero when the body has none.
+    axis: DVec3,
+    // Body-local point on the axis.
+    pivot: DVec3,
+    // Rounding in `pivot`, in metres.
+    pivot_error: f64,
+    // Bound on the turn rate about the axis.
+    rate: f64,
+    // Bound on the pivot's speed.
+    pivot_speed: f64,
+    // Bound on the body's angular speed apart from that turn.
+    tumble: f64,
+}
+
+impl Spin {
+    /// Bounds on the speed of every point within `reach` of `centre`, and on
+    /// the turn rate of `axis`, for a shape symmetric about the body-local unit
+    /// `axis` through `centre`. Its turn about that axis moves none of it.
+    /// Returns infinities for invalid inputs.
+    pub(crate) fn symmetric(self, centre: DVec3, axis: DVec3, reach: f64) -> [f64; 2] {
+        if !centre.is_finite() || !axis.is_finite() || !reach.is_finite() || reach < 0.0 {
+            return [f64::INFINITY; 2];
+        }
+        // Crossing unit directions rounds by a few epsilon of their lengths.
+        let skew = |direction: DVec3, length: f64| {
+            upper_add(
+                upper_length(self.axis.cross(direction)),
+                upper_product(8.0 * f64::EPSILON, length),
+            )
+        };
+        let offset = centre - self.pivot;
+        let distance = upper_add(upper_length(offset), self.pivot_error);
+        let turn = upper_add(
+            self.tumble,
+            upper_product(self.rate, skew(axis, upper_length(axis))),
+        );
+        let centre_speed = upper_add(
+            upper_add(self.pivot_speed, upper_product(self.tumble, distance)),
+            upper_product(
+                self.rate,
+                upper_add(skew(offset, distance), self.pivot_error),
+            ),
+        );
+        [upper_add(centre_speed, upper_product(turn, reach)), turn]
+    }
+}
+
 /// A candidate path specified by generalized displacements, including unwrapped
 /// world root rotation and joint angles. Poses are reconstructed at every query;
 /// this path never interpolates disconnected body endpoint poses.
@@ -73,6 +125,7 @@ pub struct MachineMotion<'a> {
     end: Vec<BodyPose>,
     preparation_pose_evaluations: usize,
     bounds: Vec<MotionBound>,
+    spins: Vec<Spin>,
 }
 
 impl<'a> MachineMotion<'a> {
@@ -104,16 +157,26 @@ impl<'a> MachineMotion<'a> {
         let start =
             MachineDynamics::reconstruct_poses(creation, &beginning.poses, &beginning.coordinates)?;
         let mut bounds = vec![MotionBound::default(); start.len()];
+        let mut spins = vec![Spin::default(); start.len()];
         for &body in &creation.dynamics.preorder {
             let topology = creation.loop_topology.body_parents[body];
             let rows = creation.dynamics.body_velocities[body].clone();
             if topology.is_root {
                 if !rows.is_empty() {
                     let motion = &displacement[rows];
+                    let turn = DVec3::new(motion[3], motion[4], motion[5]);
                     bounds[body] = MotionBound {
                         origin_speed: upper_length(DVec3::new(motion[0], motion[1], motion[2])),
-                        angular_speed: upper_length(DVec3::new(motion[3], motion[4], motion[5])),
+                        angular_speed: upper_length(turn),
                         ..MotionBound::default()
+                    };
+                    // A root turns about a fixed world axis, which stays fixed
+                    // in the body too.
+                    spins[body] = Spin {
+                        axis: (start[body].rotation.inverse() * turn).normalize_or_zero(),
+                        rate: bounds[body].angular_speed,
+                        pivot_speed: bounds[body].origin_speed,
+                        ..Spin::default()
                     };
                 }
                 continue;
@@ -155,14 +218,19 @@ impl<'a> MachineMotion<'a> {
                 );
                 let axis_length = upper_length(axis.as_dvec3());
                 let reach = upper_add(upper_length(bind), upper_product(extent, axis_length));
-                bounds[body] = MotionBound {
-                    origin_speed: upper_add(
+                spins[body] = Spin {
+                    pivot_speed: upper_add(
                         upper_add(
                             inherited.origin_speed,
                             upper_product(inherited.angular_speed, reach),
                         ),
                         upper_product(change, axis_length),
                     ),
+                    tumble: inherited.angular_speed,
+                    ..Spin::default()
+                };
+                bounds[body] = MotionBound {
+                    origin_speed: spins[body].pivot_speed,
                     angular_speed: inherited.angular_speed,
                     angular_acceleration: inherited.angular_acceleration,
                     origin_acceleration: upper_add(
@@ -180,6 +248,35 @@ impl<'a> MachineMotion<'a> {
                 let child_reach = upper_length(child_anchor.as_dvec3());
                 let reach = upper_add(upper_length(parent_anchor.as_dvec3()), child_reach);
                 let angular_speed = upper_add(inherited.angular_speed, change);
+                // The bearing axis and pivot are fixed in both bodies whatever
+                // the angle, so the starting poses give them in the child.
+                let [parent_pose, child_pose] = [start[parent], start[body]];
+                let inverse = child_pose.rotation.inverse();
+                let pivot = parent_pose.position + parent_pose.rotation * parent_anchor.as_dvec3()
+                    - child_pose.position;
+                spins[body] = Spin {
+                    axis: (inverse * (parent_pose.rotation * axis.as_dvec3())).normalize_or_zero(),
+                    pivot: inverse * pivot,
+                    pivot_error: upper_product(
+                        64.0 * f64::EPSILON,
+                        upper_add(
+                            upper_add(
+                                upper_length(parent_pose.position),
+                                upper_length(child_pose.position),
+                            ),
+                            upper_length(parent_anchor.as_dvec3()),
+                        ),
+                    ),
+                    rate: change,
+                    pivot_speed: upper_add(
+                        inherited.origin_speed,
+                        upper_product(
+                            inherited.angular_speed,
+                            upper_length(parent_anchor.as_dvec3()),
+                        ),
+                    ),
+                    tumble: inherited.angular_speed,
+                };
                 let angular_acceleration = upper_add(
                     inherited.angular_acceleration,
                     upper_product(inherited.angular_speed, change),
@@ -221,6 +318,7 @@ impl<'a> MachineMotion<'a> {
             end: Vec::new(),
             preparation_pose_evaluations: 1,
             bounds,
+            spins,
         };
         path.end = path.poses_at(1.0)?;
         path.preparation_pose_evaluations += 1;
@@ -252,6 +350,11 @@ impl<'a> MachineMotion<'a> {
     /// Body-indexed conservative motion bounds over the complete path.
     pub fn bounds(&self) -> &[MotionBound] {
         &self.bounds
+    }
+
+    /// Body-indexed turns about each body's own axis over the complete path.
+    pub(crate) fn spins(&self) -> &[Spin] {
+        &self.spins
     }
 
     // A fixed world axis and a linearly translating pivot. Refuse moving

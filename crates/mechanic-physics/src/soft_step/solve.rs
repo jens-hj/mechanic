@@ -1018,7 +1018,7 @@ pub(super) fn substep(
 /// continuous hit cut it short.
 pub(super) struct Substep {
     pub point_count: usize,
-    pub motion: Vec<[f64; 4]>,
+    pub motion: Vec<crate::terrain_contacts::Measured>,
     pub rewound: bool,
 }
 
@@ -1036,7 +1036,7 @@ fn continuous_fraction(
     coverage: &crate::terrain_contacts::ContactGroups,
     contacts: &[Contact],
     diagnostics: &mut SoftStepDiagnostics,
-) -> (f64, Vec<[f64; 4]>) {
+) -> (f64, Vec<crate::terrain_contacts::Measured>) {
     let displacement = state
         .velocities
         .iter()
@@ -1048,7 +1048,7 @@ fn continuous_fraction(
         diagnostics.degrade("continuous path");
         return (1.0, Vec::new());
     };
-    let mut measured = coverage.measure(terrain.geometry, motion.bounds());
+    let mut measured = coverage.measure(terrain.geometry, &motion);
     let mut fraction = 1.0;
     if settings.continuous {
         if coverage.covers_trial(
@@ -1127,9 +1127,7 @@ fn continuous_fraction(
         }
     }
     for group in &mut measured {
-        for value in group {
-            *value *= fraction;
-        }
+        group.scale(fraction);
     }
     (fraction, measured)
 }
