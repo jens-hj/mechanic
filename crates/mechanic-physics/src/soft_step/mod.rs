@@ -575,7 +575,7 @@ impl CpuMachine {
             .collect::<Vec<_>>();
         let mut tried_regions = vec![false; regions.len()];
         diagnostics.refreshed_contact_groups = groups.len();
-        for _ in 0..settings.substeps {
+        for substep in 0..settings.substeps {
             if let Some(terrain) = terrain.filter(|_| groups.invalid_count() > 0) {
                 match MachineKinematics::reconstruct_poses(
                     &self.creation,
@@ -736,13 +736,16 @@ impl CpuMachine {
                             outcome.rewound,
                         );
                     }
-                    collect_terrain_loads(
-                        &contacts,
-                        &self.held,
-                        &mut self.terrain_loads,
-                        &mut self.load_features,
-                        &mut self.load_order,
-                    );
+                    // The last substep also carries the tick's restitution impulse.
+                    if substep + 1 < settings.substeps {
+                        collect_terrain_loads(
+                            &contacts,
+                            &self.held,
+                            &mut self.terrain_loads,
+                            &mut self.load_features,
+                            &mut self.load_order,
+                        );
+                    }
                     last = Some(outcome.point_count);
                 }
                 Ok(_) | Err(_) => {
@@ -762,6 +765,13 @@ impl CpuMachine {
                 &self.scratch.points[..count],
                 &mut state.velocities,
                 settings,
+            );
+            collect_terrain_loads(
+                &contacts,
+                &self.held,
+                &mut self.terrain_loads,
+                &mut self.load_features,
+                &mut self.load_order,
             );
         }
         match MachineKinematics::reconstruct_poses(&self.creation, &state.poses, &state.coordinates)

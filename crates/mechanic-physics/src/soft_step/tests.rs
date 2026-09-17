@@ -1401,3 +1401,28 @@ fn a_resting_body_reports_terrain_normal_load_matching_its_weight() {
         assert!(world.machine.terrain_loads().is_empty());
     }
 }
+
+#[test]
+fn reported_impact_load_includes_the_rebound_impulse() {
+    let mut world = box_above_floor(0.05, -4.0);
+    let mass = f64::from(world.creation().compounds[0].mass_properties.mass);
+    for _ in 0..30 {
+        let before = world.machine.snapshot().state.velocities[1];
+        let after = world.tick(GRAVITY).velocities[1];
+        if after > 0.0 {
+            let expected = mass * (after - before - GRAVITY.y * crate::TICK_SECONDS);
+            let impulse = world
+                .machine
+                .terrain_loads()
+                .iter()
+                .map(|load| load.normal_impulse)
+                .sum::<f64>();
+            assert!(
+                (impulse / expected - 1.0).abs() < 0.1,
+                "{impulse} vs {expected}"
+            );
+            return;
+        }
+    }
+    panic!("the body never rebounded");
+}
