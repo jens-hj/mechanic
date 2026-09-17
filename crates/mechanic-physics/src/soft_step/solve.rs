@@ -1069,6 +1069,21 @@ fn continuous_fraction(
         if !required.needs_sweep(terrain.geometry) {
             return (fraction, measured);
         }
+        // A sweep cuts the substep only for an arrival buried too deep at its
+        // end, so where none of the swept groups is, its hits could not change
+        // the substep.
+        let buried = terrain.scene.recovery_groups(
+            terrain.geometry,
+            motion.final_poses(),
+            terrain.origin,
+            Some(&required),
+        );
+        if buried
+            .as_ref()
+            .is_ok_and(|buried| !buried_too_deep(terrain, buried, settings))
+        {
+            return (fraction, measured);
+        }
         diagnostics.continuous_sweeps += 1;
         let supported = contacts
             .iter()
@@ -1096,17 +1111,14 @@ fn continuous_fraction(
                 diagnostics.continuous_triangle_candidates += query.triangle_candidates;
                 if let TerrainSweepOutcome::Impact(hit) | TerrainSweepOutcome::Unconverged(hit) =
                     query.outcome
-                    && missed(
-                        terrain,
-                        motion.final_poses(),
-                        hit,
-                        terrain
-                            .geometry
-                            .collider_reach()
-                            .nth(hit.collider)
-                            .map_or(0.0, |(_, radius)| radius),
-                        settings,
-                    )
+                    && buried.as_ref().map_or(true, |buried| {
+                        missed(
+                            buried,
+                            hit,
+                            collider_radius(terrain, hit.collider),
+                            settings,
+                        )
+                    })
                 {
                     // Stop a tolerance short of the arrival, measured along the
                     // fastest collider's path.
@@ -1138,21 +1150,45 @@ fn continuous_fraction(
 // a surface it started near is not a miss. Buried vertices give the depth; a
 // clipped manifold deep in overlap only reports the gap at its clipping boundary.
 fn missed(
-    terrain: SoftStepTerrain<'_>,
-    end: &[BodyPose],
+    buried: &crate::terrain_contacts::TerrainContactQuery,
     hit: TerrainSweepHit,
     radius: f64,
     settings: &SoftStepSettings,
 ) -> bool {
-    let allowed = settings.continuous_depth.min(0.25 * radius);
+    buried.contacts.iter().any(|contact| {
+        contact.feature.touches(hit.collider, hit.target)
+            && contact.depth > allowed_depth(radius, settings)
+    })
+}
+
+// Whether any end-of-path contact is deeper than an arrival at either of its
+// colliders may end.
+fn buried_too_deep(
+    terrain: SoftStepTerrain<'_>,
+    buried: &crate::terrain_contacts::TerrainContactQuery,
+    settings: &SoftStepSettings,
+) -> bool {
+    buried.contacts.iter().any(|contact| {
+        let other = match contact.feature.obstacle {
+            crate::ContactObstacle::Collider(other) => collider_radius(terrain, other),
+            crate::ContactObstacle::Terrain { .. } => f64::INFINITY,
+        };
+        let radius = collider_radius(terrain, contact.feature.collider).min(other);
+        contact.depth > allowed_depth(radius, settings)
+    })
+}
+
+fn collider_radius(terrain: SoftStepTerrain<'_>, row: usize) -> f64 {
     terrain
-        .scene
-        .recovery_groups(terrain.geometry, end, terrain.origin, None)
-        .map_or(true, |buried| {
-            buried.contacts.iter().any(|contact| {
-                contact.feature.touches(hit.collider, hit.target) && contact.depth > allowed
-            })
-        })
+        .geometry
+        .collider_reach()
+        .nth(row)
+        .map_or(0.0, |(_, radius)| radius)
+}
+
+// How deep a swept arrival may end before it cuts the substep.
+fn allowed_depth(radius: f64, settings: &SoftStepSettings) -> f64 {
+    settings.continuous_depth.min(0.25 * radius)
 }
 
 fn joint_rows(
