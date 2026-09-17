@@ -963,7 +963,7 @@ pub(super) fn substep(
             contacts,
             diagnostics,
         ),
-        None => (1.0, Vec::new()),
+        None => (1.0, crate::terrain_contacts::Measured::default()),
     };
     diagnostics.continuous_ms += continuous_started.elapsed().as_secs_f64() * 1000.0;
     let constraints_started = std::time::Instant::now();
@@ -1018,7 +1018,7 @@ pub(super) fn substep(
 /// continuous hit cut it short.
 pub(super) struct Substep {
     pub point_count: usize,
-    pub motion: Vec<crate::terrain_contacts::Measured>,
+    pub motion: crate::terrain_contacts::Measured,
     pub rewound: bool,
 }
 
@@ -1036,7 +1036,7 @@ fn continuous_fraction(
     coverage: &crate::terrain_contacts::ContactGroups,
     contacts: &[Contact],
     diagnostics: &mut SoftStepDiagnostics,
-) -> (f64, Vec<crate::terrain_contacts::Measured>) {
+) -> (f64, crate::terrain_contacts::Measured) {
     let displacement = state
         .velocities
         .iter()
@@ -1046,7 +1046,7 @@ fn continuous_fraction(
         MachineMotion::new(creation, terrain.topology_generation, state, &displacement)
     else {
         diagnostics.degrade("continuous path");
-        return (1.0, Vec::new());
+        return (1.0, crate::terrain_contacts::Measured::default());
     };
     let mut measured = coverage.measure(terrain.geometry, &motion);
     let mut fraction = 1.0;
@@ -1062,6 +1062,7 @@ fn continuous_fraction(
         let mut required = coverage.clone();
         required.advance_measured(terrain.geometry, &measured, settings.requery_angle, false);
         required.require_measured(
+            terrain.geometry,
             &measured,
             settings.continuous_travel,
             settings.requery_angle,
@@ -1138,9 +1139,7 @@ fn continuous_fraction(
             Err(_) => diagnostics.degrade("continuous sweep"),
         }
     }
-    for group in &mut measured {
-        group.scale(fraction);
-    }
+    measured.scale(fraction);
     (fraction, measured)
 }
 
