@@ -34,6 +34,9 @@ mod motion;
 #[path = "cpu-physics/pipe_motion.rs"]
 mod pipe_motion;
 
+#[path = "cpu-physics/rolling.rs"]
+mod rolling;
+
 const ITERATIONS: usize = 256;
 const TOLERANCE: f64 = 1e-9;
 const GRAVITY: DVec3 = DVec3::new(0.0, -9.81, 0.0);
@@ -100,9 +103,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "block-pile" => block_pile(),
         "fast-impacts" => fast_impacts(),
         "four-bar" => four_bar(),
+        "wheel-roll" => rolling::run(),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
-             block-pile, fast-impacts or four-bar"
+             block-pile, fast-impacts, four-bar or wheel-roll"
         )
         .into()),
     }
