@@ -145,20 +145,65 @@ fn a_side_anchor_stays_under_a_spinning_rolling_wheel() {
         .transformed(DVec3::Y * RADIUS, DQuat::IDENTITY)
         .unwrap();
     let bottom = DVec3::new(0.0, 0.0, 0.05);
-    let anchor = wheel.side_anchor(DVec3::Y, bottom).unwrap();
+    let anchor = wheel.anchor(DVec3::Y, bottom).unwrap();
     // Roll 0.3 rad forward: the centre moves, the support stays underneath.
     let rolled = local
         .transformed(DVec3::new(0.15, RADIUS, 0.0), DQuat::from_rotation_z(-0.3))
         .unwrap();
-    let point = rolled.side_point(DVec3::Y, anchor).unwrap();
+    let point = rolled.anchor_point(DVec3::Y, anchor).unwrap();
     assert!(
         point.abs_diff_eq(bottom + DVec3::X * 0.15, 1e-12),
         "{point}"
     );
-    let cap_face = DVec3::new(0.1, 0.5, HALF_LENGTH);
-    assert!(wheel.side_anchor(DVec3::Y, cap_face).is_none());
-    let standing = ContactCylinder::new(DVec3::ZERO, DVec3::Y, RADIUS, HALF_LENGTH).unwrap();
-    assert!(standing.side_anchor(DVec3::Y, DVec3::X * RADIUS).is_none());
+}
+
+#[test]
+fn a_cap_contact_stays_put_as_the_cylinder_spins() {
+    let local = ContactCylinder::new(DVec3::ZERO, DVec3::Y, RADIUS, HALF_LENGTH).unwrap();
+    let floor = super::super::tests::floor();
+    let normal = triangle_normal(floor).unwrap();
+    // Standing on its lower cap, tipped just short of resting on a rim edge.
+    let tilt = DQuat::from_rotation_x(0.03);
+    let pose = |spin: f64| {
+        local
+            .transformed(
+                DVec3::Y * (HALF_LENGTH - 0.001),
+                tilt * DQuat::from_rotation_y(spin),
+            )
+            .unwrap()
+    };
+    let standing = pose(0.0);
+    let rims = standing.triangle_contacts(floor, 0.05).unwrap();
+    assert!(rims.len() >= 4, "{rims:?}");
+    let anchors = rims
+        .iter()
+        .map(|rim| standing.anchor(normal, rim.body_point).unwrap())
+        .collect::<Vec<_>>();
+    let spun = pose(1.1);
+    for (rim, &anchor) in rims.iter().zip(&anchors) {
+        let point = spun.anchor_point(normal, anchor).unwrap();
+        assert!(point.abs_diff_eq(rim.body_point, 1e-12), "{point} {rim:?}");
+    }
+
+    // A point pressed into a lying wheel's cap face, against an oblique surface.
+    let wheel = ContactCylinder::new(DVec3::ZERO, DVec3::Z, RADIUS, HALF_LENGTH).unwrap();
+    let oblique = DVec3::new(0.3, 1.0, 0.4).normalize();
+    let face = DVec3::new(0.1, -0.2, HALF_LENGTH);
+    let anchor = wheel.anchor(oblique, face).unwrap();
+    let spun = wheel
+        .transformed(DVec3::ZERO, DQuat::from_rotation_z(2.0))
+        .unwrap();
+    let point = spun.anchor_point(oblique, anchor).unwrap();
+    assert!(point.abs_diff_eq(face, 1e-12), "{point}");
+    // Once tipped onto its cap, a side anchor no longer places a point.
+    let side = wheel.anchor(DVec3::Y, DVec3::NEG_Y * RADIUS).unwrap();
+    let tipped = wheel
+        .transformed(
+            DVec3::ZERO,
+            DQuat::from_rotation_x(std::f64::consts::FRAC_PI_2),
+        )
+        .unwrap();
+    assert!(tipped.anchor_point(DVec3::Y, side).is_none());
 }
 
 // Deterministic stream in [0, 1).

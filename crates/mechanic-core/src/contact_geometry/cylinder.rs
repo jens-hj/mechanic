@@ -28,14 +28,18 @@ pub struct ContactCylinder {
     half_length: f64,
 }
 
-/// Where a side contact sits on a cylinder, relative to the contact normal
-/// rather than the material. A rolling wheel keeps its support under the axle.
+/// Where a contact sits on a cylinder, relative to the contact normal and the
+/// axis rather than the material. A cylinder fills the same space however far
+/// it turns about its own axis, so a rolling wheel keeps its support under the
+/// axle and a spinning cap keeps its rim points where they touch.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CylinderSideAnchor {
+pub struct CylinderAnchor {
     axial: f64,
-    // Unit radial direction in the frame of the lowest generator toward the
-    // surface and the axis crossed with it.
+    // Offset from the axis as a fraction of the radius. On the side it is in the
+    // frame of the lowest generator toward the surface and the axis crossed with
+    // it; on an end, in the cap's fixed rim directions.
     radial: [f64; 2],
+    end_on: bool,
 }
 
 impl ContactCylinder {
@@ -195,13 +199,15 @@ impl ContactCylinder {
             }
         } else {
             let cap = self.center - self.half_length.copysign(alignment) * self.axis;
-            let [u, _] = contact_tangents(normal);
-            let first = (u - self.axis.dot(u) * self.axis).normalize();
-            let second = self.axis.cross(first);
             // Fixed rim directions keep contact identities while the cap
             // wobbles; a tilted cap also reports its lowest rim point.
             let lowest = (spread > 1e-9).then(|| -radial / spread);
-            for direction in [first, second, -first, -second].into_iter().chain(lowest) {
+            for direction in self
+                .cap_frame(normal)
+                .into_iter()
+                .flat_map(|[first, second]| [first, second, -first, -second])
+                .chain(lowest)
+            {
                 let rim = cap + self.radius * direction;
                 let foot = rim - (normal.dot(rim) - plane) * normal;
                 if inside(triangle, normal, foot)
@@ -216,21 +222,18 @@ impl ContactCylinder {
         Ok(reduce(candidates, normal))
     }
 
-    /// The side anchor of a contact at `body_point` against a surface with
-    /// `normal`, or none when the cylinder stands on an end or the point is on
-    /// a cap face.
-    pub fn side_anchor(&self, normal: DVec3, body_point: DVec3) -> Option<CylinderSideAnchor> {
-        let [down, across] = self.side_frame(normal)?;
+    /// The anchor of a contact at `body_point`, on the side or a cap, against a
+    /// surface with `normal`.
+    pub fn anchor(&self, normal: DVec3, body_point: DVec3) -> Option<CylinderAnchor> {
+        let end_on = self.side_frame(normal).is_none();
+        let [down, across] = self.anchor_frame(normal, end_on)?;
         let offset = body_point - self.center;
         let axial = self.axis.dot(offset);
-        let radial = offset - axial * self.axis;
-        if radial.length() < self.radius * (1.0 - 1e-6) {
-            return None;
-        }
-        let radial = radial.normalize();
-        Some(CylinderSideAnchor {
+        let radial = (offset - axial * self.axis) / self.radius;
+        Some(CylinderAnchor {
             axial,
             radial: [radial.dot(down), radial.dot(across)],
+            end_on,
         })
     }
 
@@ -242,15 +245,35 @@ impl ContactCylinder {
         Some((offset - self.axis.dot(offset) * self.axis).length())
     }
 
-    /// Surface point of a side anchor for this pose, or none when the cylinder
-    /// now stands on an end.
-    pub fn side_point(&self, normal: DVec3, anchor: CylinderSideAnchor) -> Option<DVec3> {
-        let [down, across] = self.side_frame(normal)?;
+    /// Point of an anchor for this pose, or none once the cylinder has tipped
+    /// between standing on an end and lying on its side.
+    pub fn anchor_point(&self, normal: DVec3, anchor: CylinderAnchor) -> Option<DVec3> {
+        let [down, across] = self.anchor_frame(normal, anchor.end_on)?;
         Some(
             self.center
                 + anchor.axial * self.axis
                 + self.radius * (anchor.radial[0] * down + anchor.radial[1] * across),
         )
+    }
+
+    fn anchor_frame(&self, normal: DVec3, end_on: bool) -> Option<[DVec3; 2]> {
+        if end_on {
+            self.cap_frame(normal)
+        } else {
+            self.side_frame(normal)
+        }
+    }
+
+    // Rim directions of a cap fixed by the surface's own tangents, so they don't
+    // turn with the cylinder.
+    fn cap_frame(&self, normal: DVec3) -> Option<[DVec3; 2]> {
+        let [u, _] = contact_tangents(normal);
+        let rim = u - self.axis.dot(u) * self.axis;
+        let length = rim.length();
+        (length >= END_ON_ALIGNMENT).then(|| {
+            let first = rim * length.recip();
+            [first, self.axis.cross(first)]
+        })
     }
 
     fn side_frame(&self, normal: DVec3) -> Option<[DVec3; 2]> {

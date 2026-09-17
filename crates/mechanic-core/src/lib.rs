@@ -35,7 +35,7 @@ pub use compile::{
 };
 pub use contact_geometry::{
     ContactCylinder, ContactGeometryError, ContactPolytope, ContactVelocity, ConvexFeature,
-    ConvexSeparation, CylinderSideAnchor, RigidContactSweep, SweepOutcome, TriangleClipScratch,
+    ConvexSeparation, CylinderAnchor, RigidContactSweep, SweepOutcome, TriangleClipScratch,
     TriangleContactPoint,
 };
 pub use creation::{

@@ -4,8 +4,7 @@ use std::f64::consts::TAU;
 
 use bevy_math::DVec3;
 use mechanic_core::{
-    CompiledBearing, CompiledCreation, ContactCylinder, CoordinateDrive, CylinderSideAnchor,
-    DriveMode,
+    CompiledBearing, CompiledCreation, ContactCylinder, CoordinateDrive, CylinderAnchor, DriveMode,
 };
 
 use super::{SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
@@ -41,9 +40,9 @@ pub(super) struct Contact {
     queried_pose: BodyPose,
     other_queried_pose: Option<BodyPose>,
     local: DVec3,
-    // A terrain contact on a cylinder's side, which stays under the axle as the
-    // cylinder turns instead of following the material around.
-    side: Option<(ContactCylinder, CylinderSideAnchor)>,
+    // A terrain contact on a cylinder, which stays where it touches as the
+    // cylinder turns about its axis instead of following the material around.
+    round: Option<(ContactCylinder, CylinderAnchor)>,
     other_local: Option<DVec3>,
     anchor: DVec3,
     other_anchor: DVec3,
@@ -69,14 +68,14 @@ impl Contact {
             poses[body].rotation.inverse() * (world - poses[body].position)
         };
         let pose = poses[source.body];
-        let side = geometry
+        let round = geometry
             .rolling_shape(source.feature.collider)
             .filter(|_| source.other_body.is_none())
             .and_then(|cylinder| {
                 let anchor = cylinder
                     .transformed(pose.position, pose.rotation)
                     .ok()?
-                    .side_anchor(source.normal, source.body_point)?;
+                    .anchor(source.normal, source.body_point)?;
                 Some((*cylinder, anchor))
             });
         let reference = if source.normal.y.abs() > 0.9 {
@@ -95,7 +94,7 @@ impl Contact {
             other_queried_pose: source.other_body.map(|body| poses[body]),
             impulses: warm.copied().unwrap_or_default(),
             local: local(source.body, source.body_point),
-            side,
+            round,
             other_local: source
                 .other_body
                 .map(|body| local(body, source.terrain_point)),
@@ -112,14 +111,14 @@ impl Contact {
         }
     }
 
-    // Where a rolling contact acts at these poses.
-    fn side_point(&self, poses: &[BodyPose]) -> Option<DVec3> {
-        let (cylinder, side) = self.side?;
+    // Where a contact on a cylinder acts at these poses.
+    fn round_point(&self, poses: &[BodyPose]) -> Option<DVec3> {
+        let (cylinder, anchor) = self.round?;
         let pose = poses[self.source.body];
         cylinder
             .transformed(pose.position, pose.rotation)
             .ok()?
-            .side_point(self.source.normal, side)
+            .anchor_point(self.source.normal, anchor)
     }
 
     // Only a finite contact queried at these exact poses certifies initial
@@ -146,7 +145,7 @@ impl Contact {
             pose.position + pose.rotation * local
         };
         let anchor = self
-            .side_point(&model.poses)
+            .round_point(&model.poses)
             .unwrap_or_else(|| world(self.source.body, self.local));
         let other = match (self.source.other_body, self.other_local) {
             (Some(body), Some(local)) => world(body, local),
