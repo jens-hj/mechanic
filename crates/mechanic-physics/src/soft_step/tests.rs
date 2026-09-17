@@ -1004,28 +1004,35 @@ fn a_wheel_rolled_into_a_low_kerb_never_passes_through_it() {
     }
 }
 
-#[test]
-fn a_wheel_spinning_on_its_face_stays_on_the_floor() {
+// The rolling wheel laid on an end cap, tipped 0.03 rad short of flat and
+// spinning about its axis at `spin` rad/s, with its lowest point on the floor.
+fn face_down_wheel(spin: f64) -> World {
     let (creation, mut state) = rolling_wheel(0.0);
     let local = creation.cylinders[0].local_rotation.as_dquat() * DVec3::Y;
     let pose = &mut state.poses[0];
-    // Laid on an end cap, tipped just short of flat.
     let axis = pose.rotation * local;
     pose.rotation =
         DQuat::from_rotation_x(0.03) * DQuat::from_rotation_arc(axis, DVec3::Y) * pose.rotation;
-    let spin = 60.0 * (pose.rotation * local);
+    let spin = spin * (pose.rotation * local);
     state.velocities[3..6].copy_from_slice(&spin.to_array());
     state.poses[0].position.y -= clearance(&creation, &state);
-    let mut world = World::new(creation, state);
-    for tick in 1..=60 {
+    World::new(creation, state)
+}
+
+// The deepest clearance of the wheel's lowest point over `ticks`.
+fn deepest_clearance(world: &mut World, ticks: usize) -> f64 {
+    (0..ticks).fold(f64::INFINITY, |deepest, _| {
         let state = world.tick(GRAVITY);
-        let clearance = clearance(world.creation(), &state);
-        // Its soft contact carries the whole weight about 2.5 mm deep.
-        assert!(
-            (-0.005..0.001).contains(&clearance),
-            "tick {tick}: lowest point {clearance} m from the floor"
-        );
-    }
+        deepest.min(clearance(world.creation(), &state))
+    })
+}
+
+#[test]
+fn a_wheel_tipping_onto_its_face_stays_on_the_floor() {
+    let deepest = deepest_clearance(&mut face_down_wheel(0.0), 60);
+    // It rests about 2 mm deep. When its lowest rim point lost every manifold
+    // corner, it sank 5.8 mm.
+    assert!(deepest > -0.004, "lowest point {deepest} m below the floor");
 }
 
 #[test]

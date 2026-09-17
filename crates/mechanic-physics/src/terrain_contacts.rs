@@ -1346,10 +1346,16 @@ struct SupportGroup {
     directions: [DVec3; 5],
     supports: [TerrainContact; 5],
     curved: bool,
+    // A cylinder's deepest point, which a tipped cap's lowest rim point can be
+    // without winning any corner.
+    deepest: Option<TerrainContact>,
 }
 
 impl SupportGroup {
     fn append_unique(self, manifold: usize, output: &mut Vec<TerrainContact>) {
+        // Points along a level line are one depth; only a clearly deeper point
+        // adds a row.
+        const DEEPER: f64 = 1e-6;
         for corner in 0..if self.curved { 5 } else { 4 } {
             let mut support = self.supports[corner];
             support.manifold = manifold;
@@ -1359,6 +1365,15 @@ impl SupportGroup {
             {
                 output.push(support);
             }
+        }
+        let corners = &self.supports[..if self.curved { 5 } else { 4 }];
+        if let Some(mut deepest) = self.deepest
+            && corners
+                .iter()
+                .all(|support| deepest.separation < support.separation - DEEPER)
+        {
+            deepest.manifold = manifold;
+            output.push(deepest);
         }
     }
 }
@@ -1454,6 +1469,11 @@ fn reduce_support(
             center,
         ) {
             group.curved |= nearby;
+            if let Some(deepest) = &mut group.deepest
+                && contact.separation < deepest.separation
+            {
+                *deepest = contact;
+            }
             for (support, direction) in group.supports.iter_mut().zip(group.directions) {
                 if contact.terrain_point.dot(direction) > support.terrain_point.dot(direction) {
                     *support = contact;
@@ -1483,6 +1503,7 @@ fn reduce_support(
         directions: [u + v, u - v, -u - v, -u + v, -shape.normal(contact.normal)],
         supports: [contact; 5],
         curved: false,
+        deepest: matches!(shape, Opposing::Cylinder(_)).then_some(contact),
     });
 }
 
