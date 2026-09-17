@@ -2616,6 +2616,7 @@ fn handle_seat_interaction(
     wheel: Res<MaterialWheelState>,
     graph: Res<EditorGraph>,
     simulation: Res<AppSimulation>,
+    space: Res<State<world::AppSpace>>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut camera: Single<
         (
@@ -2635,11 +2636,9 @@ fn handle_seat_interaction(
         && !wheel.open
     {
         if let Some(seat) = player.seat {
-            let beside = seat_world_pose(&graph.0, &simulation, seat)
-                .map_or(camera.2.translation, |(centre, rotation)| {
-                    centre + rotation * (Vec3::X * 0.9)
-                });
-            player.leave_seat_at(beside);
+            let exit_position =
+                seat_exit_position(&graph.0, &simulation, seat).unwrap_or(camera.2.translation);
+            player.leave_seat_at(exit_position, *space.get());
             state.feedback = Some("Left Seat".to_owned());
             return;
         }
@@ -2730,6 +2729,25 @@ pub(crate) fn seat_world_pose(
     seat_interaction_graph(graph, simulation)
         .is_seat(seat)
         .then(|| simulation.live_part_pose(graph, seat))?
+}
+
+fn seat_exit_position(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    seat: PartId,
+) -> Option<Vec3> {
+    let PartSpec::Seat(spec) = seat_interaction_graph(graph, simulation)
+        .part(seat)
+        .copied()?
+    else {
+        return None;
+    };
+    let (centre, rotation) = seat_world_pose(graph, simulation, seat)?;
+    Some(
+        centre
+            + rotation
+                * (Vec3::Y * (spec.cuboid().size_meters().y * 0.5 + SEAT_EXIT_CLEARANCE_METERS)),
+    )
 }
 
 fn seat_surface_distance(
@@ -3984,6 +4002,7 @@ fn refresh_published_construction_visuals(
 /// simulated time lags; every tick that does run is unchanged.
 const MAXIMUM_TICK_BACKLOG: u64 = 30;
 const MAXIMUM_TICKS_PER_FRAME: usize = 3;
+const SEAT_EXIT_CLEARANCE_METERS: f32 = 0.01;
 
 fn next_simulation_ticks(
     scheduler: &mut FixedStepScheduler,
@@ -25272,8 +25291,8 @@ mod showcase_loading_tests {
     use super::{
         AppSimulation, ConstructionGraph, EditorHistory, EditorSnapshot, EditorState,
         HistoryAction, apply_history_action, creation_requires_live_physics, install_editor_graph,
-        next_simulation_ticks, raycast_seat_interaction, seat_surface_distance, seat_world_pose,
-        showcase, visual_snapshot_is_due,
+        next_simulation_ticks, raycast_seat_interaction, seat_exit_position, seat_surface_distance,
+        seat_world_pose, showcase, visual_snapshot_is_due,
     };
 
     fn graph_with_seat() -> (ConstructionGraph, PartId) {
@@ -25344,6 +25363,15 @@ mod showcase_loading_tests {
         let (position, rotation) = seat_world_pose(&graph, &simulation, seat).unwrap();
         assert!(position.abs_diff_eq(Vec3::ZERO, 1.0e-6));
         assert!(rotation.abs_diff_eq(Quat::IDENTITY, 1.0e-6));
+    }
+
+    #[test]
+    fn seat_exit_position_is_just_above_the_seat_surface() {
+        let (graph, seat) = graph_with_seat();
+
+        let exit = seat_exit_position(&graph, &AppSimulation::default(), seat).unwrap();
+
+        assert!(exit.abs_diff_eq(Vec3::new(0.0, 0.135, 0.0), 1.0e-6));
     }
 
     #[test]

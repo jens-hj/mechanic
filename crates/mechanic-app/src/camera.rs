@@ -68,8 +68,11 @@ impl PlayerState {
         self.input_captured
     }
 
-    pub(crate) fn leave_seat_at(&mut self, position: Vec3) {
-        self.position = clamp_to_platform(Vec3::new(position.x, 0.0, position.z));
+    pub(crate) fn leave_seat_at(&mut self, position: Vec3, space: AppSpace) {
+        self.position = match space {
+            AppSpace::Garage => clamp_to_platform_horizontal(position),
+            AppSpace::World => position,
+        };
         self.seat = None;
     }
 
@@ -324,6 +327,11 @@ pub(crate) fn clamp_to_platform(position: Vec3) -> Vec3 {
         0.0,
         position.z.clamp(-GROUND_HALF_SIZE, GROUND_HALF_SIZE),
     )
+}
+
+fn clamp_to_platform_horizontal(position: Vec3) -> Vec3 {
+    let clamped = clamp_to_platform(position);
+    Vec3::new(clamped.x, position.y, clamped.z)
 }
 
 pub(crate) fn avatar_alpha(pullback: f32) -> f32 {
@@ -721,15 +729,26 @@ mod tests {
     }
 
     #[test]
-    fn player_lifecycle_starts_standing_and_exit_returns_to_safe_ground() {
+    fn player_lifecycle_starts_standing_and_exit_clamps_garage_horizontal_position() {
         let mut player = PlayerState::default();
         assert!(player.seat.is_none());
         assert_eq!(player.position.y, 5.0);
-        player.leave_seat_at(Vec3::new(30.0, 8.0, -40.0));
+        player.leave_seat_at(Vec3::new(30.0, 8.0, -40.0), AppSpace::Garage);
         assert_eq!(
             player.position,
-            Vec3::new(GROUND_HALF_SIZE, 0.0, -GROUND_HALF_SIZE)
+            Vec3::new(GROUND_HALF_SIZE, 8.0, -GROUND_HALF_SIZE)
         );
+        assert!(player.seat.is_none());
+    }
+
+    #[test]
+    fn leaving_a_world_seat_stays_with_a_moved_creation() {
+        let mut player = PlayerState::default();
+        let beside_creation = Vec3::new(42.0, 8.0, -37.0);
+
+        player.leave_seat_at(beside_creation, AppSpace::World);
+
+        assert_eq!(player.position, beside_creation);
         assert!(player.seat.is_none());
     }
 
