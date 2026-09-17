@@ -37,6 +37,9 @@ mod pipe_motion;
 #[path = "cpu-physics/rolling.rs"]
 mod rolling;
 
+#[path = "cpu-physics/world_drive.rs"]
+mod world_drive;
+
 const ITERATIONS: usize = 256;
 const TOLERANCE: f64 = 1e-9;
 const GRAVITY: DVec3 = DVec3::new(0.0, -9.81, 0.0);
@@ -104,9 +107,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         "fast-impacts" => fast_impacts(),
         "four-bar" => four_bar(),
         "wheel-roll" => rolling::run(),
+        "world-drive" => world_drive::run(
+            instance
+                .as_deref()
+                .ok_or("world-drive needs --instance <world directory>")?,
+            &scale,
+        ),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
-             block-pile, fast-impacts, four-bar or wheel-roll"
+             block-pile, fast-impacts, four-bar, wheel-roll or world-drive"
         )
         .into()),
     }
