@@ -854,7 +854,7 @@ impl CpuMachine {
         if let Ok(recovery) =
             terrain
                 .scene
-                .recovery_groups(terrain.geometry, &state.poses, terrain.origin, groups)
+                .buried_groups(terrain.geometry, &state.poses, terrain.origin, groups)
         {
             diagnostics.triangle_candidates += recovery.triangle_candidates;
             diagnostics.collider_pair_candidates += recovery.collider_pair_candidates;
@@ -882,7 +882,14 @@ impl CpuMachine {
         points.sort_by_key(|point| (point.feature.corner >= SUBMERGED_CORNERS, point.feature));
         let contacts = points
             .into_iter()
-            .map(|point| Contact::new(point, &state.poses, warm.get(&point.feature)))
+            .map(|point| {
+                Contact::new(
+                    point,
+                    &state.poses,
+                    warm.get(&point.feature),
+                    terrain.geometry,
+                )
+            })
             .collect();
         diagnostics.query_ms += query_started.elapsed().as_secs_f64() * 1000.0;
         (contacts, margins)

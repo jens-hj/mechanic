@@ -7,8 +7,8 @@ use std::{
 
 use bevy_math::{DVec3, Vec3};
 use mechanic_core::{
-    CompiledCreation, ContactPolytope, ConvexFeature, ConvexSeparation, MaterialProperties,
-    TriangleContactPoint,
+    CompiledCreation, ContactCylinder, ContactPolytope, ConvexFeature, ConvexSeparation,
+    MaterialProperties, TriangleContactPoint,
 };
 use mechanic_world::{
     TerrainCollisionChunk, TerrainNodeId, TerrainSpatialIndex, WorldBounds, WorldPosition,
@@ -166,7 +166,11 @@ struct Collider {
     body: usize,
     center: DVec3,
     material: MaterialProperties,
+    // Circumscribing prism for a cylinder: every bound, sweep and body pair uses
+    // it, since it contains the cylinder.
     local: ContactPolytope,
+    // The exact cylinder, for rolling terrain contact.
+    round: Option<ContactCylinder>,
     bounds: [DVec3; 2],
     moving: bool,
     radius: f64,
@@ -185,6 +189,11 @@ impl MachineCollisionGeometry {
     /// in row order.
     pub(crate) fn collider_reach(&self) -> impl ExactSizeIterator<Item = (usize, f64)> + '_ {
         self.reach.iter().copied()
+    }
+
+    /// The exact cylinder of a collider row in body coordinates, if it is one.
+    pub(crate) fn rolling_shape(&self, row: usize) -> Option<&ContactCylinder> {
+        self.colliders.get(row)?.round.as_ref()
     }
 }
 
@@ -217,7 +226,8 @@ impl MachineCollisionGeometry {
     /// its sixteen tangent boxes describe the same prism, but each shared corner
     /// twice, rounded once per box. Two copies of one contact edge about 1e-8 m
     /// apart are two separate arrivals to the event search, and it then spends
-    /// every trial localizing contacts the solve already carries.
+    /// every trial localizing contacts the solve already carries. The exact
+    /// cylinder is kept beside that prism for rolling terrain contact.
     ///
     /// # Errors
     /// Rejects invalid compiled geometry or body references.
@@ -255,6 +265,10 @@ impl MachineCollisionGeometry {
                 material: source.material_properties,
                 bounds: local.bounds(),
                 local,
+                round: cylinder
+                    .map(ContactCylinder::from_compiled)
+                    .transpose()
+                    .map_err(|_| PhysicsError::InvalidCollision)?,
                 moving: !compound.is_static,
                 radius,
             });
@@ -639,6 +653,18 @@ enum QueryKind {
     Recovery,
 }
 
+// How a solid cylinder meets terrain. The soft-step solver rolls it on the exact
+// circle. The exact reference solver keeps the prism, because its event search
+// and sweep certificates are built on the same polytope.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CylinderContact {
+    Analytic,
+    Prism,
+    // Left out of a buried-vertex query: an exact cylinder's surface points
+    // already carry their true depth.
+    Omitted,
+}
+
 impl TerrainContactScene {
     /// Atomically publishes changed chunks/removals at an increasing generation.
     /// Geometry and hierarchy checks run before changing the visible scene.
@@ -747,7 +773,33 @@ impl TerrainContactScene {
         margins: &[f64],
         groups: Option<&ContactGroups>,
     ) -> Result<TerrainContactQuery, PhysicsError> {
-        self.query_groups(machine, poses, origin, margins, QueryKind::Surface, groups)
+        self.query_groups(
+            machine,
+            poses,
+            origin,
+            margins,
+            (QueryKind::Surface, CylinderContact::Analytic),
+            groups,
+        )
+    }
+
+    // Buried points a clipped manifold misses, for every collider but an exact
+    // cylinder, whose surface points already carry their true depth.
+    pub(crate) fn buried_groups(
+        &self,
+        machine: &MachineCollisionGeometry,
+        poses: &[BodyPose],
+        origin: DVec3,
+        groups: Option<&ContactGroups>,
+    ) -> Result<TerrainContactQuery, PhysicsError> {
+        self.query_groups(
+            machine,
+            poses,
+            origin,
+            &vec![CONTACT_ACTIVATION_DISTANCE; machine.colliders.len()],
+            (QueryKind::Recovery, CylinderContact::Omitted),
+            groups,
+        )
     }
 
     pub(crate) fn recovery_groups(
@@ -762,7 +814,7 @@ impl TerrainContactScene {
             poses,
             origin,
             &vec![CONTACT_ACTIVATION_DISTANCE; machine.colliders.len()],
-            QueryKind::Recovery,
+            (QueryKind::Recovery, CylinderContact::Analytic),
             groups,
         )
     }
@@ -899,7 +951,14 @@ impl TerrainContactScene {
         margins: &[f64],
         kind: QueryKind,
     ) -> Result<TerrainContactQuery, PhysicsError> {
-        self.query_groups(machine, poses, origin, margins, kind, None)
+        self.query_groups(
+            machine,
+            poses,
+            origin,
+            margins,
+            (kind, CylinderContact::Prism),
+            None,
+        )
     }
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -909,7 +968,7 @@ impl TerrainContactScene {
         poses: &[BodyPose],
         origin: DVec3,
         margins: &[f64],
-        kind: QueryKind,
+        (kind, cylinders): (QueryKind, CylinderContact),
         groups: Option<&ContactGroups>,
     ) -> Result<TerrainContactQuery, PhysicsError> {
         if poses.len() != machine.bodies
@@ -930,7 +989,9 @@ impl TerrainContactScene {
         self.prepare_terrain_candidates(machine, &mut cache, origin, margins, groups)?;
         let shapes = &cache;
         for (collider_row, collider) in machine.colliders.iter().enumerate() {
-            if !collider.moving || groups.is_some_and(|g| !g.includes(machine, collider.body, None))
+            if !collider.moving
+                || groups.is_some_and(|g| !g.includes(machine, collider.body, None))
+                || (cylinders == CylinderContact::Omitted && collider.round.is_some())
             {
                 continue;
             }
@@ -947,6 +1008,7 @@ impl TerrainContactScene {
                 return Err(PhysicsError::InvalidCollision);
             }
             let mut groups = Vec::<SupportGroup>::new();
+            let mut rolling = Vec::new();
             let candidates = &shapes.terrain_candidates[collider_row];
             result.chunk_candidates += candidates.len();
             for &node in candidates {
@@ -981,15 +1043,28 @@ impl TerrainContactScene {
                     {
                         continue;
                     }
-                    let shape = shapes.shape(machine, poses, collider_row)?;
-                    let points = surface_points_with_scratch(
-                        shape,
-                        triangle,
-                        kind,
-                        margin,
-                        CONTACT_ACTIVATION_DISTANCE,
-                        &mut shapes.clipping.borrow_mut(),
-                    )?;
+                    let round = shapes.rounds[collider_row]
+                        .as_ref()
+                        .filter(|_| cylinders == CylinderContact::Analytic);
+                    let (points, opposing) = if let Some(cylinder) = round {
+                        // Every query kind reports true depths here, so a
+                        // recovery query needs no separate buried vertices.
+                        let points = cylinder
+                            .triangle_contacts(triangle, margin)
+                            .map_err(|_| PhysicsError::InvalidCollision)?;
+                        (points, Opposing::Cylinder(cylinder))
+                    } else {
+                        let shape = shapes.shape(machine, poses, collider_row)?;
+                        let points = surface_points_with_scratch(
+                            shape,
+                            triangle,
+                            kind,
+                            margin,
+                            CONTACT_ACTIVATION_DISTANCE,
+                            &mut shapes.clipping.borrow_mut(),
+                        )?;
+                        (points, Opposing::Polytope(shape))
+                    };
                     if points.is_empty() {
                         continue;
                     }
@@ -1037,16 +1112,29 @@ impl TerrainContactScene {
                         }
                         if matches!(kind, QueryKind::Recovery) {
                             result.contacts.push(contact);
+                        } else if matches!(opposing, Opposing::Cylinder(_)) {
+                            rolling.push(contact);
                         } else {
                             reduce_support(
                                 &mut groups,
                                 &mut result.contacts,
                                 contact,
-                                shape,
+                                opposing,
                                 center,
                             );
                         }
                     }
+                }
+            }
+            if let Some(cylinder) = shapes.rounds[collider_row].as_ref() {
+                for contact in rolling_supports(&rolling, cylinder, center) {
+                    reduce_support(
+                        &mut groups,
+                        &mut result.contacts,
+                        contact,
+                        Opposing::Cylinder(cylinder),
+                        center,
+                    );
                 }
             }
             for (manifold, group) in groups.into_iter().enumerate() {
@@ -1152,7 +1240,7 @@ impl TerrainContactScene {
                         &mut groups,
                         &mut result.contacts,
                         contact,
-                        shapes.shape(machine, poses, receiving)?,
+                        Opposing::Polytope(shapes.shape(machine, poses, receiving)?),
                         center,
                     );
                 }
@@ -1275,22 +1363,96 @@ impl SupportGroup {
     }
 }
 
+// The receiving solid, which names the crown direction of a new support group.
+#[derive(Clone, Copy)]
+enum Opposing<'a> {
+    Polytope(&'a ContactPolytope),
+    Cylinder(&'a ContactCylinder),
+}
+
+impl Opposing<'_> {
+    fn normal(self, surface_normal: DVec3) -> DVec3 {
+        match self {
+            Self::Polytope(shape) => shape.opposing_normal(surface_normal),
+            Self::Cylinder(cylinder) => cylinder.opposing_normal(surface_normal),
+        }
+    }
+}
+
+// A cylinder side touches a surface along its lowest line, but a triangle beside
+// that line still reports its own nearest point higher up the flank. Such a
+// point would win a group corner and hold the wheel ahead of or behind its
+// axle, braking it. Keep a flank point only where no lowest-line point of its
+// group lies at or below it, as at a kerb or in a crease.
+fn rolling_supports(
+    points: &[TerrainContact],
+    cylinder: &ContactCylinder,
+    center: DVec3,
+) -> Vec<TerrainContact> {
+    const ON_LINE: f64 = 1e-6;
+    let on_line = points
+        .iter()
+        .map(|point| {
+            cylinder
+                .lowest_line_distance(point.normal, point.body_point)
+                .is_none_or(|distance| distance <= ON_LINE)
+        })
+        .collect::<Vec<_>>();
+    points
+        .iter()
+        .zip(&on_line)
+        .filter(|&(point, &line)| {
+            line || !points.iter().zip(&on_line).any(|(other, &other_line)| {
+                other_line
+                    && other.separation <= point.separation
+                    && same_support(
+                        other.normal,
+                        other.normal.dot(other.terrain_point),
+                        other.response,
+                        point,
+                        center,
+                    )
+                    .is_some()
+            })
+        })
+        .map(|(point, _)| *point)
+        .collect()
+}
+
+// Whether `contact` joins the support group with this plane and response, and
+// if so whether only because the surface curves.
+fn same_support(
+    normal: DVec3,
+    distance: f64,
+    response: [f64; 4],
+    contact: &TerrainContact,
+    center: DVec3,
+) -> Option<bool> {
+    let own = contact.normal.dot(contact.terrain_point);
+    let parallel = (normal - contact.normal).abs().max_element() < 1e-6;
+    let separation = ((contact.normal - normal).dot(center) - own + distance).abs();
+    let nearby = !parallel && normal.dot(contact.normal) > 0.995 && separation < 0.025;
+    (((parallel && (own - distance).abs() < 1e-5) || nearby)
+        && response.map(f64::to_bits) == contact.response.map(f64::to_bits))
+    .then_some(nearby)
+}
+
 fn reduce_support(
     groups: &mut Vec<SupportGroup>,
     overflow: &mut Vec<TerrainContact>,
     mut contact: TerrainContact,
-    shape: &ContactPolytope,
+    shape: Opposing<'_>,
     center: DVec3,
 ) {
     let distance = contact.normal.dot(contact.terrain_point);
     for group in groups.iter_mut() {
-        let parallel = (group.normal - contact.normal).abs().max_element() < 1e-6;
-        let separation =
-            ((contact.normal - group.normal).dot(center) - distance + group.distance).abs();
-        let nearby = !parallel && group.normal.dot(contact.normal) > 0.995 && separation < 0.025;
-        if ((parallel && (distance - group.distance).abs() < 1e-5) || nearby)
-            && group.response.map(f64::to_bits) == contact.response.map(f64::to_bits)
-        {
+        if let Some(nearby) = same_support(
+            group.normal,
+            group.distance,
+            group.response,
+            &contact,
+            center,
+        ) {
             group.curved |= nearby;
             for (support, direction) in group.supports.iter_mut().zip(group.directions) {
                 if contact.terrain_point.dot(direction) > support.terrain_point.dot(direction) {
@@ -1318,13 +1480,7 @@ fn reduce_support(
         normal: contact.normal,
         distance,
         response: contact.response,
-        directions: [
-            u + v,
-            u - v,
-            -u - v,
-            -u + v,
-            -shape.opposing_normal(contact.normal),
-        ],
+        directions: [u + v, u - v, -u - v, -u + v, -shape.normal(contact.normal)],
         supports: [contact; 5],
         curved: false,
     });
@@ -1464,6 +1620,7 @@ struct PoseCache {
     poses: Vec<BodyPose>,
     bounds: Vec<[DVec3; 2]>,
     shapes: Vec<OnceLock<ContactPolytope>>,
+    rounds: Vec<Option<ContactCylinder>>,
     separations: std::cell::RefCell<CachedSeparations>,
     spare_shapes: std::cell::RefCell<Vec<ContactPolytope>>,
     clipping: std::cell::RefCell<mechanic_core::TriangleClipScratch>,
@@ -1487,6 +1644,7 @@ impl PoseCache {
             .resize(machine.colliders.len(), [DVec3::ZERO; 2]);
         self.shapes
             .resize_with(machine.colliders.len(), OnceLock::new);
+        self.rounds.resize(machine.colliders.len(), None);
         if self.poses != poses {
             self.separations.get_mut().clear();
         }
@@ -1501,6 +1659,11 @@ impl PoseCache {
                 self.bounds[row] = machine.colliders[row]
                     .local
                     .transformed_bounds(pose.position, pose.rotation)
+                    .map_err(|_| PhysicsError::InvalidCollision)?;
+                self.rounds[row] = machine.colliders[row]
+                    .round
+                    .map(|round| round.transformed(pose.position, pose.rotation))
+                    .transpose()
                     .map_err(|_| PhysicsError::InvalidCollision)?;
             }
         }

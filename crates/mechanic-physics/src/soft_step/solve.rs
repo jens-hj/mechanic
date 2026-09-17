@@ -3,12 +3,16 @@
 use std::f64::consts::TAU;
 
 use bevy_math::DVec3;
-use mechanic_core::{CompiledBearing, CompiledCreation, CoordinateDrive, DriveMode};
+use mechanic_core::{
+    CompiledBearing, CompiledCreation, ContactCylinder, CoordinateDrive, CylinderSideAnchor,
+    DriveMode,
+};
 
 use super::{SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
 use crate::{
-    BodyPose, DynamicsFactor, MachineKinematics, MachineMotion, MachineState, PhysicsError,
-    TerrainContact, TerrainContactFeature, TerrainSweepHit, TerrainSweepOutcome,
+    BodyPose, DynamicsFactor, MachineCollisionGeometry, MachineKinematics, MachineMotion,
+    MachineState, PhysicsError, TerrainContact, TerrainContactFeature, TerrainSweepHit,
+    TerrainSweepOutcome,
     free_motion::advance_positions,
     joint_forces::{PassiveForce, drive_budget, drive_target},
     joint_machine::bounds,
@@ -37,6 +41,9 @@ pub(super) struct Contact {
     queried_pose: BodyPose,
     other_queried_pose: Option<BodyPose>,
     local: DVec3,
+    // A terrain contact on a cylinder's side, which stays under the axle as the
+    // cylinder turns instead of following the material around.
+    side: Option<(ContactCylinder, CylinderSideAnchor)>,
     other_local: Option<DVec3>,
     anchor: DVec3,
     other_anchor: DVec3,
@@ -52,10 +59,26 @@ pub(super) struct Contact {
 }
 
 impl Contact {
-    pub fn new(source: TerrainContact, poses: &[BodyPose], warm: Option<&[f64; 5]>) -> Self {
+    pub fn new(
+        source: TerrainContact,
+        poses: &[BodyPose],
+        warm: Option<&[f64; 5]>,
+        geometry: &MachineCollisionGeometry,
+    ) -> Self {
         let local = |body: usize, world: DVec3| {
             poses[body].rotation.inverse() * (world - poses[body].position)
         };
+        let pose = poses[source.body];
+        let side = geometry
+            .rolling_shape(source.feature.collider)
+            .filter(|_| source.other_body.is_none())
+            .and_then(|cylinder| {
+                let anchor = cylinder
+                    .transformed(pose.position, pose.rotation)
+                    .ok()?
+                    .side_anchor(source.normal, source.body_point)?;
+                Some((*cylinder, anchor))
+            });
         let reference = if source.normal.y.abs() > 0.9 {
             DVec3::X
         } else {
@@ -72,6 +95,7 @@ impl Contact {
             other_queried_pose: source.other_body.map(|body| poses[body]),
             impulses: warm.copied().unwrap_or_default(),
             local: local(source.body, source.body_point),
+            side,
             other_local: source
                 .other_body
                 .map(|body| local(body, source.terrain_point)),
@@ -86,6 +110,16 @@ impl Contact {
             fresh: true,
             source,
         }
+    }
+
+    // Where a rolling contact acts at these poses.
+    fn side_point(&self, poses: &[BodyPose]) -> Option<DVec3> {
+        let (cylinder, side) = self.side?;
+        let pose = poses[self.source.body];
+        cylinder
+            .transformed(pose.position, pose.rotation)
+            .ok()?
+            .side_point(self.source.normal, side)
     }
 
     // Only a finite contact queried at these exact poses certifies initial
@@ -111,7 +145,9 @@ impl Contact {
             let pose = model.poses[body];
             pose.position + pose.rotation * local
         };
-        let anchor = world(self.source.body, self.local);
+        let anchor = self
+            .side_point(&model.poses)
+            .unwrap_or_else(|| world(self.source.body, self.local));
         let other = match (self.source.other_body, self.other_local) {
             (Some(body), Some(local)) => world(body, local),
             _ => self.other_anchor,
@@ -1114,7 +1150,7 @@ fn missed(
     let allowed = settings.continuous_depth.min(0.25 * radius);
     terrain
         .scene
-        .recovery_contacts(terrain.geometry, end, terrain.origin)
+        .recovery_groups(terrain.geometry, end, terrain.origin, None)
         .map_or(true, |buried| {
             buried.contacts.iter().any(|contact| {
                 contact.feature.touches(hit.collider, hit.target) && contact.depth > allowed

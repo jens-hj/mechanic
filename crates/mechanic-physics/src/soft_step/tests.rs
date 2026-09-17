@@ -3,7 +3,9 @@
 use super::*;
 use crate::{
     DriveCommand,
-    terrain_contacts::tests::{collision_shapes, cube, loose_cubes, pose, terrain},
+    terrain_contacts::tests::{
+        collision_shapes, collision_solids, cube, loose_cubes, pose, terrain,
+    },
 };
 use bevy_math::{IVec3, Vec3};
 use mechanic_core::{
@@ -56,6 +58,74 @@ fn ground(wall: Option<f32>) -> std::sync::Arc<mechanic_world::TerrainCollisionC
     expanded.triangle_bvh.nodes[0].triangle_count =
         expanded.triangle_bvh.triangles.len().try_into().unwrap();
     chunk
+}
+
+// Rock floor with a kerb along Z: its face at `face` metres faces −X, and its
+// top is `height` metres up.
+fn kerb(face: f32, height: f32) -> std::sync::Arc<mechanic_world::TerrainCollisionChunk> {
+    use mechanic_world::{
+        TerrainCollisionChunk, TerrainNodeId, TerrainTriangleGroupMask, TriangleBvh,
+        TriangleBvhNode, TriangleBvhTriangle, WorldBounds, WorldPosition,
+    };
+    // Rectangles as [corner, across, diagonal, along]; each splits into two
+    // triangles wound toward the kerb's open side.
+    let rectangles = [
+        [
+            [-64.0, 0.0, -64.0],
+            [-64.0, 0.0, 64.0],
+            [face, 0.0, 64.0],
+            [face, 0.0, -64.0],
+        ],
+        [
+            [face, 0.0, -64.0],
+            [face, 0.0, 64.0],
+            [face, height, 64.0],
+            [face, height, -64.0],
+        ],
+        [
+            [face, height, -64.0],
+            [face, height, 64.0],
+            [64.0, height, 64.0],
+            [64.0, height, -64.0],
+        ],
+    ];
+    let vertices = rectangles.concat();
+    let triangles = (0..3_u32)
+        .flat_map(|rectangle| {
+            let base = rectangle * 4;
+            [[base, base + 1, base + 2], [base, base + 2, base + 3]]
+        })
+        .map(|indices| TriangleBvhTriangle {
+            indices,
+            group_mask: TerrainTriangleGroupMask::REGULAR,
+        })
+        .collect::<Vec<_>>();
+    let bounds = WorldBounds {
+        minimum: WorldPosition(DVec3::new(-64.0, 0.0, -64.0)),
+        maximum: WorldPosition(DVec3::new(64.0, f64::from(height), 64.0)),
+    };
+    let mut weights = [0.0; TerrainMaterial::COUNT];
+    weights[usize::from(TerrainMaterial::Rock.code())] = 1.0;
+    std::sync::Arc::new(TerrainCollisionChunk {
+        node: TerrainNodeId::ROOT,
+        material_weights: vec![weights; vertices.len()],
+        indices: triangles.iter().flat_map(|t| t.indices).collect(),
+        vertices,
+        bounds,
+        generation: 1,
+        triangle_bvh: TriangleBvh {
+            bounds,
+            nodes: vec![TriangleBvhNode {
+                bounds,
+                triangle_count: 6,
+                group_mask: TerrainTriangleGroupMask::REGULAR,
+                ..Default::default()
+            }],
+            triangles,
+        },
+        active_groups: TerrainTriangleGroupMask::REGULAR,
+        ..Default::default()
+    })
 }
 
 // Corners of the box around every collider.
@@ -228,8 +298,16 @@ impl World {
     }
 
     fn on(creation: CompiledCreation, state: MachineState, wall: Option<f32>) -> Self {
+        Self::over(creation, state, ground(wall))
+    }
+
+    fn over(
+        creation: CompiledCreation,
+        state: MachineState,
+        terrain: std::sync::Arc<mechanic_world::TerrainCollisionChunk>,
+    ) -> Self {
         let mut scene = TerrainContactScene::default();
-        scene.publish(1, &[ground(wall)], &[]).unwrap();
+        scene.publish(1, &[terrain], &[]).unwrap();
         Self {
             scene,
             geometry: MachineCollisionGeometry::new(&creation, GENERATION).unwrap(),
@@ -281,15 +359,27 @@ impl World {
 }
 
 // Each body's lowest collider point, measured from the colliders themselves.
+// Lowest point of each body, taking a cylinder as the circle it rolls on.
 fn lowest_points(creation: &CompiledCreation, state: &MachineState) -> Vec<f64> {
     let mut lowest = vec![f64::INFINITY; state.poses.len()];
-    for (body, shape) in collision_shapes(creation) {
+    for (body, shape, round) in collision_solids(creation) {
         let pose = state.poses[body];
-        let bottom = shape
-            .transformed(pose.position, pose.rotation)
-            .unwrap()
-            .bounds()[0]
-            .y;
+        let bottom = match round {
+            Some(cylinder) => {
+                cylinder
+                    .transformed(pose.position, pose.rotation)
+                    .unwrap()
+                    .support(DVec3::NEG_Y)
+                    .y
+            }
+            None => {
+                shape
+                    .transformed(pose.position, pose.rotation)
+                    .unwrap()
+                    .bounds()[0]
+                    .y
+            }
+        };
         lowest[body] = lowest[body].min(bottom);
     }
     lowest
@@ -837,10 +927,11 @@ fn a_long_multi_collider_body_settles_on_a_redundant_manifold() {
     assert!(fastest(&world.machine.snapshot().state) < 1e-2);
 }
 
-#[test]
-fn a_rolling_wheel_does_not_gain_energy() {
+const WHEEL_RADIUS: f64 = 0.475;
+
+// A free 0.95 m steel wheel resting on the floor, rolling along +X on its Z axle.
+fn rolling_wheel(speed: f64) -> (CompiledCreation, MachineState) {
     use mechanic_core::{CylinderDimensions, CylinderSpec};
-    let radius = 0.475_f64;
     let mut graph = ConstructionGraph::new();
     graph
         .apply(BuildCommand::SpawnCylinder(CylinderSpec::new(
@@ -851,8 +942,71 @@ fn a_rolling_wheel_does_not_gain_energy() {
     let creation = graph.compile().unwrap();
     let mut state = MachineState::at_rest(&creation);
     state.poses[0].position.y -= clearance(&creation, &state);
-    state.velocities[0] = 1.0;
-    state.velocities[5] = -1.0 / radius;
+    state.velocities[0] = speed;
+    state.velocities[5] = -speed / WHEEL_RADIUS;
+    (creation, state)
+}
+
+#[test]
+fn a_rolling_wheel_keeps_its_axle_height() {
+    let (creation, state) = rolling_wheel(2.0);
+    let mut world = World::new(creation, state);
+    let [mut lowest, mut highest] = [f64::INFINITY, f64::NEG_INFINITY];
+    for tick in 1..=120 {
+        let height = world.tick(GRAVITY).poses[0].position.y;
+        // The first ticks settle onto the soft contact.
+        if tick > 10 {
+            lowest = lowest.min(height);
+            highest = highest.max(height);
+        }
+    }
+    // A sixteen-sided wheel rose and fell 9 mm with every facet.
+    assert!(highest - lowest < 0.001, "axle moved {}", highest - lowest);
+}
+
+#[test]
+fn a_rolling_wheel_keeps_its_speed() {
+    let (creation, state) = rolling_wheel(2.0);
+    let mut world = World::new(creation, state);
+    for _ in 0..60 {
+        world.tick(GRAVITY);
+    }
+    let state = &world.machine.snapshot().state;
+    // Rolling resistance alone takes about 0.1 m/s in a second.
+    assert!(state.velocities[0] > 1.8, "{:?}", &state.velocities[0..6]);
+    assert!(
+        state.poses[0].position.z.abs() < 0.001,
+        "{:?}",
+        state.poses[0]
+    );
+}
+
+#[test]
+fn a_wheel_rolled_into_a_low_kerb_never_passes_through_it() {
+    const FACE: f64 = 1.5;
+    const HEIGHT: f64 = 0.1;
+    let (creation, state) = rolling_wheel(3.0);
+    #[allow(clippy::cast_possible_truncation)] // Exact small constants.
+    let mut world = World::over(creation, state, kerb(FACE as f32, HEIGHT as f32));
+    for tick in 1..=120 {
+        let axle = world.tick(GRAVITY).poses[0].position;
+        // Overlap of the wheel's circle with the kerb's solid corner region.
+        let nearest = DVec3::new(axle.x.max(FACE), axle.y.min(HEIGHT), axle.z);
+        let overlap = if axle.x >= FACE && axle.y <= HEIGHT {
+            WHEEL_RADIUS + HEIGHT - axle.y
+        } else {
+            WHEEL_RADIUS - axle.distance(nearest)
+        };
+        assert!(
+            overlap < 0.01,
+            "tick {tick}: {overlap} m into the kerb at {axle}"
+        );
+    }
+}
+
+#[test]
+fn a_rolling_wheel_does_not_gain_energy() {
+    let (creation, state) = rolling_wheel(1.0);
     let properties = creation.compounds[0].mass_properties;
     let mass = f64::from(properties.mass);
     let inertia = properties.inertia.as_dmat3();
@@ -880,11 +1034,11 @@ fn a_rolling_wheel_does_not_gain_energy() {
 }
 
 // Deepest overlap of any collider with the floor or another body, from the
-// recovery query's buried vertices.
+// recovery query's buried points.
 fn deepest_overlap(world: &World, state: &MachineState) -> f64 {
     world
         .scene
-        .recovery_contacts(&world.geometry, &state.poses, DVec3::ZERO)
+        .recovery_groups(&world.geometry, &state.poses, DVec3::ZERO, None)
         .unwrap()
         .contacts
         .iter()

@@ -205,6 +205,21 @@ fn bodies_of_one_mechanism_collide_only_when_they_were_built_apart() {
 // cylinder's sixteen boxes, whose shared corners sit about 1e-8 m below the prism
 // the solver actually uses.
 pub(crate) fn collision_shapes(creation: &CompiledCreation) -> Vec<(usize, ContactPolytope)> {
+    collision_solids(creation)
+        .into_iter()
+        .map(|(body, shape, _)| (body, shape))
+        .collect()
+}
+
+// Every collision row's body and prism, with the exact cylinder a rolling
+// contact uses where the row is one.
+pub(crate) fn collision_solids(
+    creation: &CompiledCreation,
+) -> Vec<(
+    usize,
+    ContactPolytope,
+    Option<mechanic_core::ContactCylinder>,
+)> {
     let mut shapes = Vec::new();
     let mut row = 0;
     while row < creation.colliders.len() {
@@ -218,7 +233,11 @@ pub(crate) fn collision_shapes(creation: &CompiledCreation) -> Vec<(usize, Conta
             None => ContactPolytope::from_collider(source),
         }
         .expect("compiled collision geometry is valid");
-        shapes.push((source.compound_index as usize, shape));
+        let round = cylinder.map(|cylinder| {
+            mechanic_core::ContactCylinder::from_compiled(cylinder)
+                .expect("compiled cylinder is valid")
+        });
+        shapes.push((source.compound_index as usize, shape, round));
         row += cylinder.map_or(1, |_| mechanic_core::CYLINDER_COLLIDER_COUNT);
     }
     shapes

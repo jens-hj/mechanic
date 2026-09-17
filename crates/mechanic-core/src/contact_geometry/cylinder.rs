@@ -132,6 +132,16 @@ impl ContactCylinder {
         self.center + cap * self.axis + self.radius * radial
     }
 
+    /// Outward surface normal most opposed to a surface normal: the side facing
+    /// it, or the end cap when the cylinder stands on an end. Used only to keep
+    /// a crown point during curved-terrain manifold reduction.
+    pub fn opposing_normal(&self, surface_normal: DVec3) -> DVec3 {
+        match self.side_frame(surface_normal) {
+            Some([down, _]) => down,
+            None => -self.axis * self.axis.dot(surface_normal).signum(),
+        }
+    }
+
     /// Finite contact points against a triangle within `margin` of separation,
     /// using the triangle's winding normal. Side contacts follow the lowest
     /// generator line; an end cap supplies rim points. Where the lowest points
@@ -222,6 +232,14 @@ impl ContactCylinder {
             axial,
             radial: [radial.dot(down), radial.dot(across)],
         })
+    }
+
+    /// Distance of a point from the side's lowest line toward a surface with
+    /// `normal`, or none when the cylinder stands on an end.
+    pub fn lowest_line_distance(&self, normal: DVec3, point: DVec3) -> Option<f64> {
+        let [down, _] = self.side_frame(normal)?;
+        let offset = point - (self.center + self.radius * down);
+        Some((offset - self.axis.dot(offset) * self.axis).length())
     }
 
     /// Surface point of a side anchor for this pose, or none when the cylinder
