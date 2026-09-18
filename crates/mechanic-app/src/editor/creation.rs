@@ -285,13 +285,12 @@ pub(crate) fn graph_bounds(
     graph: &ConstructionGraph,
     sockets: &[PlacedBearing],
 ) -> Option<(Vec3, Vec3)> {
-    let mut minimum = Vec3::splat(f32::INFINITY);
-    let mut maximum = Vec3::splat(f32::NEG_INFINITY);
-    for (part, _) in graph.parts() {
-        let (part_minimum, part_maximum) = builder::composed_part_world_bounds(graph, part)?;
-        minimum = minimum.min(part_minimum);
-        maximum = maximum.max(part_maximum);
-    }
+    // Loose bearing rings count even before the first part exists.
+    let (mut minimum, mut maximum) = if graph.part_count() == 0 {
+        (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY))
+    } else {
+        builder::bounds::graph_part_bounds(graph)?
+    };
     for (kind, anchor, axis) in graph
         .bearings()
         .map(|(_, bearing)| (bearing.kind, bearing.shared_anchor, bearing.axis))

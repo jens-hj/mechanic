@@ -9,7 +9,6 @@ use super::streaming::ready_obsolete_nodes;
 use super::terrain_render::full_rgba8_mip_byte_count;
 use super::terrain_render::terrain_chunk_mesh;
 use super::terrain_render::terrain_mesh_is_renderable;
-use super::transfer::graph_bounds;
 use super::transfer::place_in_world;
 use super::transfer::remove_cached_foundations;
 use super::transfer::returned_component_parts;
@@ -18,6 +17,7 @@ use super::walking::compile_player_collision;
 use super::walking::player_collision_nodes;
 use super::walking::smooth_step_visual_offset;
 use super::walking::terrain_chunk_has_collision_near;
+use crate::builder::bounds::graph_part_bounds;
 use crate::testing::TempDir;
 use std::collections::BTreeSet;
 
@@ -81,7 +81,7 @@ fn saved_floor_creation_is_centered_in_editable_garage_and_detached_from_ground(
         .into_graph()
         .unwrap();
     let placed = super::place_loaded_creation_in_garage(loaded).unwrap();
-    let (low, high) = super::transfer::graph_bounds(&placed.graph).unwrap();
+    let (low, high) = graph_part_bounds(&placed.graph).unwrap();
     assert!((low.y - garage::BUILD_MIN_Y).abs() < 1.0e-5);
     assert!((low.x + high.x).abs() < 1.0e-5);
     assert!((low.z + high.z).abs() < 1.0e-5);
@@ -352,12 +352,12 @@ fn framed_creation_transfers_preserve_orientation_and_composed_size() {
     )
     .unwrap();
     graph.reframe_parts([part], frame).unwrap();
-    let (low, high) = graph_bounds(&graph).unwrap();
+    let (low, high) = graph_part_bounds(&graph).unwrap();
     let size = high - low;
     let original_rotation = graph.part_rotation(part).unwrap();
     let garage =
         super::transfer::place_in_garage(&graph, &[], &SpaceEditorState::default()).unwrap();
-    let (garage_low, garage_high) = graph_bounds(&garage.graph).unwrap();
+    let (garage_low, garage_high) = graph_part_bounds(&garage.graph).unwrap();
     assert!((garage_high - garage_low).distance(size) < 1.0e-4);
     assert!(garage_low.y >= crate::garage::BUILD_MIN_Y - 1.0e-4);
     let garage_part = garage.graph.parts().next().unwrap().0;
@@ -378,7 +378,7 @@ fn framed_creation_transfers_preserve_orientation_and_composed_size() {
         FloatingOrigin::default(),
     )
     .unwrap();
-    let (world_low, world_high) = graph_bounds(&world.graph).unwrap();
+    let (world_low, world_high) = graph_part_bounds(&world.graph).unwrap();
     assert!((world_high - world_low).distance(size) < 1.0e-4);
     assert!(world_low.y >= 0.125 - 1.0e-4);
     let world_part = world.graph.parts().next().unwrap().0;
@@ -528,7 +528,7 @@ fn garage_creation_enters_world_detached_and_clear_of_terrain() {
         !matches!(weld.first.owner, FaceOwner::Ground)
             && !matches!(weld.second.owner, FaceOwner::Ground)
     }));
-    let (minimum, maximum) = graph_bounds(&placed.graph).unwrap();
+    let (minimum, maximum) = graph_part_bounds(&placed.graph).unwrap();
     assert!(f64::from(minimum.y) - TERRAIN_HEIGHT >= 0.125 - 1.0e-6);
     let closest_x = 0.0_f32.clamp(minimum.x, maximum.x);
     let closest_z = 0.0_f32.clamp(minimum.z, maximum.z);
@@ -1465,7 +1465,7 @@ fn world_reload_preserves_construction_origin_after_player_moves() {
         ))
         .unwrap();
     let origin = FloatingOrigin(DVec3::new(123.0, 45.0, -678.0));
-    let bounds = graph_bounds(&graph).unwrap();
+    let bounds = graph_part_bounds(&graph).unwrap();
     {
         let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
         runtime.store = WorldStore::new(&temporary.0);
@@ -1481,7 +1481,7 @@ fn world_reload_preserves_construction_origin_after_player_moves() {
             .unwrap();
         let (world, _) = load_space_editors(&runtime.store, &saved).unwrap();
         assert_eq!(world.origin, origin);
-        assert_eq!(graph_bounds(&world.graph).unwrap(), bounds);
+        assert_eq!(graph_part_bounds(&world.graph).unwrap(), bounds);
         // Saving again from the Garage must preserve the inactive World's root.
         runtime.world_editor = Some(world);
         super::saving::save_garage_instance(
@@ -1498,7 +1498,7 @@ fn world_reload_preserves_construction_origin_after_player_moves() {
         assert_eq!(runtime.floating_origin, origin);
         let world = runtime.world_editor.take().unwrap();
         assert_eq!(world.origin, origin);
-        assert_eq!(graph_bounds(&world.graph).unwrap(), bounds);
+        assert_eq!(graph_part_bounds(&world.graph).unwrap(), bounds);
         let mut player = crate::camera::PlayerState::default();
         super::space::restore_world_player(&mut runtime, &mut player, world.origin);
         assert_eq!(runtime.floating_origin, origin);

@@ -77,65 +77,62 @@ pub(crate) fn hovered_part(hit: Option<SurfaceHit>) -> Option<PartId> {
     }
 }
 
+/// Which part of a bearing a cursor ray may land on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BearingPick {
+    /// The ring's material: a ray through the hole passes on.
+    Ring,
+    /// The whole disc, hole included. Drive wiring aims at a joint rather than
+    /// at its ring, and whatever is threaded through the hole must not block it.
+    Disc,
+}
+
+/// The nearest placed bearing along a ray, at its simulated pose while
+/// `simulation` is running and at its authored pose otherwise.
+///
+/// Rotary bearings answer to `pick`; linear bearings are always pickable, and
+/// suspension only for [`BearingPick::Ring`].
 pub(crate) fn raycast_placed_bearings(
     graph: &ConstructionGraph,
+    simulation: Option<&AppSimulation>,
     bearings: &[PlacedBearing],
     origin: Vec3,
     direction: Vec3,
+    pick: BearingPick,
 ) -> Option<(usize, f32)> {
-    let rotational = raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
-        Some((
-            bearing.anchor,
-            face_geometry_from_ref(bearing.source, Some(graph)).normal,
-        ))
-    });
-    rotational
-        .into_iter()
-        .chain(linear_editor::raycast_scene(
-            graph, None, bearings, origin, direction,
-        ))
-        .chain(suspension_render::raycast_scene(
-            graph, None, bearings, origin, direction,
-        ))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-}
-
-pub(crate) fn raycast_live_placed_bearings(
-    graph: &ConstructionGraph,
-    simulation: &AppSimulation,
-    bearings: &[PlacedBearing],
-    origin: Vec3,
-    direction: Vec3,
-) -> Option<(usize, f32)> {
-    if !simulation.is_running() {
-        return raycast_placed_bearings(graph, bearings, origin, direction);
-    }
-    let rotational = raycast_placed_bearings_with_pose(bearings, origin, direction, |bearing| {
-        live_placed_bearing_pose(graph, simulation, bearing)
-    });
-    rotational
-        .into_iter()
-        .chain(linear_editor::raycast_scene(
-            graph,
-            Some(simulation),
+    let simulation = simulation.filter(|simulation| simulation.is_running());
+    let rotational =
+        raycast_rotational_bearings(
             bearings,
             origin,
             direction,
+            pick,
+            |bearing| match simulation {
+                Some(simulation) => live_placed_bearing_pose(graph, simulation, bearing),
+                None => Some((
+                    bearing.anchor,
+                    face_geometry_from_ref(bearing.source, Some(graph)).normal,
+                )),
+            },
+        );
+    let suspension = (pick == BearingPick::Ring)
+        .then(|| suspension_render::raycast_scene(graph, simulation, bearings, origin, direction))
+        .flatten();
+    rotational
+        .into_iter()
+        .chain(linear_editor::raycast_scene(
+            graph, simulation, bearings, origin, direction,
         ))
-        .chain(suspension_render::raycast_scene(
-            graph,
-            Some(simulation),
-            bearings,
-            origin,
-            direction,
-        ))
+        .chain(suspension)
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-pub(crate) fn raycast_placed_bearings_with_pose(
+/// The nearest rotary bearing along a ray, each posed by `pose` as `(anchor, axis)`.
+pub(crate) fn raycast_rotational_bearings(
     bearings: &[PlacedBearing],
     origin: Vec3,
     direction: Vec3,
+    pick: BearingPick,
     mut pose: impl FnMut(PlacedBearing) -> Option<(Vec3, Vec3)>,
 ) -> Option<(usize, f32)> {
     if !origin.is_finite() || !direction.is_finite() || direction.length_squared() < f32::EPSILON {
@@ -150,94 +147,38 @@ pub(crate) fn raycast_placed_bearings_with_pose(
                 return None;
             }
             let (anchor, axis) = pose(bearing)?;
-            let distance =
-                raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)?;
+            let distance = match pick {
+                BearingPick::Ring => {
+                    raycast_bearing_annulus(origin, direction, anchor, axis, bearing.dimensions)
+                }
+                BearingPick::Disc => {
+                    raycast_bearing_disc(origin, direction, anchor, axis, bearing.dimensions)
+                }
+            }?;
             Some((index, distance))
         })
         .min_by(|left, right| left.1.total_cmp(&right.1))
 }
 
-/// Bearing pick used for drive wiring. Unlike [`raycast_placed_bearings`] this
-/// accepts the whole disc, including the hole and whatever is threaded through
-/// it, because a wire is aimed at a joint rather than at its ring.
-pub(crate) fn raycast_placed_bearing_discs(
-    graph: &ConstructionGraph,
-    bearings: &[PlacedBearing],
+/// Distance along a normalized ray to the bearing's whole disc, hole included.
+fn raycast_bearing_disc(
     origin: Vec3,
     direction: Vec3,
-) -> Option<(usize, f32)> {
-    let rotational =
-        raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
-            Some((
-                bearing.anchor,
-                face_geometry_from_ref(bearing.source, Some(graph)).normal,
-            ))
-        });
-    rotational
-        .into_iter()
-        .chain(linear_editor::raycast_scene(
-            graph, None, bearings, origin, direction,
-        ))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-}
-
-pub(crate) fn raycast_live_placed_bearing_discs(
-    graph: &ConstructionGraph,
-    simulation: &AppSimulation,
-    bearings: &[PlacedBearing],
-    origin: Vec3,
-    direction: Vec3,
-) -> Option<(usize, f32)> {
-    if !simulation.is_running() {
-        return raycast_placed_bearing_discs(graph, bearings, origin, direction);
-    }
-    let rotational =
-        raycast_placed_bearing_discs_with_pose(bearings, origin, direction, |bearing| {
-            live_placed_bearing_pose(graph, simulation, bearing)
-        });
-    rotational
-        .into_iter()
-        .chain(linear_editor::raycast_scene(
-            graph,
-            Some(simulation),
-            bearings,
-            origin,
-            direction,
-        ))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-}
-
-pub(crate) fn raycast_placed_bearing_discs_with_pose(
-    bearings: &[PlacedBearing],
-    origin: Vec3,
-    direction: Vec3,
-    mut pose: impl FnMut(PlacedBearing) -> Option<(Vec3, Vec3)>,
-) -> Option<(usize, f32)> {
-    if !origin.is_finite() || !direction.is_finite() || direction.length_squared() < f32::EPSILON {
+    anchor: Vec3,
+    axis: Vec3,
+    dimensions: BearingDimensions,
+) -> Option<f32> {
+    let axis = axis.normalize();
+    let slope = direction.dot(axis);
+    if slope.abs() < 1.0e-6 {
         return None;
     }
-    let direction = direction.normalize();
-    bearings
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &bearing)| {
-            if bearing.kind.is_translational() {
-                return None;
-            }
-            let (anchor, axis) = pose(bearing)?;
-            let axis = axis.normalize();
-            let slope = direction.dot(axis);
-            if slope.abs() < 1.0e-6 {
-                return None;
-            }
-            let distance = (anchor - origin).dot(axis) / slope;
-            if distance <= 0.0 {
-                return None;
-            }
-            let radius = (origin + direction * distance - anchor).length();
-            (radius <= bearing.dimensions.outer_diameter() * 0.5).then_some((index, distance))
-        })
-        .min_by(|left, right| left.1.total_cmp(&right.1))
+    let distance = (anchor - origin).dot(axis) / slope;
+    if distance <= 0.0 {
+        return None;
+    }
+    let radius = (origin + direction * distance - anchor).length();
+    (radius <= dimensions.outer_diameter() * 0.5).then_some(distance)
 }
 
 pub(crate) fn raycast_bearing_annulus(

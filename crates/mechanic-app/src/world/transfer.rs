@@ -6,6 +6,7 @@ use super::{
     AppSpace, IVec2, IVec3, Result, SpaceEditorState, String, ToOwned, ToString, Vec, Vec2, Vec3,
     WorldRuntime, format,
 };
+use crate::builder::bounds::graph_part_bounds;
 use crate::builder::{
     GROUND_HALF_SIZE, PlacementSnapIndex, composed_part_world_bounds, part_world_bounds,
 };
@@ -24,17 +25,6 @@ use mechanic_world::{
     TerrainRayHit, TerrainScene, WorldInstanceIndexDoc, WorldPosition, raycast_density,
 };
 use std::collections::{BTreeMap, BTreeSet};
-
-pub(super) fn graph_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
-    let mut minimum = Vec3::splat(f32::INFINITY);
-    let mut maximum = Vec3::splat(f32::NEG_INFINITY);
-    for (part, _) in graph.parts() {
-        let (low, high) = composed_part_world_bounds(graph, part)?;
-        minimum = minimum.min(low);
-        maximum = maximum.max(high);
-    }
-    minimum.is_finite().then_some((minimum, maximum))
-}
 
 pub(super) fn collision_free(
     candidate: &ConstructionGraph,
@@ -353,7 +343,7 @@ pub(super) fn place_in_garage(
             .clone()
             .into_graph()
             .map_err(|error| error.to_string())?;
-        let Some((minimum, maximum)) = graph_bounds(&rotated_loaded.graph) else {
+        let Some((minimum, maximum)) = graph_part_bounds(&rotated_loaded.graph) else {
             continue;
         };
         let size = maximum - minimum;
@@ -378,7 +368,7 @@ pub(super) fn place_in_garage(
                 .clone()
                 .into_graph()
                 .map_err(|error| error.to_string())?;
-            let Some((low, high)) = graph_bounds(&loaded.graph) else {
+            let Some((low, high)) = graph_part_bounds(&loaded.graph) else {
                 continue;
             };
             if low.x < -GROUND_HALF_SIZE - 1.0e-4
@@ -416,7 +406,7 @@ pub(super) fn place_in_world(
         .into_graph()
         .map_err(|error| error.to_string())?;
     let (minimum, maximum) =
-        graph_bounds(&loaded.graph).ok_or_else(|| "linked assembly is empty".to_owned())?;
+        graph_part_bounds(&loaded.graph).ok_or_else(|| "linked assembly is empty".to_owned())?;
     let mut destination_index = PlacementSnapIndex::default();
     destination_index.rebuild(&destination.graph);
     let center = (minimum + maximum) * 0.5;

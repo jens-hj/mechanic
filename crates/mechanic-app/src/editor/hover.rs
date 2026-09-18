@@ -1,5 +1,6 @@
 //! What the cursor is over, and the block, bearing-offset, and delete drags that follow it.
 
+use crate::editor::raycast::{raycast_placed_bearings, raycast_rotational_bearings};
 use crate::*;
 
 /// Roughly the old five-pixel threshold at a typical desktop field of view.
@@ -399,20 +400,23 @@ pub(crate) fn update_hover(
         );
         return;
     }
-    let geometric_bearing_hit =
-        raycast_placed_bearings_with_pose(&state.placed_bearings, ray.origin, ray_direction, |s| {
-            Some((s.anchor, s.axis))
-        })
-        .into_iter()
-        .chain(linear_editor::raycast_scene(
-            &graph.0,
-            None,
-            &state.placed_bearings,
-            ray.origin,
-            ray_direction,
-        ))
-        .chain(suspension_pick.map(|(index, distance, _)| (index, distance)))
-        .min_by(|a, b| a.1.total_cmp(&b.1));
+    let geometric_bearing_hit = raycast_rotational_bearings(
+        &state.placed_bearings,
+        ray.origin,
+        ray_direction,
+        crate::editor::raycast::BearingPick::Ring,
+        |s| Some((s.anchor, s.axis)),
+    )
+    .into_iter()
+    .chain(linear_editor::raycast_scene(
+        &graph.0,
+        None,
+        &state.placed_bearings,
+        ray.origin,
+        ray_direction,
+    ))
+    .chain(suspension_pick.map(|(index, distance, _)| (index, distance)))
+    .min_by(|a, b| a.1.total_cmp(&b.1));
     let Some(tool) = selection.active_editor_tool() else {
         let construction_hit = raycast_surface(None);
         let bearing_hit = geometric_bearing_hit;
@@ -474,28 +478,30 @@ pub(crate) fn update_hover(
             .collect::<Vec<_>>()
     });
     let bearing_hit = if wiring {
-        raycast_live_placed_bearing_discs(
+        raycast_placed_bearings(
             canonical_wiring_graph
                 .as_ref()
                 .expect("wiring graph exists"),
-            &simulation,
+            Some(&simulation),
             canonical_wiring_bearings
                 .as_ref()
                 .expect("wiring sockets exist"),
             world_ray.origin,
             world_ray.direction.as_vec3(),
+            crate::editor::raycast::BearingPick::Disc,
         )
         .or_else(|| {
-            raycast_live_placed_bearings(
+            raycast_placed_bearings(
                 canonical_wiring_graph
                     .as_ref()
                     .expect("wiring graph exists"),
-                &simulation,
+                Some(&simulation),
                 canonical_wiring_bearings
                     .as_ref()
                     .expect("wiring sockets exist"),
                 world_ray.origin,
                 world_ray.direction.as_vec3(),
+                crate::editor::raycast::BearingPick::Ring,
             )
         })
     } else if matches!(

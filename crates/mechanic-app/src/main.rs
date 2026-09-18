@@ -110,10 +110,7 @@ use editor::{
         append_overlay_bar, append_plane_arrows, append_region_outline, region_world_bounds,
         write_overlay,
     },
-    raycast::{
-        hovered_part, raycast_live_placed_bearing_discs, raycast_live_placed_bearings,
-        raycast_placed_bearings_with_pose, raycast_simulation,
-    },
+    raycast::{hovered_part, raycast_simulation},
 };
 use hotbar::{SelectedMaterial, SelectedTerrainMaterial, SelectedTool, Tool};
 use mechanic_core::{

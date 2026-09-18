@@ -44,8 +44,7 @@ use crate::editor::pipe::{
 };
 use crate::editor::preview::{bearing_attachment_is_highlighted, tool_status_line};
 use crate::editor::raycast::{
-    SimulationHit, raycast_placed_bearing_discs, raycast_placed_bearing_discs_with_pose,
-    raycast_placed_bearings, raycast_simulation,
+    SimulationHit, raycast_placed_bearings, raycast_rotational_bearings, raycast_simulation,
 };
 use crate::editor::shape_actions::{RegionDrag, commit_region_drag, region_area};
 use crate::editor::shape_actions::{
@@ -1761,15 +1760,43 @@ fn wiring_picks_a_bearing_through_the_hole_the_ring_pick_misses() {
     // Straight down the axis passes through the hole, and whatever is
     // threaded through it, so the ring pick finds nothing there.
     let axis = Vec3::new(0.0, 3.0, 0.0);
-    assert!(raycast_placed_bearings(&graph, &[bearing], axis, Vec3::NEG_Y).is_none());
+    assert!(
+        raycast_placed_bearings(
+            &graph,
+            None,
+            &[bearing],
+            axis,
+            Vec3::NEG_Y,
+            crate::editor::raycast::BearingPick::Ring
+        )
+        .is_none()
+    );
     assert_eq!(
-        raycast_placed_bearing_discs(&graph, &[bearing], axis, Vec3::NEG_Y).map(|hit| hit.0),
+        raycast_placed_bearings(
+            &graph,
+            None,
+            &[bearing],
+            axis,
+            Vec3::NEG_Y,
+            crate::editor::raycast::BearingPick::Disc
+        )
+        .map(|hit| hit.0),
         Some(0)
     );
 
     // Past the rim it still misses, so the disc does not swallow the block.
     let outside = Vec3::new(bearing.dimensions.outer_diameter(), 3.0, 0.0);
-    assert!(raycast_placed_bearing_discs(&graph, &[bearing], outside, Vec3::NEG_Y).is_none());
+    assert!(
+        raycast_placed_bearings(
+            &graph,
+            None,
+            &[bearing],
+            outside,
+            Vec3::NEG_Y,
+            crate::editor::raycast::BearingPick::Disc
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -1812,13 +1839,25 @@ fn connector_pick_follows_a_simulated_bearing() {
     let ray_origin = bearing.anchor + translation + Vec3::Y * 3.0;
 
     assert!(
-        raycast_placed_bearing_discs(&graph, &[bearing], ray_origin, Vec3::NEG_Y).is_none(),
+        raycast_placed_bearings(
+            &graph,
+            None,
+            &[bearing],
+            ray_origin,
+            Vec3::NEG_Y,
+            crate::editor::raycast::BearingPick::Disc
+        )
+        .is_none(),
         "the authored bearing no longer sits under the pointer"
     );
     assert_eq!(
-        raycast_placed_bearing_discs_with_pose(&[bearing], ray_origin, Vec3::NEG_Y, |bearing| {
-            simulation_placed_bearing_pose(&graph, &creation, &transforms, bearing)
-        },)
+        raycast_rotational_bearings(
+            &[bearing],
+            ray_origin,
+            Vec3::NEG_Y,
+            crate::editor::raycast::BearingPick::Disc,
+            |bearing| { simulation_placed_bearing_pose(&graph, &creation, &transforms, bearing) }
+        )
         .map(|hit| hit.0),
         Some(0),
         "the connector should pick the bearing at its simulated pose"
@@ -1858,8 +1897,15 @@ fn placed_bearing_is_picked_before_support_and_attaches_on_release() {
     };
 
     let origin = Vec3::new(0.1, 3.0, 0.0);
-    let (_, bearing_distance) =
-        raycast_placed_bearings(&graph, &state.placed_bearings, origin, Vec3::NEG_Y).unwrap();
+    let (_, bearing_distance) = raycast_placed_bearings(
+        &graph,
+        None,
+        &state.placed_bearings,
+        origin,
+        Vec3::NEG_Y,
+        crate::editor::raycast::BearingPick::Ring,
+    )
+    .unwrap();
     let support_distance = raycast_construction(&graph, origin, Vec3::NEG_Y)
         .unwrap()
         .distance;
@@ -1867,9 +1913,11 @@ fn placed_bearing_is_picked_before_support_and_attaches_on_release() {
     assert!(
         raycast_placed_bearings(
             &graph,
+            None,
             &state.placed_bearings,
             Vec3::new(0.0, 3.0, 0.0),
             Vec3::NEG_Y,
+            crate::editor::raycast::BearingPick::Ring
         )
         .is_none()
     );
@@ -1878,8 +1926,15 @@ fn placed_bearing_is_picked_before_support_and_attaches_on_release() {
         ..bearing
     };
     assert!(
-        raycast_placed_bearings(&graph, &[tiny_hole], Vec3::new(0.0, 3.0, 0.0), Vec3::NEG_Y,)
-            .is_none()
+        raycast_placed_bearings(
+            &graph,
+            None,
+            &[tiny_hole],
+            Vec3::new(0.0, 3.0, 0.0),
+            Vec3::NEG_Y,
+            crate::editor::raycast::BearingPick::Ring
+        )
+        .is_none()
     );
     assert_eq!(graph.part_count(), 1);
     assert_eq!(graph.bearing_count(), 0);

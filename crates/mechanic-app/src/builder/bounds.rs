@@ -608,3 +608,16 @@ pub(super) fn bounds_overlap_interior(
         && (first_minimum.z < second_maximum.z - CONTACT_EPSILON
             && first_maximum.z > second_minimum.z + CONTACT_EPSILON)
 }
+
+/// World bounds of every part in the graph, or `None` when it has no parts.
+/// Bearing and suspension geometry is not included.
+pub(crate) fn graph_part_bounds(graph: &ConstructionGraph) -> Option<(Vec3, Vec3)> {
+    let mut minimum = Vec3::splat(f32::INFINITY);
+    let mut maximum = Vec3::splat(f32::NEG_INFINITY);
+    for (part, _) in graph.parts() {
+        let (low, high) = composed_part_world_bounds(graph, part)?;
+        minimum = minimum.min(low);
+        maximum = maximum.max(high);
+    }
+    minimum.is_finite().then_some((minimum, maximum))
+}

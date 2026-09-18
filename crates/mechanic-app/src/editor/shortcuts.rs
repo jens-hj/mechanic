@@ -284,8 +284,15 @@ pub(crate) fn pipette_at_ray(
         };
     }
     let part = raycast_construction(graph, origin, direction);
-    let bearing = raycast_placed_bearings(graph, &state.placed_bearings, origin, direction)
-        .and_then(|(index, distance)| Some((*state.placed_bearings.get(index)?, distance)));
+    let bearing = raycast_placed_bearings(
+        graph,
+        None,
+        &state.placed_bearings,
+        origin,
+        direction,
+        crate::editor::raycast::BearingPick::Ring,
+    )
+    .and_then(|(index, distance)| Some((*state.placed_bearings.get(index)?, distance)));
     if let Some((index, distance, owner)) = suspension_render::raycast_scene_component(
         graph,
         None,
