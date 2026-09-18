@@ -2,6 +2,8 @@ mod path_bounds;
 
 use super::*;
 use bevy_math::DQuat;
+use mechanic_core::CompiledCreation;
+use mechanic_core::ContactPolytope;
 use mechanic_core::{BuildCommand, BuildPose, ConstructionGraph, CuboidSpec};
 use mechanic_world::{
     TerrainMaterial, TerrainTriangleGroupMask, TriangleBvh, TriangleBvhNode, TriangleBvhTriangle,
