@@ -137,7 +137,7 @@ fn framed_seat_pose_matches_authored_and_stopped_published_geometry() {
             .distance(position + Vec3::X * 2.0)
             < 1.0e-5
     );
-    let streaming_focus = crate::world::terrain_streaming_focus(
+    let streaming_focus = crate::world::streaming::terrain_streaming_focus(
         &crate::camera::PlayerState {
             position: Vec3::new(-100.0, 0.0, -100.0),
             seat: Some(seat),
@@ -159,7 +159,7 @@ fn framed_seat_pose_matches_authored_and_stopped_published_geometry() {
         ..Default::default()
     };
     assert_eq!(
-        crate::world::terrain_streaming_focus(
+        crate::world::streaming::terrain_streaming_focus(
             &standing,
             &graph,
             &simulation,

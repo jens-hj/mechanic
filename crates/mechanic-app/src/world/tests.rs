@@ -1,6 +1,23 @@
 mod render;
 mod terrain_shader;
 
+use super::brush::terrain_edit_commands;
+use super::foundations::foundation_edit_is_ready;
+use super::list::install_world;
+use super::streaming::nodes_touch_on_face;
+use super::streaming::ready_obsolete_nodes;
+use super::terrain_render::full_rgba8_mip_byte_count;
+use super::terrain_render::terrain_chunk_mesh;
+use super::terrain_render::terrain_mesh_is_renderable;
+use super::transfer::graph_bounds;
+use super::transfer::place_in_world;
+use super::transfer::remove_cached_foundations;
+use super::transfer::returned_component_parts;
+use super::walking::advance_controller;
+use super::walking::compile_player_collision;
+use super::walking::player_collision_nodes;
+use super::walking::smooth_step_visual_offset;
+use super::walking::terrain_chunk_has_collision_near;
 use std::{
     collections::BTreeSet,
     sync::atomic::{AtomicUsize, Ordering},
@@ -30,13 +47,8 @@ use mechanic_world::{
 use super::{
     AppSpace, SpaceEditorState, TerrainAcknowledgements, TerrainEditOperation, TerrainStrokeSample,
     WorldDiagnostics, WorldListPhase, WorldListState, WorldPrototypePlugin, WorldRuntime,
-    advance_controller, compile_player_collision, exposure_for_space, foundation_edit_is_ready,
-    full_rgba8_mip_byte_count, generate_rgba8_mip_chain, graph_bounds, handle_world_list,
-    install_world, load_space_editors, nodes_touch_on_face, place_in_world, player_collision_nodes,
-    ready_obsolete_nodes, remove_cached_foundations, returned_component_parts,
-    smooth_step_visual_offset, static_parts_for_physics, sync_world_foundations,
-    terrain_chunk_has_collision_near, terrain_chunk_mesh, terrain_edit_commands,
-    terrain_mesh_is_renderable,
+    exposure_for_space, generate_rgba8_mip_chain, handle_world_list, load_space_editors,
+    static_parts_for_physics, sync_world_foundations,
 };
 use super::{PendingFoundationSync, TerrainFoundation};
 use crate::editor::history::EditorHistory;
@@ -71,7 +83,7 @@ fn saved_floor_creation_is_centered_in_editable_garage_and_detached_from_ground(
         .into_graph()
         .unwrap();
     let placed = super::place_loaded_creation_in_garage(loaded).unwrap();
-    let (low, high) = super::graph_bounds(&placed.graph).unwrap();
+    let (low, high) = super::transfer::graph_bounds(&placed.graph).unwrap();
     assert!((low.y - garage::BUILD_MIN_Y).abs() < 1.0e-5);
     assert!((low.x + high.x).abs() < 1.0e-5);
     assert!((low.z + high.z).abs() < 1.0e-5);
@@ -234,10 +246,18 @@ fn transfer_collision_tests_composed_boxes_instead_of_local_overlap() {
     candidate.reframe_parts([part], far).unwrap();
     let mut index = crate::builder::PlacementSnapIndex::default();
     index.rebuild(&destination);
-    assert!(super::collision_free(&candidate, &destination, &index));
+    assert!(super::transfer::collision_free(
+        &candidate,
+        &destination,
+        &index
+    ));
     destination.reframe_parts([other], far).unwrap();
     index.rebuild(&destination);
-    assert!(!super::collision_free(&candidate, &destination, &index));
+    assert!(!super::transfer::collision_free(
+        &candidate,
+        &destination,
+        &index
+    ));
 }
 
 #[test]
@@ -270,7 +290,9 @@ fn returned_framed_creation_accepts_blocks_in_its_local_grid() {
             .unwrap();
         // Repeat the user's Garage -> World -> Garage recovery path.
         for _ in 0..2 {
-            let garage = super::place_in_garage(&graph, &[], &SpaceEditorState::default()).unwrap();
+            let garage =
+                super::transfer::place_in_garage(&graph, &[], &SpaceEditorState::default())
+                    .unwrap();
             let part = garage.graph.parts().next().unwrap().0;
             let context = crate::live_edit::EditContext::resolve(
                 &garage.graph,
@@ -357,7 +379,8 @@ fn framed_creation_transfers_preserve_orientation_and_composed_size() {
     let (low, high) = graph_bounds(&graph).unwrap();
     let size = high - low;
     let original_rotation = graph.part_rotation(part).unwrap();
-    let garage = super::place_in_garage(&graph, &[], &SpaceEditorState::default()).unwrap();
+    let garage =
+        super::transfer::place_in_garage(&graph, &[], &SpaceEditorState::default()).unwrap();
     let (garage_low, garage_high) = graph_bounds(&garage.graph).unwrap();
     assert!((garage_high - garage_low).distance(size) < 1.0e-4);
     assert!(garage_low.y >= crate::garage::BUILD_MIN_Y - 1.0e-4);
@@ -407,9 +430,9 @@ fn framed_foundation_sampling_uses_global_composed_bottom_bounds() {
         bevy::prelude::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
     )
     .unwrap();
-    let bounds = super::framed_part_bounds(spec, frame);
+    let bounds = super::transfer::framed_part_bounds(spec, frame);
     let origin = FloatingOrigin(DVec3::new(100.0, 10.0, 200.0));
-    let support = super::bounds_foundation_support(&FlatTerrain(10.0), bounds, origin);
+    let support = super::transfer::bounds_foundation_support(&FlatTerrain(10.0), bounds, origin);
     assert!(support.has_valid_anchor());
     assert!(support.samples.iter().all(|sample| {
         sample.position.0.x > 104.0
@@ -418,7 +441,7 @@ fn framed_foundation_sampling_uses_global_composed_bottom_bounds() {
             && sample.position.0.z < 198.0
     }));
     assert!(
-        super::bounds_foundation_support(
+        super::transfer::bounds_foundation_support(
             &FlatTerrain(10.0),
             crate::builder::part_world_bounds(spec),
             origin
@@ -1172,7 +1195,7 @@ fn ground_weld_sampling_does_not_depend_on_streamed_meshes() {
     {
         let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
         let spawn = runtime.field.safe_spawn();
-        let scene = super::TerrainScene {
+        let scene = mechanic_world::TerrainScene {
             field: &runtime.field,
             edits: &runtime.edits,
         };
@@ -1474,7 +1497,7 @@ fn world_reload_preserves_construction_origin_after_player_moves() {
         runtime.floating_origin = origin;
         runtime.capsule.position = WorldPosition(DVec3::new(-89.0, 123.0, 456.0));
         runtime.document.return_anchor = Some(runtime.capsule.position);
-        super::save_all(&mut runtime).unwrap();
+        super::saving::save_all(&mut runtime).unwrap();
         super::save_world_instance(&mut runtime, &graph, &EditorState::default()).unwrap();
         let saved = runtime
             .store
@@ -1485,7 +1508,7 @@ fn world_reload_preserves_construction_origin_after_player_moves() {
         assert_eq!(graph_bounds(&world.graph).unwrap(), bounds);
         // Saving again from the Garage must preserve the inactive World's root.
         runtime.world_editor = Some(world);
-        super::save_garage_instance(
+        super::saving::save_garage_instance(
             &mut runtime,
             &ConstructionGraph::new(),
             &EditorState::default(),
@@ -1501,7 +1524,7 @@ fn world_reload_preserves_construction_origin_after_player_moves() {
         assert_eq!(world.origin, origin);
         assert_eq!(graph_bounds(&world.graph).unwrap(), bounds);
         let mut player = crate::camera::PlayerState::default();
-        super::restore_world_player(&mut runtime, &mut player, world.origin);
+        super::space::restore_world_player(&mut runtime, &mut player, world.origin);
         assert_eq!(runtime.floating_origin, origin);
         assert_eq!(
             runtime.local_to_global(player.position),
@@ -1762,7 +1785,9 @@ fn large_construction_foundations_publish_over_bounded_frames() {
         .pending_foundation_sync
         .as_ref()
         .expect("the first frame leaves bounded foundation work pending");
-    assert!((1..=super::FOUNDATION_SYNC_MAX_PARTS_PER_FRAME).contains(&pending.next_part));
+    assert!(
+        (1..=super::foundations::FOUNDATION_SYNC_MAX_PARTS_PER_FRAME).contains(&pending.next_part)
+    );
     assert!(!runtime.foundations_match_editor_revision(1));
 
     for _ in 0..4_096 {
@@ -2201,7 +2226,8 @@ fn soil_commits_on_sixth_tick_and_survives_world_reload() {
     assert!(!runtime.pending_terrain_edits.is_empty());
     let commands = runtime.pending_terrain_edits.drain(..).collect();
     let result =
-        super::execute_terrain_edit_batch(runtime.edits.clone(), &runtime.field, commands).unwrap();
+        super::brush::execute_terrain_edit_batch(runtime.edits.clone(), &runtime.field, commands)
+            .unwrap();
     assert!(super::commit_terrain_edit_result(&mut runtime, result).0);
     assert!(!runtime.pending_foundation_edit.is_empty());
     let store = WorldStore::new(&temporary.0);
@@ -2265,11 +2291,11 @@ fn saving_an_unpublished_transfer_keeps_the_previous_material_owner() {
             elapsed_ms: 0.0,
         },
     );
-    super::save_all(&mut runtime).unwrap();
+    super::saving::save_all(&mut runtime).unwrap();
     let (saved, clumps) = runtime.store.load_material_state("Material").unwrap();
     assert!(saved.sample_cell(&field, cell).is_solid());
     assert!(clumps.bodies.is_empty());
-    super::finish_terrain_edits(&mut runtime).unwrap();
+    super::brush::finish_terrain_edits(&mut runtime).unwrap();
     assert!(runtime.edits.sample_cell(&field, cell).is_solid());
     assert!(!runtime.material_publication_pending());
 }
@@ -2298,7 +2324,7 @@ fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit
         .init_resource::<WorldDiagnostics>()
         .init_resource::<EditorState>()
         .init_resource::<EditorGraph>()
-        .init_resource::<super::AppSimulation>()
+        .init_resource::<crate::simulation::state::AppSimulation>()
         .init_resource::<bevy::prelude::Assets<bevy::prelude::Mesh>>()
         .add_systems(
             Update,
@@ -2335,7 +2361,7 @@ fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit
         runtime.clumps.next_id = 2;
         (spawn - runtime.floating_origin.0).as_vec3()
     };
-    app.insert_resource(super::PlayerState {
+    app.insert_resource(crate::camera::PlayerState {
         position: player,
         ..Default::default()
     });
@@ -2353,7 +2379,12 @@ fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit
         );
         playing
     });
-    assert!(app.world().resource::<super::AppSimulation>().cpu.is_none());
+    assert!(
+        app.world()
+            .resource::<crate::simulation::state::AppSimulation>()
+            .cpu
+            .is_none()
+    );
 
     update_until(&mut app, "the clump never deposited", |app| {
         let runtime = app.world().resource::<WorldRuntime>();

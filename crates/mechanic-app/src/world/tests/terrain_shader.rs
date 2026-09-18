@@ -18,7 +18,8 @@ use bevy::{
 };
 
 use crate::render_diagnostics::{ProfiledCamera, RenderTimings, RenderTimingsPlugin};
-use crate::world::{TerrainRenderMaterial, generate_rgba8_mip_chain, terrain_render_material};
+use crate::world::terrain_render::terrain_render_material;
+use crate::world::{TerrainRenderMaterial, generate_rgba8_mip_chain};
 
 const WIDTH: u32 = 4096;
 const HEIGHT: u32 = 2524;
