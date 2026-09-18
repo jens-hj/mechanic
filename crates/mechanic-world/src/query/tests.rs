@@ -12,8 +12,7 @@ use mechanic_core::{
 
 use super::{
     ActiveTerrainScene, FoundationSample, FoundationSpatialIndex, FoundationSupport,
-    KinematicCapsule, KinematicInput, TerrainDensity, TerrainSpatialIndex,
-    WorldConstructionEditability, raycast_density,
+    KinematicCapsule, KinematicInput, TerrainDensity, TerrainSpatialIndex, raycast_density,
 };
 use crate::{
     BrickCoord, KinematicCollisionScene, TerrainMaterial, TerrainMeshRequest, TerrainNodeId,
@@ -837,17 +836,4 @@ fn active_octree_and_chunk_bvhs_match_direct_chunk_raycast() {
 
     index.remove(TerrainNodeId::leaf(nodes[0]));
     assert!(!index.contains(TerrainNodeId::leaf(nodes[0])));
-}
-
-#[test]
-fn moving_creation_edit_has_clear_feedback() {
-    assert!(
-        WorldConstructionEditability::GroundedStatic
-            .feedback()
-            .is_none()
-    );
-    assert_eq!(
-        WorldConstructionEditability::MovingBlocked.feedback(),
-        Some("Moving creations cannot be edited in this prototype")
-    );
 }

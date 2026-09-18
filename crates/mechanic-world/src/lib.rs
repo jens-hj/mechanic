@@ -53,13 +53,13 @@ pub use query::{
     ActiveTerrainScene, FoundationRefresh, FoundationSample, FoundationSpatialIndex,
     FoundationSupport, KinematicCapsule, KinematicCapsuleConfig, KinematicContactReaction,
     KinematicInput, KinematicSupport, KinematicTickOutcome, TerrainDensity, TerrainScene,
-    TerrainSpatialIndex, WorldConstructionEditability, raycast_density,
+    TerrainSpatialIndex, raycast_density,
 };
 pub use soil::{SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
 pub use streaming::{
     ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainPublicationDelta,
-    TerrainPublicationUpsert, TerrainReadiness, TerrainSelection, TerrainSelectionDelta,
-    TerrainSelectionStats, TerrainStreamer, TerrainTransitionMask, publication_face_mask,
-    select_active_nodes, select_active_nodes_cached, select_active_nodes_with_interests,
-    terrain_loading_worker_count, terrain_worker_count,
+    TerrainPublicationUpsert, TerrainReadiness, TerrainSelection, TerrainSelectionStats,
+    TerrainStreamer, TerrainTransitionMask, publication_face_mask, select_active_nodes,
+    select_active_nodes_cached, select_active_nodes_with_interests, terrain_loading_worker_count,
+    terrain_worker_count,
 };

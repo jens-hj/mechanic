@@ -3,10 +3,7 @@
 mod abi;
 mod device;
 mod limits;
-mod render;
-mod runtime;
 mod shaders;
-mod terrain;
 
 pub use abi::{
     COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, CONSTRAINT_NON_CONVERGENCE_FLAG,
@@ -27,16 +24,4 @@ pub use device::{
 pub use limits::{
     BROADPHASE_HASH_CAPACITY, MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS, MAX_CONTACT_PAIRS,
     MAX_CONVEX_SHAPE_SLOTS, SNAPSHOT_RING_SIZE,
-};
-pub use render::{
-    TerrainRenderAcknowledgement, TerrainRenderArena, TerrainRenderArenaLimits, TerrainRenderChunk,
-    TerrainRenderDelta, TerrainRenderDirtyRanges, TerrainRenderError,
-};
-pub use runtime::{
-    CapacityKind, FailureStatus, PhysicsRuntime, PublishedGpuState, SimulationStatus,
-    TickStatistics,
-};
-pub use terrain::{
-    TerrainBufferLimits, TerrainContact, TerrainContactShape, TerrainPhysicsScene,
-    TerrainStageMetrics, terrain_contacts,
 };

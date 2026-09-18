@@ -4,8 +4,8 @@ use bevy_math::DVec3;
 
 use super::selection::{classify_node, mesh_dependency_generation};
 use super::{
-    ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainSelectionDelta, TerrainStreamer,
-    TerrainTransitionMask, publication_face_mask, select_active_nodes, select_active_nodes_cached,
+    ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainStreamer, TerrainTransitionMask,
+    publication_face_mask, select_active_nodes, select_active_nodes_cached,
 };
 use crate::{
     BRICK_EDGE_CELLS, BrickCoord, TerrainDensityClass, TerrainField, TerrainNodeId, TerrainOctree,
@@ -71,28 +71,6 @@ fn stale_active_generation_is_not_ready_for_seam_publication() {
 
     streamer.set_desired([new]);
     assert!(streamer.current_active().next().is_none());
-}
-
-#[test]
-fn selection_delta_reconstructs_the_full_selected_cut() {
-    let first = ActiveTerrainNode {
-        id: TerrainNodeId::leaf(BrickCoord::new(0, 0, 0)),
-        generation: 1,
-        transition_mask: TerrainTransitionMask::NONE,
-    };
-    let changed = ActiveTerrainNode {
-        generation: 2,
-        ..first
-    };
-    let added = ActiveTerrainNode {
-        id: TerrainNodeId::leaf(BrickCoord::new(1, 0, 0)),
-        ..changed
-    };
-    let delta = TerrainSelectionDelta::between(9, [first], [changed, added]);
-
-    assert_eq!(delta.generation, 9);
-    assert_eq!(delta.upserts, vec![changed, added]);
-    assert!(delta.removals.is_empty());
 }
 
 #[test]

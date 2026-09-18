@@ -10,8 +10,7 @@ mod selection;
 pub use bounds_cache::TerrainBoundsCache;
 pub use faces::{TerrainFace, TerrainTransitionMask};
 pub use publication::{
-    TerrainPublicationDelta, TerrainPublicationUpsert, TerrainReadiness, TerrainSelectionDelta,
-    publication_face_mask,
+    TerrainPublicationDelta, TerrainPublicationUpsert, TerrainReadiness, publication_face_mask,
 };
 use publication::{neighbour_candidates, publication_face_mask_maps};
 pub use selection::{

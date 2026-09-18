@@ -15,7 +15,6 @@ pub use capsule::{
 };
 pub use foundation::{
     FoundationRefresh, FoundationSample, FoundationSpatialIndex, FoundationSupport,
-    WorldConstructionEditability,
 };
 pub use scene::{
     ActiveTerrainScene, TerrainDensity, TerrainScene, TerrainSpatialIndex, raycast_density,

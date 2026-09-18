@@ -34,52 +34,6 @@ pub struct TerrainPublicationDelta {
     pub removals: Vec<TerrainNodeId>,
 }
 
-/// Incremental difference between two selected terrain cuts.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TerrainSelectionDelta {
-    /// Exact terrain edit generation used by the selector.
-    pub generation: u64,
-    /// Added or generation/transition-modified nodes.
-    pub upserts: Vec<ActiveTerrainNode>,
-    /// Nodes absent from the replacement cut.
-    pub removals: Vec<TerrainNodeId>,
-}
-
-impl TerrainSelectionDelta {
-    /// Computes a stable delta without changing either complete cut.
-    pub fn between(
-        generation: u64,
-        previous: impl IntoIterator<Item = ActiveTerrainNode>,
-        current: impl IntoIterator<Item = ActiveTerrainNode>,
-    ) -> Self {
-        let previous = previous
-            .into_iter()
-            .map(|node| (node.id, node))
-            .collect::<BTreeMap<_, _>>();
-        let current = current
-            .into_iter()
-            .map(|node| (node.id, node))
-            .collect::<BTreeMap<_, _>>();
-        Self {
-            generation,
-            upserts: current
-                .iter()
-                .filter_map(|(&id, &node)| (previous.get(&id) != Some(&node)).then_some(node))
-                .collect(),
-            removals: previous
-                .keys()
-                .filter(|id| !current.contains_key(id))
-                .copied()
-                .collect(),
-        }
-    }
-
-    /// True when the selected cut is unchanged.
-    pub fn is_empty(&self) -> bool {
-        self.upserts.is_empty() && self.removals.is_empty()
-    }
-}
-
 impl TerrainPublicationDelta {
     /// True when the delta carries no publication work.
     pub fn is_empty(&self) -> bool {

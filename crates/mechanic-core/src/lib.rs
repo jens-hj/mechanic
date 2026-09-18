@@ -92,9 +92,7 @@ pub use linear::{
 pub use linear_geometry::{
     LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,
 };
-pub use obb::{
-    Obb, ObbContact, ObbContactManifold, ObbContactPoint, obb_contact_manifold, obb_sat,
-};
+pub use obb::{Obb, ObbContact, obb_sat};
 pub use pipe_junction::{
     PipeJunctionBox, PipeJunctionSurface, PipeJunctionTriangle, pipe_junction_triangles,
     pipe_junction_wall_boxes,

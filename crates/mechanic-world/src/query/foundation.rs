@@ -212,22 +212,3 @@ pub(super) fn terrain_reaches(terrain: &impl TerrainDensity, position: WorldPosi
 pub(super) fn snap_5_cm(value: f64) -> f64 {
     (value / TERRAIN_CELL_METERS).round() * TERRAIN_CELL_METERS
 }
-
-/// Whether a construction may be edited by the world builder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorldConstructionEditability {
-    /// Grounded/static construction accepts placement and deletion.
-    GroundedStatic,
-    /// Moving creations are deliberately outside this prototype slice.
-    MovingBlocked,
-}
-
-impl WorldConstructionEditability {
-    /// Clear HUD feedback for the temporary limitation.
-    pub const fn feedback(self) -> Option<&'static str> {
-        match self {
-            Self::GroundedStatic => None,
-            Self::MovingBlocked => Some("Moving creations cannot be edited in this prototype"),
-        }
-    }
-}
