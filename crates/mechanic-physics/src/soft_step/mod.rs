@@ -251,12 +251,21 @@ impl SoftStepDiagnostics {
 /// Terrain-facing load integrated over the last accepted simulation tick.
 #[derive(Clone, Copy, Debug)]
 pub struct TerrainLoad {
+    /// Source body in the published simulation topology.
+    pub body: usize,
     /// Contact position relative to the terrain query's floating origin.
     pub point: DVec3,
     /// Outward unit terrain normal.
     pub normal: DVec3,
     /// Normal impulse summed across the tick's accepted substeps, in N s.
     pub normal_impulse: f64,
+    /// Integrated world-space tangential impulse in N s.
+    pub tangent_impulse: DVec3,
+    /// Physical work dissipated by accepted substeps, in joules.
+    pub work_j: f64,
+    /// Integrated resultant load over this contact's whole support footprint.
+    /// Shared by its points; use for stress, never sum it across those points.
+    pub footprint_impulse: f64,
     /// Estimated circular support radius, in metres.
     pub patch_radius: f64,
 }
@@ -276,6 +285,7 @@ pub struct CpuMachine {
     diagnostics: SoftStepDiagnostics,
     warm: BTreeMap<TerrainContactFeature, [f64; 5]>,
     terrain_loads: Vec<TerrainLoad>,
+    supported: Vec<bool>,
     load_features: Vec<(TerrainContactFeature, usize)>,
     load_order: Vec<usize>,
     /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
@@ -327,6 +337,7 @@ impl CpuMachine {
             .map(|pattern| PassiveForce::from_kind(creation.bearings[pattern.bearing].kind))
             .collect::<Vec<_>>();
         Ok(Self {
+            supported: vec![false; creation.compounds.len()],
             held: vec![false; creation.compounds.len()],
             held_rows: vec![false; state.velocities.len()],
             closure_warm: vec![[0.0; 8]; closure_passive.len()],
@@ -356,9 +367,58 @@ impl CpuMachine {
         &self.terrain_loads
     }
 
+    /// Whether the last accepted tick loaded an upward support contact for a
+    /// body, including support from another body rather than terrain.
+    pub fn body_supported(&self, body: usize) -> bool {
+        self.supported.get(body).copied().unwrap_or(false)
+    }
+
     /// Last published state.
     pub fn snapshot(&self) -> &CpuSnapshot {
         &self.completed
+    }
+
+    /// Installs a prepared topology between ticks, retaining the tick sequence
+    /// and holds on surviving authored bodies. Callers preserve state by stable
+    /// identity before preparing the replacement.
+    ///
+    /// # Errors
+    /// Leaves this machine unchanged if the replacement is invalid.
+    pub fn replace_bodies(
+        &mut self,
+        creation: CompiledCreation,
+        state: MachineState,
+        authored_bodies: usize,
+    ) -> Result<(), PhysicsError> {
+        let mut replacement = Self::new(creation, self.completed.topology_generation, state)?;
+        if authored_bodies > self.held.len() || authored_bodies > replacement.held.len() {
+            return Err(PhysicsError::InvalidDynamics);
+        }
+        replacement.completed.tick = self.completed.tick;
+        let mut held = vec![false; replacement.held.len()];
+        held[..authored_bodies].copy_from_slice(&self.held[..authored_bodies]);
+        let poses = replacement.completed.state.poses.clone();
+        replacement.hold(&held, &poses)?;
+        *self = replacement;
+        Ok(())
+    }
+
+    /// Holds only appended sleeping bodies, preserving construction holds.
+    ///
+    /// # Errors
+    /// Rejects a mask that does not match the runtime body suffix.
+    pub fn hold_runtime(
+        &mut self,
+        authored_bodies: usize,
+        sleeping: &[bool],
+    ) -> Result<(), PhysicsError> {
+        if authored_bodies + sleeping.len() != self.held.len() {
+            return Err(PhysicsError::InvalidCommand);
+        }
+        let mut held = self.held.clone();
+        held[authored_bodies..].copy_from_slice(sleeping);
+        let poses = self.completed.state.poses.clone();
+        self.hold(&held, &poses)
     }
 
     /// Work and quality of the last tick.
@@ -799,6 +859,25 @@ impl CpuMachine {
         if diagnostics.degraded {
             self.terrain_loads.clear();
         }
+        self.supported.fill(false);
+        if !diagnostics.degraded {
+            for contact in &contacts {
+                if contact.impulses[0] <= 0.0 {
+                    continue;
+                }
+                if contact.source.normal.y >= 0.25 {
+                    self.supported[contact.source.body] = true;
+                }
+                if contact.source.normal.y <= -0.25
+                    && let Some(body) = contact.source.other_body
+                {
+                    self.supported[body] = true;
+                }
+            }
+        }
+        for load in &mut self.terrain_loads {
+            load.work_j = load.work_j.max(0.0);
+        }
         self.warm = contacts
             .iter()
             .map(|contact| (contact.source.feature, contact.impulses))
@@ -1025,6 +1104,12 @@ fn collect_terrain_loads(
             end += 1;
         }
         let group = &order[start..end];
+        let normal_load: f64 = group.iter().map(|&index| contacts[index].impulses[0]).sum();
+        let tangent_load: DVec3 = group
+            .iter()
+            .map(|&index| contacts[index].tangent_impulse)
+            .sum();
+        let footprint_impulse = normal_load.hypot(tangent_load.length());
         let mut distance = 0.0;
         let mut pairs = 0_u32;
         for (i, &a) in group.iter().enumerate() {
@@ -1049,13 +1134,23 @@ fn collect_terrain_loads(
             }
             let source = contact.source;
             match features.binary_search_by_key(&source.feature, |&(feature, _)| feature) {
-                Ok(index) => loads[features[index].1].normal_impulse += impulse,
+                Ok(index) => {
+                    let load = &mut loads[features[index].1];
+                    load.normal_impulse += impulse;
+                    load.tangent_impulse += contact.tangent_impulse;
+                    load.work_j += contact.work_j;
+                    load.footprint_impulse += footprint_impulse;
+                }
                 Err(index) => {
                     features.insert(index, (source.feature, loads.len()));
                     loads.push(TerrainLoad {
+                        body: source.body,
                         point: source.terrain_point,
                         normal: source.normal,
                         normal_impulse: impulse,
+                        tangent_impulse: contact.tangent_impulse,
+                        work_j: contact.work_j,
+                        footprint_impulse,
                         patch_radius: radius,
                     });
                 }

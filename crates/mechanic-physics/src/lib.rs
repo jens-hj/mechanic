@@ -12,9 +12,11 @@ mod joint_machine;
 mod kinematics;
 mod machine;
 pub use kinematics::MachineKinematics;
+mod clumps;
 mod motion_path;
 mod response;
 mod soft_step;
+pub use clumps::PreparedClumpBodies;
 mod terrain_contacts;
 
 /// The exact reference solver: implicit midpoint ticks with event search and

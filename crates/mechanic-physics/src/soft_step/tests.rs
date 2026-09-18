@@ -1392,6 +1392,16 @@ fn a_resting_body_reports_terrain_normal_load_matching_its_weight() {
                 .machine
                 .terrain_loads()
                 .iter()
+                .map(|load| load.work_j)
+                .sum::<f64>()
+                < 1e-5,
+            "stationary supporting weight must not mine terrain"
+        );
+        assert!(
+            world
+                .machine
+                .terrain_loads()
+                .iter()
                 .all(|load| (0.05..=0.3).contains(&load.patch_radius) && load.normal.y > 0.99)
         );
         world
@@ -1425,6 +1435,50 @@ fn reported_impact_load_includes_the_rebound_impulse() {
         }
     }
     panic!("the body never rebounded");
+}
+
+#[test]
+fn terrain_work_tracks_motion_and_not_stationary_contact_correction() {
+    let mut work = Vec::new();
+    for substeps in [2, 8] {
+        let mut world = box_above_floor(0.05, -2.0);
+        world.settings.substeps = substeps;
+        let mass = f64::from(world.creation().compounds[0].mass_properties.mass);
+        let mut delivered = 0.0;
+        for _ in 0..30 {
+            world.tick(DVec3::ZERO);
+            delivered += world
+                .machine
+                .terrain_loads()
+                .iter()
+                .map(|load| load.work_j)
+                .sum::<f64>();
+        }
+        assert!(
+            delivered > mass * 0.2,
+            "a stopping impact must deliver physical work: substeps={substeps}, work={delivered}, mass={mass}"
+        );
+        assert!(
+            delivered < mass * 2.2,
+            "contact work must not exceed incoming kinetic energy"
+        );
+        work.push(delivered);
+    }
+    assert!(
+        (work[0] / work[1] - 1.0).abs() < 0.35,
+        "substep-dependent work: {work:?}"
+    );
+    let mut world = box_above_floor(-0.02, 0.0);
+    for _ in 0..30 {
+        world.tick(DVec3::ZERO);
+        assert!(
+            world
+                .machine
+                .terrain_loads()
+                .iter()
+                .all(|load| load.work_j < 1e-8)
+        );
+    }
 }
 
 #[test]

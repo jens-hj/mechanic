@@ -37,6 +37,11 @@ pub(super) struct Contact {
     pub source: TerrainContact,
     /// Accumulated normal, two tangent and two rolling impulses per substep.
     pub impulses: [f64; 5],
+    /// Physical contact work for this accepted substep, not solver iterations.
+    pub work_j: f64,
+    /// World-space tangential impulse for this substep.
+    pub tangent_impulse: DVec3,
+    physical_speeds: [f64; 3],
     queried_pose: BodyPose,
     other_queried_pose: Option<BodyPose>,
     local: DVec3,
@@ -104,6 +109,9 @@ impl Contact {
             tangent_v,
             rolling: (source.response[3] > 0.0).then_some(source.response[3] * radius),
             sliding: false,
+            work_j: 0.0,
+            tangent_impulse: DVec3::ZERO,
+            physical_speeds: [0.0; 3],
             approach: 0.0,
             loaded: false,
             fresh: true,
@@ -838,6 +846,9 @@ pub(super) fn substep(
     // Approach and slip before forces act decide restitution and the friction
     // mode, once per contact: at the tick's first substep or after a re-query.
     for (contact, point) in contacts.iter_mut().zip(points.iter()) {
+        contact.work_j = 0.0;
+        contact.physical_speeds =
+            std::array::from_fn(|axis| point.rows[axis].speed(&state.velocities));
         if contact.fresh {
             contact.fresh = false;
             contact.approach = point.rows[0].speed(&state.velocities);
@@ -1004,6 +1015,30 @@ pub(super) fn substep(
     }
     for drive in &drives {
         diagnostics.drive_impulses[drive.coordinate] += joints.drive[drive.coordinate];
+    }
+    // Measure once after relaxation. Pre-force approach prevents stationary
+    // support under gravity from accumulating mining energy. Capping impact
+    // work by incoming effective kinetic energy excludes positional push-out.
+    for (contact, point) in contacts.iter_mut().zip(points.iter()) {
+        let average: [f64; 3] = std::array::from_fn(|axis| {
+            0.5 * (contact.physical_speeds[axis] + point.rows[axis].speed(&state.velocities))
+        });
+        let impact_work = if contact.physical_speeds[0] < -0.05 {
+            (contact.impulses[0] * (-average[0]).max(0.0))
+                .min(0.5 * point.rows[0].mass * contact.physical_speeds[0].powi(2))
+        } else {
+            0.0
+        };
+        let slip_work = if contact.physical_speeds[1].hypot(contact.physical_speeds[2]) > 0.05 {
+            (-contact.impulses[1] * average[1] - contact.impulses[2] * average[2]).max(0.0)
+        } else {
+            0.0
+        };
+        // Impulses already changed the accepted velocity. A CCD position clamp
+        // must not discount that delivered work a second time.
+        contact.work_j = impact_work + slip_work;
+        contact.tangent_impulse =
+            contact.tangent_u * contact.impulses[1] + contact.tangent_v * contact.impulses[2];
     }
     diagnostics.constraints_ms += constraints_started.elapsed().as_secs_f64() * 1000.0;
     Ok(Substep {
@@ -1400,9 +1435,12 @@ pub(super) fn restitution(
         let restitution = contact.source.response[2];
         if contact.loaded && restitution > 0.0 && contact.approach < -settings.restitution_threshold
         {
-            let change = -row.mass * (row.speed(velocities) + restitution * contact.approach);
+            let before = row.speed(velocities);
+            let change = -row.mass * (before + restitution * contact.approach);
             let next = (contact.impulses[0] + change).max(0.0);
-            row.apply(velocities, next - contact.impulses[0]);
+            let applied = next - contact.impulses[0];
+            row.apply(velocities, applied);
+            contact.work_j -= 0.5 * applied * (before + row.speed(velocities));
             contact.impulses[0] = next;
         }
         if contact.loaded {
