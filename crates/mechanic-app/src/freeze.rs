@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-#[path = "freeze_clearance.rs"]
 mod clearance;
 use clearance::ClearanceCache;
 
@@ -1343,7 +1342,6 @@ fn plan_external_cached(
 }
 
 #[cfg(test)]
-#[path = "freeze_tests.rs"]
 mod tests;
 
 pub(crate) fn weld_terrain_clear(

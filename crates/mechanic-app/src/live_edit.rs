@@ -226,5 +226,4 @@ pub(crate) fn place_previews(
 }
 
 #[cfg(test)]
-#[path = "live_edit_tests.rs"]
 mod tests;

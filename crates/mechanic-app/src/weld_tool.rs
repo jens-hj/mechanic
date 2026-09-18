@@ -9,7 +9,6 @@ use mechanic_core::{
     WeldConstraint, WeldFeature, WeldPick, WeldSelection, WeldSnap,
 };
 
-#[path = "weld_socket.rs"]
 pub(crate) mod socket;
 
 #[derive(Clone, Debug)]
@@ -982,5 +981,4 @@ fn append_vertex_marker(
 }
 
 #[cfg(test)]
-#[path = "weld_tool_tests.rs"]
 mod tests;

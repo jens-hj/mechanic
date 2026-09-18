@@ -167,5 +167,4 @@ pub(crate) fn penetration(a: &ConvexGeometry, b: &ConvexGeometry) -> f32 {
 }
 
 #[cfg(test)]
-#[path = "live_weld_tests.rs"]
 mod tests;

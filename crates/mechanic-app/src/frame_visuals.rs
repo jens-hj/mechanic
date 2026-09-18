@@ -130,5 +130,4 @@ fn published_placement(simulation: &AppSimulation, part: PartId) -> BuildTransfo
 }
 
 #[cfg(test)]
-#[path = "frame_visuals_tests.rs"]
 mod tests;

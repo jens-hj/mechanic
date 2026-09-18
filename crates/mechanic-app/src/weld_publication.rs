@@ -572,5 +572,4 @@ impl Restore {
 }
 
 #[cfg(test)]
-#[path = "weld_publication_tests.rs"]
 mod tests;
