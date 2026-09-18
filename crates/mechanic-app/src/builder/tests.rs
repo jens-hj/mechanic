@@ -31,6 +31,14 @@ fn measure_pipe_overlap_latency() {
     }
 }
 use super::PipeNode;
+use super::bearings::bearing_ring_overlaps_face;
+use super::bearings::locked_bearings;
+use super::candidates::candidate_from_hit;
+use super::raycast::raycast_construction_with_ground;
+use super::raycast::raycast_sources;
+use super::snap::AxisGuide;
+use super::snap::GuideKind;
+use super::snap::render_free_smart_guides;
 
 #[test]
 fn pipe_overlap_pruning_matches_exhaustive_boxes_in_rotated_frames() {
@@ -62,19 +70,19 @@ fn pipe_overlap_pruning_matches_exhaustive_boxes_in_rotated_frames() {
                         rotation,
                     )
                     .unwrap();
-                    let targets = super::part_collision_boxes(second)
+                    let targets = super::bounds::part_collision_boxes(second)
                         .into_iter()
-                        .map(|shape| super::CollisionBox {
+                        .map(|shape| super::bounds::CollisionBox {
                             center: frame.point(shape.center),
                             rotation: frame.rotation() * shape.rotation,
                             ..shape
                         })
                         .collect::<Vec<_>>();
-                    let expected = super::part_collision_boxes(first)
+                    let expected = super::bounds::part_collision_boxes(first)
                         .into_iter()
-                        .any(|a| targets.iter().any(|&b| super::boxes_overlap(a, b)));
+                        .any(|a| targets.iter().any(|&b| super::bounds::boxes_overlap(a, b)));
                     assert_eq!(
-                        super::parts_overlap_with_frame(first, second, frame),
+                        super::bounds::parts_overlap_with_frame(first, second, frame),
                         expected
                     );
                 }
@@ -97,25 +105,24 @@ use mechanic_core::{
 };
 
 use super::{
-    AxisGuide, BLOCK_SIZE_METERS, BlockVolume, GuideKind, PipeRunAttachment, PipeRunPiece,
-    PlacementBounds, PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane,
-    PlacementSnapIndex, PlacementSupport, SurfaceHit, bearing_anchor_from_hit,
-    bearing_attachment_candidate, bearing_overlaps_candidate, bearing_ring_overlaps_face,
-    bearing_support_face, begin_weld, block_box_bounds, block_box_specs, block_sheet_specs,
-    block_span_from_rays, candidate_from_hit, center_cylinder_candidate_on_bearing,
+    BLOCK_SIZE_METERS, BlockVolume, PipeRunAttachment, PipeRunPiece, PlacementBounds,
+    PlacementCandidate, PlacementError, PlacementGrid, PlacementPlane, PlacementSnapIndex,
+    PlacementSupport, SurfaceHit, bearing_anchor_from_hit, bearing_attachment_candidate,
+    bearing_overlaps_candidate, bearing_support_face, begin_weld, block_box_bounds,
+    block_box_specs, block_sheet_specs, block_span_from_rays, center_cylinder_candidate_on_bearing,
     cuboid_candidate_from_hit, cylinder_candidate_from_hit, face_geometry_from_ref, face_is_flat,
-    free_cuboid_candidate, free_cylinder_candidate, locked_bearings, newly_locked_bearings,
+    free_cuboid_candidate, free_cylinder_candidate, newly_locked_bearings,
     oriented_cuboid_candidate_from_hit, oriented_cuboid_candidate_from_hit_with_grid,
     pipe_run_pieces, raycast_construction, raycast_construction_for_annulus,
-    raycast_construction_with_ground, raycast_placement_plane_point, raycast_sources,
-    render_free_smart_guides, rigid_body_parts, smart_snap_block_span, smart_snap_cuboid_candidate,
-    smart_snap_free_cuboid_candidate, stage_bearing_attachment, stage_bearing_block_batch,
-    stage_block_batch, stage_block_batch_from_source, stage_block_batch_from_source_in_bounds,
-    stage_block_batch_in_bounds, stage_block_volume_in_bounds, stage_controller_in_bounds,
-    stage_cuboid, stage_cylinder_from_source, stage_dimension_link_in_bounds,
-    stage_engine_from_source, stage_engine_in_bounds, stage_input_in_bounds, stage_pipe_run,
-    stage_pipe_run_in_bounds, stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission,
-    stage_weld_objects, transmission_candidate_from_hit, validate_block_batch_in_bounds,
+    raycast_placement_plane_point, rigid_body_parts, smart_snap_block_span,
+    smart_snap_cuboid_candidate, smart_snap_free_cuboid_candidate, stage_bearing_attachment,
+    stage_bearing_block_batch, stage_block_batch, stage_block_batch_from_source,
+    stage_block_batch_from_source_in_bounds, stage_block_batch_in_bounds,
+    stage_block_volume_in_bounds, stage_controller_in_bounds, stage_cuboid,
+    stage_cylinder_from_source, stage_dimension_link_in_bounds, stage_engine_from_source,
+    stage_engine_in_bounds, stage_input_in_bounds, stage_pipe_run, stage_pipe_run_in_bounds,
+    stage_seat_in_bounds, stage_servo_in_bounds, stage_transmission, stage_weld_objects,
+    transmission_candidate_from_hit, validate_block_batch_in_bounds,
     validate_indexed_block_batch_in_bounds, validate_part,
 };
 
@@ -152,7 +159,8 @@ fn linear_candidates_are_flush_and_lattice_snapped_on_every_face_orientation() {
                         mount_normal: normal,
                         face,
                     };
-                    let surface = super::linear_carriage_face(Vec3::ZERO, rail, axis).unwrap();
+                    let surface =
+                        super::bearings::linear_carriage_face(Vec3::ZERO, rail, axis).unwrap();
                     let hit =
                         surface.center + surface.tangent_u * 0.029 + surface.tangent_v * 0.009;
                     let candidate = super::linear_block_candidate(
@@ -164,7 +172,8 @@ fn linear_candidates_are_flush_and_lattice_snapped_on_every_face_orientation() {
                         GridRotation::default(),
                     )
                     .unwrap();
-                    let block_face = super::face_geometry(candidate.spec, candidate.attached_face);
+                    let block_face =
+                        super::faces::face_geometry(candidate.spec, candidate.attached_face);
                     assert!(
                         (block_face.center - surface.center)
                             .dot(surface.normal)
@@ -186,7 +195,7 @@ fn linear_candidates_are_flush_and_lattice_snapped_on_every_face_orientation() {
                     )
                     .unwrap();
                     let cylinder_face =
-                        super::cylinder_face_geometry(cylinder.spec, cylinder.attached_face)
+                        super::faces::cylinder_face_geometry(cylinder.spec, cylinder.attached_face)
                             .unwrap();
                     assert!(
                         (cylinder_face.center - surface.center)
@@ -269,7 +278,7 @@ fn linear_rail_overhang_and_flush_side_attachment_use_real_support_overlap() {
             rail,
             Vec3::X
         ));
-        let surface = super::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
+        let surface = super::bearings::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
         let candidate = super::linear_block_candidate(
             anchor,
             rail,
@@ -309,7 +318,7 @@ fn linear_block_and_cylinder_direct_attachments_share_one_moving_compound() {
         face: CarriageFace::Top,
     };
     let anchor = Vec3::new(0.0, 0.125, 0.0);
-    let surface = super::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
+    let surface = super::bearings::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
     let block = super::linear_block_candidate(
         anchor,
         rail,
@@ -371,7 +380,7 @@ fn linear_block_and_cylinder_direct_attachments_share_one_moving_compound() {
         face: CarriageFace::PositiveSide,
         ..rail
     };
-    let side_surface = super::linear_carriage_face(anchor, side_rail, Vec3::X).unwrap();
+    let side_surface = super::bearings::linear_carriage_face(anchor, side_rail, Vec3::X).unwrap();
     let side = super::linear_block_candidate(
         anchor,
         side_rail,
@@ -705,7 +714,7 @@ fn framed_overlap_keeps_cylinder_bores_empty_and_identity_behavior_exact() {
         );
         assert_eq!(index.overlaps(candidate), overlaps);
         assert_eq!(
-            super::parts_overlap_with_frame(
+            super::bounds::parts_overlap_with_frame(
                 candidate,
                 *graph.part(target).unwrap(),
                 mechanic_core::ConstructionFrame::IDENTITY
@@ -1264,7 +1273,7 @@ fn cylinders_place_along_all_six_flat_face_normals() {
     for outward in cases {
         let mut graph = ConstructionGraph::new();
         let support = spawn_cube(&mut graph, IVec3::new(0, 16, 0), 4);
-        let hit = super::raycast_cuboid(
+        let hit = super::raycast::raycast_cuboid(
             Vec3::new(0.0, 4.0, 0.0) + outward * 5.0,
             -outward,
             support,
@@ -1608,7 +1617,7 @@ fn electric_engine_spans_two_by_two_ground_cells_without_a_half_block_offset() {
     );
     assert_eq!(candidate.spec.size_meters(), Vec3::splat(0.5));
     assert_eq!(
-        super::cuboid_world_bounds(candidate.spec),
+        super::bounds::cuboid_world_bounds(candidate.spec),
         (Vec3::new(-0.125, 0.0, -0.125), Vec3::new(0.375, 0.5, 0.375))
     );
 }
@@ -1634,7 +1643,7 @@ fn quarter_turn_rotates_an_authored_footprint_and_survives_staging() {
         IVec3::new(0, 2, 1)
     );
     assert_eq!(candidate.attached_face, FaceKind::NegativeY);
-    let (minimum, maximum) = super::cuboid_world_bounds(candidate.spec);
+    let (minimum, maximum) = super::bounds::cuboid_world_bounds(candidate.spec);
     assert!((maximum.x - minimum.x - 0.75).abs() < 1.0e-6);
     assert!((maximum.z - minimum.z - 0.50).abs() < 1.0e-6);
 
@@ -1661,7 +1670,7 @@ fn every_authored_orientation_attaches_flush_from_every_world_face() {
                 for z in 0..4 {
                     let mut graph = ConstructionGraph::new();
                     let support = spawn_cube(&mut graph, IVec3::new(0, 16, 0), 4);
-                    let hit = super::raycast_cuboid(
+                    let hit = super::raycast::raycast_cuboid(
                         Vec3::new(0.0, 4.0, 0.0) + outward * 5.0,
                         -outward,
                         support,
@@ -1674,7 +1683,8 @@ fn every_authored_orientation_attaches_flush_from_every_world_face() {
                         EngineKind::Gas.grid_units(),
                         GridRotation::new(x, y, z),
                     );
-                    let attached = super::face_geometry(candidate.spec, candidate.attached_face);
+                    let attached =
+                        super::faces::face_geometry(candidate.spec, candidate.attached_face);
 
                     assert!(attached.normal.abs_diff_eq(-outward, 1.0e-6));
                     assert!(
@@ -1707,7 +1717,7 @@ fn tipped_authored_part_uses_its_rotated_height_and_footprint() {
     );
 
     assert_eq!(candidate.spec.pose.rotation.quarter_turns_xyz(), [1, 0, 0]);
-    let (minimum, maximum) = super::cuboid_world_bounds(candidate.spec);
+    let (minimum, maximum) = super::bounds::cuboid_world_bounds(candidate.spec);
     assert!((maximum.x - minimum.x - 0.5).abs() < 1.0e-6);
     assert!((maximum.y - minimum.y - 0.75).abs() < 1.0e-6);
     assert!((maximum.z - minimum.z - 0.5).abs() < 1.0e-6);
@@ -1728,7 +1738,7 @@ fn placement_works_from_all_six_cuboid_faces() {
     for (outward, expected_face) in cases {
         let mut graph = ConstructionGraph::new();
         let part = spawn_cube(&mut graph, IVec3::new(0, 16, 0), 4);
-        let hit = super::raycast_cuboid(
+        let hit = super::raycast::raycast_cuboid(
             Vec3::new(0.0, 4.0, 0.0) + outward * 5.0,
             -outward,
             part,
@@ -1955,11 +1965,12 @@ fn free_candidates_snap_globally_and_face_the_view_cardinally() {
         PlacementBounds::GarageBuild,
     );
     let ticks = cuboid.spec.pose.translation_position_ticks();
-    let world_dimensions = super::oriented_grid_dimensions([1, 2, 3], cuboid.spec.pose.rotation);
+    let world_dimensions =
+        super::candidates::oriented_grid_dimensions([1, 2, 3], cuboid.spec.pose.rotation);
     assert_eq!(
         ticks,
-        super::snap_global_center_ticks(
-            super::snap_world_to_position_ticks(Vec3::new(0.18, 6.18, -0.18)),
+        super::grid::snap_global_center_ticks(
+            super::grid::snap_world_to_position_ticks(Vec3::new(0.18, 6.18, -0.18)),
             world_dimensions,
             PlacementGrid::Centimetres25,
             PlacementBounds::GarageBuild,
@@ -2878,7 +2889,7 @@ fn bearing_attachment_centres_a_cylinder_before_it_is_dragged() {
     .unwrap();
 
     let centered = center_cylinder_candidate_on_bearing(candidate, anchor);
-    let face = super::cylinder_face_geometry(centered.spec, centered.attached_face).unwrap();
+    let face = super::faces::cylinder_face_geometry(centered.spec, centered.attached_face).unwrap();
 
     assert!(face.center.abs_diff_eq(anchor, 1.0e-5));
     assert_eq!(centered.anchor, Some(anchor));
@@ -2902,7 +2913,7 @@ fn oversized_bearing_attaches_to_any_block_face_overlapped_by_its_ring() {
     );
 
     assert!(
-        !super::face_geometry(candidate.spec, candidate.attached_face)
+        !super::faces::face_geometry(candidate.spec, candidate.attached_face)
             .center
             .abs_diff_eq(anchor, 1.0e-5)
     );
@@ -3806,7 +3817,7 @@ fn branch_arm_faces_the_player_and_rotating_steps_it_around_the_pipe() {
             assert_eq!(branch.junction.arms.count(), 3);
             let outward = (candidate.spec.pose.translation() - branch.junction.pose.translation())
                 .normalize();
-            let outlet = super::face_toward(outward);
+            let outlet = super::pipes::face_toward(outward);
             assert!(branch.junction.arms.contains(outlet), "turn {turn}");
             outlet
         })
@@ -3879,7 +3890,7 @@ fn branching_off_a_junction_side_opens_another_arm_and_keeps_its_welds() {
     };
     let (_, cross) =
         super::pipe_branch_candidate(&graph, wall, dimensions, Vec3::NEG_X, 0).unwrap();
-    assert_eq!(cross.site, super::PipeBranchSite::Extend(junction));
+    assert_eq!(cross.site, super::pipes::PipeBranchSite::Extend(junction));
 
     let (graph, opened) = super::apply_pipe_branch(&graph, cross).unwrap();
     let arms = graph
@@ -4107,7 +4118,7 @@ fn linear_bent_pipe_joins_existing_carriage_attachments_as_one_compound() {
         mount_normal: Vec3::Y,
         face: CarriageFace::Top,
     };
-    let surface = super::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
+    let surface = super::bearings::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
     let attachment = super::LinearAttachment {
         source,
         anchor,

@@ -11,9 +11,10 @@ use mechanic_core::{
 };
 use mechanic_gpu::GpuTransform;
 
+use crate::builder::candidates::candidate_from_hit;
 use crate::builder::{
     BlockVolume, PlacementGrid, PlacementPlane, SurfaceHit, bearing_attachment_candidate,
-    candidate_from_hit, raycast_construction,
+    raycast_construction,
 };
 use crate::builder::{SmartGuide, block_sheet_specs};
 use crate::camera::{MaterialWheelState, PlayerState};
@@ -943,8 +944,9 @@ fn moving_frame_raycast_matches_exact_authored_feature_geometry() {
         for z in [-0.49, 0.0, 0.49] {
             let origin = frame.point(Vec3::new(x, 2.0, z));
             let direction = frame.vector(Vec3::NEG_Y);
-            let authored =
-                crate::builder::raycast_construction_with_ground(&graph, origin, direction, None);
+            let authored = crate::builder::raycast::raycast_construction_with_ground(
+                &graph, origin, direction, None,
+            );
             let world_origin =
                 position + rotation * (origin - creation.compounds[0].root_translation);
             let world_direction = rotation * direction;
@@ -1101,7 +1103,7 @@ fn hammer_hits_pipe_walls_before_through_and_after_a_bend() {
             Vec3::new(1.0, 0.625, 0.0),
         ] {
             let build_origin = point + Vec3::Y + Vec3::Z;
-            let authored = crate::builder::raycast_construction_with_ground(
+            let authored = crate::builder::raycast::raycast_construction_with_ground(
                 &graph,
                 build_origin,
                 Vec3::NEG_Z,
@@ -2172,7 +2174,8 @@ fn deleting_linear_support_preserves_occupied_side_and_travel_axis() {
             ..rail
         }),
     };
-    let surface = crate::builder::linear_carriage_face(socket.anchor, rail, socket.axis).unwrap();
+    let surface =
+        crate::builder::bearings::linear_carriage_face(socket.anchor, rail, socket.axis).unwrap();
     let candidate = crate::builder::linear_block_candidate(
         socket.anchor,
         rail,

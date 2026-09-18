@@ -88,7 +88,7 @@ fn moving_surface_placement_uses_real_builder_and_inherits_pose_source() {
     {
         let mut view = live_edit::EditorView::new(&mut graph, &mut state);
         let (graph, _) = view.parts();
-        let candidate = builder::candidate_from_hit(&graph.0, top_hit(anchor));
+        let candidate = builder::candidates::candidate_from_hit(&graph.0, top_hit(anchor));
         local_center = candidate.spec.pose.translation();
         graph.0 = builder::stage_cuboid(&graph.0, candidate).unwrap();
         added = graph
@@ -211,7 +211,8 @@ fn rotational_and_linear_attachments_and_controller_wiring_return_to_build_space
                     mount_normal: Vec3::Y,
                     face: CarriageFace::Top,
                 };
-                let surface = builder::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
+                let surface =
+                    builder::bearings::linear_carriage_face(anchor, rail, Vec3::X).unwrap();
                 let candidate = builder::linear_block_candidate(
                     anchor,
                     rail,

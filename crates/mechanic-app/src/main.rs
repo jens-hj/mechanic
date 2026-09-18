@@ -69,7 +69,7 @@ use bevy::{
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 #[cfg(test)]
-use builder::candidate_from_hit;
+use builder::candidates::candidate_from_hit;
 use builder::{
     BlockVolume, PlacementBounds, PlacementCandidate, PlacementError, PlacementGrid,
     PlacementPlane, PlacementSupport, SmartGuide, SurfaceHit, bearing_anchor_from_hit_with_grid,

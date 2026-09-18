@@ -303,7 +303,7 @@ fn returned_framed_creation_accepts_blocks_in_its_local_grid() {
             let local = garage.graph.in_edit_frame(context.frame).unwrap();
             let spec = local.part(part).unwrap().as_cuboid().unwrap();
             let (low, high) = builder::part_world_bounds(mechanic_core::PartSpec::Cuboid(spec));
-            let hit = builder::raycast_construction_with_ground(
+            let hit = builder::raycast::raycast_construction_with_ground(
                 &local,
                 Vec3::new((low.x + high.x) * 0.5, high.y + 1.0, (low.z + high.z) * 0.5),
                 Vec3::NEG_Y,
@@ -311,7 +311,7 @@ fn returned_framed_creation_accepts_blocks_in_its_local_grid() {
             )
             .unwrap();
             let bounds = PlacementBounds::GarageBuild.in_edit_frame(context.frame_to_world);
-            let candidate = builder::candidate_from_hit_with_grid(
+            let candidate = builder::candidates::candidate_from_hit_with_grid(
                 &local,
                 hit,
                 PlacementGrid::Centimetres25,
