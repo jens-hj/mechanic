@@ -1,10 +1,10 @@
 //! Linear rail placement and carriage picking in the shared bearing workflow.
 use super::{
-    AppSimulation, CreationMenuState, EditorGraph, EditorHistory, EditorSnapshot, EditorState,
-    GameAction, PlacedBearing, PlacementError, SelectedTool, Tool,
-    bearing_anchor_from_hit_with_grid, bearing_location_occupied, builder, linear_render,
-    try_face_geometry_from_ref,
+    AppSimulation, CreationMenuState, EditorGraph, EditorState, GameAction, PlacedBearing,
+    PlacementError, SelectedTool, Tool, bearing_anchor_from_hit_with_grid,
+    bearing_location_occupied, builder, linear_render, try_face_geometry_from_ref,
 };
+use crate::editor::history::{EditorHistory, EditorSnapshot};
 use crate::render::mesh::drive::axis_tangents;
 use bevy::prelude::{ButtonInput, Res, ResMut, Transform, Vec3};
 use mechanic_core::{
@@ -411,15 +411,15 @@ mod tests {
         let placed = state.placed_bearings[0];
         place(&graph, &mut state, &mut history);
         assert_eq!(state.placed_bearings.len(), 1);
-        assert!(crate::apply_history_action(
-            crate::HistoryAction::Undo,
+        assert!(crate::editor::history::apply_history_action(
+            crate::editor::history::HistoryAction::Undo,
             &mut graph,
             &mut state,
             &mut history
         ));
         assert!(state.placed_bearings.is_empty());
-        assert!(crate::apply_history_action(
-            crate::HistoryAction::Redo,
+        assert!(crate::editor::history::apply_history_action(
+            crate::editor::history::HistoryAction::Redo,
             &mut graph,
             &mut state,
             &mut history

@@ -100,7 +100,7 @@ fn rendered_mesh_uses_chroma_payload_and_ghost_omits_it() {
 fn finish_modulation_preserves_guide_colour_over_existing_dark_textures() {
     let base = ConstructionRenderMaterial {
         base: StandardMaterial::default(),
-        extension: super::super::ChromaMaterialExtension {
+        extension: crate::chroma::ChromaMaterialExtension {
             tint_mask: Handle::default(),
             base_lightness: Vec4::ZERO,
         },

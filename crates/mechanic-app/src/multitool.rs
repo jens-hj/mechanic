@@ -11,13 +11,15 @@ use bevy::{
     ecs::system::SystemParam, light::NotShadowCaster, prelude::*,
 };
 
+use crate::editor::hammer::HammerInteraction;
+use crate::editor::raycast::hovered_part;
+use crate::editor::wiring::wire_end_under_cursor;
 use crate::{
-    EditorGraph, EditorState, FovCamera, HammerInteraction,
+    EditorGraph, EditorState, FovCamera,
     camera::{AVATAR_HIDDEN_PULLBACK, MainCamera, PlayerCamera, PlayerState},
     controls::GameAction,
     garage,
     hotbar::{MainTool, SelectedTool},
-    hovered_part, wire_end_under_cursor,
 };
 
 const VIEWMODEL_LAYER: usize = 2;
@@ -48,7 +50,7 @@ impl Plugin for MultitoolPlugin {
             .add_systems(
                 Update,
                 update
-                    .after(crate::handle_hammer_actions)
+                    .after(crate::editor::hammer::handle_hammer_actions)
                     .run_if(crate::debug_frame_updates_enabled),
             );
     }

@@ -27,11 +27,13 @@ use super::styles::*;
 use super::theme::*;
 use crate::camera::PlayerState;
 use crate::controls::GameAction;
+use crate::editor::hammer::{HAMMER_CHARGE_SECONDS, HammerInteraction};
+use crate::editor::wiring::WireEnd;
 use crate::hotbar::{MainTool, MatterMode, SelectedMaterial, SelectedTool, Tool};
 use crate::world::AppSpace;
 use crate::{
     AppSimulation, BearingToolSettings, BlockAttachment, CylinderToolSettings, EditorGraph,
-    EditorState, HAMMER_CHARGE_SECONDS, HammerInteraction, WireEnd, visible_bearing_count,
+    EditorState, visible_bearing_count,
 };
 
 /// How loudly one line speaks, and about what.

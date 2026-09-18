@@ -20,8 +20,9 @@ use mechanic_core::{
 };
 
 use crate::control_panel::{ControlPanelState, panel_rows, set_row_commands};
+use crate::editor::history::{EditorHistory, EditorSnapshot};
 use crate::sequencer::GearboxRuntime;
-use crate::{AppSimulation, EditorGraph, EditorHistory, EditorSnapshot, EditorState};
+use crate::{AppSimulation, EditorGraph, EditorState};
 
 pub(crate) use model::{GearboxEdit, GearboxIntent, Intent, PanelEdit, PanelModel};
 pub(crate) use view::{ControlPanel, ControlPanelProps, Handles};

@@ -365,7 +365,7 @@ struct ScriptedPlacement {
 fn scripted_placement(
     mut placement: ResMut<ScriptedPlacement>,
     mut graph: ResMut<crate::EditorGraph>,
-    mut history: ResMut<crate::EditorHistory>,
+    mut history: ResMut<crate::editor::history::EditorHistory>,
     mut state: ResMut<crate::EditorState>,
     list: Res<crate::world::WorldListState>,
 ) {
@@ -402,7 +402,7 @@ fn scripted_placement(
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
-    let previous = crate::EditorSnapshot::capture(&graph.0, &state);
+    let previous = crate::editor::history::EditorSnapshot::capture(&graph.0, &state);
     let mut outcome = Err(mechanic_core::GraphError::LinearCarriageOccupied);
     for x in 0..volume {
         for z in 0..volume {
@@ -530,7 +530,7 @@ impl FreezeSequence {
 pub(crate) fn hammer_impact(
     simulation: &crate::AppSimulation,
     tick: u64,
-) -> Option<crate::HammerImpact> {
+) -> Option<crate::editor::hammer::HammerImpact> {
     use std::sync::atomic::{AtomicU32, Ordering};
     #[derive(serde::Deserialize)]
     struct Strike {
@@ -581,8 +581,13 @@ pub(crate) fn hammer_impact(
             (delivered < repeat).then_some(delivered + 1)
         })
         .ok()?;
-    let (ticks, per_tick) =
-        crate::hammer_delivery(creation, transform, strike.body_index, point, impulse);
+    let (ticks, per_tick) = crate::editor::hammer::hammer_delivery(
+        creation,
+        transform,
+        strike.body_index,
+        point,
+        impulse,
+    );
     crate::performance_capture::record("scripted_hammer", || {
         serde_json::json!({
             "tick": tick, "body": strike.body_index, "local_point": strike.local_point,
@@ -590,7 +595,7 @@ pub(crate) fn hammer_impact(
             "strike": ordinal + 1, "repeat": repeat, "body_local_impulse": strike.body_local_impulse,
         })
     });
-    Some(crate::HammerImpact {
+    Some(crate::editor::hammer::HammerImpact {
         body_index: strike.body_index,
         local_point: point,
         impulse_per_tick: per_tick,

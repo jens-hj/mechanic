@@ -53,8 +53,13 @@ pub(crate) fn wanted(
     }
     match (simulation.creation.as_ref(), simulation.is_running()) {
         (Some(creation), true) => crate::joint_number_labels(&graph.0, |bearing| {
-            crate::simulation_bearing_pose(&graph.0, creation, &simulation.transforms, bearing)
-                .map(|(anchor, _)| anchor)
+            crate::pose::simulation_bearing_pose(
+                &graph.0,
+                creation,
+                &simulation.transforms,
+                bearing,
+            )
+            .map(|(anchor, _)| anchor)
         }),
         _ => crate::joint_number_labels(&graph.0, |bearing| Some(bearing.shared_anchor)),
     }

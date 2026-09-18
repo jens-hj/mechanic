@@ -13,8 +13,9 @@ use mechanic_core::{ColliderShape, CompiledCreation, DimensionLinkId, LocalColli
 use mechanic_gpu::GpuTransform;
 use mechanic_world::FrozenCreationDoc;
 
+use crate::editor::history::EditorHistory;
 use crate::{
-    AppSimulation, EditorGraph, EditorHistory, EditorState, MaterialWheelState, PlayerState,
+    AppSimulation, EditorGraph, EditorState, MaterialWheelState, PlayerState,
     controls::{ActionInput, GameAction},
     freeze_motion::{HeightRepeat, cardinal_heading, grid_ceiling, smooth_pose},
     hotbar::{MainTool, SelectedTool},

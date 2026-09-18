@@ -3,8 +3,9 @@
 use super::{
     AppSimulation, ConstructionRenderMaterial, EditorGraph, EditorState, EditorVisuals,
     PlacedBearing, SelectedTool, Tool, WorldPhysicsRevision, bearing_uses_socket, linear_editor,
-    material_index, transform_from_gpu,
 };
+use crate::pose::transform_from_gpu;
+use crate::render::materials::material_index;
 use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };

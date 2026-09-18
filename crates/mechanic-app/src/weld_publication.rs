@@ -1,8 +1,8 @@
 //! Explicit weld-placement transactions. Ordinary edits retain pose-preserving transfer.
 
+use crate::editor::history::{EditorHistory, EditorSnapshot};
 use crate::{
-    AppSimulation, EditorGraph, EditorHistory, EditorSnapshot, EditorState, PreparedWorldPhysics,
-    WorldPhysicsPublication,
+    AppSimulation, EditorGraph, EditorState, PreparedWorldPhysics, WorldPhysicsPublication,
     builder::PlacementBounds,
     freeze::DimensionFreeze,
     weld_tool::{Pick, motion},

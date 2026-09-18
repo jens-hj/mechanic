@@ -1,10 +1,11 @@
 //! Drive indicator, wire, and drive x-ray overlay meshes.
 
+use crate::pose::{simulation_bearing_pose, simulation_part_pose};
 use crate::render::mesh::primitives::{
     append_mesh_quad, append_mesh_triangle, degenerate_overlay_mesh,
 };
 use crate::sequencer::DriveSequencer;
-use crate::{PlacedBearing, bearing_uses_socket, simulation_bearing_pose, simulation_part_pose};
+use crate::{PlacedBearing, bearing_uses_socket};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::prelude::{Mesh, Vec3};

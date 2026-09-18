@@ -1,8 +1,10 @@
 //! Procedural suspension rendering and triangle picking share cached core meshes.
 use super::{
     AppSimulation, ConstructionRenderMaterial, EditorGraph, EditorState, EditorVisuals,
-    PlacedBearing, material_index, transform_from_gpu,
+    PlacedBearing,
 };
+use crate::pose::transform_from_gpu;
+use crate::render::materials::material_index;
 use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };

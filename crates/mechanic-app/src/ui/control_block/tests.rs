@@ -122,7 +122,7 @@ fn drive_preset_uses_two_gas_engines_and_the_full_gear_range() {
     let mut world = World::new();
     world.insert_resource(crate::EditorGraph(graph));
     world.init_resource::<crate::EditorState>();
-    world.init_resource::<crate::EditorHistory>();
+    world.init_resource::<crate::editor::history::EditorHistory>();
     world.init_resource::<crate::AppSimulation>();
     let mut system = SystemState::<super::EditTarget>::new(&mut world);
     let intent = super::Intent {

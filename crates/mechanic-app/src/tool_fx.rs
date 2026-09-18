@@ -7,8 +7,9 @@ mod render;
 #[cfg(test)]
 mod tests;
 
+use crate::editor::history::EditorHistory;
 use crate::{
-    AppSimulation, EditorGraph, EditorHistory, EditorState, MaterialWheelState, PlayerState,
+    AppSimulation, EditorGraph, EditorState, MaterialWheelState, PlayerState,
     camera::MainCamera,
     controls::GameAction,
     freeze::{DimensionFreeze, VisualSnapshot},
@@ -238,18 +239,19 @@ fn update(
                         connector_plates: [None; 6],
                     })
             }
-            Some(MainTool::Connector) => {
-                crate::wire_drag_endpoints(&input.graph.0, &input.state, &simulation).map(
-                    |(_, target)| EmitterFrame {
-                        tool: Kind::Connector,
-                        origin,
-                        target,
-                        normal: Vec3::Y,
-                        connector_phase: emitter.connector_phase,
-                        connector_plates: emitter.connector_plates,
-                    },
-                )
-            }
+            Some(MainTool::Connector) => crate::editor::wiring::wire_drag_endpoints(
+                &input.graph.0,
+                &input.state,
+                &simulation,
+            )
+            .map(|(_, target)| EmitterFrame {
+                tool: Kind::Connector,
+                origin,
+                target,
+                normal: Vec3::Y,
+                connector_phase: emitter.connector_phase,
+                connector_plates: emitter.connector_plates,
+            }),
             _ => None,
         }
     } else {

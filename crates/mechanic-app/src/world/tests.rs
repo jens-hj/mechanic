@@ -39,7 +39,8 @@ use super::{
     terrain_mesh_is_renderable,
 };
 use super::{PendingFoundationSync, TerrainFoundation};
-use crate::{EditorGraph, EditorHistory, EditorState, garage, showcase};
+use crate::editor::history::EditorHistory;
+use crate::{EditorGraph, EditorState, garage, showcase};
 
 #[test]
 fn saved_floor_creation_is_centered_in_editable_garage_and_detached_from_ground() {

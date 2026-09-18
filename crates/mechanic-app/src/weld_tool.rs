@@ -480,7 +480,7 @@ pub(crate) fn actions(
     graph: &mut ConstructionGraph,
     simulation: &AppSimulation,
     state: &mut EditorState,
-    history: &mut crate::EditorHistory,
+    history: &mut crate::editor::history::EditorHistory,
     actions: &ButtonInput<GameAction>,
     blocked: bool,
 ) {
@@ -550,7 +550,8 @@ pub(crate) fn actions(
             } else {
                 match intent.stage(graph, []) {
                     Ok(staged) => {
-                        let previous = crate::EditorSnapshot::capture(graph, state);
+                        let previous =
+                            crate::editor::history::EditorSnapshot::capture(graph, state);
                         *graph = staged;
                         intent.place_sockets(state);
                         history.commit(previous);
@@ -679,7 +680,7 @@ pub(crate) fn join_hover(
 pub(crate) fn join_actions(
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
-    history: &mut crate::EditorHistory,
+    history: &mut crate::editor::history::EditorHistory,
     actions: &ButtonInput<GameAction>,
     blocked: bool,
 ) {
@@ -704,7 +705,7 @@ pub(crate) fn join_actions(
     match state.weld.join_candidate.take() {
         Some((_, _, Ok(staged))) => {
             let lockup = crate::weld_lockup_warning(graph, &staged);
-            let previous = crate::EditorSnapshot::capture(graph, state);
+            let previous = crate::editor::history::EditorSnapshot::capture(graph, state);
             *graph = staged;
             history.commit(previous);
             state.weld.cancel();
@@ -818,13 +819,13 @@ pub(crate) fn draw_features(
     let geometry = if selected.active_editor_tool() == Some(crate::Tool::Weld) {
         feature_geometry(&graph.0, &state, &simulation)
     } else {
-        crate::OverlayGeometry::default()
+        crate::editor::overlay::OverlayGeometry::default()
     };
     if let Ok((mesh, mut visibility)) = overlay.single_mut() {
-        *visibility = crate::write_overlay(&mut meshes, &mesh.0, geometry);
+        *visibility = crate::editor::overlay::write_overlay(&mut meshes, &mesh.0, geometry);
     } else {
         let mesh = meshes.add(crate::render::mesh::primitives::degenerate_overlay_mesh());
-        let visibility = crate::write_overlay(&mut meshes, &mesh, geometry);
+        let visibility = crate::editor::overlay::write_overlay(&mut meshes, &mesh, geometry);
         commands.spawn((
             Name::new("Weld feature highlights"),
             Mesh3d(mesh),
@@ -846,8 +847,8 @@ fn feature_geometry(
     graph: &ConstructionGraph,
     state: &EditorState,
     simulation: &AppSimulation,
-) -> crate::OverlayGeometry {
-    let mut geometry = crate::OverlayGeometry::default();
+) -> crate::editor::overlay::OverlayGeometry {
+    let mut geometry = crate::editor::overlay::OverlayGeometry::default();
     let target = state
         .weld
         .publishing
@@ -895,7 +896,7 @@ fn feature_geometry(
                     let half = solid.half_edges[edge as usize];
                     let next = solid.half_edges[half.next as usize];
                     if half.logical_edge.is_some() {
-                        crate::append_overlay_bar(
+                        crate::editor::overlay::append_overlay_bar(
                             frame.point(solid.vertices[half.origin as usize].position),
                             frame.point(solid.vertices[next.origin as usize].position),
                             0.010,
@@ -911,7 +912,12 @@ fn feature_geometry(
         }
         match selection.feature {
             WeldFeature::Edge([a, b]) => {
-                crate::append_overlay_bar(frame.point(a), frame.point(b), 0.022, &mut geometry);
+                crate::editor::overlay::append_overlay_bar(
+                    frame.point(a),
+                    frame.point(b),
+                    0.022,
+                    &mut geometry,
+                );
             }
             WeldFeature::Vertex(point) => {
                 append_vertex_marker(frame.point(point), frame.rotation(), 0.054, &mut geometry);
@@ -929,7 +935,7 @@ fn append_revealed_vertices(
     patch: mechanic_core::SurfacePatchKey,
     frame: ConstructionFrame,
     solid: &mechanic_core::EvaluatedSolid,
-    geometry: &mut crate::OverlayGeometry,
+    geometry: &mut crate::editor::overlay::OverlayGeometry,
 ) {
     let Some((origin, direction)) = state.pointer_ray else {
         return;
@@ -967,7 +973,7 @@ fn append_vertex_marker(
     point: Vec3,
     rotation: Quat,
     size: f32,
-    geometry: &mut crate::OverlayGeometry,
+    geometry: &mut crate::editor::overlay::OverlayGeometry,
 ) {
     crate::render::mesh::construction::append_transformed_cuboid(
         point,

@@ -34,7 +34,7 @@ fn garage_press_drag_release_commits_one_default_pose_placement() {
         placement_bounds: builder::PlacementBounds::GarageBuild,
         ..default()
     };
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     let mut input = ButtonInput::default();
     hover(&graph, &simulation, &mut state, ray(0.0), &input, &world);
     input.press(GameAction::Primary);
@@ -99,8 +99,8 @@ fn garage_press_drag_release_commits_one_default_pose_placement() {
             .unwrap()
             .abs_diff_eq(Vec3::new(2.0, 7.0, 0.0), 1.0e-5)
     );
-    assert!(crate::apply_history_action(
-        crate::HistoryAction::Undo,
+    assert!(crate::editor::history::apply_history_action(
+        crate::editor::history::HistoryAction::Undo,
         &mut graph,
         &mut state,
         &mut history
@@ -111,8 +111,8 @@ fn garage_press_drag_release_commits_one_default_pose_placement() {
             .unwrap()
             .abs_diff_eq(Vec3::Y * 7.0, 1.0e-5)
     );
-    assert!(crate::apply_history_action(
-        crate::HistoryAction::Redo,
+    assert!(crate::editor::history::apply_history_action(
+        crate::editor::history::HistoryAction::Redo,
         &mut graph,
         &mut state,
         &mut history
@@ -131,7 +131,7 @@ fn invalid_release_retains_source_and_escape_or_secondary_cancels_without_editin
             placement_bounds: builder::PlacementBounds::GarageBuild,
             ..default()
         };
-        let mut history = crate::EditorHistory::default();
+        let mut history = crate::editor::history::EditorHistory::default();
         let mut input = ButtonInput::default();
         hover(&graph, &simulation, &mut state, ray(0.0), &input, &world);
         input.press(GameAction::Primary);
@@ -225,7 +225,7 @@ fn a_locked_destination_tracks_motion_without_a_stationary_drag_jump() {
         placement_bounds: builder::PlacementBounds::GarageBuild,
         ..default()
     };
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     let mut input = ButtonInput::default();
     hover(&graph, &simulation, &mut state, ray(0.0), &input, &world);
     input.press(GameAction::Primary);
@@ -278,7 +278,7 @@ fn initial_hover_snaps_both_axes_and_drag_keeps_the_snapped_alignment() {
         placement_bounds: builder::PlacementBounds::GarageBuild,
         ..default()
     };
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     let mut input = ButtonInput::default();
     let pointer = |x, z| Ray3d::new(Vec3::new(x, 9.0, z), Dir3::NEG_Y);
     hover(
@@ -471,7 +471,7 @@ fn socket_gesture(kind: mechanic_core::BearingKind) {
     } else {
         ray(2.0)
     };
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     let mut input = ButtonInput::default();
     hover(&graph, &simulation, &mut state, ray(0.0), &input, &world);
     input.press(GameAction::Primary);
@@ -547,8 +547,8 @@ fn socket_gesture(kind: mechanic_core::BearingKind) {
     );
     assert_eq!(compiled.bearings.len(), 1);
     assert_eq!(graph.bearings().next().unwrap().1.kind, kind);
-    assert!(crate::apply_history_action(
-        crate::HistoryAction::Undo,
+    assert!(crate::editor::history::apply_history_action(
+        crate::editor::history::HistoryAction::Undo,
         &mut graph,
         &mut state,
         &mut history
@@ -559,8 +559,8 @@ fn socket_gesture(kind: mechanic_core::BearingKind) {
             .unwrap()
             .abs_diff_eq(Vec3::Y * 7.0, 1.0e-5)
     );
-    assert!(crate::apply_history_action(
-        crate::HistoryAction::Redo,
+    assert!(crate::editor::history::apply_history_action(
+        crate::editor::history::HistoryAction::Redo,
         &mut graph,
         &mut state,
         &mut history
@@ -627,7 +627,7 @@ fn bearing_loop() -> (ConstructionGraph, PartId, PartId, PartId) {
 fn click(
     graph: &mut ConstructionGraph,
     state: &mut EditorState,
-    history: &mut crate::EditorHistory,
+    history: &mut crate::editor::history::EditorHistory,
     x: f32,
 ) {
     join_hover(graph, &AppSimulation::default(), state, ray(x));
@@ -647,7 +647,7 @@ fn join_welds_two_touching_garage_parts_in_place_with_one_history_entry() {
         .map(|&part| graph.part_frame(part))
         .collect::<Vec<_>>();
     let mut state = EditorState::default();
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     click(&mut graph, &mut state, &mut history, 0.0);
     assert_eq!(state.weld.join_first(), Some(parts[0]));
     join_hover(&graph, &AppSimulation::default(), &mut state, ray(0.5));
@@ -663,8 +663,8 @@ fn join_welds_two_touching_garage_parts_in_place_with_one_history_entry() {
             .collect::<Vec<_>>(),
         frames
     );
-    assert!(crate::apply_history_action(
-        crate::HistoryAction::Undo,
+    assert!(crate::editor::history::apply_history_action(
+        crate::editor::history::HistoryAction::Undo,
         &mut graph,
         &mut state,
         &mut history
@@ -676,7 +676,7 @@ fn join_welds_two_touching_garage_parts_in_place_with_one_history_entry() {
 fn join_closes_a_loop_through_bearings() {
     let (mut graph, _, left, right) = bearing_loop();
     let mut state = EditorState::default();
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     click(&mut graph, &mut state, &mut history, -0.25);
     click(&mut graph, &mut state, &mut history, 0.25);
     assert_eq!(graph.weld_count(), 1, "{:?}", state.feedback);
@@ -698,7 +698,7 @@ fn join_refuses_separated_bodies_and_the_same_body() {
         ([2; 3], IVec3::new(4, 28, 0)),
     ]);
     let mut state = EditorState::default();
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     click(&mut graph, &mut state, &mut history, 0.0);
     for x in [1.0, 0.0] {
         click(&mut graph, &mut state, &mut history, x);
@@ -718,7 +718,7 @@ fn changing_weld_mode_cancels_the_gesture() {
         ([2; 3], IVec3::new(2, 28, 0)),
     ]);
     let mut state = EditorState::default();
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     sync_mode(&mut state, WeldMode::Join);
     click(&mut graph, &mut state, &mut history, 0.0);
     assert!(state.weld.busy());
@@ -737,7 +737,7 @@ fn place_mode_refuses_a_destination_in_the_source_creation() {
         placement_bounds: builder::PlacementBounds::GarageBuild,
         ..default()
     };
-    let mut history = crate::EditorHistory::default();
+    let mut history = crate::editor::history::EditorHistory::default();
     let mut input = ButtonInput::default();
     hover(&graph, &simulation, &mut state, ray(-0.25), &input, &world);
     input.press(GameAction::Primary);

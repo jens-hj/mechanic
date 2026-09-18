@@ -44,9 +44,10 @@ use mechanic_world::{
     select_active_nodes_with_interests, terrain_loading_worker_count, terrain_worker_count,
 };
 
+use crate::editor::history::EditorHistory;
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
 use crate::{
-    AppSimulation, EditorGraph, EditorHistory, EditorState, PlacedBearing,
+    AppSimulation, EditorGraph, EditorState, PlacedBearing,
     builder::{
         GROUND_HALF_SIZE, PlacementSnapIndex, composed_part_world_bounds, part_world_bounds,
     },
@@ -2064,7 +2065,7 @@ fn enter_world(
     graph.0 = world_editor.graph;
     *history = world_editor.history;
     editor.placed_bearings = world_editor.placed_bearings;
-    crate::cancel_transient_editor_state(&mut graph.0, &mut editor);
+    crate::editor::history::cancel_transient_editor_state(&mut graph.0, &mut editor);
     editor.construction_mesh_dirty = true;
     reset_player_collision_publication(&mut runtime);
 
@@ -2168,7 +2169,7 @@ fn terrain_render_material(
         asset_server
             .load_builder()
             .with_settings(move |settings: &mut bevy::image::ImageLoaderSettings| {
-                crate::configure_repeating_texture(settings, is_srgb);
+                crate::render::materials::configure_repeating_texture(settings, is_srgb);
             })
             .load(path)
     };
@@ -2373,7 +2374,7 @@ fn leave_world(
     graph.0 = garage_editor.graph;
     *history = garage_editor.history;
     editor.placed_bearings = garage_editor.placed_bearings;
-    crate::cancel_transient_editor_state(&mut graph.0, &mut editor);
+    crate::editor::history::cancel_transient_editor_state(&mut graph.0, &mut editor);
     editor.construction_mesh_dirty = true;
     for entity in &entities {
         commands.entity(entity).despawn();

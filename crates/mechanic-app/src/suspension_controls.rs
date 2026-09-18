@@ -347,7 +347,7 @@ pub(crate) fn validate_draft(
 pub(crate) fn actions(
     graph: &mut crate::EditorGraph,
     state: &mut EditorState,
-    history: &mut crate::EditorHistory,
+    history: &mut crate::editor::history::EditorHistory,
     actions: &ButtonInput<crate::GameAction>,
     delta: Vec2,
     tool: Option<crate::Tool>,

@@ -5,7 +5,8 @@ use bevy::{
     render::render_resource::PrimitiveTopology,
 };
 
-use crate::{builder::GROUND_HALF_SIZE, configure_repeating_texture};
+use crate::builder::GROUND_HALF_SIZE;
+use crate::render::materials::configure_repeating_texture;
 
 pub(crate) const CELL_SIZE: f32 = 5.0;
 pub(crate) const CELL_COUNT: u8 = 6;

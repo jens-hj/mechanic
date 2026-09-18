@@ -1,5 +1,6 @@
 use super::*;
-use crate::{EditorGraph, EditorHistory, GameAction, Tool};
+use crate::editor::history::EditorHistory;
+use crate::{EditorGraph, GameAction, Tool};
 pub(crate) fn fixture() -> (EditorGraph, EditorState) {
     let mut graph = ConstructionGraph::new();
     let mechanic_core::BuildOutcome::Spawned(part) = graph
@@ -109,15 +110,15 @@ fn every_parameter_steps_and_commits_once_on_release() {
         assert_eq!(history.undo.len(), 1, "{parameter:?}");
         assert_ne!(state.placed_bearings[0].kind, original);
         assert!(state.suspension.controls.gesture.is_none());
-        crate::apply_history_action(
-            crate::HistoryAction::Undo,
+        crate::editor::history::apply_history_action(
+            crate::editor::history::HistoryAction::Undo,
             &mut graph.0,
             &mut state,
             &mut history,
         );
         assert_eq!(state.placed_bearings[0].kind, original);
-        crate::apply_history_action(
-            crate::HistoryAction::Redo,
+        crate::editor::history::apply_history_action(
+            crate::editor::history::HistoryAction::Redo,
             &mut graph.0,
             &mut state,
             &mut history,

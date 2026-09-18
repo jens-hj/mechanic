@@ -10,10 +10,11 @@ use mechanic_core::{
 pub(super) fn append_outline(
     socket: PlacedBearing,
     frame: ConstructionFrame,
-    geometry: &mut crate::OverlayGeometry,
+    geometry: &mut crate::editor::overlay::OverlayGeometry,
 ) {
-    let mut line =
-        |a, b| crate::append_overlay_bar(frame.point(a), frame.point(b), 0.010, geometry);
+    let mut line = |a, b| {
+        crate::editor::overlay::append_overlay_bar(frame.point(a), frame.point(b), 0.010, geometry);
+    };
     match socket.kind {
         BearingKind::Rotational => {
             let (u, v) = crate::render::mesh::drive::axis_tangents(socket.axis);
@@ -159,7 +160,7 @@ fn surface(
             if direction.dot(socket.axis) >= -1.0e-6 {
                 return None;
             }
-            let distance = crate::raycast_bearing_annulus(
+            let distance = crate::editor::raycast::raycast_bearing_annulus(
                 origin,
                 direction,
                 socket.anchor,

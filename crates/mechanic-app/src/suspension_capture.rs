@@ -1,5 +1,6 @@
 //! Opt-in native snapshots of prescribed suspension geometry, without OS input.
-use crate::{ConstructionRenderMaterial, EditorVisuals, material_index};
+use crate::render::materials::material_index;
+use crate::{ConstructionRenderMaterial, EditorVisuals};
 use bevy::{
     app::AppExit,
     input::{
@@ -378,7 +379,7 @@ fn exercise(
     capture: Res<Capture>,
     mut graph: ResMut<crate::EditorGraph>,
     mut editor: ResMut<crate::EditorState>,
-    mut history: ResMut<crate::EditorHistory>,
+    mut history: ResMut<crate::editor::history::EditorHistory>,
 ) {
     if !matches!(capture.stage, Stage::Wait) {
         return;
