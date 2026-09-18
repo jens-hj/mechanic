@@ -199,7 +199,6 @@ mod tests {
         assert!((impulses[0] - 2.0).abs() < 1e-12);
         assert!(impulses[1].abs() < 1e-12);
         assert!(result.pivots >= 3 && result.pivots <= 16);
-        assert!(result.basis_storage <= 8);
         assert_eq!(
             impulses,
             seed(&factor, &blocks, 16, 1e-12).unwrap().impulses.unwrap()

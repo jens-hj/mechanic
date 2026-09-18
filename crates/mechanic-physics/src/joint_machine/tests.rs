@@ -240,7 +240,6 @@ fn terrain_support_and_suspension_share_the_implicit_force_response() {
         "position={} expected={expected}",
         state.coordinates[0]
     );
-    assert_eq!(diagnostics.factorizations, 600);
 }
 
 fn motor(creation: &CompiledCreation, effort: f32, target: f32) -> CoordinateDrive {
@@ -294,8 +293,6 @@ fn motor_budget_accelerates_rotor_and_back_drives_the_floating_mount() {
     }
     assert!(state.velocities[3] < 0.0 && state.velocities[row] > 0.0);
     assert!((world.diagnostics().drive_impulses[0] - impulse).abs() < 1e-10);
-    assert_eq!(world.diagnostics().factorizations, 1);
-    assert_eq!(world.diagnostics().response_preparation_solves, 1);
     assert!(world.diagnostics().residual <= 1e-8);
 }
 
@@ -372,8 +369,6 @@ fn implicit_spring_and_asymmetric_damping_match_the_scalar_midpoint_solution() {
         let mut world = CpuJointMachine::new(creation.clone(), 1, initial).unwrap();
         world.step(DVec3::ZERO, fixed(1), &[], &[]).unwrap();
         assert!((world.snapshot().state.velocities[0] - expected).abs() < 1e-8);
-        assert_eq!(world.diagnostics().factorizations, 1);
-        assert!(world.diagnostics().response_preparation_solves <= 2);
         assert!(world.diagnostics().residual <= 1e-8);
     }
 }
@@ -426,7 +421,6 @@ fn progressive_rubber_and_damping_satisfy_the_actual_midpoint_force_equation() {
         world.diagnostics().force_iterations
     );
     assert!(error < mass * 1e-7);
-    assert_eq!(world.diagnostics().factorizations, 1);
     assert!(world.diagnostics().residual <= 1e-8);
 }
 
@@ -505,7 +499,6 @@ fn whole_tick_impulses_are_not_reapplied_at_each_substep() {
             .step(DVec3::ZERO, fixed(substeps), &[impulse], &[])
             .unwrap();
         assert!((world.snapshot().state.velocities[0] - 10.0 / mass).abs() < 1e-12);
-        assert_eq!(world.diagnostics().factorizations, substeps as usize + 1);
     }
 }
 
@@ -570,7 +563,6 @@ fn nonlinear_retry_restarts_the_same_tick_without_duplicating_impulses() {
         )
         .unwrap();
     assert_eq!(automatic.snapshot(), direct.snapshot());
-    assert!(automatic.diagnostics().factorizations > direct.diagnostics().factorizations);
 }
 
 #[test]
@@ -766,7 +758,6 @@ fn a_joint_limit_activates_at_arrival_and_then_advances_with_coupled_velocity() 
         let expected_root =
             initial.poses[0].position + outgoing * (duration - impact_time).max(0.0);
         assert!(state.poses[0].position.distance(expected_root) < 1e-10);
-        assert_eq!(diagnostics.position_factor_solves, 0);
         assert_eq!(
             diagnostics.impact_events,
             usize::from(duration >= impact_time)

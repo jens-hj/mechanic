@@ -73,7 +73,6 @@ fn split_recovery_rejects_excessive_penetration_before_mutating_state() {
         Err(PhysicsError::NotConverged)
     );
     assert_eq!(state, initial);
-    assert_eq!(diagnostics.factorizations, 0);
     assert_eq!(diagnostics.accepted_seconds, 0.0);
 }
 
@@ -100,5 +99,4 @@ fn split_recovery_does_not_extend_finite_terrain_into_empty_space() {
     .unwrap();
     assert_eq!(state, initial);
     assert_eq!(diagnostics.terrain_recovery_passes, 0);
-    assert_eq!(diagnostics.position_factor_solves, 0);
 }

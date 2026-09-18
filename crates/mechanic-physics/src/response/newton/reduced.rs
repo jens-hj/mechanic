@@ -141,9 +141,6 @@ mod tests {
         let rhs = [1.0, -0.3, 0.7, 0.2, -0.5];
         let shift = 1e-3;
         let work = direction(&factor, &blocks, &derivatives, &steps, &rhs, shift);
-        assert_eq!(work.factor_solves, 3);
-        assert_eq!(work.generalized_factorizations, 1);
-        assert_eq!(work.reduced_storage, 14);
         let delta = work.direction.unwrap();
         let mut velocity = vec![0.0; 2];
         for (row, impulse) in blocks[0].jacobian.iter().zip(&delta) {

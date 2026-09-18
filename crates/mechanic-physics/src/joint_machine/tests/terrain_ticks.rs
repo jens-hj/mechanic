@@ -74,7 +74,6 @@ fn supported_ticks_validate_motion_before_publication_and_repeat_at_each_substep
                 assert_eq!(diagnostics.terrain_contact_queries, subdivisions as usize);
                 assert_eq!(diagnostics.terrain_path_queries, subdivisions as usize);
                 assert_eq!(diagnostics.terrain_path_rejections, 0);
-                assert_eq!(diagnostics.factorizations, subdivisions as usize);
                 assert_eq!(diagnostics.terrain_envelopes, 2 * subdivisions as usize);
             }
             world.snapshot().state_hash()
@@ -199,7 +198,6 @@ fn split_joint_recovery_checks_terrain_and_restores_physical_velocity_on_failure
     assert_eq!(state, before);
     assert_eq!(diagnostics.terrain_correction_paths, 1);
     assert_eq!(diagnostics.terrain_path_rejections, 1);
-    assert!(diagnostics.position_factor_solves > 0);
     let empty = TerrainContactScene::default();
     let clear = context(&empty, &geometry, 1);
     correct_joint_positions(

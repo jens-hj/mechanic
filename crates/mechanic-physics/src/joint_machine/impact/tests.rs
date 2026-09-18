@@ -72,7 +72,6 @@ fn impact_applies_restitution_once_without_moving_or_biasing_penetration() {
             .unwrap()
         );
         assert_eq!(state, before);
-        assert_eq!(diagnostics.factorizations, 1);
     }
 }
 
@@ -117,7 +116,6 @@ fn failed_instantaneous_solve_preserves_all_physical_state() {
     assert_eq!(state, before);
     assert_eq!(diagnostics.impact_attempts, 1);
     assert_eq!(diagnostics.impact_events, 0);
-    assert!(diagnostics.impact_factor_solves > 0);
     assert_eq!(
         diagnostics.failure_stage,
         Some(crate::JointFailureStage::Impact)

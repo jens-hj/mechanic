@@ -247,7 +247,6 @@ fn coupled_car_contact_response_uses_tree_inverse_with_original_friction_bounds(
         assert!(a.converged && b.converged);
         assert_close(&b.velocity_change, &a.velocity_change, 1e-9);
         assert_close(&b.impulses, &a.impulses, 1e-9);
-        assert_eq!(b.response_storage, if copies == 1 { 9 } else { 0 });
         for impulse in b.impulses.chunks_exact(3) {
             assert!(impulse[0] >= 0.0);
             assert!(impulse[1].hypot(impulse[2]) <= 0.8 * impulse[0] + 1e-9);

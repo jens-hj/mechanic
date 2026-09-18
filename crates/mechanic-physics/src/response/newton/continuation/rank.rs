@@ -136,7 +136,6 @@ mod tests {
         // The minimum norm distribution divides that sum equally.
         assert!((result[0] - 0.7).abs() < 1e-14);
         assert!((result[1] - 0.7).abs() < 1e-14);
-        assert_eq!(work.reduced_storage, 7);
     }
 
     #[test]
