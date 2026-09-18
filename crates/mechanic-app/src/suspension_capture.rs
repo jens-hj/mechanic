@@ -44,14 +44,14 @@ impl Plugin for SuspensionCapturePlugin {
             .add_systems(
                 Update,
                 exercise
-                    .after(crate::editor::build_actions::handle_build_actions)
-                    .before(crate::suspension_render::sync_suspension_visuals),
+                    .after(crate::schedule::FrameSet::Build)
+                    .before(crate::schedule::FrameSet::Simulation),
             )
             .add_systems(
                 Update,
                 aim_camera
-                    .after(crate::camera::update_player_camera)
-                    .before(crate::editor::hover::update_hover),
+                    .after(crate::schedule::FrameSet::Camera)
+                    .before(crate::schedule::FrameSet::Hover),
             );
     }
 }

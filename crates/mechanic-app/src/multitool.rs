@@ -47,11 +47,11 @@ pub(crate) struct MultitoolPlugin;
 
 impl Plugin for MultitoolPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn.after(crate::setup))
+        app.add_systems(Startup, spawn.after(crate::schedule::StartupSet::Scene))
             .add_systems(
                 Update,
                 update
-                    .after(crate::editor::hammer::handle_hammer_actions)
+                    .after(crate::schedule::FrameSet::Shape)
                     .run_if(crate::debug_freeze::debug_frame_updates_enabled),
             );
     }

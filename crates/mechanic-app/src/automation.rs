@@ -201,7 +201,7 @@ impl Plugin for AutomationPlugin {
             .add_systems(PreUpdate, suppress_input.after(InputSystems))
             .add_systems(
                 Update,
-                (advance, scripted_placement).after(crate::performance_capture::sample),
+                (advance, scripted_placement).after(crate::schedule::FrameSet::Metrics),
             );
     }
 }

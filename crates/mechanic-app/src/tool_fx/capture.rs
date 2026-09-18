@@ -25,7 +25,7 @@ pub(super) fn install(app: &mut App) {
                 elapsed: -4.0,
                 ..default()
             })
-            .add_systems(Startup, setup.after(crate::setup))
+            .add_systems(Startup, setup.after(crate::schedule::StartupSet::Scene))
             .add_systems(
                 PostUpdate,
                 advance

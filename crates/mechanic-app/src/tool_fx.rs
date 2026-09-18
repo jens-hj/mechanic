@@ -35,7 +35,7 @@ impl Plugin for ToolFxPlugin {
         app.init_resource::<ToolFx>()
             .init_resource::<ToolEmitter>()
             .add_plugins((render::CustomMaterialPlugin, aperture::AperturePlugin))
-            .add_systems(Startup, spawn.after(crate::setup))
+            .add_systems(Startup, spawn.after(crate::schedule::StartupSet::Scene))
             .add_systems(
                 PostUpdate,
                 (collect_plate_emitters, update)

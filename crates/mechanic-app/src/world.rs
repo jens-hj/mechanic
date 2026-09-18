@@ -48,6 +48,7 @@ use crate::editor::build_actions::PlacedBearing;
 use crate::editor::history::EditorHistory;
 use crate::editor::state::{EditorGraph, EditorState};
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
+use crate::schedule::FrameSet;
 use crate::simulation::state::AppSimulation;
 use crate::{
     builder::{
@@ -1130,11 +1131,8 @@ impl Plugin for WorldPrototypePlugin {
             .add_systems(
                 Update,
                 (
-                    select_and_size_brush.after(crate::controls::update_action_state),
-                    walk_world
-                        .after(crate::camera::update_player_camera)
-                        .after(crate::simulation::tick::poll_simulation_readbacks)
-                        .after(crate::freeze::update),
+                    select_and_size_brush.after(FrameSet::Input),
+                    walk_world.after(FrameSet::Readback),
                     use_brush.after(walk_world),
                     coordinate_terrain_edits.after(use_brush),
                     prepare_terrain_texture_mips,
@@ -1143,7 +1141,8 @@ impl Plugin for WorldPrototypePlugin {
                     clumps::sync_clump_rendering.after(integrate_terrain_remeshes),
                     sync_world_foundations
                         .after(integrate_terrain_remeshes)
-                        .after(crate::editor::build_actions::handle_build_actions),
+                        .after(FrameSet::Build)
+                        .before(FrameSet::Simulation),
                     autosave_world.after(integrate_terrain_remeshes),
                     save_on_exit.after(autosave_world),
                 )
@@ -1152,13 +1151,10 @@ impl Plugin for WorldPrototypePlugin {
             .add_systems(
                 Update,
                 toggle_space
-                    .after(crate::controls::update_action_state)
+                    .after(FrameSet::Input)
                     .run_if(world_list_closed),
             )
-            .add_systems(
-                Update,
-                handle_world_list.after(crate::pause_menu::handle_pause_request),
-            );
+            .add_systems(Update, handle_world_list.after(FrameSet::Commands));
     }
 }
 
