@@ -849,7 +849,18 @@ fn load_space_editors(
 
 fn application_world_store() -> WorldStore {
     crate::automation::world_store().map_or_else(
-        || WorldStore::platform_default().unwrap_or_else(|| WorldStore::new("worlds")),
+        || {
+            // Tests start from an empty store: a world left behind by a play
+            // session would otherwise decide what every fixture contains.
+            if cfg!(test) {
+                WorldStore::new(
+                    std::env::temp_dir()
+                        .join(format!("mechanic-test-worlds-{}", std::process::id())),
+                )
+            } else {
+                WorldStore::platform_default().unwrap_or_else(|| WorldStore::new("worlds"))
+            }
+        },
         WorldStore::new,
     )
 }
