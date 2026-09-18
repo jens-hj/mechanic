@@ -14,7 +14,7 @@ use bevy::{
     window::ExitCondition,
 };
 
-use super::TerrainRenderMaterial;
+use crate::world::TerrainRenderMaterial;
 
 #[derive(Resource, Default)]
 struct Pixels(Vec<u8>);

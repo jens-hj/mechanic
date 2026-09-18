@@ -17,14 +17,14 @@ use bevy::{
     window::ExitCondition,
 };
 
-use super::{TerrainRenderMaterial, generate_rgba8_mip_chain, terrain_render_material};
 use crate::render_diagnostics::{ProfiledCamera, RenderTimings, RenderTimingsPlugin};
+use crate::world::{TerrainRenderMaterial, generate_rgba8_mip_chain, terrain_render_material};
 
 const WIDTH: u32 = 4096;
 const HEIGHT: u32 = 2524;
 const SHADER_PATH: &str = "shaders/terrain_material.wgsl";
-const REFERENCE: &str = include_str!("fixtures/terrain_material_reference.wgsl");
-const CANDIDATE: &str = include_str!("../../assets/shaders/terrain_material.wgsl");
+const REFERENCE: &str = include_str!("../fixtures/terrain_material_reference.wgsl");
+const CANDIDATE: &str = include_str!("../../../assets/shaders/terrain_material.wgsl");
 
 #[derive(Resource, Default)]
 struct Pixels(Vec<u8>);

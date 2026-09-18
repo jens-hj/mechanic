@@ -1,11 +1,15 @@
-// High-speed return-to-center regression from a garage-built vehicle.
+//! High-speed return-to-center regression from a garage-built vehicle.
+
+use super::*;
 
 #[test]
 #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
 fn high_speed_steering_returns_to_center_after_release() {
     let (device, queue) = test_device().expect("this regression requires a GPU adapter");
-    let document: mechanic_core::CreationDocument =
-        ron::from_str(include_str!("../tests/fixtures/front_steered_car.mech")).unwrap();
+    let document: mechanic_core::CreationDocument = ron::from_str(include_str!(
+        "../../../tests/fixtures/front_steered_car.mech"
+    ))
+    .unwrap();
     let creation = document.into_graph().unwrap().graph.compile().unwrap();
     assert_eq!(creation.coordinate_drives.len(), 6);
     for (coordinate, drive) in creation.coordinate_drives[..2].iter().enumerate() {
