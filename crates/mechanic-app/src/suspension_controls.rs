@@ -1,5 +1,7 @@
 //! Reticle-operated suspension edits. Drafts never enter the simulation graph.
-use crate::{ConstructionGraph, EditorState, PlacedBearing};
+use crate::ConstructionGraph;
+use crate::editor::build_actions::PlacedBearing;
+use crate::editor::state::EditorState;
 use bevy::prelude::*;
 use mechanic_core::{
     BearingKind, BumpStopSpec, ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec,
@@ -320,7 +322,7 @@ pub(crate) fn validate_draft(
         let spec = gesture.parameter.edit(
             gesture.original,
             gesture.value,
-            !crate::bearing_socket_targets(graph, socket).is_empty(),
+            !crate::editor::build_actions::bearing_socket_targets(graph, socket).is_empty(),
         )?;
         let half = spec.plates().diameter / 2.0;
         let center = socket.anchor + socket.axis * spec.extended_length() / 2.0;
@@ -345,7 +347,7 @@ pub(crate) fn validate_draft(
 
 /// Runs before connector wiring and before entering the live edit coordinate frame.
 pub(crate) fn actions(
-    graph: &mut crate::EditorGraph,
+    graph: &mut crate::editor::state::EditorGraph,
     state: &mut EditorState,
     history: &mut crate::editor::history::EditorHistory,
     actions: &ButtonInput<crate::GameAction>,

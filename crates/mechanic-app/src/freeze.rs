@@ -14,8 +14,10 @@ use mechanic_gpu::GpuTransform;
 use mechanic_world::FrozenCreationDoc;
 
 use crate::editor::history::EditorHistory;
+use crate::editor::state::{EditorGraph, EditorState};
+use crate::simulation::state::AppSimulation;
 use crate::{
-    AppSimulation, EditorGraph, EditorState, MaterialWheelState, PlayerState,
+    MaterialWheelState, PlayerState,
     controls::{ActionInput, GameAction},
     freeze_motion::{HeightRepeat, cardinal_heading, grid_ceiling, smooth_pose},
     hotbar::{MainTool, SelectedTool},

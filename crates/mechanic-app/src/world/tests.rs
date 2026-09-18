@@ -40,7 +40,8 @@ use super::{
 };
 use super::{PendingFoundationSync, TerrainFoundation};
 use crate::editor::history::EditorHistory;
-use crate::{EditorGraph, EditorState, garage, showcase};
+use crate::editor::state::{EditorGraph, EditorState};
+use crate::{garage, showcase};
 
 #[test]
 fn saved_floor_creation_is_centered_in_editable_garage_and_detached_from_ground() {
@@ -273,7 +274,7 @@ fn returned_framed_creation_accepts_blocks_in_its_local_grid() {
             let part = garage.graph.parts().next().unwrap().0;
             let context = crate::live_edit::EditContext::resolve(
                 &garage.graph,
-                &crate::AppSimulation::default(),
+                &crate::simulation::state::AppSimulation::default(),
                 part,
             )
             .unwrap();
@@ -895,7 +896,7 @@ fn real_gpu_terrain_publication_preserves_motion_and_rejects_failed_replacements
         collider.material_properties.restitution = 0.0;
         collider.material_properties.youngs_modulus_pa = 200.0e9;
     }
-    let gpu = crate::GpuPhysics::new_with_config(
+    let gpu = mechanic_gpu::GpuPhysics::new_with_config(
         &device,
         &queue,
         &creation,
@@ -914,11 +915,12 @@ fn real_gpu_terrain_publication_preserves_motion_and_rejects_failed_replacements
         Vec3::NEG_Y * 20.0 * creation.compounds[0].mass_properties.mass,
     )
     .unwrap();
-    let mut simulation = crate::AppSimulation {
+    let mut simulation = crate::simulation::state::AppSimulation {
         gpu: Some(gpu),
         ..Default::default()
     };
-    let publish = |simulation: &mut crate::AppSimulation, runtime: &WorldRuntime| {
+    let publish = |simulation: &mut crate::simulation::state::AppSimulation,
+                   runtime: &WorldRuntime| {
         crate::terrain_publication::publish(simulation, runtime, &device, &queue)
     };
     assert!(publish(&mut simulation, &runtime).unwrap());
@@ -1120,7 +1122,7 @@ fn bearing_and_upper_block_edits_preserve_ground_weld_until_last_foot_is_removed
     app.world_mut()
         .resource_mut::<EditorState>()
         .placed_bearings
-        .push(crate::PlacedBearing {
+        .push(crate::editor::build_actions::PlacedBearing {
             kind: mechanic_core::BearingKind::Rotational,
             axis: Vec3::ZERO,
             source: FaceRef::part(platform, FaceKind::PositiveY),
@@ -1411,7 +1413,7 @@ fn leaving_world_discards_body_state_and_keeps_the_construction_frame() {
         super::Exposure::default(),
     ));
     let graph = showcase::build_preset(showcase::CreationPreset::PendulumGarden256).unwrap();
-    app.insert_resource(crate::AppSimulation {
+    app.insert_resource(crate::simulation::state::AppSimulation {
         creation: Some(graph.compile().unwrap()),
         published_graph: graph.clone(),
         world_revision: Some((1, 1)),
@@ -1432,7 +1434,9 @@ fn leaving_world_discards_body_state_and_keeps_the_construction_frame() {
     }
     app.add_systems(Update, super::leave_world);
     app.update();
-    let simulation = app.world().resource::<crate::AppSimulation>();
+    let simulation = app
+        .world()
+        .resource::<crate::simulation::state::AppSimulation>();
     assert!(simulation.creation.is_none());
     assert!(simulation.transforms.is_empty());
     assert!(simulation.live_state.is_none());

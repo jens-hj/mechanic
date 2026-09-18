@@ -6,7 +6,8 @@ use mechanic_core::{
 };
 use mechanic_gpu::GpuTransform;
 
-use crate::{AppSimulation, builder};
+use crate::builder;
+use crate::simulation::state::AppSimulation;
 
 const CONTACT_TOLERANCE: f32 = 0.001;
 const MAX_LIVE_PENETRATION: f32 = 0.005;

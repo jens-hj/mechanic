@@ -44,10 +44,12 @@ use mechanic_world::{
     select_active_nodes_with_interests, terrain_loading_worker_count, terrain_worker_count,
 };
 
+use crate::editor::build_actions::PlacedBearing;
 use crate::editor::history::EditorHistory;
+use crate::editor::state::{EditorGraph, EditorState};
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
+use crate::simulation::state::AppSimulation;
 use crate::{
-    AppSimulation, EditorGraph, EditorState, PlacedBearing,
     builder::{
         GROUND_HALF_SIZE, PlacementSnapIndex, composed_part_world_bounds, part_world_bounds,
     },
@@ -1131,7 +1133,7 @@ impl Plugin for WorldPrototypePlugin {
                     select_and_size_brush.after(crate::controls::update_action_state),
                     walk_world
                         .after(crate::camera::update_player_camera)
-                        .after(crate::poll_simulation_readbacks)
+                        .after(crate::simulation::tick::poll_simulation_readbacks)
                         .after(crate::freeze::update),
                     use_brush.after(walk_world),
                     coordinate_terrain_edits.after(use_brush),
@@ -1141,7 +1143,7 @@ impl Plugin for WorldPrototypePlugin {
                     clumps::sync_clump_rendering.after(integrate_terrain_remeshes),
                     sync_world_foundations
                         .after(integrate_terrain_remeshes)
-                        .after(crate::handle_build_actions),
+                        .after(crate::editor::build_actions::handle_build_actions),
                     autosave_world.after(integrate_terrain_remeshes),
                     save_on_exit.after(autosave_world),
                 )
@@ -1153,7 +1155,10 @@ impl Plugin for WorldPrototypePlugin {
                     .after(crate::controls::update_action_state)
                     .run_if(world_list_closed),
             )
-            .add_systems(Update, handle_world_list.after(crate::handle_pause_request));
+            .add_systems(
+                Update,
+                handle_world_list.after(crate::pause_menu::handle_pause_request),
+            );
     }
 }
 
@@ -3268,7 +3273,7 @@ pub(crate) fn terrain_streaming_focus(
 ) -> WorldPosition {
     let local = player
         .seat
-        .and_then(|seat| crate::seat_world_pose(graph, simulation, seat))
+        .and_then(|seat| crate::seat::seat_world_pose(graph, simulation, seat))
         .map_or(player.position, |(position, _)| position);
     WorldPosition(origin.0 + local.as_dvec3())
 }

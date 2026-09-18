@@ -1,16 +1,17 @@
 //! Editor construction meshes: blocks, layered parts, regions, and authored machine parts.
 
 use crate::builder::BLOCK_SIZE_METERS;
+use crate::editor::state::EditorState;
+use crate::render::authored::{
+    AUTHORED_CUBE_INDICES, AUTHORED_CUBE_NORMALS, AUTHORED_CUBE_POSITIONS, AUTHORED_CUBE_TANGENTS,
+    CUBE_INDICES, CUBE_NORMALS, authored_uvs,
+};
 use crate::render::mesh::pipe::{
     PipeEndFaces, PipeTextureOffset, append_cylinder_shape, append_cylinder_shape_with_end_faces,
     append_pipe_bend_shape, append_pipe_bend_shape_with_end_faces, append_pipe_junction_shape,
     pipe_end_faces, pipe_texture_offsets, welded_pipe_ends,
 };
-use crate::{
-    AUTHORED_CUBE_INDICES, AUTHORED_CUBE_NORMALS, AUTHORED_CUBE_POSITIONS, AUTHORED_CUBE_TANGENTS,
-    AuthoredPart, CUBE_INDICES, CUBE_NORMALS, EditorState, authored_uvs, builder, chroma,
-    shape_tool,
-};
+use crate::{AuthoredPart, builder, chroma, shape_tool};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::prelude::{IVec3, Mesh, Quat, Vec2, Vec3, vec};

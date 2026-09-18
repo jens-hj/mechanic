@@ -222,7 +222,12 @@ fn place_blocks(
     mut state: ResMut<EditorState>,
     mut history: ResMut<EditorHistory>,
 ) {
-    crate::handle_block_actions(&actions, &mut graph.0, &mut state, &mut history);
+    crate::editor::build_actions::handle_block_actions(
+        &actions,
+        &mut graph.0,
+        &mut state,
+        &mut history,
+    );
 }
 #[test]
 fn accepted_block_gesture_emits_once_and_rejected_placement_emits_nothing() {

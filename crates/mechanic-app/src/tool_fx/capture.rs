@@ -55,7 +55,7 @@ struct Link;
 #[expect(clippy::too_many_arguments)]
 fn setup(
     mut commands: Commands,
-    visuals: Res<crate::EditorVisuals>,
+    visuals: Res<crate::editor::preview::EditorVisuals>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     camera: Single<Entity, With<MainCamera>>,

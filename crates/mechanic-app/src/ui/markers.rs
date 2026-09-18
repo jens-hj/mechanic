@@ -18,8 +18,9 @@ use super::Handles;
 use super::components::{OverlayBadge, OverlayBadgeProps};
 use super::styles::*;
 use super::theme::*;
+use crate::editor::state::EditorGraph;
 use crate::hotbar::Tool;
-use crate::{AppSimulation, EditorGraph};
+use crate::simulation::state::AppSimulation;
 
 /// Width of one chip. Fixed rather than hugging its digits: a lane holds at
 /// most eight states, so two digits is the widest it goes, and a constant size
@@ -48,20 +49,27 @@ pub(crate) fn wanted(
     simulation: &AppSimulation,
     tool: impl Into<Option<Tool>>,
 ) -> Vec<(usize, Vec3)> {
-    if !crate::drive_xray_is_visible(tool, crate::driven_bearing_count(&graph.0)) {
+    if !crate::editor::preview::drive_xray_is_visible(
+        tool,
+        crate::editor::preview::driven_bearing_count(&graph.0),
+    ) {
         return Vec::new();
     }
     match (simulation.creation.as_ref(), simulation.is_running()) {
-        (Some(creation), true) => crate::joint_number_labels(&graph.0, |bearing| {
-            crate::pose::simulation_bearing_pose(
-                &graph.0,
-                creation,
-                &simulation.transforms,
-                bearing,
-            )
-            .map(|(anchor, _)| anchor)
+        (Some(creation), true) => {
+            crate::editor::preview::joint_number_labels(&graph.0, |bearing| {
+                crate::pose::simulation_bearing_pose(
+                    &graph.0,
+                    creation,
+                    &simulation.transforms,
+                    bearing,
+                )
+                .map(|(anchor, _)| anchor)
+            })
+        }
+        _ => crate::editor::preview::joint_number_labels(&graph.0, |bearing| {
+            Some(bearing.shared_anchor)
         }),
-        _ => crate::joint_number_labels(&graph.0, |bearing| Some(bearing.shared_anchor)),
     }
 }
 

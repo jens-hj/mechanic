@@ -45,7 +45,7 @@ fn socket_picking_and_publication_follow_the_live_destination_frame() {
         let source = spawn(&mut graph, IVec3::new(0, 28, 0));
         let support = spawn(&mut graph, IVec3::new(8, 28, 0));
         let mount = face(&graph, support, FaceKind::PositiveY);
-        let socket = crate::PlacedBearing {
+        let socket = crate::editor::build_actions::PlacedBearing {
             source: mount.face,
             anchor: mount.selection.point,
             axis: if matches!(kind, mechanic_core::BearingKind::Rotational) {
@@ -76,7 +76,7 @@ fn socket_picking_and_publication_follow_the_live_destination_frame() {
             published_graph: graph.clone(),
             creation: Some(creation),
             transforms: transforms.clone(),
-            live_state: Some(crate::LivePhysicsState {
+            live_state: Some(crate::simulation::state::LivePhysicsState {
                 tick: 0,
                 transforms,
                 velocities: vec![
@@ -217,7 +217,7 @@ fn fixture() -> (Intent, AppSimulation, PartId) {
         published_graph: graph,
         creation: Some(creation),
         transforms: transforms.clone(),
-        live_state: Some(crate::LivePhysicsState {
+        live_state: Some(crate::simulation::state::LivePhysicsState {
             tick: 12,
             transforms,
             velocities,
@@ -392,7 +392,7 @@ fn history_restores_affected_assemblies_without_rewinding_an_unrelated_body() {
         creation: Some(creation),
         published_graph: graph,
         transforms: transforms.clone(),
-        live_state: Some(crate::LivePhysicsState {
+        live_state: Some(crate::simulation::state::LivePhysicsState {
             tick: 20,
             transforms,
             velocities,
@@ -519,7 +519,7 @@ fn real_gpu_weld_publication_starts_from_default_source_coordinates() {
     )
     .unwrap();
     let (_, render_queue) = render_handles(device.clone(), queue.clone());
-    let replacement = crate::replacement_simulation_for_weld(
+    let replacement = crate::simulation::publication::replacement_simulation_for_weld(
         PreparedWorldPhysics {
             graph,
             creation,
@@ -551,7 +551,7 @@ fn default_ghost_includes_joints_and_relocation_updates_saved_sockets() {
     let (intent, _, _) = fixture();
     let graph = &intent.baseline;
     let joint = graph.bearings().find(|(_, joint)| matches!(joint.source.owner, FaceOwner::Part(part) if intent.parts.contains(&part))).unwrap().1;
-    let socket = crate::PlacedBearing {
+    let socket = crate::editor::build_actions::PlacedBearing {
         kind: joint.kind,
         axis: joint.axis,
         source: joint.source,

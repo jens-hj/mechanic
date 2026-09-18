@@ -3,8 +3,10 @@
 use crate::camera::{MainCamera, MaterialWheelState, PlayerState};
 use crate::controls::GameAction;
 use crate::editor::raycast::raycast_simulation;
+use crate::editor::state::EditorState;
 use crate::hotbar::{SelectedTool, Tool};
-use crate::{AppSimulation, EditorState, automation, camera, tool_fx, ui};
+use crate::simulation::state::AppSimulation;
+use crate::{automation, camera, tool_fx, ui};
 use bevy::prelude::{
     ButtonInput, Camera, GlobalTransform, Quat, Res, ResMut, Resource, Single, Time, Vec2, Vec3,
     Window, With, format,

@@ -1,10 +1,12 @@
 //! Cursor rays against simulated bodies, placed bearings, and their discs.
 
 use crate::builder::{BEARING_DEPTH, SurfaceHit, face_geometry_from_ref};
+use crate::editor::build_actions::PlacedBearing;
 use crate::pose::{
     live_placed_bearing_pose, simulation_bearing_pose, simulation_placed_bearing_pose,
 };
-use crate::{AppSimulation, PlacedBearing, builder, linear_editor, suspension_render};
+use crate::simulation::state::AppSimulation;
+use crate::{builder, linear_editor, suspension_render};
 use bevy::prelude::{Quat, Vec3};
 use mechanic_core::{BearingDimensions, CompiledCreation, ConstructionGraph, FaceOwner, PartId};
 use mechanic_gpu::GpuTransform;

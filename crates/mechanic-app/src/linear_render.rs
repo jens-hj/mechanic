@@ -1,11 +1,13 @@
 //! Cached procedural rail and carriage visuals sharing construction textures.
 
-use super::{
-    AppSimulation, ConstructionRenderMaterial, EditorGraph, EditorState, EditorVisuals,
-    PlacedBearing, SelectedTool, Tool, WorldPhysicsRevision, bearing_uses_socket, linear_editor,
-};
+use super::{ConstructionRenderMaterial, SelectedTool, Tool, linear_editor};
+use crate::editor::build_actions::{PlacedBearing, bearing_uses_socket};
+use crate::editor::preview::EditorVisuals;
+use crate::editor::state::{EditorGraph, EditorState};
 use crate::pose::transform_from_gpu;
 use crate::render::materials::material_index;
+use crate::simulation::publication::WorldPhysicsRevision;
+use crate::simulation::state::AppSimulation;
 use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };

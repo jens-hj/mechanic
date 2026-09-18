@@ -120,10 +120,10 @@ fn drive_preset_uses_two_gas_engines_and_the_full_gear_range() {
     }
     assert_eq!(graph.actuator_inventory(controller).unwrap().gas_engines, 2);
     let mut world = World::new();
-    world.insert_resource(crate::EditorGraph(graph));
-    world.init_resource::<crate::EditorState>();
+    world.insert_resource(crate::editor::state::EditorGraph(graph));
+    world.init_resource::<crate::editor::state::EditorState>();
     world.init_resource::<crate::editor::history::EditorHistory>();
-    world.init_resource::<crate::AppSimulation>();
+    world.init_resource::<crate::simulation::state::AppSimulation>();
     let mut system = SystemState::<super::EditTarget>::new(&mut world);
     let intent = super::Intent {
         lane: link,
@@ -132,7 +132,7 @@ fn drive_preset_uses_two_gas_engines_and_the_full_gear_range() {
     };
     for ratios in [vec![4.0, 3.0, 1.0], vec![4.0, 3.0, 0.25]] {
         world
-            .resource_mut::<crate::EditorGraph>()
+            .resource_mut::<crate::editor::state::EditorGraph>()
             .0
             .apply(BuildCommand::SetGearboxRatios {
                 controller,
@@ -145,7 +145,7 @@ fn drive_preset_uses_two_gas_engines_and_the_full_gear_range() {
             &mut system.get_mut(&mut world).unwrap(),
             &intent,
         );
-        let graph = &world.resource::<crate::EditorGraph>().0;
+        let graph = &world.resource::<crate::editor::state::EditorGraph>().0;
         let drive = graph.drive_link(link).unwrap();
         let top = mechanic_core::rpm_to_rad_s(EngineKind::Gas.no_load_rpm()) / ratios[2];
         assert!(
@@ -178,7 +178,12 @@ fn drive_preset_uses_two_gas_engines_and_the_full_gear_range() {
                 .symbol(),
             'S'
         );
-        assert!(world.resource::<crate::EditorState>().feedback.is_none());
+        assert!(
+            world
+                .resource::<crate::editor::state::EditorState>()
+                .feedback
+                .is_none()
+        );
         graph.compile().unwrap();
     }
 }
@@ -195,7 +200,7 @@ fn open() -> (Overlay, DriveLinkId) {
     state.open(controller);
     overlay.handles.block.model.set(super::capture(
         &state,
-        &crate::EditorGraph(graph),
+        &crate::editor::state::EditorGraph(graph),
         &crate::sequencer::GearboxRuntime::default(),
         false,
     ));

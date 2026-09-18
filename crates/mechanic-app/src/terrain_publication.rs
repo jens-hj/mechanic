@@ -10,7 +10,8 @@ use mechanic_world::{
 };
 use std::time::Instant;
 
-use crate::{AppSimulation, world::WorldRuntime};
+use crate::simulation::state::AppSimulation;
+use crate::world::WorldRuntime;
 
 /// Exact terrain generations, seam selection, and frame represented by a GPU scene.
 #[derive(Debug, PartialEq)]

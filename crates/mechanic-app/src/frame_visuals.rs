@@ -7,8 +7,9 @@ use bevy::{
 };
 use mechanic_core::{ConstructionGraph, PartId, SolidOwner};
 
+use crate::live_edit::EditContext;
 use crate::render::mesh::construction::BuildTransform;
-use crate::{AppSimulation, live_edit::EditContext};
+use crate::simulation::state::AppSimulation;
 
 /// Highlights the selected rigid body using each published body's current pose.
 pub(crate) fn weld_preview_mesh(

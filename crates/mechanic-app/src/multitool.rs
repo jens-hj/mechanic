@@ -11,11 +11,12 @@ use bevy::{
     ecs::system::SystemParam, light::NotShadowCaster, prelude::*,
 };
 
+use crate::camera::FovCamera;
 use crate::editor::hammer::HammerInteraction;
 use crate::editor::raycast::hovered_part;
+use crate::editor::state::{EditorGraph, EditorState};
 use crate::editor::wiring::wire_end_under_cursor;
 use crate::{
-    EditorGraph, EditorState, FovCamera,
     camera::{AVATAR_HIDDEN_PULLBACK, MainCamera, PlayerCamera, PlayerState},
     controls::GameAction,
     garage,
@@ -51,7 +52,7 @@ impl Plugin for MultitoolPlugin {
                 Update,
                 update
                     .after(crate::editor::hammer::handle_hammer_actions)
-                    .run_if(crate::debug_frame_updates_enabled),
+                    .run_if(crate::debug_freeze::debug_frame_updates_enabled),
             );
     }
 }

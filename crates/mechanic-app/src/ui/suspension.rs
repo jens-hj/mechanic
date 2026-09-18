@@ -69,9 +69,9 @@ pub(crate) type Layout =
 
 #[expect(clippy::too_many_lines)]
 pub(crate) fn capture(
-    state: &crate::EditorState,
+    state: &crate::editor::state::EditorState,
     graph: &crate::ConstructionGraph,
-    simulation: &crate::AppSimulation,
+    simulation: &crate::simulation::state::AppSimulation,
     camera: &(&Camera, &GlobalTransform),
 ) -> Model {
     let controls = &state.suspension.controls;
@@ -102,7 +102,7 @@ pub(crate) fn capture(
                 g.original,
                 g.draft,
                 compression,
-                !crate::bearing_socket_targets(graph, socket).is_empty(),
+                !crate::editor::build_actions::bearing_socket_targets(graph, socket).is_empty(),
             )
     });
     let Some(origin) = project(Vec3::ZERO) else {

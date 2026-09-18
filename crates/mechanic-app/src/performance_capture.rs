@@ -222,7 +222,7 @@ impl Drop for Recorder {
 pub(crate) fn sample(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time<Real>>,
-    simulation: Res<crate::AppSimulation>,
+    simulation: Res<crate::simulation::state::AppSimulation>,
     world: Res<crate::world::WorldDiagnostics>,
     space: Res<State<crate::world::AppSpace>>,
     window: Single<&Window, With<PrimaryWindow>>,

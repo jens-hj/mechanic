@@ -130,7 +130,9 @@ pub(crate) fn driving_enabled() -> bool {
     config().is_some_and(|config| config.driving.is_some())
 }
 
-pub(crate) fn driving_seat(simulation: &crate::AppSimulation) -> Option<mechanic_core::PartId> {
+pub(crate) fn driving_seat(
+    simulation: &crate::simulation::state::AppSimulation,
+) -> Option<mechanic_core::PartId> {
     let mut seats = simulation
         .published_graph
         .parts()
@@ -165,7 +167,7 @@ fn driving_keys(tick: u64, straight: bool) -> Vec<char> {
 
 /// Drives the sole input-linked seat in an explicitly selected disposable world.
 pub(crate) fn drive_input(
-    simulation: &crate::AppSimulation,
+    simulation: &crate::simulation::state::AppSimulation,
     state: &mut Driving,
     tick: u64,
 ) -> Option<(crate::sequencer::DriveKeyState, mechanic_core::PartId)> {
@@ -251,7 +253,7 @@ fn advance(
     mut run: ResMut<Run>,
     mut worlds: ResMut<crate::world::WorldListState>,
     mut recorder: ResMut<crate::performance_capture::Recorder>,
-    simulation: Res<crate::AppSimulation>,
+    simulation: Res<crate::simulation::state::AppSimulation>,
     mut metrics: ResMut<crate::performance::PerformanceMetrics>,
     diagnostics: Res<crate::world::WorldDiagnostics>,
     timings: Res<crate::render_diagnostics::RenderTimings>,
@@ -364,9 +366,9 @@ struct ScriptedPlacement {
 /// Commits one disposable cuboid above the construction on the scripted cadence.
 fn scripted_placement(
     mut placement: ResMut<ScriptedPlacement>,
-    mut graph: ResMut<crate::EditorGraph>,
+    mut graph: ResMut<crate::editor::state::EditorGraph>,
     mut history: ResMut<crate::editor::history::EditorHistory>,
-    mut state: ResMut<crate::EditorState>,
+    mut state: ResMut<crate::editor::state::EditorState>,
     list: Res<crate::world::WorldListState>,
 ) {
     let Some(interval) = config().and_then(|config| config.placement_interval) else {
@@ -440,7 +442,7 @@ fn scripted_placement(
 fn log_capture_readiness(
     run: &mut Run,
     worlds: &crate::world::WorldListState,
-    simulation: &crate::AppSimulation,
+    simulation: &crate::simulation::state::AppSimulation,
     diagnostics: &crate::world::WorldDiagnostics,
 ) {
     if crate::performance_capture::is_active()
@@ -528,7 +530,7 @@ impl FreezeSequence {
 /// Submit reproducible hammer strikes during a capture in an isolated world.
 /// The normal hammer delivery calculation determines the per-tick impulses.
 pub(crate) fn hammer_impact(
-    simulation: &crate::AppSimulation,
+    simulation: &crate::simulation::state::AppSimulation,
     tick: u64,
 ) -> Option<crate::editor::hammer::HammerImpact> {
     use std::sync::atomic::{AtomicU32, Ordering};

@@ -14,8 +14,9 @@ use mosaic_macros::{component, view};
 use super::components::{PanelSurface, PanelSurfaceProps};
 use super::styles::*;
 use super::theme::{accent, ink};
+use crate::sequencer::measured_engine_speeds;
 use crate::sequencer::{DriveSequencer, GearboxRuntime};
-use crate::{AppSimulation, measured_engine_speeds};
+use crate::simulation::state::AppSimulation;
 
 const PANEL_WIDTH: f32 = 236.0;
 const INSET: f32 = 18.0;

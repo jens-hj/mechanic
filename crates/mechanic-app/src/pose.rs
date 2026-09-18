@@ -1,9 +1,11 @@
 //! Conversions between published GPU transforms, Bevy transforms, and construction poses.
 
 use super::{
-    AppSimulation, CompiledCreation, ConstructionGraph, FaceOwner, GpuTransform, PartId,
-    PlacedBearing, Quat, Transform, Vec3, default, face_geometry_from_ref,
+    CompiledCreation, ConstructionGraph, FaceOwner, GpuTransform, PartId, Quat, Transform, Vec3,
+    default, face_geometry_from_ref,
 };
+use crate::editor::build_actions::PlacedBearing;
+use crate::simulation::state::AppSimulation;
 
 pub(crate) fn transform_from_gpu(transform: GpuTransform) -> Transform {
     Transform {

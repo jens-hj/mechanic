@@ -27,14 +27,15 @@ use super::styles::*;
 use super::theme::*;
 use crate::camera::PlayerState;
 use crate::controls::GameAction;
+use crate::editor::build_actions::visible_bearing_count;
+use crate::editor::dimensions::{BearingToolSettings, CylinderToolSettings};
 use crate::editor::hammer::{HAMMER_CHARGE_SECONDS, HammerInteraction};
+use crate::editor::hover::BlockAttachment;
+use crate::editor::state::{EditorGraph, EditorState};
 use crate::editor::wiring::WireEnd;
 use crate::hotbar::{MainTool, MatterMode, SelectedMaterial, SelectedTool, Tool};
+use crate::simulation::state::AppSimulation;
 use crate::world::AppSpace;
-use crate::{
-    AppSimulation, BearingToolSettings, BlockAttachment, CylinderToolSettings, EditorGraph,
-    EditorState, visible_bearing_count,
-};
 
 /// How loudly one line speaks, and about what.
 ///
@@ -513,7 +514,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     dimensions.travel()
                 )
             } else {
-                crate::tool_status_line(
+                crate::editor::preview::tool_status_line(
                     selection.active_editor_tool(),
                     bearing.dimensions,
                     cylinder.dimensions,
@@ -544,7 +545,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 let free_range = if !in_world
                     && selection
                         .active_editor_tool()
-                        .is_some_and(crate::tool_supports_free_placement)
+                        .is_some_and(crate::editor::placement::tool_supports_free_placement)
                 {
                     format!("    Free range: {:.2} m", state.free_placement.range)
                 } else {

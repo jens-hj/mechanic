@@ -1,10 +1,11 @@
 //! Undo and redo: whole-creation snapshots and the shortcuts that walk them.
 
 use crate::controls::GameAction;
-use crate::{
-    AppSimulation, EditorGraph, EditorState, PlacedBearing, clear_hover, freeze, live_edit, ui,
-    weld_publication,
-};
+use crate::editor::build_actions::PlacedBearing;
+use crate::editor::hover::clear_hover;
+use crate::editor::state::{EditorGraph, EditorState};
+use crate::simulation::state::AppSimulation;
+use crate::{freeze, live_edit, ui, weld_publication};
 use bevy::prelude::{ButtonInput, Res, ResMut, Resource};
 use mechanic_core::{AppearanceTarget, BuildCommand, ConstructionGraph};
 use std::collections::{HashSet, VecDeque};

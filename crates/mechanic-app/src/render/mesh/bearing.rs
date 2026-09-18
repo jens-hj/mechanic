@@ -1,8 +1,8 @@
 //! Bearing ring geometry and its terraced texture profile.
 
 use crate::builder::{BEARING_DEPTH, face_geometry_from_ref};
+use crate::editor::build_actions::{PlacedBearing, bearing_uses_socket};
 use crate::render::materials::BEARING_RENDER_RADIAL_SKIN;
-use crate::{PlacedBearing, bearing_uses_socket};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::prelude::{Mesh, Vec3};

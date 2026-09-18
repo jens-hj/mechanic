@@ -142,7 +142,7 @@ fn overlay_replaces_stale_held_readbacks_without_rewinding_neighbors() {
     let mut simulation = AppSimulation {
         world_revision: revision,
         transforms: vec![stale, neighbor],
-        live_state: Some(crate::LivePhysicsState {
+        live_state: Some(crate::simulation::state::LivePhysicsState {
             tick: 15,
             transforms: vec![stale, neighbor],
             velocities: vec![moving; 2],

@@ -24,7 +24,7 @@ fn simulation(graph: &ConstructionGraph, poses: Vec<GpuTransform>) -> AppSimulat
         creation: Some(graph.compile().unwrap()),
         // Deliberately stale interpolation must not determine whether targets touch.
         transforms: vec![pose(Vec3::splat(100.0), Quat::IDENTITY); poses.len()],
-        live_state: Some(crate::LivePhysicsState {
+        live_state: Some(crate::simulation::state::LivePhysicsState {
             tick: 12,
             velocities: vec![
                 mechanic_gpu::GpuVelocity {

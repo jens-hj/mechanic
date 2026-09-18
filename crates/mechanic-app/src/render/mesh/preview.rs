@@ -1,12 +1,13 @@
 //! Placement, deletion, and layer preview meshes.
 
-#[cfg(test)]
-use crate::DELETE_PREVIEW_SCALE;
 use crate::builder::{BlockVolume, part_world_bounds};
+use crate::editor::preview::BLOCK_SHEET_PREVIEW_INSET_METERS;
+#[cfg(test)]
+use crate::editor::preview::DELETE_PREVIEW_SCALE;
+use crate::render::authored::{CUBE_INDICES, CUBE_NORMALS};
 use crate::render::mesh::construction::{
     CUBE_POSITIONS, append_transformed_cuboid, combined_parts_mesh_scaled,
 };
-use crate::{BLOCK_SHEET_PREVIEW_INSET_METERS, CUBE_INDICES, CUBE_NORMALS};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::prelude::{Mesh, Quat, Vec3, vec};

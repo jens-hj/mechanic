@@ -1,6 +1,7 @@
 use super::*;
 use crate::editor::history::EditorHistory;
-use crate::{EditorGraph, GameAction, Tool};
+use crate::editor::state::EditorGraph;
+use crate::{GameAction, Tool};
 pub(crate) fn fixture() -> (EditorGraph, EditorState) {
     let mut graph = ConstructionGraph::new();
     let mechanic_core::BuildOutcome::Spawned(part) = graph

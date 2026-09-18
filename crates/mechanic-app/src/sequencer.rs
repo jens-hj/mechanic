@@ -5,6 +5,12 @@
 //! than frames, so a paused simulation freezes every dwell and a slow frame
 //! never skips one.
 
+use crate::camera::PlayerState;
+use crate::editor::state::EditorState;
+use crate::simulation::state::AppSimulation;
+use crate::{automation, freeze, ui};
+use mechanic_core::TICK_SECONDS_F32;
+use mechanic_gpu::GpuTransform;
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::prelude::*;
@@ -1008,6 +1014,214 @@ fn target_speed(target: DriveTarget) -> Option<f32> {
         DriveTarget::Speed(speed) | DriveTarget::LinearSpeed(speed) => Some(speed),
         DriveTarget::Angle(_) | DriveTarget::LinearPosition(_) => None,
     }
+}
+
+/// Advances every driven bearing's program and pushes changed rows to the GPU.
+///
+/// Runs immediately before the tick is dispatched, so a state entered this
+/// frame takes effect in the same tick rather than the next one.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bevy systems receive each independent resource explicitly"
+)]
+pub(crate) fn run_drive_sequencer(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    overlay: Res<ui::UiInput>,
+    simulation: Res<AppSimulation>,
+    frozen: Res<freeze::DimensionFreeze>,
+    mut sequencer: ResMut<DriveSequencer>,
+    mut gearboxes: ResMut<GearboxRuntime>,
+    mut state: ResMut<EditorState>,
+    mut player: ResMut<PlayerState>,
+) {
+    if !simulation.is_running() {
+        if sequencer.is_started() {
+            sequencer.stop();
+            gearboxes.stop();
+        }
+        return;
+    }
+    if !sequencer.is_started_for(simulation.world_revision) {
+        let Some(creation) = simulation.creation.as_ref() else {
+            return;
+        };
+        if sequencer.is_started() && simulation.world_revision.is_some() {
+            sequencer.sync_publication(
+                creation,
+                &simulation.published_graph,
+                simulation.world_revision,
+                simulation.next_tick,
+            );
+            gearboxes.sync_publication(&simulation.published_graph, &sequencer);
+        } else {
+            sequencer.start(
+                creation,
+                &simulation.published_graph,
+                simulation.world_revision,
+            );
+            gearboxes.start(&simulation.published_graph, &sequencer);
+        }
+        state.drive_rows_dirty = true;
+    }
+    if automation::driving_enabled() {
+        player.seat = automation::driving_seat(&simulation);
+        return; // Scripted programs advance at each dispatched tick below.
+    }
+    let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
+    let keyboard_controller = player
+        .seat
+        .filter(|seat| simulation.published_graph.seat_input(*seat).is_some())
+        .and_then(|seat| simulation.published_graph.seat_controller(seat));
+    step_drive_programs(
+        &simulation,
+        &frozen,
+        &mut sequencer,
+        &mut gearboxes,
+        &mut state,
+        &keyboard,
+        &keys,
+        keyboard_controller,
+        (!overlay.blocks_keyboard())
+            .then_some(keyboard_controller)
+            .flatten(),
+        simulation.next_tick,
+    );
+}
+
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn step_drive_programs(
+    simulation: &AppSimulation,
+    frozen: &freeze::DimensionFreeze,
+    sequencer: &mut DriveSequencer,
+    gearboxes: &mut GearboxRuntime,
+    state: &mut EditorState,
+    keyboard: &ButtonInput<KeyCode>,
+    keys: &DriveKeyState,
+    keyboard_controller: Option<PartId>,
+    gearbox_keyboard_controller: Option<PartId>,
+    tick: u64,
+) {
+    let suspended = frozen.suspended_controllers(simulation);
+    let sequencer_changed = sequencer.step_with_held_bearings(
+        &simulation.published_graph,
+        keys,
+        keyboard_controller,
+        tick,
+        &suspended,
+        &frozen.suspended_bearings(simulation),
+    );
+    let measured_speeds =
+        measured_engine_speeds(&simulation.published_graph, simulation, sequencer);
+    let gearbox_changed = gearboxes.step_with_suspension(
+        &simulation.published_graph,
+        sequencer,
+        keyboard,
+        gearbox_keyboard_controller,
+        tick,
+        &measured_speeds,
+        false,
+        &suspended,
+    );
+    if sequencer_changed || gearbox_changed {
+        state.drive_rows_dirty = true;
+    }
+}
+
+/// Signed joint speeds from the two transform snapshots already read for rendering.
+#[expect(clippy::cast_precision_loss)]
+pub(crate) fn measured_engine_speeds(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    sequencer: &DriveSequencer,
+) -> Vec<(PartId, EngineKind, f32)> {
+    let Some(creation) = simulation.creation.as_ref() else {
+        return Vec::new();
+    };
+    let tick_delta = simulation
+        .snapshot_tick
+        .saturating_sub(simulation.previous_snapshot_tick);
+    if tick_delta == 0 || simulation.previous_transforms.len() != simulation.transforms.len() {
+        return Vec::new();
+    }
+    let delta_seconds = tick_delta as f32 * TICK_SECONDS_F32;
+    let mut result = Vec::<(PartId, EngineKind, f32)>::new();
+    for row in sequencer.rows() {
+        let Some(link) = graph.drive_link(row.link) else {
+            continue;
+        };
+        let Some(bearing) = creation
+            .bearings
+            .iter()
+            .find(|bearing| bearing.coordinate_index == Some(row.coordinate))
+        else {
+            continue;
+        };
+        let a = bearing.compound_a as usize;
+        let b = bearing.compound_b as usize;
+        let (Some(previous_a), Some(previous_b), Some(current_a), Some(current_b)) = (
+            simulation.previous_transforms.get(a),
+            simulation.previous_transforms.get(b),
+            simulation.transforms.get(a),
+            simulation.transforms.get(b),
+        ) else {
+            continue;
+        };
+        let speed = if bearing.kind.is_translational() {
+            let displacement = |a: &GpuTransform, b: &GpuTransform| {
+                let rotation_a = Quat::from_array(a.rotation);
+                let rotation_b = Quat::from_array(b.rotation);
+                let separation = Vec3::from_slice(&b.position[..3])
+                    + rotation_b * bearing.local_anchor_b
+                    - Vec3::from_slice(&a.position[..3])
+                    - rotation_a * bearing.local_anchor_a;
+                separation.dot(rotation_a * bearing.local_axis_a)
+            };
+            (displacement(current_a, current_b) - displacement(previous_a, previous_b))
+                / delta_seconds
+                / mechanic_core::LINEAR_METERS_PER_RADIAN
+        } else {
+            signed_joint_speed(
+                Quat::from_array(previous_a.rotation),
+                Quat::from_array(previous_b.rotation),
+                Quat::from_array(current_a.rotation),
+                Quat::from_array(current_b.rotation),
+                bearing.local_axis_a,
+                delta_seconds,
+            )
+        };
+        for kind in [EngineKind::Electric, EngineKind::Gas] {
+            let powered = match kind {
+                EngineKind::Electric => link.actuator.uses_electric(),
+                EngineKind::Gas => link.actuator.uses_gas(),
+            };
+            if !powered {
+                continue;
+            }
+            if let Some(entry) = result.iter_mut().find(|(controller, candidate, _)| {
+                *controller == link.controller && *candidate == kind
+            }) {
+                if speed.abs() > entry.2.abs() {
+                    entry.2 = speed;
+                }
+            } else {
+                result.push((link.controller, kind, speed));
+            }
+        }
+    }
+    result
+}
+
+pub(crate) fn signed_joint_speed(
+    previous_a: Quat,
+    previous_b: Quat,
+    current_a: Quat,
+    current_b: Quat,
+    local_axis_a: Vec3,
+    delta_seconds: f32,
+) -> f32 {
+    let angular_a = (current_a * previous_a.inverse()).to_scaled_axis() / delta_seconds;
+    let angular_b = (current_b * previous_b.inverse()).to_scaled_axis() / delta_seconds;
+    (angular_b - angular_a).dot(current_a * local_axis_a)
 }
 
 #[cfg(test)]

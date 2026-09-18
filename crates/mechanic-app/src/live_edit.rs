@@ -3,7 +3,9 @@
 use bevy::prelude::*;
 use mechanic_core::{ConstructionFrame, ConstructionFrameId, ConstructionGraph, PartId};
 
-use crate::{AppSimulation, EditorGraph, EditorState, PlacedBearing};
+use crate::editor::build_actions::PlacedBearing;
+use crate::editor::state::{EditorGraph, EditorState};
+use crate::simulation::state::AppSimulation;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EditContext {
@@ -208,9 +210,9 @@ pub(crate) fn place_previews(
     mut previews: Query<
         (&mut Transform, &Visibility),
         Or<(
-            With<crate::ActionPreview>,
-            With<crate::SelectionPreview>,
-            With<crate::DeletePreview>,
+            With<crate::editor::preview::ActionPreview>,
+            With<crate::editor::preview::SelectionPreview>,
+            With<crate::editor::preview::DeletePreview>,
         )>,
     >,
 ) {

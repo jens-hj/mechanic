@@ -1,17 +1,18 @@
 //! Drive wires and control links: dragging, connecting, and their hover previews.
 
 use crate::controls::GameAction;
+use crate::editor::build_actions::{PlacedBearing, socket_bearings};
 use crate::editor::history::{EditorHistory, EditorSnapshot};
+use crate::editor::preview::EditorVisuals;
 use crate::editor::raycast::hovered_part;
+use crate::editor::state::{EditorGraph, EditorState};
 use crate::hotbar::{SelectedTool, Tool};
+use crate::linear_render;
 use crate::pose::live_placed_bearing_pose;
 use crate::render::mesh::bearing::single_bearing_mesh;
 use crate::render::mesh::drive::wire_drag_preview_mesh;
 use crate::render::mesh::primitives::degenerate_overlay_mesh;
-use crate::{
-    AppSimulation, EditorGraph, EditorState, EditorVisuals, PlacedBearing, linear_render,
-    socket_bearings,
-};
+use crate::simulation::state::AppSimulation;
 use bevy::prelude::{
     Assets, ButtonInput, Component, Cuboid, Local, Mesh, Quat, Res, ResMut, Single, Transform,
     Vec3, With, format,

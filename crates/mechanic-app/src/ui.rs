@@ -48,16 +48,18 @@ use bevy_mosaic::MosaicContext;
 use mosaic_core::{Size as MosaicSize, State as MosaicState};
 
 use crate::camera::{MainCamera, MaterialWheelState};
+use crate::chroma::ChromaBrush;
 use crate::control_panel::ControlPanelState;
 use crate::controls::{Controls, GameAction};
 use crate::creation_menu::CreationMenuState;
+use crate::editor::state::{EditorGraph, EditorState};
 use crate::hotbar::{
     MainTool, MatterMode, SelectedMaterial, SelectedTerrainMaterial, SelectedTool,
 };
 use crate::pause_menu::PauseMenuState;
 use crate::settings::AppSettings;
 use crate::showcase::CreationPreset;
-use crate::{AppSimulation, EditorGraph, EditorState, chroma::ChromaBrush};
+use crate::simulation::state::AppSimulation;
 use mechanic_core::{ConstructionMaterial, MaterialAppearance};
 use mechanic_world::TerrainMaterial;
 
@@ -594,7 +596,7 @@ pub(crate) fn push(
             format!(
                 "{} · {} · {}",
                 shape_mode.label(),
-                crate::feature_amount_label(treatment, amount),
+                crate::editor::shape_actions::feature_amount_label(treatment, amount),
                 shape_snap.label()
             )
         },

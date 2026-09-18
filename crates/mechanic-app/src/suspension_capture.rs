@@ -1,6 +1,7 @@
 //! Opt-in native snapshots of prescribed suspension geometry, without OS input.
+use crate::ConstructionRenderMaterial;
+use crate::editor::preview::EditorVisuals;
 use crate::render::materials::material_index;
-use crate::{ConstructionRenderMaterial, EditorVisuals};
 use bevy::{
     app::AppExit,
     input::{
@@ -43,14 +44,14 @@ impl Plugin for SuspensionCapturePlugin {
             .add_systems(
                 Update,
                 exercise
-                    .after(crate::handle_build_actions)
+                    .after(crate::editor::build_actions::handle_build_actions)
                     .before(crate::suspension_render::sync_suspension_visuals),
             )
             .add_systems(
                 Update,
                 aim_camera
                     .after(crate::camera::update_player_camera)
-                    .before(crate::update_hover),
+                    .before(crate::editor::hover::update_hover),
             );
     }
 }
@@ -93,7 +94,7 @@ fn suppress_input(
 fn aim_camera(
     mut camera: Query<(&mut Transform, &mut GlobalTransform), With<crate::MainCamera>>,
     capture: Res<Capture>,
-    editor: Res<crate::EditorState>,
+    editor: Res<crate::editor::state::EditorState>,
 ) {
     let transform = if capture.index >= 22 {
         let target = editor
@@ -202,8 +203,8 @@ fn advance(
     mut commands: Commands,
     mut capture: ResMut<Capture>,
     mut worlds: ResMut<crate::world::WorldListState>,
-    mut graph: ResMut<crate::EditorGraph>,
-    mut editor: ResMut<crate::EditorState>,
+    mut graph: ResMut<crate::editor::state::EditorGraph>,
+    mut editor: ResMut<crate::editor::state::EditorState>,
     visuals: Res<EditorVisuals>,
     mut materials: ResMut<Assets<ConstructionRenderMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -270,13 +271,15 @@ fn advance(
                 };
                 let source = mechanic_core::FaceRef::part(part, mechanic_core::FaceKind::PositiveY);
                 let anchor = crate::face_geometry_from_ref(source, Some(&graph.0)).center;
-                editor.placed_bearings.push(crate::PlacedBearing {
-                    kind: mechanic_core::BearingKind::Suspension(spec),
-                    axis: Vec3::Y,
-                    source,
-                    anchor,
-                    dimensions: mechanic_core::BearingDimensions::default(),
-                });
+                editor
+                    .placed_bearings
+                    .push(crate::editor::build_actions::PlacedBearing {
+                        kind: mechanic_core::BearingKind::Suspension(spec),
+                        axis: Vec3::Y,
+                        source,
+                        anchor,
+                        dimensions: mechanic_core::BearingDimensions::default(),
+                    });
                 let socket = editor.placed_bearings[0];
                 editor.suspension.controls.select(
                     socket,
@@ -377,8 +380,8 @@ fn advance(
 #[expect(clippy::needless_pass_by_value)]
 fn exercise(
     capture: Res<Capture>,
-    mut graph: ResMut<crate::EditorGraph>,
-    mut editor: ResMut<crate::EditorState>,
+    mut graph: ResMut<crate::editor::state::EditorGraph>,
+    mut editor: ResMut<crate::editor::state::EditorState>,
     mut history: ResMut<crate::editor::history::EditorHistory>,
 ) {
     if !matches!(capture.stage, Stage::Wait) {

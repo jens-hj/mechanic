@@ -4,14 +4,17 @@ use crate::builder::{
     PlacementBounds, PlacementGrid, PlacementPlane, SmartGuide, part_world_bounds,
 };
 use crate::controls::GameAction;
+use crate::editor::placement::{
+    PlacementLatticeKey, PlacementLatticeVisual, SmartGuideVisual, SmartSnapRangeKey,
+    SmartSnapRangeVisual,
+};
+use crate::editor::shape_actions::{
+    ShapeArrowVisual, ShapeNodeVisual, ShapePlaneVisual, ShapeSelectedVisual,
+};
+use crate::editor::state::EditorState;
 use crate::hotbar::{SelectedTool, Tool};
 use crate::render::mesh::construction::append_transformed_cuboid;
 use crate::render::mesh::primitives::{append_mesh_quad, append_mesh_triangle, renderable_mesh};
-use crate::{
-    EditorState, PlacementLatticeKey, PlacementLatticeVisual, ShapeArrowVisual, ShapeNodeVisual,
-    ShapePlaneVisual, ShapeSelectedVisual, SmartGuideVisual, SmartSnapRangeKey,
-    SmartSnapRangeVisual,
-};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::prelude::{

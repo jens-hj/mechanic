@@ -8,8 +8,10 @@ mod render;
 mod tests;
 
 use crate::editor::history::EditorHistory;
+use crate::editor::state::{EditorGraph, EditorState};
+use crate::simulation::state::AppSimulation;
 use crate::{
-    AppSimulation, EditorGraph, EditorState, MaterialWheelState, PlayerState,
+    MaterialWheelState, PlayerState,
     camera::MainCamera,
     controls::GameAction,
     freeze::{DimensionFreeze, VisualSnapshot},

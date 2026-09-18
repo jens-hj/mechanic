@@ -1,11 +1,13 @@
 //! The player's visible body.
 
 use super::{
-    Alpha, AlphaMode, AppSimulation, Assets, Color, Commands, Component, Cuboid, EditorGraph,
-    Handle, MainCamera, Mesh, Mesh3d, MeshMaterial3d, Name, PlayerCamera, PlayerState, Quat, Query,
-    Res, ResMut, Resource, Single, StandardMaterial, Transform, Vec3, Visibility, With, Without,
-    camera, default, seat_world_pose,
+    Alpha, AlphaMode, Assets, Color, Commands, Component, Cuboid, Handle, MainCamera, Mesh, Mesh3d,
+    MeshMaterial3d, Name, PlayerCamera, PlayerState, Quat, Query, Res, ResMut, Resource, Single,
+    StandardMaterial, Transform, Vec3, Visibility, With, Without, camera, default,
 };
+use crate::editor::state::EditorGraph;
+use crate::seat::seat_world_pose;
+use crate::simulation::state::AppSimulation;
 
 #[derive(Component)]
 pub(crate) struct PlayerAvatar;

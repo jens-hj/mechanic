@@ -1,6 +1,8 @@
 //! Weld placement onto the moving attachment surface of a bearing socket.
 use super::{Pick, motion};
-use crate::{AppSimulation, PlacedBearing, builder};
+use crate::builder;
+use crate::editor::build_actions::PlacedBearing;
+use crate::simulation::state::AppSimulation;
 use bevy::prelude::*;
 use mechanic_core::{
     BearingKind, BearingSpec, BuildCommand, CarriageFace, ConstructionFrame, ConstructionGraph,
@@ -89,7 +91,7 @@ pub(crate) fn pick(
         let FaceOwner::Part(support) = socket.source.owner else {
             continue;
         };
-        let targets = crate::bearing_socket_targets(graph, socket);
+        let targets = crate::editor::build_actions::bearing_socket_targets(graph, socket);
         let part = targets.first().copied().unwrap_or(support);
         let Ok(frame) = motion(simulation, part, false) else {
             continue;
@@ -119,7 +121,7 @@ pub(crate) fn pick(
         let origin = inverse.point(ray.origin);
         let direction = inverse.vector(ray.direction.as_vec3());
         let occupied = graph.bearings().find_map(|(_, joint)| {
-            if crate::bearing_uses_socket(joint, socket) {
+            if crate::editor::build_actions::bearing_uses_socket(joint, socket) {
                 Some(joint.kind)
             } else {
                 None
@@ -263,7 +265,7 @@ pub(crate) fn stage(
                 .with_kind(socket.kind),
         ))
         .map_err(|e| e.to_string())?;
-    for target in crate::bearing_socket_targets(graph, socket) {
+    for target in crate::editor::build_actions::bearing_socket_targets(graph, socket) {
         staged
             .apply(BuildCommand::RigidLink(RigidLinkSpec {
                 first: target,

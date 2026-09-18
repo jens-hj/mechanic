@@ -1,10 +1,11 @@
 //! Procedural suspension rendering and triangle picking share cached core meshes.
-use super::{
-    AppSimulation, ConstructionRenderMaterial, EditorGraph, EditorState, EditorVisuals,
-    PlacedBearing,
-};
+use super::ConstructionRenderMaterial;
+use crate::editor::build_actions::PlacedBearing;
+use crate::editor::preview::EditorVisuals;
+use crate::editor::state::{EditorGraph, EditorState};
 use crate::pose::transform_from_gpu;
 use crate::render::materials::material_index;
+use crate::simulation::state::AppSimulation;
 use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };
@@ -468,7 +469,9 @@ pub(super) fn sync_suspension_visuals(
         {
             let (transform, compression) =
                 socket_pose(graph, live.then_some(&simulation), gesture.target.0);
-            let attached = !crate::bearing_socket_targets(graph, gesture.target.0).is_empty();
+            let attached =
+                !crate::editor::build_actions::bearing_socket_targets(graph, gesture.target.0)
+                    .is_empty();
             return (
                 transform,
                 draft_compression(gesture.original, gesture.draft, compression, attached),

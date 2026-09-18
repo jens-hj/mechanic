@@ -1,8 +1,8 @@
 //! Feature picking and a destination-relative weld gesture. Ghosts use authored geometry.
 
-use crate::{
-    AppSimulation, EditorState, builder, controls::GameAction, hotbar::WeldMode, weld_publication,
-};
+use crate::editor::state::EditorState;
+use crate::simulation::state::AppSimulation;
+use crate::{builder, controls::GameAction, hotbar::WeldMode, weld_publication};
 use bevy::prelude::*;
 use mechanic_core::{
     ConstructionFrame, ConstructionGraph, FaceRef, PartId, SolidOwner, WeldAlignment,
@@ -15,7 +15,7 @@ pub(crate) mod socket;
 pub(crate) struct Pick {
     pub(crate) part: PartId,
     pub(crate) face: FaceRef,
-    pub(crate) socket: Option<crate::PlacedBearing>,
+    pub(crate) socket: Option<crate::editor::build_actions::PlacedBearing>,
     pub(crate) selection: WeldSelection,
 }
 
@@ -668,7 +668,7 @@ pub(crate) fn join_hover(
     }
     if let Some((_, _, staged)) = &state.weld.join_candidate {
         state.feedback = Some(match staged {
-            Ok(staged) => crate::weld_lockup_warning(graph, staged).map_or_else(
+            Ok(staged) => crate::editor::hover::weld_lockup_warning(graph, staged).map_or_else(
                 || "Click to weld these bodies where they are".to_owned(),
                 |warning| format!("Click to weld — {warning}"),
             ),
@@ -704,7 +704,7 @@ pub(crate) fn join_actions(
     }
     match state.weld.join_candidate.take() {
         Some((_, _, Ok(staged))) => {
-            let lockup = crate::weld_lockup_warning(graph, &staged);
+            let lockup = crate::editor::hover::weld_lockup_warning(graph, &staged);
             let previous = crate::editor::history::EditorSnapshot::capture(graph, state);
             *graph = staged;
             history.commit(previous);
@@ -724,7 +724,7 @@ pub(crate) fn join_actions(
 pub(crate) fn preview_mesh(
     graph: &ConstructionGraph,
     parts: &[PartId],
-    sockets: &[crate::PlacedBearing],
+    sockets: &[crate::editor::build_actions::PlacedBearing],
 ) -> Mesh {
     use bevy::{
         asset::RenderAssetUsages, mesh::Indices, render::render_resource::PrimitiveTopology,
@@ -744,7 +744,8 @@ pub(crate) fn preview_mesh(
         .filter(|socket| included(socket.source.owner))
         .filter(|socket| {
             !graph.bearings().any(|(_, joint)| {
-                crate::bearing_uses_socket(joint, *socket) && !included(joint.target.owner)
+                crate::editor::build_actions::bearing_uses_socket(joint, *socket)
+                    && !included(joint.target.owner)
             })
         })
         .collect::<Vec<_>>();
@@ -757,7 +758,7 @@ pub(crate) fn preview_mesh(
             && matches!(joint.kind, mechanic_core::BearingKind::Rotational)
             && !sockets
                 .iter()
-                .any(|&socket| crate::bearing_uses_socket(joint, socket))
+                .any(|&socket| crate::editor::build_actions::bearing_uses_socket(joint, socket))
     }) {
         crate::render::mesh::bearing::append_bearing_cylinder(
             joint.shared_anchor,
@@ -807,7 +808,7 @@ pub(crate) struct WeldFeatureVisual;
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn draw_features(
-    graph: Res<crate::EditorGraph>,
+    graph: Res<crate::editor::state::EditorGraph>,
     state: Res<EditorState>,
     simulation: Res<AppSimulation>,
     selected: Res<crate::hotbar::SelectedTool>,

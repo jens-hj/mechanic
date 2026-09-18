@@ -14,7 +14,8 @@ use super::Handles;
 use super::components::{OverlayBadge, OverlayBadgeProps, PanelSurface, PanelSurfaceProps};
 use super::styles::*;
 use super::theme::*;
-use crate::{AppSimulation, EditorState};
+use crate::editor::state::EditorState;
+use crate::simulation::state::AppSimulation;
 
 const LABEL_W: f32 = 132.0;
 const LABEL_H: f32 = 28.0;

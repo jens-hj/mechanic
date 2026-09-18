@@ -6894,7 +6894,7 @@ fn snap_cardinal(vector: Vec3) -> Vec3 {
 }
 
 pub(crate) fn suspension_block_candidate(
-    socket: crate::PlacedBearing,
+    socket: crate::editor::build_actions::PlacedBearing,
 ) -> Result<PlacementCandidate, PlacementError> {
     let BearingKind::Suspension(spec) = socket.kind else {
         return Err(PlacementError::BearingOutsideFace);
@@ -6915,7 +6915,7 @@ pub(crate) fn suspension_block_candidate(
     })
 }
 pub(crate) fn suspension_cylinder_candidate(
-    socket: crate::PlacedBearing,
+    socket: crate::editor::build_actions::PlacedBearing,
     dimensions: CylinderDimensions,
 ) -> Result<CylinderPlacementCandidate, PlacementError> {
     let BearingKind::Suspension(spec) = socket.kind else {
@@ -6937,7 +6937,7 @@ pub(crate) fn suspension_cylinder_candidate(
     })
 }
 fn suspension_attachment(
-    socket: crate::PlacedBearing,
+    socket: crate::editor::build_actions::PlacedBearing,
     targets: &[PartId],
 ) -> BearingAttachment<'_> {
     BearingAttachment {
@@ -6951,7 +6951,7 @@ fn suspension_attachment(
 }
 pub(crate) fn stage_suspension_block(
     graph: &ConstructionGraph,
-    socket: crate::PlacedBearing,
+    socket: crate::editor::build_actions::PlacedBearing,
     candidate: PlacementCandidate,
     targets: &[PartId],
     bounds: PlacementBounds,
@@ -6967,7 +6967,7 @@ pub(crate) fn stage_suspension_block(
 }
 pub(crate) fn stage_suspension_cylinder(
     graph: &ConstructionGraph,
-    socket: crate::PlacedBearing,
+    socket: crate::editor::build_actions::PlacedBearing,
     candidate: CylinderPlacementCandidate,
     targets: &[PartId],
     bounds: PlacementBounds,

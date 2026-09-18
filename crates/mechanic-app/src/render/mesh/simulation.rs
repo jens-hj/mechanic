@@ -1,6 +1,7 @@
 //! Meshes of compiled compounds while the simulation runs.
 
 use crate::builder::face_geometry_from_ref;
+use crate::editor::build_actions::{PlacedBearing, bearing_uses_socket};
 use crate::pose::transform_bearing_pose;
 use crate::render::mesh::bearing::append_bearing_cylinder;
 use crate::render::mesh::construction::{
@@ -8,7 +9,7 @@ use crate::render::mesh::construction::{
     append_region, append_textured_part, ordinary_materials,
 };
 use crate::render::mesh::pipe::{pipe_end_faces, pipe_texture_offsets, welded_pipe_ends};
-use crate::{AuthoredPart, PlacedBearing, bearing_uses_socket, chroma};
+use crate::{AuthoredPart, chroma};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
 use bevy::prelude::{Mesh, Quat, Vec3};

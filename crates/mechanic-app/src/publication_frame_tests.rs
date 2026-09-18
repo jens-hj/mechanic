@@ -5,7 +5,8 @@ use mechanic_core::{
 };
 use mechanic_gpu::{GpuTransform, GpuVelocity};
 
-use super::{AppSimulation, LivePhysicsState, rebuilt_body_states};
+use crate::simulation::publication::rebuilt_body_states;
+use crate::simulation::state::{AppSimulation, LivePhysicsState};
 
 fn spawn(graph: &mut ConstructionGraph, units: IVec3, size: [u8; 3]) -> PartId {
     let BuildOutcome::Spawned(part) = graph
@@ -49,7 +50,11 @@ fn failed_tick_keeps_the_last_completed_pose_even_between_visual_snapshots() {
         ..Default::default()
     };
     let mut editor = super::EditorState::default();
-    super::stop_failed_simulation(&mut simulation, &mut editor, "tick failed".to_owned());
+    crate::simulation::state::stop_failed_simulation(
+        &mut simulation,
+        &mut editor,
+        "tick failed".to_owned(),
+    );
     assert_eq!(
         simulation.transforms[0].position.map(f32::to_bits),
         landed.position.map(f32::to_bits)
@@ -176,7 +181,8 @@ fn merging_reframed_bodies_preserves_visible_geometry_and_total_momentum() {
         .unwrap();
     let rebuilt = graph.compile().unwrap();
     assert_eq!(rebuilt.compounds.len(), 1);
-    super::validate_merged_body_poses(&rebuilt, &graph, &previous).unwrap();
+    crate::simulation::publication::validate_merged_body_poses(&rebuilt, &graph, &previous)
+        .unwrap();
     let (transforms, velocities) = rebuilt_body_states(&rebuilt, &graph, &previous);
     let new_center = Vec3::from_slice(&transforms[0].position[..3]);
     let new_rotation = Quat::from_array(transforms[0].rotation);
@@ -285,11 +291,11 @@ fn moving_weld_fixture() -> (
 #[test]
 fn co_moving_sources_can_publish_a_weld_at_the_latest_tick() {
     let (graph, merged, mut previous) = moving_weld_fixture();
-    super::validate_merged_body_poses(&merged, &graph, &previous).unwrap();
+    crate::simulation::publication::validate_merged_body_poses(&merged, &graph, &previous).unwrap();
     // The quaternion double cover must not reject the same physical pose.
     let state = previous.live_state.as_mut().unwrap();
     state.transforms[1].rotation = (-Quat::from_array(state.transforms[1].rotation)).to_array();
-    super::validate_merged_body_poses(&merged, &graph, &previous).unwrap();
+    crate::simulation::publication::validate_merged_body_poses(&merged, &graph, &previous).unwrap();
 }
 
 #[test]
@@ -297,7 +303,9 @@ fn stale_moving_weld_rejects_translation_or_rotation_disagreement() {
     let (graph, merged, mut previous) = moving_weld_fixture();
     let compatible = previous.live_state.as_ref().unwrap().transforms.clone();
     previous.live_state.as_mut().unwrap().transforms[1].position[0] += 0.02;
-    let error = super::validate_merged_body_poses(&merged, &graph, &previous).unwrap_err();
+    let error =
+        crate::simulation::publication::validate_merged_body_poses(&merged, &graph, &previous)
+            .unwrap_err();
     assert!(error.contains("moved apart"));
     // Rotate around the merged centre, so both mappings agree on position and
     // the orientation check alone must reject publication.
@@ -309,7 +317,9 @@ fn stale_moving_weld_rejects_translation_or_rotation_disagreement() {
         merged_center + rotation * (old_center - merged.compounds[0].root_translation),
         rotation,
     );
-    let error = super::validate_merged_body_poses(&merged, &graph, &previous).unwrap_err();
+    let error =
+        crate::simulation::publication::validate_merged_body_poses(&merged, &graph, &previous)
+            .unwrap_err();
     assert!(error.contains("moved apart"));
     assert!(Quat::from_array(previous.transforms[1].rotation).abs_diff_eq(Quat::IDENTITY, 1.0e-6));
 }

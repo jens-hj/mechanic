@@ -10,7 +10,8 @@ use bevy::{
 };
 use mechanic_gpu::GpuKernelTimings;
 
-use crate::{AppSimulation, cpu_physics::Route};
+use crate::cpu_physics::Route;
+use crate::simulation::state::AppSimulation;
 
 const FRAME_HISTORY_LENGTH: usize = 120;
 const DISPLAY_INTERVAL: Duration = Duration::from_millis(250);
@@ -324,7 +325,7 @@ mod tests {
 
     #[test]
     fn submission_timings_average_ticks_before_smoothing() {
-        let mut simulation = crate::AppSimulation::default();
+        let mut simulation = crate::simulation::state::AppSimulation::default();
         assert!(simulation.physics_submission_timings.is_none());
         let totals = mechanic_gpu::GpuSubmissionTimings {
             encoding_ms: 20.0,

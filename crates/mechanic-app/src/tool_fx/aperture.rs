@@ -26,7 +26,7 @@ impl MaterialExtension for ApertureExtension {
 fn sync(
     mut commands: Commands,
     fx: Res<super::ToolFx>,
-    visuals: Res<crate::EditorVisuals>,
+    visuals: Res<crate::editor::preview::EditorVisuals>,
     materials: Res<Assets<StandardMaterial>>,
     mut extended: ResMut<Assets<ApertureMaterial>>,
     mut handle: Local<Option<Handle<ApertureMaterial>>>,

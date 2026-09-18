@@ -1,3 +1,4 @@
+use crate::settings::AppSettings;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use bevy::{
@@ -11,10 +12,10 @@ use mechanic_core::PartId;
 #[cfg(test)]
 use mechanic_world::TerrainMaterial;
 
+use crate::editor::state::EditorState;
 #[cfg(test)]
 use crate::hotbar::PlaceableItem;
 use crate::{
-    EditorState,
     builder::GROUND_HALF_SIZE,
     control_panel::ControlPanelState,
     controls::GameAction,
@@ -571,3 +572,24 @@ fn update_cursor_capture(
 #[cfg(test)]
 #[expect(clippy::float_cmp)]
 mod tests;
+#[derive(Component)]
+pub(crate) struct FovCamera;
+
+pub(crate) fn apply_camera_fov(
+    settings: Res<AppSettings>,
+    mut cameras: Query<&mut Projection, With<FovCamera>>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let fov = settings.camera_fov_degrees().to_radians();
+    for mut projection in &mut cameras {
+        set_projection_fov(&mut projection, fov);
+    }
+}
+
+pub(crate) fn set_projection_fov(projection: &mut Projection, fov_radians: f32) {
+    if let Projection::Perspective(perspective) = projection {
+        perspective.fov = fov_radians;
+    }
+}

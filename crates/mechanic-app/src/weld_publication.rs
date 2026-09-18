@@ -1,8 +1,10 @@
 //! Explicit weld-placement transactions. Ordinary edits retain pose-preserving transfer.
 
 use crate::editor::history::{EditorHistory, EditorSnapshot};
+use crate::editor::state::{EditorGraph, EditorState};
+use crate::simulation::publication::{PreparedWorldPhysics, WorldPhysicsPublication};
+use crate::simulation::state::AppSimulation;
 use crate::{
-    AppSimulation, EditorGraph, EditorState, PreparedWorldPhysics, WorldPhysicsPublication,
     builder::PlacementBounds,
     freeze::DimensionFreeze,
     weld_tool::{Pick, motion},
@@ -196,7 +198,7 @@ impl Intent {
         previous: &AppSimulation,
     ) -> Result<BodyStates, String> {
         let (mut transforms, mut velocities) =
-            crate::rebuilt_body_states(creation, graph, previous);
+            crate::simulation::publication::rebuilt_body_states(creation, graph, previous);
         let old = previous
             .creation
             .as_ref()
@@ -241,8 +243,12 @@ impl Intent {
                 angular: velocity.angular,
             };
         }
-        let mut coordinates =
-            crate::rebuilt_mechanism_coordinates(creation, previous, &transforms, &velocities);
+        let mut coordinates = crate::simulation::publication::rebuilt_mechanism_coordinates(
+            creation,
+            previous,
+            &transforms,
+            &velocities,
+        );
         for (index, bearing) in creation.loop_topology.tree_bearings.iter().enumerate() {
             if self.baseline.bearing(*bearing).is_some_and(|joint| matches!(joint.source.owner, FaceOwner::Part(part) if self.parts.contains(&part))) {
                 coordinates[index] = GpuMechanismCoordinate { position: 0.0, velocity: 0.0 };
@@ -310,7 +316,8 @@ pub(crate) fn maintain(
                 let suspension_sockets = crate::suspension_editor::sockets(&state.placed_bearings);
                 let config = crate::GpuPhysicsConfig {
                     ground_plane_enabled: false,
-                    mechanism_self_collisions: crate::world_mechanism_self_collisions(&staged),
+                    mechanism_self_collisions:
+                        crate::simulation::publication::world_mechanism_self_collisions(&staged),
                     ..default()
                 };
                 let device = device.clone();
@@ -322,7 +329,7 @@ pub(crate) fn maintain(
                     foundation: world.foundation_revision(),
                     ready: None,
                     task: Some(AsyncComputeTaskPool::get().spawn(async move {
-                        crate::prepare_world_physics(
+                        crate::simulation::publication::prepare_world_physics(
                             staged,
                             generation,
                             suspension_sockets,
@@ -373,7 +380,7 @@ pub(crate) fn maintain(
                 history.next_revision.saturating_add(1),
                 world.foundation_revision(),
             );
-            let mut replacement = crate::replacement_simulation_for_weld(
+            let mut replacement = crate::simulation::publication::replacement_simulation_for_weld(
                 transaction
                     .ready
                     .take()
@@ -398,7 +405,11 @@ pub(crate) fn maintain(
             state.feedback = Some(format!("Weld rejected: {error}"));
         }
         Ok((mut replacement, hold)) => {
-            crate::inherit_terrain_residency(simulation, &mut replacement, device);
+            crate::simulation::publication::inherit_terrain_residency(
+                simulation,
+                &mut replacement,
+                device,
+            );
             let mut previous = EditorSnapshot::capture(&graph.0, state);
             let mut affected = transaction.intent.parts.clone();
             if let Ok(component) = graph
@@ -408,7 +419,8 @@ pub(crate) fn maintain(
                 affected.extend(component.parts());
             }
             previous.weld_restore = Restore::capture(affected, &graph.0, simulation, frozen);
-            let warning = crate::weld_lockup_warning(&graph.0, &replacement.published_graph);
+            let warning =
+                crate::editor::hover::weld_lockup_warning(&graph.0, &replacement.published_graph);
             graph.0 = replacement.published_graph.clone();
             transaction.intent.place_sockets(state);
             history.commit(previous);
@@ -508,7 +520,7 @@ impl Restore {
         previous: &AppSimulation,
     ) -> Result<BodyStates, String> {
         let (mut transforms, mut velocities) =
-            crate::rebuilt_body_states(creation, graph, previous);
+            crate::simulation::publication::rebuilt_body_states(creation, graph, previous);
         for (index, body) in creation.compounds.iter().enumerate() {
             let Some((&part, &(world_frame, center, velocity))) = body
                 .source_parts
@@ -537,8 +549,12 @@ impl Restore {
                 angular: velocity.angular,
             };
         }
-        let mut coordinates =
-            crate::rebuilt_mechanism_coordinates(creation, previous, &transforms, &velocities);
+        let mut coordinates = crate::simulation::publication::rebuilt_mechanism_coordinates(
+            creation,
+            previous,
+            &transforms,
+            &velocities,
+        );
         for (index, bearing) in creation.loop_topology.tree_bearings.iter().enumerate() {
             if let Some(saved) = self.coordinates.get(bearing) {
                 coordinates[index] = *saved;

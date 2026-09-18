@@ -172,7 +172,7 @@ fn invalid_release_retains_source_and_escape_or_secondary_cancels_without_editin
         assert!(history.undo.is_empty());
         assert!(graph.shares_revision(&original));
         if escape {
-            crate::cancel_one_world_escape_owner(&mut graph, &mut state);
+            crate::pause_menu::cancel_one_world_escape_owner(&mut graph, &mut state);
         } else {
             input.press(GameAction::Secondary);
             actions(
@@ -205,7 +205,7 @@ fn a_locked_destination_tracks_motion_without_a_stationary_drag_jump() {
         published_graph: graph.clone(),
         creation: Some(creation),
         transforms: transforms.clone(),
-        live_state: Some(crate::LivePhysicsState {
+        live_state: Some(crate::simulation::state::LivePhysicsState {
             tick: 1,
             transforms,
             velocities: vec![
@@ -454,7 +454,7 @@ fn socket_gesture(kind: mechanic_core::BearingKind) {
         ..default()
     };
     let face = FaceRef::part(destination, mechanic_core::FaceKind::PositiveY);
-    let socket = crate::PlacedBearing {
+    let socket = crate::editor::build_actions::PlacedBearing {
         source: face,
         anchor: builder::face_geometry_from_ref(face, Some(&graph)).center,
         axis: if matches!(kind, mechanic_core::BearingKind::Rotational) {
