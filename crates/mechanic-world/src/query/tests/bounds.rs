@@ -1,5 +1,7 @@
+use bevy_math::DVec3;
+
 use super::super::*;
-use crate::WorldBounds;
+use crate::{BrickCoord, TerrainNodeId, WorldBounds, WorldPosition};
 
 fn bounds(minimum: DVec3, maximum: DVec3) -> WorldBounds {
     WorldBounds {

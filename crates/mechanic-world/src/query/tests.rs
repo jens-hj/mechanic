@@ -12,12 +12,12 @@ use mechanic_core::{
 
 use super::{
     ActiveTerrainScene, FoundationSample, FoundationSpatialIndex, FoundationSupport,
-    KinematicCapsule, KinematicCollisionScene, KinematicInput, TerrainDensity, TerrainRayHit,
-    TerrainSpatialIndex, WorldConstructionEditability, raycast_density,
+    KinematicCapsule, KinematicInput, TerrainDensity, TerrainSpatialIndex,
+    WorldConstructionEditability, raycast_density,
 };
 use crate::{
-    BrickCoord, TerrainMaterial, TerrainMeshRequest, TerrainNodeId, TerrainOctree,
-    TerrainTransitionMask, WorldPosition, WorldSeed, mesh_chunk,
+    BrickCoord, KinematicCollisionScene, TerrainMaterial, TerrainMeshRequest, TerrainNodeId,
+    TerrainOctree, TerrainRayHit, TerrainTransitionMask, WorldPosition, WorldSeed, mesh_chunk,
 };
 
 struct Plane;
