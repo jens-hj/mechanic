@@ -855,6 +855,83 @@ impl Default for DriveLimits {
     }
 }
 
+/// Typed programmable envelope for a linear bearing, in SI units.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "[f32; 4]", into = "[f32; 4]")]
+pub struct LinearDriveLimits {
+    max_speed: f32,
+    max_force: f32,
+    minimum: f32,
+    maximum: f32,
+}
+
+impl LinearDriveLimits {
+    /// Creates a linear envelope. Graph insertion also checks physical rail travel.
+    ///
+    /// # Errors
+    /// Rejects non-finite or non-positive speed/force and unordered displacement limits.
+    pub fn new(
+        max_speed: f32,
+        max_force: f32,
+        minimum: f32,
+        maximum: f32,
+    ) -> Result<Self, DriveLimitsError> {
+        if !max_speed.is_finite()
+            || max_speed <= 0.0
+            || max_speed > MAX_DRIVE_SPEED_RAD_S * crate::LINEAR_METERS_PER_RADIAN
+        {
+            return Err(DriveLimitsError::SpeedOutOfRange);
+        }
+        if !max_force.is_finite() || max_force <= 0.0 {
+            return Err(DriveLimitsError::NonPositiveTorque);
+        }
+        if !minimum.is_finite() || !maximum.is_finite() || minimum < -3.925 || maximum > 3.925 {
+            return Err(DriveLimitsError::LimitOutOfRange);
+        }
+        if minimum >= maximum {
+            return Err(DriveLimitsError::InvertedLimits);
+        }
+        Ok(Self {
+            max_speed,
+            max_force,
+            minimum,
+            maximum,
+        })
+    }
+    /// Maximum carriage speed in metres per second.
+    pub const fn max_speed(self) -> f32 {
+        self.max_speed
+    }
+    /// Maximum force in newtons, further limited by installed hardware.
+    pub const fn max_force(self) -> f32 {
+        self.max_force
+    }
+    /// Minimum signed carriage displacement in metres.
+    pub const fn minimum(self) -> f32 {
+        self.minimum
+    }
+    /// Maximum signed carriage displacement in metres.
+    pub const fn maximum(self) -> f32 {
+        self.maximum
+    }
+}
+impl TryFrom<[f32; 4]> for LinearDriveLimits {
+    type Error = DriveLimitsError;
+    fn try_from(values: [f32; 4]) -> Result<Self, Self::Error> {
+        Self::new(values[0], values[1], values[2], values[3])
+    }
+}
+impl From<LinearDriveLimits> for [f32; 4] {
+    fn from(limits: LinearDriveLimits) -> Self {
+        [
+            limits.max_speed,
+            limits.max_force,
+            limits.minimum,
+            limits.maximum,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1103,116 +1180,38 @@ mod tests {
             }
         }
     }
-}
 
-#[cfg(test)]
-mod name_tests {
-    use super::{DriveName, MAX_DRIVE_NAME_BYTES};
+    mod name {
+        use super::super::{DriveName, MAX_DRIVE_NAME_BYTES};
 
-    #[test]
-    fn an_unnamed_joint_reads_as_empty() {
-        assert!(DriveName::EMPTY.is_empty());
-        assert_eq!(DriveName::EMPTY.as_str(), "");
-        assert_eq!(DriveName::default(), DriveName::new(""));
-    }
-
-    #[test]
-    fn a_name_reads_back_exactly_as_it_was_written() {
-        let name = DriveName::new("Steer · front left");
-        assert_eq!(name.as_str(), "Steer · front left");
-        assert!(!name.is_empty());
-    }
-
-    #[test]
-    fn an_overlong_name_is_cut_on_a_character_boundary() {
-        // Every character is two bytes, so the cut lands mid-character unless
-        // the boundary is respected — the case that would corrupt the buffer.
-        let long = "é".repeat(MAX_DRIVE_NAME_BYTES);
-        let name = DriveName::new(&long);
-        assert_eq!(name.as_str().chars().count(), MAX_DRIVE_NAME_BYTES / 2);
-        assert!(name.as_str().chars().all(|character| character == 'é'));
-    }
-
-    #[test]
-    fn a_name_that_exactly_fills_the_buffer_keeps_every_byte() {
-        let full = "j".repeat(MAX_DRIVE_NAME_BYTES);
-        assert_eq!(DriveName::new(&full).as_str(), full);
-    }
-}
-
-/// Typed programmable envelope for a linear bearing, in SI units.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "[f32; 4]", into = "[f32; 4]")]
-pub struct LinearDriveLimits {
-    max_speed: f32,
-    max_force: f32,
-    minimum: f32,
-    maximum: f32,
-}
-
-impl LinearDriveLimits {
-    /// Creates a linear envelope. Graph insertion also checks physical rail travel.
-    ///
-    /// # Errors
-    /// Rejects non-finite or non-positive speed/force and unordered displacement limits.
-    pub fn new(
-        max_speed: f32,
-        max_force: f32,
-        minimum: f32,
-        maximum: f32,
-    ) -> Result<Self, DriveLimitsError> {
-        if !max_speed.is_finite()
-            || max_speed <= 0.0
-            || max_speed > MAX_DRIVE_SPEED_RAD_S * crate::LINEAR_METERS_PER_RADIAN
-        {
-            return Err(DriveLimitsError::SpeedOutOfRange);
+        #[test]
+        fn an_unnamed_joint_reads_as_empty() {
+            assert!(DriveName::EMPTY.is_empty());
+            assert_eq!(DriveName::EMPTY.as_str(), "");
+            assert_eq!(DriveName::default(), DriveName::new(""));
         }
-        if !max_force.is_finite() || max_force <= 0.0 {
-            return Err(DriveLimitsError::NonPositiveTorque);
+
+        #[test]
+        fn a_name_reads_back_exactly_as_it_was_written() {
+            let name = DriveName::new("Steer · front left");
+            assert_eq!(name.as_str(), "Steer · front left");
+            assert!(!name.is_empty());
         }
-        if !minimum.is_finite() || !maximum.is_finite() || minimum < -3.925 || maximum > 3.925 {
-            return Err(DriveLimitsError::LimitOutOfRange);
+
+        #[test]
+        fn an_overlong_name_is_cut_on_a_character_boundary() {
+            // Every character is two bytes, so the cut lands mid-character unless
+            // the boundary is respected — the case that would corrupt the buffer.
+            let long = "é".repeat(MAX_DRIVE_NAME_BYTES);
+            let name = DriveName::new(&long);
+            assert_eq!(name.as_str().chars().count(), MAX_DRIVE_NAME_BYTES / 2);
+            assert!(name.as_str().chars().all(|character| character == 'é'));
         }
-        if minimum >= maximum {
-            return Err(DriveLimitsError::InvertedLimits);
+
+        #[test]
+        fn a_name_that_exactly_fills_the_buffer_keeps_every_byte() {
+            let full = "j".repeat(MAX_DRIVE_NAME_BYTES);
+            assert_eq!(DriveName::new(&full).as_str(), full);
         }
-        Ok(Self {
-            max_speed,
-            max_force,
-            minimum,
-            maximum,
-        })
-    }
-    /// Maximum carriage speed in metres per second.
-    pub const fn max_speed(self) -> f32 {
-        self.max_speed
-    }
-    /// Maximum force in newtons, further limited by installed hardware.
-    pub const fn max_force(self) -> f32 {
-        self.max_force
-    }
-    /// Minimum signed carriage displacement in metres.
-    pub const fn minimum(self) -> f32 {
-        self.minimum
-    }
-    /// Maximum signed carriage displacement in metres.
-    pub const fn maximum(self) -> f32 {
-        self.maximum
-    }
-}
-impl TryFrom<[f32; 4]> for LinearDriveLimits {
-    type Error = DriveLimitsError;
-    fn try_from(values: [f32; 4]) -> Result<Self, Self::Error> {
-        Self::new(values[0], values[1], values[2], values[3])
-    }
-}
-impl From<LinearDriveLimits> for [f32; 4] {
-    fn from(limits: LinearDriveLimits) -> Self {
-        [
-            limits.max_speed,
-            limits.max_force,
-            limits.minimum,
-            limits.maximum,
-        ]
     }
 }

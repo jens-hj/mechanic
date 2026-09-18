@@ -484,65 +484,6 @@ fn capture_driving_frame(commands: &mut Commands, run: &mut Run, config: &Config
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn driving_sequence_settles_accelerates_and_steers_both_directions() {
-        assert!(driving_keys(179, false).is_empty());
-        assert_eq!(driving_keys(180, false), ['W']);
-        assert_eq!(driving_keys(360, false), ['W', 'A']);
-        assert_eq!(driving_keys(540, false), ['W']);
-        assert_eq!(driving_keys(720, false), ['W', 'D']);
-        assert_eq!(driving_keys(900, false), ['W']);
-        assert!(driving_keys(179, true).is_empty());
-        assert_eq!(driving_keys(180, true), ['W']);
-        assert_eq!(driving_keys(900, true), ['W']);
-    }
-
-    #[test]
-    fn automation_discards_keyboard_mouse_and_camera_motion() {
-        let mut app = App::new();
-        app.init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<ButtonInput<MouseButton>>()
-            .init_resource::<AccumulatedMouseMotion>()
-            .init_resource::<AccumulatedMouseScroll>()
-            .add_systems(Update, suppress_input);
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyW);
-        app.world_mut()
-            .resource_mut::<ButtonInput<MouseButton>>()
-            .press(MouseButton::Left);
-        app.world_mut()
-            .resource_mut::<AccumulatedMouseMotion>()
-            .delta = Vec2::ONE;
-        app.world_mut()
-            .resource_mut::<AccumulatedMouseScroll>()
-            .delta = Vec2::ONE;
-        app.update();
-        assert!(
-            !app.world()
-                .resource::<ButtonInput<KeyCode>>()
-                .pressed(KeyCode::KeyW)
-        );
-        assert!(
-            !app.world()
-                .resource::<ButtonInput<MouseButton>>()
-                .pressed(MouseButton::Left)
-        );
-        assert_eq!(
-            app.world().resource::<AccumulatedMouseMotion>().delta,
-            Vec2::ZERO
-        );
-        assert_eq!(
-            app.world().resource::<AccumulatedMouseScroll>().delta,
-            Vec2::ZERO
-        );
-    }
-}
-
 /// Disposable-world actions pass through the normal freeze transaction and repeat handler.
 #[derive(Default)]
 pub(crate) struct FreezeSequence {
@@ -655,4 +596,63 @@ pub(crate) fn hammer_impact(
         impulse_per_tick: per_tick,
         remaining_ticks: ticks,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn driving_sequence_settles_accelerates_and_steers_both_directions() {
+        assert!(driving_keys(179, false).is_empty());
+        assert_eq!(driving_keys(180, false), ['W']);
+        assert_eq!(driving_keys(360, false), ['W', 'A']);
+        assert_eq!(driving_keys(540, false), ['W']);
+        assert_eq!(driving_keys(720, false), ['W', 'D']);
+        assert_eq!(driving_keys(900, false), ['W']);
+        assert!(driving_keys(179, true).is_empty());
+        assert_eq!(driving_keys(180, true), ['W']);
+        assert_eq!(driving_keys(900, true), ['W']);
+    }
+
+    #[test]
+    fn automation_discards_keyboard_mouse_and_camera_motion() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .add_systems(Update, suppress_input);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseMotion>()
+            .delta = Vec2::ONE;
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta = Vec2::ONE;
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<ButtonInput<KeyCode>>()
+                .pressed(KeyCode::KeyW)
+        );
+        assert!(
+            !app.world()
+                .resource::<ButtonInput<MouseButton>>()
+                .pressed(MouseButton::Left)
+        );
+        assert_eq!(
+            app.world().resource::<AccumulatedMouseMotion>().delta,
+            Vec2::ZERO
+        );
+        assert_eq!(
+            app.world().resource::<AccumulatedMouseScroll>().delta,
+            Vec2::ZERO
+        );
+    }
 }

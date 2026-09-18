@@ -725,7 +725,7 @@ fn terrain_icon() -> Element {
 }
 
 #[cfg(test)]
-mod consolidated_tests {
+mod tests {
     use mechanic_core::ConstructionMaterial;
     use mosaic_core::{Rect, Vector2};
     use mosaic_widgets::input::{PointerButton, PointerEventKind};

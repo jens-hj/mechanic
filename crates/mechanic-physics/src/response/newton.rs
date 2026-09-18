@@ -622,25 +622,24 @@ mod tests {
             assert!((dot(row, &solution) - target).abs() < 1e-10);
         }
     }
-}
 
-#[cfg(test)]
-mod dense_tests {
-    use super::*;
+    mod dense {
+        use super::super::*;
 
-    #[test]
-    fn contact_newton_preserves_a_weak_direction_and_dependent_rows() {
-        let matrix = [1.0, 1.0, 0.0, 1.0, 1.0 + 1e-10, 0.0, 2.0, 2.0, 0.0];
-        let expected = [2.0, -3.0, 0.0];
-        let rhs = matrix
-            .chunks_exact(3)
-            .map(|row| row.iter().zip(expected).map(|(a, b)| a * b).sum())
-            .collect::<Vec<_>>();
-        let actual = rank_direction(&matrix, &rhs).unwrap();
-        assert!((actual[0] - expected[0]).abs() < 1e-5);
-        assert!((actual[1] - expected[1]).abs() < 1e-5);
-        let mut inconsistent = rhs;
-        inconsistent[2] += 1.0;
-        assert!(rank_direction(&matrix, &inconsistent).is_none());
+        #[test]
+        fn contact_newton_preserves_a_weak_direction_and_dependent_rows() {
+            let matrix = [1.0, 1.0, 0.0, 1.0, 1.0 + 1e-10, 0.0, 2.0, 2.0, 0.0];
+            let expected = [2.0, -3.0, 0.0];
+            let rhs = matrix
+                .chunks_exact(3)
+                .map(|row| row.iter().zip(expected).map(|(a, b)| a * b).sum())
+                .collect::<Vec<_>>();
+            let actual = rank_direction(&matrix, &rhs).unwrap();
+            assert!((actual[0] - expected[0]).abs() < 1e-5);
+            assert!((actual[1] - expected[1]).abs() < 1e-5);
+            let mut inconsistent = rhs;
+            inconsistent[2] += 1.0;
+            assert!(rank_direction(&matrix, &inconsistent).is_none());
+        }
     }
 }

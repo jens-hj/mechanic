@@ -2320,7 +2320,7 @@ fn editable_field(buffer: State<String>, commit: Rc<dyn Fn()>, typing: State<boo
 }
 
 #[cfg(test)]
-mod engine_lane_tests {
+mod tests {
     use mechanic_core::{GearKey, GearKeyChord, GearboxConfig};
 
     use super::{BearingSlots, EngineKind, EngineLaneModel, ShiftMode, gearbox_bindings_enabled};
