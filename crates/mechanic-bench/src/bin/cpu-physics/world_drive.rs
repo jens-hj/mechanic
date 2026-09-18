@@ -46,7 +46,12 @@ pub(super) fn run(
         );
     }
     let loaded = instance.creation.into_graph()?;
-    let mut edits = store.load_octree(&world.name)?;
+    let (mut edits, clumps) = store.load_material_state(&world.name)?;
+    if !clumps.bodies.is_empty() {
+        return Err(
+            "world-drive does not replay saved clumps; use the material-clumps benchmark".into(),
+        );
+    }
     let field = TerrainField::new(world.seed);
     let terrain = TerrainScene {
         field: &field,
