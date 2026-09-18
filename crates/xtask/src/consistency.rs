@@ -3,7 +3,10 @@
 //! Each check returns one line per violation. `AGENTS.md` states the rule;
 //! this module keeps the tree from drifting away from it.
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::run::Failure;
 
@@ -21,6 +24,14 @@ const CHECKS: &[Check] = &[
     Check {
         name: "crate manifests take every dependency from the workspace",
         run: dependencies_come_from_workspace,
+    },
+    Check {
+        name: "modules are foo.rs beside foo/, never mod.rs",
+        run: no_mod_rs,
+    },
+    Check {
+        name: "modules live where their name says, without #[path]",
+        run: no_path_attributes,
     },
 ];
 
@@ -57,7 +68,7 @@ fn read(path: &Path) -> Result<String, String> {
 }
 
 /// Paths of every `crates/*/Cargo.toml`, sorted.
-fn crate_manifests(root: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+fn crate_manifests(root: &Path) -> Result<Vec<PathBuf>, String> {
     let crates = root.join("crates");
     let mut manifests: Vec<_> = fs::read_dir(&crates)
         .map_err(|error| format!("cannot list {}: {error}", crates.display()))?
@@ -67,6 +78,62 @@ fn crate_manifests(root: &Path) -> Result<Vec<std::path::PathBuf>, String> {
         .collect();
     manifests.sort();
     Ok(manifests)
+}
+
+/// Every `.rs` file under `crates/`, sorted, skipping build output.
+fn rust_sources(root: &Path) -> Result<Vec<PathBuf>, String> {
+    fn walk(directory: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> {
+        let entries = fs::read_dir(directory)
+            .map_err(|error| format!("cannot list {}: {error}", directory.display()))?;
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name != "target") {
+                    walk(&path, found)?;
+                }
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut found = Vec::new();
+    walk(&root.join("crates"), &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+fn relative(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn no_mod_rs(root: &Path) -> Result<Vec<String>, String> {
+    Ok(rust_sources(root)?
+        .iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "mod.rs"))
+        .map(|path| relative(root, path))
+        .collect())
+}
+
+fn no_path_attributes(root: &Path) -> Result<Vec<String>, String> {
+    // Cargo discovers `src/bin/<name>.rs` only as a single file, so a binary
+    // with submodules has to point at them. Everything else follows its name.
+    let binaries = root.join("crates/mechanic-bench/src/bin");
+    let mut violations = Vec::new();
+    for path in rust_sources(root)? {
+        if path.starts_with(&binaries) {
+            continue;
+        }
+        for (index, line) in read(&path)?.lines().enumerate() {
+            if line.trim_start().starts_with("#[path") {
+                violations.push(format!("{}:{}", relative(root, &path), index + 1));
+            }
+        }
+    }
+    Ok(violations)
 }
 
 fn mosaic_revisions_match(root: &Path) -> Result<Vec<String>, String> {
@@ -107,8 +174,11 @@ fn dependencies_come_from_workspace(root: &Path) -> Result<Vec<String>, String> 
                 .next()
                 .is_some_and(|first| first.is_ascii_alphanumeric() || first == '_');
             if in_dependencies && opens_dependency && !line.contains("workspace = true") {
-                let shown = manifest.strip_prefix(root).unwrap_or(&manifest);
-                violations.push(format!("{}:{}: {line}", shown.display(), index + 1));
+                violations.push(format!(
+                    "{}:{}: {line}",
+                    relative(root, &manifest),
+                    index + 1
+                ));
             }
         }
     }
