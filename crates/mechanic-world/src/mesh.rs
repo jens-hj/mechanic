@@ -953,6 +953,7 @@ pub fn mesh_chunk_profiled_prepared(
     // potentially large allocation in every published chunk for the rest of
     // the world's lifetime.
     chunk.vertex_cache = LatticeEdgeVertexCache::default();
+    release_growth_slack(&mut chunk);
     make_vertices_node_local(&mut chunk);
     let bvh_started = Instant::now();
     chunk.triangle_bvh = build_triangle_bvh(chunk.origin, &chunk.vertices, &chunk.index_groups);
@@ -966,6 +967,23 @@ pub fn mesh_chunk_profiled_prepared(
             bvh_construction_ms,
         },
     )
+}
+
+/// Growth slack is retained for as long as a chunk stays published. Across a
+/// streamed cut it was about 30% of the geometry vectors' capacity.
+fn release_growth_slack(chunk: &mut TerrainMeshChunk) {
+    chunk.vertices.shrink_to_fit();
+    chunk.normals.shrink_to_fit();
+    chunk.material_weights.shrink_to_fit();
+    chunk.index_groups.regular.shrink_to_fit();
+    for indices in chunk
+        .index_groups
+        .transitions
+        .iter_mut()
+        .chain(&mut chunk.index_groups.caps)
+    {
+        indices.shrink_to_fit();
+    }
 }
 
 fn make_vertices_node_local(chunk: &mut TerrainMeshChunk) {
@@ -2194,6 +2212,11 @@ mod tests {
         let indices = final_indices(&chunk);
         assert!(!indices.is_empty());
         assert_eq!(chunk.vertex_cache.vertices.capacity(), 0);
+        assert_eq!(chunk.vertices.capacity(), chunk.vertices.len());
+        assert_eq!(
+            chunk.index_groups.regular.capacity(),
+            chunk.index_groups.regular.len()
+        );
         assert!(chunk.vertices.len() < indices.len());
         let unique = chunk
             .vertices
