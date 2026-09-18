@@ -104,6 +104,32 @@ impl ConstructionMaterial {
     }
 }
 
+/// How a surface answers contact: the four coefficients every solver mixes
+/// pairwise. Construction materials and terrain materials both resolve to this.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceResponse {
+    /// Static Coulomb friction coefficient.
+    pub static_friction: f32,
+    /// Kinetic Coulomb friction coefficient.
+    pub dynamic_friction: f32,
+    /// Coefficient of restitution.
+    pub restitution: f32,
+    /// Dimensionless rolling-resistance coefficient.
+    pub rolling_resistance: f32,
+}
+
+impl SurfaceResponse {
+    /// Static friction, dynamic friction, restitution, and rolling resistance.
+    pub const fn to_array(self) -> [f32; 4] {
+        [
+            self.static_friction,
+            self.dynamic_friction,
+            self.restitution,
+            self.rolling_resistance,
+        ]
+    }
+}
+
 /// Physical properties belonging to one construction material.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialProperties {
@@ -137,6 +163,16 @@ impl MaterialProperties {
             restitution,
             rolling_resistance,
             youngs_modulus_pa,
+        }
+    }
+
+    /// The contact coefficients, without density or stiffness.
+    pub const fn surface_response(self) -> SurfaceResponse {
+        SurfaceResponse {
+            static_friction: self.static_friction,
+            dynamic_friction: self.dynamic_friction,
+            restitution: self.restitution,
+            rolling_resistance: self.rolling_resistance,
         }
     }
 

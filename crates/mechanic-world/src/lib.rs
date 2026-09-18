@@ -37,7 +37,7 @@ pub use edits::{
     encode_brick,
 };
 pub use generation::{CaveEdge, CaveGraph, CaveNode, TerrainField, TerrainMaterial, TerrainSample};
-pub use material_response::{TerrainMaterialError, TerrainSurfaceResponse};
+pub use material_response::TerrainMaterialError;
 pub use mesh::{
     LatticeEdgeVertexCache, PreparedTerrainRegion, TerrainCollisionChunk, TerrainIndexGroups,
     TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest, TerrainRayHit,

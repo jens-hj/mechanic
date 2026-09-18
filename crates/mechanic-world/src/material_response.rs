@@ -1,36 +1,13 @@
 //! Initial game-tuned surface contact properties; these are not measured soil data.
 
+use mechanic_core::{ConstructionMaterial, SurfaceResponse};
+
 use crate::{TerrainCollisionChunk, TerrainMaterial};
 
 /// Invalid per-vertex material weights or triangle indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("terrain triangle has invalid material weights")]
 pub struct TerrainMaterialError;
-
-/// Surface response supplied to construction/terrain contacts.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TerrainSurfaceResponse {
-    /// Static Coulomb friction coefficient.
-    pub static_friction: f32,
-    /// Sliding Coulomb friction coefficient.
-    pub dynamic_friction: f32,
-    /// Normal coefficient of restitution.
-    pub restitution: f32,
-    /// Rolling resistance coefficient.
-    pub rolling_resistance: f32,
-}
-
-impl TerrainSurfaceResponse {
-    /// Static friction, dynamic friction, restitution, and rolling resistance.
-    pub const fn to_array(self) -> [f32; 4] {
-        [
-            self.static_friction,
-            self.dynamic_friction,
-            self.restitution,
-            self.rolling_resistance,
-        ]
-    }
-}
 
 impl TerrainCollisionChunk {
     /// Normalized mean of the three vertices' material responses. CPU and GPU
@@ -41,7 +18,7 @@ impl TerrainCollisionChunk {
     pub fn triangle_surface_response(
         &self,
         indices: [u32; 3],
-    ) -> Result<TerrainSurfaceResponse, TerrainMaterialError> {
+    ) -> Result<SurfaceResponse, TerrainMaterialError> {
         let mut weights = [0.0; TerrainMaterial::COUNT];
         for index in indices {
             let source = self
@@ -69,7 +46,7 @@ impl TerrainCollisionChunk {
                 *target += weight * value;
             }
         }
-        Ok(TerrainSurfaceResponse {
+        Ok(SurfaceResponse {
             static_friction: response[0],
             dynamic_friction: response[1],
             restitution: response[2],
@@ -79,28 +56,81 @@ impl TerrainCollisionChunk {
 }
 
 impl TerrainMaterial {
+    /// The construction material this terrain is the same substance as, when it
+    /// is one. Such a material answers contact identically as ground and as a
+    /// block. Soil, rock, surface cover, and iron ore are terrain of their own:
+    /// packed dirt, cut stone, and refined iron are different surfaces.
+    pub const fn shared_construction_material(self) -> Option<ConstructionMaterial> {
+        match self {
+            Self::Sand => Some(ConstructionMaterial::Sand),
+            Self::Graphite => Some(ConstructionMaterial::Graphite),
+            Self::SurfaceCover | Self::Soil | Self::Rock | Self::Iron => None,
+        }
+    }
+
     /// Initial surface tuning. Permanent deformation is a separate response.
-    pub const fn surface_response(self) -> TerrainSurfaceResponse {
+    ///
+    /// Ground never returns energy: terrain restitution is zero, and a contact
+    /// takes the larger restitution of its two surfaces.
+    pub const fn surface_response(self) -> SurfaceResponse {
         let (static_friction, dynamic_friction, rolling_resistance) = match self {
             Self::SurfaceCover => (0.8, 0.65, 0.03),
             Self::Soil => (0.7, 0.55, 0.025),
-            Self::Sand => (0.6, 0.5, 0.04),
             Self::Rock => (0.8, 0.6, 0.01),
             Self::Iron => (0.6, 0.45, 0.01),
-            Self::Graphite => (0.3, 0.2, 0.01),
+            Self::Sand => Self::shared_friction(ConstructionMaterial::Sand),
+            Self::Graphite => Self::shared_friction(ConstructionMaterial::Graphite),
         };
-        TerrainSurfaceResponse {
+        SurfaceResponse {
             static_friction,
             dynamic_friction,
             restitution: 0.0,
             rolling_resistance,
         }
     }
+
+    /// Static friction, dynamic friction, and rolling resistance of a
+    /// construction material this terrain shares its substance with.
+    const fn shared_friction(material: ConstructionMaterial) -> (f32, f32, f32) {
+        let shared = material.properties();
+        (
+            shared.static_friction,
+            shared.dynamic_friction,
+            shared.rolling_resistance,
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_sharing_a_construction_material_shares_its_friction() {
+        let mut shared = 0;
+        for terrain in TerrainMaterial::ALL {
+            let Some(construction) = terrain.shared_construction_material() else {
+                continue;
+            };
+            shared += 1;
+            let block = construction.properties().surface_response();
+            let ground = terrain.surface_response();
+            assert_eq!(
+                ground.static_friction.to_bits(),
+                block.static_friction.to_bits()
+            );
+            assert_eq!(
+                ground.dynamic_friction.to_bits(),
+                block.dynamic_friction.to_bits()
+            );
+            assert_eq!(
+                ground.rolling_resistance.to_bits(),
+                block.rolling_resistance.to_bits()
+            );
+            assert_eq!(ground.restitution.to_bits(), 0.0_f32.to_bits());
+        }
+        assert_eq!(shared, 2);
+    }
 
     #[test]
     fn triangle_blending_normalizes_weights_and_rejects_invalid_material_data() {
@@ -115,8 +145,19 @@ mod tests {
             chunk.material_weights.push(weights);
         }
         let response = chunk.triangle_surface_response([0, 1, 2]).unwrap();
-        assert!((response.static_friction - (0.8 * 2.0 + 0.3) / 3.0).abs() < 1e-7);
-        assert!((response.dynamic_friction - (0.6 * 2.0 + 0.2) / 3.0).abs() < 1e-7);
+        let rock = TerrainMaterial::Rock.surface_response();
+        let graphite = TerrainMaterial::Graphite.surface_response();
+        let blend = |rock: f32, graphite: f32| (rock * 2.0 + graphite) / 3.0;
+        assert!(
+            (response.static_friction - blend(rock.static_friction, graphite.static_friction))
+                .abs()
+                < 1e-7
+        );
+        assert!(
+            (response.dynamic_friction - blend(rock.dynamic_friction, graphite.dynamic_friction))
+                .abs()
+                < 1e-7
+        );
         assert!(chunk.triangle_surface_response([0, 1, 3]).is_err());
         chunk.material_weights[0][0] = f32::NAN;
         assert!(chunk.triangle_surface_response([0, 1, 2]).is_err());

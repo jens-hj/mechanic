@@ -71,7 +71,8 @@ pub use geometry::{
     PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, POSITION_TICK_METERS,
     POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartSpec, PipeArms,
     PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, PipeJunctionDimensions,
-    PipeJunctionError, PipeJunctionSpec, SeatSpec, ServoSpec, TransmissionSpec, snap_world_to_grid,
+    PipeJunctionError, PipeJunctionSpec, SeatSpec, ServoSpec, SurfaceResponse, TransmissionSpec,
+    snap_world_to_grid,
 };
 pub use graph::{
     ActuatorInventory, AppearanceTarget, BearingDimensionError, BearingDimensions, BearingSpec,
