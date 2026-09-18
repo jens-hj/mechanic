@@ -50,14 +50,14 @@ A working Metal or Vulkan driver is still required to run the GPU application.
 ### Native Windows
 
 Install Git, [rustup](https://rustup.rs/), and Visual Studio 2022 Build Tools
-with the **Desktop development with C++** workload. In PowerShell, the helper
-uses the repository-pinned toolchain and propagates command failures:
+with the **Desktop development with C++** workload. `rustup` installs the
+repository-pinned toolchain on first use, and the same commands work in
+PowerShell as everywhere else:
 
 ```powershell
-.\scripts\dev.ps1 build
-.\scripts\dev.ps1 run
-.\scripts\dev.ps1 test
-.\scripts\dev.ps1 check
+cargo build --workspace
+cargo run -p mechanic-app
+cargo xtask ci
 ```
 
 Nix does not provide the native Windows environment; use WSL only when a Linux
@@ -432,9 +432,21 @@ loose target blocks remain enabled.
 
 ## Commands
 
+`cargo xtask` is the single entry point for checks, on every platform. CI runs
+`cargo xtask ci`, so a green local run means a green pipeline:
+
 ```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo xtask help          # list every task
+cargo xtask ci            # fmt, consistency, lint, test, doc, scripts-test
+cargo xtask fmt --fix     # apply formatting
+cargo xtask wgsl          # validate the compute kernels without a GPU
+cargo xtask bench-smoke   # quick headless benchmark
+```
+
+Tasks forward extra arguments to the underlying command, for example
+`cargo xtask test -p mechanic-core`.
+
+```sh
 cargo run -p mechanic-app
 cargo run -p mechanic-bench -- --scenario smoke
 cargo run -p mechanic-bench --release -- --scenario open_bearing

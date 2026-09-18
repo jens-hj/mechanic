@@ -8,14 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  format:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup show
-      - run: cargo fmt --all -- --check
-
-  test:
+  check:
     name: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -23,11 +16,20 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      # Mosaic is a private first-party dependency fetched over SSH. The secret
+      # is a read-only deploy key for gitlab.com/unincorporated/mosaic/mosaic.
+      - uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.MOSAIC_DEPLOY_KEY }}
+      - name: Trust gitlab.com
+        shell: bash
+        run: mkdir -p ~/.ssh && ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
       - run: rustup show
-      - run: cargo check --workspace --all-targets
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+      - run: cargo xtask ci
       - name: Fence acquisition and concurrent queue regression
         run: cargo test --manifest-path vendor/wgpu-core/Cargo.toml --features noop,wgsl --config 'patch.crates-io.wgpu-hal.path="vendor/wgpu-hal"' acquisition_does_not_block
       - name: Fence regression with lock validation
