@@ -1,0 +1,27 @@
+{
+  "cpu": "12th Gen Intel Core i5-12600K",
+  "platform": "Linux-7.2.6-x86_64-with-glibc2.42",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "source_commit": "16a106fa4d7c21314a1ce13e6b782129a49eebfb",
+  "commands": [
+    "cargo build -p mechanic-bench --release --bin material-mining --bin material-clumps",
+    "target/release/material-clumps --ticks 360 --trace > clumps.jsonl",
+    "for m in sand soil rock iron graphite cover; do target/release/material-mining $m 180 > $m.jsonl; done",
+    "target/release/material-mining sand 360 --settle > deposition.jsonl",
+    "target/release/material-clumps --ticks 360   # twice, untraced repeat",
+    "gzip -n -9 *.jsonl && python3 build-replay.py"
+  ],
+  "binary_sha256": {
+    "material-clumps": "48707d94b537d996751156507add149cdeef22e8a2b3c2ffa08384dd2c5f3638",
+    "material-mining": "24fc3d4035971b4007702d6acf0e4fb5cee6b63a9240646e43436cc78b599e65"
+  },
+  "kernel_coverage_complete": false,
+  "recorded_utc": "2026-09-18T11:46:27.681281+00:00",
+  "runs_sequential": true,
+  "concurrent_compilation": false,
+  "load_average_at_start": [
+    4.96,
+    7.3,
+    9.79
+  ]
+}

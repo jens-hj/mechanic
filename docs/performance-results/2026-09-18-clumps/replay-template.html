@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Mechanic · recorded material physics</title>
+<style>
+body{margin:0;background:#131b22;color:#e5ecf2;font:16px system-ui}main{max-width:1100px;margin:32px auto;padding:0 20px}h1{font-size:26px;font-weight:600}p{max-width:850px;color:#afbecb;line-height:1.55}canvas{width:100%;height:560px;background:#1c2832;border-radius:12px;touch-action:none}nav{display:flex;gap:14px;align-items:center;margin:16px 0;flex-wrap:wrap}button,select{font:inherit;background:#2d4355;color:white;border:1px solid #52718a;border-radius:6px;padding:8px 14px}input{flex:1;min-width:200px}output{font-variant-numeric:tabular-nums;color:#bed3e2}small{color:#b4c4ce}
+</style>
+<main><h1>Mechanical breakage and loose material</h1>
+<p>Recorded CPU physics from the reproducible clump and powered-contact benchmarks. Drag the view to rotate. The mining fixture guides a rotating cutter into a production-meshed material sample; terrain disappears only when measured contact stress and work authorize extraction.</p>
+<nav><select id="scenario"></select><button id="play">Pause</button><input id="seek" type="range" min="0" value="0"><output id="time"></output></nav>
+<canvas id="view"></canvas><p id="stats"></p>
+<small>Soft-ground fixture: 80 kg feed load, up to 40 N m motor torque. Mineral fixture: 8,000 kg feed load, up to 4,000 N m. This demonstrates material handling and drilling contact; it is not a complete mining vehicle. The 256-body replay keeps every body active and does not model deposition.</small>
+</main>
+<script>
+const data=/*REPLAY_DATA*/{};
+const select=document.querySelector('#scenario'),canvas=document.querySelector('#view'),ctx=canvas.getContext('2d'),seek=document.querySelector('#seek'),play=document.querySelector('#play');
+for(const key of Object.keys(data)){const option=document.createElement('option');option.value=key;option.textContent=key;select.append(option)}
+let index=0,playing=true,yaw=.65,last=0,drag=null;
+const colors=['#78874f','#83624a','#9aa0a5','#dbc188','#946f63','#596370'];
+function choose(){index=0;seek.max=data[select.value].frames.length-1;draw()}
+select.onchange=choose;seek.oninput=()=>{index=Number(seek.value);playing=false;play.textContent='Play';draw()};
+play.onclick=()=>{playing=!playing;play.textContent=playing?'Pause':'Play'};
+canvas.onpointerdown=e=>{drag=e.clientX;canvas.setPointerCapture(e.pointerId)};canvas.onpointerup=()=>drag=null;canvas.onpointermove=e=>{if(drag!==null){yaw+=(e.clientX-drag)*.01;drag=e.clientX;draw()}};
+function rotated(v,q){const [x,y,z,w]=q,[a,b,c]=v;const tx=2*(y*c-z*b),ty=2*(z*a-x*c),tz=2*(x*b-y*a);return[a+w*tx+y*tz-z*ty,b+w*ty+z*tx-x*tz,c+w*tz+x*ty-y*tx]}
+function draw(){if(!select.value)return;const run=data[select.value],frame=run.frames[index],mining=run.mining;
+const w=canvas.clientWidth,h=canvas.clientHeight,dpr=devicePixelRatio||1;canvas.width=w*dpr;canvas.height=h*dpr;ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);
+const scale=Math.min(w*.43,260),target=mining?[.8,.65,.8]:[0,.2,0];
+function camera(p){const x=p[0]-target[0],y=p[1]-target[1],z=p[2]-target[2];const u=Math.cos(yaw)*x-Math.sin(yaw)*z,d=Math.sin(yaw)*x+Math.cos(yaw)*z;return[w/2+u*scale,h*.58-(y*.88-d*.48)*scale,d*.88+y*.48]}
+const faces=[];function face(points,color){const projected=points.map(camera);faces.push({points:projected,color,depth:projected.reduce((s,p)=>s+p[2],0)/projected.length})}
+face([[-3,-.015,-3],[3,-.015,-3],[3,-.015,3],[-3,-.015,3]],'#25333c');
+if(mining&&frame.terrain!==null){const mesh=run.meshes[frame.terrain];for(let i=0;i<mesh.indices.length;i+=3){const p=mesh.indices.slice(i,i+3).map(n=>mesh.vertices[n].map((v,a)=>v+mesh.origin[a]));face(p,run.color)}}
+function box(p,q,half,color){const vertices=[];for(let n=0;n<8;n++){const v=rotated(half.map((s,a)=>s*((n>>a&1)?1:-1)),q);vertices.push(v.map((v,a)=>v+p[a]))}for(const f of [[0,1,3,2],[4,6,7,5],[0,4,5,1],[2,3,7,6],[0,2,6,4],[1,5,7,3]])face(f.map(n=>vertices[n]),color)}
+frame.poses.forEach((p,i)=>box(p.slice(0,3),p.slice(3,7),mining?p.slice(7,10):[.05,.05,.05],mining?run.color:colors[i%6]));
+if(mining){const p=frame.tool_position.slice();p[1]-=200;box(p,frame.tool_rotation,[.025,.05,.1],'#77a8ca')}
+faces.sort((a,b)=>a.depth-b.depth);for(const f of faces){ctx.beginPath();f.points.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();ctx.fillStyle=f.color;ctx.fill();ctx.strokeStyle='#14212b55';ctx.lineWidth=.5;ctx.stroke()}
+seek.value=index;document.querySelector('#time').textContent=(frame.tick/60).toFixed(2)+' s';
+const s=run.summary;document.querySelector('#stats').textContent=(mining?`${frame.removed_cells} cells extracted · ${frame.clumps} physical chunks`:'256 active chunks')+` · ${Number(s.physics_p95_ms).toFixed(2)} ms physics p95 · ${s.degraded_ticks} degraded ticks`;
+}
+function animate(now){if(playing&&now-last>50){index=(index+1)%data[select.value].frames.length;last=now;draw()}requestAnimationFrame(animate)}
+choose();requestAnimationFrame(animate);window.onresize=draw;
+</script></html>

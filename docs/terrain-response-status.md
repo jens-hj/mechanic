@@ -132,6 +132,15 @@ keeps actual convex vertices instead of reintroducing every clipped triangle
 intersection. A 2 m rigid-terrain cube improves from 36.8 to 9.6 ms physics p95
 on an i5-12600K; soil remeshing and varied-surface contact counts remain costly.
 
+Contact stress and delivered work now break terrain into world-owned clumps on
+the CPU route. Sand, soil and cover settle back into low-compaction terrain;
+rock, iron and graphite stay physical and sleep. Terrain edits and clump changes
+publish as one generation and save in one snapshot, and the GPU route rejects a
+world that holds clumps. See
+[the clump report](performance-results/2026-09-18-clumps/REPORT.md). Extraction
+conserves material in every measured run, but the 256-clump replay runs at a
+104 – 114 ms physics p95 on an i5-12600K, so no clump scale gate is claimed.
+
 ## Open work
 
 1. Articulated rotational CCD and crossings that start in overlap.
@@ -140,7 +149,7 @@ on an i5-12600K; soil remeshing and varied-surface contact counts remain costly.
    installed car still overturns in the scripted sequence.
 4. Soil follow-up: remesh performance, a close-up visual rut demonstration, and
    a compact GPU load readback.
-5. Then, in order:
-   - material transfers and runtime clumps
-   - atomic terrain/body publication
-   - the 256-clump benchmark and a visual demonstration
+5. Clump follow-up: the 256-clump tick cost, an identical-tool resistance
+   comparison using a fixture with a realistic mass and an external feed force,
+   the validation gaps listed in the clump report, and an in-app visual
+   demonstration.
