@@ -2,66 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{ConstructionGraph, ConstructionMaterial, FaceOwner, PartId, PartSpec, RegionId};
-
-/// Maximum part ownership per asynchronously replaceable geometry page.
-pub const CONSTRUCTION_PAGE_MAX_PARTS: usize = 256;
-/// Maximum vertex ownership per asynchronously replaceable geometry page.
-pub const CONSTRUCTION_PAGE_MAX_VERTICES: usize = 65_000;
-
-/// Stable owner of one construction geometry page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ConstructionGeometryOwner {
-    /// Ordinary construction material geometry.
-    Material(ConstructionMaterial),
-    /// Authored machine appearance, using its stable application index.
-    Authored(u8),
-    /// Bearing and joint-ring geometry.
-    Bearings,
-    /// Shape-region-owned surface geometry.
-    Region(RegionId),
-}
-
-/// Stable identity of one paged construction mesh.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ConstructionPageKey {
-    /// Geometry family owning the page.
-    pub owner: ConstructionGeometryOwner,
-    /// Zero-based page within that family.
-    pub page: u32,
-}
-
-/// One complete replacement page ready for an atomic render cutover.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConstructionRenderPage {
-    /// Stable page identity.
-    pub key: ConstructionPageKey,
-    /// Parts whose geometry is contained in the page.
-    pub parts: Vec<PartId>,
-    /// Built vertex count, bounded by [`CONSTRUCTION_PAGE_MAX_VERTICES`].
-    pub vertex_count: usize,
-}
-
-/// Generation-exact construction render publication.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ConstructionRenderDelta {
-    /// Exact committed graph revision represented by every page.
-    pub generation: u64,
-    /// Complete page replacements; old pages remain visible until all are ready.
-    pub replacements: Vec<ConstructionRenderPage>,
-    /// Pages no longer owned by the replacement revision.
-    pub removals: Vec<ConstructionPageKey>,
-}
-
-impl ConstructionRenderDelta {
-    /// Validates the fixed page contract before a render owner accepts work.
-    pub fn validate(&self) -> bool {
-        self.replacements.iter().all(|page| {
-            page.parts.len() <= CONSTRUCTION_PAGE_MAX_PARTS
-                && page.vertex_count <= CONSTRUCTION_PAGE_MAX_VERTICES
-        })
-    }
-}
+use crate::{ConstructionGraph, FaceOwner, PartId, PartSpec, RegionId};
 
 /// Exact graph change owned by one committed construction revision.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -238,7 +179,7 @@ const fn is_pipe(spec: &PartSpec) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BuildCommand, BuildPose, CuboidSpec};
+    use crate::{BuildCommand, BuildPose, ConstructionMaterial, CuboidSpec};
 
     #[test]
     fn reframing_invalidates_only_changed_parts_and_their_owned_regions() {

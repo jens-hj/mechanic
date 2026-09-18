@@ -16910,8 +16910,8 @@ fn append_pipe_bend_shape_with_end_faces(
     normals: &mut Vec<[f32; 3]>,
     indices: &mut Vec<u32>,
 ) {
-    const ARC_SLICES: u16 = 12;
-    const RADIAL_SIDES: u16 = 24;
+    const ARC_SLICES: u16 = mechanic_core::PIPE_BEND_ARC_SLICES;
+    const RADIAL_SIDES: u16 = mechanic_core::PIPE_BEND_RADIAL_SIDES;
     let radius = dimensions.radius() * scale;
     let outer = dimensions.outer_diameter() * scale * 0.5;
     let inner = dimensions.inner_diameter() * scale * 0.5;

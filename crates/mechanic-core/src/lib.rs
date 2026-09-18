@@ -56,11 +56,7 @@ pub use drive::{
     DriveTarget, DriveTrigger, LinearDriveLimits, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
     MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
 };
-pub use edit::{
-    CONSTRUCTION_PAGE_MAX_PARTS, CONSTRUCTION_PAGE_MAX_VERTICES, ConstructionEditDelta,
-    ConstructionGeometryOwner, ConstructionPageKey, ConstructionRenderDelta,
-    ConstructionRenderPage,
-};
+pub use edit::ConstructionEditDelta;
 pub use frame::{ConstructionFrame, ConstructionFrameId, FrameError};
 pub use gearbox::{
     GearKey, GearKeyChord, GearboxConfig, GearboxError, MAX_GEAR_RATIO, MAX_GEARS, MIN_GEAR_RATIO,
