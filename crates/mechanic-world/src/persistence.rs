@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// World document version written by this build.
-pub const WORLD_FORMAT_VERSION: u32 = 5;
+pub const WORLD_FORMAT_VERSION: u32 = 6;
 /// Delay after the last mutation before an ordinary autosave.
 pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 /// Maximum time dirty data waits even while mutations continue.
@@ -177,6 +177,119 @@ pub struct WorldStore {
 }
 
 impl WorldStore {
+    /// Atomically saves terrain and loose material in one ownership snapshot.
+    ///
+    /// # Errors
+    /// Reports malformed clumps, encoding failures, or the exact I/O path.
+    pub fn save_material_state(
+        &self,
+        world_name: &str,
+        terrain: &TerrainOctree,
+        clumps: &crate::ClumpCollection,
+    ) -> Result<(), WorldSaveError> {
+        let path = self.directory_for(world_name).join("material.bin");
+        let corrupt = |message: &str| WorldSaveError::CorruptCurrent {
+            path: path.clone(),
+            message: message.to_owned(),
+        };
+        if !clumps.is_valid() {
+            return Err(corrupt("invalid clump ownership"));
+        }
+        let text = ron::to_string(clumps).map_err(|_| corrupt("cannot encode clumps"))?;
+        let mut bytes = b"MECS\x01\x00".to_vec();
+        bytes.extend_from_slice(
+            &u64::try_from(text.len())
+                .map_err(|_| corrupt("clump payload too large"))?
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(text.as_bytes());
+        let snapshot = terrain.snapshot();
+        let bricks = snapshot.bricks().collect::<Vec<_>>();
+        bytes.extend_from_slice(
+            &u64::try_from(bricks.len())
+                .map_err(|_| corrupt("too many bricks"))?
+                .to_le_bytes(),
+        );
+        for brick in bricks {
+            let payload = encode_brick(brick);
+            bytes.extend_from_slice(
+                &u64::try_from(payload.len())
+                    .map_err(|_| corrupt("brick too large"))?
+                    .to_le_bytes(),
+            );
+            bytes.extend_from_slice(&payload);
+        }
+        atomic_write(&path, &bytes)
+    }
+
+    /// Loads the matching terrain and loose-material ownership snapshot.
+    /// A world with no snapshot has no material edits yet.
+    ///
+    /// # Errors
+    /// Rejects corrupt, duplicate, truncated, trailing or unsupported data.
+    pub fn load_material_state(
+        &self,
+        world_name: &str,
+    ) -> Result<(TerrainOctree, crate::ClumpCollection), WorldSaveError> {
+        let path = self.directory_for(world_name).join("material.bin");
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok((TerrainOctree::default(), crate::ClumpCollection::default()));
+            }
+            Err(source) => return Err(WorldSaveError::Io { path, source }),
+        };
+        let corrupt = |message: &str| WorldSaveError::CorruptCurrent {
+            path: path.clone(),
+            message: message.to_owned(),
+        };
+        if !bytes.starts_with(b"MECS\x01\x00") {
+            return Err(corrupt("unsupported material snapshot"));
+        }
+        let mut remaining = &bytes[6..];
+        let read_size = |input: &mut &[u8]| -> Result<usize, WorldSaveError> {
+            let (size, tail) = input
+                .split_at_checked(8)
+                .ok_or_else(|| corrupt("truncated material snapshot"))?;
+            *input = tail;
+            usize::try_from(u64::from_le_bytes(
+                size.try_into().map_err(|_| corrupt("invalid size"))?,
+            ))
+            .map_err(|_| corrupt("oversized payload"))
+        };
+        let size = read_size(&mut remaining)?;
+        let (text, rest) = remaining
+            .split_at_checked(size)
+            .ok_or_else(|| corrupt("truncated clumps"))?;
+        remaining = rest;
+        let clumps: crate::ClumpCollection =
+            ron::de::from_bytes(text).map_err(|_| corrupt("invalid clump payload"))?;
+        if !clumps.is_valid() {
+            return Err(corrupt("invalid clump ownership"));
+        }
+        let count = read_size(&mut remaining)?;
+        if count > remaining.len() / 8 {
+            return Err(corrupt("invalid brick count"));
+        }
+        let mut terrain = TerrainOctree::default();
+        for _ in 0..count {
+            let size = read_size(&mut remaining)?;
+            let (payload, rest) = remaining
+                .split_at_checked(size)
+                .ok_or_else(|| corrupt("truncated brick"))?;
+            remaining = rest;
+            let brick = decode_brick(payload).map_err(|_| corrupt("invalid brick payload"))?;
+            if terrain.brick(brick.coordinate()).is_some() {
+                return Err(corrupt("duplicate brick"));
+            }
+            terrain.insert_saved_brick(brick);
+        }
+        if !remaining.is_empty() {
+            return Err(corrupt("trailing material data"));
+        }
+        Ok((terrain, clumps))
+    }
+
     /// Creates a store rooted at an explicit directory.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -881,6 +994,37 @@ mod tests {
         let brick = edits.brick(crate::BrickCoord::new(0, 0, 0)).unwrap();
         let brick_path = store.save_brick(&world.name, brick).unwrap();
         assert_eq!(store.load_brick(&brick_path).unwrap(), *brick);
+    }
+
+    #[test]
+    fn material_snapshot_keeps_terrain_and_clumps_together() {
+        let temporary = TempDir::new();
+        let store = WorldStore::new(&temporary.0);
+        let field = TerrainField::new(WorldSeed(84));
+        let mut terrain = TerrainOctree::default();
+        let centre = crate::WorldPosition(bevy_math::DVec3::new(0.025, 200.025, 0.025));
+        terrain
+            .add_sphere(&field, centre, 0.1, crate::TerrainMaterial::Iron)
+            .unwrap();
+        let cell = centre.cell().unwrap();
+        let source = crate::ExtractionCell {
+            cell,
+            sample: terrain.sample_cell(&field, cell),
+        };
+        let transfer = crate::ClumpCollection::default()
+            .prepare_extraction(&terrain, &field, &[source])
+            .unwrap();
+        store
+            .save_material_state("material", &transfer.terrain, &transfer.clumps)
+            .unwrap();
+        let (loaded, clumps) = store.load_material_state("material").unwrap();
+        assert_eq!(clumps, transfer.clumps);
+        assert!(!loaded.sample_cell(&field, cell).is_solid());
+        let path = store.directory_for("material").join("material.bin");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.pop();
+        fs::write(&path, bytes).unwrap();
+        assert!(store.load_material_state("material").is_err());
     }
 
     #[test]

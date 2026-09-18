@@ -380,6 +380,27 @@ pub fn select_active_nodes_cached(
     focus: WorldPosition,
     cache: &mut TerrainBoundsCache,
 ) -> TerrainSelection {
+    select_active_nodes_with_interests(field, terrain, focus, &[], cache)
+}
+
+/// Selects one balanced cut covering the player and additional moving bodies.
+pub fn select_active_nodes_with_interests(
+    field: &TerrainField,
+    terrain: &TerrainOctreeSnapshot,
+    focus: WorldPosition,
+    interests: &[WorldPosition],
+    cache: &mut TerrainBoundsCache,
+) -> TerrainSelection {
+    let mut focuses = vec![focus.0];
+    for interest in interests {
+        if interest.is_inside_world()
+            && !focuses
+                .iter()
+                .any(|point| point.distance_squared(interest.0) < 64.0)
+        {
+            focuses.push(interest.0);
+        }
+    }
     let before = cache.access_counts();
     let mut state = TerrainSelectionState::default();
     let edit_footprints = TerrainEditFootprints::new(terrain);
@@ -387,7 +408,7 @@ pub fn select_active_nodes_cached(
         field,
         terrain,
         TerrainNodeId::ROOT,
-        focus.0,
+        &focuses,
         cache,
         &edit_footprints,
         &mut state,
@@ -459,13 +480,16 @@ fn select_recursive(
     field: &TerrainField,
     terrain: &TerrainOctreeSnapshot,
     id: TerrainNodeId,
-    focus: DVec3,
+    focus: &[DVec3],
     cache: &mut TerrainBoundsCache,
     edit_footprints: &TerrainEditFootprints,
     state: &mut TerrainSelectionState,
 ) {
     let (minimum, maximum) = node_bounds(id);
-    let distance_squared = horizontal_distance_squared_to_bounds(focus, minimum, maximum);
+    let distance_squared = focus
+        .iter()
+        .map(|&point| horizontal_distance_squared_to_bounds(point, minimum, maximum))
+        .fold(f64::INFINITY, f64::min);
     if distance_squared > 1_000_000.0 || maximum.y < -128.0 || minimum.y > 256.0 {
         return;
     }

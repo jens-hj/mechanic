@@ -3,6 +3,8 @@
 //! Rendering remains owned by `mechanic-app`, and the GPU runtime consumes only
 //! [`TerrainCollisionChunk`]. This crate deliberately has no Bevy ECS dependency.
 
+mod breakage;
+mod clumps;
 mod construction_collision;
 mod coordinates;
 mod edits;
@@ -12,6 +14,10 @@ mod mesh;
 mod persistence;
 mod query;
 mod soil;
+pub use breakage::{
+    BreakageAccumulator, BreakagePatch, BreakageResponse, ExtractionCell, MATERIAL_QUANTUM_M3,
+};
+pub use clumps::{ClumpCollection, MAX_ACTIVE_CLUMPS, MaterialClump, MaterialTransfer};
 mod streaming;
 pub use soil::{SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
 mod transvoxel;
@@ -55,5 +61,5 @@ pub use streaming::{
     TerrainPublicationDelta, TerrainPublicationUpsert, TerrainReadiness, TerrainSelection,
     TerrainSelectionDelta, TerrainSelectionStats, TerrainStreamer, TerrainTransitionMask,
     active_face_mask, publication_face_mask, select_active_nodes, select_active_nodes_cached,
-    terrain_loading_worker_count, terrain_worker_count,
+    select_active_nodes_with_interests, terrain_loading_worker_count, terrain_worker_count,
 };

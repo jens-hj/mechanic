@@ -761,6 +761,110 @@ impl TerrainOctree {
         outcome
     }
 
+    /// Removes exactly the authorized cells, or leaves the terrain unchanged if
+    /// any source is stale, repeated, empty, or outside the editable world.
+    /// The caller must publish the returned material and terrain together.
+    pub fn extract_cells(
+        &mut self,
+        field: &TerrainField,
+        cells: &[crate::ExtractionCell],
+    ) -> Option<TerrainEditOutcome> {
+        if !crate::breakage::unique_sources(cells)
+            || cells.iter().any(|source| {
+                !source.cell.is_editable()
+                    || !source.sample.is_solid()
+                    || self.sample_cell(field, source.cell) != source.sample
+            })
+        {
+            return None;
+        }
+        let mut grouped = BTreeMap::<BrickCoord, Vec<WorldCell>>::new();
+        for source in cells {
+            grouped
+                .entry(source.cell.brick())
+                .or_default()
+                .push(source.cell);
+        }
+        let mut outcome = TerrainEditOutcome::default();
+        for (coordinate, cells) in grouped {
+            let mut brick = self
+                .brick(coordinate)
+                .cloned()
+                .unwrap_or_else(|| TerrainBrick::promote(field, coordinate));
+            for cell in cells {
+                if let Some(material) = brick.set_empty(cell.local_in_brick()) {
+                    outcome.removed_cells[material.code() as usize] += 1;
+                }
+            }
+            brick.revision = self.next_revision;
+            self.insert_brick(brick);
+            self.dirty.insert(TerrainNodeId::leaf(coordinate));
+            outcome.changed_brick_coordinates.push(coordinate);
+        }
+        outcome.changed_bricks = outcome.changed_brick_coordinates.len();
+        if outcome.changed_bricks > 0 {
+            self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        }
+        Some(outcome)
+    }
+
+    /// Deposits whole cells of loose material into empty terrain supported from
+    /// below. Returns the applied edit and the unplaced quantity. Fractional
+    /// cells remain owned by the clump; they are never rounded away.
+    pub fn deposit_material(
+        &mut self,
+        field: &TerrainField,
+        cells: &[WorldCell],
+        material: TerrainMaterial,
+        mut quanta: u64,
+    ) -> (TerrainEditOutcome, u64) {
+        let mut outcome = TerrainEditOutcome::default();
+        if !crate::BreakageResponse::for_material(material).deposits {
+            return (outcome, quanta);
+        }
+        let mut staged = BTreeMap::<BrickCoord, TerrainBrick>::new();
+        for &cell in cells {
+            if quanta < 510 {
+                break;
+            }
+            if !cell.is_editable() || cell.y == i32::MIN {
+                continue;
+            }
+            let sample_at = |cell: WorldCell| {
+                staged
+                    .get(&cell.brick())
+                    .and_then(|brick| brick.sample(cell.local_in_brick()))
+                    .unwrap_or_else(|| self.sample_cell(field, cell))
+            };
+            if sample_at(cell).is_solid()
+                || !sample_at(WorldCell::new(cell.x, cell.y - 1, cell.z)).is_solid()
+            {
+                continue;
+            }
+            let coordinate = cell.brick();
+            let brick = staged.entry(coordinate).or_insert_with(|| {
+                self.brick(coordinate)
+                    .cloned()
+                    .unwrap_or_else(|| TerrainBrick::promote(field, coordinate))
+            });
+            if brick.set_solid(cell.local_in_brick(), material, -EMPTY_DENSITY) {
+                quanta -= 510;
+                outcome.added_cells[material.code() as usize] += 1;
+                brick.revision = self.next_revision;
+            }
+        }
+        for (coordinate, brick) in staged {
+            self.insert_brick(brick);
+            self.dirty.insert(TerrainNodeId::leaf(coordinate));
+            outcome.changed_brick_coordinates.push(coordinate);
+        }
+        outcome.changed_bricks = outcome.changed_brick_coordinates.len();
+        if outcome.changed_bricks > 0 {
+            self.next_revision = self.next_revision.wrapping_add(1).max(1);
+        }
+        (outcome, quanta)
+    }
+
     /// Subtracts a spherical brush and reports only cells that became empty.
     ///
     /// # Errors
@@ -1972,6 +2076,111 @@ mod tests {
         );
         assert_eq!(terrain.sample_cell(&field, cell), before);
         assert_eq!(terrain.dirty_leaves().count(), 0);
+    }
+
+    #[test]
+    fn extraction_is_atomic_and_preserves_compressed_material_quantity() {
+        let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
+        terrain.compress_patch(&field, patch).unwrap();
+        let source = crate::ExtractionCell {
+            cell,
+            sample: terrain.sample_cell(&field, cell),
+        };
+        let clumps = crate::ClumpCollection::default();
+        assert!(
+            clumps
+                .prepare_extraction(&terrain, &field, &[source, source])
+                .is_none()
+        );
+        assert_eq!(terrain.sample_cell(&field, cell), source.sample);
+        let transfer = clumps
+            .prepare_extraction(&terrain, &field, &[source])
+            .unwrap();
+        assert!(!transfer.terrain.sample_cell(&field, cell).is_solid());
+        assert_eq!(
+            u64::from(transfer.clumps.bodies[&1].quanta),
+            source.material_quanta()
+        );
+        assert!(
+            transfer
+                .clumps
+                .prepare_extraction(&transfer.terrain, &field, &[source])
+                .is_none()
+        );
+        assert!(terrain.sample_cell(&field, cell).is_solid());
+    }
+
+    #[test]
+    fn settled_soft_material_deposits_once_while_rock_stays_physical() {
+        for material in [
+            TerrainMaterial::Sand,
+            TerrainMaterial::Soil,
+            TerrainMaterial::Rock,
+            TerrainMaterial::Iron,
+        ] {
+            let (field, terrain, _, cell) = soil_fixture(material);
+            let source = crate::ExtractionCell {
+                cell,
+                sample: terrain.sample_cell(&field, cell),
+            };
+            let mut transfer = crate::ClumpCollection::default()
+                .prepare_extraction(&terrain, &field, &[source])
+                .unwrap();
+            assert!(
+                transfer
+                    .clumps
+                    .prepare_deposition(&transfer.terrain, &field, 1, &[cell])
+                    .is_none()
+            );
+            transfer
+                .clumps
+                .bodies
+                .get_mut(&1)
+                .unwrap()
+                .update_settling(true, 1.0);
+            let deposited =
+                transfer
+                    .clumps
+                    .prepare_deposition(&transfer.terrain, &field, 1, &[cell, cell]);
+            if crate::BreakageResponse::for_material(material).deposits {
+                let deposited = deposited.unwrap();
+                assert!(deposited.clumps.bodies.is_empty());
+                let sample = deposited.terrain.sample_cell(&field, cell);
+                assert!(sample.is_solid());
+                assert_eq!(sample.material, material);
+                assert_eq!(sample.compaction, 0);
+            } else {
+                assert!(deposited.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn breakage_requires_stress_and_work_at_the_exposed_contact() {
+        let (field, terrain, soil, cell) = soil_fixture(TerrainMaterial::Rock);
+        let mut damage = crate::BreakageAccumulator::default();
+        let mut patch = crate::BreakagePatch {
+            centre: soil.centre,
+            normal: DVec3::Y,
+            radius: 0.025,
+            stress_pa: 1e9,
+            work_j: 0.0,
+        };
+        damage.accumulate(&terrain, &field, patch);
+        assert!(damage.ready(&terrain, &field, 256).is_empty());
+        patch.stress_pa = 1.0;
+        patch.work_j = 1e9;
+        damage.accumulate(&terrain, &field, patch);
+        assert!(damage.ready(&terrain, &field, 256).is_empty());
+        patch.stress_pa = 1e9;
+        damage.accumulate(&terrain, &field, patch);
+        let ready = damage.ready(&terrain, &field, 256);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].cell, cell);
+        assert!(damage.ready(&terrain, &field, 0).is_empty());
+        assert_eq!(damage.ready(&terrain, &field, 1), ready);
+        damage.committed(&ready);
+        assert!(damage.ready(&terrain, &field, 1).is_empty());
     }
 
     #[test]
