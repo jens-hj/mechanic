@@ -99,7 +99,7 @@ impl RotationalSweep {
             "mechanic sweep rotating terrain colliders",
             &self.pipeline,
             self.bindings.as_ref().expect("terrain sweep is bound"),
-            gpu.collider_count.div_ceil(256),
+            gpu.collider_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
         direct_compute_pass(
@@ -107,7 +107,7 @@ impl RotationalSweep {
             "mechanic clamp terrain sweep poses",
             &self.apply,
             &self.apply_bindings,
-            gpu.body_count.div_ceil(256),
+            gpu.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
     }

@@ -62,7 +62,7 @@ impl PositionRecovery {
             &pipelines,
             device,
             "mechanic split collision kernel",
-            include_str!("../../kernels/collision.wgsl"),
+            &crate::shaders::COLLISION.source(),
         );
         let previous_poses =
             create_sized_buffer(device, "mechanic terrain previous poses", size * 2, usage);
@@ -147,7 +147,7 @@ impl PositionRecovery {
             &pipelines,
             device,
             "mechanic split root kernel",
-            include_str!("../../kernels/physics.wgsl"),
+            &crate::shaders::PHYSICS.source(),
         );
         let clear = compute_pipeline(
             &pipelines,
@@ -188,7 +188,7 @@ impl PositionRecovery {
             &pipelines,
             device,
             "mechanic split joint kernel",
-            include_str!("../../kernels/articulated.wgsl"),
+            &crate::shaders::ARTICULATED.source(),
         );
         let coordinates = compute_pipeline(
             &pipelines,
@@ -241,7 +241,7 @@ impl PositionRecovery {
             "mechanic capture terrain sweep poses",
             &self.capture,
             &self.capture_bindings,
-            gpu.body_count.div_ceil(256),
+            gpu.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
     }
@@ -266,7 +266,7 @@ impl PositionRecovery {
                     "mechanic refresh correction mass frames",
                     &gpu.collision.update_world_masses_pipeline,
                     &gpu.collision.update_world_masses_bind_group,
-                    gpu.body_count.div_ceil(256),
+                    gpu.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
                     None,
                 );
                 indirect_compute_pass(

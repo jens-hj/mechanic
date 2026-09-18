@@ -1,50 +1,3 @@
-struct TickConfig {
-    body_count: u32,
-    tick_index: u32,
-    snapshot_slot: u32,
-    collider_count: u32,
-    delta_seconds: f32,
-    gravity_y: f32,
-    linear_damping: f32,
-    angular_damping: f32,
-    bearing_count: u32,
-    suppression_count: u32,
-    pair_capacity: u32,
-    flags: u32,
-    hash_capacity: u32,
-    solver_iterations: u32,
-    reserved_a: u32,
-    reserved_b: u32,
-};
-
-struct Bearing {
-    local_anchor_a: vec4<f32>,
-    local_anchor_b: vec4<f32>,
-    local_axis_a: vec4<f32>,
-    local_axis_b: vec4<f32>,
-    suspension: vec4<f32>,
-    bump_stop: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
-struct MechanismBody {
-    metadata: vec4<u32>,
-    traversal: vec4<u32>,
-    bind_relative_position: vec4<f32>,
-    bind_relative_rotation: vec4<f32>,
-};
-
-struct Coordinate {
-    position: f32,
-    velocity: f32,
-};
-
-struct LinkState {
-    position: vec4<f32>,
-    rotation: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
 struct CoordinateAccumulator {
     gradient_bits: atomic<u32>,
     diagonal_bits: atomic<u32>,
@@ -77,9 +30,6 @@ struct ClosureFrame {
     upper: f32,
 };
 
-const BEARING_CLOSURE_FLAG: u32 = 1u;
-const BEARING_SUSPENDED_FLAG: u32 = 2u;
-const INVALID_NUMERIC_FLAG: u32 = 2u;
 const ANCHOR_TOLERANCE_MICROMETERS: u32 = 10u;
 const AXIS_TOLERANCE_MICRODEGREES: u32 = 1000u;
 const AXIS_WEIGHT: f32 = 1.0;
@@ -220,7 +170,7 @@ fn accumulate_coordinate(
     endpoint_axis_derivative: vec3<f32>,
     residual_sign: f32,
 ) {
-    if coordinate >= config.reserved_b {
+    if coordinate >= config.coordinate_count {
         atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
         return;
     }
@@ -365,7 +315,7 @@ fn branch_transpose(
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn evaluate_closures(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let index = invocation.x;
     if index >= config.bearing_count {
@@ -435,13 +385,13 @@ fn finalize_closures() {
     indirect_args[5] = 1u;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x != 0u {
         return;
     }
     var residual_preconditioned = 0.0;
-    for (var coordinate = 0u; coordinate < config.reserved_b; coordinate += 1u) {
+    for (var coordinate = 0u; coordinate < config.coordinate_count; coordinate += 1u) {
         let gradient = bitcast<f32>(atomicLoad(&accumulators[coordinate].gradient_bits));
         let diagonal = bitcast<f32>(atomicLoad(&accumulators[coordinate].diagonal_bits));
         var residual = 0.0;
@@ -459,7 +409,7 @@ fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
 
     for (var iteration = 0u; iteration < 8u; iteration += 1u) {
-        for (var coordinate = 0u; coordinate < config.reserved_b; coordinate += 1u) {
+        for (var coordinate = 0u; coordinate < config.coordinate_count; coordinate += 1u) {
             pcg_rows[coordinate].operator_product = 0.0;
         }
         for (var index = 0u; index < config.bearing_count; index += 1u) {
@@ -488,7 +438,7 @@ fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
         }
 
         var direction_operator = 0.0;
-        for (var coordinate = 0u; coordinate < config.reserved_b; coordinate += 1u) {
+        for (var coordinate = 0u; coordinate < config.coordinate_count; coordinate += 1u) {
             direction_operator += pcg_rows[coordinate].direction
                 * pcg_rows[coordinate].operator_product;
         }
@@ -497,7 +447,7 @@ fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
             alpha = residual_preconditioned / direction_operator;
         }
         var next_residual_preconditioned = 0.0;
-        for (var coordinate = 0u; coordinate < config.reserved_b; coordinate += 1u) {
+        for (var coordinate = 0u; coordinate < config.coordinate_count; coordinate += 1u) {
             pcg_rows[coordinate].solution += alpha * pcg_rows[coordinate].direction;
             pcg_rows[coordinate].residual -= alpha * pcg_rows[coordinate].operator_product;
             let diagonal = bitcast<f32>(atomicLoad(&accumulators[coordinate].diagonal_bits));
@@ -512,7 +462,7 @@ fn solve_closure_pcg(@builtin(global_invocation_id) invocation: vec3<u32>) {
         if abs(residual_preconditioned) > 1.0e-20 {
             beta = next_residual_preconditioned / residual_preconditioned;
         }
-        for (var coordinate = 0u; coordinate < config.reserved_b; coordinate += 1u) {
+        for (var coordinate = 0u; coordinate < config.coordinate_count; coordinate += 1u) {
             pcg_rows[coordinate].direction = pcg_rows[coordinate].preconditioned
                 + beta * pcg_rows[coordinate].direction;
         }

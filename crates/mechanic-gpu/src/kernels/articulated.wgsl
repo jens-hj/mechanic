@@ -1,95 +1,13 @@
-struct TickConfig {
-    body_count: u32,
-    tick_index: u32,
-    snapshot_slot: u32,
-    collider_count: u32,
-    delta_seconds: f32,
-    gravity_y: f32,
-    linear_damping: f32,
-    angular_damping: f32,
-    bearing_count: u32,
-    suppression_count: u32,
-    pair_capacity: u32,
-    flags: u32,
-    hash_capacity: u32,
-    solver_iterations: u32,
-    reserved_a: u32,
-    reserved_b: u32,
-};
-
-struct Mass {
-    inverse_mass: vec4<f32>,
-    inverse_inertia_x: vec4<f32>,
-    inverse_inertia_y: vec4<f32>,
-    inverse_inertia_z: vec4<f32>,
-};
-
-struct Bearing {
-    local_anchor_a: vec4<f32>,
-    local_anchor_b: vec4<f32>,
-    local_axis_a: vec4<f32>,
-    local_axis_b: vec4<f32>,
-    suspension: vec4<f32>,
-    bump_stop: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
-struct MechanismBody {
-    metadata: vec4<u32>,
-    traversal: vec4<u32>,
-    bind_relative_position: vec4<f32>,
-    bind_relative_rotation: vec4<f32>,
-};
-
-struct Coordinate {
-    position: f32,
-    velocity: f32,
-};
-
-struct Drive {
-    mode: u32,
-    max_acceleration: f32,
-    max_speed: f32,
-    target_speed: f32,
-    target_angle: f32,
-    min_angle: f32,
-    max_angle: f32,
-    source_a_max_acceleration: f32,
-    source_a_no_load_speed: f32,
-    source_b_max_acceleration: f32,
-    source_b_no_load_speed: f32,
-    padding: f32,
-};
-
-struct DriveConstraint {
-    bearing: Bearing,
-    drive: Drive,
-    // Axis inertia, accumulated impulse, current angle, reserved.
-    state: vec4<f32>,
-    // Child body, parent body, tree direction, coordinate.
-    metadata: vec4<u32>,
-};
-
-const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 // Diagonal Jacobi rows share off-centre inertia terms and adjacent bodies.
 // Under-relaxation keeps their simultaneous impulses dissipative.
 const BEARING_PROJECTION_RELAXATION: f32 = 0.5;
 const GRAVITY_ALIGNED_BEARING_SLEEP_SPEED: f32 = 0.005;
 const INVALID_INDEX: u32 = 0xffffffffu;
-const DRIVE_MODE_PASSIVE: u32 = 0u;
-const DRIVE_MODE_ANGLE: u32 = 2u;
-// The outer position loop converts error to a tapered velocity request. The
-// existing torque-limited velocity loop supplies derivative damping, matching
-// the cascaded position/velocity control used by physical servos.
-const DRIVE_ANGLE_POSITION_GAIN: f32 = 6.0;
-const DRIVE_ANGLE_BRAKE_MARGIN: f32 = 0.8;
-const DRIVE_ANGLE_DEADBAND: f32 = 0.0005;
 const SMALL_MECHANISM_SERIAL_CLEANUP_STEPS: u32 = 5u;
 // Angle drives sharing light knuckles with fast wheel drives must converge
 // before advance_coordinates integrates their velocities. Contact cleanup is
 // too late to undo an erroneous angle step, even with unused servo torque.
 const SMALL_MECHANISM_ANGLE_ITERATIONS: u32 = 32u;
-const INVALID_NUMERIC_FLAG: u32 = 2u;
 
 @group(0) @binding(0) var<uniform> config: TickConfig;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
@@ -135,7 +53,7 @@ fn add_delta(body: u32, linear: vec3<f32>, angular: vec3<f32>) {
     atomicAdd(&velocity_deltas[base + 5u], i32(round(angular.z * FIXED_VELOCITY_SCALE)));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn prepare_drive_constraints(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let index = invocation.x;
     if index >= config.bearing_count {
@@ -450,7 +368,7 @@ fn project_bearing_velocities_serial() {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn project_bearing_velocities(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let index = invocation.x;
     if index >= config.bearing_count {
@@ -489,7 +407,7 @@ fn project_bearing_velocities(@builtin(global_invocation_id) invocation: vec3<u3
     solve_angular_axis(body_a, body_b, relative_angular, tangent_b);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn apply_velocity_deltas(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {
@@ -515,7 +433,7 @@ fn apply_velocity_deltas(@builtin(global_invocation_id) invocation: vec3<u32>) {
 // from erasing its steering drive's correction while retaining the fused
 // workgroup path for the more numerous bearing rows. The shared accumulators
 // still cap every motor to one tick of torque.
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn project_small_mechanism_velocities(
     @builtin(local_invocation_index) index: u32,
 ) {
@@ -668,7 +586,7 @@ fn stabilized_speed(body: u32, speed: f32) -> f32 {
     );
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn advance_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count || mechanism_bodies[body].metadata.w != 0u {
@@ -698,7 +616,7 @@ fn advance_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     coordinates[coordinate].position = angle;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn capture_coordinates(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count || mechanism_bodies[body].metadata.w != 0u {
@@ -746,7 +664,7 @@ fn reconstruct_body_velocities() {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn validate_articulated_state(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x == 0u { atomicOr(&diagnostics[8], 2u); }
     let body = invocation.x;
@@ -774,7 +692,6 @@ fn validate_articulated_state(@builtin(global_invocation_id) invocation: vec3<u3
         atomicOr(&diagnostics[0], INVALID_NUMERIC_FLAG);
     }
 }
-
 
 // Positive impulse opposes the relative velocity of B at the carriage point.
 fn linear_joint_impulse(a: u32, b: u32, ra: vec3<f32>, rb: vec3<f32>, impulse: vec3<f32>, torque: vec3<f32>, immediate: bool) {
@@ -890,7 +807,7 @@ fn project_linear_joint(index: u32, immediate: bool, motor: bool) {
 
 // Advance only joint position with scratch correction velocities. Leave the
 // physical generalized velocity and all drive/passive force budgets intact.
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn correct_coordinate_positions(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count || mechanism_bodies[body].metadata.w != 0u { return; }

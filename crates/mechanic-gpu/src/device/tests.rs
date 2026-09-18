@@ -82,29 +82,6 @@ fn replacement_scene_reuses_every_compiled_shader_and_pipeline() {
 }
 
 #[test]
-fn physics_wgsl_parses_and_validates_without_a_gpu() {
-    for (name, source) in [
-        ("physics", include_str!("../kernels/physics.wgsl")),
-        ("collision", include_str!("../kernels/collision.wgsl")),
-        ("lbvh", include_str!("../kernels/lbvh.wgsl")),
-        ("bearings", include_str!("../kernels/bearings.wgsl")),
-        ("mechanism", include_str!("../kernels/mechanism.wgsl")),
-        ("articulated", include_str!("../kernels/articulated.wgsl")),
-        ("closure", include_str!("../kernels/closure.wgsl")),
-        ("snapshot", include_str!("../kernels/snapshot.wgsl")),
-    ] {
-        let module = naga::front::wgsl::parse_str(source)
-            .unwrap_or_else(|error| panic!("{name} WGSL parses: {error}"));
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .unwrap_or_else(|error| panic!("{name} WGSL validates: {error:#?}"));
-    }
-}
-
-#[test]
 fn gated_recovery_timestamps_remain_ordered() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =

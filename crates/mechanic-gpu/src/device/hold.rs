@@ -5,8 +5,6 @@ use thiserror::Error;
 
 use super::{GpuBearing, GpuDriveConstraint, GpuMass, GpuPhysics, GpuTransform};
 
-const SUSPENDED_BEARING: u32 = 2;
-
 /// Invalid component hold or prescribed pose update.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum GpuHoldError {
@@ -133,7 +131,7 @@ impl GpuPhysics {
             }
             let mut bearing = *original;
             if held[body] {
-                bearing.metadata[3] |= SUSPENDED_BEARING;
+                bearing.metadata[3] |= crate::abi::BEARING_SUSPENDED_FLAG;
             }
             queue.write_buffer(
                 &self.bearings,

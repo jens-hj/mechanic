@@ -12,6 +12,44 @@ pub const CONSTRAINT_NON_CONVERGENCE_FLAG: u32 = 1 << 2;
 /// Persistent-manifold table could not retain a generated contact pair.
 pub const MANIFOLD_OVERFLOW_FLAG: u32 = 1 << 3;
 
+/// Bearing flag: the row closes a loop instead of owning a tree coordinate.
+pub const BEARING_CLOSURE_FLAG: u32 = 1 << 0;
+
+/// Bearing flag: the joint is suspended while a body it touches is held.
+pub const BEARING_SUSPENDED_FLAG: u32 = 1 << 1;
+
+/// Invocations per workgroup along X for every row-parallel entry point.
+pub const WORKGROUP_SIZE: u32 = 256;
+
+/// WGSL declarations of every constant the kernels share with the CPU,
+/// generated here so each value has one owner.
+pub(crate) fn wgsl_constants() -> String {
+    use std::fmt::Write as _;
+
+    let constants = [
+        ("WORKGROUP_SIZE", WORKGROUP_SIZE),
+        ("PAIR_OVERFLOW_FLAG", PAIR_OVERFLOW_FLAG),
+        ("INVALID_NUMERIC_FLAG", INVALID_NUMERIC_FLAG),
+        (
+            "CONSTRAINT_NON_CONVERGENCE_FLAG",
+            CONSTRAINT_NON_CONVERGENCE_FLAG,
+        ),
+        ("MANIFOLD_OVERFLOW_FLAG", MANIFOLD_OVERFLOW_FLAG),
+        ("BEARING_CLOSURE_FLAG", BEARING_CLOSURE_FLAG),
+        ("BEARING_SUSPENDED_FLAG", BEARING_SUSPENDED_FLAG),
+        ("COLLIDER_SHAPE_CUBOID", COLLIDER_SHAPE_CUBOID),
+        ("COLLIDER_SHAPE_CONVEX", COLLIDER_SHAPE_CONVEX),
+        ("DRIVE_MODE_PASSIVE", DRIVE_MODE_PASSIVE),
+        ("DRIVE_MODE_SPEED", DRIVE_MODE_SPEED),
+        ("DRIVE_MODE_ANGLE", DRIVE_MODE_ANGLE),
+    ];
+    let mut source = String::new();
+    for (name, value) in constants {
+        writeln!(source, "const {name}: u32 = {value}u;").expect("writing to a String cannot fail");
+    }
+    source
+}
+
 /// Per-tick uniform shared by physics kernels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
@@ -44,10 +82,10 @@ pub struct GpuTickConfig {
     pub hash_capacity: u32,
     /// Projected impulse iteration count.
     pub solver_iterations: u32,
-    /// Reserved for aligned ABI growth.
-    pub reserved_a: u32,
-    /// Reserved for aligned ABI growth.
-    pub reserved_b: u32,
+    /// Power-of-two row count of the broadphase bitonic sort.
+    pub sort_count: u32,
+    /// Reduced mechanism coordinates in the loaded creation.
+    pub coordinate_count: u32,
 }
 
 /// Fixed-size counters and residuals copied to the CPU after each tick.

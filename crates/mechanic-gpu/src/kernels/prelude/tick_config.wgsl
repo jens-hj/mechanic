@@ -1,0 +1,18 @@
+struct TickConfig {
+    body_count: u32,
+    tick_index: u32,
+    snapshot_slot: u32,
+    collider_count: u32,
+    delta_seconds: f32,
+    gravity_y: f32,
+    linear_damping: f32,
+    angular_damping: f32,
+    bearing_count: u32,
+    suppression_count: u32,
+    pair_capacity: u32,
+    flags: u32,
+    hash_capacity: u32,
+    solver_iterations: u32,
+    sort_count: u32,
+    coordinate_count: u32,
+};

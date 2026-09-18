@@ -4,7 +4,7 @@
 @group(0) @binding(3) var<storage, read_write> snapshot_rotations: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> diagnostics: array<atomic<u32>>;
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn publish_snapshot(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x == 0u { atomicOr(&diagnostics[8], 64u); }
     if atomicLoad(&diagnostics[0]) != 0u {

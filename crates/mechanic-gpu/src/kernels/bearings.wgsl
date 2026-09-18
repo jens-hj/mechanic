@@ -1,42 +1,3 @@
-struct TickConfig {
-    body_count: u32,
-    tick_index: u32,
-    snapshot_slot: u32,
-    collider_count: u32,
-    delta_seconds: f32,
-    gravity_y: f32,
-    linear_damping: f32,
-    angular_damping: f32,
-    bearing_count: u32,
-    suppression_count: u32,
-    pair_capacity: u32,
-    flags: u32,
-    hash_capacity: u32,
-    solver_iterations: u32,
-    reserved_a: u32,
-    reserved_b: u32,
-};
-
-struct Bearing {
-    local_anchor_a: vec4<f32>,
-    local_anchor_b: vec4<f32>,
-    local_axis_a: vec4<f32>,
-    local_axis_b: vec4<f32>,
-    suspension: vec4<f32>,
-    bump_stop: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
-struct LinkState {
-    position: vec4<f32>,
-    rotation: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
-const BEARING_CLOSURE_FLAG: u32 = 1u;
-const BEARING_SUSPENDED_FLAG: u32 = 2u;
-const CONSTRAINT_NON_CONVERGENCE_FLAG: u32 = 4u;
-
 @group(0) @binding(0) var<uniform> config: TickConfig;
 @group(0) @binding(1) var<storage, read> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read> rotations: array<vec4<f32>>;
@@ -82,7 +43,7 @@ fn record_residual(
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn validate_bearings(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x == 0u { atomicOr(&diagnostics[8], 32u); }
     let index = invocation.x;
@@ -105,7 +66,7 @@ fn validate_bearings(@builtin(global_invocation_id) invocation: vec3<u32>) {
     record_residual(anchor_a, anchor_b, axis_a, axis_b, (bearing.metadata.w & BEARING_CLOSURE_FLAG) != 0u, bearing, rotations[body_a], rotations[body_b]);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn validate_mechanism_bearings(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x == 0u { atomicOr(&diagnostics[8], 32u); }
     let index = invocation.x;

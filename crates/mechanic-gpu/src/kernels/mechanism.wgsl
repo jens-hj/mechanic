@@ -1,50 +1,3 @@
-struct TickConfig {
-    body_count: u32,
-    tick_index: u32,
-    snapshot_slot: u32,
-    collider_count: u32,
-    delta_seconds: f32,
-    gravity_y: f32,
-    linear_damping: f32,
-    angular_damping: f32,
-    bearing_count: u32,
-    suppression_count: u32,
-    pair_capacity: u32,
-    flags: u32,
-    hash_capacity: u32,
-    solver_iterations: u32,
-    reserved_a: u32,
-    reserved_b: u32,
-};
-
-struct Bearing {
-    local_anchor_a: vec4<f32>,
-    local_anchor_b: vec4<f32>,
-    local_axis_a: vec4<f32>,
-    local_axis_b: vec4<f32>,
-    suspension: vec4<f32>,
-    bump_stop: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
-struct MechanismBody {
-    metadata: vec4<u32>,
-    traversal: vec4<u32>,
-    bind_relative_position: vec4<f32>,
-    bind_relative_rotation: vec4<f32>,
-};
-
-struct Coordinate {
-    position: f32,
-    velocity: f32,
-};
-
-struct LinkState {
-    position: vec4<f32>,
-    rotation: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
 @group(0) @binding(0) var<uniform> config: TickConfig;
 @group(0) @binding(1) var<storage, read_write> positions: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> rotations: array<vec4<f32>>;
@@ -71,7 +24,7 @@ fn axis_rotation(axis: vec3<f32>, angle: f32) -> vec4<f32> {
     return vec4<f32>(normalize(axis) * sin(half_angle), cos(half_angle));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn prepare_links(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {
@@ -127,7 +80,7 @@ fn compose(child: LinkState, parent: LinkState) -> LinkState {
     return result;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn jump_a_to_b(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {
@@ -142,7 +95,7 @@ fn jump_a_to_b(@builtin(global_invocation_id) invocation: vec3<u32>) {
     links_b[body].metadata.y = links_a[child.metadata.x].metadata.y;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn jump_b_to_a(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {
@@ -157,7 +110,7 @@ fn jump_b_to_a(@builtin(global_invocation_id) invocation: vec3<u32>) {
     links_a[body].metadata.y = links_b[child.metadata.x].metadata.y;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn publish_a(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {
@@ -175,7 +128,7 @@ fn publish_a(@builtin(global_invocation_id) invocation: vec3<u32>) {
     rotations[body] = normalize(quat_multiply(rotations[root], link.rotation));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn publish_b(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {

@@ -1,34 +1,3 @@
-struct TickConfig {
-    body_count: u32,
-    tick_index: u32,
-    snapshot_slot: u32,
-    collider_count: u32,
-    delta_seconds: f32,
-    gravity_y: f32,
-    linear_damping: f32,
-    angular_damping: f32,
-    bearing_count: u32,
-    suppression_count: u32,
-    pair_capacity: u32,
-    flags: u32,
-    hash_capacity: u32,
-    solver_iterations: u32,
-    reserved_a: u32,
-    reserved_b: u32,
-};
-
-struct Collider {
-    local_center: vec4<f32>,
-    local_rotation: vec4<f32>,
-    half_extents: vec4<f32>,
-    metadata: vec4<u32>,
-    surface_response: vec4<f32>,
-    surface_elasticity: vec4<f32>,
-    // shape kind, convex-buffer offset, packed element counts, and
-    // nonzero when the owning body can never move.
-    shape: vec4<u32>,
-};
-
 struct Interval {
     minimum: f32,
     maximum: f32,
@@ -64,47 +33,6 @@ struct ContactImpulse {
     rolling: vec3<f32>,
 };
 
-struct Mass {
-    inverse_mass: vec4<f32>,
-    inverse_inertia_x: vec4<f32>,
-    inverse_inertia_y: vec4<f32>,
-    inverse_inertia_z: vec4<f32>,
-};
-
-struct Bearing {
-    local_anchor_a: vec4<f32>,
-    local_anchor_b: vec4<f32>,
-    local_axis_a: vec4<f32>,
-    local_axis_b: vec4<f32>,
-    suspension: vec4<f32>,
-    bump_stop: vec4<f32>,
-    metadata: vec4<u32>,
-};
-
-struct Drive {
-    mode: u32,
-    max_acceleration: f32,
-    max_speed: f32,
-    target_speed: f32,
-    target_angle: f32,
-    min_angle: f32,
-    max_angle: f32,
-    source_a_max_acceleration: f32,
-    source_a_no_load_speed: f32,
-    source_b_max_acceleration: f32,
-    source_b_no_load_speed: f32,
-    padding: f32,
-};
-
-struct DriveConstraint {
-    bearing: Bearing,
-    drive: Drive,
-    // Axis inertia, accumulated impulse, current angle, reserved.
-    state: vec4<f32>,
-    // Child body, parent body, tree direction, coordinate.
-    metadata: vec4<u32>,
-};
-
 struct BearingProjectionFrame {
     arm_a: vec3<f32>,
     arm_b: vec3<f32>,
@@ -134,11 +62,8 @@ struct SatResult {
     near_face_axes: u32,
 };
 
-const PAIR_OVERFLOW_FLAG: u32 = 1u;
-const MANIFOLD_OVERFLOW_FLAG: u32 = 8u;
 const MAX_HASH_PROBES: u32 = 96u;
 const EMPTY_HASH_KEY: u32 = 0u;
-const FIXED_VELOCITY_SCALE: f32 = 1048576.0;
 // Per-body counts follow the eight-u32 GpuDiagnostics readback header.
 const BODY_CONTACT_COUNT_OFFSET: u32 = 12u;
 const PROJECTED_RELAXATION: f32 = 0.125;
@@ -160,16 +85,9 @@ const ANALYTIC_CYLINDER_FLAG: u32 = 0x80000000u;
 const CYLINDER_FACE_PAIR_FLAG: u32 = 0x40000000u;
 const TERRAIN_CONTACT_FLAG: u32 = 0x20000000u;
 const CONTACT_FLAG_MASK: u32 = ANALYTIC_CYLINDER_FLAG | CYLINDER_FACE_PAIR_FLAG | TERRAIN_CONTACT_FLAG;
-const DRIVE_MODE_PASSIVE: u32 = 0u;
-const DRIVE_MODE_ANGLE: u32 = 2u;
-const DRIVE_ANGLE_POSITION_GAIN: f32 = 6.0;
-const DRIVE_ANGLE_BRAKE_MARGIN: f32 = 0.8;
-const DRIVE_ANGLE_DEADBAND: f32 = 0.0005;
 // A full cylinder has sixteen overlapping sector rows. Face landings therefore
 // need one sixteenth of the ordinary per-contact Jacobi correction.
 const CYLINDER_FACE_RELAXATION_SCALE: f32 = 0.0625;
-const COLLIDER_SHAPE_CUBOID: u32 = 0u;
-const COLLIDER_SHAPE_CONVEX: u32 = 1u;
 
 fn mixed_collider_response(collider_a: u32, collider_b: u32) -> vec4<f32> {
     let first = colliders[collider_a].surface_response;
@@ -289,7 +207,7 @@ struct TerrainPreviousPose {
 @group(0) @binding(35) var<storage, read_write> terrain_recovery_dispatch: array<u32>;
 @group(0) @binding(36) var<storage, read> recovery_contacts: array<u32>;
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn capture_terrain_poses(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count { return; }
@@ -406,7 +324,7 @@ fn next_terrain_chunk(minimum: vec3<f32>, maximum: vec3<f32>, start: u32) -> vec
     return vec3<u32>(end, 0u, 0u);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn sweep_rotating_terrain_colliders(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let collider = invocation.x;
     if collider >= config.collider_count { return; }
@@ -465,7 +383,7 @@ fn sweep_rotating_terrain_colliders(@builtin(global_invocation_id) invocation: v
     atomicMin(&terrain_sweep_fractions[body], bitcast<u32>(fraction));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn apply_terrain_sweep(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count { return; }
@@ -647,7 +565,7 @@ fn emit_terrain_support(collider_index: u32, normal: vec3<f32>,
     contacts[output].arm_b = vec4<f32>(depth, 0.0, 0.0, pack_raw_surface_response(response));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn generate_terrain_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x == 0u { atomicOr(&diagnostics[8], 128u); }
     let collider_index = invocation.x;
@@ -810,7 +728,7 @@ fn world_inverse_inertia_column(body: u32, world_axis: vec3<f32>) -> vec3<f32> {
     return quat_rotate(rotation, local_result);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn update_world_masses(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {
@@ -841,7 +759,6 @@ fn collider_rotation(index: u32) -> vec4<f32> {
     let collider = colliders[index];
     return quat_multiply(rotations[collider.metadata.x], collider.local_rotation);
 }
-
 
 fn collider_is_convex(index: u32) -> bool {
     return colliders[index].shape.x == COLLIDER_SHAPE_CONVEX;
@@ -1154,7 +1071,7 @@ fn pair_is_suppressed(body_a: u32, body_b: u32) -> bool {
         && suppressed_pairs[left].y == high;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn build_hash(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let collider_index = invocation.x;
     if collider_index >= config.collider_count {
@@ -1189,7 +1106,7 @@ fn append_pair(collider_a: u32, collider_b: u32) {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn generate_pairs(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let collider_index = invocation.x;
     if collider_index >= config.collider_count {
@@ -1322,7 +1239,6 @@ fn obb_sat(collider_a: u32, collider_b: u32) -> SatResult {
     minimum.near_face_axes = near_face_axes;
     return minimum;
 }
-
 
 /// Separating-axis test for any pair involving a convex polytope.
 ///
@@ -1516,7 +1432,7 @@ fn emit_narrowphase_contact(pair: vec2<u32>) {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let pair_index = invocation.x;
     let pair_count = min(atomicLoad(&diagnostics[1]), config.pair_capacity);
@@ -1559,7 +1475,7 @@ fn narrowphase(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn narrowphase_without_mechanism_self_collisions(
     @builtin(global_invocation_id) invocation: vec3<u32>,
 ) {
@@ -1576,7 +1492,7 @@ fn narrowphase_without_mechanism_self_collisions(
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn generate_ground_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let collider_index = invocation.x;
     if collider_index >= config.collider_count {
@@ -1649,7 +1565,7 @@ fn contact_mass_mode(body_a: u32, body_b: u32) -> u32 {
     return mode;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let contact_index = invocation.x;
     let contact_count = min(atomicLoad(&diagnostics[2]), config.pair_capacity);
@@ -1736,7 +1652,7 @@ fn prepare_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn count_body_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let active_index = invocation.x;
     if active_index >= min(atomicLoad(&diagnostics[5]), config.pair_capacity) {
@@ -1805,7 +1721,7 @@ fn add_velocity_delta(body: u32, linear: vec3<f32>, angular: vec3<f32>) {
     atomicAdd(&velocity_deltas[base + 5u], i32(round(angular.z * FIXED_VELOCITY_SCALE)));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn warm_start(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let active_index = invocation.x;
     let active_count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
@@ -2034,7 +1950,7 @@ fn distributed_contact_relaxation(contact: Contact) -> f32 {
         * shape_scale;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn solve_accumulate(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x == 0u { atomicOr(&diagnostics[8], 16u); }
     let active_index = invocation.x;
@@ -2541,7 +2457,7 @@ fn solve_small_mechanism_contacts() {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn solve_apply(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count {
@@ -2562,7 +2478,7 @@ fn solve_apply(@builtin(global_invocation_id) invocation: vec3<u32>) {
     angular_velocities[body] = vec4<f32>(angular_velocities[body].xyz + angular_delta, 0.0);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn persist_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let active_index = invocation.x;
     let active_count = min(atomicLoad(&diagnostics[5]), config.pair_capacity);
@@ -2580,7 +2496,6 @@ fn persist_contacts(@builtin(global_invocation_id) invocation: vec3<u32>) {
         contact.arm_a_impulse.w,
     );
 }
-
 
 // Positive impulse opposes the relative velocity of B at the carriage point.
 fn linear_joint_impulse(a: u32, b: u32, ra: vec3<f32>, rb: vec3<f32>, impulse: vec3<f32>, torque: vec3<f32>, immediate: bool) {
@@ -2888,7 +2803,7 @@ fn solve_terrain_positions() {
 
 // Re-linearize geometry after a split correction. Physical impulses and cached
 // manifolds stay untouched; the next position solve sees the corrected pose.
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn update_terrain_position_geometry(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let index = invocation.x;
     if index >= min(atomicLoad(&diagnostics[2]), config.pair_capacity)

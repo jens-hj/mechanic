@@ -979,7 +979,11 @@ impl GpuPhysics {
                     bearing.compound_a,
                     bearing.compound_b,
                     bearing.coordinate_index.unwrap_or(u32::MAX),
-                    u32::from(bearing.coordinate_index.is_none()),
+                    if bearing.coordinate_index.is_none() {
+                        crate::abi::BEARING_CLOSURE_FLAG
+                    } else {
+                        0
+                    },
                 ],
             })
             .collect::<Vec<_>>();
@@ -1072,7 +1076,7 @@ impl GpuPhysics {
             pipelines,
             device,
             "mechanic physics kernels",
-            include_str!("kernels/physics.wgsl"),
+            &crate::shaders::PHYSICS.source(),
         );
         let integration_pipeline = compute_pipeline(
             pipelines,
@@ -1111,7 +1115,7 @@ impl GpuPhysics {
             pipelines,
             device,
             "mechanic snapshot kernel",
-            include_str!("kernels/snapshot.wgsl"),
+            &crate::shaders::SNAPSHOT.source(),
         );
         let snapshot_pipeline = compute_pipeline(
             pipelines,
@@ -1224,7 +1228,7 @@ impl GpuPhysics {
             pipelines,
             device,
             "mechanic bearing kernels",
-            include_str!("kernels/bearings.wgsl"),
+            &crate::shaders::BEARINGS.source(),
         );
         let bearing_entry_point = if mechanism.active {
             "validate_mechanism_bearings"
@@ -1633,8 +1637,8 @@ impl GpuPhysics {
                 | (u32::from(self.solver_route() == GpuSolverRoute::FusedSmallMechanism) << 1),
             hash_capacity: u32::try_from(BROADPHASE_HASH_CAPACITY).unwrap_or(u32::MAX),
             solver_iterations: self.pipeline_config.solver_iterations.max(1),
-            reserved_a: self.collision.lbvh.sort_count,
-            reserved_b: self.mechanism.coordinate_count,
+            sort_count: self.collision.lbvh.sort_count,
+            coordinate_count: self.mechanism.coordinate_count,
         };
         queue.write_buffer(&self.config, 0, bytes_of(&config));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1667,7 +1671,7 @@ impl GpuPhysics {
             });
             pass.set_pipeline(&self.integration_pipeline);
             pass.set_bind_group(0, &self.bind_groups[usize::from(snapshot_slot)], &[]);
-            pass.dispatch_workgroups(self.body_count.div_ceil(256), 1, 1);
+            pass.dispatch_workgroups(self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE), 1, 1);
         }
         if self.mechanism.active {
             self.encode_mechanism_passes(&mut encoder);
@@ -1702,7 +1706,7 @@ impl GpuPhysics {
                 "mechanic validate articulated state",
                 &self.mechanism.validate_state_pipeline,
                 &self.mechanism.validate_state_bind_group,
-                self.body_count.div_ceil(256),
+                self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
                 None,
             );
         }
@@ -1713,14 +1717,18 @@ impl GpuPhysics {
             });
             pass.set_pipeline(&self.bearing_pipeline);
             pass.set_bind_group(0, &self.bearing_bind_group, &[]);
-            pass.dispatch_workgroups(self.bearing_count.div_ceil(256), 1, 1);
+            pass.dispatch_workgroups(
+                self.bearing_count.div_ceil(crate::abi::WORKGROUP_SIZE),
+                1,
+                1,
+            );
         }
         direct_compute_pass(
             &mut encoder,
             "mechanic snapshot publication",
             &self.snapshot_pipeline,
             &self.snapshot_bind_groups[usize::from(snapshot_slot)],
-            self.body_count.div_ceil(256),
+            self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             timestamp_writes(self.timestamps.as_ref(), Some(12), Some(13)),
         );
         encoder.copy_buffer_to_buffer(
@@ -1851,13 +1859,13 @@ impl GpuPhysics {
 
     fn encode_mechanism_passes(&self, encoder: &mut wgpu::CommandEncoder) {
         let mechanism = &self.mechanism;
-        let workgroups = self.body_count.div_ceil(256);
+        let workgroups = self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE);
         direct_compute_pass(
             encoder,
             "mechanic prepare drive constraints",
             &mechanism.prepare_drives_pipeline,
             &mechanism.prepare_drives_bind_group,
-            self.bearing_count.div_ceil(256),
+            self.bearing_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
         self.encode_bearing_velocity_projection(encoder, true);
@@ -1912,7 +1920,7 @@ impl GpuPhysics {
         gate: Option<&wgpu::Buffer>,
     ) {
         let mechanism = &self.mechanism;
-        let workgroups = self.body_count.div_ceil(256);
+        let workgroups = self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE);
         self.encode_mechanism_forward_kinematics(encoder, gate, 0);
         if mechanism.closure_count > 0 {
             const CLOSURE_CORRECTION_STEPS: u32 = 12;
@@ -1937,7 +1945,7 @@ impl GpuPhysics {
                         "mechanic evaluate closures",
                         &mechanism.evaluate_closures_pipeline,
                         &mechanism.evaluate_closures_bind_group,
-                        self.bearing_count.div_ceil(256),
+                        self.bearing_count.div_ceil(crate::abi::WORKGROUP_SIZE),
                         None,
                     );
                 } else {
@@ -2064,7 +2072,7 @@ impl GpuPhysics {
             "mechanic project bearing velocities",
             &mechanism.project_velocity_pipeline,
             &mechanism.project_velocity_bind_group,
-            self.bearing_count.div_ceil(256),
+            self.bearing_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             if timestamp_start {
                 timestamp_writes(self.timestamps.as_ref(), Some(2), None)
             } else {
@@ -2076,7 +2084,7 @@ impl GpuPhysics {
             "mechanic apply bearing velocity deltas",
             &mechanism.apply_velocity_pipeline,
             &mechanism.apply_velocity_bind_group,
-            self.body_count.div_ceil(256),
+            self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
     }
@@ -2111,7 +2119,7 @@ impl GpuPhysics {
             "mechanic capture reduced velocities",
             &mechanism.capture_coordinates_pipeline,
             &mechanism.capture_coordinates_bind_group,
-            self.body_count.div_ceil(256),
+            self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             if mechanism.has_dynamic_root {
                 timestamp_writes(self.timestamps.as_ref(), None, Some(9))
             } else {
@@ -2137,7 +2145,7 @@ impl GpuPhysics {
         indirect_offset: u64,
     ) {
         let mechanism = &self.mechanism;
-        let workgroups = self.body_count.div_ceil(256);
+        let workgroups = self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE);
         let mut dispatch = |label: &str,
                             pipeline: &wgpu::ComputePipeline,
                             bindings: &wgpu::BindGroup,
@@ -2195,13 +2203,13 @@ impl GpuPhysics {
     fn encode_collision_passes(&self, encoder: &mut wgpu::CommandEncoder) {
         let collision = &self.collision;
         let lbvh = &collision.lbvh;
-        let sort_workgroups = lbvh.sort_count.div_ceil(256);
+        let sort_workgroups = lbvh.sort_count.div_ceil(crate::abi::WORKGROUP_SIZE);
         direct_compute_pass(
             encoder,
             "mechanic world inverse inertias",
             &collision.update_world_masses_pipeline,
             &collision.update_world_masses_bind_group,
-            self.body_count.div_ceil(256),
+            self.body_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             timestamp_writes(self.timestamps.as_ref(), Some(4), None),
         );
         direct_compute_pass(
@@ -2248,7 +2256,10 @@ impl GpuPhysics {
             "mechanic LBVH topology",
             &lbvh.build_topology_pipeline,
             &lbvh.build_topology_bind_group,
-            self.collider_count.saturating_sub(1).max(1).div_ceil(256),
+            self.collider_count
+                .saturating_sub(1)
+                .max(1)
+                .div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
         direct_compute_pass(
@@ -2256,7 +2267,7 @@ impl GpuPhysics {
             "mechanic LBVH leaves",
             &lbvh.prepare_leaves_pipeline,
             &lbvh.prepare_leaves_bind_group,
-            self.collider_count.div_ceil(256),
+            self.collider_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
         direct_compute_pass(
@@ -2264,7 +2275,7 @@ impl GpuPhysics {
             "mechanic LBVH bounds",
             &lbvh.build_bounds_pipeline,
             &lbvh.build_bounds_bind_group,
-            self.collider_count.div_ceil(256),
+            self.collider_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
         direct_compute_pass(
@@ -2272,7 +2283,7 @@ impl GpuPhysics {
             "mechanic LBVH traversal",
             &lbvh.traverse_pipeline,
             &lbvh.traverse_bind_group,
-            self.collider_count.div_ceil(256),
+            self.collider_count.div_ceil(crate::abi::WORKGROUP_SIZE),
             None,
         );
         direct_compute_pass(
@@ -2298,7 +2309,7 @@ impl GpuPhysics {
                 "mechanic ground contacts",
                 &collision.ground_contacts_pipeline,
                 &collision.ground_contacts_bind_group,
-                self.collider_count.div_ceil(256),
+                self.collider_count.div_ceil(crate::abi::WORKGROUP_SIZE),
                 None,
             );
         }
@@ -2310,7 +2321,7 @@ impl GpuPhysics {
                 "mechanic terrain BVH contacts",
                 &collision.terrain_pipeline,
                 bindings,
-                self.collider_count.div_ceil(256),
+                self.collider_count.div_ceil(crate::abi::WORKGROUP_SIZE),
                 timestamp_writes(self.timestamps.as_ref(), Some(14), Some(15)),
             );
         }
@@ -3163,7 +3174,11 @@ fn create_mechanism_resources(
                         bearing.compound_a,
                         bearing.compound_b,
                         coordinate,
-                        u32::from(bearing.coordinate_index.is_none()),
+                        if bearing.coordinate_index.is_none() {
+                            crate::abi::BEARING_CLOSURE_FLAG
+                        } else {
+                            0
+                        },
                     ],
                 },
                 drive,
@@ -3256,7 +3271,7 @@ fn create_mechanism_resources(
         pipelines,
         device,
         "mechanic mechanism kernels",
-        include_str!("kernels/mechanism.wgsl"),
+        &crate::shaders::MECHANISM_KERNEL.source(),
     );
     let prepare_pipeline = compute_pipeline(
         pipelines,
@@ -3344,7 +3359,7 @@ fn create_mechanism_resources(
         pipelines,
         device,
         "mechanic articulated dynamics kernels",
-        include_str!("kernels/articulated.wgsl"),
+        &crate::shaders::ARTICULATED.source(),
     );
     let prepare_drives_pipeline = compute_pipeline(
         pipelines,
@@ -3557,7 +3572,7 @@ fn create_mechanism_resources(
         pipelines,
         device,
         "mechanic closure kernels",
-        include_str!("kernels/closure.wgsl"),
+        &crate::shaders::CLOSURE.source(),
     );
     let evaluate_closures_pipeline = compute_pipeline(
         pipelines,
@@ -3767,7 +3782,7 @@ fn create_lbvh_resources(
         pipelines,
         device,
         "mechanic LBVH kernels",
-        include_str!("kernels/lbvh.wgsl"),
+        &crate::shaders::LBVH.source(),
     );
     let compute_morton_pipeline = compute_pipeline(
         pipelines,
@@ -4074,7 +4089,7 @@ fn create_collision_resources(
         pipelines,
         device,
         "mechanic collision kernels",
-        include_str!("kernels/collision.wgsl"),
+        &crate::shaders::COLLISION.source(),
     );
     let update_world_masses_pipeline = compute_pipeline(
         pipelines,
@@ -4397,7 +4412,7 @@ fn shader_module(
     pipelines: &GpuPhysicsPipelines,
     device: &wgpu::Device,
     label: &'static str,
-    source: &'static str,
+    source: &str,
 ) -> wgpu::ShaderModule {
     if let Some(shader) = pipelines.shaders.lock().unwrap().get(label).cloned() {
         return shader;

@@ -1,29 +1,3 @@
-struct TickConfig {
-    body_count: u32,
-    tick_index: u32,
-    snapshot_slot: u32,
-    collider_count: u32,
-    delta_seconds: f32,
-    gravity_y: f32,
-    linear_damping: f32,
-    angular_damping: f32,
-    bearing_count: u32,
-    suppression_count: u32,
-    pair_capacity: u32,
-    flags: u32,
-    hash_capacity: u32,
-    solver_iterations: u32,
-    reserved_a: u32,
-    reserved_b: u32,
-};
-
-struct Mass {
-    inverse_mass: vec4<f32>,
-    inverse_inertia_x: vec4<f32>,
-    inverse_inertia_y: vec4<f32>,
-    inverse_inertia_z: vec4<f32>,
-};
-
 struct ExternalImpulse {
     world_point: vec4<f32>,
     impulse: vec4<f32>,
@@ -35,7 +9,6 @@ struct ExternalImpulseBatch {
     rows: array<ExternalImpulse, 64>,
 };
 
-const INVALID_NUMERIC_FLAG: u32 = 2u;
 const POWERED_LINEAR_DAMPING: f32 = 0.99999;
 const POWERED_ANGULAR_DAMPING: f32 = 0.9999;
 
@@ -100,7 +73,7 @@ fn apply_external_impulse() {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn integrate(@builtin(global_invocation_id) invocation: vec3<u32>) {
     if invocation.x == 0u { atomicOr(&diagnostics[8], 1u); }
     if atomicLoad(&diagnostics[0]) != 0u {
@@ -151,7 +124,7 @@ fn integrate(@builtin(global_invocation_id) invocation: vec3<u32>) {
     angular_velocities[index] = angular;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn clear_position_corrections(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count { return; }
@@ -159,7 +132,7 @@ fn clear_position_corrections(@builtin(global_invocation_id) invocation: vec3<u3
     angular_velocities[body] = vec4<f32>(0.0);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn apply_position_correction(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let body = invocation.x;
     if body >= config.body_count || inverse_masses[body] <= 0.0

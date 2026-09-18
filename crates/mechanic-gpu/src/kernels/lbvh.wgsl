@@ -1,35 +1,3 @@
-struct TickConfig {
-    body_count: u32,
-    tick_index: u32,
-    snapshot_slot: u32,
-    collider_count: u32,
-    delta_seconds: f32,
-    gravity_y: f32,
-    linear_damping: f32,
-    angular_damping: f32,
-    bearing_count: u32,
-    suppression_count: u32,
-    pair_capacity: u32,
-    flags: u32,
-    hash_capacity: u32,
-    solver_iterations: u32,
-    sort_count: u32,
-    reserved_b: u32,
-};
-
-struct Collider {
-    local_center: vec4<f32>,
-    local_rotation: vec4<f32>,
-    half_extents: vec4<f32>,
-    metadata: vec4<u32>,
-    surface_response: vec4<f32>,
-    surface_elasticity: vec4<f32>,
-    // shape kind, convex-buffer offset, packed element counts, reserved.
-    shape: vec4<u32>,
-};
-
-const COLLIDER_SHAPE_CONVEX: u32 = 1u;
-
 struct Aabb {
     minimum: vec4<f32>,
     maximum: vec4<f32>,
@@ -42,7 +10,6 @@ struct SortParams {
     reserved_b: u32,
 };
 
-const PAIR_OVERFLOW_FLAG: u32 = 1u;
 const INVALID_NODE: u32 = 0xffffffffu;
 const SORT_BLOCK_SIZE: u32 = 256u;
 
@@ -112,7 +79,7 @@ fn entry_less(a: vec2<u32>, b: vec2<u32>) -> bool {
     return a.x < b.x || (a.x == b.x && a.y < b.y);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn compute_morton(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let index = invocation.x;
     if index >= config.sort_count {
@@ -153,7 +120,7 @@ fn compute_morton(@builtin(global_invocation_id) invocation: vec3<u32>) {
     morton_entries[index] = vec2<u32>(morton_code(center), index);
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn sort_local_initial(
     @builtin(global_invocation_id) invocation: vec3<u32>,
     @builtin(local_invocation_id) local_invocation: vec3<u32>,
@@ -187,7 +154,7 @@ fn sort_local_initial(
     morton_entries[index] = shared_entries[local_index];
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn sort_global_step(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let index = invocation.x;
     if index >= config.sort_count {
@@ -208,7 +175,7 @@ fn sort_global_step(@builtin(global_invocation_id) invocation: vec3<u32>) {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn sort_local_merge(
     @builtin(global_invocation_id) invocation: vec3<u32>,
     @builtin(local_invocation_id) local_invocation: vec3<u32>,
@@ -254,7 +221,7 @@ fn common_prefix(left: i32, right: i32) -> i32 {
     return 32 + i32(countLeadingZeros(left_entry.y ^ right_entry.y));
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn build_topology(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let node = invocation.x;
     if config.collider_count <= 1u || node >= config.collider_count - 1u {
@@ -301,7 +268,7 @@ fn build_topology(@builtin(global_invocation_id) invocation: vec3<u32>) {
     node_parents[right_child] = node + 1u;
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn prepare_leaves(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let leaf = invocation.x;
     if leaf >= config.collider_count {
@@ -311,7 +278,7 @@ fn prepare_leaves(@builtin(global_invocation_id) invocation: vec3<u32>) {
     node_aabbs[config.collider_count - 1u + leaf] = collider_aabbs[collider_index];
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn build_bounds(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let leaf = invocation.x;
     if config.collider_count <= 1u || leaf >= config.collider_count {
@@ -382,7 +349,7 @@ fn append_pair(collider_a: u32, collider_b: u32) {
     }
 }
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WORKGROUP_SIZE)
 fn traverse(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let leaf = invocation.x;
     if leaf >= config.collider_count {

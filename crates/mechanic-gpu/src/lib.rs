@@ -7,6 +7,7 @@ mod limits;
 mod render;
 mod runtime;
 mod scheduler;
+mod shaders;
 mod terrain;
 
 pub use abi::{
