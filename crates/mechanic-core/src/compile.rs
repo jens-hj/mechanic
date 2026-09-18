@@ -180,8 +180,9 @@ pub struct LoopTopology {
     pub bearing_coordinates: BTreeMap<BearingId, u32>,
 }
 
-/// Complete, immutable upload image for the GPU runtime.
-#[derive(Clone, Debug, PartialEq)]
+/// Complete, immutable upload image for the GPU runtime. The default is an
+/// empty runtime scene, suitable for appending world-owned free bodies.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompiledCreation {
     /// Backend-independent symbolic dynamics schedules and body-frame inertias.
     pub dynamics: crate::CompiledDynamics,
