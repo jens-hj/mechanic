@@ -1,6 +1,6 @@
 //! The tools, and which one is in hand.
 //!
-//! What the bar looks like lives in [`crate::ui::hotbar`]; this is what a tool
+//! What the bar looks like lives in `crate::ui::hotbar`; this is what a tool
 //! is, which key picks it, and what it may do in which mode.
 
 use bevy::prelude::*;

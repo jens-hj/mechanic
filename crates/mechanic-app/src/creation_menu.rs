@@ -4,7 +4,7 @@
 //! row to open it. Rows come from the creations directory, so the list is
 //! rebuilt from disk each time the modal opens rather than tracked live.
 //!
-//! What it looks like lives in [`crate::ui::creations`]; this is the state
+//! What it looks like lives in `crate::ui::creations`; this is the state
 //! behind it — what is typed, what is on disk, and what has been asked for
 //! twice.
 

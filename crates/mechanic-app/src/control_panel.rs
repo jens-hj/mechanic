@@ -1,6 +1,6 @@
 //! Which control block is open, and how its wires group into joints.
 //!
-//! The panel itself is drawn by [`crate::ui::control_block`] in Mosaic. What
+//! The panel itself is drawn by `crate::ui::control_block` in Mosaic. What
 //! lives here is the part the rest of the app talks to: whether a block is open
 //! — which is what every other system gates its own input on — and the grouping
 //! that turns a socket's several wires into the one joint a person sees.

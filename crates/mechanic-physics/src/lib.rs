@@ -1,7 +1,7 @@
 //! CPU physics for compiled machines.
 //!
 //! [`CpuMachine`] is the soft-step game solver the app runs: every valid tick
-//! publishes. [`reference`] holds the exact solver, which publishes only when the
+//! publishes. [`mod@reference`] holds the exact solver, which publishes only when the
 //! original contact laws hold and serves as an offline checker. Both share the
 //! reduced-coordinate machine model, joint force laws and collision geometry.
 //! The soft-step solver runs closed mechanism loops; the exact reference does not.

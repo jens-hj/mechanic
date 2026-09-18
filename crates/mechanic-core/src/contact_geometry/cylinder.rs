@@ -3,7 +3,7 @@
 //! A cylinder collides as a circle, not as the prism that bounds it, so a wheel
 //! rolls without lifting over facet corners. Every reported point is where the
 //! triangle normal's column through the triangle point enters the cylinder,
-//! which is the same depth law [`ContactPolytope`] uses for its clipped points.
+//! which is the same depth law [`ContactPolytope`](crate::ContactPolytope) uses for its clipped points.
 
 use super::{ContactGeometryError, TriangleContactPoint, contact_tangents, triangle_normal};
 use crate::CompiledCylinder;
