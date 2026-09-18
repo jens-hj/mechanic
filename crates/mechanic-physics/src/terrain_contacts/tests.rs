@@ -1,3 +1,5 @@
+mod path_bounds;
+
 use super::*;
 use bevy_math::DQuat;
 use mechanic_core::{BuildCommand, BuildPose, ConstructionGraph, CuboidSpec};

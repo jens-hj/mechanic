@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use crate::{MachineMotion, MachineState};
 use bevy_math::IVec3;
 use mechanic_core::{
@@ -135,7 +135,7 @@ fn empty_region_rejects_escaped_motion_and_changed_terrain_or_topology() {
 #[test]
 fn suspension_travel_with_rotating_ancestors_stays_inside_the_envelope() {
     let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
-        "../../../mechanic-bench/tests/fixtures/driven_car_instance.ron"
+        "../../../../mechanic-bench/tests/fixtures/driven_car_instance.ron"
     ))
     .unwrap();
     let loaded = instance.creation.into_graph().unwrap();
@@ -377,7 +377,7 @@ fn finite_support_reuse_matches_fresh_initial_support_queries() {
 #[test]
 fn a_car_moving_as_one_keeps_its_internal_contacts_but_not_its_terrain_contacts() {
     let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
-        "../../../mechanic-bench/tests/fixtures/driven_car_instance.ron"
+        "../../../../mechanic-bench/tests/fixtures/driven_car_instance.ron"
     ))
     .unwrap();
     let loaded = instance.creation.into_graph().unwrap();

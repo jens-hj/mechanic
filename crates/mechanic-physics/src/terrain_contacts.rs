@@ -2124,6 +2124,3 @@ impl TerrainContactScene {
         })
     }
 }
-
-#[cfg(test)]
-mod path_bounds_tests;

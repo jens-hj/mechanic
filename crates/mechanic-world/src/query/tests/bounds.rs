@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use crate::WorldBounds;
 
 fn bounds(minimum: DVec3, maximum: DVec3) -> WorldBounds {

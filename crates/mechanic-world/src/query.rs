@@ -100,9 +100,6 @@ pub struct TerrainSpatialIndex {
     aggregate_bounds: BTreeMap<TerrainNodeId, crate::WorldBounds>,
 }
 
-#[cfg(test)]
-mod bounds_tests;
-
 impl TerrainSpatialIndex {
     /// Inserts an active node and updates its ancestor path.
     pub fn insert(&mut self, id: TerrainNodeId) {
