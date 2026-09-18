@@ -2,7 +2,24 @@
 
 ## Project Structure & Module Organization
 
-Mechanic is a Rust 2024 Cargo workspace. Keep shared construction data structures, geometry, and compilation logic in `crates/mechanic-core`. GPU runtime code, ABI definitions, and compute shaders belong in `crates/mechanic-gpu`; WGSL kernels live under `crates/mechanic-gpu/src/kernels`. The interactive Bevy prototype is in `crates/mechanic-app`, while reproducible performance scenarios are in `crates/mechanic-bench`. Architectural decisions and milestone status are documented in `docs/`. Tests are generally colocated with their Rust modules in `#[cfg(test)]` blocks.
+Mechanic is a Rust 2024 Cargo workspace. Dependencies point one way:
+`core ← world ← physics`, `core + world ← gpu`, and everything `← bench, app`.
+
+| Crate | Owns |
+|---|---|
+| `crates/mechanic-core` | Construction graph, geometry, compilation, compiled dynamics schedules, creation documents, and the shared units and constants every other crate imports. No filesystem access, no rendering. |
+| `crates/mechanic-world` | Terrain generation, edits, meshing, streaming, queries, material clumps, and world documents with their on-disk store. |
+| `crates/mechanic-physics` | CPU solvers. They run the app by default. |
+| `crates/mechanic-gpu` | GPU runtime, ABI structs, and compute shaders; WGSL kernels live under `src/kernels`. Selected with `MECHANIC_PHYSICS=gpu`. |
+| `crates/mechanic-bench` | Reproducible headless performance scenarios; every binary emits JSONL. |
+| `crates/mechanic-app` | The interactive Bevy prototype. |
+| `crates/bevy_mosaic` | Runs the Mosaic GUI framework inside a Bevy app. |
+| `crates/xtask` | The task runner behind `cargo xtask`. Dependency-free. |
+
+`vendor/` holds patched upstream crates; each carries a `MECHANIC-PATCH.md`
+naming its source revision and the change. `scripts/` holds Python capture and
+benchmark tooling with `test-*.py` regression tests. Architectural decisions
+and milestone status are documented in `docs/`, indexed by `docs/README.md`.
 
 ## Domain Terminology
 
@@ -11,16 +28,38 @@ Mechanic is a Rust 2024 Cargo workspace. Keep shared construction data structure
 
 ## Build, Test, and Development Commands
 
-- `cargo build --workspace` builds every crate with the pinned toolchain.
+`cargo xtask` is the single entry point for checks; CI runs `cargo xtask ci`.
+
+- `cargo xtask ci` runs every task below except `wgsl` and `bench-smoke`.
+- `cargo xtask fmt` verifies formatting; `cargo xtask fmt --fix` applies it.
+- `cargo xtask consistency` verifies the repository conventions below that no compiler checks.
+- `cargo xtask lint` runs Clippy on every target with warnings denied.
+- `cargo xtask test` runs core, world, physics, GPU, app, benchmark, and WGSL validation tests without stopping at the first failure.
+- `cargo xtask doc` builds the API docs with rustdoc warnings denied.
+- `cargo xtask wgsl` validates the compute kernels without a GPU.
+- `cargo xtask scripts-test` runs the Python regression tests under `scripts/`.
+- `cargo xtask bench-smoke` runs the quick headless benchmark. Use `cargo run -p mechanic-bench --release -- --scenario <name>` for performance measurements such as `four_bar` or `dense_100k`.
 - `cargo run -p mechanic-app` launches the construction and simulation prototype.
-- `cargo test --workspace` runs core, GPU, app, benchmark, and WGSL validation tests.
-- `cargo clippy --workspace --all-targets -- -D warnings` enforces all configured lints without warnings.
-- `cargo fmt --all -- --check` verifies formatting; use `cargo fmt --all` to apply it.
-- `cargo run -p mechanic-bench -- --scenario smoke` runs the quick headless benchmark. Use `--release` for performance measurements such as `four_bar` or `dense_100k`.
+
+Tasks forward extra arguments to the underlying command, for example `cargo xtask test -p mechanic-core`.
 
 ## Coding Style & Naming Conventions
 
 Follow standard `rustfmt` output with four-space indentation. Use `snake_case` for modules, functions, variables, and test names; `UpperCamelCase` for types and traits; and `SCREAMING_SNAKE_CASE` for constants. Keep CPU/GPU layouts synchronized when editing ABI structs or WGSL bindings. Unsafe Rust is forbidden, public APIs should be documented, and Clippy `all` plus `pedantic` warnings are enabled workspace-wide.
+
+## Structural Conventions
+
+These hold everywhere; `cargo xtask consistency` enforces the mechanical ones.
+
+- **Modules.** A module with children is `foo.rs` beside `foo/`. Never `mod.rs`.
+- **Tests.** One `#[cfg(test)] mod tests` per file, as its last item. Keep it inline below roughly 300 lines; above that it becomes `foo/tests.rs`, split by theme under `foo/tests/` when it grows further. No `*_tests.rs` files. Fixtures shared across modules live in the crate's `#[cfg(test)] mod testing`.
+- **Crate roots.** `lib.rs` is crate docs, an alphabetical `mod` list, then alphabetical `pub use` blocks. It defines no items, and re-exports are flat.
+- **Type suffixes.** `*Error` is an `Err` payload and derives `thiserror::Error`. `*Outcome` is a successful return with several variants; `*Result` is reserved for `std::result::Result` aliases and otherwise unused. `*Config` is parameters supplied by code; `*Settings` is preferences the player persists. `*Doc` is a serialized file row. `*Spec` is validated authoring input. Use `Cpu*` and `Gpu*` prefixes whenever both forms of a concept exist.
+- **Constants.** A physical quantity has one owner, `mechanic_core::units` when more than one crate needs it. Do not define alias constants or repeat a literal; import the owner.
+- **Lint suppressions.** Use `#[expect(lint, reason = "…")]`, never a bare `#[allow]`, so a suppression that stops applying fails the build.
+- **Configuration.** Each binary crate reads its environment variables once, through one `env.rs` registry. `docs/environment.md` lists every variable.
+- **Manifests.** Every dependency, internal crates included, is declared in `[workspace.dependencies]` and consumed with `workspace = true`.
+- **Model and view (app).** A root feature module owns ECS state and systems; its `ui/<feature>.rs` counterpart is a Mosaic view with no model types. Systems are ordered through the sets in `schedule.rs`, not by naming another module's system function.
 
 ## Dependency Quality
 
