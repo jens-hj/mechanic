@@ -1,15 +1,20 @@
 //! Independent suspension placement through the common bearing socket workflow.
-use super::{
-    BearingDimensions, BearingSocket, BuildCommand, ButtonInput, ConstructionGraph,
-    ConstructionMaterial, CylinderDimensions, FaceOwner, GameAction, MaterialAppearance,
-    PlacementError, Tool, bearing_anchor_from_hit_with_grid, builder, suspension_render,
-    try_face_geometry_from_ref,
-};
+use crate::builder::PlacementError;
+use crate::builder::bearings::bearing_anchor_from_hit_with_grid;
+use crate::builder::faces::try_face_geometry_from_ref;
+use crate::controls::GameAction;
 use crate::editor::build_actions::{
     PlacedBearing, bearing_location_occupied, bearing_socket_targets, bearing_uses_socket,
 };
 use crate::editor::history::{EditorHistory, EditorSnapshot};
 use crate::editor::state::EditorState;
+use crate::hotbar::Tool;
+use crate::{builder, suspension_render};
+use bevy::prelude::ButtonInput;
+use mechanic_core::{
+    BearingDimensions, BearingSocket, BuildCommand, ConstructionGraph, ConstructionMaterial,
+    CylinderDimensions, FaceOwner, MaterialAppearance,
+};
 use mechanic_core::{BumpStopSpec, ShockSpec, SpringSpec, SuspensionSpec};
 
 /// Imported creations may describe attached assemblies only as graph bearings.

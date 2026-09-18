@@ -264,10 +264,7 @@ pub(crate) type BodyStates = (
     Vec<GpuMechanismCoordinate>,
 );
 fn pose(frame: ConstructionFrame) -> GpuTransform {
-    GpuTransform {
-        position: frame.translation().extend(0.0).to_array(),
-        rotation: frame.rotation().to_array(),
-    }
+    crate::pose::gpu_transform(frame.translation(), frame.rotation())
 }
 
 pub(crate) struct Publication {

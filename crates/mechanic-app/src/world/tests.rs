@@ -18,10 +18,8 @@ use super::walking::compile_player_collision;
 use super::walking::player_collision_nodes;
 use super::walking::smooth_step_visual_offset;
 use super::walking::terrain_chunk_has_collision_near;
-use std::{
-    collections::BTreeSet,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use crate::testing::TempDir;
+use std::collections::BTreeSet;
 
 use bevy::{
     asset::RenderAssetUsages,
@@ -90,28 +88,6 @@ fn saved_floor_creation_is_centered_in_editable_garage_and_detached_from_ground(
     assert_eq!(placed.name, "Floor example");
     assert_eq!(placed.graph.weld_count(), 0);
     placed.graph.compile().unwrap();
-}
-
-struct TempWorldStore(std::path::PathBuf);
-
-static NEXT_TEMP_WORLD_STORE: AtomicUsize = AtomicUsize::new(0);
-
-impl TempWorldStore {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "mechanic-world-install-test-{}-{}",
-            std::process::id(),
-            NEXT_TEMP_WORLD_STORE.fetch_add(1, Ordering::Relaxed),
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        Self(path)
-    }
-}
-
-impl Drop for TempWorldStore {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 struct FlatTerrain(f64);
@@ -1287,7 +1263,7 @@ fn loading_world_ignores_picker_actions_until_playing() {
 
 #[test]
 fn exiting_to_the_selector_saves_and_allows_the_world_to_reload() {
-    let temporary = TempWorldStore::new();
+    let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);
     let document = store.create_world("Reloadable", Some(7)).unwrap();
     let mut graph = ConstructionGraph::new();
@@ -1345,8 +1321,8 @@ fn exiting_to_the_selector_saves_and_allows_the_world_to_reload() {
     );
 }
 
-fn frozen_save_fixture() -> (TempWorldStore, App, ConstructionGraph) {
-    let temporary = TempWorldStore::new();
+fn frozen_save_fixture() -> (TempDir, App, ConstructionGraph) {
+    let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);
     let document = store.create_world("Frozen publication", Some(7)).unwrap();
     let mut graph = ConstructionGraph::new();
@@ -1423,7 +1399,7 @@ fn spawn_unaccepted_frozen_edit(graph: &mut ConstructionGraph) {
 
 #[test]
 fn leaving_world_discards_body_state_and_keeps_the_construction_frame() {
-    let temporary = TempWorldStore::new();
+    let temporary = TempDir::new("world-install");
     let mut app = App::new();
     app.init_resource::<WorldRuntime>();
     app.init_resource::<EditorGraph>();
@@ -1471,7 +1447,7 @@ fn leaving_world_discards_body_state_and_keeps_the_construction_frame() {
 
 #[test]
 fn world_reload_preserves_construction_origin_after_player_moves() {
-    let temporary = TempWorldStore::new();
+    let temporary = TempDir::new("world-install");
     let mut app = App::new();
     app.init_resource::<WorldRuntime>();
     app.init_resource::<WorldListState>();
@@ -1641,7 +1617,7 @@ fn installing_a_new_world_replaces_the_previous_world_editor() {
         ..super::SpaceEditorState::default()
     };
     assert!(editor.graph.part_count() > 0);
-    let temporary = TempWorldStore::new();
+    let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);
     let document = store.create_world("Fresh", Some(42)).unwrap();
 
@@ -2203,7 +2179,7 @@ fn old_lod_waits_until_every_visible_replacement_is_published() {
 }
 #[test]
 fn soil_commits_on_sixth_tick_and_survives_world_reload() {
-    let temporary = TempWorldStore::new();
+    let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);
     let document = store.create_world("Soil", Some(91)).unwrap();
     let mut app = App::new();
@@ -2255,7 +2231,7 @@ fn soil_commits_on_sixth_tick_and_survives_world_reload() {
 
 #[test]
 fn saving_an_unpublished_transfer_keeps_the_previous_material_owner() {
-    let temporary = TempWorldStore::new();
+    let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);
     let document = store.create_world("Material", Some(91)).unwrap();
     let mut app = App::new();
@@ -2315,7 +2291,7 @@ fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit
     use bevy::prelude::IntoScheduleConfigs;
 
     bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
-    let temporary = TempWorldStore::new();
+    let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);
     let document = store.create_world("Settled", Some(91)).unwrap();
     let mut app = App::new();

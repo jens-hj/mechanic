@@ -1,11 +1,11 @@
 //! Conversions between published GPU transforms, Bevy transforms, and construction poses.
 
-use super::{
-    CompiledCreation, ConstructionGraph, FaceOwner, GpuTransform, PartId, Quat, Transform, Vec3,
-    default, face_geometry_from_ref,
-};
+use crate::builder::faces::face_geometry_from_ref;
 use crate::editor::build_actions::PlacedBearing;
 use crate::simulation::state::AppSimulation;
+use bevy::prelude::{Quat, Transform, Vec3, default};
+use mechanic_core::{CompiledCreation, ConstructionGraph, FaceOwner, PartId};
+use mechanic_gpu::GpuTransform;
 
 pub(crate) fn transform_from_gpu(transform: GpuTransform) -> Transform {
     Transform {
@@ -114,4 +114,12 @@ pub(crate) fn transform_bearing_pose(
     );
     let rotation = Quat::from_array(transform.rotation);
     (translation + rotation * local_anchor, rotation * local_axis)
+}
+
+/// A published transform from a position and rotation.
+pub(crate) fn gpu_transform(position: Vec3, rotation: Quat) -> GpuTransform {
+    GpuTransform {
+        position: position.extend(0.0).to_array(),
+        rotation: rotation.to_array(),
+    }
 }

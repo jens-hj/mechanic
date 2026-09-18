@@ -120,13 +120,7 @@ pub(crate) fn smooth_pose(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pose(position: Vec3, rotation: Quat) -> GpuTransform {
-        GpuTransform {
-            position: position.extend(0.0).to_array(),
-            rotation: rotation.to_array(),
-        }
-    }
+    use crate::pose::gpu_transform as pose;
 
     #[test]
     fn height_steps_start_immediately_then_repeat_after_delay() {

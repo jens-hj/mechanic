@@ -227,33 +227,11 @@ pub(crate) fn slug(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use crate::testing::TempDir;
 
     use mechanic_core::{CREATION_FORMAT_VERSION, CreationDocument, PartDoc, PoseDoc};
 
     use super::{CreationStore, SavedCreation, delete, read_document, slug};
-
-    /// A directory of its own per test, so they stay parallel-safe without
-    /// mutating process environment.
-    struct TempDir(std::path::PathBuf);
-
-    impl TempDir {
-        fn new() -> Self {
-            static COUNTER: AtomicU32 = AtomicU32::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "mechanic-store-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            Self(path)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn document(name: &str, parts: usize) -> CreationDocument {
         CreationDocument {
@@ -302,7 +280,7 @@ mod tests {
 
     #[test]
     fn saving_then_listing_and_loading_round_trips() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::new("store");
         let store = CreationStore::new(&temporary.0);
         assert!(
             store.list().is_empty(),
@@ -344,7 +322,7 @@ mod tests {
 
     #[test]
     fn saving_the_same_name_replaces_rather_than_duplicates() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::new("store");
         let store = CreationStore::new(&temporary.0);
         store
             .save(&document("Rig", 1))
@@ -360,7 +338,7 @@ mod tests {
 
     #[test]
     fn overwrite_replaces_the_creation_without_a_legacy_backup() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::new("store");
         let store = CreationStore::new(&temporary.0);
         let path = store.path_for("Rig");
         store.save(&document("Rig", 1)).unwrap();
@@ -375,7 +353,7 @@ mod tests {
 
     #[test]
     fn deleting_removes_only_that_creation() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::new("store");
         let store = CreationStore::new(&temporary.0);
         let doomed = store.save(&document("Doomed", 1)).expect("the save writes");
         store.save(&document("Kept", 1)).expect("the save writes");
@@ -389,7 +367,7 @@ mod tests {
 
     #[test]
     fn unreadable_files_are_skipped_rather_than_hiding_the_rest() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::new("store");
         let store = CreationStore::new(&temporary.0);
         store.save(&document("Good", 1)).expect("the save writes");
         std::fs::write(temporary.0.join("broken.mech"), "this is not RON")

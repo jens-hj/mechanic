@@ -1,13 +1,15 @@
 //! The player's visible body.
 
-use super::{
-    Alpha, AlphaMode, Assets, Color, Commands, Component, Cuboid, Handle, MainCamera, Mesh, Mesh3d,
-    MeshMaterial3d, Name, PlayerCamera, PlayerState, Quat, Query, Res, ResMut, Resource, Single,
-    StandardMaterial, Transform, Vec3, Visibility, With, Without, camera, default,
-};
+use crate::camera;
+use crate::camera::{MainCamera, PlayerCamera, PlayerState};
 use crate::editor::state::EditorGraph;
 use crate::seat::seat_world_pose;
 use crate::simulation::state::AppSimulation;
+use bevy::prelude::{
+    Alpha, AlphaMode, Assets, Color, Commands, Component, Cuboid, Handle, Mesh, Mesh3d,
+    MeshMaterial3d, Name, Quat, Query, Res, ResMut, Resource, Single, StandardMaterial, Transform,
+    Vec3, Visibility, With, Without, default,
+};
 
 #[derive(Component)]
 pub(crate) struct PlayerAvatar;

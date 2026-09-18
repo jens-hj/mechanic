@@ -155,34 +155,13 @@ fn normalized_fov(document: &SettingsDocument) -> f32 {
 #[cfg(test)]
 #[expect(clippy::float_cmp)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
-
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new() -> Self {
-            static COUNTER: AtomicU32 = AtomicU32::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "mechanic-settings-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir_all(&path).expect("temporary directory");
-            Self(path)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::testing::TempDir;
 
     #[test]
     fn absent_and_malformed_settings_use_the_default() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::created("settings");
         let path = temporary.0.join(SETTINGS_FILE);
         assert_eq!(
             AppSettings::from_path(path.clone()).camera_fov_degrees(),
@@ -197,7 +176,7 @@ mod tests {
 
     #[test]
     fn values_are_clamped_and_rounded_to_slider_steps() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::created("settings");
         for (value, expected) in [(20.0, 45.0), (87.0, 85.0), (140.0, 100.0)] {
             let path = temporary.0.join(format!("{value}.ron"));
             let text = ron::ser::to_string(&SettingsDocument {
@@ -213,7 +192,7 @@ mod tests {
 
     #[test]
     fn atomic_save_round_trips_without_leaving_the_temporary_file() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::created("settings");
         let path = temporary.0.join(SETTINGS_FILE);
         let mut settings = AppSettings::from_path(path.clone());
         settings
@@ -226,7 +205,7 @@ mod tests {
 
     #[test]
     fn fov_only_document_loads_default_controls() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::created("settings");
         let path = temporary.0.join(SETTINGS_FILE);
         fs::write(&path, "(version:2,camera_fov_degrees:65.0)").expect("fixture writes");
         let settings = AppSettings::from_path(path);
@@ -236,7 +215,7 @@ mod tests {
 
     #[test]
     fn settings_that_pinned_every_binding_fall_back_to_current_defaults() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::created("settings");
         let path = temporary.0.join(SETTINGS_FILE);
         fs::write(
             &path,
@@ -253,7 +232,7 @@ mod tests {
 
     #[test]
     fn only_bindings_the_player_changed_are_saved() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::created("settings");
         let path = temporary.0.join(SETTINGS_FILE);
         let mut settings = AppSettings::from_path(path.clone());
         settings
@@ -276,7 +255,7 @@ mod tests {
 
     #[test]
     fn binding_changes_round_trip_and_reset() {
-        let temporary = TempDir::new();
+        let temporary = TempDir::created("settings");
         let path = temporary.0.join(SETTINGS_FILE);
         let mut settings = AppSettings::from_path(path.clone());
         settings

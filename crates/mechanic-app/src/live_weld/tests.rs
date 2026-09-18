@@ -1,4 +1,5 @@
 use super::*;
+use crate::pose::gpu_transform as pose;
 use mechanic_core::{
     BearingSpec, BuildCommand, BuildOutcome, BuildPose, ColliderShape, CuboidSpec, FaceKind,
     FaceRef, GridRotation, RigidLinkSpec,
@@ -10,13 +11,6 @@ fn spawn(graph: &mut ConstructionGraph, units: IVec3) -> PartId {
         panic!("part expected")
     };
     part
-}
-
-fn pose(position: Vec3, rotation: Quat) -> GpuTransform {
-    GpuTransform {
-        position: position.extend(0.0).to_array(),
-        rotation: rotation.to_array(),
-    }
 }
 
 fn simulation(graph: &ConstructionGraph, poses: Vec<GpuTransform>) -> AppSimulation {

@@ -1,25 +1,42 @@
 //! Startup: the garage scene, cameras, lights, and the shared meshes and materials every editor visual uses.
 
-use super::{
-    ActionPreview, Alpha, AlphaMode, AppSettings, AssetServer, Assets, AuthoredPart,
-    AuthoredPartVisual, BearingDimensions, BearingTextureMipsPending, BearingVisual,
-    CONTROLLER_SURFACE_COLOR, Camera, Camera3d, ClearColorConfig, Color, Commands,
-    ConstructionMaterial, ConstructionRenderMaterial, ConstructionVisual, Cuboid,
-    CylinderDimensions, DeletePreview, DriveXrayVisual, EditorVisuals, Extent3d, FovCamera,
-    GeneratedEnvironmentMapLight, Image, ImageLoaderSettings, JointXrayVisual, MainCamera, Mesh,
-    Mesh3d, MeshMaterial3d, Name, NoFrustumCulling, PREVIEW_RENDER_DEPTH_BIAS,
-    PerspectiveProjection, PlacementLatticeVisual, PlayerCamera, PlayerState, Projection,
-    RenderAssetUsages, RenderLayers, Res, ResMut, SHAPE_SELECTION_COLOR, SKY_CUBEMAP_SIZE,
-    SKY_ENVIRONMENT_INTENSITY, SelectionPreview, ShapeArrowVisual, ShapeNodeVisual,
-    ShapePlaneVisual, ShapeSelectedVisual, SmartGuideVisual, SmartSnapRangeVisual,
-    StandardMaterial, TextureDimension, TextureFormat, Tonemapping, Transform, Vec3, Visibility,
-    WireDragVisual, WireHoverVisual, authored_part_material, authored_preview_material,
-    bearing_surface_material, camera, configure_repeating_texture, construction_material,
-    construction_tint_mask_path, default, degenerate_overlay_mesh, format, garage, material_index,
-    preview_material, render_diagnostics, render_experiments, single_authored_part_mesh,
-    single_bearing_mesh, single_cylinder_mesh, sky_cubemap, spawn_player_avatar, tool_fx, vec,
-    wire_drag_preview_mesh,
+use crate::avatar::spawn_player_avatar;
+use crate::camera::{FovCamera, MainCamera, PlayerCamera, PlayerState};
+use crate::chroma::ConstructionRenderMaterial;
+use crate::editor::placement::{PlacementLatticeVisual, SmartGuideVisual, SmartSnapRangeVisual};
+use crate::editor::preview::{
+    ActionPreview, BearingVisual, ConstructionVisual, DeletePreview, DriveXrayVisual,
+    EditorVisuals, JointXrayVisual, SelectionPreview,
 };
+use crate::editor::shape_actions::{
+    SHAPE_SELECTION_COLOR, ShapeArrowVisual, ShapeNodeVisual, ShapePlaneVisual, ShapeSelectedVisual,
+};
+use crate::editor::wiring::{WireDragVisual, WireHoverVisual};
+use crate::render::authored::{AuthoredPart, AuthoredPartVisual, CONTROLLER_SURFACE_COLOR};
+use crate::render::environment::{SKY_CUBEMAP_SIZE, SKY_ENVIRONMENT_INTENSITY, sky_cubemap};
+use crate::render::materials::{
+    BearingTextureMipsPending, PREVIEW_RENDER_DEPTH_BIAS, authored_part_material,
+    authored_preview_material, bearing_surface_material, configure_repeating_texture,
+    construction_material, construction_tint_mask_path, material_index, preview_material,
+};
+use crate::render::mesh::bearing::single_bearing_mesh;
+use crate::render::mesh::construction::{single_authored_part_mesh, single_cylinder_mesh};
+use crate::render::mesh::drive::wire_drag_preview_mesh;
+use crate::render::mesh::primitives::degenerate_overlay_mesh;
+use crate::settings::AppSettings;
+use crate::{camera, garage, render_diagnostics, render_experiments, tool_fx};
+use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::image::ImageLoaderSettings;
+use bevy::prelude::{
+    Alpha, AlphaMode, AssetServer, Assets, Camera, Camera3d, ClearColorConfig, Color, Commands,
+    Cuboid, GeneratedEnvironmentMapLight, Image, Mesh, Mesh3d, MeshMaterial3d, Name,
+    PerspectiveProjection, Projection, Res, ResMut, StandardMaterial, Transform, Vec3, Visibility,
+    default, format, vec,
+};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use mechanic_core::{BearingDimensions, ConstructionMaterial, CylinderDimensions};
 
 #[expect(
     clippy::too_many_lines,

@@ -345,15 +345,27 @@ fn captured_drag_keeps_cursor_locked_and_restores_camera_look() {
     let camera = app
         .world_mut()
         .spawn((
-            crate::PlayerCamera::default(),
+            crate::camera::PlayerCamera::default(),
             Transform::default(),
             GlobalTransform::default(),
             crate::MainCamera,
         ))
         .id();
-    let yaw = app.world().get::<crate::PlayerCamera>(camera).unwrap().yaw;
+    let yaw = app
+        .world()
+        .get::<crate::camera::PlayerCamera>(camera)
+        .unwrap()
+        .yaw;
     app.update();
-    assert!((app.world().get::<crate::PlayerCamera>(camera).unwrap().yaw - yaw).abs() < 1e-6);
+    assert!(
+        (app.world()
+            .get::<crate::camera::PlayerCamera>(camera)
+            .unwrap()
+            .yaw
+            - yaw)
+            .abs()
+            < 1e-6
+    );
     let cursor = app.world().get::<CursorOptions>(window).unwrap();
     assert!(!cursor.visible);
     assert_eq!(cursor.grab_mode, CursorGrabMode::Locked);
@@ -366,6 +378,14 @@ fn captured_drag_keeps_cursor_locked_and_restores_camera_look() {
         .resource_mut::<ButtonInput<GameAction>>()
         .release(GameAction::Primary);
     app.update();
-    assert!((app.world().get::<crate::PlayerCamera>(camera).unwrap().yaw - yaw).abs() > 0.001);
+    assert!(
+        (app.world()
+            .get::<crate::camera::PlayerCamera>(camera)
+            .unwrap()
+            .yaw
+            - yaw)
+            .abs()
+            > 0.001
+    );
     assert!(!app.world().get::<CursorOptions>(window).unwrap().visible);
 }

@@ -51,24 +51,15 @@ mod suspension_controls;
 mod suspension_editor;
 mod suspension_render;
 mod terrain_publication;
+#[cfg(test)]
+mod testing;
 mod tool_fx;
 mod ui;
 mod weld_publication;
 mod weld_tool;
 mod world;
 
-use avatar::spawn_player_avatar;
-use bevy::{
-    asset::RenderAssetUsages,
-    camera::visibility::{NoFrustumCulling, RenderLayers},
-    core_pipeline::tonemapping::Tonemapping,
-    diagnostic::FrameTimeDiagnosticsPlugin,
-    image::ImageLoaderSettings,
-    prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-    tasks::futures::check_ready,
-    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
-};
+use bevy::{diagnostic::FrameTimeDiagnosticsPlugin, prelude::*, tasks::futures::check_ready};
 #[cfg(test)]
 use builder::candidates::candidate_from_hit;
 use builder::{
@@ -78,7 +69,7 @@ use builder::{
     bearing_support_face, block_box_bounds, block_box_specs, block_span_from_rays,
     candidate_from_hit_with_grid_and_supports, center_cylinder_candidate_on_bearing,
     cylinder_candidate_from_hit_with_grid, face_geometry_from_ref, free_cuboid_candidate,
-    free_cylinder_candidate, oriented_cuboid_candidate_from_hit_with_grid, raycast_construction,
+    free_cylinder_candidate, oriented_cuboid_candidate_from_hit_with_grid,
     raycast_construction_for_annulus, raycast_construction_for_annulus_with_ground,
     raycast_placement_plane_point, smart_snap_anchor, smart_snap_block_span,
     smart_snap_cuboid_candidate, smart_snap_cuboid_candidate_with_supports,
@@ -88,11 +79,7 @@ use builder::{
     validate_block_batch_in_bounds, validate_block_volume_in_bounds,
     validate_cylinder_candidate_in_bounds, validate_indexed_block_batch_in_bounds,
 };
-use camera::FovCamera;
-use camera::{
-    MainCamera, MaterialWheelState, PlayerCamera, PlayerState, SEATED_EYE_HEIGHT,
-    seated_view_rotation,
-};
+use camera::{MainCamera, MaterialWheelState, PlayerState};
 use chroma::{ChromaBrush, ConstructionRenderMaterial};
 use control_panel::ControlPanelState;
 use controls::GameAction;
@@ -110,18 +97,9 @@ use editor::{
         PipeEditMode, invalidate_pipe_drag, pipe_pointer_delta, rebuild_pipe_drag,
         refresh_pipe_drag,
     },
-    placement::{
-        PlacementLatticeVisual, SmartGuideVisual, SmartSnapRangeVisual, active_placement_grid,
-        free_placement_point_on_miss,
-    },
-    preview::{
-        ActionPreview, BearingVisual, ConstructionVisual, DeletePreview, DriveXrayVisual,
-        EditorVisuals, FeaturePreviewKey, JointXrayVisual, SelectionPreview,
-    },
-    shape_actions::{
-        LayerPreview, SHAPE_SELECTION_COLOR, ShapeArrowVisual, ShapeNodeVisual, ShapePlaneVisual,
-        ShapeSelectedVisual,
-    },
+    placement::{active_placement_grid, free_placement_point_on_miss},
+    preview::{ConstructionVisual, EditorVisuals, FeaturePreviewKey},
+    shape_actions::LayerPreview,
     state::{CurrentCreation, EditorGraph, EditorState},
 };
 use editor::{
@@ -136,41 +114,26 @@ use editor::{
         hovered_part, raycast_live_placed_bearing_discs, raycast_live_placed_bearings,
         raycast_placed_bearings_with_pose, raycast_simulation,
     },
-    wiring::{WireDragVisual, WireHoverVisual},
 };
 use hotbar::{SelectedMaterial, SelectedTerrainMaterial, SelectedTool, Tool};
 use mechanic_core::{
-    BearingDimensions, BearingSocket, BuildCommand, BuildOutcome, CageIndex, CompiledCreation,
-    ConstructionGraph, ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions,
-    DimensionLinkSpec, EngineKind, FaceOwner, FaceRef, GridRotation, InputSpec, MaterialAppearance,
+    BearingDimensions, BuildCommand, BuildOutcome, CageIndex, ConstructionGraph,
+    ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, DimensionLinkSpec,
+    EngineKind, FaceOwner, FaceRef, GridRotation, InputSpec, MaterialAppearance,
     POSITION_TICK_METERS, POSITION_TICKS_PER_GRID_UNIT, PartId, PartSpec, PendingOperation,
     RegionId, SeatSpec, ServoSpec, ShapeRegion, TransmissionSpec, part_cells,
 };
-use mechanic_gpu::{GpuPhysicsConfig, GpuTransform};
+use mechanic_gpu::GpuPhysicsConfig;
 use pause_menu::PauseMenuState;
 use performance::PerformanceMetrics;
-use render::authored::{
-    AuthoredPart, AuthoredPartVisual, CONTROLLER_SURFACE_COLOR, authored_orientation,
-};
+use render::authored::{AuthoredPart, authored_orientation};
 use render::mesh::{
-    bearing::single_bearing_mesh,
-    construction::{
-        append_transformed_cuboid, ordinary_material, preview_region, single_authored_part_mesh,
-        single_cylinder_mesh,
-    },
-    drive::wire_drag_preview_mesh,
-    primitives::{append_mesh_quad, append_mesh_triangle, degenerate_overlay_mesh},
+    construction::{append_transformed_cuboid, ordinary_material, preview_region},
+    primitives::{append_mesh_quad, append_mesh_triangle},
 };
 use render::{
-    environment::{
-        OneShotEnvironmentMapPlugin, SKY_CUBEMAP_SIZE, SKY_ENVIRONMENT_INTENSITY,
-        StreamingMeshAllocatorPlugin, sky_cubemap,
-    },
-    materials::{
-        BearingTextureMipsPending, PREVIEW_RENDER_DEPTH_BIAS, authored_part_material,
-        authored_preview_material, bearing_surface_material, configure_repeating_texture,
-        construction_material, construction_tint_mask_path, material_index, preview_material,
-    },
+    environment::{OneShotEnvironmentMapPlugin, StreamingMeshAllocatorPlugin},
+    materials::material_index,
 };
 use sequencer::{DriveSequencer, GearboxRuntime};
 use settings::AppSettings;

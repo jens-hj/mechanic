@@ -1,3 +1,4 @@
+use crate::pose::gpu_transform as pose;
 use bevy::prelude::{IVec3, Mat3, Quat, Vec3};
 use mechanic_core::{
     BuildCommand, BuildOutcome, BuildPose, ConstructionFrame, ConstructionGraph, CuboidSpec,
@@ -18,13 +19,6 @@ fn spawn(graph: &mut ConstructionGraph, units: IVec3, size: [u8; 3]) -> PartId {
         unreachable!()
     };
     part
-}
-
-fn pose(position: Vec3, rotation: Quat) -> GpuTransform {
-    GpuTransform {
-        position: position.extend(0.0).to_array(),
-        rotation: rotation.to_array(),
-    }
 }
 
 fn velocity(linear: Vec3, angular: Vec3) -> GpuVelocity {

@@ -1,5 +1,5 @@
 //! Procedural suspension rendering and triangle picking share cached core meshes.
-use super::ConstructionRenderMaterial;
+use crate::chroma::ConstructionRenderMaterial;
 use crate::editor::build_actions::PlacedBearing;
 use crate::editor::preview::EditorVisuals;
 use crate::editor::state::{EditorGraph, EditorState};

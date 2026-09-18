@@ -1,9 +1,11 @@
 //! Cached procedural rail and carriage visuals sharing construction textures.
 
-use super::{ConstructionRenderMaterial, SelectedTool, Tool, linear_editor};
+use crate::chroma::ConstructionRenderMaterial;
 use crate::editor::build_actions::{PlacedBearing, bearing_uses_socket};
 use crate::editor::preview::EditorVisuals;
 use crate::editor::state::{EditorGraph, EditorState};
+use crate::hotbar::{SelectedTool, Tool};
+use crate::linear_editor;
 use crate::pose::transform_from_gpu;
 use crate::render::materials::material_index;
 use crate::simulation::publication::WorldPhysicsRevision;

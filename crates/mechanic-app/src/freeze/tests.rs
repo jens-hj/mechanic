@@ -4,6 +4,7 @@
 )]
 
 use super::*;
+use crate::pose::gpu_transform as pose;
 use bevy::math::DVec3;
 use mechanic_core::{BuildCommand, BuildPose, ConstructionGraph, CuboidSpec, GridRotation};
 
@@ -21,13 +22,6 @@ fn creation() -> CompiledCreation {
             .unwrap();
     }
     graph.compile().unwrap()
-}
-
-fn pose(position: Vec3, rotation: Quat) -> GpuTransform {
-    GpuTransform {
-        position: position.extend(0.0).to_array(),
-        rotation: rotation.to_array(),
-    }
 }
 
 #[expect(clippy::unnecessary_wraps)]

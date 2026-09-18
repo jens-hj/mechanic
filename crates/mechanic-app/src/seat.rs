@@ -1,12 +1,21 @@
 //! Entering, leaving, and locating seats.
 
-use super::{
-    AppSimulation, ButtonInput, Camera, ConstructionGraph, EditorGraph, EditorState, FaceOwner,
-    GameAction, GlobalTransform, MainCamera, MaterialWheelState, PartId, PartSpec, PlayerCamera,
-    PlayerState, PrimaryWindow, Quat, Res, ResMut, SEATED_EYE_HEIGHT, Single, State, ToOwned,
-    Transform, Vec2, Vec3, Window, With, camera, raycast_construction, raycast_simulation,
-    seated_view_rotation, ui, world,
+use crate::builder::raycast::raycast_construction;
+use crate::camera::{
+    MainCamera, MaterialWheelState, PlayerCamera, PlayerState, SEATED_EYE_HEIGHT,
+    seated_view_rotation,
 };
+use crate::controls::GameAction;
+use crate::editor::raycast::raycast_simulation;
+use crate::editor::state::{EditorGraph, EditorState};
+use crate::simulation::state::AppSimulation;
+use crate::{camera, ui, world};
+use bevy::prelude::{
+    ButtonInput, Camera, GlobalTransform, Quat, Res, ResMut, Single, State, ToOwned, Transform,
+    Vec2, Vec3, Window, With,
+};
+use bevy::window::PrimaryWindow;
+use mechanic_core::{ConstructionGraph, FaceOwner, PartId, PartSpec};
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn handle_seat_interaction(

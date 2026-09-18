@@ -328,6 +328,7 @@ pub(crate) fn graph_bounds(
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::TempDir;
     use bevy::prelude::Vec3;
     use mechanic_core::{BearingDimensions, FaceKind, FaceRef};
 
@@ -339,23 +340,6 @@ mod tests {
         showcase,
     };
     use mechanic_core::ConstructionGraph;
-
-    struct TempDir(std::path::PathBuf);
-
-    impl TempDir {
-        fn new(label: &str) -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("mechanic-creations-{}-{label}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&path);
-            Self(path)
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// A preset construction plus one bearing ring the editor is still holding.
     fn editor_with_a_loose_ring() -> (ConstructionGraph, EditorState) {

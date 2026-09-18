@@ -1,9 +1,9 @@
 //! A debug key that freezes every frame update so a single frame can be inspected.
 
-use super::{
-    ButtonInput, CursorGrabMode, CursorOptions, KeyCode, MouseButton, PrimaryWindow, Res, ResMut,
-    Resource, Single, Time, Virtual, With,
+use bevy::prelude::{
+    ButtonInput, KeyCode, MouseButton, Res, ResMut, Resource, Single, Time, Virtual, With,
 };
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 pub(crate) const DEBUG_FRAME_FREEZE_KEY: KeyCode = KeyCode::F8;
 

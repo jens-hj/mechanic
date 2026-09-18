@@ -6,6 +6,7 @@ use crate::*;
 use mechanic_core::{
     BuildPose, CarriageFace, ConstructionFrame, FaceKind, LinearBearing, LinearBearingDimensions,
 };
+use mechanic_gpu::GpuTransform;
 
 fn spawn(graph: &mut ConstructionGraph, x: i32) -> PartId {
     let spec = CuboidSpec::new(
