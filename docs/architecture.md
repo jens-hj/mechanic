@@ -2,10 +2,17 @@
 
 ## Ownership
 
-Shared compiled dynamics schedules and body-frame inertia live in
+Dependencies point one way: `core ← world ← physics`, `core + world ← gpu`,
+and everything `← bench, app`.
+
+The construction graph, geometry, compilation, shared compiled dynamics
+schedules, body-frame inertia, and the units every crate agrees on
+(`mechanic_core::units`: tick rate, gravity, tolerances) live in
 `mechanic-core`. `mechanic-physics` owns the CPU solvers, which run the
 application by default; `MECHANIC_PHYSICS=gpu` selects the GPU runtime. Terrain
-ownership stays in `mechanic-world`, and GPU code and ABI stay in `mechanic-gpu`. The machine model is described in
+ownership stays in `mechanic-world`, and GPU code and ABI stay in
+`mechanic-gpu`. `mechanic-app` owns rendering, input, and the frame order
+(`schedule.rs`); `mechanic-bench` owns measurement. The machine model is described in
 [compiled machine dynamics](compiled-machine-dynamics.md), and the CPU solvers
 in [CPU physics](physics-cpu.md).
 
@@ -149,9 +156,14 @@ an explicitly incomplete build so a player can finish matching the stacks. All
 other compilation errors still prevent the candidate from replacing the current
 construction.
 
-`mechanic-core` owns the document and its conversions and performs no
-filesystem access; the app owns where files live, reads and writes them, and
-maps the editor's unattached rings to and from the document's sockets.
+`mechanic-core` owns the creation document and its conversions and performs no
+filesystem access; the app's `CreationStore` owns where creation files live,
+reads and writes them, and maps the editor's unattached rings to and from the
+document's sockets. Worlds follow the same split one crate up:
+`mechanic-world` defines the world document and, because a world is many files
+written atomically by generation, also owns their on-disk layout in
+`WorldStore`. Both formats accept exactly the version they write; there are no
+migrations.
 
 ## Clocks and publication
 
@@ -162,6 +174,12 @@ anchor error and 0.001 degree axis error. Rendering consumes the newest complete
 pair of sequence-numbered slots and never waits for bulk CPU readback.
 
 ## Kernel order
+
+The steps below are the physical stages. `GpuPhysics::encode_and_submit_tick`
+encodes them as: integration; the mechanism passes (steps 2 and 3); terrain
+preparation; the collision passes (steps 4 to 6); a post-contact mechanism pass
+that turns the solved body velocities back into root and joint coordinates and
+rebuilds poses; state and bearing validation (step 7); and the snapshot (step 8).
 
 1. Apply gravity and damping to every dynamic compound; only fixed/floating
    mechanism roots advance as free body poses.
@@ -197,18 +215,24 @@ contact timing includes contact projection before articulated feedback.
 
 ## Contact ABI
 
-`GpuContact` remains 64 bytes and the 2,097,152-row pair/contact capacity is
-unchanged. Narrowphase temporarily carries combined compliance in the future
+Every ABI struct has one WGSL definition under
+`crates/mechanic-gpu/src/kernels/prelude`, every flag and mode constant is
+generated into the kernels from its Rust owner in `abi.rs`, and a test reflects
+each composed kernel with naga and compares every mirrored struct's size and
+field offsets against the Rust layout.
+
+`GpuContact` is 64 bytes and the pair/contact capacity is 2,097,152 rows.
+Narrowphase temporarily carries combined compliance in the future
 normal-impulse lane. Preparation then stores target normal speed in the former
 penetration lane and packs static friction, kinetic friction, rolling
 resistance, and compliance response into the spare lane; an analytic-cylinder
 bit lives in contact metadata.
 
-`GpuCollider` grows from 96 to 112 bytes to hold explicit surface-response and
-elasticity vectors, adding 2 MiB at the 131,072-collider cap. A 32-byte uniform
-holds the ground surface. `GpuPersistentManifold` grows from 48 to 64 bytes so
+`GpuCollider` is 112 bytes: it holds explicit surface-response and elasticity
+vectors, 14 MiB at the 131,072-collider cap. A 48-byte uniform holds the ground
+surface: response, elasticity, and plane. `GpuPersistentManifold` is 64 bytes so
 normal, two-axis sliding, and two-axis rolling impulses survive between ticks;
-that adds 32 MiB at maximum pair capacity. These are fixed allocations and do
+that is 128 MiB at maximum pair capacity. These are fixed allocations and do
 not alter overflow behavior or adapt solver quality at runtime.
 
 The initial WGSL proof keeps these stages as separate entry points even where a

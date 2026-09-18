@@ -20,6 +20,25 @@ physics pipeline. The production GPU-driven render path remains gated until both
 100,000-body scenarios pass the physics and integrated-render budgets on the
 reference M1 Pro.
 
+## Repository map
+
+| Crate | Owns |
+|---|---|
+| `crates/mechanic-core` | Construction graph, geometry, compilation, creation documents, shared units. |
+| `crates/mechanic-world` | Terrain generation, edits, meshing, streaming, queries, clumps, world saves. |
+| `crates/mechanic-physics` | CPU solvers; they run the app by default. |
+| `crates/mechanic-gpu` | GPU runtime, ABI structs, WGSL compute kernels. |
+| `crates/mechanic-bench` | Headless benchmark scenarios emitting JSONL. |
+| `crates/mechanic-app` | The interactive Bevy prototype. |
+| `crates/bevy_mosaic` | The Mosaic GUI framework inside a Bevy app. |
+| `crates/xtask` | `cargo xtask`, the task runner CI uses. |
+
+`vendor/` holds patched upstream crates ([why and how to update](vendor/README.md)),
+`scripts/` holds capture and benchmark tooling, and [`docs/`](docs/README.md)
+indexes the design, feature, and status documents. [`AGENTS.md`](AGENTS.md)
+states the conventions every change follows, and
+[`docs/environment.md`](docs/environment.md) lists every environment variable.
+
 ## Platform setup
 
 The repository pins Rust in `rust-toolchain.toml`, Cargo dependencies in
@@ -450,6 +469,7 @@ Tasks forward extra arguments to the underlying command, for example
 cargo run -p mechanic-app
 cargo run -p mechanic-bench -- --scenario smoke
 cargo run -p mechanic-bench --release -- --scenario open_bearing
+cargo run -p mechanic-bench --release -- --scenario suspension_1
 cargo run -p mechanic-bench --release -- --scenario four_bearing_contact
 cargo run -p mechanic-bench --release -- --scenario bearings_16
 cargo run -p mechanic-bench --release -- --scenario bearings_64
@@ -459,6 +479,8 @@ cargo run -p mechanic-bench --release -- --scenario four_bar
 cargo run -p mechanic-bench --release -- --scenario invalid_loop
 cargo run -p mechanic-bench --release -- --scenario dense_100k --seconds 30 --warmup 5
 cargo run -p mechanic-bench --release -- --scenario loops_100k --seconds 30 --warmup 5
+cargo run -p mechanic-bench --release -- --scenario terrain_stream --seconds 30 --warmup 5
+cargo run -p mechanic-bench --release -- --scenario terrain_dig --seconds 30 --warmup 5
 cargo run -p mechanic-bench --release -- --scenario player_collision --seconds 30 --warmup 5
 cargo run -p mechanic-bench --release -- --scenario test2_car --seconds 30 --warmup 5
 ```
@@ -470,6 +492,12 @@ resolution and every buffer the renderer reads; only the tick changes. World
 physics never pauses: a tick the CPU route cannot complete hands the last
 published state to the GPU runtime. See [CPU physics](docs/physics-cpu.md).
 Anything other than `gpu` selects the CPU solver.
+
+`mechanic-bench` also ships focused binaries, run with
+`cargo run -p mechanic-bench --release --bin <name>`: `cpu-physics` (CPU solver
+motion, rolling, pipe, scale, and world-drive cases), `compiled-response` and
+`compiled-inertia` (reduced-coordinate model checks), `edit-latency`,
+`material-mining`, `material-clumps`, and `suspension-world`.
 
 Benchmark output is machine-readable JSONL. The four-bar cases prove correction
 and explicit rejection but do not unlock editor work. A scale gate only passes

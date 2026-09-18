@@ -41,6 +41,18 @@ const CHECKS: &[Check] = &[
         name: "lint suppressions are #[expect], or #[allow] with a reason",
         run: no_bare_allow,
     },
+    Check {
+        name: "docs/environment.md lists every MECHANIC_* variable the code reads",
+        run: environment_variables_are_documented,
+    },
+    Check {
+        name: "README.md lists every benchmark scenario",
+        run: scenarios_are_documented,
+    },
+    Check {
+        name: "every vendored crate is described in vendor/README.md",
+        run: vendored_crates_are_described,
+    },
 ];
 
 /// Runs every check and reports all violations together.
@@ -180,6 +192,61 @@ fn no_bare_allow(root: &Path) -> Result<Vec<String>, String> {
         }
     }
     Ok(violations)
+}
+
+/// Every `"MECHANIC_…"` string literal in the crates' sources.
+fn environment_variables_are_documented(root: &Path) -> Result<Vec<String>, String> {
+    let documented = read(&root.join("docs/environment.md"))?;
+    let mut missing = std::collections::BTreeSet::new();
+    for path in rust_sources(root)? {
+        if path.starts_with(root.join("crates/xtask")) {
+            continue;
+        }
+        for literal in read(&path)?.split('"').skip(1).step_by(2) {
+            let is_variable = literal.starts_with("MECHANIC_")
+                && literal
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            if is_variable && !documented.contains(&format!("`{literal}`")) {
+                missing.insert(format!("{literal} ({})", relative(root, &path)));
+            }
+        }
+    }
+    Ok(missing.into_iter().collect())
+}
+
+/// Scenario names are the string patterns of `Scenario::parse`.
+fn scenarios_are_documented(root: &Path) -> Result<Vec<String>, String> {
+    let source = read(&root.join("crates/mechanic-bench/src/main.rs"))?;
+    let readme = read(&root.join("README.md"))?;
+    let names: Vec<&str> = source
+        .lines()
+        .filter(|line| line.contains("=> Some(Self::"))
+        .filter_map(|line| line.split('"').nth(1))
+        .collect();
+    if names.is_empty() {
+        return Err("found no scenario names in mechanic-bench".to_owned());
+    }
+    Ok(names
+        .into_iter()
+        .filter(|name| !readme.contains(&format!("--scenario {name}")))
+        .map(|name| format!("--scenario {name}"))
+        .collect())
+}
+
+fn vendored_crates_are_described(root: &Path) -> Result<Vec<String>, String> {
+    let vendor = root.join("vendor");
+    let described = read(&vendor.join("README.md"))?;
+    let entries = fs::read_dir(&vendor)
+        .map_err(|error| format!("cannot list {}: {error}", vendor.display()))?;
+    let mut missing: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !described.contains(&format!("`{name}`")))
+        .collect();
+    missing.sort();
+    Ok(missing)
 }
 
 fn mosaic_revisions_match(root: &Path) -> Result<Vec<String>, String> {
