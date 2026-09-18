@@ -90,9 +90,9 @@ fn octree_range_minimum_matches_promoted_cell_scan() {
         .bricks()
         .flat_map(|brick| {
             let brick_minimum = brick.coordinate().minimum_cell();
-            (0..super::BRICK_EDGE_CELLS).flat_map(move |z| {
-                (0..super::BRICK_EDGE_CELLS).flat_map(move |y| {
-                    (0..super::BRICK_EDGE_CELLS).filter_map(move |x| {
+            (0..crate::BRICK_EDGE_CELLS).flat_map(move |z| {
+                (0..crate::BRICK_EDGE_CELLS).flat_map(move |y| {
+                    (0..crate::BRICK_EDGE_CELLS).filter_map(move |x| {
                         let cell = WorldCell::new(
                             brick_minimum.x + x,
                             brick_minimum.y + y,
@@ -354,7 +354,7 @@ fn soil_fixture(
     for z in 0..32 {
         for y in 0..32 {
             for x in 0..32 {
-                brick.cells[super::local_index(bevy_math::IVec3::new(x, y, z)).unwrap()] =
+                brick.cells[super::brick::local_index(bevy_math::IVec3::new(x, y, z)).unwrap()] =
                     crate::TerrainSample {
                         density: if y <= 16 {
                             -super::EMPTY_DENSITY

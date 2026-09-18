@@ -32,24 +32,24 @@ fn authored_addition_uses_solid_material_without_changing_procedural_cover() {
         density: -0.05,
         material: TerrainMaterial::SurfaceCover,
     };
-    let lattice = |sample, authored_material| super::LatticePoint {
+    let lattice = |sample, authored_material| super::lattice::LatticePoint {
         sample,
         normal: Vec3::Y,
         authored_material,
     };
     assert_eq!(
-        super::crossing_material(lattice(dirt, None), lattice(procedural_air, None)),
+        super::polygonise::crossing_material(lattice(dirt, None), lattice(procedural_air, None)),
         TerrainMaterial::SurfaceCover
     );
     assert_eq!(
-        super::crossing_material(
+        super::polygonise::crossing_material(
             lattice(dirt, Some(TerrainMaterial::Soil)),
             lattice(procedural_air, None),
         ),
         TerrainMaterial::Soil
     );
     assert_eq!(
-        super::crossing_material(
+        super::polygonise::crossing_material(
             lattice(procedural_air, None),
             lattice(dirt, Some(TerrainMaterial::Soil)),
         ),
@@ -645,10 +645,15 @@ fn official_transition_vertices_only_use_crossing_edges() {
             .fold(0_u16, |case, (bit, point)| {
                 case | (((row_major_case >> point) & 1) << bit)
             });
-        let class = super::TRANSITION_CELL_CLASS[usize::from(table_case)] & 0x7f;
-        let vertex_count =
-            usize::from(super::TRANSITION_CELL_DATA[usize::from(class)].geometry_counts >> 4);
-        for &data in &super::TRANSITION_VERTEX_DATA[usize::from(table_case)][..vertex_count] {
+        let class =
+            crate::transvoxel::tables::TRANSITION_CELL_CLASS[usize::from(table_case)] & 0x7f;
+        let vertex_count = usize::from(
+            crate::transvoxel::tables::TRANSITION_CELL_DATA[usize::from(class)].geometry_counts
+                >> 4,
+        );
+        for &data in &crate::transvoxel::tables::TRANSITION_VERTEX_DATA[usize::from(table_case)]
+            [..vertex_count]
+        {
             let edge = data & 0xff;
             let first = row_major_point(usize::from((edge >> 4) as u8));
             let second = row_major_point(usize::from((edge & 0x0f) as u8));
@@ -719,8 +724,8 @@ fn excavated_surface_triangles_keep_outward_winding() {
 #[test]
 fn official_regular_and_transition_tables_cover_every_case() {
     for case in 0..256 {
-        let class = super::REGULAR_CELL_CLASS[case];
-        let cell = super::REGULAR_CELL_DATA[usize::from(class)];
+        let class = crate::transvoxel::tables::REGULAR_CELL_CLASS[case];
+        let cell = crate::transvoxel::tables::REGULAR_CELL_DATA[usize::from(class)];
         let vertices = usize::from(cell.geometry_counts >> 4);
         let triangles = usize::from(cell.geometry_counts & 0x0f);
         assert!(
@@ -730,8 +735,8 @@ fn official_regular_and_transition_tables_cover_every_case() {
         );
     }
     for case in 0..512 {
-        let class = super::TRANSITION_CELL_CLASS[case] & 0x7f;
-        let cell = super::TRANSITION_CELL_DATA[usize::from(class)];
+        let class = crate::transvoxel::tables::TRANSITION_CELL_CLASS[case] & 0x7f;
+        let cell = crate::transvoxel::tables::TRANSITION_CELL_DATA[usize::from(class)];
         let vertices = usize::from(cell.geometry_counts >> 4);
         let triangles = usize::from(cell.geometry_counts & 0x0f);
         assert!(
