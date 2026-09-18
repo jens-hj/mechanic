@@ -5,7 +5,7 @@ use crate::scenes::unit_cube;
 use bevy_math::{IVec3, Vec3};
 use mechanic_bench::stats::percentile_95;
 use mechanic_core::{BuildCommand, BuildOutcome, CompiledCreation, ConstructionGraph};
-use mechanic_world::{ConstructionBodyPose, ConstructionCollisionIndex, KinematicCapsuleConfig};
+use mechanic_world::{ConstructionBodyState, ConstructionCollisionIndex, KinematicCapsuleConfig};
 use std::time::Instant;
 
 pub(crate) const PLAYER_STATIC_COLLIDER_COUNT: usize = 131_072;
@@ -22,7 +22,7 @@ pub(crate) fn run_player_collision_benchmark(options: Options) -> Result<bool, S
     let mut poses = dynamic_creation
         .compounds
         .iter()
-        .map(|compound| ConstructionBodyPose {
+        .map(|compound| ConstructionBodyState {
             translation: compound.root_translation,
             rotation: compound.root_rotation,
             linear_velocity: Vec3::ZERO,
@@ -95,7 +95,7 @@ pub(crate) fn run_player_collision_benchmark(options: Options) -> Result<bool, S
     Ok(gate_passed)
 }
 
-pub(crate) fn update_benchmark_poses(poses: &mut [ConstructionBodyPose], sample: usize) {
+pub(crate) fn update_benchmark_poses(poses: &mut [ConstructionBodyState], sample: usize) {
     let phase = if sample.is_multiple_of(2) {
         0.001
     } else {

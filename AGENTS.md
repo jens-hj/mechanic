@@ -7,7 +7,7 @@ Mechanic is a Rust 2024 Cargo workspace. Dependencies point one way:
 
 | Crate | Owns |
 |---|---|
-| `crates/mechanic-core` | Construction graph, geometry, compilation, compiled dynamics schedules, creation documents, and the shared units and constants every other crate imports. No filesystem access, no rendering. |
+| `crates/mechanic-core` | Construction graph, geometry, compilation, compiled dynamics schedules, creation documents, and the shared units and constants every other crate imports. No filesystem access and no GPU or engine types: authored bearing and suspension assets are defined here as plain geometry with their material-slot legend, and the app turns them into meshes and materials. |
 | `crates/mechanic-world` | Terrain generation, edits, meshing, streaming, queries, material clumps, and world documents with their on-disk store. |
 | `crates/mechanic-physics` | CPU solvers. They run the app by default. |
 | `crates/mechanic-gpu` | GPU runtime, ABI structs, and compute shaders; WGSL kernels live under `src/kernels`. Selected with `MECHANIC_PHYSICS=gpu`. |

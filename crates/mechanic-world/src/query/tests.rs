@@ -525,7 +525,7 @@ fn moving_support_carries_position_yaw_and_jump_velocity() {
     }
     assert!(capsule.grounded);
     let before = capsule.position;
-    let pose = crate::ConstructionBodyPose {
+    let pose = crate::ConstructionBodyState {
         translation: Vec3::X,
         rotation: bevy_math::Quat::from_rotation_y(core::f32::consts::FRAC_PI_2),
         linear_velocity: Vec3::new(2.0, 0.0, 0.0),

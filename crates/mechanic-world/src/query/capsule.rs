@@ -2,7 +2,7 @@
 
 use super::scene::{TerrainDensity, raycast_density};
 use crate::construction_collision::{
-    ConstructionBodyPose, ConstructionContact, KinematicCollisionScene, construction_feet,
+    ConstructionBodyState, ConstructionContact, KinematicCollisionScene, construction_feet,
 };
 use crate::{TERRAIN_CELL_METERS, WorldPosition};
 use bevy_math::{DVec2, DVec3, Quat, Vec3};
@@ -84,7 +84,7 @@ pub struct KinematicSupport {
     /// Contact anchor retained in the body frame.
     pub local_anchor: Vec3,
     /// Pose used to apply the next published support-point delta.
-    pub previous_pose: ConstructionBodyPose,
+    pub previous_pose: ConstructionBodyState,
 }
 
 /// Equal-and-opposite impulse queued for the next GPU physics tick.

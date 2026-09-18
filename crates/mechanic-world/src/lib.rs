@@ -22,7 +22,7 @@ pub use breakage::{
 };
 pub use clumps::{ClumpCollection, MAX_ACTIVE_CLUMPS, MaterialClump, MaterialTransfer};
 pub use construction_collision::{
-    ConstructionBodyPose, ConstructionCollisionIndex, ConstructionCollisionMetrics,
+    ConstructionBodyState, ConstructionCollisionIndex, ConstructionCollisionMetrics,
     ConstructionContact, KinematicCollisionScene,
 };
 pub use coordinates::{

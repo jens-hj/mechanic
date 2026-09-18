@@ -56,7 +56,7 @@ use bevy::{
 use mechanic_core::{ConstructionGraph, CreationDocument, DimensionLinkId, PartId, PartSpec};
 use mechanic_gpu::GpuExternalImpulse;
 use mechanic_world::{
-    ActiveTerrainScene, AutosaveState, ConstructionBodyPose, ConstructionCollisionIndex,
+    ActiveTerrainScene, AutosaveState, ConstructionBodyState, ConstructionCollisionIndex,
     FloatingOrigin, FoundationSpatialIndex, KinematicCapsule, SavedWorldStatus, TerrainBoundsCache,
     TerrainDensity, TerrainEditBatch, TerrainField, TerrainMaterial, TerrainMeshChunk,
     TerrainNodeId, TerrainOctree, TerrainSpatialIndex, TerrainStreamer, TerrainTransitionMask,
@@ -195,7 +195,7 @@ pub(crate) struct WorldRuntime {
     collision_pose_revision: u64,
     /// Last construction revision validated against the frozen target.
     frozen_editor: Option<(ConstructionGraph, Vec<PlacedBearing>)>,
-    collision_poses: Vec<ConstructionBodyPose>,
+    collision_poses: Vec<ConstructionBodyState>,
     controller_accumulator: f64,
     jump_queued: bool,
     step_visual_offset: f32,

@@ -17,7 +17,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task};
 use mechanic_core::ConstructionGraph;
 use mechanic_gpu::GpuExternalImpulse;
 use mechanic_world::{
-    ActiveTerrainNode, ActiveTerrainScene, ConstructionBodyPose, ConstructionCollisionIndex,
+    ActiveTerrainNode, ActiveTerrainScene, ConstructionBodyState, ConstructionCollisionIndex,
     KinematicCapsule, KinematicCollisionScene, KinematicInput, TerrainMeshChunk, TerrainNodeId,
     TerrainTransitionMask, WorldPosition,
 };
@@ -285,9 +285,10 @@ pub(super) fn sync_player_construction_collision(
         .snapshot_tick
         .saturating_sub(runtime.collision_snapshot_tick);
     let elapsed = tick_delta.max(1) as f32 * mechanic_core::TICK_SECONDS_F32;
-    runtime
-        .collision_poses
-        .resize(simulation.transforms.len(), ConstructionBodyPose::default());
+    runtime.collision_poses.resize(
+        simulation.transforms.len(),
+        ConstructionBodyState::default(),
+    );
     for (body, transform) in simulation.transforms.iter().copied().enumerate() {
         let translation = Vec3::from_slice(&transform.position[..3]);
         let rotation = Quat::from_array(transform.rotation).normalize();
@@ -302,7 +303,7 @@ pub(super) fn sync_player_construction_collision(
         } else {
             angular_velocity(previous.rotation, rotation, elapsed)
         };
-        runtime.collision_poses[body] = ConstructionBodyPose {
+        runtime.collision_poses[body] = ConstructionBodyState {
             translation,
             rotation,
             linear_velocity,

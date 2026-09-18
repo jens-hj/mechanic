@@ -15,7 +15,7 @@ const COLLISION_SKIN: f32 = 1.0e-4;
 
 /// Published pose and motion of one compiled compound, in the render/GPU-local frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ConstructionBodyPose {
+pub struct ConstructionBodyState {
     /// Compound centre of mass.
     pub translation: Vec3,
     /// Compound orientation.
@@ -26,7 +26,7 @@ pub struct ConstructionBodyPose {
     pub angular_velocity: Vec3,
 }
 
-impl ConstructionBodyPose {
+impl ConstructionBodyState {
     /// Transforms a compound-local point into the construction frame.
     pub fn transform_point(self, point: Vec3) -> Vec3 {
         self.translation + self.rotation * point
@@ -181,8 +181,8 @@ pub struct ConstructionCollisionIndex {
     compounds: Vec<CompoundTree>,
     mass_properties: Vec<MassProperties>,
     is_static: Vec<bool>,
-    poses: Vec<ConstructionBodyPose>,
-    previous_poses: Vec<ConstructionBodyPose>,
+    poses: Vec<ConstructionBodyState>,
+    previous_poses: Vec<ConstructionBodyState>,
     local_nodes: Vec<BvhNode>,
     static_nodes: Vec<BvhNode>,
     dynamic_nodes: Vec<BvhNode>,
@@ -216,7 +216,7 @@ impl ConstructionCollisionIndex {
         let poses = creation
             .compounds
             .iter()
-            .map(|compound| ConstructionBodyPose {
+            .map(|compound| ConstructionBodyState {
                 translation: compound.root_translation,
                 rotation: compound.root_rotation,
                 linear_velocity: Vec3::ZERO,
@@ -283,7 +283,7 @@ impl ConstructionCollisionIndex {
     /// Replaces published body poses and refits only the dynamic top-level tree.
     ///
     /// Returns false without changing the scene when the body count differs.
-    pub fn refit_dynamic(&mut self, poses: &[ConstructionBodyPose]) -> bool {
+    pub fn refit_dynamic(&mut self, poses: &[ConstructionBodyState]) -> bool {
         if poses.len() != self.poses.len() {
             return false;
         }
@@ -310,7 +310,7 @@ impl ConstructionCollisionIndex {
     }
 
     /// Published body pose.
-    pub fn body_pose(&self, compound_index: u32) -> Option<ConstructionBodyPose> {
+    pub fn body_pose(&self, compound_index: u32) -> Option<ConstructionBodyState> {
         self.poses.get(compound_index as usize).copied()
     }
 
@@ -661,8 +661,8 @@ fn capsule_segment(feet: Vec3, config: KinematicCapsuleConfig) -> (Vec3, Vec3) {
 
 fn cast_compiled_collider(
     collider: &LocalCollider,
-    previous_pose: ConstructionBodyPose,
-    current_pose: ConstructionBodyPose,
+    previous_pose: ConstructionBodyState,
+    current_pose: ConstructionBodyState,
     feet: Vec3,
     displacement: Vec3,
     config: KinematicCapsuleConfig,
@@ -677,7 +677,7 @@ fn cast_compiled_collider(
         rotation_angle.abs() * collider_local_bounds(collider).maximum.abs().max_element();
     for _ in 0..20 {
         let moved_feet = feet + displacement * time;
-        let pose = ConstructionBodyPose {
+        let pose = ConstructionBodyState {
             translation: previous_pose
                 .translation
                 .lerp(current_pose.translation, time),
@@ -720,7 +720,7 @@ fn cast_compiled_collider(
 
 fn collider_distance(
     collider: &LocalCollider,
-    pose: ConstructionBodyPose,
+    pose: ConstructionBodyState,
     feet: Vec3,
     config: KinematicCapsuleConfig,
 ) -> (f32, Vec3, f32) {
@@ -1180,7 +1180,7 @@ mod tests {
         dynamic_creation.compounds[0].mass_properties.inverse_mass =
             dynamic_creation.compounds[0].mass_properties.mass.recip();
         let mut index = ConstructionCollisionIndex::new(&dynamic_creation);
-        let pose = super::ConstructionBodyPose {
+        let pose = super::ConstructionBodyState {
             translation: Vec3::new(2.0, 1.0, 0.0),
             rotation: bevy_math::Quat::IDENTITY,
             linear_velocity: Vec3::X * 240.0,
