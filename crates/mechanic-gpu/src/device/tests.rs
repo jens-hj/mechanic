@@ -12,7 +12,7 @@ use crate::GpuMechanismCoordinate;
 use super::{
     EXTERNAL_IMPULSE_BATCH_CAPACITY, FULL_CYLINDER_GROUND_FIRST, GpuExternalImpulse,
     GpuGroundPlane, GpuGroundPlaneError, GpuImpulseError, GpuPhysics, GpuPhysicsConfig,
-    GpuPhysicsPipelines, contact_pair_capacity, full_cylinder_ground_data,
+    GpuPhysicsPipelines, full_cylinder_ground_data, pipelines::collision::contact_pair_capacity,
     uses_fused_contact_schedule, uses_fused_velocity_schedule,
 };
 
@@ -2279,7 +2279,7 @@ fn dense_pipe_contacts_on_bearings_and_a_rail_remain_bounded() {
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             gpu.encode_mechanism_forward_kinematics(&mut encoder, None, 0);
-            super::direct_compute_pass(
+            super::wgpu_util::direct_compute_pass(
                 &mut encoder,
                 "initialize pipe motion",
                 &gpu.mechanism.reconstruct_velocities_pipeline,
@@ -2884,11 +2884,11 @@ fn collider_local_ground_planes_support_bodies_at_different_heights() {
 #[test]
 fn late_mapping_callbacks_cannot_reorder_publication() {
     assert_eq!(
-        super::oldest_completed_readback([(2, 7, 1), (0, 8, 0)].into_iter()),
+        super::readback::oldest_completed_readback([(2, 7, 1), (0, 8, 0)].into_iter()),
         None
     );
     assert_eq!(
-        super::oldest_completed_readback([(2, 7, 0), (0, 8, 0)].into_iter()),
+        super::readback::oldest_completed_readback([(2, 7, 0), (0, 8, 0)].into_iter()),
         Some(2)
     );
 }
@@ -3040,8 +3040,8 @@ fn copy_state_rows<T: bytemuck::Pod>(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     encoder.copy_buffer_to_buffer(source, 0, &destination, 0, size);
     queue.submit([encoder.finish()]);
-    super::map_for_read(device, &destination).unwrap();
-    let rows = super::mapped_rows(&destination, count);
+    super::readback::map_for_read(device, &destination).unwrap();
+    let rows = super::readback::mapped_rows(&destination, count);
     destination.unmap();
     rows
 }
