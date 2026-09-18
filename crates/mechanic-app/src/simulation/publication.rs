@@ -480,7 +480,7 @@ pub(crate) fn replacement_simulation_with_transfer(
         });
     };
     gpu.enable_async_readback();
-    if std::env::var_os("MECHANIC_PERF_CAPTURE_DIR").is_some_and(|v| !v.is_empty()) {
+    if crate::env::is_set(crate::env::PERF_CAPTURE_DIR) {
         gpu.enable_readback_timing();
     }
     gpu.write_body_states(render_queue, &transforms, &velocities)

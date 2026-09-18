@@ -50,6 +50,10 @@ const CHECKS: &[Check] = &[
         run: environment_variables_are_documented,
     },
     Check {
+        name: "the app names its environment variables only in env.rs",
+        run: app_environment_names_live_in_the_registry,
+    },
+    Check {
         name: "README.md lists every benchmark scenario",
         run: scenarios_are_documented,
     },
@@ -238,6 +242,29 @@ fn environment_variables_are_documented(root: &Path) -> Result<Vec<String>, Stri
         }
     }
     Ok(missing.into_iter().collect())
+}
+
+fn app_environment_names_live_in_the_registry(root: &Path) -> Result<Vec<String>, String> {
+    let app = root.join("crates/mechanic-app/src");
+    let registry = app.join("env.rs");
+    let mut violations = Vec::new();
+    for path in rust_sources(root)? {
+        if !path.starts_with(&app) || path == registry {
+            continue;
+        }
+        for (index, line) in read(&path)?.lines().enumerate() {
+            let names_a_variable = line.split('"').skip(1).step_by(2).any(|literal| {
+                literal.starts_with("MECHANIC_")
+                    && literal
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            });
+            if names_a_variable {
+                violations.push(format!("{}:{}", relative(root, &path), index + 1));
+            }
+        }
+    }
+    Ok(violations)
 }
 
 /// Scenario names are the string patterns of `Scenario::parse`.

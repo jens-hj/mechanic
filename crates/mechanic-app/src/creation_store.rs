@@ -20,7 +20,7 @@ pub(crate) const CREATION_EXTENSION: &str = "mech";
 
 /// Directory that overrides the platform default, for tests and for anyone who
 /// wants their creations somewhere specific.
-const DIRECTORY_OVERRIDE: &str = "MECHANIC_CREATIONS_DIR";
+use crate::env::CREATIONS_DIR;
 
 /// Name a creation falls back to when its own reduces to nothing usable.
 const FALLBACK_SLUG: &str = "creation";
@@ -71,7 +71,7 @@ impl CreationStore {
     /// Resolves the platform's creations directory.
     pub(crate) fn from_environment() -> Self {
         Self {
-            directory: env::var_os(DIRECTORY_OVERRIDE).map_or_else(
+            directory: env::var_os(CREATIONS_DIR).map_or_else(
                 || {
                     data_root().map_or_else(
                         || PathBuf::from("creations"),

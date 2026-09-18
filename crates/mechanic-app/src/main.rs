@@ -19,6 +19,7 @@ mod creation_menu;
 mod creation_store;
 mod debug_freeze;
 mod editor;
+mod env;
 mod frame_visuals;
 mod freeze;
 mod freeze_motion;

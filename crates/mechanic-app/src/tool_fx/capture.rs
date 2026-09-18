@@ -12,7 +12,7 @@ use bevy::{
 use std::{path::PathBuf, sync::OnceLock};
 fn directory() -> Option<&'static PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
-    DIR.get_or_init(|| std::env::var_os("MECHANIC_FX_CAPTURE_DIR").map(PathBuf::from))
+    DIR.get_or_init(|| crate::env::path(crate::env::FX_CAPTURE_DIR))
         .as_ref()
 }
 pub(super) fn enabled() -> bool {

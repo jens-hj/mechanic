@@ -233,7 +233,7 @@ pub(crate) fn sample(
     mut recorder: ResMut<Recorder>,
 ) {
     if !recorder.initialized {
-        recorder.directory = std::env::var_os("MECHANIC_PERF_CAPTURE_DIR")
+        recorder.directory = crate::env::raw(crate::env::PERF_CAPTURE_DIR)
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
         recorder.initialized = true;
@@ -251,7 +251,7 @@ pub(crate) fn sample(
         // is designed to exclude, so this opt-in records from world entry
         // instead. Such a capture contains warm-up and is not comparable with a
         // settled one.
-        let from_start = std::env::var_os("MECHANIC_PERF_CAPTURE_FROM_START")
+        let from_start = crate::env::raw(crate::env::PERF_CAPTURE_FROM_START)
             .is_some_and(|value| !value.is_empty());
         let ready = *space.get() == crate::world::AppSpace::World
             && (from_start
@@ -268,7 +268,7 @@ pub(crate) fn sample(
                 .elapsed()
                 >= WARMUP
         {
-            recorder.metadata = json!({"requested_physics_route":format!("{:?}", crate::cpu_physics::route()), "capture_from_start":from_start, "terrain_pass_partition":crate::render_diagnostics::terrain_passes_enabled(), "automated_background":crate::automation::background(), "foreground_requested":crate::automation::foreground(), "adapter":format!("{:?}", adapter.0), "label":std::env::var("MECHANIC_PERF_LABEL").ok(), "executable":std::env::current_exe().ok(), "experiment":format!("{:?}", crate::render_experiments::current()), "f3":metrics.snapshot().open, "present_mode":format!("{:?}",window.present_mode), "start_submitted_tick":simulation.next_tick.saturating_sub(1), "start_completed_tick":simulation.completed_tick, "bodies":simulation.creation.as_ref().map(|c| c.compounds.len()), "dynamic_bodies":simulation.creation.as_ref().map(|c| c.compounds.iter().filter(|body| !body.is_static).count()), "generalized_velocities":simulation.creation.as_ref().map(|c| c.dynamics.elimination_parent.len())});
+            recorder.metadata = json!({"requested_physics_route":format!("{:?}", crate::cpu_physics::route()), "capture_from_start":from_start, "terrain_pass_partition":crate::render_diagnostics::terrain_passes_enabled(), "automated_background":crate::automation::background(), "foreground_requested":crate::automation::foreground(), "adapter":format!("{:?}", adapter.0), "label":crate::env::text(crate::env::PERF_LABEL), "executable":std::env::current_exe().ok(), "experiment":format!("{:?}", crate::render_experiments::current()), "f3":metrics.snapshot().open, "present_mode":format!("{:?}",window.present_mode), "start_submitted_tick":simulation.next_tick.saturating_sub(1), "start_completed_tick":simulation.completed_tick, "bodies":simulation.creation.as_ref().map(|c| c.compounds.len()), "dynamic_bodies":simulation.creation.as_ref().map(|c| c.compounds.iter().filter(|body| !body.is_static).count()), "generalized_velocities":simulation.creation.as_ref().map(|c| c.dynamics.elimination_parent.len())});
             recorder.metadata["initial_state_hash"] = simulation
                 .live_state
                 .as_ref()

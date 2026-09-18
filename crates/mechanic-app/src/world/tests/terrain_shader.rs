@@ -260,8 +260,8 @@ fn terrain_shader_preserves_pixels_and_measures_gpu_cost() {
             |path| std::fs::read_to_string(path).expect("benchmark shader source"),
         )
     };
-    let reference_source = source("MECHANIC_TERRAIN_REFERENCE_SHADER", REFERENCE);
-    let candidate_source = source("MECHANIC_TERRAIN_CANDIDATE_SHADER", CANDIDATE);
+    let reference_source = source(crate::env::TERRAIN_REFERENCE_SHADER, REFERENCE);
+    let candidate_source = source(crate::env::TERRAIN_CANDIDATE_SHADER, CANDIDATE);
     let (mut app, shader, terrain, readback) = fixture();
     for (blended, side) in [(false, 33), (false, 513), (true, 33)] {
         let mesh = app

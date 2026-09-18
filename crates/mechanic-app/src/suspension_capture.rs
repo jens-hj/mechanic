@@ -24,7 +24,7 @@ use std::{
 pub(crate) struct SuspensionCapturePlugin;
 impl Plugin for SuspensionCapturePlugin {
     fn build(&self, app: &mut App) {
-        let Some(directory) = std::env::var_os("MECHANIC_SUSPENSION_CAPTURE_DIR") else {
+        let Some(directory) = crate::env::raw(crate::env::SUSPENSION_CAPTURE_DIR) else {
             return;
         };
         let directory = PathBuf::from(directory);

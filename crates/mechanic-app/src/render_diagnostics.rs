@@ -144,8 +144,8 @@ impl RenderTimings {
 pub(crate) fn terrain_passes_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("MECHANIC_PERF_TERRAIN_PASSES").as_deref() == Ok("1")
-            && std::env::var_os("MECHANIC_PERF_CAPTURE_DIR").is_some_and(|v| !v.is_empty())
+        crate::env::flag(crate::env::PERF_TERRAIN_PASSES)
+            && crate::env::is_set(crate::env::PERF_CAPTURE_DIR)
     })
 }
 

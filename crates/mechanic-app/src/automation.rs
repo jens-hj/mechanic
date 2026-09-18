@@ -37,16 +37,15 @@ fn config() -> Option<&'static Config> {
     static CONFIG: OnceLock<Option<Config>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            std::env::var("MECHANIC_AUTO_WORLD").ok().map(|world| {
+            crate::env::text(crate::env::AUTO_WORLD).map(|world| {
                 assert!(
                     !world.trim().is_empty(),
                     "MECHANIC_AUTO_WORLD must name a test-world copy"
                 );
-                let _directory = std::env::var_os("MECHANIC_PERF_CAPTURE_DIR")
+                let _directory = crate::env::raw(crate::env::PERF_CAPTURE_DIR)
                     .filter(|value| !value.is_empty())
                     .expect("MECHANIC_AUTO_WORLD requires MECHANIC_PERF_CAPTURE_DIR");
-                let placement_interval = std::env::var("MECHANIC_AUTO_PLACE")
-                    .ok()
+                let placement_interval = crate::env::text(crate::env::AUTO_PLACE)
                     .filter(|value| !value.is_empty())
                     .map(|value| {
                         let seconds: f64 = value
@@ -55,50 +54,45 @@ fn config() -> Option<&'static Config> {
                         assert!(seconds > 0.0, "MECHANIC_AUTO_PLACE must be positive");
                         Duration::from_secs_f64(seconds)
                     });
-                let foreground = std::env::var("MECHANIC_AUTO_FOREGROUND").as_deref() == Ok("1");
+                let foreground = crate::env::flag(crate::env::AUTO_FOREGROUND);
                 if foreground {
                     assert!(
                         placement_interval.is_none(),
                         "foreground comparison forbids placement diagnostics"
                     );
                     assert!(
-                        std::env::var_os("MECHANIC_PERF_CAPTURE_FROM_START")
+                        crate::env::raw(crate::env::PERF_CAPTURE_FROM_START)
                             .is_none_or(|v| v.is_empty()),
                         "foreground comparison requires settled streaming"
                     );
                     assert!(
-                        std::env::var("MECHANIC_AUTO_DRIVING_FRAMES").as_deref() != Ok("1"),
+                        !crate::env::flag(crate::env::AUTO_DRIVING_FRAMES),
                         "foreground comparison forbids demonstration screenshots"
                     );
                 }
-                let replay_ticks = std::env::var("MECHANIC_AUTO_REPLAY_TICKS")
-                    .ok()
-                    .map(|value| {
-                        let ticks = value
-                            .parse::<u64>()
-                            .expect("replay ticks must be an integer");
-                        assert!(
-                            foreground && (1..=3600).contains(&ticks),
-                            "replay requires foreground mode and 1..=3600 ticks"
-                        );
-                        ticks
-                    });
+                let replay_ticks = crate::env::text(crate::env::AUTO_REPLAY_TICKS).map(|value| {
+                    let ticks = value
+                        .parse::<u64>()
+                        .expect("replay ticks must be an integer");
+                    assert!(
+                        foreground && (1..=3600).contains(&ticks),
+                        "replay requires foreground mode and 1..=3600 ticks"
+                    );
+                    ticks
+                });
                 Config {
                     world,
-                    world_store: std::env::var_os("MECHANIC_AUTO_WORLD_STORE").map(Into::into),
+                    world_store: crate::env::raw(crate::env::AUTO_WORLD_STORE).map(Into::into),
                     foreground,
                     replay_ticks,
-                    driving: (std::env::var("MECHANIC_AUTO_DRIVE").as_deref() == Ok("1")).then(
-                        || {
-                            if std::env::var("MECHANIC_AUTO_DRIVE_STRAIGHT").as_deref() == Ok("1") {
-                                DrivingPattern::Straight
-                            } else {
-                                DrivingPattern::Steering
-                            }
-                        },
-                    ),
-                    demonstration: std::env::var("MECHANIC_AUTO_DRIVING_FRAMES").as_deref()
-                        == Ok("1"),
+                    driving: (crate::env::flag(crate::env::AUTO_DRIVE)).then(|| {
+                        if crate::env::flag(crate::env::AUTO_DRIVE_STRAIGHT) {
+                            DrivingPattern::Straight
+                        } else {
+                            DrivingPattern::Steering
+                        }
+                    }),
+                    demonstration: crate::env::flag(crate::env::AUTO_DRIVING_FRAMES),
                     placement_interval,
                 }
             })
@@ -400,8 +394,7 @@ fn scripted_placement(
         anchor + IVec3::new(2 * index, 12 + 4 * index, 0),
         mechanic_core::GridRotation::default(),
     );
-    let volume: i32 = std::env::var("MECHANIC_AUTO_PLACE_VOLUME")
-        .ok()
+    let volume: i32 = crate::env::text(crate::env::AUTO_PLACE_VOLUME)
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
     let previous = crate::editor::history::EditorSnapshot::capture(&graph.0, &state);
@@ -474,7 +467,7 @@ fn capture_driving_frame(commands: &mut Commands, run: &mut Run, config: &Config
             .is_none_or(|next| Instant::now() >= next)
     {
         let directory =
-            std::path::PathBuf::from(std::env::var_os("MECHANIC_PERF_CAPTURE_DIR").unwrap());
+            std::path::PathBuf::from(crate::env::raw(crate::env::PERF_CAPTURE_DIR).unwrap());
         // Capture I/O is explicitly opt-in and is visible in frame timings.
         let _ = std::fs::create_dir_all(&directory);
         let path = directory.join(format!("driving-{:03}.png", run.driving_frames));
@@ -495,7 +488,7 @@ pub(crate) struct FreezeSequence {
 }
 impl FreezeSequence {
     pub(crate) fn advance(&mut self) -> Option<(bool, bool, bool)> {
-        if !config().is_some_and(|_| std::env::var("MECHANIC_AUTO_FREEZE").as_deref() == Ok("1"))
+        if !config().is_some_and(|_| crate::env::flag(crate::env::AUTO_FREEZE))
             || !crate::performance_capture::is_active()
         {
             return None;
@@ -550,7 +543,7 @@ pub(crate) fn hammer_impact(
     }
     let strike = STRIKE
         .get_or_init(|| {
-            std::env::var("MECHANIC_AUTO_HAMMER").ok().map(|value| {
+            crate::env::text(crate::env::AUTO_HAMMER).map(|value| {
                 serde_json::from_str::<Strike>(&value)
                     .expect("MECHANIC_AUTO_HAMMER requires body_index, local_point and impulse")
             })

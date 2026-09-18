@@ -7,7 +7,7 @@ use std::time::Instant;
     reason = "keep the saved-world stage measurements together"
 )]
 fn measure_builder_body_mesh_rebuild() {
-    let source = std::env::var("MECHANIC_EDIT_FIXTURE").ok().map_or_else(
+    let source = crate::env::text(crate::env::EDIT_FIXTURE).map_or_else(
         || {
             include_str!(
                 "../../../mechanic-bench/tests/fixtures/builder-world/generations/20/world.ron"

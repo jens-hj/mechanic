@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use bevy::prelude::Msaa;
 
-const ENVIRONMENT_VARIABLE: &str = "MECHANIC_RENDER_EXPERIMENT";
+use crate::env::RENDER_EXPERIMENT;
 static EXPERIMENT: OnceLock<RenderExperiment> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -22,7 +22,7 @@ impl RenderExperiment {
             Some("no-msaa") => Ok(Self::NoMsaa),
             Some("simple-terrain") => Ok(Self::SimpleTerrain),
             Some(value) => Err(format!(
-                "Invalid {ENVIRONMENT_VARIABLE}={value:?}; expected baseline, no-msaa, or simple-terrain"
+                "Invalid {RENDER_EXPERIMENT}={value:?}; expected baseline, no-msaa, or simple-terrain"
             )),
         }
     }
@@ -52,11 +52,11 @@ impl RenderExperiment {
 
 pub(crate) fn current() -> RenderExperiment {
     *EXPERIMENT.get_or_init(|| {
-        let value = std::env::var(ENVIRONMENT_VARIABLE);
+        let value = std::env::var(RENDER_EXPERIMENT);
         let value = match &value {
             Ok(value) => Some(value.as_str()),
             Err(std::env::VarError::NotPresent) => None,
-            Err(error) => panic!("Invalid {ENVIRONMENT_VARIABLE}: {error}"),
+            Err(error) => panic!("Invalid {RENDER_EXPERIMENT}: {error}"),
         };
         RenderExperiment::parse(value).unwrap_or_else(|error| panic!("{error}"))
     })

@@ -42,8 +42,7 @@ pub(crate) fn route() -> Route {
     static ROUTE: OnceLock<Route> = OnceLock::new();
     *ROUTE.get_or_init(|| {
         route_from(
-            std::env::var("MECHANIC_PHYSICS")
-                .ok()
+            crate::env::text(crate::env::PHYSICS)
                 .filter(|value| !value.is_empty())
                 .as_deref(),
         )
@@ -352,7 +351,7 @@ impl CpuRoute {
     pub(crate) fn accumulate_soil(&self, world: &mut crate::world::WorldRuntime) {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         if !*ENABLED.get_or_init(|| {
-            !std::env::var("MECHANIC_SOIL")
+            !std::env::var(crate::env::SOIL)
                 .is_ok_and(|value| value.trim().eq_ignore_ascii_case("off"))
         }) {
             return;
