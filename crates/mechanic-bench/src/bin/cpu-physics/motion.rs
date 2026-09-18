@@ -124,7 +124,7 @@ pub(super) fn run(options: &scale::Options) -> Result<(), Box<dyn Error>> {
                 samples.sort_by(f64::total_cmp);
                 println!(
                     "{}",
-                    json!({"scenario":if rotor {"rotor"} else {"translation"}, "unrelated":unrelated,"speed":speed,"threshold_speed":threshold,"ticks":options.ticks,"p50_ms":samples[samples.len()/2],"p95_ms":samples[samples.len()*95/100],"refreshed_contact_groups":groups[0],"reused_contact_groups":groups[1],"detailed_sweep_preparations":groups[2],"clearance_certificate_failures":groups[3],"query_ms":query,"continuous_ms":continuous,"continuous_candidates":candidates,"requeries":requeries,"empty_contact_reuses":empty_reuses,"sweeps":sweeps,"degraded_ticks":degraded,"state_hash":machine.snapshot().state_hash()})
+                    json!({"scenario":if rotor {"rotor"} else {"translation"}, "unrelated":unrelated,"speed":speed,"threshold_speed":threshold,"ticks":options.ticks,"p50_ms":mechanic_bench::stats::percentile(&samples, 50),"p95_ms":mechanic_bench::stats::percentile_95(&samples),"refreshed_contact_groups":groups[0],"reused_contact_groups":groups[1],"detailed_sweep_preparations":groups[2],"clearance_certificate_failures":groups[3],"query_ms":query,"continuous_ms":continuous,"continuous_candidates":candidates,"requeries":requeries,"empty_contact_reuses":empty_reuses,"sweeps":sweeps,"degraded_ticks":degraded,"state_hash":machine.snapshot().state_hash()})
                 );
             }
         }
@@ -235,7 +235,7 @@ fn vehicle(options: &scale::Options) -> Result<(), Box<dyn Error>> {
         println!(
             "{}",
             json!({"scenario":"vehicle", "speed":speed, "unrelated":0,
-            "ticks":options.ticks,"p50_ms":samples[samples.len()/2],"p95_ms":samples[samples.len()*95/100],
+            "ticks":options.ticks,"p50_ms":mechanic_bench::stats::percentile(&samples, 50),"p95_ms":mechanic_bench::stats::percentile_95(&samples),
             "refreshed_contact_groups":groups[0],"reused_contact_groups":groups[1],"detailed_sweep_preparations":groups[2],"clearance_certificate_failures":groups[3],"query_ms":query,"continuous_ms":continuous,"continuous_candidates":candidates,"requeries":requeries,
             "sweeps":sweeps,"degraded_ticks":degraded,"state_hash":machine.snapshot().state_hash()})
         );

@@ -4,9 +4,6 @@ use mechanic_core::CompiledCreation;
 use mechanic_physics::{BodyPose, DynamicsFactor, MachineDynamics};
 use std::{error::Error, hint::black_box, time::Instant};
 
-#[path = "../scenarios.rs"]
-mod scenarios;
-
 const WARMUP: usize = 100;
 const SAMPLES: usize = 1000;
 const IMPULSES: usize = 32;
@@ -102,7 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => return Err("factor must be dense or articulated".into()),
     };
     let creation = if arguments[0] == "chain_256" {
-        scenarios::build_bearing_chain(256)?
+        mechanic_bench::scenarios::build_bearing_chain(256)?
     } else {
         let source = std::fs::read_to_string(&arguments[0])?;
         let doc: mechanic_world::WorldCreationInstanceDoc = ron::from_str(&source)?;

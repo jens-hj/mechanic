@@ -113,11 +113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         println!("{record}");
     }
-    timings.sort_by(f64::total_cmp);
-    let p95 = timings
-        .get(timings.len().saturating_mul(95) / 100)
-        .copied()
-        .unwrap_or_default();
+    let p95 = mechanic_bench::stats::percentile_95_or_zero(&timings);
     println!(
         "{}",
         serde_json::json!({"scenario":"material-clumps-summary", "bodies":256, "ticks":ticks,

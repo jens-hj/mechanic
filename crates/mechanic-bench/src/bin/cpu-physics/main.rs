@@ -22,22 +22,16 @@ use serde_json::json;
 /// Position of the wall faced by `fast-impacts` cases, along +X.
 const WALL: f32 = 5.0;
 
-#[path = "compiled-response/finite_support.rs"]
-mod finite_support;
+use mechanic_bench::finite_support;
 
-#[path = "cpu-physics/scale.rs"]
 mod scale;
 
-#[path = "cpu-physics/motion.rs"]
 mod motion;
 
-#[path = "cpu-physics/pipe_motion.rs"]
 mod pipe_motion;
 
-#[path = "cpu-physics/rolling.rs"]
 mod rolling;
 
-#[path = "cpu-physics/world_drive.rs"]
 mod world_drive;
 
 const ITERATIONS: usize = 256;
@@ -340,8 +334,9 @@ fn extent(creation: &CompiledCreation, state: &MachineState) -> Result<[DVec3; 2
 }
 
 fn saved_car() -> Result<CompiledCreation, Box<dyn Error>> {
-    let instance: mechanic_world::WorldCreationInstanceDoc =
-        ron::from_str(include_str!("../../tests/fixtures/driven_car_instance.ron"))?;
+    let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
+        "../../../tests/fixtures/driven_car_instance.ron"
+    ))?;
     let loaded = instance.creation.into_graph()?;
     Ok(loaded
         .graph

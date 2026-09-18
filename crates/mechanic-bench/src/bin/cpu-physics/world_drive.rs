@@ -424,9 +424,9 @@ impl Window {
             "driving": driving,
             "fastest_body_m_s": speed,
             "terrain_chunks": chunks,
-            "p95_ms": self.samples[(self.samples.len() * 95 / 100).min(self.samples.len() - 1)],
-            "total_tick_p95_ms": self.total_samples[(self.total_samples.len() * 95 / 100).min(self.total_samples.len() - 1)],
-            "p50_ms": self.samples[self.samples.len() / 2],
+            "p95_ms": mechanic_bench::stats::percentile_95(&self.samples),
+            "total_tick_p95_ms": mechanic_bench::stats::percentile_95(&self.total_samples),
+            "p50_ms": mechanic_bench::stats::percentile(&self.samples, 50),
             "max_ms": self.samples.last(),
             "degraded_ticks": self.degraded,
         });

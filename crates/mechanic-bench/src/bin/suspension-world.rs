@@ -187,12 +187,7 @@ fn main() -> Result<()> {
     }
     let elapsed = measurement.elapsed().as_secs_f64();
     samples.sort_by(f64::total_cmp);
-    let percentile = |percent: usize| {
-        samples[(samples.len() * percent)
-            .div_ceil(100)
-            .saturating_sub(1)
-            .min(samples.len() - 1)]
-    };
+    let percentile = |percent: usize| mechanic_bench::stats::percentile(&samples, percent);
     println!(
         "{{\"type\":\"summary\",\"plane\":{plane},\"samples\":{},\"completed_tps\":{},\"p50_ms\":{},\"p95_ms\":{},\"p99_ms\":{},\"minimum_up_y\":{minimum_up},\"stable\":{},\"serialized_readback\":true}}",
         samples.len(),

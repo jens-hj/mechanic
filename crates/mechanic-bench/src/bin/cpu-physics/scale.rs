@@ -208,7 +208,7 @@ pub(super) fn run(options: &Options) -> Result<(), Box<dyn Error>> {
         );
     }
     samples.sort_by(f64::total_cmp);
-    let p95 = samples[(samples.len() * 95).div_ceil(100).saturating_sub(1)];
+    let p95 = mechanic_bench::stats::percentile_95(&samples);
     println!(
         "{}",
         json!({"kind":"summary","p95_ms":p95,"degraded_ticks":degraded,"maximum_penetration_m":maximum_depth,"closure_gap_m":maximum_gap,"closure_angle_rad":maximum_angle,"outside_terrain_region":outside_region,"timing_gate":p95<=2.0 && degraded==0 && !outside_region,"rendering_measured":false})

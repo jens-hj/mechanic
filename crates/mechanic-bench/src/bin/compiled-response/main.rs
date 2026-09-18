@@ -8,9 +8,7 @@ use mechanic_core::{ColliderShape, CompiledCreation};
 use mechanic_physics::solve_constraints;
 use mechanic_physics::{ConstraintBlock, ImpulseBounds, MachineDynamics};
 
-#[path = "compiled-response/finite_support.rs"]
-mod finite_support;
-#[path = "compiled-response/measurement.rs"]
+use mechanic_bench::finite_support;
 mod measurement;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -87,8 +85,10 @@ mod tests {
     use super::*;
 
     fn car() -> CompiledCreation {
-        let instance: mechanic_world::WorldCreationInstanceDoc =
-            ron::from_str(include_str!("../../tests/fixtures/driven_car_instance.ron")).unwrap();
+        let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(include_str!(
+            "../../../tests/fixtures/driven_car_instance.ron"
+        ))
+        .unwrap();
         let loaded = instance.creation.into_graph().unwrap();
         loaded
             .graph

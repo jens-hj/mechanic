@@ -1,8 +1,7 @@
 //! Shared finite-floor fixture for measurements and physical regressions.
 
-use super::CompiledCreation;
 use bevy_math::DVec3;
-use mechanic_core::ContactPolytope;
+use mechanic_core::{CompiledCreation, ContactPolytope};
 use mechanic_physics::BodyPose;
 use mechanic_physics::{MachineCollisionGeometry, TerrainContactScene};
 use mechanic_world::{
@@ -12,7 +11,14 @@ use mechanic_world::{
 use std::error::Error;
 use std::sync::Arc;
 
-pub(super) fn scene(
+/// Seats the machine on a finite 128 m floor at `y = 0`: shifts `roots` so its
+/// lowest point sits 1 mm into the surface, and returns its collision geometry
+/// with that floor.
+///
+/// # Errors
+///
+/// Returns the geometry or terrain-scene construction failure.
+pub fn scene(
     creation: &CompiledCreation,
     roots: &mut [BodyPose],
 ) -> Result<(MachineCollisionGeometry, TerrainContactScene), Box<dyn Error>> {

@@ -6,7 +6,16 @@ use mechanic_core::{
     CuboidSpec, FaceKind, FaceRef, GridRotation,
 };
 
-pub(crate) fn build_bearing_chain(bearing_count: usize) -> Result<CompiledCreation, String> {
+/// A serial chain of `bearing_count` bearings joining one-block links.
+///
+/// # Errors
+///
+/// Returns the graph or compilation failure as text.
+///
+/// # Panics
+///
+/// Panics when `bearing_count` places a link beyond the `i32` grid.
+pub fn build_bearing_chain(bearing_count: usize) -> Result<CompiledCreation, String> {
     let mut graph = ConstructionGraph::new();
     let outcomes = graph
         .apply_batch((0..=bearing_count).map(|index| {

@@ -248,7 +248,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "{}",
         serde_json::json!({"scenario":"material-mining-summary", "material":name, "ticks":ticks,
         "removed_cells":removed, "deposited_cells":deposited, "clumps":clumps.bodies.len(), "degraded_ticks":degraded,
-        "physics_p95_ms":solves.get(solves.len() * 95 / 100), "total_tick_p95_ms":totals.get(totals.len() * 95 / 100),
+        "physics_p95_ms":(!solves.is_empty()).then(|| mechanic_bench::stats::percentile_95(&solves)), "total_tick_p95_ms":(!totals.is_empty()).then(|| mechanic_bench::stats::percentile_95(&totals)),
         "remesh_ms":remesh_total, "publication_ms":publication_total, "material_quanta":clumps.bodies.values().map(|body| u64::from(body.quanta)).sum::<u64>(),
         "kernel_coverage_complete":false})
     );

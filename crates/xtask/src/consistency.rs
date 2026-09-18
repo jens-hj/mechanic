@@ -151,14 +151,8 @@ fn no_tests_suffix_files(root: &Path) -> Result<Vec<String>, String> {
 }
 
 fn no_path_attributes(root: &Path) -> Result<Vec<String>, String> {
-    // Cargo discovers `src/bin/<name>.rs` only as a single file, so a binary
-    // with submodules has to point at them. Everything else follows its name.
-    let binaries = root.join("crates/mechanic-bench/src/bin");
     let mut violations = Vec::new();
     for path in rust_sources(root)? {
-        if path.starts_with(&binaries) {
-            continue;
-        }
         for (index, line) in read(&path)?.lines().enumerate() {
             if line.trim_start().starts_with("#[path") {
                 violations.push(format!("{}:{}", relative(root, &path), index + 1));

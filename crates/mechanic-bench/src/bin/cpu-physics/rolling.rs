@@ -138,7 +138,7 @@ fn roll(floor: &str, height: &dyn Fn(f64) -> f64, speed: f64) -> Result<(), Box<
 
 fn percentile(samples: &mut [f64], fraction: usize) -> f64 {
     samples.sort_by(f64::total_cmp);
-    samples[(samples.len() * fraction / 100).min(samples.len() - 1)]
+    mechanic_bench::stats::percentile(samples, fraction)
 }
 
 // A strip of `CELL`-sized square cells along +X, two triangles each, with a

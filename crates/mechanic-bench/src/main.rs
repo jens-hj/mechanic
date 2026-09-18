@@ -29,8 +29,8 @@ use mechanic_world::{
     terrain_worker_count,
 };
 
-mod scenarios;
-use scenarios::build_bearing_chain;
+use mechanic_bench::scenarios::build_bearing_chain;
+use mechanic_bench::stats::{percentile, percentile_95, percentile_95_or_zero};
 
 const SCALE_BODY_COUNT: usize = 100_000;
 const PLAYER_STATIC_COLLIDER_COUNT: usize = 131_072;
@@ -1587,16 +1587,6 @@ fn node_overlaps_region(node: TerrainNodeId, centre: WorldPosition, radius: f64)
     minimum.cmple(region_maximum).all() && region_minimum.cmple(maximum).all()
 }
 
-fn percentile_95_or_zero(samples: &[f64]) -> f64 {
-    if samples.is_empty() {
-        0.0
-    } else {
-        let mut sorted = samples.to_vec();
-        sorted.sort_by(f64::total_cmp);
-        percentile_95(&sorted)
-    }
-}
-
 fn build_four_bar(invalid: bool) -> Result<CompiledCreation, String> {
     let mut graph = ConstructionGraph::new();
     let outcomes = graph
@@ -1770,15 +1760,6 @@ fn bearing_command(
         anchor,
         axis,
     ))
-}
-
-fn percentile_95(sorted: &[f64]) -> f64 {
-    percentile(sorted, 95)
-}
-
-fn percentile(sorted: &[f64], percentage: usize) -> f64 {
-    let rank = sorted.len().saturating_mul(percentage).div_ceil(100);
-    sorted[rank.saturating_sub(1)]
 }
 
 fn grid_f32(value: usize) -> f32 {
