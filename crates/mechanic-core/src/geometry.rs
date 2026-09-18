@@ -21,7 +21,6 @@ pub enum ConstructionMaterial {
     /// Lightweight aluminium alloy.
     Aluminium,
     /// Graphite construction material.
-    #[serde(alias = "Carbon")]
     Graphite,
     /// Carbon-fibre composite construction material.
     CarbonFiber,

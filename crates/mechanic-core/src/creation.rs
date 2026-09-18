@@ -31,7 +31,6 @@ use crate::{
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
 pub const CREATION_FORMAT_VERSION: u32 = 17;
-const OLDEST_CREATION_FORMAT_VERSION: u32 = CREATION_FORMAT_VERSION;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
 ///
@@ -60,7 +59,7 @@ pub enum CreationError {
     LinearBearing(#[from] crate::LinearBearingError),
     /// The file was written by a different format version.
     #[error(
-        "creation format version {0} is not supported; this build reads versions {OLDEST_CREATION_FORMAT_VERSION} through {CREATION_FORMAT_VERSION}"
+        "creation format version {0} is not supported; this build reads only version {CREATION_FORMAT_VERSION}"
     )]
     UnsupportedVersion(u32),
     /// Frame transform is not finite and rigid.
@@ -989,7 +988,7 @@ impl CreationDocument {
     /// range, or the replayed commands do not describe a valid construction.
     #[allow(clippy::too_many_lines)] // One replay pass per serialized record family.
     pub fn into_graph(self) -> Result<LoadedCreation, CreationError> {
-        if !(OLDEST_CREATION_FORMAT_VERSION..=CREATION_FORMAT_VERSION).contains(&self.version) {
+        if self.version != CREATION_FORMAT_VERSION {
             return Err(CreationError::UnsupportedVersion(self.version));
         }
 
@@ -2640,13 +2639,6 @@ mod tests {
             material: Steel,
         )";
         assert!(ron::from_str::<PartDoc>(missing).is_err());
-    }
-
-    #[test]
-    fn legacy_carbon_material_deserializes_as_graphite_and_writes_graphite() {
-        let parsed: ConstructionMaterial = ron::from_str("Carbon").unwrap();
-        assert_eq!(parsed, ConstructionMaterial::Graphite);
-        assert_eq!(ron::to_string(&parsed).unwrap(), "Graphite");
     }
 
     #[test]
