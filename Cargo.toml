@@ -27,6 +27,12 @@ rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+bevy_mosaic = { path = "crates/bevy_mosaic" }
+mechanic-core = { path = "crates/mechanic-core" }
+mechanic-gpu = { path = "crates/mechanic-gpu" }
+mechanic-physics = { path = "crates/mechanic-physics" }
+mechanic-world = { path = "crates/mechanic-world" }
+
 bevy = { git = "https://github.com/bevyengine/bevy.git", tag = "v0.19.0", default-features = false }
 bevy_math = { git = "https://github.com/bevyengine/bevy.git", tag = "v0.19.0", default-features = false, features = ["std", "serialize"] }
 bytemuck = { version = "1.23", features = ["derive"] }
@@ -35,6 +41,7 @@ wgpu = "29.0"
 pollster = "0.4"
 naga = { version = "29.0", features = ["wgsl-in"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 ron = "0.12"
 fastnoise-lite = { version = "1.1.1", features = ["f64"] }
 getrandom = "0.3"

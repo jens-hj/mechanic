@@ -9,7 +9,7 @@ license.workspace = true
 bevy_math.workspace = true
 fastnoise-lite.workspace = true
 getrandom.workspace = true
-mechanic-core = { path = "../mechanic-core" }
+mechanic-core.workspace = true
 ron.workspace = true
 serde.workspace = true
 thiserror.workspace = true

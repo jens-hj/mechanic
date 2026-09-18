@@ -7,8 +7,8 @@ license.workspace = true
 
 [dependencies]
 bevy_math.workspace = true
-mechanic-core = { path = "../mechanic-core" }
-mechanic-world = { path = "../mechanic-world" }
+mechanic-core.workspace = true
+mechanic-world.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
