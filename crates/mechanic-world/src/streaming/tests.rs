@@ -2,10 +2,10 @@ use std::collections::BTreeSet;
 
 use bevy_math::DVec3;
 
+use super::selection::{classify_node, mesh_dependency_generation};
 use super::{
     ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainSelectionDelta, TerrainStreamer,
-    TerrainTransitionMask, classify_node, mesh_dependency_generation, publication_face_mask,
-    select_active_nodes, select_active_nodes_cached,
+    TerrainTransitionMask, publication_face_mask, select_active_nodes, select_active_nodes_cached,
 };
 use crate::{
     BRICK_EDGE_CELLS, BrickCoord, TerrainDensityClass, TerrainField, TerrainNodeId, TerrainOctree,
@@ -139,7 +139,7 @@ fn cached_reselection_reuses_horizontal_procedural_bounds() {
     assert_eq!(cold.nodes, warm.nodes);
     assert!(warm.stats.cache_hits > 0);
     assert_eq!(warm.stats.cache_misses, 0);
-    assert!(warm.stats.cache_memory_bytes <= super::PROCEDURAL_BOUNDS_CACHE_BYTES);
+    assert!(warm.stats.cache_memory_bytes <= super::bounds_cache::PROCEDURAL_BOUNDS_CACHE_BYTES);
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn transition_boundary_samples_propagate_across_fine_edges_and_corners() {
         (diagonal, TerrainTransitionMask::NONE),
     ]);
 
-    super::propagate_transition_boundary_sync(&selected, &mut masks);
+    super::selection::propagate_transition_boundary_sync(&selected, &mut masks);
 
     assert!(masks[&side].synchronizes_boundary_feature(
         (1 << TerrainFace::PositiveX as u8) | (1 << TerrainFace::NegativeZ as u8)
