@@ -62,6 +62,7 @@ Flags are on when set to `1`.
 
 | Variable | Effect |
 |---|---|
+| `MECHANIC_TIMING_TESTS` | `1` makes the app's tests enforce their wall-clock budgets. `cargo xtask budgets` sets it and runs them alone. |
 | `MECHANIC_EDIT_FIXTURE` | Creation file used by the app's edit-latency rendering test. |
 
 ## Tooling

@@ -1025,9 +1025,10 @@ fn a_4096_block_sheet_mesh_publication_stays_within_one_frame() {
 
     assert_eq!(delta.added.len(), 4_096);
     assert_eq!(mesh.count_vertices(), 24);
-    assert!(
-        elapsed.as_secs_f64() <= 0.005,
-        "mesh publication took {elapsed:?}"
+    crate::testing::assert_within_budget(
+        elapsed,
+        std::time::Duration::from_millis(5),
+        "publishing a 4,096-block sheet mesh",
     );
 }
 

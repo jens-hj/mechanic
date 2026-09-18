@@ -52,6 +52,9 @@ pub(crate) const AUTO_FREEZE: &str = "MECHANIC_AUTO_FREEZE";
 /// JSON hammer strike delivered during an automated run.
 pub(crate) const AUTO_HAMMER: &str = "MECHANIC_AUTO_HAMMER";
 
+/// `1` makes tests enforce their wall-clock budgets; see `cargo xtask budgets`.
+#[cfg(test)]
+pub(crate) const TIMING_TESTS: &str = "MECHANIC_TIMING_TESTS";
 /// Creation file used by the edit-latency rendering test.
 #[cfg(test)]
 pub(crate) const EDIT_FIXTURE: &str = "MECHANIC_EDIT_FIXTURE";

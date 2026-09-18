@@ -2336,9 +2336,10 @@ fn fast_volume_path_keeps_4096_blocks_individual_with_exact_welds() {
         placed.graph.part(placed.new_parts[0]),
         Some(&start.spec.into())
     );
-    assert!(
-        elapsed.as_secs_f64() < 1.0 / 60.0,
-        "bulk staging regressed to {elapsed:?}"
+    crate::testing::assert_within_budget(
+        elapsed,
+        std::time::Duration::from_secs_f64(mechanic_core::TICK_SECONDS),
+        "staging 4,096 blocks",
     );
 }
 
@@ -2414,9 +2415,10 @@ fn fast_volume_path_welds_only_the_adjacent_boundary() {
         top.graph.weld_count(),
         placed.graph.weld_count() + top.weld_count
     );
-    assert!(
-        elapsed.as_secs_f64() < 1.0 / 60.0,
-        "adjacent bulk staging regressed to {elapsed:?}"
+    crate::testing::assert_within_budget(
+        elapsed,
+        std::time::Duration::from_secs_f64(mechanic_core::TICK_SECONDS),
+        "staging 4,096 adjacent blocks",
     );
 }
 

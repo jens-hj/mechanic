@@ -62,6 +62,11 @@ const TASKS: &[Task] = &[
         run: scripts_test,
     },
     Task {
+        name: "budgets",
+        summary: "enforce the app's wall-clock test budgets, run alone and serially",
+        run: budgets,
+    },
+    Task {
         name: "bench-smoke",
         summary: "run the quick headless benchmark scenario",
         run: |extra| {
@@ -74,9 +79,9 @@ const TASKS: &[Task] = &[
     },
 ];
 
-/// Tasks `ci` skips: `wgsl` is a subset of `test`, and `bench-smoke` needs a
-/// real adapter.
-const NOT_IN_CI: &[&str] = &["wgsl", "bench-smoke"];
+/// Tasks `ci` skips: `wgsl` is a subset of `test`, `budgets` is meaningless on a
+/// shared runner, and `bench-smoke` needs a real adapter.
+const NOT_IN_CI: &[&str] = &["wgsl", "budgets", "bench-smoke"];
 
 fn main() -> ExitCode {
     let mut arguments = std::env::args().skip(1);
@@ -152,6 +157,16 @@ fn doc(extra: &[String]) -> Result<(), Failure> {
         extra,
         &[("RUSTDOCFLAGS", "-D warnings")],
     )
+}
+
+/// The tests that carry an interactive budget, by name filter.
+const BUDGET_TESTS: &[&str] = &["fast_volume_path", "stays_within_one_frame"];
+
+fn budgets(extra: &[String]) -> Result<(), Failure> {
+    let mut arguments = vec!["test", "-p", "mechanic-app", "--"];
+    arguments.extend(BUDGET_TESTS);
+    arguments.push("--test-threads=1");
+    run::cargo_with_env(&arguments, extra, &[("MECHANIC_TIMING_TESTS", "1")])
 }
 
 fn scripts_test(extra: &[String]) -> Result<(), Failure> {

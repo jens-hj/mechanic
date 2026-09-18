@@ -30,7 +30,7 @@ and milestone status are documented in `docs/`, indexed by `docs/README.md`.
 
 `cargo xtask` is the single entry point for checks; CI runs `cargo xtask ci`.
 
-- `cargo xtask ci` runs every task below except `wgsl` and `bench-smoke`.
+- `cargo xtask ci` runs every task below except `wgsl`, `budgets`, and `bench-smoke`.
 - `cargo xtask fmt` verifies formatting; `cargo xtask fmt --fix` applies it.
 - `cargo xtask consistency` verifies the repository conventions below that no compiler checks.
 - `cargo xtask lint` runs Clippy on every target with warnings denied.
@@ -38,6 +38,7 @@ and milestone status are documented in `docs/`, indexed by `docs/README.md`.
 - `cargo xtask doc` builds the API docs with rustdoc warnings denied.
 - `cargo xtask wgsl` validates the compute kernels without a GPU.
 - `cargo xtask scripts-test` runs the Python regression tests under `scripts/`.
+- `cargo xtask budgets` enforces the app tests' wall-clock budgets, alone and serially. Ordinary test runs check those tests' behaviour only, because a parallel run on a busy machine says nothing about a frame budget.
 - `cargo xtask bench-smoke` runs the quick headless benchmark. Use `cargo run -p mechanic-bench --release -- --scenario <name>` for performance measurements such as `four_bar` or `dense_100k`.
 - `cargo run -p mechanic-app` launches the construction and simulation prototype.
 

@@ -3,6 +3,7 @@
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU32, Ordering},
+    time::Duration,
 };
 
 /// A directory of its own per test, removed on drop, so tests that touch the
@@ -34,5 +35,17 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Holds `elapsed` to an interactive budget, but only under
+/// `MECHANIC_TIMING_TESTS=1`. A parallel debug test run on a busy machine says
+/// nothing about a frame budget, so `cargo xtask budgets` runs these alone.
+pub(crate) fn assert_within_budget(elapsed: Duration, budget: Duration, what: &str) {
+    if crate::env::flag(crate::env::TIMING_TESTS) {
+        assert!(
+            elapsed <= budget,
+            "{what} took {elapsed:?}, over its {budget:?} budget"
+        );
     }
 }

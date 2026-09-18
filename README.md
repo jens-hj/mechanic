@@ -459,6 +459,7 @@ cargo xtask help          # list every task
 cargo xtask ci            # fmt, consistency, lint, test, doc, scripts-test
 cargo xtask fmt --fix     # apply formatting
 cargo xtask wgsl          # validate the compute kernels without a GPU
+cargo xtask budgets       # enforce the app tests' wall-clock budgets, run alone
 cargo xtask bench-smoke   # quick headless benchmark
 ```
 
