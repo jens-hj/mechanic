@@ -1123,3 +1123,205 @@ pub(crate) fn tool_status_line(
         _ => format!("Tool: {}", tool.label()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mechanic_core::{
+        BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, ControllerSpec,
+        CuboidSpec, DriveLinkSpec, FaceKind, FaceRef, GridRotation, PartId,
+    };
+
+    use bevy::prelude::*;
+
+    use crate::control_panel;
+    use crate::editor::preview::{
+        drive_xray_is_visible, driven_bearing_count, joint_number_labels,
+    };
+    use crate::editor::state::EditorGraph;
+    use crate::hotbar::Tool;
+    use crate::simulation::state::AppSimulation;
+    use crate::ui::markers;
+
+    fn spawned(outcome: BuildOutcome) -> PartId {
+        match outcome {
+            BuildOutcome::Spawned(part) => part,
+            other => panic!("expected a spawn, got {other:?}"),
+        }
+    }
+
+    fn cuboid(dimensions: [u8; 3], units: IVec3) -> CuboidSpec {
+        CuboidSpec::new(dimensions, BuildPose::new(units, GridRotation::default()))
+            .expect("test dimensions are in range")
+    }
+
+    /// One control block driving two joints, each on its own rotor.
+    fn two_driven_joints() -> (ConstructionGraph, PartId, [Vec3; 2]) {
+        let mut graph = ConstructionGraph::new();
+        let base = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([16, 2, 4], IVec3::new(0, 1, 0))))
+                .expect("the base spawns"),
+        );
+        let controller = spawned(
+            graph
+                .apply(BuildCommand::SpawnController(ControllerSpec::new(
+                    BuildPose::from_half_grid(IVec3::new(0, 5, 0), GridRotation::default()),
+                )))
+                .expect("the control block spawns"),
+        );
+        let mut anchors = Vec::new();
+        for offset in [-6_i8, 6_i8] {
+            let rotor = spawned(
+                graph
+                    .apply(BuildCommand::Spawn(cuboid(
+                        [2, 2, 2],
+                        IVec3::new(i32::from(offset), 3, 0),
+                    )))
+                    .expect("the rotor spawns"),
+            );
+            let anchor = Vec3::new(f32::from(offset) * 0.25, 0.5, 0.0);
+            let BuildOutcome::BearingAdded(bearing) = graph
+                .apply(BuildCommand::AddBearing(BearingSpec::new(
+                    FaceRef::part(base, FaceKind::PositiveY),
+                    FaceRef::part(rotor, FaceKind::NegativeY),
+                    anchor,
+                    Vec3::Y,
+                )))
+                .expect("the bearing is added")
+            else {
+                panic!("expected a bearing outcome");
+            };
+            graph
+                .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                    controller, bearing,
+                )))
+                .expect("the wire is added");
+            anchors.push(anchor);
+        }
+        (graph, controller, [anchors[0], anchors[1]])
+    }
+
+    #[test]
+    fn floating_numbers_match_the_rows_the_panel_lists() {
+        let (graph, controller, anchors) = two_driven_joints();
+        let rows = control_panel::panel_rows(&graph, controller);
+        let labels = joint_number_labels(&graph, |bearing| Some(bearing.shared_anchor));
+
+        assert_eq!(rows.len(), 2, "each joint gets its own panel row");
+        assert_eq!(
+            labels,
+            vec![(1, anchors[0]), (2, anchors[1])],
+            "the number floating over a joint is the row number the panel shows"
+        );
+    }
+
+    #[test]
+    fn two_wires_on_one_joint_share_a_single_number() {
+        let (mut graph, controller, anchors) = two_driven_joints();
+        // A second group hung from the first joint's socket adds a wire
+        // describing the same physical joint, which the panel folds into one
+        // row and which therefore earns one number, not two.
+        let extra = spawned(
+            graph
+                .apply(BuildCommand::Spawn(cuboid([2, 2, 2], IVec3::new(-6, 3, 0))))
+                .expect("the extra rotor spawns"),
+        );
+        let base = graph.parts().next().expect("the base is the first part").0;
+        let BuildOutcome::BearingAdded(bearing) = graph
+            .apply(BuildCommand::AddBearing(BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveY),
+                FaceRef::part(extra, FaceKind::NegativeY),
+                anchors[0],
+                Vec3::Y,
+            )))
+            .expect("the second bearing is added")
+        else {
+            panic!("expected a bearing outcome");
+        };
+        graph
+            .apply(BuildCommand::AddDriveLink(DriveLinkSpec::new(
+                controller, bearing,
+            )))
+            .expect("the second wire is added");
+
+        assert_eq!(driven_bearing_count(&graph), 3, "three wires exist");
+        assert_eq!(
+            control_panel::panel_rows(&graph, controller).len(),
+            2,
+            "but they describe two joints"
+        );
+        assert_eq!(
+            joint_number_labels(&graph, |bearing| Some(bearing.shared_anchor)),
+            vec![(1, anchors[0]), (2, anchors[1])],
+            "one joint carries one number no matter how many wires reach it"
+        );
+    }
+
+    /// Builds an app running `update_joint_numbers` over the given graph.
+    ///
+    /// The camera has no viewport, so every projection fails and the labels
+    /// stay hidden. That is deliberate: this exercises the spawn and despawn
+    /// bookkeeping, which is what breaks, without needing a render target.
+    /// What the overlay would number, with the connector in hand.
+    fn numbered(graph: &ConstructionGraph) -> Vec<usize> {
+        markers::wanted(
+            &EditorGraph(graph.clone()),
+            &AppSimulation::default(),
+            Tool::Connector,
+        )
+        .into_iter()
+        .map(|(number, _)| number)
+        .collect()
+    }
+
+    #[test]
+    fn every_driven_joint_is_numbered_once() {
+        let (graph, _, _) = two_driven_joints();
+        assert_eq!(numbered(&graph), vec![1, 2], "each joint gets one number");
+    }
+
+    #[test]
+    fn numbers_track_joints_appearing_and_disappearing() {
+        let (graph, _, _) = two_driven_joints();
+        assert!(
+            numbered(&ConstructionGraph::new()).is_empty(),
+            "nothing driven, nothing numbered",
+        );
+        assert_eq!(numbered(&graph).len(), 2);
+        assert!(
+            numbered(&ConstructionGraph::new()).is_empty(),
+            "removing the joints clears them",
+        );
+    }
+
+    #[test]
+    fn putting_away_the_connector_clears_the_numbers() {
+        let (graph, _, _) = two_driven_joints();
+        assert_eq!(numbered(&graph).len(), 2);
+        assert!(
+            markers::wanted(&EditorGraph(graph), &AppSimulation::default(), Tool::Hammer,)
+                .is_empty(),
+            "the numbers belong to the tools that show the wires",
+        );
+    }
+
+    #[test]
+    fn numbers_show_with_the_tools_that_show_the_wires() {
+        for tool in [Tool::Connector, Tool::Controller] {
+            assert!(
+                drive_xray_is_visible(tool, 1),
+                "{tool:?} should show joint numbers"
+            );
+        }
+        for tool in [Tool::Block, Tool::Bearing, Tool::Weld, Tool::Hammer] {
+            assert!(
+                !drive_xray_is_visible(tool, 1),
+                "{tool:?} should not show joint numbers"
+            );
+        }
+        assert!(
+            !drive_xray_is_visible(Tool::Connector, 0),
+            "nothing driven means nothing to number"
+        );
+    }
+}

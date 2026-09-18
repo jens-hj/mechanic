@@ -1,3 +1,5 @@
+mod transmission_speed;
+
 use super::{
     DriveKeyState, RowCursor, automatic_shift_destination, chord_just_pressed, initial_gear,
     reversal_is_safe, stepped_cursor,

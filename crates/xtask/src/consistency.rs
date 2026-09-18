@@ -34,6 +34,10 @@ const CHECKS: &[Check] = &[
         run: no_path_attributes,
     },
     Check {
+        name: "tests live in a tests module, never in *_tests.rs",
+        run: no_tests_suffix_files,
+    },
+    Check {
         name: "lint suppressions are #[expect], or #[allow] with a reason",
         run: no_bare_allow,
     },
@@ -118,6 +122,18 @@ fn no_mod_rs(root: &Path) -> Result<Vec<String>, String> {
     Ok(rust_sources(root)?
         .iter()
         .filter(|path| path.file_name().is_some_and(|name| name == "mod.rs"))
+        .map(|path| relative(root, path))
+        .collect())
+}
+
+fn no_tests_suffix_files(root: &Path) -> Result<Vec<String>, String> {
+    Ok(rust_sources(root)?
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("_tests.rs"))
+        })
         .map(|path| relative(root, path))
         .collect())
 }

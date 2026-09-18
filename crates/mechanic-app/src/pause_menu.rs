@@ -439,6 +439,8 @@ pub(crate) fn capture_control_binding(
 
 #[cfg(test)]
 mod tests {
+    mod escape;
+
     use super::*;
 
     #[test]

@@ -15,3 +15,6 @@ pub(crate) mod shape_actions;
 pub(crate) mod shortcuts;
 pub(crate) mod state;
 pub(crate) mod wiring;
+
+#[cfg(test)]
+mod tests;

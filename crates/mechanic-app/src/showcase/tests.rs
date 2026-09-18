@@ -1,3 +1,5 @@
+mod loading;
+
 use bevy::prelude::{Quat, Vec3};
 
 use super::{

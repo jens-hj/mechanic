@@ -835,3 +835,6 @@ pub(crate) fn coordinate_from_body_states(
     };
     Some(mechanic_gpu::GpuMechanismCoordinate { position, velocity })
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,8 +1,8 @@
 //! Tool transactions on authored grids carried by moving physical bodies.
 
-use super::*;
 use crate::editor::build_actions::handle_chroma_actions;
 use crate::editor::build_actions::stage_part_deletion_preserving_bearings;
+use crate::*;
 use mechanic_core::{
     BuildPose, CarriageFace, ConstructionFrame, FaceKind, LinearBearing, LinearBearingDimensions,
 };

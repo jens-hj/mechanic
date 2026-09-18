@@ -71,3 +71,27 @@ pub(crate) fn update_debug_frame_freeze(
 pub(crate) fn debug_frame_updates_enabled(freeze: Res<DebugFrameFreeze>) -> bool {
     !freeze.blocks_updates()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::debug_freeze::{DebugFrameFreeze, DebugFrameFreezeEffect};
+
+    #[test]
+    fn freeze_stays_active_until_a_click_is_consumed() {
+        let mut freeze = DebugFrameFreeze::default();
+        assert_eq!(
+            freeze.advance(true, false),
+            DebugFrameFreezeEffect::PauseTime
+        );
+        assert!(freeze.blocks_updates());
+
+        assert_eq!(freeze.advance(false, true), DebugFrameFreezeEffect::None);
+        assert!(freeze.blocks_updates());
+
+        assert_eq!(
+            freeze.advance(false, false),
+            DebugFrameFreezeEffect::ResumeTime
+        );
+        assert!(!freeze.blocks_updates());
+    }
+}

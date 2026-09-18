@@ -49,7 +49,7 @@ fn failed_tick_keeps_the_last_completed_pose_even_between_visual_snapshots() {
         }),
         ..Default::default()
     };
-    let mut editor = super::EditorState::default();
+    let mut editor = crate::editor::state::EditorState::default();
     crate::simulation::state::stop_failed_simulation(
         &mut simulation,
         &mut editor,

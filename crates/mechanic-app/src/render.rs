@@ -5,3 +5,6 @@ pub(crate) mod authored;
 pub(crate) mod environment;
 pub(crate) mod materials;
 pub(crate) mod mesh;
+
+#[cfg(test)]
+mod tests;
