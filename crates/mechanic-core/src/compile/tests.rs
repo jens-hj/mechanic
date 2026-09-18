@@ -1,6 +1,7 @@
 use bevy_math::{IVec3, Vec3};
 
-use super::{PartPiece, outer_product};
+use super::mass::outer_product;
+use crate::PartPiece;
 use crate::{
     ActuatorAssignment, BearingDimensions, BearingId, BearingSpec, BuildCommand, BuildOutcome,
     BuildPose, ColliderShape, ConstructionGraph, ConstructionMaterial, ControllerSpec,
