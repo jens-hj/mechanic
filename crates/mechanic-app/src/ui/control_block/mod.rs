@@ -278,7 +278,7 @@ fn preset_motor_speed(
         .filter_map(|kind| {
             let config = graph.gearbox_config(controller, kind).ok()?;
             let ratio = config.ratios().iter().copied().reduce(f32::min)?;
-            Some(kind.no_load_rpm() * core::f32::consts::TAU / 60.0 / ratio)
+            Some(mechanic_core::rpm_to_rad_s(kind.no_load_rpm()) / ratio)
         })
         .reduce(f32::max)
 }
@@ -475,7 +475,7 @@ fn actuator_capability(
     actuator: ActuatorAssignment,
     inventory: mechanic_core::ActuatorInventory,
 ) -> (f32, f32) {
-    let rpm_to_rad_s = |rpm: f32| rpm * core::f32::consts::TAU / 60.0;
+    let rpm_to_rad_s = mechanic_core::rpm_to_rad_s;
     match actuator {
         ActuatorAssignment::Unpowered => (0.0, 0.0),
         ActuatorAssignment::Servo => (
@@ -727,7 +727,7 @@ mod tests {
             );
             let graph = &world.resource::<crate::EditorGraph>().0;
             let drive = graph.drive_link(link).unwrap();
-            let top = EngineKind::Gas.no_load_rpm() * core::f32::consts::TAU / 60.0 / ratios[2];
+            let top = mechanic_core::rpm_to_rad_s(EngineKind::Gas.no_load_rpm()) / ratios[2];
             assert!(
                 matches!(drive.program.state(1).unwrap().target(), DriveTarget::Speed(speed) if (speed - top).abs() < 0.0001),
                 "W must request {top} rad/s, got {:?}",

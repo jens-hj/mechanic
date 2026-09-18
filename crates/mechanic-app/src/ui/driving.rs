@@ -132,7 +132,7 @@ fn engine_lane(
     let rpm = engaged.zip(output_speed).map_or_else(
         || "— RPM".to_owned(),
         |((_, _, ratio), speed)| {
-            let rpm = speed.abs() * ratio * 60.0 / core::f32::consts::TAU;
+            let rpm = mechanic_core::rad_s_to_rpm(speed.abs() * ratio);
             format!("{rpm:.0} RPM")
         },
     );

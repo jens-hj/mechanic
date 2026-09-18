@@ -85,11 +85,10 @@ fn high_speed_steering_returns_to_center_after_release() {
                     .dot(Vec3::NEG_X)
                     .signum()
                     * wheel_speed,
-                max_speed: EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU / 60.0,
+                max_speed: mechanic_core::rpm_to_rad_s(EngineKind::Gas.no_load_rpm()),
                 max_acceleration: acceleration,
                 source_b_max_acceleration: acceleration,
-                source_b_no_load_speed: EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU
-                    / 60.0,
+                source_b_no_load_speed: mechanic_core::rpm_to_rad_s(EngineKind::Gas.no_load_rpm()),
                 ..CoordinateDrive::default()
             });
         }

@@ -8761,15 +8761,13 @@ mod tests {
                 mode: DriveMode::Speed,
                 target_speed: 0.0,
                 target_angle: 0.0,
-                max_speed: EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU
-                    / 60.0
+                max_speed: mechanic_core::rpm_to_rad_s(EngineKind::Gas.no_load_rpm())
                     / FIRST_GEAR_RATIO,
                 max_acceleration: acceleration,
                 source_a_max_acceleration: 0.0,
                 source_a_no_load_speed: 0.0,
                 source_b_max_acceleration: acceleration,
-                source_b_no_load_speed: EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU
-                    / 60.0
+                source_b_no_load_speed: mechanic_core::rpm_to_rad_s(EngineKind::Gas.no_load_rpm())
                     / FIRST_GEAR_RATIO,
                 min_angle: f32::NEG_INFINITY,
                 max_angle: f32::INFINITY,
@@ -9068,7 +9066,7 @@ mod tests {
             world_axis.cross(Vec3::Y).dot(Vec3::X).signum()
         };
         let make_drives = |ratio: f32, command_speed: f32| {
-            let output_speed = EngineKind::Gas.no_load_rpm() * std::f32::consts::TAU / 60.0 / ratio;
+            let output_speed = mechanic_core::rpm_to_rad_s(EngineKind::Gas.no_load_rpm()) / ratio;
             let mut drives = fixture
                 .creation
                 .coordinate_drives
@@ -9183,7 +9181,7 @@ mod tests {
             }
             if !shifted {
                 let engine_rpm =
-                    wheel_surface_speed.abs() / WHEEL_RADIUS * ratio * 60.0 / std::f32::consts::TAU;
+                    mechanic_core::rad_s_to_rpm(wheel_surface_speed.abs() / WHEEL_RADIUS * ratio);
                 maximum_engine_rpm = maximum_engine_rpm.max(engine_rpm);
                 if engine_rpm >= 0.75 * EngineKind::Gas.no_load_rpm() {
                     ratio = 1.0;

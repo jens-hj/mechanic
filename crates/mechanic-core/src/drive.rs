@@ -6,7 +6,7 @@ use thiserror::Error;
 /// Largest authorable drive speed, covering the fastest engine at minimum reduction.
 /// Actual speed and torque remain limited by the connected hardware and active gear.
 pub const MAX_DRIVE_SPEED_RAD_S: f32 =
-    crate::EngineKind::Gas.no_load_rpm() * core::f32::consts::TAU / 60.0 / crate::MIN_GEAR_RATIO;
+    crate::rpm_to_rad_s(crate::EngineKind::Gas.no_load_rpm()) / crate::MIN_GEAR_RATIO;
 
 /// Largest supported drive angle magnitude, in radians.
 pub const MAX_DRIVE_LIMIT_RADIANS: f32 = core::f32::consts::TAU;
@@ -1089,7 +1089,7 @@ mod tests {
     fn programs_accept_engine_speeds_across_the_supported_gear_range() {
         for kind in [crate::EngineKind::Gas, crate::EngineKind::Electric] {
             for ratio in [crate::MIN_GEAR_RATIO, 1.0, crate::MAX_GEAR_RATIO] {
-                let speed = kind.no_load_rpm() * core::f32::consts::TAU / 60.0 / ratio;
+                let speed = crate::rpm_to_rad_s(kind.no_load_rpm()) / ratio;
                 let limits = DriveLimits::default().with_max_speed(speed).unwrap();
                 for target in [speed, -speed * 0.7] {
                     let state = DriveState::new(DriveTarget::Speed(target)).unwrap();

@@ -515,7 +515,7 @@ fn automatic_shift_destination(
     measured_speed: f32,
 ) -> usize {
     let ratio = config.ratios()[current];
-    let engine_rpm = measured_speed.abs() * ratio * 60.0 / core::f32::consts::TAU;
+    let engine_rpm = mechanic_core::rad_s_to_rpm(measured_speed.abs() * ratio);
     let (first, last) = gear_bank_range(kind, config, current);
     if engine_rpm >= 0.75 * kind.no_load_rpm() && current < last {
         current + 1
@@ -536,7 +536,7 @@ fn reversal_is_safe(
         return true;
     }
     let output_speed =
-        kind.no_load_rpm() * core::f32::consts::TAU / 60.0 / config.ratios()[destination];
+        mechanic_core::rpm_to_rad_s(kind.no_load_rpm()) / config.ratios()[destination];
     measured_speed.abs() < 0.05_f32.max(output_speed * 0.05)
 }
 
@@ -1869,7 +1869,7 @@ mod tests {
     fn automatic_shift_thresholds_have_hysteresis() {
         let config = GearboxConfig::for_depth(3, false);
         let output_speed =
-            |rpm: f32, gear: usize| rpm * core::f32::consts::TAU / 60.0 / config.ratios()[gear];
+            |rpm: f32, gear: usize| mechanic_core::rpm_to_rad_s(rpm) / config.ratios()[gear];
         assert_eq!(
             automatic_shift_destination(
                 EngineKind::Electric,

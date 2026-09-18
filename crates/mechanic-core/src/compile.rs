@@ -1291,7 +1291,7 @@ fn resolve_coordinate_actuation(
                         * (f32::from(electric_percent) / 100.0)
                         * ratio;
                     row.source_a_no_load_speed =
-                        rpm_to_rad_s(EngineKind::Electric.no_load_rpm()) / ratio;
+                        crate::rpm_to_rad_s(EngineKind::Electric.no_load_rpm()) / ratio;
                     row.max_speed = row.max_speed.max(row.source_a_no_load_speed);
                 }
                 if gas_percent != 0
@@ -1304,13 +1304,13 @@ fn resolve_coordinate_actuation(
                         * (f32::from(gas_percent) / 100.0)
                         * ratio;
                     row.source_b_no_load_speed =
-                        rpm_to_rad_s(EngineKind::Gas.no_load_rpm()) / ratio;
+                        crate::rpm_to_rad_s(EngineKind::Gas.no_load_rpm()) / ratio;
                     row.max_speed = row.max_speed.max(row.source_b_no_load_speed);
                 }
             }
             ActuatorAssignment::Servo => {
                 row.source_a_torque = ServoSpec::STALL_TORQUE_NEWTON_METERS;
-                row.source_a_no_load_speed = rpm_to_rad_s(ServoSpec::NO_LOAD_RPM);
+                row.source_a_no_load_speed = crate::rpm_to_rad_s(ServoSpec::NO_LOAD_RPM);
                 row.max_speed = row.source_a_no_load_speed;
             }
         }
@@ -1329,10 +1329,6 @@ fn resolve_coordinate_actuation(
         }
     }
     Ok(result)
-}
-
-fn rpm_to_rad_s(rpm: f32) -> f32 {
-    rpm * core::f32::consts::TAU / 60.0
 }
 
 fn resolve_coordinate_drives(

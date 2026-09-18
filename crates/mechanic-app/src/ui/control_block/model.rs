@@ -717,7 +717,7 @@ impl LaneModel {
                     DriveTarget::LinearPosition(value) | DriveTarget::LinearSpeed(value) => value,
                     DriveTarget::Angle(angle) => angle.to_degrees(),
                     DriveTarget::Speed(speed) => match speed_unit {
-                        SpeedUnit::Rpm => speed * 60.0 / core::f32::consts::TAU,
+                        SpeedUnit::Rpm => mechanic_core::rad_s_to_rpm(speed),
                         SpeedUnit::DegreesPerSecond => speed.to_degrees(),
                     },
                 },
@@ -744,7 +744,7 @@ impl LaneModel {
             number,
             name: name.as_str().to_owned(),
             speed: match speed_unit {
-                SpeedUnit::Rpm => max_speed_rad_s * 60.0 / core::f32::consts::TAU,
+                SpeedUnit::Rpm => mechanic_core::rad_s_to_rpm(max_speed_rad_s),
                 SpeedUnit::DegreesPerSecond => max_speed_rad_s.to_degrees(),
             },
             torque: effective_torque,
@@ -768,7 +768,7 @@ impl LaneModel {
     ) -> Self {
         self.is_linear = true;
         let angular_speed = match self.speed_unit {
-            SpeedUnit::Rpm => self.speed * core::f32::consts::TAU / 60.0,
+            SpeedUnit::Rpm => mechanic_core::rpm_to_rad_s(self.speed),
             SpeedUnit::DegreesPerSecond => self.speed.to_radians(),
         };
         self.speed = limits
