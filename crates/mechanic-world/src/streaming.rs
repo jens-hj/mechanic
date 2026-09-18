@@ -878,21 +878,6 @@ impl TerrainSelectionDelta {
     }
 }
 
-/// Generation-safe output produced by terrain edit/selection coordination.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TerrainCoordinatorResult {
-    /// Exact terrain edit generation used throughout this result.
-    pub generation: u64,
-    /// Immutable edited terrain root consumed by background workers.
-    pub terrain: TerrainOctreeSnapshot,
-    /// Complete verified selected cut.
-    pub selection: TerrainSelection,
-    /// Incremental change from the previously accepted cut.
-    pub selection_delta: TerrainSelectionDelta,
-    /// Union of changed bricks since the preceding acknowledged edit.
-    pub changed_bricks: BTreeSet<BrickCoord>,
-}
-
 impl TerrainPublicationDelta {
     /// True when the delta carries no publication work.
     pub fn is_empty(&self) -> bool {
@@ -1261,23 +1246,6 @@ pub fn terrain_loading_worker_count() -> usize {
         .map_or(4, usize::from)
         .saturating_sub(2)
         .clamp(1, 8)
-}
-
-/// Faces touching an equal, coarser, or finer node in an active balanced cut.
-pub fn active_face_mask(
-    node: TerrainNodeId,
-    active: &BTreeSet<TerrainNodeId>,
-) -> TerrainTransitionMask {
-    let mut mask = TerrainTransitionMask::NONE;
-    for face in TerrainFace::ALL {
-        if neighbour_candidates(node, face)
-            .into_iter()
-            .any(|candidate| active.contains(&candidate))
-        {
-            mask.insert(face);
-        }
-    }
-    mask
 }
 
 /// Faces that can publish without a temporary cap.

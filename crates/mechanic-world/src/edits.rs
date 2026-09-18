@@ -565,9 +565,6 @@ pub trait TerrainSource {
             |cell| self.sample_cell(field, cell),
         )
     }
-
-    /// True when an inclusive cell region contains a promoted leaf.
-    fn has_promoted_between(&self, minimum: WorldCell, maximum: WorldCell) -> bool;
 }
 
 impl TerrainOctree {
@@ -625,10 +622,6 @@ impl TerrainOctree {
     /// Samples the cell containing a continuous position.
     pub fn sample_position(&self, field: &TerrainField, position: WorldPosition) -> TerrainSample {
         TerrainSource::sample_position(self, field, position)
-    }
-
-    pub(crate) fn has_promoted_between(&self, minimum: WorldCell, maximum: WorldCell) -> bool {
-        intersects_promoted(&self.root, minimum.brick(), maximum.brick())
     }
 
     /// Promotes a procedural brick to explicit 5 cm samples.
@@ -1223,19 +1216,11 @@ impl TerrainSource for TerrainOctree {
     fn brick(&self, coordinate: BrickCoord) -> Option<&TerrainBrick> {
         self.brick(coordinate)
     }
-
-    fn has_promoted_between(&self, minimum: WorldCell, maximum: WorldCell) -> bool {
-        self.has_promoted_between(minimum, maximum)
-    }
 }
 
 impl TerrainSource for TerrainOctreeSnapshot {
     fn brick(&self, coordinate: BrickCoord) -> Option<&TerrainBrick> {
         self.brick(coordinate)
-    }
-
-    fn has_promoted_between(&self, minimum: WorldCell, maximum: WorldCell) -> bool {
-        intersects_promoted(&self.root, minimum.brick(), maximum.brick())
     }
 }
 
@@ -1323,17 +1308,6 @@ fn node_intersects(id: TerrainNodeId, minimum: BrickCoord, maximum: BrickCoord) 
         && i64::from(id.coordinates.y) <= i64::from(maximum.y)
         && maximum_node[2] >= i64::from(minimum.z)
         && i64::from(id.coordinates.z) <= i64::from(maximum.z)
-}
-
-fn intersects_promoted(node: &TerrainNode, minimum: BrickCoord, maximum: BrickCoord) -> bool {
-    node.promoted_descendants != 0
-        && node_intersects(node.id, minimum, maximum)
-        && (node.brick.is_some()
-            || node
-                .children
-                .iter()
-                .flatten()
-                .any(|child| intersects_promoted(child, minimum, maximum)))
 }
 
 fn minimum_promoted_density_between(
