@@ -1225,8 +1225,9 @@ fn maintain_space_simulation(
         publication.pending = None;
         publication.ready = None;
         publication.failed_revision = None;
-        if simulation.gpu.is_some() {
+        if simulation.gpu.is_some() || simulation.cpu.is_some() {
             simulation.gpu = None;
+            simulation.cpu = None;
             simulation.world_revision = None;
             *hammer = HammerInteraction::default();
             state.construction_mesh_dirty = true;
@@ -1241,6 +1242,15 @@ fn maintain_space_simulation(
         publication.ready = None;
         publication.failed_revision = None;
         *simulation = AppSimulation::default();
+        return;
+    }
+
+    if !cpu_physics::selected() && !runtime.clumps.bodies.is_empty() {
+        stop_failed_simulation(
+            &mut simulation,
+            &mut state,
+            "This world contains loose material and requires CPU physics".to_owned(),
+        );
         return;
     }
 
@@ -1379,7 +1389,7 @@ fn maintain_space_simulation(
     let Some(static_parts) = runtime.static_parts_for_physics(history.current_revision) else {
         return;
     };
-    if graph.0.part_count() == 0 {
+    if graph.0.part_count() == 0 && runtime.clumps.bodies.is_empty() {
         publication.pending = None;
         publication.ready = None;
         publication.failed_revision = None;
@@ -1475,9 +1485,13 @@ fn prepare_world_physics(
 ) -> Result<PreparedWorldPhysics, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let compile_started = std::time::Instant::now();
-        let creation = graph
-            .compile_with_suspension_sockets(anchored, &suspension_sockets)
-            .map_err(|error| error.to_string())?;
+        let creation = if graph.part_count() == 0 {
+            CompiledCreation::default()
+        } else {
+            graph
+                .compile_with_suspension_sockets(anchored, &suspension_sockets)
+                .map_err(|error| error.to_string())?
+        };
         let compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
         let cpu_started = std::time::Instant::now();
         let cpu = cpu_physics::selected()
@@ -3583,7 +3597,11 @@ fn advance_simulation(
     mut meshes: ResMut<Assets<Mesh>>,
     mut construction_visuals: Query<(&ConstructionVisual, &mut Visibility), Without<BearingVisual>>,
 ) {
-    if !simulation.is_running() {
+    if !(simulation.is_running()
+        || (simulation.cpu.is_some()
+            && !world_runtime.clumps.bodies.is_empty()
+            && simulation.failure.is_none()))
+    {
         return;
     }
     let published_graph = simulation.published_graph.clone();
@@ -3775,15 +3793,20 @@ fn advance_simulation(
                     .expect("running simulation has creation");
                 let drive_rows =
                     geared_gpu_drive_rows(creation, &published_graph, &sequencer, &gearboxes);
-                let stepped = cpu.step(
-                    tick,
-                    cpu_physics::gravity(),
-                    &drive_rows,
-                    world_runtime.pending_player_reactions(),
-                );
+                let stepped = cpu
+                    .prepare_clump_tick(&mut world_runtime.clumps)
+                    .and_then(|()| {
+                        cpu.step(
+                            tick,
+                            cpu_physics::gravity(),
+                            &drive_rows,
+                            world_runtime.pending_player_reactions(),
+                        )
+                    });
                 world_runtime.clear_player_reactions();
                 match stepped {
                     Ok(completed) => {
+                        cpu.update_clumps(&mut world_runtime);
                         cpu.accumulate_soil(&mut world_runtime);
                         let publication_started = std::time::Instant::now();
                         let sequence = completed.sequence;
@@ -3799,6 +3822,11 @@ fn advance_simulation(
                         continue;
                     }
                     Err(message) => {
+                        if !world_runtime.clumps.bodies.is_empty() {
+                            stop_failed_simulation(&mut simulation, &mut state, message);
+                            simulation.cpu = cpu_route;
+                            return;
+                        }
                         // Physics in the world never pauses. The GPU runtime stays
                         // resident, so it takes over from the last CPU publication
                         // and runs this same tick; the next construction publication
@@ -4059,8 +4087,9 @@ fn stop_failed_simulation(simulation: &mut AppSimulation, state: &mut EditorStat
 }
 
 impl AppSimulation {
-    const fn is_running(&self) -> bool {
-        self.gpu.is_some() && self.failure.is_none()
+    fn is_running(&self) -> bool {
+        (self.gpu.is_some() || self.cpu.as_ref().is_some_and(|cpu| cpu.has_clumps()))
+            && self.failure.is_none()
     }
 
     pub(crate) fn live_part_pose(

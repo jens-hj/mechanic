@@ -40,8 +40,8 @@ use mechanic_world::{
     TerrainNodeId, TerrainOctree, TerrainRayHit, TerrainReadiness, TerrainScene, TerrainSelection,
     TerrainSpatialIndex, TerrainStreamer, TerrainTransitionMask, WorldBounds,
     WorldCreationInstanceDoc, WorldDocument, WorldInstanceIndexDoc, WorldPoseDoc, WorldPosition,
-    WorldSeed, WorldStore, mesh_chunk_profiled, raycast_density, select_active_nodes_cached,
-    terrain_loading_worker_count, terrain_worker_count,
+    WorldSeed, WorldStore, mesh_chunk_profiled, raycast_density,
+    select_active_nodes_with_interests, terrain_loading_worker_count, terrain_worker_count,
 };
 
 use crate::hotbar::{MainTool, MatterMode, SelectedTerrainMaterial, SelectedTool};
@@ -80,6 +80,7 @@ fn exposure_for_space(space: AppSpace) -> Exposure {
 }
 
 const MAX_PENDING_TERRAIN_EDITS: usize = 4_096;
+mod clumps;
 const TERRAIN_EDIT_BATCH_SIZE: usize = 64;
 const CONTROLLER_DT: f64 = 1.0 / 60.0;
 const MAX_CONTROLLER_TICKS_PER_FRAME: usize = 4;
@@ -203,6 +204,12 @@ struct TerrainEditTaskResult {
     terrain: TerrainOctree,
     outcomes: Vec<TerrainEditOutcome>,
     elapsed_ms: f64,
+}
+
+struct PendingMaterialPublication {
+    previous: TerrainOctree,
+    clumps: mechanic_world::ClumpCollection,
+    sources: Vec<mechanic_world::ExtractionCell>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -371,6 +378,9 @@ pub(crate) struct WorldRuntime {
     document: WorldDocument,
     field: Arc<TerrainField>,
     edits: TerrainOctree,
+    pub(crate) clumps: mechanic_world::ClumpCollection,
+    pending_breakage: mechanic_world::BreakageAccumulator,
+    pending_material: Option<PendingMaterialPublication>,
     capsule: KinematicCapsule,
     floating_origin: FloatingOrigin,
     autosave: AutosaveState,
@@ -411,6 +421,7 @@ pub(crate) struct WorldRuntime {
     terrain_material: Option<Handle<TerrainRenderMaterial>>,
     terrain_texture_mips_pending: Vec<Handle<Image>>,
     selection_focus: Option<WorldPosition>,
+    selection_clump_interests: Vec<WorldPosition>,
     selected_terrain_revision: u64,
     construction_collision: Option<ConstructionCollisionIndex>,
     collision_revision: Option<(u64, u64)>,
@@ -430,6 +441,126 @@ pub(crate) struct WorldRuntime {
 }
 
 impl WorldRuntime {
+    pub(crate) fn material_publication_pending(&self) -> bool {
+        self.pending_material.is_some()
+    }
+
+    pub(crate) fn material_motion(&mut self) {
+        self.autosave.mutate(self.clock);
+    }
+
+    pub(crate) fn accumulate_breakage(
+        &mut self,
+        patches: impl Iterator<Item = mechanic_world::BreakagePatch>,
+    ) {
+        if self.pending_material.is_some() || self.terrain_edit_error.is_some() {
+            return;
+        }
+        self.pending_breakage
+            .discard_stale(&self.edits, &self.field);
+        for patch in patches {
+            self.pending_breakage
+                .accumulate(&self.edits, &self.field, patch);
+        }
+    }
+
+    fn begin_material_transfer(&mut self) {
+        if self.pending_material.is_some()
+            || self.terrain_edit_task.is_some()
+            || !self.pending_terrain_edits.is_empty()
+            || self.terrain_edit_error.is_some()
+            || !self
+                .terrain_acknowledgements
+                .completed(self.terrain_revision)
+        {
+            return;
+        }
+        let mut transfer = None;
+        let mut sources = Vec::new();
+        for body in self
+            .clumps
+            .bodies
+            .values()
+            .filter(|body| body.can_deposit())
+        {
+            let Ok(centre) = body.position.cell() else {
+                continue;
+            };
+            let mut targets = Vec::new();
+            for y in -3..=2 {
+                for z in -2..=2 {
+                    for x in -2..=2 {
+                        targets.push(mechanic_world::WorldCell::new(
+                            centre.x + x,
+                            centre.y + y,
+                            centre.z + z,
+                        ));
+                    }
+                }
+            }
+            // Do not turn occupied bucket or fragment space into solid ground.
+            let radius = mechanic_world::TERRAIN_CELL_METERS * 3.0_f64.sqrt() * 0.5;
+            targets.retain(|cell| {
+                self.clumps.bodies.values().all(|other| {
+                    other.id == body.id
+                        || other.position.0.distance(cell.centre().0)
+                            > other.half_extents.length() + radius
+                })
+            });
+            if let Some(collision) = self.construction_collision.as_mut() {
+                let config = mechanic_world::KinematicCapsuleConfig {
+                    radius,
+                    standing_height: radius * 2.0,
+                    step_height: 0.0,
+                    ..Default::default()
+                };
+                let origin = self.floating_origin.0;
+                targets.retain(|cell| {
+                    collision
+                        .cast_capsule(
+                            (cell.centre().0 - origin - DVec3::Y * radius).as_vec3(),
+                            Vec3::ZERO,
+                            config,
+                        )
+                        .is_none()
+                });
+            }
+            transfer = self
+                .clumps
+                .prepare_deposition(&self.edits, &self.field, body.id, &targets);
+            if transfer.is_some() {
+                break;
+            }
+        }
+        if transfer.is_none() {
+            sources =
+                self.pending_breakage
+                    .ready(&self.edits, &self.field, self.clumps.available());
+            if sources.is_empty() {
+                return;
+            }
+            transfer = self
+                .clumps
+                .prepare_extraction(&self.edits, &self.field, &sources);
+        }
+        let Some(transfer) = transfer else {
+            return;
+        };
+        self.pending_material = Some(PendingMaterialPublication {
+            previous: self.edits.clone(),
+            clumps: transfer.clumps,
+            sources,
+        });
+        commit_terrain_edit_result(
+            self,
+            TerrainEditTaskResult {
+                terrain: transfer.terrain,
+                outcomes: vec![transfer.outcome],
+                elapsed_ms: 0.0,
+            },
+        );
+        self.pending_soil.clear();
+    }
     /// Accumulates global CPU loads, submitting thresholded cells at 10 Hz.
     pub(crate) fn accumulate_soil(
         &mut self,
@@ -866,6 +997,7 @@ fn application_world_store() -> WorldStore {
 }
 
 impl FromWorld for WorldRuntime {
+    #[allow(clippy::too_many_lines)] // Initialize one coherent world and its persisted material ownership.
     fn from_world(_world: &mut World) -> Self {
         let store = application_world_store();
         let loaded = store
@@ -885,9 +1017,13 @@ impl FromWorld for WorldRuntime {
                 (document, field)
             },
         );
-        let (edits, load_error) = match store.load_octree(&document.name) {
-            Ok(edits) => (edits, None),
-            Err(error) => (TerrainOctree::default(), Some(error.to_string())),
+        let (edits, clumps, load_error) = match store.load_material_state(&document.name) {
+            Ok((edits, clumps)) => (edits, clumps, None),
+            Err(error) => (
+                TerrainOctree::default(),
+                mechanic_world::ClumpCollection::default(),
+                Some(error.to_string()),
+            ),
         };
         let ((world_editor, garage_editor), instance_error) =
             match load_space_editors(&store, &document) {
@@ -918,6 +1054,9 @@ impl FromWorld for WorldRuntime {
             last_brush_edit: None,
             pending_terrain_edits: VecDeque::new(),
             pending_soil: mechanic_world::SoilAccumulator::default(),
+            clumps,
+            pending_breakage: mechanic_world::BreakageAccumulator::default(),
+            pending_material: None,
             soil_ticks: 0,
             terrain_edit_task: None,
             terrain_edit_error: None,
@@ -951,6 +1090,7 @@ impl FromWorld for WorldRuntime {
             terrain_material: None,
             terrain_texture_mips_pending: Vec::new(),
             selection_focus: None,
+            selection_clump_interests: Vec::new(),
             selected_terrain_revision: u64::MAX,
             construction_collision: None,
             collision_revision: None,
@@ -995,6 +1135,7 @@ impl Plugin for WorldPrototypePlugin {
                     prepare_terrain_texture_mips,
                     schedule_terrain_remeshes.after(coordinate_terrain_edits),
                     integrate_terrain_remeshes.after(schedule_terrain_remeshes),
+                    clumps::sync_clump_rendering.after(integrate_terrain_remeshes),
                     sync_world_foundations
                         .after(integrate_terrain_remeshes)
                         .after(crate::handle_build_actions),
@@ -1160,9 +1301,9 @@ fn save_before_world_selector(
 }
 
 fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<(), String> {
-    let terrain = runtime
+    let (terrain, clumps) = runtime
         .store
-        .load_octree(&document.name)
+        .load_material_state(&document.name)
         .map_err(|error| error.to_string())?;
     let (world_editor, garage_editor) = load_space_editors(&runtime.store, &document)?;
     runtime.frozen_editor = document.frozen_creation.map(|_| {
@@ -1179,6 +1320,9 @@ fn install_world(runtime: &mut WorldRuntime, document: WorldDocument) -> Result<
     runtime.floating_origin = world_editor.origin;
     runtime.document = document;
     runtime.edits = terrain;
+    runtime.clumps = clumps;
+    runtime.pending_material = None;
+    runtime.pending_breakage = mechanic_world::BreakageAccumulator::default();
     runtime.world_editor = Some(world_editor);
     runtime.pending_garage_editor = Some(garage_editor);
     runtime.known_world_parts.clear();
@@ -2253,6 +2397,9 @@ fn walk_world(
     mut player: ResMut<PlayerState>,
     mut diagnostics: ResMut<WorldDiagnostics>,
 ) {
+    if runtime.material_publication_pending() {
+        return;
+    }
     sync_player_construction_collision(
         &mut runtime,
         &simulation,
@@ -2652,6 +2799,9 @@ fn use_brush(
     selection: Res<SelectedTool>,
     material: Res<SelectedTerrainMaterial>,
 ) {
+    if runtime.material_publication_pending() {
+        return;
+    }
     if list.phase() != WorldListPhase::Playing {
         runtime.last_brush_edit = None;
         *preview.1 = Visibility::Hidden;
@@ -2851,6 +3001,13 @@ fn coordinate_terrain_edits(
     mut editor: ResMut<EditorState>,
     mut diagnostics: ResMut<WorldDiagnostics>,
 ) {
+    if runtime.pending_material.is_some() {
+        return;
+    }
+    runtime.begin_material_transfer();
+    if runtime.pending_material.is_some() {
+        return;
+    }
     let completed = runtime.terrain_edit_task.as_mut().and_then(check_ready);
     if let Some(completed) = completed {
         runtime.terrain_edit_task = None;
@@ -2950,7 +3107,20 @@ fn update_terrain_selection(
         }
     }
 
-    let needs_selection = runtime.selected_terrain_revision != runtime.terrain_revision
+    let interests = runtime
+        .clumps
+        .bodies
+        .values()
+        .filter(|body| !body.sleeping)
+        .map(|body| body.position)
+        .collect::<Vec<_>>();
+    let clumps_moved = interests.len() != runtime.selection_clump_interests.len()
+        || interests
+            .iter()
+            .zip(&runtime.selection_clump_interests)
+            .any(|(a, b)| a.0.distance_squared(b.0) >= 64.0);
+    let needs_selection = clumps_moved
+        || runtime.selected_terrain_revision != runtime.terrain_revision
         || runtime
             .selection_focus
             .is_none_or(|previous| previous.0.distance(focus.0) >= RESELECT_DISTANCE_METRES);
@@ -2959,10 +3129,17 @@ fn update_terrain_selection(
         let terrain = runtime.edits.snapshot();
         let terrain_revision = runtime.terrain_revision;
         let mut bounds_cache = core::mem::take(&mut runtime.terrain_bounds_cache);
+        runtime.selection_clump_interests.clone_from(&interests);
         runtime.terrain_selection_task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let started = std::time::Instant::now();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                select_active_nodes_cached(&field, &terrain, focus, &mut bounds_cache)
+                select_active_nodes_with_interests(
+                    &field,
+                    &terrain,
+                    focus,
+                    &interests,
+                    &mut bounds_cache,
+                )
             }))
             .map(|selection| TerrainSelectionTaskResult {
                 selection,
@@ -3104,6 +3281,7 @@ fn integrate_terrain_remeshes(
     mut tasks: Query<(Entity, &mut TerrainMeshTask)>,
     mut diagnostics: ResMut<WorldDiagnostics>,
     mut list: ResMut<WorldListState>,
+    mut simulation: ResMut<AppSimulation>,
 ) {
     const INTEGRATION_BUDGET_MS: f64 = 2.0;
     let started = std::time::Instant::now();
@@ -3157,6 +3335,43 @@ fn integrate_terrain_remeshes(
                 runtime.active_terrain_index.insert(activated.id);
                 runtime.active_terrain.insert(activated.id, result.chunk);
             }
+        }
+    }
+
+    // Material ownership waits for the complete replacement cut. Staged meshes
+    // remain invisible and physics retains the prior scene until this boundary.
+    let material_cutover = runtime.pending_material.is_some();
+    if material_cutover {
+        if !tasks.is_empty()
+            || runtime.terrain_streamer.backlog() != 0
+            || runtime.selected_terrain_revision != runtime.terrain_revision
+        {
+            return;
+        }
+        let pending = runtime
+            .pending_material
+            .as_ref()
+            .expect("pending material publication");
+        let Some(cpu) = simulation.cpu.as_mut() else {
+            return;
+        };
+        let active = runtime
+            .terrain_streamer
+            .current_active()
+            .map(|node| node.id)
+            .collect::<BTreeSet<_>>();
+        if let Err(error) = cpu.publish_material(
+            runtime
+                .active_terrain
+                .iter()
+                .filter(|(id, _)| active.contains(id))
+                .map(|(_, chunk)| chunk),
+            &pending.clumps,
+            runtime.floating_origin.0,
+        ) {
+            runtime.terrain_edit_error = Some(error.clone());
+            list.notice = Some(format!("Material publication failed: {error}"));
+            return;
         }
     }
 
@@ -3222,7 +3437,7 @@ fn integrate_terrain_remeshes(
         .collect::<Vec<_>>();
     let mut deferred = Vec::new();
     for (offset, id) in dirty.iter().copied().enumerate() {
-        if started.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS {
+        if !material_cutover && started.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS {
             deferred.extend_from_slice(&dirty[offset..]);
             break;
         }
@@ -3381,6 +3596,12 @@ fn integrate_terrain_remeshes(
     )
     .unwrap_or(u32::MAX);
     acknowledge_complete_terrain_pipeline(&mut runtime, tasks.is_empty());
+    if material_cutover && let Some(pending) = runtime.pending_material.take() {
+        runtime.clumps = pending.clumps;
+        runtime.pending_breakage.committed(&pending.sources);
+        let now = runtime.clock;
+        runtime.autosave.mutate(now);
+    }
 }
 
 fn terrain_mesh_is_renderable(chunk: &TerrainMeshChunk, index_count: usize) -> bool {
@@ -3753,6 +3974,13 @@ fn save_on_exit(
 }
 
 fn finish_terrain_edits(runtime: &mut WorldRuntime) -> Result<(), String> {
+    // Leaving a world cancels an unpublished ownership change, preserving the
+    // last complete terrain/body pair. A future contact can retry extraction.
+    if let Some(pending) = runtime.pending_material.take() {
+        runtime.edits = pending.previous;
+        runtime.terrain_revision = runtime.terrain_revision.wrapping_add(1);
+        runtime.terrain_acknowledgements.edit = runtime.terrain_revision;
+    }
     if let Some(task) = runtime.terrain_edit_task.take() {
         let result = block_on(task)?;
         commit_terrain_edit_result(runtime, result);
@@ -3781,7 +4009,14 @@ fn save_all(runtime: &mut WorldRuntime) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     runtime
         .store
-        .save_dirty_leaves(&runtime.document.name, &mut runtime.edits)
+        .save_material_state(
+            &runtime.document.name,
+            runtime
+                .pending_material
+                .as_ref()
+                .map_or(&runtime.edits, |pending| &pending.previous),
+            &runtime.clumps,
+        )
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -6170,5 +6405,52 @@ mod tests {
             super::MAX_PENDING_TERRAIN_EDITS
         );
         assert!(runtime.pending_soil.take_ready().is_empty());
+    }
+
+    #[test]
+    fn saving_an_unpublished_transfer_keeps_the_previous_material_owner() {
+        let temporary = TempWorldStore::new();
+        let store = WorldStore::new(&temporary.0);
+        let document = store.create_world("Material", Some(91)).unwrap();
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>();
+        let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+        runtime.store = store;
+        install_world(&mut runtime, document).unwrap();
+        let centre = WorldPosition(DVec3::new(0.025, 200.025, 0.025));
+        let field = runtime.field.clone();
+        runtime
+            .edits
+            .add_sphere(&field, centre, 0.1, TerrainMaterial::Rock)
+            .unwrap();
+        let cell = centre.cell().unwrap();
+        let source = mechanic_world::ExtractionCell {
+            cell,
+            sample: runtime.edits.sample_cell(&field, cell),
+        };
+        let transfer = runtime
+            .clumps
+            .prepare_extraction(&runtime.edits, &field, &[source])
+            .unwrap();
+        runtime.pending_material = Some(super::PendingMaterialPublication {
+            previous: runtime.edits.clone(),
+            clumps: transfer.clumps,
+            sources: vec![source],
+        });
+        super::commit_terrain_edit_result(
+            &mut runtime,
+            super::TerrainEditTaskResult {
+                terrain: transfer.terrain,
+                outcomes: vec![transfer.outcome],
+                elapsed_ms: 0.0,
+            },
+        );
+        super::save_all(&mut runtime).unwrap();
+        let (saved, clumps) = runtime.store.load_material_state("Material").unwrap();
+        assert!(saved.sample_cell(&field, cell).is_solid());
+        assert!(clumps.bodies.is_empty());
+        super::finish_terrain_edits(&mut runtime).unwrap();
+        assert!(runtime.edits.sample_cell(&field, cell).is_solid());
+        assert!(!runtime.material_publication_pending());
     }
 }

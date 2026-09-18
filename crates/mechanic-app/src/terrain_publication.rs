@@ -246,7 +246,23 @@ pub(crate) fn publish(
     queue: &wgpu::Queue,
 ) -> Result<bool, String> {
     let origin = world.local_to_global(Vec3::ZERO).0;
-    let positions = physics_body_positions(simulation);
+    if world.material_publication_pending() {
+        return Ok(false);
+    }
+    if simulation.cpu.is_none() && !world.clumps.bodies.is_empty() {
+        return Err(
+            "Loose material requires CPU physics; this world cannot run on the GPU route"
+                .to_owned(),
+        );
+    }
+    let mut positions = physics_body_positions(simulation);
+    positions.extend(
+        world
+            .clumps
+            .bodies
+            .values()
+            .map(|body| (body.position.0 - origin).as_vec3()),
+    );
     let interest = interest_regions(world, &positions);
     let key = TerrainPublicationKey::new(origin, world.physics_terrain_near(&interest));
     let publication = &mut simulation.terrain_publication;
@@ -255,7 +271,13 @@ pub(crate) fn publish(
     }
     let settled = publication.settled_origin == Some(origin);
     let current = publication.accepted.as_ref() == Some(&key);
-    let gpu_may_tick = publish_gpu(simulation, world, device, queue, &interest, key, settled)?;
+    let gpu_may_tick = if simulation.gpu.is_some() {
+        publish_gpu(simulation, world, device, queue, &interest, key, settled)?
+    } else {
+        simulation.terrain_publication.accepted = Some(key);
+        simulation.terrain_publication.accepted_positions = positions;
+        false
+    };
     let Some(cpu) = simulation.cpu.as_mut() else {
         return Ok(gpu_may_tick);
     };
@@ -263,6 +285,7 @@ pub(crate) fn publish(
     // waits for a GPU preparation, which only matters if the GPU takes over.
     if settled || current {
         cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
+        cpu.publish_clumps(&world.clumps)?;
     }
     Ok(settled && cpu.is_ready())
 }
