@@ -758,7 +758,7 @@ pub(crate) fn preview_mesh(
                 .iter()
                 .any(|&socket| crate::bearing_uses_socket(joint, socket))
     }) {
-        crate::append_bearing_cylinder(
+        crate::render::mesh::bearing::append_bearing_cylinder(
             joint.shared_anchor,
             joint.axis,
             joint.dimensions,
@@ -773,7 +773,7 @@ pub(crate) fn preview_mesh(
         if matches!(socket.kind, mechanic_core::BearingKind::Rotational)
             && let Some(face) = builder::try_face_geometry_from_ref(socket.source, Some(graph))
         {
-            crate::append_bearing_cylinder(
+            crate::render::mesh::bearing::append_bearing_cylinder(
                 socket.anchor,
                 face.normal,
                 socket.dimensions,
@@ -823,7 +823,7 @@ pub(crate) fn draw_features(
     if let Ok((mesh, mut visibility)) = overlay.single_mut() {
         *visibility = crate::write_overlay(&mut meshes, &mesh.0, geometry);
     } else {
-        let mesh = meshes.add(crate::degenerate_overlay_mesh());
+        let mesh = meshes.add(crate::render::mesh::primitives::degenerate_overlay_mesh());
         let visibility = crate::write_overlay(&mut meshes, &mesh, geometry);
         commands.spawn((
             Name::new("Weld feature highlights"),
@@ -969,7 +969,7 @@ fn append_vertex_marker(
     size: f32,
     geometry: &mut crate::OverlayGeometry,
 ) {
-    crate::append_transformed_cuboid(
+    crate::render::mesh::construction::append_transformed_cuboid(
         point,
         rotation,
         Vec3::splat(size),

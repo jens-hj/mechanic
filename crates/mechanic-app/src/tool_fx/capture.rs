@@ -83,9 +83,11 @@ fn setup(
         ));
         parent.spawn((
             Link,
-            Mesh3d(meshes.add(crate::single_authored_part_mesh(
-                crate::AuthoredPart::DimensionLinkEnabled,
-            ))),
+            Mesh3d(meshes.add(
+                crate::render::mesh::construction::single_authored_part_mesh(
+                    crate::AuthoredPart::DimensionLinkEnabled,
+                ),
+            )),
             MeshMaterial3d(
                 visuals.authored_materials[crate::AuthoredPart::DimensionLinkEnabled.index()]
                     .clone(),

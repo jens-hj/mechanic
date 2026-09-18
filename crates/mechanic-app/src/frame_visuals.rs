@@ -7,7 +7,8 @@ use bevy::{
 };
 use mechanic_core::{ConstructionGraph, PartId, SolidOwner};
 
-use crate::{AppSimulation, BuildTransform, live_edit::EditContext};
+use crate::render::mesh::construction::BuildTransform;
+use crate::{AppSimulation, live_edit::EditContext};
 
 /// Highlights the selected rigid body using each published body's current pose.
 pub(crate) fn weld_preview_mesh(
@@ -48,7 +49,7 @@ pub(crate) fn parts_preview_mesh(
             let Ok(solid) = graph.evaluated_solid(owner) else {
                 continue;
             };
-            crate::append_evaluated_solid(
+            crate::render::mesh::construction::append_evaluated_solid(
                 &solid,
                 BuildTransform::IDENTITY,
                 &mut positions,
@@ -75,7 +76,13 @@ pub(crate) fn parts_preview_mesh(
                 *point = (center + (Vec3::from_array(*point) - center) * scale).to_array();
             }
         } else if let Some(spec) = graph.part(member) {
-            crate::append_part(*spec, scale, &mut positions, &mut normals, &mut indices);
+            crate::render::mesh::construction::append_part(
+                *spec,
+                scale,
+                &mut positions,
+                &mut normals,
+                &mut indices,
+            );
         }
         let placement = published_placement(simulation, member);
         let frame = (!evaluated).then(|| graph.part_frame(member)).flatten();

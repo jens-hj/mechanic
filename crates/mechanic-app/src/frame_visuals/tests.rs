@@ -174,7 +174,7 @@ fn shaped_region_is_highlighted_once_without_applying_its_frame_twice() {
     }
     let solid = graph.evaluated_solid(owner).unwrap();
     let mut expected_positions = Vec::new();
-    crate::append_evaluated_solid(
+    crate::render::mesh::construction::append_evaluated_solid(
         &solid,
         BuildTransform::IDENTITY,
         &mut expected_positions,

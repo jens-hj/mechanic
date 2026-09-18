@@ -1,10 +1,11 @@
 //! Linear rail placement and carriage picking in the shared bearing workflow.
 use super::{
     AppSimulation, CreationMenuState, EditorGraph, EditorHistory, EditorSnapshot, EditorState,
-    GameAction, PlacedBearing, PlacementError, SelectedTool, Tool, axis_tangents,
+    GameAction, PlacedBearing, PlacementError, SelectedTool, Tool,
     bearing_anchor_from_hit_with_grid, bearing_location_occupied, builder, linear_render,
     try_face_geometry_from_ref,
 };
+use crate::render::mesh::drive::axis_tangents;
 use bevy::prelude::{ButtonInput, Res, ResMut, Transform, Vec3};
 use mechanic_core::{
     BearingDimensions, BearingKind, CarriageFace, ConstructionGraph, FaceOwner, LinearBearing,

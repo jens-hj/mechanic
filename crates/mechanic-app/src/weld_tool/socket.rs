@@ -16,7 +16,7 @@ pub(super) fn append_outline(
         |a, b| crate::append_overlay_bar(frame.point(a), frame.point(b), 0.010, geometry);
     match socket.kind {
         BearingKind::Rotational => {
-            let (u, v) = crate::axis_tangents(socket.axis);
+            let (u, v) = crate::render::mesh::drive::axis_tangents(socket.axis);
             for diameter in [
                 socket.dimensions.inner_diameter(),
                 socket.dimensions.outer_diameter(),
@@ -32,7 +32,7 @@ pub(super) fn append_outline(
         }
         BearingKind::Suspension(spec) => {
             let center = socket.anchor + socket.axis * spec.initial_length();
-            let (u, v) = crate::axis_tangents(socket.axis);
+            let (u, v) = crate::render::mesh::drive::axis_tangents(socket.axis);
             for i in 0..32_u16 {
                 let point = |i| {
                     let angle = f32::from(i) * std::f32::consts::TAU / 32.0;
@@ -173,7 +173,7 @@ fn surface(
                 socket,
                 point,
                 socket.axis,
-                crate::axis_tangents(socket.axis).0,
+                crate::render::mesh::drive::axis_tangents(socket.axis).0,
             ))
         }
         BearingKind::Suspension(spec) => {
@@ -193,7 +193,7 @@ fn surface(
                 socket,
                 point,
                 normal,
-                crate::axis_tangents(normal).0,
+                crate::render::mesh::drive::axis_tangents(normal).0,
             ))
         }
         BearingKind::Linear(rail) => {

@@ -221,7 +221,7 @@ fn capture_sheet(
     plane: crate::PlacementPlane,
     mut project: impl FnMut(Vec3) -> Option<Vec2>,
 ) -> Model {
-    let Some((minimum, maximum)) = crate::block_sheet_bounds(specs) else {
+    let Some((minimum, maximum)) = crate::render::mesh::preview::block_sheet_bounds(specs) else {
         return Model::default();
     };
     let axes = plane.tangent_axes();

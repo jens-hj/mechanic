@@ -2,7 +2,7 @@
 
 use super::*;
 use mechanic_core::{
-    BuildPose, CarriageFace, ConstructionFrame, LinearBearing, LinearBearingDimensions,
+    BuildPose, CarriageFace, ConstructionFrame, FaceKind, LinearBearing, LinearBearingDimensions,
 };
 
 fn spawn(graph: &mut ConstructionGraph, x: i32) -> PartId {
