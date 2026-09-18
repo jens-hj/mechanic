@@ -3001,14 +3001,22 @@ fn coordinate_terrain_edits(
     mut editor: ResMut<EditorState>,
     mut diagnostics: ResMut<WorldDiagnostics>,
     list: Res<WorldListState>,
+    tasks: Query<(), With<TerrainMeshTask>>,
 ) {
     if runtime.pending_material.is_some() {
         return;
     }
-    // A transfer holds terrain publication until its replacement cut is
-    // complete. Begun while loading, a saved clump that is already settled
-    // would hold the first cut, and with it the loading screen, indefinitely.
-    if list.phase() == WorldListPhase::Playing {
+    // A transfer holds every staged mesh until its replacement cut is complete,
+    // then publishes them all in one frame. Begun while loading, a saved clump
+    // that is already settled would hold the loading screen indefinitely; begun
+    // while terrain streams, that frame would carry the whole streamed cut.
+    // Edit acknowledgements do not cover streaming, so check it here.
+    if list.phase() == WorldListPhase::Playing
+        && tasks.is_empty()
+        && runtime.terrain_selection_task.is_none()
+        && runtime.terrain_streamer.backlog() == 0
+        && !runtime.terrain_streamer.has_dirty_publication()
+    {
         runtime.begin_material_transfer();
     }
     if runtime.pending_material.is_some() {
