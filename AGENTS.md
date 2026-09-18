@@ -60,7 +60,8 @@ These hold everywhere; `cargo xtask consistency` enforces the mechanical ones.
 - **Lint suppressions.** Use `#[expect(lint)]`, so a suppression that stops applying fails the build, and give it a `reason` unless the item makes the cause evident. Where a lint fires only under some `cfg`, or Clippy never marks the expectation fulfilled (module-level `clippy::wildcard_imports`), use `#[allow(lint, reason = "…")]`. A bare `#[allow]` is never acceptable.
 - **Configuration.** The app names every environment variable it reads in `env.rs` and reads them through that module's accessors; no other file spells a `MECHANIC_*` name. `docs/environment.md` lists every variable any crate reads.
 - **Manifests.** Every dependency, internal crates included, is declared in `[workspace.dependencies]` and consumed with `workspace = true`.
-- **Model and view (app).** A root feature module owns ECS state and systems; its `ui/<feature>.rs` counterpart is a Mosaic view with no model types. Systems are ordered through the sets in `schedule.rs`, not by naming another module's system function.
+- **Model and view (app).** A root feature module owns the ECS state and the systems that change the world. Its `ui/<feature>` counterpart owns the Mosaic view, the plain-data snapshot that view renders, the intents it sends back, and the `push_*` system that builds the snapshot from the ECS. A view never touches a resource, and nothing in the world reads a view.
+- **Frame order (app).** Systems are ordered through the sets in `schedule.rs`, never by naming another module's system function.
 
 ## Dependency Quality
 
