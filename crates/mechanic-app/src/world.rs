@@ -3000,11 +3000,17 @@ fn coordinate_terrain_edits(
     mut runtime: ResMut<WorldRuntime>,
     mut editor: ResMut<EditorState>,
     mut diagnostics: ResMut<WorldDiagnostics>,
+    list: Res<WorldListState>,
 ) {
     if runtime.pending_material.is_some() {
         return;
     }
-    runtime.begin_material_transfer();
+    // A transfer holds terrain publication until its replacement cut is
+    // complete. Begun while loading, a saved clump that is already settled
+    // would hold the first cut, and with it the loading screen, indefinitely.
+    if list.phase() == WorldListPhase::Playing {
+        runtime.begin_material_transfer();
+    }
     if runtime.pending_material.is_some() {
         return;
     }
@@ -3352,26 +3358,27 @@ fn integrate_terrain_remeshes(
             .pending_material
             .as_ref()
             .expect("pending material publication");
-        let Some(cpu) = simulation.cpu.as_mut() else {
-            return;
-        };
-        let active = runtime
-            .terrain_streamer
-            .current_active()
-            .map(|node| node.id)
-            .collect::<BTreeSet<_>>();
-        if let Err(error) = cpu.publish_material(
-            runtime
-                .active_terrain
-                .iter()
-                .filter(|(id, _)| active.contains(id))
-                .map(|(_, chunk)| chunk),
-            &pending.clumps,
-            runtime.floating_origin.0,
-        ) {
-            runtime.terrain_edit_error = Some(error.clone());
-            list.notice = Some(format!("Material publication failed: {error}"));
-            return;
+        // Without a CPU scene there is no second copy to keep consistent; the
+        // route reads terrain and clumps from the world when it starts.
+        if let Some(cpu) = simulation.cpu.as_mut() {
+            let active = runtime
+                .terrain_streamer
+                .current_active()
+                .map(|node| node.id)
+                .collect::<BTreeSet<_>>();
+            if let Err(error) = cpu.publish_material(
+                runtime
+                    .active_terrain
+                    .iter()
+                    .filter(|(id, _)| active.contains(id))
+                    .map(|(_, chunk)| chunk),
+                &pending.clumps,
+                runtime.floating_origin.0,
+            ) {
+                runtime.terrain_edit_error = Some(error.clone());
+                list.notice = Some(format!("Material publication failed: {error}"));
+                return;
+            }
         }
     }
 
@@ -6452,5 +6459,93 @@ mod tests {
         super::finish_terrain_edits(&mut runtime).unwrap();
         assert!(runtime.edits.sample_cell(&field, cell).is_solid());
         assert!(!runtime.material_publication_pending());
+    }
+
+    /// Updates until `done`, failing instead of waiting forever on a stalled pipeline.
+    fn update_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
+        while !done(app) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit() {
+        use bevy::prelude::IntoScheduleConfigs;
+
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        let temporary = TempWorldStore::new();
+        let store = WorldStore::new(&temporary.0);
+        let document = store.create_world("Settled", Some(91)).unwrap();
+        let mut app = App::new();
+        app.init_resource::<WorldRuntime>()
+            .init_resource::<WorldListState>()
+            .init_resource::<WorldDiagnostics>()
+            .init_resource::<EditorState>()
+            .init_resource::<EditorGraph>()
+            .init_resource::<super::AppSimulation>()
+            .init_resource::<bevy::prelude::Assets<bevy::prelude::Mesh>>()
+            .add_systems(
+                Update,
+                (
+                    super::coordinate_terrain_edits,
+                    super::schedule_terrain_remeshes,
+                    super::integrate_terrain_remeshes,
+                )
+                    .chain(),
+            );
+        let player = {
+            let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+            runtime.store = store;
+            install_world(&mut runtime, document).unwrap();
+            runtime.terrain_material = Some(bevy::prelude::Handle::default());
+            let spawn = runtime.capsule.position.0;
+            let surface = runtime.field.surface_height(spawn.x, spawn.z);
+            // Saved exactly as a play session leaves it: soft, at rest, and
+            // already past the deposit delay, with no physics scene yet.
+            let clump = mechanic_world::MaterialClump {
+                id: 1,
+                material: TerrainMaterial::Soil,
+                quanta: 510 * 8,
+                half_extents: DVec3::splat(0.05),
+                position: WorldPosition(DVec3::new(spawn.x, surface + 0.05, spawn.z)),
+                rotation: bevy::math::DQuat::IDENTITY,
+                linear_velocity: DVec3::ZERO,
+                angular_velocity: DVec3::ZERO,
+                settled_seconds: 300.0,
+                sleeping: false,
+            };
+            assert!(clump.is_valid() && clump.can_deposit());
+            runtime.clumps.bodies.insert(clump.id, clump);
+            runtime.clumps.next_id = 2;
+            (spawn - runtime.floating_origin.0).as_vec3()
+        };
+        app.insert_resource(super::PlayerState {
+            position: player,
+            ..Default::default()
+        });
+        app.world_mut().resource_mut::<WorldListState>().phase = WorldListPhase::Loading;
+
+        update_until(&mut app, "the world never finished loading", |app| {
+            let playing =
+                app.world().resource::<WorldListState>().phase() == WorldListPhase::Playing;
+            // A transfer holds terrain publication, and with it loading progress.
+            assert!(
+                playing
+                    || !app
+                        .world()
+                        .resource::<WorldRuntime>()
+                        .material_publication_pending()
+            );
+            playing
+        });
+        assert!(app.world().resource::<super::AppSimulation>().cpu.is_none());
+
+        update_until(&mut app, "the clump never deposited", |app| {
+            let runtime = app.world().resource::<WorldRuntime>();
+            runtime.clumps.bodies.is_empty() && !runtime.material_publication_pending()
+        });
     }
 }
