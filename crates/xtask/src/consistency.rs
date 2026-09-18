@@ -34,6 +34,10 @@ const CHECKS: &[Check] = &[
         run: no_path_attributes,
     },
     Check {
+        name: "library roots hold only docs, mod lines, and re-exports",
+        run: library_roots_define_no_items,
+    },
+    Check {
         name: "tests live in a tests module, never in *_tests.rs",
         run: no_tests_suffix_files,
     },
@@ -136,6 +140,33 @@ fn no_mod_rs(root: &Path) -> Result<Vec<String>, String> {
         .filter(|path| path.file_name().is_some_and(|name| name == "mod.rs"))
         .map(|path| relative(root, path))
         .collect())
+}
+
+fn library_roots_define_no_items(root: &Path) -> Result<Vec<String>, String> {
+    const ITEMS: [&str; 9] = [
+        "fn ", "struct ", "enum ", "const ", "static ", "type ", "trait ", "impl ", "impl<",
+    ];
+    let mut violations = Vec::new();
+    for manifest in crate_manifests(root)? {
+        let library = manifest.with_file_name("src").join("lib.rs");
+        if !library.is_file() {
+            continue;
+        }
+        for (index, line) in read(&library)?.lines().enumerate() {
+            let declaration = line
+                .trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub ");
+            let opens_inline_module = declaration.starts_with("mod ") && line.ends_with('{');
+            if ITEMS.iter().any(|item| declaration.starts_with(item)) || opens_inline_module {
+                violations.push(format!(
+                    "{}:{}: {line}",
+                    relative(root, &library),
+                    index + 1
+                ));
+            }
+        }
+    }
+    Ok(violations)
 }
 
 fn no_tests_suffix_files(root: &Path) -> Result<Vec<String>, String> {
