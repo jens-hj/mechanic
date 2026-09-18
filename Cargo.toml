@@ -7,6 +7,7 @@ members = [
     "crates/mechanic-gpu",
     "crates/mechanic-bench",
     "crates/mechanic-app",
+    "crates/xtask",
 ]
 resolver = "2"
 exclude = ["vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal"]

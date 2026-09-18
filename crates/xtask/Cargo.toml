@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+description = "Workspace task runner: `cargo xtask <task>`."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Deliberately dependency-free so the runner builds in seconds and never
+# needs the private Mosaic checkout.
+[dependencies]
+
+[lints]
+workspace = true
