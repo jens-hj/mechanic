@@ -10276,7 +10276,7 @@ mod tests {
         else {
             panic!("wrong outcome")
         };
-        let cell = i16::try_from(mechanic_core::STEPS_PER_CELL).unwrap();
+        let cell = i16::try_from(mechanic_core::POSITION_TICKS_PER_GRID_UNIT).unwrap();
         graph
             .apply(BuildCommand::SetRegionVertices {
                 region: id,
@@ -10612,7 +10612,7 @@ mod tests {
             panic!("wrong outcome")
         };
         if shaped {
-            let cell = i16::try_from(mechanic_core::STEPS_PER_CELL).unwrap();
+            let cell = i16::try_from(mechanic_core::POSITION_TICKS_PER_GRID_UNIT).unwrap();
             graph
                 .apply(BuildCommand::SetRegionVertices {
                     region: id,

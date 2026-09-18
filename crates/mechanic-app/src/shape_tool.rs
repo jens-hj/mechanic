@@ -12,8 +12,8 @@
 
 use bevy::prelude::*;
 use mechanic_core::{
-    CageIndex, EdgeChainRef, EdgeTreatment, EvaluatedSolid, STEP_METERS, STEPS_PER_CELL,
-    ShapeFeatureId, ShapeRegion, SolidOwner,
+    CageIndex, EdgeChainRef, EdgeTreatment, EvaluatedSolid, POSITION_TICK_METERS,
+    POSITION_TICKS_PER_GRID_UNIT, ShapeFeatureId, ShapeRegion, SolidOwner,
 };
 
 /// Active Shape workflow selected from the hold-Tab context wheel.
@@ -133,7 +133,7 @@ impl FeatureDrag {
             return self.amount_ticks;
         };
         let drag_value = (projected - self.anchor).dot(self.bisector);
-        let delta = f64::from((drag_value - self.last_drag_value) / STEP_METERS);
+        let delta = f64::from((drag_value - self.last_drag_value) / POSITION_TICK_METERS);
         self.last_drag_value = drag_value;
 
         // Keep ordinary coalesced pointer motion: fillet previews can take
@@ -349,7 +349,7 @@ impl Default for ShapeSnap {
         // A quarter cell: coarse enough that corners line up on their own, fine
         // enough to shape with.
         Self {
-            steps: STEPS_PER_CELL / 4,
+            steps: POSITION_TICKS_PER_GRID_UNIT / 4,
         }
     }
 }
@@ -357,17 +357,17 @@ impl Default for ShapeSnap {
 impl ShapeSnap {
     /// Increments offered, coarsest first.
     const CHOICES: [i32; 5] = [
-        STEPS_PER_CELL,
-        STEPS_PER_CELL / 2,
-        STEPS_PER_CELL / 4,
-        STEPS_PER_CELL / 5,
-        STEPS_PER_CELL / 20,
+        POSITION_TICKS_PER_GRID_UNIT,
+        POSITION_TICKS_PER_GRID_UNIT / 2,
+        POSITION_TICKS_PER_GRID_UNIT / 4,
+        POSITION_TICKS_PER_GRID_UNIT / 5,
+        POSITION_TICKS_PER_GRID_UNIT / 20,
     ];
 
     /// Five-centimetre increment used when entering Chamfer or Fillet mode.
     pub(crate) const fn feature_default() -> Self {
         Self {
-            steps: STEPS_PER_CELL / 5,
+            steps: POSITION_TICKS_PER_GRID_UNIT / 5,
         }
     }
 
@@ -382,13 +382,13 @@ impl ShapeSnap {
 
     pub(crate) fn label(self) -> String {
         match self.steps {
-            steps if steps == STEPS_PER_CELL => "Snap: 1 block".to_owned(),
-            steps if steps == STEPS_PER_CELL / 2 => "Snap: 1/2 block".to_owned(),
-            steps if steps == STEPS_PER_CELL / 4 => "Snap: 1/4 block".to_owned(),
-            steps if steps == STEPS_PER_CELL / 5 => "Snap: 5 cm".to_owned(),
+            steps if steps == POSITION_TICKS_PER_GRID_UNIT => "Snap: 1 block".to_owned(),
+            steps if steps == POSITION_TICKS_PER_GRID_UNIT / 2 => "Snap: 1/2 block".to_owned(),
+            steps if steps == POSITION_TICKS_PER_GRID_UNIT / 4 => "Snap: 1/4 block".to_owned(),
+            steps if steps == POSITION_TICKS_PER_GRID_UNIT / 5 => "Snap: 5 cm".to_owned(),
             _ => format!(
                 "Snap: fine ({:.1} mm)",
-                f64::from(self.steps) * f64::from(STEP_METERS) * 1000.0
+                f64::from(self.steps) * f64::from(POSITION_TICK_METERS) * 1000.0
             ),
         }
     }
@@ -477,7 +477,7 @@ impl VertexDrag {
     pub(crate) fn position(&self) -> Vec3 {
         let delta = Vec3::from_array(self.offset.map(f32::from))
             - Vec3::from_array(self.start_offset.map(f32::from));
-        self.start_position + delta * STEP_METERS
+        self.start_position + delta * POSITION_TICK_METERS
     }
 
     /// Changes the movement axis and starts measuring this segment at the
@@ -509,7 +509,7 @@ impl VertexDrag {
 pub(crate) fn vertex_position(region: &ShapeRegion, index: CageIndex) -> Option<Vec3> {
     region
         .vertex_steps(index)
-        .map(|steps| steps.as_vec3() * STEP_METERS)
+        .map(|steps| steps.as_vec3() * POSITION_TICK_METERS)
 }
 
 /// Cage vertices close enough to the pointer to be drawn, with how near each is.
@@ -727,7 +727,7 @@ pub(crate) fn drag_offset(
     ) else {
         return drag.offset;
     };
-    let travel = (point - drag.grab_point) / STEP_METERS;
+    let travel = (point - drag.grab_point) / POSITION_TICK_METERS;
     let mut proposed = drag.anchor_offset.map(i32::from);
     proposed[drag.axis] =
         snap.quantise(i32::from(drag.anchor_offset[drag.axis]) + round_to_i32(travel[drag.axis]));
@@ -904,8 +904,8 @@ mod tests {
     use bevy::prelude::*;
     use mechanic_core::{
         BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, ConstructionMaterial, CuboidSpec,
-        CylinderDimensions, CylinderSpec, EdgeChainRef, EdgeTreatment, STEP_METERS, STEPS_PER_CELL,
-        ShapeRegion, SolidOwner,
+        CylinderDimensions, CylinderSpec, EdgeChainRef, EdgeTreatment, POSITION_TICK_METERS,
+        POSITION_TICKS_PER_GRID_UNIT, ShapeRegion, SolidOwner,
     };
 
     fn region(size: IVec3) -> ShapeRegion {
@@ -913,7 +913,7 @@ mod tests {
     }
 
     fn cell_steps() -> i16 {
-        i16::try_from(STEPS_PER_CELL).unwrap()
+        i16::try_from(POSITION_TICKS_PER_GRID_UNIT).unwrap()
     }
 
     #[test]
@@ -966,8 +966,12 @@ mod tests {
         let origin = start + Vec3::new(0.0, 0.0, 2.0);
         let drag = begin_group_drag(&region, index, &[], origin, direction);
         for travel in 1_i16..14 {
-            let moved =
-                origin + Vec3::new(mechanic_core::STEP_METERS * f32::from(travel), 0.0, 0.0);
+            let moved = origin
+                + Vec3::new(
+                    mechanic_core::POSITION_TICK_METERS * f32::from(travel),
+                    0.0,
+                    0.0,
+                );
             let offset = drag_offset(&region, &drag, snap, moved, direction);
             assert_eq!(
                 i32::from(offset[0]) % snap.steps,
@@ -988,7 +992,8 @@ mod tests {
         let drag = begin_group_drag(&region, index, &[], origin, direction);
         assert_eq!(drag.axis, 0, "X is most visible from this view");
 
-        let target = start + Vec3::new(STEP_METERS * 7.0, STEP_METERS * 11.0, 0.0);
+        let target =
+            start + Vec3::new(POSITION_TICK_METERS * 7.0, POSITION_TICK_METERS * 11.0, 0.0);
         let moved_direction = (target - origin).normalize();
         assert_eq!(
             drag_offset(&region, &drag, snap, origin, moved_direction),
@@ -1006,7 +1011,7 @@ mod tests {
         let direction = Vec3::NEG_Z;
         let origin = start + Vec3::Z * 2.0;
         let mut drag = begin_group_drag(&region, index, &[], origin, direction);
-        let target_x = start + Vec3::X * STEP_METERS * 7.0;
+        let target_x = start + Vec3::X * POSITION_TICK_METERS * 7.0;
         let moved_x = (target_x - origin).normalize();
         drag.offset = drag_offset(&region, &drag, snap, origin, moved_x);
 
@@ -1016,7 +1021,7 @@ mod tests {
             drag_offset(&region, &drag, snap, origin, moved_x),
             [7, 0, 0]
         );
-        let target_y = target_x + Vec3::Y * STEP_METERS * 5.0;
+        let target_y = target_x + Vec3::Y * POSITION_TICK_METERS * 5.0;
         let moved_y = (target_y - origin).normalize();
         assert_eq!(
             drag_offset(&region, &drag, snap, origin, moved_y),
@@ -1034,7 +1039,7 @@ mod tests {
     #[test]
     fn cycling_the_increment_walks_coarse_to_fine_and_wraps() {
         let mut snap = ShapeSnap {
-            steps: STEPS_PER_CELL,
+            steps: POSITION_TICKS_PER_GRID_UNIT,
         };
         let mut seen = vec![snap.steps];
         for _ in 0..4 {

@@ -125,9 +125,9 @@ use mechanic_core::{
     MIN_BEARING_OUTER_DIAMETER, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
     MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, POSITION_TICK_METERS,
     POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId, PartPiece, PartSpec,
-    PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, STEPS_PER_CELL,
-    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TICK_SECONDS_F32, TopologyError,
-    TransmissionSpec, face_neighbour_offset, part_cells,
+    PendingOperation, PipeBendDimensions, RegionId, SeatControllerLinkSpec, SeatSpec, ServoSpec,
+    ShapeRegion, TICK_SECONDS_F32, TopologyError, TransmissionSpec, face_neighbour_offset,
+    part_cells,
 };
 use mechanic_gpu::{
     FixedStepScheduler, GpuExternalImpulse, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines,
@@ -9710,7 +9710,7 @@ fn layer_feedback(
 fn region_area(start: CuboidSpec, span: IVec3) -> ShapeRegion {
     let cells = part_cells(start);
     ShapeRegion::from_origin_steps(
-        cells.corner_steps(IVec3::ZERO, 0) + span.min(IVec3::ZERO) * STEPS_PER_CELL,
+        cells.corner_steps(IVec3::ZERO, 0) + span.min(IVec3::ZERO) * POSITION_TICKS_PER_GRID_UNIT,
         cells.counts() + span.abs(),
         start.material,
     )
@@ -11008,8 +11008,8 @@ fn append_dashed_overlay_bar(from: Vec3, to: Vec3, thickness: f32, geometry: &mu
 fn append_region_outline(region: &ShapeRegion, geometry: &mut OverlayGeometry) {
     const THICKNESS: f32 = 0.012;
     let (low_steps, high_steps) = region.bounds_steps();
-    let low = low_steps.as_vec3() * STEP_METERS;
-    let high = high_steps.as_vec3() * STEP_METERS;
+    let low = low_steps.as_vec3() * POSITION_TICK_METERS;
+    let high = high_steps.as_vec3() * POSITION_TICK_METERS;
     let centre = (low + high) * 0.5;
     let extent = high - low;
     for axis in 0..3 {
@@ -11165,7 +11165,10 @@ fn append_axis_arrows(at: Vec3, axis: usize, geometry: &mut OverlayGeometry) {
 /// A region's bounding box in world metres.
 fn region_world_bounds(region: &ShapeRegion) -> (Vec3, Vec3) {
     let (low, high) = region.bounds_steps();
-    (low.as_vec3() * STEP_METERS, high.as_vec3() * STEP_METERS)
+    (
+        low.as_vec3() * POSITION_TICK_METERS,
+        high.as_vec3() * POSITION_TICK_METERS,
+    )
 }
 
 fn appearance_target(graph: &ConstructionGraph, state: &EditorState) -> Option<AppearanceTarget> {
@@ -21646,7 +21649,7 @@ mod interaction_tests {
         ConstructionMaterial, ControllerSpec, CuboidSpec, CylinderDimensions, CylinderSpec,
         DimensionLinkId, DimensionLinkSpec, DriveLinkSpec, EdgeChainRef, EdgeTreatment, FaceKind,
         FaceOwner, FaceRef, GridRotation, MaterialAppearance, MaterialColor, MaterialDye,
-        MaterialFinish, PartId, PartSpec, PendingOperation, RigidLinkSpec, STEP_METERS,
+        MaterialFinish, POSITION_TICK_METERS, PartId, PartSpec, PendingOperation, RigidLinkSpec,
         ShapeFeature, ShapeRegion, SolidOwner, WeldSpec,
     };
     use mechanic_gpu::GpuTransform;
@@ -22905,7 +22908,7 @@ mod interaction_tests {
         let region = state.active_region.and_then(|id| graph.region(id)).unwrap();
         assert_eq!(region.origin_steps(), IVec3::new(10, 0, 0));
         assert!(
-            (region.bounds_steps().0.as_vec3() * STEP_METERS)
+            (region.bounds_steps().0.as_vec3() * POSITION_TICK_METERS)
                 .abs_diff_eq(Vec3::new(0.025, 0.0, 0.0), 1.0e-7)
         );
         assert_eq!(graph.region_of(part), state.active_region);

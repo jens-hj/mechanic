@@ -2804,7 +2804,7 @@ mod tests {
     #[test]
     fn arbitrary_frame_composes_raw_region_convex_planes_and_mass() {
         let (mut graph, region) = region_over_one_block();
-        let cell = i16::try_from(crate::STEPS_PER_CELL).unwrap();
+        let cell = i16::try_from(crate::POSITION_TICKS_PER_GRID_UNIT).unwrap();
         graph
             .apply(BuildCommand::SetRegionVertices {
                 region,
@@ -3156,7 +3156,7 @@ mod tests {
         // driven down onto the bottom leaves a wedge of half the material,
         // whose centroid is the triangle's.
         let (mut graph, id) = region_over_one_block();
-        let cell = i16::try_from(crate::STEPS_PER_CELL).unwrap();
+        let cell = i16::try_from(crate::POSITION_TICKS_PER_GRID_UNIT).unwrap();
         graph
             .apply(BuildCommand::SetRegionVertices {
                 region: id,

@@ -108,8 +108,8 @@ pub(crate) fn capture(
     if let Some(drag) = state.region_drag.as_ref() {
         let (low, high) = drag.region.bounds_steps();
         return capture_box(
-            low.as_vec3() * mechanic_core::STEP_METERS,
-            high.as_vec3() * mechanic_core::STEP_METERS,
+            low.as_vec3() * mechanic_core::POSITION_TICK_METERS,
+            high.as_vec3() * mechanic_core::POSITION_TICK_METERS,
             drag.region.size_cells(),
             drag.plane,
             |point| camera.world_to_viewport(transform, point).ok(),

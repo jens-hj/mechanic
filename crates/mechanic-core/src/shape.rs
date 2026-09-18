@@ -25,22 +25,12 @@
 
 use bevy_math::{IVec3, Quat, Vec3};
 
-use crate::POSITION_TICKS_PER_HALF_GRID_UNIT;
 use crate::geometry::{CuboidSpec, FaceKind, GridRotation};
-
-/// Displacement steps spanning one half-grid unit (0.125 m), so one step is
-/// 2.5 mm. Shape's finest user-facing increment remains 12.5 mm.
-pub const STEPS_PER_HALF_UNIT: i32 = POSITION_TICKS_PER_HALF_GRID_UNIT;
-
-/// Steps spanning one construction cell.
-pub const STEPS_PER_CELL: i32 = 2 * STEPS_PER_HALF_UNIT;
-
-/// Length of one displacement step, in metres.
-pub const STEP_METERS: f32 = crate::POSITION_TICK_METERS;
+use crate::{POSITION_TICK_METERS, POSITION_TICKS_PER_HALF_GRID_UNIT};
 
 /// Converts a position in integer steps to metres.
 pub fn steps_to_meters(steps: IVec3) -> Vec3 {
-    steps.as_vec3() * STEP_METERS
+    steps.as_vec3() * POSITION_TICK_METERS
 }
 
 /// Largest number of vertices one convex piece can carry. A piece is fused only
@@ -185,7 +175,8 @@ impl CellGrid {
 
     /// A grid whose cell-relative planes begin at an exact shape-step origin.
     pub(crate) fn from_cell_planes(origin_steps: IVec3, planes_cells: &[Vec<i32>; 3]) -> Self {
-        let origin_half_units = origin_steps.div_euclid(IVec3::splat(STEPS_PER_HALF_UNIT));
+        let origin_half_units =
+            origin_steps.div_euclid(IVec3::splat(POSITION_TICKS_PER_HALF_GRID_UNIT));
         let planes_half_units = core::array::from_fn(|axis| {
             planes_cells[axis]
                 .iter()
@@ -194,7 +185,7 @@ impl CellGrid {
         });
         Self {
             planes_half_units,
-            offset_steps: origin_steps.rem_euclid(IVec3::splat(STEPS_PER_HALF_UNIT)),
+            offset_steps: origin_steps.rem_euclid(IVec3::splat(POSITION_TICKS_PER_HALF_GRID_UNIT)),
         }
     }
 
@@ -232,7 +223,7 @@ impl CellGrid {
 
     /// Exact shape-step coordinate of one cell corner, including a precision offset.
     pub fn corner_steps(&self, cell: IVec3, corner: usize) -> IVec3 {
-        self.corner_half_units(cell, corner) * STEPS_PER_HALF_UNIT + self.offset_steps
+        self.corner_half_units(cell, corner) * POSITION_TICKS_PER_HALF_GRID_UNIT + self.offset_steps
     }
 
     /// Whether a cell index lies inside the grid.
@@ -793,7 +784,7 @@ fn build_piece(corners: &[IVec3; 8], indices: &[usize], cell: IVec3) -> Option<C
     if volume_six == 0 {
         return None;
     }
-    let scale = STEP_METERS;
+    let scale = POSITION_TICK_METERS;
     let volume = (volume_six.abs() as f32) / 6.0 * scale * scale * scale;
     let centroid = centroid_accumulator / (4.0 * volume_six as f32) * scale;
 
@@ -909,9 +900,10 @@ const fn positive_face(axis: usize) -> FaceKind {
 )] // Tests quantise geometry back to lattice steps to compare it exactly.
 mod tests {
     use super::{
-        CellGrid, ConvexPiece, GridFace, PartPiece, STEP_METERS, STEPS_PER_CELL, decompose,
+        CellGrid, ConvexPiece, GridFace, POSITION_TICK_METERS, PartPiece, decompose,
         has_inverted_cell, undisplaced_steps,
     };
+    use crate::POSITION_TICKS_PER_GRID_UNIT;
     use crate::geometry::{BuildPose, CuboidSpec, FaceKind, GridRotation};
     use bevy_math::{IVec3, Vec3};
     use std::collections::BTreeMap;
@@ -979,7 +971,7 @@ mod tests {
     }
 
     fn quantise(point: Vec3) -> [i32; 3] {
-        let steps = point / STEP_METERS;
+        let steps = point / POSITION_TICK_METERS;
         [
             steps.x.round() as i32,
             steps.y.round() as i32,
@@ -1137,7 +1129,11 @@ mod tests {
         // beneath them: the plain single-slope wedge, half a cell of material.
         let mut cage = Cage::unit();
         for corner in [6, 7] {
-            cage.displace(IVec3::ZERO, corner, IVec3::new(0, -STEPS_PER_CELL, 0));
+            cage.displace(
+                IVec3::ZERO,
+                corner,
+                IVec3::new(0, -POSITION_TICKS_PER_GRID_UNIT, 0),
+            );
         }
         let pieces = cage.pieces();
         let convex = convex_pieces(&pieces);
@@ -1260,7 +1256,7 @@ mod tests {
             })
             .sum::<i64>() as f32
             / 6.0
-            * STEP_METERS.powi(3);
+            * POSITION_TICK_METERS.powi(3);
         assert!(
             (total_volume(&pieces) - split_volume).abs() <= split_volume * 1.0e-5,
             "fusing must neither lose nor duplicate volume"
@@ -1334,8 +1330,16 @@ mod tests {
         // One vertex alone reaches its neighbour but never passes it, so a cell
         // can only be turned inside out by driving two through each other.
         let mut cage = Cage::unit();
-        cage.displace(IVec3::ZERO, 0, IVec3::new(STEPS_PER_CELL, 0, 0));
-        cage.displace(IVec3::ZERO, 1, IVec3::new(-STEPS_PER_CELL, 0, 0));
+        cage.displace(
+            IVec3::ZERO,
+            0,
+            IVec3::new(POSITION_TICKS_PER_GRID_UNIT, 0, 0),
+        );
+        cage.displace(
+            IVec3::ZERO,
+            1,
+            IVec3::new(-POSITION_TICKS_PER_GRID_UNIT, 0, 0),
+        );
         assert!(
             cage.inverted(),
             "two vertices driven through each other must be rejected"

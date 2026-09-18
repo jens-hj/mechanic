@@ -9890,7 +9890,8 @@ mod tests {
         };
         // Drop the top pair of cage corners on +z a whole cell onto the corners
         // below them, which slopes the whole top face.
-        let cell = i16::try_from(mechanic_core::STEPS_PER_CELL).expect("a cell is twenty steps");
+        let cell = i16::try_from(mechanic_core::POSITION_TICKS_PER_GRID_UNIT)
+            .expect("a cell is twenty steps");
         graph
             .apply(BuildCommand::SetRegionVertices {
                 region: id,

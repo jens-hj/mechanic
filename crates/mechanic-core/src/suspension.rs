@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const TICK: f32 = 0.0025;
+const TICK: f32 = crate::POSITION_TICK_METERS;
 const EPS: f32 = 1.0e-6;
 const MIN_TRAVEL: f32 = 0.05;
 const PI: f32 = core::f32::consts::PI;

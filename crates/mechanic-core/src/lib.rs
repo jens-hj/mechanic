@@ -99,9 +99,8 @@ pub use id::{
 pub use region::{CageIndex, RegionError, ShapeRegion};
 pub use shape::{
     CellGrid, ConvexFace, ConvexPiece, GridFace, MAX_PIECE_EDGES, MAX_PIECE_FACES,
-    MAX_PIECE_VERTICES, PartPiece, STEP_METERS, STEPS_PER_CELL, STEPS_PER_HALF_UNIT, decompose,
-    decompose_part, face_neighbour_offset, has_inverted_cell, part_cells, steps_to_meters,
-    undisplaced_steps,
+    MAX_PIECE_VERTICES, PartPiece, decompose, decompose_part, face_neighbour_offset,
+    has_inverted_cell, part_cells, steps_to_meters, undisplaced_steps,
 };
 pub use solid::{
     BoundaryHalfEdge, BoundaryVertex, ConvexVolumeCell, EdgeChainRef, EdgeTreatment,

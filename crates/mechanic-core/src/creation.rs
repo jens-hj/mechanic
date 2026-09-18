@@ -1355,7 +1355,7 @@ fn rotate_y_vec3(position: Vec3, yaw: u8) -> Vec3 {
 fn transform_region_doc(region: &mut RegionDoc, yaw: u8, translation: IVec3) {
     let origin = IVec3::from_array(region.origin_steps);
     let size = IVec3::from_array(region.size_cells);
-    let maximum = origin + size * crate::STEPS_PER_CELL;
+    let maximum = origin + size * crate::POSITION_TICKS_PER_GRID_UNIT;
     let corners = [
         IVec3::new(origin.x, origin.y, origin.z),
         IVec3::new(maximum.x, origin.y, origin.z),
@@ -1363,7 +1363,9 @@ fn transform_region_doc(region: &mut RegionDoc, yaw: u8, translation: IVec3) {
         IVec3::new(origin.x, origin.y, maximum.z),
         IVec3::new(maximum.x, maximum.y, maximum.z),
     ]
-    .map(|corner| rotate_y_i32(corner, yaw) + translation * crate::STEPS_PER_HALF_UNIT);
+    .map(|corner| {
+        rotate_y_i32(corner, yaw) + translation * crate::POSITION_TICKS_PER_HALF_GRID_UNIT
+    });
     let minimum = corners
         .iter()
         .copied()
@@ -1378,7 +1380,7 @@ fn transform_region_doc(region: &mut RegionDoc, yaw: u8, translation: IVec3) {
     let old_vertices = core::mem::take(&mut region.vertices);
     let old_counts = old_divisions.each_ref().map(|axis| axis.len() + 2);
     region.origin_steps = minimum.to_array();
-    region.size_cells = ((maximum - minimum) / crate::STEPS_PER_CELL).to_array();
+    region.size_cells = ((maximum - minimum) / crate::POSITION_TICKS_PER_GRID_UNIT).to_array();
     region.divisions = match yaw % 4 {
         0 => old_divisions,
         1 => [

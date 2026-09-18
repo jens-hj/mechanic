@@ -20,8 +20,11 @@ use std::collections::BTreeMap;
 use bevy_math::IVec3;
 use thiserror::Error;
 
-use crate::shape::{CellGrid, STEPS_PER_CELL, STEPS_PER_HALF_UNIT};
-use crate::{ConstructionMaterial, MaterialAppearance};
+use crate::shape::CellGrid;
+use crate::{
+    ConstructionMaterial, MaterialAppearance, POSITION_TICKS_PER_GRID_UNIT,
+    POSITION_TICKS_PER_HALF_GRID_UNIT,
+};
 
 /// A cage vertex, indexed by its plane along each axis.
 pub type CageIndex = [u16; 3];
@@ -75,7 +78,7 @@ impl ShapeRegion {
         material: ConstructionMaterial,
     ) -> Result<Self, RegionError> {
         Self::from_origin_steps(
-            origin_half_units * STEPS_PER_HALF_UNIT,
+            origin_half_units * POSITION_TICKS_PER_HALF_GRID_UNIT,
             size_cells,
             material,
         )
@@ -177,7 +180,7 @@ impl ShapeRegion {
         let mut position = IVec3::ZERO;
         for axis in 0..3 {
             let cells = *self.planes[axis].get(usize::from(index[axis]))?;
-            position[axis] = self.origin_steps[axis] + cells * STEPS_PER_CELL;
+            position[axis] = self.origin_steps[axis] + cells * POSITION_TICKS_PER_GRID_UNIT;
         }
         Some(position)
     }
@@ -214,7 +217,7 @@ impl ShapeRegion {
     pub fn bounds_steps(&self) -> (IVec3, IVec3) {
         (
             self.origin_steps,
-            self.origin_steps + self.size_cells * STEPS_PER_CELL,
+            self.origin_steps + self.size_cells * POSITION_TICKS_PER_GRID_UNIT,
         )
     }
 
@@ -342,19 +345,23 @@ impl ShapeRegion {
     pub fn covers_cell(&self, cell_min_steps: IVec3) -> bool {
         let relative = cell_min_steps - self.origin_steps;
         relative.cmpge(IVec3::ZERO).all()
-            && (relative % STEPS_PER_CELL).cmpeq(IVec3::ZERO).all()
-            && (relative / STEPS_PER_CELL).cmplt(self.size_cells).all()
+            && (relative % POSITION_TICKS_PER_GRID_UNIT)
+                .cmpeq(IVec3::ZERO)
+                .all()
+            && (relative / POSITION_TICKS_PER_GRID_UNIT)
+                .cmplt(self.size_cells)
+                .all()
     }
 
     /// Whether two regions claim any of the same space.
     pub fn overlaps(&self, other: &Self) -> bool {
         let (low, high) = (
             self.origin_steps,
-            self.origin_steps + self.size_cells * STEPS_PER_CELL,
+            self.origin_steps + self.size_cells * POSITION_TICKS_PER_GRID_UNIT,
         );
         let (other_low, other_high) = (
             other.origin_steps,
-            other.origin_steps + other.size_cells * STEPS_PER_CELL,
+            other.origin_steps + other.size_cells * POSITION_TICKS_PER_GRID_UNIT,
         );
         low.cmplt(other_high).all() && other_low.cmplt(high).all()
     }

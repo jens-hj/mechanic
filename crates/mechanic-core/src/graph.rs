@@ -2166,7 +2166,7 @@ impl ConstructionGraph {
         for z in 0..size.z {
             for y in 0..size.y {
                 for x in 0..size.x {
-                    let corner = origin + IVec3::new(x, y, z) * crate::shape::STEPS_PER_CELL;
+                    let corner = origin + IVec3::new(x, y, z) * crate::POSITION_TICKS_PER_GRID_UNIT;
                     let Some(&(part, cell_material, cell_appearance)) =
                         occupants.get(&corner.to_array())
                     else {
@@ -3239,7 +3239,7 @@ impl ConstructionGraph {
             let cells = crate::part_cells(cuboid);
             let origin = cells.corner_steps(IVec3::ZERO, 0);
             minimum = minimum.min(origin);
-            maximum = maximum.max(origin + cells.counts() * crate::shape::STEPS_PER_CELL);
+            maximum = maximum.max(origin + cells.counts() * crate::POSITION_TICKS_PER_GRID_UNIT);
             members += 1;
         }
         if members < 2
@@ -3249,12 +3249,12 @@ impl ConstructionGraph {
             return None;
         }
         let extent = maximum - minimum;
-        if extent.rem_euclid(IVec3::splat(crate::shape::STEPS_PER_CELL)) != IVec3::ZERO {
+        if extent.rem_euclid(IVec3::splat(crate::POSITION_TICKS_PER_GRID_UNIT)) != IVec3::ZERO {
             return None;
         }
         let region = ShapeRegion::from_origin_steps(
             minimum,
-            extent / crate::shape::STEPS_PER_CELL,
+            extent / crate::POSITION_TICKS_PER_GRID_UNIT,
             material,
         )
         .ok()?
@@ -4834,7 +4834,7 @@ mod tests {
 
     /// One construction cell, in the steps a cage vertex moves in.
     fn cell_steps() -> i16 {
-        i16::try_from(crate::STEPS_PER_CELL).expect("a cell is twenty steps")
+        i16::try_from(crate::POSITION_TICKS_PER_GRID_UNIT).expect("a cell is twenty steps")
     }
 
     /// A solid run of `size` one-cell blocks welded together from the origin.
