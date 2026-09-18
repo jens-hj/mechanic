@@ -104,7 +104,7 @@ fn failed_terrain_path_retries_match_direct_quality_and_consume_impulse_once() {
     retried
         .step_candidate(
             DVec3::ZERO,
-            JointTickSettings::default(),
+            JointTickConfig::default(),
             &[impulse],
             &[],
             Some(&terrain),
@@ -146,7 +146,7 @@ fn final_terrain_failure_retains_completed_state_and_does_not_consume_a_command(
     };
     let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
     let before = world.snapshot().clone();
-    let settings = JointTickSettings {
+    let settings = JointTickConfig {
         maximum_substeps: 4,
         ..Default::default()
     };
@@ -236,7 +236,7 @@ fn terrain_failure_does_not_commit_a_drive_change() {
     assert_eq!(
         world.step_candidate(
             DVec3::ZERO,
-            JointTickSettings::default(),
+            JointTickConfig::default(),
             &[],
             &[command],
             Some(&terrain)
@@ -296,7 +296,7 @@ fn changed_supporting_terrain_or_wrong_topology_cannot_publish_an_invalid_tick()
     assert_eq!(
         world.step_candidate(
             mechanic_core::GRAVITY,
-            JointTickSettings::default(),
+            JointTickConfig::default(),
             &[],
             &[],
             Some(&context(&scene, &geometry, 7))

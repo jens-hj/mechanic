@@ -1,7 +1,7 @@
 //! Replays the preserved builder at matched scales without editing its save.
 use super::{
     Arc, ConstructionGraph, CpuMachine, DVec3, Error, GRAVITY, IVec3, Instant,
-    MachineCollisionGeometry, MachineState, SoftStepSettings, SoftStepTerrain, TerrainContactScene,
+    MachineCollisionGeometry, MachineState, SoftStepConfig, SoftStepTerrain, TerrainContactScene,
     TerrainNodeId, extent, ground, json, lowest_point,
 };
 use mechanic_core::{CreationDocument, PartDoc, RigidLinkDoc};
@@ -115,7 +115,7 @@ pub(super) fn run(options: &Options) -> Result<(), Box<dyn Error>> {
         .filter(|&body| creation.loop_topology.body_parents[body].is_root)
         .collect::<Vec<_>>();
     let mut machine = CpuMachine::new(creation.clone(), 1, state)?;
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     println!(
         "{}",
         json!({"kind":"metadata", "scenario":"builder-scale", "copies":options.copies,"connected":options.connected,"hold":options.hold,"warmup_ticks":options.warmup,"measured_ticks":options.ticks,"terrain":if options.floor {"diagnostic-floor"} else {"saved-seed-leaf-mesh"},"terrain_generation_ms":terrain_ms,"fixture_generation":world.construction_generation,"instance_id":instance.id,"bodies":creation.compounds.len(),"velocities":creation.dynamics.elimination_parent.len(),"colliders":creation.colliders.len(),"coordinates":creation.dynamics.coordinate_velocities.len(),"route":"cpu","executable":std::env::current_exe()?})

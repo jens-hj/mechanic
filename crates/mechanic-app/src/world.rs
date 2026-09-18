@@ -34,7 +34,7 @@ use mechanic_world::TerrainFace;
 use mechanic_world::{
     ActiveTerrainNode, ActiveTerrainScene, AutosaveState, ConstructionBodyPose,
     ConstructionCollisionIndex, FloatingOrigin, FoundationSpatialIndex, FoundationSupport,
-    KinematicCapsule, KinematicCollisionScene, KinematicInput, OpenWorldResult, SavedWorld,
+    KinematicCapsule, KinematicCollisionScene, KinematicInput, OpenWorldOutcome, SavedWorld,
     SavedWorldStatus, TerrainBoundsCache, TerrainDensity, TerrainEditBatch, TerrainEditOutcome,
     TerrainField, TerrainMaterial, TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest,
     TerrainNodeId, TerrainOctree, TerrainRayHit, TerrainReadiness, TerrainScene, TerrainSelection,
@@ -1227,7 +1227,7 @@ fn handle_world_list(
                 return;
             };
             match runtime.store.open_entry(&entry) {
-                Ok(OpenWorldResult::Opened(document)) => {
+                Ok(OpenWorldOutcome::Opened(document)) => {
                     match install_world(&mut runtime, *document) {
                         Ok(()) => {
                             list.phase = WorldListPhase::Loading;
@@ -1238,7 +1238,7 @@ fn handle_world_list(
                         Err(error) => list.notice = Some(error),
                     }
                 }
-                Ok(OpenWorldResult::OutdatedRemoved { path }) => {
+                Ok(OpenWorldOutcome::OutdatedRemoved { path }) => {
                     list.notice = Some(format!(
                         "Incompatible world was removed: {}",
                         path.display()

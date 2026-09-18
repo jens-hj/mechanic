@@ -415,7 +415,7 @@ impl<'a> MachineKinematics<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CpuMachine, ExternalImpulse, MachineState, SoftStepSettings};
+    use crate::{CpuMachine, ExternalImpulse, MachineState, SoftStepConfig};
     use mechanic_core::{BuildCommand, BuildPose, ConstructionGraph, CuboidSpec};
 
     #[test]
@@ -537,7 +537,7 @@ mod tests {
             machine
                 .step(
                     mechanic_core::GRAVITY,
-                    &SoftStepSettings::default(),
+                    &SoftStepConfig::default(),
                     &[],
                     &[],
                     None,
@@ -584,7 +584,7 @@ mod tests {
         machine
             .step(
                 DVec3::ZERO,
-                &SoftStepSettings::default(),
+                &SoftStepConfig::default(),
                 &[impulse],
                 &[],
                 None,
@@ -598,12 +598,12 @@ mod tests {
         let poses = state.poses.clone();
         machine.hold(&[true; 96], &poses).unwrap();
         machine
-            .step(DVec3::NEG_Y, &SoftStepSettings::default(), &[], &[], None)
+            .step(DVec3::NEG_Y, &SoftStepConfig::default(), &[], &[], None)
             .unwrap();
         assert_eq!(machine.snapshot().state.poses, poses);
         machine.hold(&[false; 96], &poses).unwrap();
         machine
-            .step(DVec3::NEG_Y, &SoftStepSettings::default(), &[], &[], None)
+            .step(DVec3::NEG_Y, &SoftStepConfig::default(), &[], &[], None)
             .unwrap();
         assert!(machine.snapshot().state.poses[body].position.y < poses[body].position.y);
         assert!(!machine.diagnostics().degraded);

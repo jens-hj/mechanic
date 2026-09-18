@@ -5,7 +5,7 @@
 use bevy_math::{DVec3, Vec3};
 use mechanic_core::{CompiledCreation, MaterialProperties, RuntimeBox, TICK_SECONDS};
 use mechanic_physics::{
-    CpuMachine, ExternalImpulse, MachineState, PreparedClumpBodies, SoftStepSettings,
+    CpuMachine, ExternalImpulse, MachineState, PreparedClumpBodies, SoftStepConfig,
     SoftStepTerrain, TerrainContactScene,
 };
 use mechanic_world::{
@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut scene = TerrainContactScene::default();
     scene.publish(1, &[Arc::new(chunk.collision_chunk())], &[])?;
     let mut damage = BreakageAccumulator::default();
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     let mut generation = 1;
     let mut removed = 0_u64;
     let mut deposited = 0_u64;

@@ -41,7 +41,7 @@ pub struct WeldSelection {
 
 /// Reasons a feature alignment cannot be installed.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum WeldRejection {
+pub enum WeldError {
     /// Non-finite, degenerate, or nonincident selection data.
     #[error("The selected feature is missing or degenerate")]
     InvalidFeature,
@@ -78,13 +78,13 @@ pub struct WeldAlignment {
 }
 
 impl WeldSelection {
-    fn validate(self) -> Result<(), WeldRejection> {
+    fn validate(self) -> Result<(), WeldError> {
         if !self.point.is_finite()
             || !self.normal.is_normalized()
             || !self.tangent.is_normalized()
             || self.normal.dot(self.tangent).abs() > EPSILON
         {
-            return Err(WeldRejection::InvalidFeature);
+            return Err(WeldError::InvalidFeature);
         }
         match self.feature {
             WeldFeature::Face => (),
@@ -95,7 +95,7 @@ impl WeldSelection {
                     && a.distance(b) > EPSILON
                     && (b - a).normalize().dot(self.normal).abs() <= EPSILON
                     && point_on_segment(self.point, a, b) => {}
-            _ => return Err(WeldRejection::InvalidFeature),
+            _ => return Err(WeldError::InvalidFeature),
         }
         Ok(())
     }
@@ -106,7 +106,7 @@ impl WeldAlignment {
     ///
     /// # Errors
     /// Returns `InvalidFeature` for degenerate or nonincident selection data.
-    pub fn new(source: WeldSelection, destination: WeldSelection) -> Result<Self, WeldRejection> {
+    pub fn new(source: WeldSelection, destination: WeldSelection) -> Result<Self, WeldError> {
         source.validate()?;
         destination.validate()?;
         let mut rotation = Quat::from_rotation_arc(source.normal, -destination.normal);
@@ -121,7 +121,7 @@ impl WeldAlignment {
             rotation = Quat::from_axis_angle(destination.normal, angle) * rotation;
         }
         let initial = ConstructionFrame::new(destination.point - rotation * source.point, rotation)
-            .map_err(|_| WeldRejection::InvalidFeature)?;
+            .map_err(|_| WeldError::InvalidFeature)?;
         let constraint = match (source.feature, destination.feature) {
             (WeldFeature::Vertex(_), WeldFeature::Vertex(_)) => WeldConstraint::Fixed,
             (WeldFeature::Face, _) | (_, WeldFeature::Face) => WeldConstraint::Plane,
@@ -145,7 +145,7 @@ impl WeldAlignment {
     ///
     /// # Errors
     /// Returns `InvalidFeature` if the aligned transform is not finite.
-    pub fn align_tangent_grids(mut self) -> Result<Self, WeldRejection> {
+    pub fn align_tangent_grids(mut self) -> Result<Self, WeldError> {
         if self.constraint == WeldConstraint::Plane {
             let from = self.initial.vector(self.source.tangent);
             let to = self.destination.tangent;
@@ -162,7 +162,7 @@ impl WeldAlignment {
                 self.destination.point - rotation * self.source.point,
                 rotation,
             )
-            .map_err(|_| WeldRejection::InvalidFeature)?;
+            .map_err(|_| WeldError::InvalidFeature)?;
         }
         Ok(self)
     }
@@ -187,13 +187,13 @@ impl WeldAlignment {
     ///
     /// # Errors
     /// Returns `Incidence` if translation or rotation breaks a finite feature constraint.
-    pub fn place(self, displacement: Vec3, steps: u8) -> Result<ConstructionFrame, WeldRejection> {
+    pub fn place(self, displacement: Vec3, steps: u8) -> Result<ConstructionFrame, WeldError> {
         if !displacement.is_finite()
             || !self
                 .displacement(displacement)
                 .abs_diff_eq(displacement, EPSILON)
         {
-            return Err(WeldRejection::Incidence);
+            return Err(WeldError::Incidence);
         }
         let spin = Quat::from_axis_angle(
             self.destination.normal,
@@ -202,7 +202,7 @@ impl WeldAlignment {
         let rotation = spin * self.initial.rotation();
         let anchor = self.destination.point + displacement;
         let frame = ConstructionFrame::new(anchor - rotation * self.source.point, rotation)
-            .map_err(|_| WeldRejection::InvalidFeature)?;
+            .map_err(|_| WeldError::InvalidFeature)?;
         let valid = match (self.source.feature, self.destination.feature) {
             (WeldFeature::Vertex(a), WeldFeature::Vertex(b)) => {
                 frame.point(a).abs_diff_eq(b, EPSILON)
@@ -227,7 +227,7 @@ impl WeldAlignment {
             }
             _ => true,
         };
-        valid.then_some(frame).ok_or(WeldRejection::Incidence)
+        valid.then_some(frame).ok_or(WeldError::Incidence)
     }
 
     /// Advances to the next constraint-compatible orientation, ignoring obstacles.
@@ -287,7 +287,7 @@ pub type WeldMaterialPatch = Vec<Vec2>;
 pub fn weld_contact_square(
     source: &[WeldMaterialPatch],
     destination: &[WeldMaterialPatch],
-) -> Result<Vec2, WeldRejection> {
+) -> Result<Vec2, WeldError> {
     let half = 0.025;
     let mut lines = Vec::<(Vec2, f32)>::new();
     let mut candidates = Vec::new();
@@ -347,7 +347,7 @@ pub fn weld_contact_square(
             }
         }
     }
-    Err(WeldRejection::InsufficientContact)
+    Err(WeldError::InsufficientContact)
 }
 
 fn area(polygon: &[Vec2]) -> f32 {
@@ -451,11 +451,11 @@ impl WeldPick {
         mating: crate::SurfacePatchKey,
         point: Vec3,
         radius: f32,
-    ) -> Result<Self, WeldRejection> {
+    ) -> Result<Self, WeldError> {
         let face = Self::new(graph, owner, WeldFeatureRef::Face(mating), mating, point)?;
         let solid = graph
             .evaluated_solid(owner)
-            .map_err(|_| WeldRejection::InvalidFeature)?;
+            .map_err(|_| WeldError::InvalidFeature)?;
         let mut vertices = solid
             .vertices
             .iter()
@@ -515,7 +515,7 @@ impl WeldPick {
         feature: WeldFeatureRef,
         mating: crate::SurfacePatchKey,
         point: Vec3,
-    ) -> Result<Self, WeldRejection> {
+    ) -> Result<Self, WeldError> {
         let pick = Self {
             revision: graph.clone(),
             owner,
@@ -531,21 +531,18 @@ impl WeldPick {
     ///
     /// # Errors
     /// Returns `InvalidFeature` if the revision or selected topology no longer matches.
-    pub fn resolve(
-        &self,
-        graph: &crate::ConstructionGraph,
-    ) -> Result<WeldSelection, WeldRejection> {
+    pub fn resolve(&self, graph: &crate::ConstructionGraph) -> Result<WeldSelection, WeldError> {
         if !graph.shares_revision(&self.revision) {
-            return Err(WeldRejection::InvalidFeature);
+            return Err(WeldError::InvalidFeature);
         }
         let solid = graph
             .evaluated_solid(self.owner)
-            .map_err(|_| WeldRejection::InvalidFeature)?;
+            .map_err(|_| WeldError::InvalidFeature)?;
         let surface = solid
             .surfaces
             .iter()
             .find(|surface| surface.key == self.mating && surface.smoothing_group == 0)
-            .ok_or(WeldRejection::InvalidFeature)?;
+            .ok_or(WeldError::InvalidFeature)?;
         let normal = surface.normal.normalize();
         let plane_point =
             solid.vertices[solid.half_edges[surface.half_edge as usize].origin as usize].position;
@@ -555,36 +552,34 @@ impl WeldPick {
             .filter(|s| s.key == self.mating)
             .any(|s| !s.normal.abs_diff_eq(normal, EPSILON))
         {
-            return Err(WeldRejection::InvalidFeature);
+            return Err(WeldError::InvalidFeature);
         }
         if (self.point - plane_point).dot(normal).abs() > EPSILON {
-            return Err(WeldRejection::InvalidFeature);
+            return Err(WeldError::InvalidFeature);
         }
         if !on_patch(&solid, self.mating, self.point, normal) {
-            return Err(WeldRejection::InvalidFeature);
+            return Err(WeldError::InvalidFeature);
         }
         let feature = match self.feature {
             WeldFeatureRef::Face(key) if key == self.mating => WeldFeature::Face,
-            WeldFeatureRef::Face(_) => return Err(WeldRejection::InvalidFeature),
+            WeldFeatureRef::Face(_) => return Err(WeldError::InvalidFeature),
             WeldFeatureRef::Edge(key) => {
-                let edge = solid
-                    .logical_edge(key)
-                    .ok_or(WeldRejection::InvalidFeature)?;
+                let edge = solid.logical_edge(key).ok_or(WeldError::InvalidFeature)?;
                 if !edge.half_edges.iter().any(|&index| {
                     let half = solid.half_edges[index as usize];
                     solid.surfaces[half.face as usize].key == self.mating
                         || solid.surfaces[solid.half_edges[half.twin as usize].face as usize].key
                             == self.mating
                 }) {
-                    return Err(WeldRejection::InvalidFeature);
+                    return Err(WeldError::InvalidFeature);
                 }
-                WeldFeature::Edge(straight_edge(&solid, edge).ok_or(WeldRejection::InvalidFeature)?)
+                WeldFeature::Edge(straight_edge(&solid, edge).ok_or(WeldError::InvalidFeature)?)
             }
             WeldFeatureRef::Vertex(index) => {
                 let point = solid
                     .vertices
                     .get(index as usize)
-                    .ok_or(WeldRejection::InvalidFeature)?
+                    .ok_or(WeldError::InvalidFeature)?
                     .position;
                 let count = solid
                     .logical_edges
@@ -598,7 +593,7 @@ impl WeldPick {
                     edge.origin == index && solid.surfaces[edge.face as usize].key == self.mating
                 });
                 if count < 3 || !incident {
-                    return Err(WeldRejection::InvalidFeature);
+                    return Err(WeldError::InvalidFeature);
                 }
                 WeldFeature::Vertex(point)
             }

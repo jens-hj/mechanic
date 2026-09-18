@@ -31,7 +31,7 @@ pub struct DriveCommand {
 
 /// Fixed quality bounds. Retry uses successively finer subdivisions, never frame time.
 #[derive(Clone, Copy, Debug)]
-pub struct JointTickSettings {
+pub struct JointTickConfig {
     /// Numerical factor for complete CPU experiments; quality bounds are unchanged.
     pub factorization: crate::DynamicsFactorization,
     /// Initial subdivisions of the external 60 Hz tick: 1, 2, 4, or 8.
@@ -46,7 +46,7 @@ pub struct JointTickSettings {
     pub tolerance: f64,
 }
 
-impl Default for JointTickSettings {
+impl Default for JointTickConfig {
     fn default() -> Self {
         Self {
             factorization: crate::DynamicsFactorization::DenseReference,
@@ -388,7 +388,7 @@ impl CpuJointMachine {
     pub fn step(
         &mut self,
         gravity: DVec3,
-        settings: JointTickSettings,
+        settings: JointTickConfig,
         impulses: &[ExternalImpulse],
         commands: &[DriveCommand],
     ) -> Result<&CpuSnapshot, PhysicsError> {
@@ -409,7 +409,7 @@ impl CpuJointMachine {
     pub fn step_with_terrain(
         &mut self,
         gravity: DVec3,
-        settings: JointTickSettings,
+        settings: JointTickConfig,
         impulses: &[ExternalImpulse],
         commands: &[DriveCommand],
         terrain: &TerrainSubstep<'_>,
@@ -421,7 +421,7 @@ impl CpuJointMachine {
     fn step_candidate(
         &mut self,
         gravity: DVec3,
-        settings: JointTickSettings,
+        settings: JointTickConfig,
         impulses: &[ExternalImpulse],
         commands: &[DriveCommand],
         terrain: Option<&TerrainSubstep<'_>>,
@@ -649,7 +649,7 @@ fn substep(
     state: &mut MachineState,
     gravity: DVec3,
     dt: f64,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     contacts: Option<SubstepContacts<'_>>,
     terrain: Option<&TerrainSubstep<'_>>,
     diagnostics: &mut JointTickDiagnostics,
@@ -680,7 +680,7 @@ fn integrate_substep(
     model: &MachineDynamics,
     gravity: DVec3,
     dt: f64,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     contacts: Option<SubstepContacts<'_>>,
     terrain: Option<&TerrainSubstep<'_>>,
     diagnostics: &mut JointTickDiagnostics,
@@ -1145,7 +1145,7 @@ fn correct_joint_positions(
     drives: &[CoordinateDrive],
     state: &mut MachineState,
     factor: &crate::DynamicsFactor,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     terrain: Option<&TerrainSubstep<'_>>,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<(), PhysicsError> {

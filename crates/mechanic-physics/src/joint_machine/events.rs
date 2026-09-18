@@ -1,7 +1,7 @@
 //! Bounded first-impact trials; only validated prefixes advance physical time.
 
 use super::{
-    CompiledCreation, CoordinateDrive, DVec3, JointTickDiagnostics, JointTickSettings,
+    CompiledCreation, CoordinateDrive, DVec3, JointTickConfig, JointTickDiagnostics,
     MachineDynamics, MachineState, PassiveForce, PhysicsError, SubstepContacts, TerrainSubstep,
     impact, integrate_substep,
 };
@@ -64,7 +64,7 @@ pub(super) fn advance_interval(
     state: &mut MachineState,
     gravity: DVec3,
     duration: f64,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     terrain: Option<&TerrainSubstep<'_>>,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<(), PhysicsError> {
@@ -89,7 +89,7 @@ pub(super) fn advance_interval_cached<const REUSE: bool>(
     state: &mut MachineState,
     gravity: DVec3,
     duration: f64,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     terrain: Option<&TerrainSubstep<'_>>,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<(), PhysicsError> {
@@ -581,7 +581,7 @@ fn activate_clear_endpoint(
     state: &mut MachineState,
     terrain: &TerrainSubstep<'_>,
     hit: TerrainSweepHit,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<bool, PhysicsError> {
     let query = terrain.contacts(state, diagnostics)?;
@@ -623,7 +623,7 @@ pub(super) fn activate_endpoint(
     model: &MachineDynamics,
     terrain: &TerrainSubstep<'_>,
     hit: TerrainSweepHit,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<(), PhysicsError> {
     // A split joint correction could have changed the endpoint. Require the

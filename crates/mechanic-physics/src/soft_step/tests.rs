@@ -284,7 +284,7 @@ struct World {
     scene: TerrainContactScene,
     geometry: MachineCollisionGeometry,
     machine: CpuMachine,
-    settings: SoftStepSettings,
+    settings: SoftStepConfig,
 }
 
 impl World {
@@ -311,7 +311,7 @@ impl World {
             scene,
             geometry: MachineCollisionGeometry::new(&creation, GENERATION).unwrap(),
             machine: CpuMachine::new(creation, GENERATION, state).unwrap(),
-            settings: SoftStepSettings::default(),
+            settings: SoftStepConfig::default(),
         }
     }
 

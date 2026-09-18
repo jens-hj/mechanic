@@ -10,7 +10,7 @@ use mechanic_core::{
 };
 use mechanic_physics::{
     ConstraintBlock, ConstraintSolution, ContactFriction, CpuMachine, DriveCommand, DynamicsFactor,
-    ImpulseBounds, MachineCollisionGeometry, MachineState, PreparedConstraints, SoftStepSettings,
+    ImpulseBounds, MachineCollisionGeometry, MachineState, PreparedConstraints, SoftStepConfig,
     SoftStepTerrain, TerrainContactScene, solve_constraints,
 };
 use mechanic_world::{
@@ -247,7 +247,7 @@ fn run(
     let (geometry, scene) = finite_support::scene(creation, &mut roots)?;
     state.poses = roots;
     let start = state.poses[0].position;
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     let mut machine = CpuMachine::new(creation.clone(), 1, state)?;
     let mut samples = Vec::new();
     let (mut deepest, mut settled, mut degraded) = (0.0_f64, 0.0_f64, 0_u64);
@@ -431,7 +431,7 @@ fn impact(
     let geometry = MachineCollisionGeometry::new(creation, 1)?;
     let mut scene = TerrainContactScene::default();
     scene.publish(1, &[ground(wall)], &[])?;
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     let mut machine = CpuMachine::new(creation.clone(), 1, state)?;
     let (mut samples, mut deepest, mut degraded) = (Vec::new(), 0.0_f64, 0_u64);
     let (mut requeries, mut hits) = (0_usize, 0_usize);

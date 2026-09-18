@@ -24,8 +24,8 @@ pub use clumps::PreparedClumpBodies;
 pub use error::PhysicsError;
 pub use free_motion::{CpuFreeMotion, CpuSnapshot, ExternalImpulse, MachineState};
 pub use joint_machine::{
-    CpuJointMachine, DriveCommand, JointAttemptFailure, JointFailureStage, JointTickDiagnostics,
-    JointTickSettings, TerrainIntegration, TerrainSubstep,
+    CpuJointMachine, DriveCommand, JointAttemptFailure, JointFailureStage, JointTickConfig,
+    JointTickDiagnostics, TerrainIntegration, TerrainSubstep,
 };
 pub use kinematics::MachineKinematics;
 pub use machine::{BodyPose, MachineDynamics, SpatialMotion};
@@ -35,7 +35,7 @@ pub use response::{
     DynamicsFactorization, ImpulseBounds, PreparedConstraints, solve_constraints,
 };
 pub use soft_step::{
-    CpuMachine, SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain, TerrainLoad,
+    CpuMachine, SoftStepConfig, SoftStepDiagnostics, SoftStepTerrain, TerrainLoad,
 };
 pub use terrain_contacts::{
     ContactObstacle, ContactTarget, MachineCollisionGeometry, TerrainContact,

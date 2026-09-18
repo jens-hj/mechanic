@@ -125,11 +125,11 @@ fn narrow_disconnected_and_holed_contacts_are_rejected() {
     ] {
         assert_eq!(
             weld_contact_square(&source, &destination),
-            Err(WeldRejection::InsufficientContact)
+            Err(WeldError::InsufficientContact)
         );
         assert_eq!(
             weld_contact_square(&destination, &source),
-            Err(WeldRejection::InsufficientContact)
+            Err(WeldError::InsufficientContact)
         );
     }
 }
@@ -365,11 +365,11 @@ fn invalid_material_cannot_supply_missing_contact() {
     let valid = vec![rect(0.0, 0.0, 0.1, 0.1)];
     assert_eq!(
         weld_contact_square(&invalid, &valid),
-        Err(WeldRejection::InsufficientContact)
+        Err(WeldError::InsufficientContact)
     );
     assert_eq!(
         weld_contact_square(&valid, &invalid),
-        Err(WeldRejection::InsufficientContact)
+        Err(WeldError::InsufficientContact)
     );
 }
 

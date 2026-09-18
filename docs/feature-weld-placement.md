@@ -39,7 +39,7 @@ pairs generally permit half-turns). Obstructed compatible orientations remain in
 `WeldPick` resolves evaluated topology only at its captured graph revision. Curved
 chains and tessellation seams are excluded; flat cylinder ends remain selectable.
 `WeldAlignment` owns the feature constraints, and `WeldSnap` owns snap phase.
-`WeldRejection` documents geometry rejection reasons. App feedback also reports
+`WeldError` documents geometry rejection reasons. App feedback also reports
 stale publication, terrain, bounds, and obstruction failures.
 
 The selected rigid bodies' coplanar material must contain a continuous 5 × 5 cm

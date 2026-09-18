@@ -87,7 +87,7 @@ impl PreparedClumpBodies {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CpuMachine, SoftStepSettings, SoftStepTerrain, TerrainContactScene};
+    use crate::{CpuMachine, SoftStepConfig, SoftStepTerrain, TerrainContactScene};
     use bevy_math::DQuat;
     use mechanic_world::{MaterialClump, TerrainMaterial, WorldPosition};
 
@@ -140,7 +140,7 @@ mod tests {
             machine
                 .step(
                     mechanic_core::GRAVITY,
-                    &SoftStepSettings::default(),
+                    &SoftStepConfig::default(),
                     &[],
                     &[],
                     Some(SoftStepTerrain {
@@ -165,7 +165,7 @@ mod tests {
         initial.velocities[0] = 0.7;
         let mut machine = CpuMachine::new(base.clone(), 1, initial).unwrap();
         machine
-            .step(DVec3::ZERO, &SoftStepSettings::default(), &[], &[], None)
+            .step(DVec3::ZERO, &SoftStepConfig::default(), &[], &[], None)
             .unwrap();
         let before = machine.snapshot().clone();
         let clumps = ClumpCollection {

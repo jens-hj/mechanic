@@ -2,7 +2,7 @@
 use super::{
     BuildCommand, BuildPose, ConstructionGraph, ContactPolytope, CpuMachine, CuboidSpec, DVec3,
     DriveCommand, DriveMode, Error, GRAVITY, GridRotation, IVec3, Instant, MachineState,
-    SoftStepSettings, SoftStepTerrain, finite_support, json, scale,
+    SoftStepConfig, SoftStepTerrain, finite_support, json, scale,
 };
 use bevy_math::Vec3;
 use mechanic_core::{BearingSpec, BuildOutcome, FaceKind, FaceRef, PartId, WeldSpec};
@@ -20,7 +20,7 @@ fn spawn(graph: &mut ConstructionGraph, ticks: IVec3) -> Result<PartId, Box<dyn 
 
 #[allow(clippy::too_many_lines)] // Keep the paired fixture and measurement protocol together.
 pub(super) fn run(options: &scale::Options) -> Result<(), Box<dyn Error>> {
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     for rotor in [true, false] {
         for unrelated in [0, 32] {
             let mut graph = ConstructionGraph::new();
@@ -188,7 +188,7 @@ fn vehicle(options: &scale::Options) -> Result<(), Box<dyn Error>> {
                 },
             })
             .collect::<Vec<_>>();
-        let settings = SoftStepSettings::default();
+        let settings = SoftStepConfig::default();
         let mut samples = Vec::new();
         let (mut query, mut continuous) = (0.0, 0.0);
         let (mut candidates, mut requeries, mut sweeps, mut degraded) = (0, 0, 0, 0);

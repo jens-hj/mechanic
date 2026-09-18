@@ -1733,11 +1733,8 @@ impl ConstructionGraph {
     ///
     /// # Errors
     /// Rejects missing faces or a construction that cannot compile.
-    pub fn weld_mating_faces(
-        &self,
-        selected: FaceRef,
-    ) -> Result<Vec<FaceRef>, crate::WeldRejection> {
-        let reject = crate::WeldRejection::InvalidFeature;
+    pub fn weld_mating_faces(&self, selected: FaceRef) -> Result<Vec<FaceRef>, crate::WeldError> {
+        let reject = crate::WeldError::InvalidFeature;
         let target = self.face_geometry(selected).map_err(|_| reject)?;
         let FaceOwner::Part(part) = selected.owner else {
             return Ok(vec![selected]);
@@ -1872,7 +1869,7 @@ impl ConstructionGraph {
         &self,
         source: &[FaceRef],
         destination: &[FaceRef],
-    ) -> Result<Vec3, crate::WeldRejection> {
+    ) -> Result<Vec3, crate::WeldError> {
         self.weld_contact_square_transformed(
             source,
             destination,
@@ -1891,11 +1888,11 @@ impl ConstructionGraph {
         destination: &[FaceRef],
         source_motion: crate::ConstructionFrame,
         destination_motion: crate::ConstructionFrame,
-    ) -> Result<Vec3, crate::WeldRejection> {
-        let rejection = crate::WeldRejection::InsufficientContact;
+    ) -> Result<Vec3, crate::WeldError> {
+        let rejection = crate::WeldError::InsufficientContact;
         let mut target = self
             .face_geometry(*destination.first().ok_or(rejection)?)
-            .map_err(|_| crate::WeldRejection::InvalidFeature)?;
+            .map_err(|_| crate::WeldError::InvalidFeature)?;
         target.center = destination_motion.point(target.center);
         target.normal = destination_motion.vector(target.normal);
         target.tangent_u = destination_motion.vector(target.tangent_u);

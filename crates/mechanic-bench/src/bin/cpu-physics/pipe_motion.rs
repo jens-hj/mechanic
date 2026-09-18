@@ -54,7 +54,7 @@ pub(super) fn scene_ticks(
     background: Option<&str>,
     options: &scale::Options,
 ) -> Result<(), Box<dyn Error>> {
-    use super::{CpuMachine, GRAVITY, SoftStepSettings, SoftStepTerrain};
+    use super::{CpuMachine, GRAVITY, SoftStepConfig, SoftStepTerrain};
     let load = |path: &str| -> Result<mechanic_core::CreationDocument, Box<dyn Error>> {
         let instance: mechanic_world::WorldCreationInstanceDoc =
             ron::from_str(&std::fs::read_to_string(path)?)?;
@@ -111,7 +111,7 @@ pub(super) fn scene_ticks(
     let geometry = MachineCollisionGeometry::new(&creation, 1)?;
     let mut scene = TerrainContactScene::default();
     scene.publish(1, &[super::ground(false)], &[])?;
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     let terrain = || SoftStepTerrain {
         scene: &scene,
         geometry: &geometry,

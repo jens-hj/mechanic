@@ -61,8 +61,8 @@ pub(super) fn rotor(anchored: bool) -> CompiledCreation {
         .unwrap()
 }
 
-fn fixed(substeps: u32) -> JointTickSettings {
-    JointTickSettings {
+fn fixed(substeps: u32) -> JointTickConfig {
+    JointTickConfig {
         substeps,
         maximum_substeps: substeps,
         ..Default::default()
@@ -444,7 +444,7 @@ fn failed_tick_and_drive_change_are_rolled_back_then_can_be_retried() {
         coordinate: 0,
         drive,
     };
-    let settings = JointTickSettings {
+    let settings = JointTickConfig {
         constraint_iterations: 1,
         maximum_substeps: 8,
         ..Default::default()
@@ -528,7 +528,7 @@ fn nonlinear_retry_restarts_the_same_tick_without_duplicating_impulses() {
         point: initial.poses[1].position,
         impulse: DVec3::Y * -20.0,
     };
-    let settings = JointTickSettings {
+    let settings = JointTickConfig {
         force_iterations: 8,
         ..Default::default()
     };
@@ -560,7 +560,7 @@ fn nonlinear_retry_restarts_the_same_tick_without_duplicating_impulses() {
     direct
         .step(
             DVec3::ZERO,
-            JointTickSettings {
+            JointTickConfig {
                 substeps: accepted,
                 maximum_substeps: accepted,
                 ..settings

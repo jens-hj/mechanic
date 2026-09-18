@@ -34,7 +34,7 @@ const SUBMERGED_CORNERS: usize = 1 << 20;
 
 /// Fixed solver parameters. Defaults suit 60 Hz game ticks.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SoftStepSettings {
+pub struct SoftStepConfig {
     /// Numerical factor for the effective dynamics.
     pub factorization: DynamicsFactorization,
     /// Substeps per external tick.
@@ -88,7 +88,7 @@ pub struct SoftStepSettings {
     pub joint_damping_ratio: f64,
 }
 
-impl Default for SoftStepSettings {
+impl Default for SoftStepConfig {
     fn default() -> Self {
         Self {
             factorization: DynamicsFactorization::Articulated,
@@ -116,7 +116,7 @@ impl Default for SoftStepSettings {
     }
 }
 
-impl SoftStepSettings {
+impl SoftStepConfig {
     fn is_valid(&self) -> bool {
         let nonnegative = [
             self.contact_hertz,
@@ -527,7 +527,7 @@ impl CpuMachine {
     pub fn step(
         &mut self,
         gravity: DVec3,
-        settings: &SoftStepSettings,
+        settings: &SoftStepConfig,
         impulses: &[ExternalImpulse],
         commands: &[DriveCommand],
         terrain: Option<SoftStepTerrain<'_>>,
@@ -902,7 +902,7 @@ impl CpuMachine {
         &self,
         terrain: SoftStepTerrain<'_>,
         state: &MachineState,
-        settings: &SoftStepSettings,
+        settings: &SoftStepConfig,
         gravity: DVec3,
         warm: &BTreeMap<TerrainContactFeature, [f64; 5]>,
         selection: Option<(&crate::terrain_contacts::ContactGroups, &[f64])>,
@@ -1039,7 +1039,7 @@ fn clamp_coordinates(
 // Rejects non-finite state and bounds runaway speeds, which count as degraded.
 fn sane(
     state: &mut MachineState,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
     diagnostics: &mut SoftStepDiagnostics,
 ) -> bool {
     let finite = state

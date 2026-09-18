@@ -13,7 +13,7 @@ fn impact_applies_restitution_once_without_moving_or_biasing_penetration() {
     scene
         .publish(1, &[terrain([TerrainMaterial::Rock; 2])], &[])
         .unwrap();
-    let settings = JointTickSettings::default();
+    let settings = JointTickConfig::default();
     let mut previous: Option<f64> = None;
     for depth in [0.0, 0.001, 0.004] {
         let mut state = MachineState {
@@ -96,7 +96,7 @@ fn failed_instantaneous_solve_preserves_all_physical_state() {
     let impact = query
         .impact_constraints(&model, &state.velocities, 1.0, 1e-7)
         .unwrap();
-    let settings = JointTickSettings {
+    let settings = JointTickConfig {
         constraint_iterations: 1,
         tolerance: 1e-30,
         ..Default::default()
@@ -158,7 +158,7 @@ fn contact_impulse_respects_an_active_joint_stop_and_back_drives_the_root() {
         &creation.coordinate_drives,
         &mut free,
         &impact,
-        JointTickSettings::default(),
+        JointTickConfig::default(),
         &mut JointTickDiagnostics::default(),
     )
     .unwrap();
@@ -174,7 +174,7 @@ fn contact_impulse_respects_an_active_joint_stop_and_back_drives_the_root() {
         &drives,
         &mut stopped,
         &impact,
-        JointTickSettings::default(),
+        JointTickConfig::default(),
         &mut diagnostics,
     )
     .unwrap();

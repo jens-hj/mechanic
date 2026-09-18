@@ -8,13 +8,7 @@ fn tick(
     tick: u64,
 ) -> MachineState {
     let outcome = world
-        .step_candidate(
-            gravity,
-            JointTickSettings::default(),
-            &[],
-            &[],
-            Some(terrain),
-        )
+        .step_candidate(gravity, JointTickConfig::default(), &[], &[], Some(terrain))
         .map(|snapshot| snapshot.state.clone());
     outcome.unwrap_or_else(|error| {
         panic!(

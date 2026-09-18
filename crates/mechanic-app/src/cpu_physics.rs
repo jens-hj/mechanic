@@ -13,7 +13,7 @@ use mechanic_gpu::{
 };
 use mechanic_physics::{
     BodyPose, CpuMachine, DriveCommand, ExternalImpulse, MachineKinematics, MachineState,
-    PhysicsError, SoftStepSettings, SoftStepTerrain, TerrainContactScene,
+    PhysicsError, SoftStepConfig, SoftStepTerrain, TerrainContactScene,
 };
 use mechanic_world::{TerrainMeshChunk, TerrainNodeId};
 use std::collections::BTreeMap;
@@ -86,7 +86,7 @@ pub(crate) struct CpuRoute {
     published: bool,
     /// App tick at publication; earlier commands belong to a retired scene.
     base_tick: u64,
-    settings: SoftStepSettings,
+    settings: SoftStepConfig,
     /// Ticks since this route was built that hit a numerical fallback.
     degraded_ticks: u64,
 }
@@ -141,7 +141,7 @@ impl PreparedRoute {
             origin: DVec3::ZERO,
             published: false,
             base_tick,
-            settings: SoftStepSettings::default(),
+            settings: SoftStepConfig::default(),
             degraded_ticks: 0,
         })
     }

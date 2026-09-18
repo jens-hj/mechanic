@@ -7,7 +7,7 @@ use mechanic_core::{
     CompiledBearing, CompiledCreation, ContactCylinder, CoordinateDrive, CylinderAnchor, DriveMode,
 };
 
-use super::{SoftStepDiagnostics, SoftStepSettings, SoftStepTerrain};
+use super::{SoftStepConfig, SoftStepDiagnostics, SoftStepTerrain};
 use crate::{
     BodyPose, DynamicsFactor, MachineCollisionGeometry, MachineKinematics, MachineMotion,
     MachineState, PhysicsError, TerrainContact, TerrainContactFeature, TerrainSweepHit,
@@ -388,7 +388,7 @@ impl Closure {
         model: &MachineKinematics,
         factor: &DynamicsFactor,
         bearing: &CompiledBearing,
-        settings: &SoftStepSettings,
+        settings: &SoftStepConfig,
     ) -> Result<Self, PhysicsError> {
         let (a, b) = (bearing.compound_a as usize, bearing.compound_b as usize);
         let frame = ClosureFrame::new(creation, &model.poses, bearing);
@@ -510,7 +510,7 @@ impl Closure {
         soft: Soft,
         relax: bool,
         dt: f64,
-        settings: &SoftStepSettings,
+        settings: &SoftStepConfig,
     ) {
         let [position, orientation, stops] = impulses.get_disjoint_mut([0..3, 3..6, 6..8]).unwrap();
         self.position
@@ -770,7 +770,7 @@ pub(super) fn substep(
     joints: &mut JointImpulses,
     gravity: DVec3,
     dt: f64,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
     terrain: Option<SoftStepTerrain<'_>>,
     coverage: &crate::terrain_contacts::ContactGroups,
     diagnostics: &mut SoftStepDiagnostics,
@@ -1067,7 +1067,7 @@ fn continuous_fraction(
     state: &MachineState,
     terrain: SoftStepTerrain<'_>,
     dt: f64,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
     coverage: &crate::terrain_contacts::ContactGroups,
     contacts: &[Contact],
     diagnostics: &mut SoftStepDiagnostics,
@@ -1187,7 +1187,7 @@ fn missed(
     buried: &crate::terrain_contacts::TerrainContactQuery,
     hit: TerrainSweepHit,
     radius: f64,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
 ) -> bool {
     buried.contacts.iter().any(|contact| {
         contact.feature.touches(hit.collider, hit.target)
@@ -1200,7 +1200,7 @@ fn missed(
 fn buried_too_deep(
     terrain: SoftStepTerrain<'_>,
     buried: &crate::terrain_contacts::TerrainContactQuery,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
 ) -> bool {
     buried.contacts.iter().any(|contact| {
         let other = match contact.feature.obstacle {
@@ -1221,7 +1221,7 @@ fn collider_radius(terrain: SoftStepTerrain<'_>, row: usize) -> f64 {
 }
 
 // How deep a swept arrival may end before it cuts the substep.
-fn allowed_depth(radius: f64, settings: &SoftStepSettings) -> f64 {
+fn allowed_depth(radius: f64, settings: &SoftStepConfig) -> f64 {
     settings.continuous_depth.min(0.25 * radius)
 }
 
@@ -1231,7 +1231,7 @@ fn joint_rows(
     joints: &mut JointImpulses,
     factor: &DynamicsFactor,
     dt: f64,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
 ) -> Result<(Vec<Limit>, Vec<Drive>), PhysicsError> {
     let creation = machine.creation;
     let size = state.velocities.len();
@@ -1315,7 +1315,7 @@ fn pass(
     [soft, joint_soft]: [Soft; 2],
     relax: bool,
     dt: f64,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
 ) {
     for drive in drives {
         let impulse = &mut joints.drive[drive.coordinate];
@@ -1385,7 +1385,7 @@ fn normal(
     soft: Soft,
     relax: bool,
     dt: f64,
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
 ) {
     let (bias, mass_scale, impulse_scale) = if separation > 0.0 {
         (separation / dt, 1.0, 0.0)
@@ -1427,7 +1427,7 @@ pub(super) fn restitution(
     contacts: &mut [Contact],
     points: &[PointRows],
     velocities: &mut [f64],
-    settings: &SoftStepSettings,
+    settings: &SoftStepConfig,
 ) -> f64 {
     let mut error = 0.0_f64;
     for (contact, point) in contacts.iter_mut().zip(points) {

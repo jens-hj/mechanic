@@ -62,7 +62,7 @@ fn saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension() 
                 world
                     .step_candidate(
                         mechanic_core::GRAVITY,
-                        JointTickSettings {
+                        JointTickConfig {
                             factorization,
                             ..fixed(substeps)
                         },
@@ -199,7 +199,7 @@ fn saved_car_cold_drop_resolves_its_first_impact_before_publication() {
         let result = world
             .step_candidate(
                 mechanic_core::GRAVITY,
-                JointTickSettings::default(),
+                JointTickConfig::default(),
                 &[],
                 &[],
                 Some(&terrain),

@@ -4,7 +4,7 @@
 use bevy_math::{DQuat, DVec3};
 use mechanic_core::CompiledCreation;
 use mechanic_physics::{
-    CpuMachine, MachineState, PreparedClumpBodies, SoftStepSettings, SoftStepTerrain,
+    CpuMachine, MachineState, PreparedClumpBodies, SoftStepConfig, SoftStepTerrain,
     TerrainContactScene,
 };
 use mechanic_world::{
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut machine = CpuMachine::new(prepared.creation, 1, prepared.state)?;
     let mut scene = TerrainContactScene::default();
     scene.publish(1, &[floor()], &[])?;
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     let mut timings = Vec::new();
     let mut degraded = 0_u32;
     let mut minimum_y = f64::INFINITY;

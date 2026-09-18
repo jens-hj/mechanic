@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn saved_car_joint_ticks_keep_authored_suspension_and_drives_and_repeat() {
-        use mechanic_physics::{CpuJointMachine, DriveCommand, JointTickSettings, MachineState};
+        use mechanic_physics::{CpuJointMachine, DriveCommand, JointTickConfig, MachineState};
         let creation = car();
         let driven = creation
             .coordinate_drives
@@ -322,7 +322,7 @@ mod tests {
         let mut second = CpuJointMachine::new(creation, 3, initial).unwrap();
         let mut effort = 0.0_f64;
         for tick in 1..=120 {
-            let settings = JointTickSettings::default();
+            let settings = JointTickConfig::default();
             let commands = if matches!(tick, 1 | 61) {
                 driven
                     .iter()

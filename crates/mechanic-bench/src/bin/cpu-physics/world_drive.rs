@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use super::{
     CpuMachine, DVec3, DriveCommand, Error, GRAVITY, Instant, MachineCollisionGeometry,
-    MachineState, SoftStepSettings, SoftStepTerrain, TerrainContactScene, json, scale,
+    MachineState, SoftStepConfig, SoftStepTerrain, TerrainContactScene, json, scale,
 };
 use mechanic_core::{ContactPolytope, DriveKey, DriveMode, DriveTarget};
 use mechanic_physics::MachineKinematics;
@@ -153,7 +153,7 @@ pub(super) fn run(
     let mut remesh_ms = 0.0;
     let mut sunk_metres = 0.0;
     let mut maximum_rut = 0.0_f64;
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     let mut machine = CpuMachine::new(creation.clone(), 1, MachineState::at_rest(&creation))?;
     let mut window = Window::default();
     let mut measured = Window::default();

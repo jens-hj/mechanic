@@ -160,7 +160,7 @@ pub enum SavedWorldStatus {
 
 /// Result of opening an entry from the world list.
 #[derive(Clone, Debug, PartialEq)]
-pub enum OpenWorldResult {
+pub enum OpenWorldOutcome {
     /// Current world ready to play.
     Opened(Box<WorldDocument>),
     /// Incompatible direct-child directory was removed as requested by policy.
@@ -655,15 +655,15 @@ impl WorldStore {
     ///
     /// Current corrupt worlds report their exact failing file and remain
     /// untouched. Outdated deletion validates the direct-child target again.
-    pub fn open_entry(&self, entry: &SavedWorld) -> Result<OpenWorldResult, WorldSaveError> {
+    pub fn open_entry(&self, entry: &SavedWorld) -> Result<OpenWorldOutcome, WorldSaveError> {
         match &entry.status {
             SavedWorldStatus::Current => self
                 .load_world(&entry.path)
                 .map(Box::new)
-                .map(OpenWorldResult::Opened),
+                .map(OpenWorldOutcome::Opened),
             SavedWorldStatus::Outdated => {
                 self.delete_world(&entry.path)?;
-                Ok(OpenWorldResult::OutdatedRemoved {
+                Ok(OpenWorldOutcome::OutdatedRemoved {
                     path: entry.path.clone(),
                 })
             }
@@ -920,7 +920,7 @@ mod tests {
     use mechanic_core::{CREATION_FORMAT_VERSION, CreationDocument, DimensionLinkId};
 
     use super::{
-        AutosaveState, FrozenCreationDoc, OpenWorldResult, SavedWorldStatus, WORLD_FORMAT_VERSION,
+        AutosaveState, FrozenCreationDoc, OpenWorldOutcome, SavedWorldStatus, WORLD_FORMAT_VERSION,
         WorldCreationInstanceDoc, WorldDocument, WorldPoseDoc, WorldSaveError, WorldStore,
     };
     use crate::{TerrainField, TerrainOctree, WorldPosition, WorldSeed};
@@ -1250,7 +1250,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store.open_entry(&entry).unwrap(),
-            OpenWorldResult::OutdatedRemoved {
+            OpenWorldOutcome::OutdatedRemoved {
                 path: directory.clone()
             }
         );

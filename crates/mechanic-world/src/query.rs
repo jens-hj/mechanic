@@ -526,7 +526,7 @@ pub const MAX_KINEMATIC_REACTIONS: usize = 8;
 
 /// Observable result of one fixed controller tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct KinematicTickResult {
+pub struct KinematicTickOutcome {
     /// Fixed-capacity reaction rows; only the prefix ending at `reaction_count` is valid.
     pub reactions: [KinematicContactReaction; MAX_KINEMATIC_REACTIONS],
     /// Number of populated reaction rows.
@@ -539,7 +539,7 @@ pub struct KinematicTickResult {
     pub stepped_height: f32,
 }
 
-impl Default for KinematicTickResult {
+impl Default for KinematicTickOutcome {
     fn default() -> Self {
         Self {
             reactions: [KinematicContactReaction::default(); MAX_KINEMATIC_REACTIONS],
@@ -551,7 +551,7 @@ impl Default for KinematicTickResult {
     }
 }
 
-impl KinematicTickResult {
+impl KinematicTickOutcome {
     /// Populated equal-and-opposite reaction rows.
     pub fn reaction_impulses(&self) -> &[KinematicContactReaction] {
         &self.reactions[..self.reaction_count]
@@ -615,8 +615,8 @@ impl KinematicCapsule {
         scene: &mut KinematicCollisionScene<'_, T>,
         input: KinematicInput,
         delta_seconds: f64,
-    ) -> KinematicTickResult {
-        let mut result = KinematicTickResult::default();
+    ) -> KinematicTickOutcome {
+        let mut result = KinematicTickOutcome::default();
         let mut support_velocity = Vec3::ZERO;
         if let Some(mut support) = self.support {
             let current_pose = scene

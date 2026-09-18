@@ -45,14 +45,14 @@ pub use mesh::{
     mesh_chunk, mesh_chunk_profiled, mesh_chunk_profiled_prepared,
 };
 pub use persistence::{
-    AUTOSAVE_DEBOUNCE, AUTOSAVE_DIRTY_INTERVAL, AutosaveState, FrozenCreationDoc, OpenWorldResult,
+    AUTOSAVE_DEBOUNCE, AUTOSAVE_DIRTY_INTERVAL, AutosaveState, FrozenCreationDoc, OpenWorldOutcome,
     SavedWorld, SavedWorldStatus, WORLD_FORMAT_VERSION, WorldCreationInstanceDoc, WorldDocument,
     WorldInstanceIndexDoc, WorldPoseDoc, WorldSaveError, WorldStore,
 };
 pub use query::{
     ActiveTerrainScene, FoundationRefresh, FoundationSample, FoundationSpatialIndex,
     FoundationSupport, KinematicCapsule, KinematicCapsuleConfig, KinematicContactReaction,
-    KinematicInput, KinematicSupport, KinematicTickResult, TerrainDensity, TerrainScene,
+    KinematicInput, KinematicSupport, KinematicTickOutcome, TerrainDensity, TerrainScene,
     TerrainSpatialIndex, WorldConstructionEditability, raycast_density,
 };
 pub use soil::{SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};

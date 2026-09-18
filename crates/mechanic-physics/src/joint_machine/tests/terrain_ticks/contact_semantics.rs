@@ -74,7 +74,7 @@ fn an_impact_above_the_threshold_rebounds_at_the_material_restitution() {
             state,
             mechanic_core::GRAVITY,
             duration,
-            JointTickSettings::default(),
+            JointTickConfig::default(),
             Some(&terrain),
             diagnostics,
         )
@@ -165,7 +165,7 @@ fn a_settled_box_stays_within_the_activation_window() {
         let result = machine
             .step_candidate(
                 mechanic_core::GRAVITY,
-                JointTickSettings::default(),
+                JointTickConfig::default(),
                 &[],
                 &[],
                 Some(&terrain),
@@ -221,7 +221,7 @@ fn a_sprung_wheel_settles_on_the_floor_at_its_spring_equilibrium() {
         let result = machine
             .step_candidate(
                 mechanic_core::GRAVITY,
-                JointTickSettings::default(),
+                JointTickConfig::default(),
                 &[],
                 &[],
                 Some(&terrain),
@@ -327,7 +327,7 @@ fn a_long_multi_collider_body_settles_on_a_redundant_manifold() {
         let result = machine
             .step_candidate(
                 mechanic_core::GRAVITY,
-                JointTickSettings::default(),
+                JointTickConfig::default(),
                 &[],
                 &[],
                 Some(&terrain),
@@ -434,7 +434,7 @@ fn a_rolling_wheel_only_loses_energy_on_its_facets() {
         let result = machine
             .step_candidate(
                 mechanic_core::GRAVITY,
-                JointTickSettings::default(),
+                JointTickConfig::default(),
                 &[],
                 &[],
                 Some(&terrain),
@@ -491,7 +491,7 @@ fn a_separating_box_leaves_without_a_contact_impulse() {
     let result = machine
         .step_candidate(
             mechanic_core::GRAVITY,
-            JointTickSettings::default(),
+            JointTickConfig::default(),
             &[],
             &[],
             Some(&terrain),
@@ -522,7 +522,7 @@ fn a_box_that_returns_within_one_tick_stops_on_the_surface() {
     let result = machine
         .step_candidate(
             mechanic_core::GRAVITY,
-            JointTickSettings::default(),
+            JointTickConfig::default(),
             &[],
             &[],
             Some(&terrain),
@@ -558,7 +558,7 @@ fn settles_at_rest(integration: TerrainIntegration, ticks: u64) -> (f64, f64) {
         let result = machine
             .step_candidate(
                 mechanic_core::GRAVITY,
-                JointTickSettings::default(),
+                JointTickConfig::default(),
                 &[],
                 &[],
                 Some(&terrain),

@@ -1,8 +1,8 @@
 //! Split finite-terrain position recovery. Scratch displacements never become velocity.
 
 use super::{
-    CompiledCreation, ConstraintBlock, CoordinateDrive, ImpulseBounds, JointTickDiagnostics,
-    JointTickSettings, MachineDynamics, MachineState, PhysicsError, TerrainSubstep,
+    CompiledCreation, ConstraintBlock, CoordinateDrive, ImpulseBounds, JointTickConfig,
+    JointTickDiagnostics, MachineDynamics, MachineState, PhysicsError, TerrainSubstep,
     advance_positions, bounds, validate_positions,
 };
 use crate::terrain_contacts::CONTACT_ACTIVATION_DISTANCE;
@@ -12,7 +12,7 @@ pub(super) fn correct(
     creation: &CompiledCreation,
     drives: &[CoordinateDrive],
     state: &mut MachineState,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     terrain: Option<&TerrainSubstep<'_>>,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<(), PhysicsError> {
@@ -26,7 +26,7 @@ fn correct_candidate(
     creation: &CompiledCreation,
     drives: &[CoordinateDrive],
     state: &mut MachineState,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     terrain: Option<&TerrainSubstep<'_>>,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<(), PhysicsError> {

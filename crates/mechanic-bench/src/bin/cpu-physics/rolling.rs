@@ -9,7 +9,7 @@ use mechanic_core::{
     CylinderDimensions, CylinderSpec, GridRotation, LayerFace, MaterialAppearance,
 };
 use mechanic_physics::{
-    CpuMachine, MachineCollisionGeometry, MachineState, SoftStepSettings, SoftStepTerrain,
+    CpuMachine, MachineCollisionGeometry, MachineState, SoftStepConfig, SoftStepTerrain,
     TerrainContactScene,
 };
 use mechanic_world::{
@@ -70,7 +70,7 @@ fn roll(floor: &str, height: &dyn Fn(f64) -> f64, speed: f64) -> Result<(), Box<
     let geometry = MachineCollisionGeometry::new(&creation, 1)?;
     let mut scene = TerrainContactScene::default();
     scene.publish(1, &[tessellated(height)], &[])?;
-    let settings = SoftStepSettings::default();
+    let settings = SoftStepConfig::default();
     let mut machine = CpuMachine::new(creation, 1, state)?;
     let (mut ticks, mut queries) = (Vec::new(), Vec::new());
     let (mut lowest, mut highest) = (f64::INFINITY, f64::NEG_INFINITY);

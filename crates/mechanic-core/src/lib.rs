@@ -120,6 +120,6 @@ pub use units::{
     rad_s_to_rpm, rpm_to_rad_s,
 };
 pub use weld::{
-    WeldAlignment, WeldCollider, WeldConstraint, WeldFeature, WeldFeatureRef, WeldMaterialPatch,
-    WeldPick, WeldPlacement, WeldRejection, WeldSelection, WeldSnap, weld_contact_square,
+    WeldAlignment, WeldCollider, WeldConstraint, WeldError, WeldFeature, WeldFeatureRef,
+    WeldMaterialPatch, WeldPick, WeldPlacement, WeldSelection, WeldSnap, weld_contact_square,
 };

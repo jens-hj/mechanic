@@ -1,6 +1,6 @@
 //! Instantaneous coupled contact and joint-stop impact. No elapsed force time.
 
-use super::{JointTickDiagnostics, JointTickSettings, bounds, stops};
+use super::{JointTickConfig, JointTickDiagnostics, bounds, stops};
 use crate::{
     ConstraintBlock, ImpulseBounds, MachineDynamics, MachineState, PhysicsError,
     TerrainImpactConstraints,
@@ -14,7 +14,7 @@ pub(super) fn activate(
     drives: &[CoordinateDrive],
     state: &mut MachineState,
     contacts: &TerrainImpactConstraints,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<bool, PhysicsError> {
     activate_candidate(
@@ -38,7 +38,7 @@ fn activate_candidate(
     drives: &[CoordinateDrive],
     state: &mut MachineState,
     contacts: &TerrainImpactConstraints,
-    settings: JointTickSettings,
+    settings: JointTickConfig,
     diagnostics: &mut JointTickDiagnostics,
 ) -> Result<bool, PhysicsError> {
     let closing = contacts.blocks.iter().any(|block| {
