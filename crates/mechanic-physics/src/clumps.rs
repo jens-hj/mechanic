@@ -139,7 +139,7 @@ mod tests {
         for _ in 0..180 {
             machine
                 .step(
-                    -DVec3::Y * 9.81,
+                    mechanic_core::GRAVITY,
                     &SoftStepSettings::default(),
                     &[],
                     &[],

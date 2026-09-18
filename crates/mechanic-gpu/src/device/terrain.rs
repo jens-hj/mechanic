@@ -477,10 +477,12 @@ pub(super) mod tests {
                 let rotation = bevy_math::Quat::from_array(pose.rotation);
                 let vertical_radius = (rotation.inverse() * Vec3::Y).abs().element_sum() * 0.5;
                 let penetration = (vertical_radius - pose.position[1]).max(0.0);
-                let incoming = (previous_velocity - 9.81 * crate::FIXED_DT_SECONDS) * 0.999;
+                let incoming = (previous_velocity
+                    - mechanic_core::STANDARD_GRAVITY_M_S2_F32 * mechanic_core::TICK_SECONDS_F32)
+                    * 0.999;
                 let outgoing = sample.velocities[0].linear[1];
-                let position_correction =
-                    pose.position[1] - (previous_height + incoming * crate::FIXED_DT_SECONDS);
+                let position_correction = pose.position[1]
+                    - (previous_height + incoming * mechanic_core::TICK_SECONDS_F32);
                 println!(
                     "{{\"scenario\":\"terrain_downward_impact\",\"speed_mps\":{speed},\"tick\":{tick},\"penetration_m\":{penetration},\"incoming_y_mps\":{incoming},\"outgoing_y_mps\":{outgoing},\"restitution\":0,\"recovery_velocity_target_mps\":0,\"position_correction_y_m\":{position_correction},\"contacts\":{},\"failure_flags\":{}}}",
                     sample.diagnostics.contact_count, sample.diagnostics.error_flags

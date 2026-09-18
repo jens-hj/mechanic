@@ -126,12 +126,12 @@ use mechanic_core::{
     MIN_CYLINDER_SWEEP_DEGREES, MaterialAppearance, POSITION_TICK_METERS,
     POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartId, PartPiece, PartSpec,
     PendingOperation, PipeBendDimensions, RegionId, STEP_METERS, STEPS_PER_CELL,
-    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TopologyError, TransmissionSpec,
-    face_neighbour_offset, part_cells,
+    SeatControllerLinkSpec, SeatSpec, ServoSpec, ShapeRegion, TICK_SECONDS_F32, TopologyError,
+    TransmissionSpec, face_neighbour_offset, part_cells,
 };
 use mechanic_gpu::{
-    FIXED_DT_SECONDS, FixedStepScheduler, GpuExternalImpulse, GpuPhysics, GpuPhysicsConfig,
-    GpuPhysicsPipelines, GpuTickReadback, GpuTransform, GpuVelocity,
+    FixedStepScheduler, GpuExternalImpulse, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines,
+    GpuTickReadback, GpuTransform, GpuVelocity,
 };
 use pause_menu::{PauseMenuState, PauseRequest};
 use performance::PerformanceMetrics;
@@ -2906,7 +2906,7 @@ fn measured_engine_speeds(
     if tick_delta == 0 || simulation.previous_transforms.len() != simulation.transforms.len() {
         return Vec::new();
     }
-    let delta_seconds = tick_delta as f32 * FIXED_DT_SECONDS;
+    let delta_seconds = tick_delta as f32 * TICK_SECONDS_F32;
     let mut result = Vec::<(PartId, EngineKind, f32)>::new();
     for row in sequencer.rows() {
         let Some(link) = graph.drive_link(row.link) else {
@@ -13192,7 +13192,7 @@ fn hammer_point_travel(
         .filter(|collider| collider.compound_index == body_index)
         .map(|collider| collider.local_center.length() + collider_reach(collider))
         .fold(0.0_f32, f32::max);
-    (linear_delta.length() + angular_delta.length() * maximum_radius) * FIXED_DT_SECONDS
+    (linear_delta.length() + angular_delta.length() * maximum_radius) * TICK_SECONDS_F32
 }
 
 /// How far one collider extends from its own centre.

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::PHYSICS_TPS;
+use mechanic_core::TICK_RATE_HZ;
 
 const PHASE_DENOMINATOR: u128 = 1_000_000_000;
 
@@ -56,7 +56,7 @@ impl FixedStepScheduler {
     pub fn advance(&mut self, elapsed: Duration) -> ScheduledTicks {
         self.phase = self
             .phase
-            .saturating_add(elapsed.as_nanos().saturating_mul(u128::from(PHYSICS_TPS)));
+            .saturating_add(elapsed.as_nanos().saturating_mul(u128::from(TICK_RATE_HZ)));
         let due = self.phase / PHASE_DENOMINATOR;
         self.phase %= PHASE_DENOMINATOR;
         let count = u64::try_from(due).unwrap_or(u64::MAX);

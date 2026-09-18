@@ -201,14 +201,14 @@ fn gravity_is_reintegrated_at_the_impact_time_before_restitution() {
         .unwrap()
         .contacts[0]
         .response[2];
-    let impact_time = (2.0 * gap / 9.81_f64).sqrt();
-    let rebound = restitution * 9.81 * impact_time;
+    let impact_time = (2.0 * gap / mechanic_core::STANDARD_GRAVITY_M_S2).sqrt();
+    let rebound = restitution * mechanic_core::STANDARD_GRAVITY_M_S2 * impact_time;
     let remaining = TICK_SECONDS - impact_time;
     // The full tick can contain repeated bounces; isolate one analytic impact.
     assert!(remaining > 0.0);
     let world = CpuJointMachine::new(creation, 7, initial).unwrap();
     // Inspect a single physical interval ending before the second analytic hit.
-    let duration = impact_time + rebound / 9.81 * 0.5;
+    let duration = impact_time + rebound / mechanic_core::STANDARD_GRAVITY_M_S2 * 0.5;
     let mut state = world.snapshot().state.clone();
     let mut diagnostics = JointTickDiagnostics::default();
     events::advance_interval(
@@ -216,7 +216,7 @@ fn gravity_is_reintegrated_at_the_impact_time_before_restitution() {
         &world.passive,
         &world.drives,
         &mut state,
-        -DVec3::Y * 9.81,
+        mechanic_core::GRAVITY,
         duration,
         fixed(1),
         Some(&terrain),
@@ -224,9 +224,14 @@ fn gravity_is_reintegrated_at_the_impact_time_before_restitution() {
     )
     .unwrap();
     let after = duration - impact_time;
-    assert!((state.velocities[1] - (rebound - 9.81 * after)).abs() < 1e-8);
     assert!(
-        (state.poses[0].position.y - (0.5 + rebound * after - 0.5 * 9.81 * after * after)).abs()
+        (state.velocities[1] - (rebound - mechanic_core::STANDARD_GRAVITY_M_S2 * after)).abs()
+            < 1e-8
+    );
+    assert!(
+        (state.poses[0].position.y
+            - (0.5 + rebound * after - 0.5 * mechanic_core::STANDARD_GRAVITY_M_S2 * after * after))
+            .abs()
             < 1e-9
     );
     assert_eq!(diagnostics.impact_events, 1);
@@ -303,14 +308,15 @@ fn separating_support_releases_before_gravity_reverses_its_velocity() {
     let mut initial = MachineState::at_rest(&creation);
     initial.poses[0].position.y = 0.5;
     initial.velocities[1] = 0.1;
-    let expected_height = 0.5 + 0.1 * TICK_SECONDS - 0.5 * 9.81 * TICK_SECONDS * TICK_SECONDS;
-    let expected_velocity = 0.1 - 9.81 * TICK_SECONDS;
+    let expected_height = 0.5 + 0.1 * TICK_SECONDS
+        - 0.5 * mechanic_core::STANDARD_GRAVITY_M_S2 * TICK_SECONDS * TICK_SECONDS;
+    let expected_velocity = 0.1 - mechanic_core::STANDARD_GRAVITY_M_S2 * TICK_SECONDS;
     assert!(expected_height > 0.5 && expected_velocity < 0.0);
     for subdivisions in [1, 2, 4, 8] {
         let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
         world
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 fixed(subdivisions),
                 &[],
                 &[],
@@ -326,7 +332,7 @@ fn separating_support_releases_before_gravity_reverses_its_velocity() {
         assert_eq!(world.diagnostics().impact_events, 0);
         world
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 fixed(subdivisions),
                 &[],
                 &[],
@@ -347,12 +353,12 @@ fn released_support_can_return_and_impact_the_same_triangle_within_one_tick() {
     let mut initial = MachineState::at_rest(&creation);
     initial.poses[0].position.y = 0.5;
     initial.velocities[1] = 0.05;
-    assert!(2.0 * initial.velocities[1] / 9.81 < TICK_SECONDS);
+    assert!(2.0 * initial.velocities[1] / mechanic_core::STANDARD_GRAVITY_M_S2 < TICK_SECONDS);
     for subdivisions in [1, 2, 4, 8] {
         let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
         world
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 fixed(subdivisions),
                 &[],
                 &[],
@@ -429,7 +435,7 @@ fn first_impact_on_an_interior_terrain_triangle_survives_manifold_reduction() {
     assert_eq!(world.diagnostics().terrain_impact_holds, 0);
     for _ in 0..60 {
         world
-            .step_candidate(-DVec3::Y * 9.81, fixed(1), &[], &[], Some(&terrain))
+            .step_candidate(mechanic_core::GRAVITY, fixed(1), &[], &[], Some(&terrain))
             .unwrap();
         assert!((world.snapshot().state.poses[0].position.y - 0.5).abs() < 1e-9);
         assert!(

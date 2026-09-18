@@ -82,7 +82,6 @@ fn exposure_for_space(space: AppSpace) -> Exposure {
 const MAX_PENDING_TERRAIN_EDITS: usize = 4_096;
 mod clumps;
 const TERRAIN_EDIT_BATCH_SIZE: usize = 64;
-const CONTROLLER_DT: f64 = 1.0 / 60.0;
 const MAX_CONTROLLER_TICKS_PER_FRAME: usize = 4;
 const STEP_VISUAL_SMOOTHING_SECONDS: f32 = 0.08;
 
@@ -2521,7 +2520,7 @@ fn walk_world(
                 jump: tick == 0 && jump_queued,
                 jump_held: actions.pressed(GameAction::Jump),
             },
-            CONTROLLER_DT,
+            mechanic_core::TICK_SECONDS,
         );
         camera.yaw += result.support_yaw_delta;
         resolved_contacts = resolved_contacts.saturating_add(result.resolved_contacts);
@@ -2568,11 +2567,12 @@ fn advance_controller(
 ) -> (usize, bool) {
     *jump_queued |= jump_pressed;
     *accumulator += delta_seconds;
-    let ticks = ((*accumulator / CONTROLLER_DT) as usize).min(MAX_CONTROLLER_TICKS_PER_FRAME);
+    let ticks =
+        ((*accumulator / mechanic_core::TICK_SECONDS) as usize).min(MAX_CONTROLLER_TICKS_PER_FRAME);
     if ticks == 0 {
         return (0, false);
     }
-    *accumulator -= CONTROLLER_DT * ticks as f64;
+    *accumulator -= mechanic_core::TICK_SECONDS * ticks as f64;
     (ticks, core::mem::take(jump_queued))
 }
 
@@ -2632,7 +2632,7 @@ fn sync_player_construction_collision(
     let tick_delta = simulation
         .snapshot_tick
         .saturating_sub(runtime.collision_snapshot_tick);
-    let elapsed = tick_delta.max(1) as f32 * mechanic_gpu::FIXED_DT_SECONDS;
+    let elapsed = tick_delta.max(1) as f32 * mechanic_core::TICK_SECONDS_F32;
     runtime
         .collision_poses
         .resize(simulation.transforms.len(), ConstructionBodyPose::default());
@@ -4230,7 +4230,7 @@ mod tests {
     };
 
     use super::{
-        AppSpace, CONTROLLER_DT, SpaceEditorState, TerrainAcknowledgements, TerrainEditOperation,
+        AppSpace, SpaceEditorState, TerrainAcknowledgements, TerrainEditOperation,
         TerrainStrokeSample, WorldDiagnostics, WorldListPhase, WorldListState,
         WorldPrototypePlugin, WorldRuntime, advance_controller, compile_player_collision,
         exposure_for_space, foundation_edit_is_ready, full_rgba8_mip_byte_count,
@@ -4373,7 +4373,7 @@ mod tests {
             advance_controller(
                 &mut accumulator,
                 &mut jump_queued,
-                CONTROLLER_DT * 0.5,
+                mechanic_core::TICK_SECONDS * 0.5,
                 true,
             ),
             (0, false)
@@ -4382,13 +4382,18 @@ mod tests {
             advance_controller(
                 &mut accumulator,
                 &mut jump_queued,
-                CONTROLLER_DT * 0.5,
+                mechanic_core::TICK_SECONDS * 0.5,
                 false,
             ),
             (1, true)
         );
         assert_eq!(
-            advance_controller(&mut accumulator, &mut jump_queued, CONTROLLER_DT, false,),
+            advance_controller(
+                &mut accumulator,
+                &mut jump_queued,
+                mechanic_core::TICK_SECONDS,
+                false,
+            ),
             (1, false)
         );
     }

@@ -10,12 +10,11 @@ use crate::{
 use bevy_math::{DQuat, IVec3, Vec3};
 use mechanic_core::{
     BearingKind, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-    DriveMode, FaceKind, FaceRef, GridRotation, PartId, ShockBodyEnd, ShockSpec, SpringSpec,
-    SuspensionSpec,
+    DriveMode, FaceKind, FaceRef, GRAVITY, GridRotation, PartId, ShockBodyEnd, ShockSpec,
+    SpringSpec, SuspensionSpec,
 };
 use mechanic_world::TerrainMaterial;
 
-const GRAVITY: DVec3 = DVec3::new(0.0, -9.81, 0.0);
 const GENERATION: u64 = 7;
 
 // The 128 m rock floor, optionally with a 128 m wall at `wall` metres facing −X.
@@ -585,7 +584,8 @@ fn two_parallel_suspensions_share_their_load() {
     let creation = twin_suspension(spec);
     // Both springs carry the plate, so each compresses half as far as one would.
     let expected = f64::from(spec.passive_rows()[0][1])
-        - f64::from(creation.compounds[1].mass_properties.mass) * 9.81
+        - f64::from(creation.compounds[1].mass_properties.mass)
+            * mechanic_core::STANDARD_GRAVITY_M_S2
             / (2.0 * f64::from(spring.rate()));
     let state = MachineState::at_rest(&creation);
     let mut world = World::new(creation, state);
@@ -725,7 +725,7 @@ fn a_slow_impact_does_not_bounce() {
 fn a_box_leaving_the_floor_is_not_pulled_back() {
     let mut world = box_above_floor(0.0, 0.5);
     let state = world.tick(GRAVITY);
-    let expected = 0.5 - 9.81 * TICK_SECONDS;
+    let expected = 0.5 - mechanic_core::STANDARD_GRAVITY_M_S2 * TICK_SECONDS;
     assert!(
         (state.velocities[1] - expected).abs() < 1e-9,
         "{} expected {expected}",
@@ -815,8 +815,9 @@ fn a_sprung_block_settles_at_its_spring_equilibrium() {
     for pose in &mut state.poses {
         pose.position.y += 0.502;
     }
-    let equilibrium =
-        -f64::from(creation.compounds[1].mass_properties.mass) * 9.81 / f64::from(spring.rate());
+    let equilibrium = -f64::from(creation.compounds[1].mass_properties.mass)
+        * mechanic_core::STANDARD_GRAVITY_M_S2
+        / f64::from(spring.rate());
     let mut world = World::new(creation, state);
     for _ in 0..240 {
         world.tick(GRAVITY);
@@ -838,7 +839,8 @@ fn a_preloaded_spring_reaches_its_authored_equilibrium() {
         let spec = SuspensionSpec::new(Some(spring), Some(shock), None).unwrap();
         let creation = suspension(spec, true);
         let expected = f64::from(spec.passive_rows()[0][1])
-            - f64::from(creation.compounds[1].mass_properties.mass) * 9.81
+            - f64::from(creation.compounds[1].mass_properties.mass)
+                * mechanic_core::STANDARD_GRAVITY_M_S2
                 / f64::from(spring.rate());
         let state = MachineState::at_rest(&creation);
         let mut world = World::new(creation, state);
@@ -1072,7 +1074,7 @@ fn a_rolling_wheel_does_not_gain_energy() {
         let world_inertia = rotation * inertia * rotation.transpose();
         0.5 * mass * linear.length_squared()
             + 0.5 * angular.dot(world_inertia * angular)
-            + mass * 9.81 * state.poses[0].position.y
+            + mass * mechanic_core::STANDARD_GRAVITY_M_S2 * state.poses[0].position.y
     };
     let initial = energy(&state);
     let mut world = World::new(creation, state);
@@ -1081,7 +1083,7 @@ fn a_rolling_wheel_does_not_gain_energy() {
         let current = energy(&state);
         // A millimetre of lift is the most a soft contact may add.
         assert!(
-            current <= initial + mass * 9.81 * 0.001,
+            current <= initial + mass * mechanic_core::STANDARD_GRAVITY_M_S2 * 0.001,
             "tick {tick}: energy {current} from {initial}"
         );
         assert!(state.velocities[0] > -1e-3, "tick {tick}: rolled backwards");
@@ -1375,8 +1377,8 @@ fn a_resting_body_reports_terrain_normal_load_matching_its_weight() {
             .iter()
             .map(|body| f64::from(body.mass_properties.mass))
             .sum::<f64>()
-            * 9.81
-            * crate::TICK_SECONDS;
+            * mechanic_core::STANDARD_GRAVITY_M_S2
+            * mechanic_core::TICK_SECONDS;
         let impulse = world
             .machine
             .terrain_loads()
@@ -1420,7 +1422,7 @@ fn reported_impact_load_includes_the_rebound_impulse() {
         let before = world.machine.snapshot().state.velocities[1];
         let after = world.tick(GRAVITY).velocities[1];
         if after > 0.0 {
-            let expected = mass * (after - before - GRAVITY.y * crate::TICK_SECONDS);
+            let expected = mass * (after - before - GRAVITY.y * mechanic_core::TICK_SECONDS);
             let impulse = world
                 .machine
                 .terrain_loads()

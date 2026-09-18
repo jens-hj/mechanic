@@ -61,7 +61,7 @@ fn saved_car_first_supported_tick_repeats_with_authored_drives_and_suspension() 
                 let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
                 world
                     .step_candidate(
-                        -DVec3::Y * 9.81,
+                        mechanic_core::GRAVITY,
                         JointTickSettings {
                             factorization,
                             ..fixed(substeps)
@@ -109,7 +109,13 @@ fn saved_car_sustained_support_repeats_at_each_substep_policy() {
             let mut maximum_depth = 0.0_f64;
             for _ in 0..120 {
                 world
-                    .step_candidate(-DVec3::Y * 9.81, fixed(substeps), &[], &[], Some(&terrain))
+                    .step_candidate(
+                        mechanic_core::GRAVITY,
+                        fixed(substeps),
+                        &[],
+                        &[],
+                        Some(&terrain),
+                    )
                     .unwrap();
                 for (body, shape) in &shapes {
                     let pose = world.snapshot().state.poses[*body];
@@ -192,7 +198,7 @@ fn saved_car_cold_drop_resolves_its_first_impact_before_publication() {
         let mut world = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
         let result = world
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 JointTickSettings::default(),
                 &[],
                 &[],

@@ -43,10 +43,10 @@ fn box_on_floor(
 
 // Free fall from `speed` over `height` reaches the surface at this time.
 fn arrival_time(height: f64, speed: f64) -> f64 {
-    (2.0_f64 * 9.81 * height + speed * speed)
+    (2.0_f64 * mechanic_core::STANDARD_GRAVITY_M_S2 * height + speed * speed)
         .sqrt()
         .mul_add(1.0, -speed)
-        / 9.81
+        / mechanic_core::STANDARD_GRAVITY_M_S2
 }
 
 // Splits the tick at the analytic arrival time, separating the impact itself from
@@ -58,7 +58,7 @@ fn an_impact_above_the_threshold_rebounds_at_the_material_restitution() {
     let terrain = context(&scene, &geometry, 7);
     let machine = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
     let arrival = arrival_time(0.002, 1.0);
-    let incoming = 1.0 + 9.81 * arrival;
+    let incoming = 1.0 + mechanic_core::STANDARD_GRAVITY_M_S2 * arrival;
     assert!(
         incoming > terrain.restitution_threshold,
         "this case must exceed the restitution threshold: incoming={incoming:e}"
@@ -72,7 +72,7 @@ fn an_impact_above_the_threshold_rebounds_at_the_material_restitution() {
             &machine.passive,
             &machine.drives,
             state,
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             duration,
             JointTickSettings::default(),
             Some(&terrain),
@@ -91,7 +91,7 @@ fn an_impact_above_the_threshold_rebounds_at_the_material_restitution() {
     // that is leaving the surface.
     let remainder = TICK_SECONDS - arrival;
     advance(&mut state, remainder, &mut diagnostics).unwrap();
-    let expected = rebound - 9.81 * remainder;
+    let expected = rebound - mechanic_core::STANDARD_GRAVITY_M_S2 * remainder;
     assert!(
         (state.velocities[1] - expected).abs() <= 1e-6,
         "vertical={:e} expected={expected:e}",
@@ -106,7 +106,7 @@ fn an_impact_below_the_threshold_stops_dead_for_every_substep_policy() {
         let (creation, geometry, initial) = box_on_floor(0.002, -0.5);
         let scene = scene();
         let terrain = context(&scene, &geometry, 7);
-        let incoming = 0.5 + 9.81 * arrival_time(0.002, 0.5);
+        let incoming = 0.5 + mechanic_core::STANDARD_GRAVITY_M_S2 * arrival_time(0.002, 0.5);
         assert!(
             incoming < terrain.restitution_threshold,
             "this case must stay below the restitution threshold: incoming={incoming:e}"
@@ -114,7 +114,13 @@ fn an_impact_below_the_threshold_stops_dead_for_every_substep_policy() {
         let mut machine = CpuJointMachine::new(creation.clone(), 7, initial).unwrap();
         for tick in 1..=4 {
             let result = machine
-                .step_candidate(-DVec3::Y * 9.81, fixed(substeps), &[], &[], Some(&terrain))
+                .step_candidate(
+                    mechanic_core::GRAVITY,
+                    fixed(substeps),
+                    &[],
+                    &[],
+                    Some(&terrain),
+                )
                 .map(|_| ());
             assert!(
                 result.is_ok(),
@@ -158,7 +164,7 @@ fn a_settled_box_stays_within_the_activation_window() {
     for tick in 1..=30 {
         let result = machine
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 JointTickSettings::default(),
                 &[],
                 &[],
@@ -209,12 +215,12 @@ fn a_sprung_wheel_settles_on_the_floor_at_its_spring_equilibrium() {
         MachineDynamics::reconstruct_poses(&creation, &initial.poses, &initial.coordinates)
             .unwrap();
     let mass = f64::from(creation.compounds[1].mass_properties.mass);
-    let equilibrium = -mass * 9.81 / f64::from(spring.rate());
+    let equilibrium = -mass * mechanic_core::STANDARD_GRAVITY_M_S2 / f64::from(spring.rate());
     let mut machine = CpuJointMachine::new(creation.clone(), 7, initial).unwrap();
     for tick in 1..=120 {
         let result = machine
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 JointTickSettings::default(),
                 &[],
                 &[],
@@ -320,7 +326,7 @@ fn a_long_multi_collider_body_settles_on_a_redundant_manifold() {
     for tick in 1..=30 {
         let result = machine
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 JointTickSettings::default(),
                 &[],
                 &[],
@@ -419,7 +425,7 @@ fn a_rolling_wheel_only_loses_energy_on_its_facets() {
             * bevy_math::DMat3::from_quat(rotation.inverse());
         0.5 * mass * linear.length_squared()
             + 0.5 * angular.dot(world * angular)
-            + mass * 9.81 * state.poses[0].position.y
+            + mass * mechanic_core::STANDARD_GRAVITY_M_S2 * state.poses[0].position.y
     };
 
     let mut machine = CpuJointMachine::new(creation.clone(), 7, initial.clone()).unwrap();
@@ -427,7 +433,7 @@ fn a_rolling_wheel_only_loses_energy_on_its_facets() {
     for tick in 1..=60 {
         let result = machine
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 JointTickSettings::default(),
                 &[],
                 &[],
@@ -484,7 +490,7 @@ fn a_separating_box_leaves_without_a_contact_impulse() {
     let mut machine = CpuJointMachine::new(creation, 7, initial).unwrap();
     let result = machine
         .step_candidate(
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             JointTickSettings::default(),
             &[],
             &[],
@@ -497,7 +503,7 @@ fn a_separating_box_leaves_without_a_contact_impulse() {
         machine.diagnostics()
     );
     // Pure ballistic motion: a support cannot pull or push a departing box.
-    let expected = 0.5 - 9.81 * TICK_SECONDS;
+    let expected = 0.5 - mechanic_core::STANDARD_GRAVITY_M_S2 * TICK_SECONDS;
     let actual = machine.snapshot().state.velocities[1];
     assert!(
         (actual - expected).abs() <= 1e-9,
@@ -515,7 +521,7 @@ fn a_box_that_returns_within_one_tick_stops_on_the_surface() {
     let mut machine = CpuJointMachine::new(creation.clone(), 7, initial).unwrap();
     let result = machine
         .step_candidate(
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             JointTickSettings::default(),
             &[],
             &[],
@@ -551,7 +557,7 @@ fn settles_at_rest(integration: TerrainIntegration, ticks: u64) -> (f64, f64) {
     for tick in 1..=ticks {
         let result = machine
             .step_candidate(
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 JointTickSettings::default(),
                 &[],
                 &[],

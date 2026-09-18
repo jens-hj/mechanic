@@ -37,7 +37,7 @@ fn a_box_dropped_on_a_resting_box_comes_to_rest_on_top_of_it() {
     let mut world = CpuJointMachine::new(creation, 7, initial).unwrap();
     let mut state = world.snapshot().state.clone();
     for tick_index in 1..=120 {
-        state = tick(&mut world, -DVec3::Y * 9.81, &terrain, tick_index);
+        state = tick(&mut world, mechanic_core::GRAVITY, &terrain, tick_index);
         let [lower, upper] = [state.poses[0].position, state.poses[1].position];
         assert!(
             upper.y - lower.y >= 1.0 - terrain.maximum_depth,
@@ -175,7 +175,7 @@ fn settle_captured(instance: &str, ticks: u64) -> (MachineState, Vec<f64>, f64) 
     let mut world = CpuJointMachine::new(creation, 7, initial).unwrap();
     let mut state = world.snapshot().state.clone();
     for tick_index in 1..=ticks {
-        state = tick(&mut world, -DVec3::Y * 9.81, &terrain, tick_index);
+        state = tick(&mut world, mechanic_core::GRAVITY, &terrain, tick_index);
     }
     let lowest = lowest_points(&state);
     (state, lowest, terrain.maximum_depth)

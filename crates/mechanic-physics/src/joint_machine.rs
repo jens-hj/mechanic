@@ -7,11 +7,11 @@ mod recovery;
 mod stops;
 
 use bevy_math::DVec3;
-use mechanic_core::{CompiledCreation, CoordinateDrive, DriveMode};
+use mechanic_core::{CompiledCreation, CoordinateDrive, DriveMode, TICK_SECONDS};
 
 use crate::{
     ConstraintBlock, CpuSnapshot, ExternalImpulse, ImpulseBounds, MachineDynamics, MachineState,
-    PhysicsError, PreparedConstraints, TICK_SECONDS,
+    PhysicsError, PreparedConstraints,
     free_motion::{advance_positions, apply_external_impulses},
     joint_forces::{PassiveForce, drive_budget, drive_target, validate_drive},
 };

@@ -482,7 +482,7 @@ mod tests {
             .cpu
             .as_mut()
             .unwrap()
-            .step(1, DVec3::NEG_Y * 9.81, &[], &[])
+            .step(1, mechanic_core::GRAVITY, &[], &[])
             .unwrap();
         for (before, after) in simulation.transforms.iter().zip(&completed.transforms) {
             assert!(after.position[1] < before.position[1]);

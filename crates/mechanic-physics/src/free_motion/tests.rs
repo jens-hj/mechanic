@@ -96,7 +96,7 @@ fn free_fall_matches_ballistic_motion_at_the_external_clock() {
     let start = state.poses[0].position;
     state.velocities[..3].copy_from_slice(&[2.0, 3.0, -1.0]);
     let mut world = CpuFreeMotion::new(creation, 7, state).unwrap();
-    let gravity = DVec3::new(0.0, -9.81, 0.0);
+    let gravity = mechanic_core::GRAVITY;
     for _ in 0..60 {
         world.step(gravity, 1, &[]).unwrap();
     }
@@ -111,7 +111,9 @@ fn free_fall_matches_ballistic_motion_at_the_external_clock() {
             .length()
             < 1e-11
     );
-    assert!((snapshot.state.velocities[1] - (3.0 - 9.81)).abs() < 1e-11);
+    assert!(
+        (snapshot.state.velocities[1] - (3.0 - mechanic_core::STANDARD_GRAVITY_M_S2)).abs() < 1e-11
+    );
 }
 
 #[test]
@@ -225,7 +227,7 @@ fn anchored_tree_keeps_its_root_fixed_while_joint_motion_evolves() {
     let root = state.poses[0];
     let mut world = CpuFreeMotion::new(creation, 1, state).unwrap();
     for _ in 0..60 {
-        world.step(DVec3::new(0.0, -9.81, 0.0), 4, &[]).unwrap();
+        world.step(mechanic_core::GRAVITY, 4, &[]).unwrap();
     }
     assert_eq!(world.snapshot().state.poses[0], root);
     assert!(world.snapshot().state.coordinates[0].abs() > 0.1);
@@ -285,8 +287,8 @@ fn repeated_fixed_input_ticks_have_identical_completed_hashes() {
             point: DVec3::new(0.1, 0.2, 0.3),
             impulse: DVec3::new(0.7, -0.4, 0.5),
         };
-        let a = a.step(DVec3::new(0.0, -9.81, 0.0), 2, &[command]).unwrap();
-        let b = b.step(DVec3::new(0.0, -9.81, 0.0), 2, &[command]).unwrap();
+        let a = a.step(mechanic_core::GRAVITY, 2, &[command]).unwrap();
+        let b = b.step(mechanic_core::GRAVITY, 2, &[command]).unwrap();
         assert_eq!(a.state_hash(), b.state_hash(), "tick {tick}");
         assert_eq!(a, b);
     }

@@ -13,7 +13,7 @@ use super::components::{PanelSurface, PanelSurfaceProps};
 use super::styles::*;
 use super::theme::{accent, ink};
 use crate::sequencer::{DriveSequencer, GearboxRuntime};
-use crate::{AppSimulation, FIXED_DT_SECONDS, measured_engine_speeds};
+use crate::{AppSimulation, measured_engine_speeds};
 
 const PANEL_WIDTH: f32 = 236.0;
 const INSET: f32 = 18.0;
@@ -93,7 +93,7 @@ fn vehicle_speed_kmh(simulation: &AppSimulation, seat: PartId) -> Option<f32> {
     let current = simulation.transforms.get(body)?;
     let displacement =
         Vec3::from_slice(&current.position[..3]) - Vec3::from_slice(&previous.position[..3]);
-    Some(displacement.length() / (ticks as f32 * FIXED_DT_SECONDS) * 3.6)
+    Some(displacement.length() / (ticks as f32 * mechanic_core::TICK_SECONDS_F32) * 3.6)
 }
 
 fn engine_lane(

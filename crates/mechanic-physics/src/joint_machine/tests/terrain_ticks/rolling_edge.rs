@@ -35,7 +35,8 @@ fn normal_force(creation: &CompiledCreation, angle: f64, omega: f64) -> f64 {
     let arm = DQuat::from_rotation_z(angle) * DVec3::new(-0.5, -0.5, 0.0);
     // a_y = N/m-g, alpha = r_x N/I and the supported material point obeys
     // 0 = a_y + alpha*r_x - omega^2*r_y. This includes changing contact J.
-    (9.81 + omega * omega * arm.y) / (mass.recip() + arm.x * arm.x / inertia)
+    (mechanic_core::STANDARD_GRAVITY_M_S2 + omega * omega * arm.y)
+        / (mass.recip() + arm.x * arm.x / inertia)
 }
 
 #[test]
@@ -51,7 +52,7 @@ fn rotating_edge_support_force_converges_to_constrained_rigid_body_equation() {
             &[],
             &[],
             &mut state,
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             dt,
             fixed(1),
             Some(SubstepContacts {
@@ -64,7 +65,9 @@ fn rotating_edge_support_force_converges_to_constrained_rigid_body_equation() {
         )
         .unwrap();
         assert!(matches!(outcome, events::TrialOutcome::Complete { .. }));
-        let actual = mass * ((state.velocities[1] - initial.velocities[1]) / dt + 9.81);
+        let actual = mass
+            * ((state.velocities[1] - initial.velocities[1]) / dt
+                + mechanic_core::STANDARD_GRAVITY_M_S2);
         let relative_error = (actual - expected).abs() / expected;
         println!(
             "rolling_edge dt={dt} force={actual} reference={expected} relative_error={relative_error}"
@@ -86,7 +89,7 @@ fn rotating_support_uses_the_normal_velocity_at_its_reconstructed_end_pose() {
         &[],
         &[],
         &mut state,
-        -DVec3::Y * 9.81,
+        mechanic_core::GRAVITY,
         1e-3,
         fixed(1),
         Some(SubstepContacts {
@@ -127,7 +130,7 @@ fn a_rotating_released_edge_does_not_report_a_frozen_row_reversal() {
     assert!(surface.query.contacts.is_empty());
     let dt = 1e-3;
     let mut outgoing = initial.velocities.clone();
-    outgoing[1] -= 9.81 * dt;
+    outgoing[1] -= mechanic_core::STANDARD_GRAVITY_M_S2 * dt;
     let mut diagnostics = JointTickDiagnostics::default();
     assert!(
         surface
@@ -146,9 +149,10 @@ fn a_rotating_released_edge_does_not_report_a_frozen_row_reversal() {
     for sample in 0..=100 {
         let time = dt * f64::from(sample) / 100.0;
         let rotated = DQuat::from_rotation_z(omega * time) * arm;
-        let speed = initial.velocities[1] - 9.81 * time + omega * rotated.x;
+        let speed =
+            initial.velocities[1] - mechanic_core::STANDARD_GRAVITY_M_S2 * time + omega * rotated.x;
         let height = initial.poses[0].position.y + initial.velocities[1] * time
-            - 0.5 * 9.81 * time * time
+            - 0.5 * mechanic_core::STANDARD_GRAVITY_M_S2 * time * time
             + rotated.y;
         assert!(
             speed > 0.0 && height >= -1e-15,

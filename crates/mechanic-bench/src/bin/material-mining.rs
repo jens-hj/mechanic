@@ -3,10 +3,10 @@
 //! tool or synthetic damage is supplied to the breakage system.
 
 use bevy_math::{DVec3, Vec3};
-use mechanic_core::{CompiledCreation, MaterialProperties, RuntimeBox};
+use mechanic_core::{CompiledCreation, MaterialProperties, RuntimeBox, TICK_SECONDS};
 use mechanic_physics::{
     CpuMachine, ExternalImpulse, MachineState, PreparedClumpBodies, SoftStepSettings,
-    SoftStepTerrain, TICK_SECONDS, TerrainContactScene,
+    SoftStepTerrain, TerrainContactScene,
 };
 use mechanic_world::{
     BreakageAccumulator, BreakagePatch, BrickCoord, ClumpCollection, TerrainField, TerrainMaterial,
@@ -105,7 +105,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .clamp_length_max(f64::from(tool_mass) * 0.25);
         if settle && tick > 90 {
-            guide.y = (0.5 - velocities[1] + 9.81 * TICK_SECONDS) * f64::from(tool_mass);
+            guide.y = (0.5 - velocities[1] + mechanic_core::STANDARD_GRAVITY_M_S2 * TICK_SECONDS)
+                * f64::from(tool_mass);
         }
         let command = |point, impulse| ExternalImpulse {
             tick: snapshot.tick + 1,
@@ -121,7 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ];
         let solve_started = Instant::now();
         machine.step(
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             &settings,
             &impulses,
             &[],

@@ -17,14 +17,17 @@ use std::time::Instant;
 
 use bevy_math::Vec3;
 use bytemuck::{Pod, Zeroable, bytes_of, cast_slice};
-use mechanic_core::{ColliderShape, CompiledCreation, ConstructionMaterial};
+use mechanic_core::{
+    ColliderShape, CompiledCreation, ConstructionMaterial, STANDARD_GRAVITY_M_S2_F32,
+    TICK_SECONDS_F32,
+};
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
 use crate::{
-    BROADPHASE_HASH_CAPACITY, COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, FIXED_DT_SECONDS,
-    GpuBearing, GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuGroundSurface,
-    GpuLinkState, GpuMass, GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair,
+    BROADPHASE_HASH_CAPACITY, COLLIDER_SHAPE_CONVEX, COLLIDER_SHAPE_CUBOID, GpuBearing,
+    GpuCollider, GpuContact, GpuContractionNode, GpuDiagnostics, GpuGroundSurface, GpuLinkState,
+    GpuMass, GpuMechanismBody, GpuMechanismCoordinate, GpuMechanismDrive, GpuPair,
     GpuPersistentManifold, GpuSpatialInertia, GpuTickConfig, GpuTransform, GpuVelocity,
     MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS, MAX_CONTACT_PAIRS, MAX_CONVEX_SHAPE_SLOTS,
     SNAPSHOT_RING_SIZE, pack_convex_counts,
@@ -1621,8 +1624,8 @@ impl GpuPhysics {
             tick_index: wrapping_u32(tick_index),
             snapshot_slot: u32::from(snapshot_slot),
             collider_count: self.collider_count,
-            delta_seconds: FIXED_DT_SECONDS,
-            gravity_y: -9.81,
+            delta_seconds: TICK_SECONDS_F32,
+            gravity_y: -STANDARD_GRAVITY_M_S2_F32,
             linear_damping: 0.999,
             angular_damping: 0.98,
             bearing_count: self.bearing_count,
@@ -6595,7 +6598,7 @@ mod tests {
             let expected = creation.compounds[bearing.compound_b as usize]
                 .mass_properties
                 .mass
-                * 9.81
+                * mechanic_core::STANDARD_GRAVITY_M_S2_F32
                 / spring.rate();
             let gpu = suspension_test_gpu(&device, &queue, &creation);
             for tick in 1..=360 {
@@ -6654,7 +6657,8 @@ mod tests {
             } else {
                 assert!(
                     position * speed > 0.0
-                        && position.abs() < speed.abs() * 60.0 * crate::FIXED_DT_SECONDS * 0.9,
+                        && position.abs()
+                            < speed.abs() * 60.0 * mechanic_core::TICK_SECONDS_F32 * 0.9,
                     "damper failed to decay: speed {speed}, travel {position}"
                 );
             }
@@ -6730,9 +6734,10 @@ mod tests {
                     );
                     let force = spec.elastic_force(compression);
                     assert!(
-                        (force - mass * 9.81).abs() < mass * 9.81 * 0.15,
+                        (force - mass * mechanic_core::STANDARD_GRAVITY_M_S2_F32).abs()
+                            < mass * mechanic_core::STANDARD_GRAVITY_M_S2_F32 * 0.15,
                         "rubber load mismatch: force {force}, load {}",
-                        mass * 9.81
+                        mass * mechanic_core::STANDARD_GRAVITY_M_S2_F32
                     );
                 } else {
                     assert!(
@@ -6934,7 +6939,7 @@ mod tests {
                     &queue,
                     bearing.compound_b,
                     contact_point,
-                    Vec3::NEG_X * force * crate::FIXED_DT_SECONDS,
+                    Vec3::NEG_X * force * mechanic_core::TICK_SECONDS_F32,
                 )
                 .unwrap();
                 gpu.dispatch_tick(&device, &queue, tick);
@@ -8352,13 +8357,14 @@ mod tests {
         gpu.dispatch_tick(&device, &queue, 1);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let snapshot = gpu.read_snapshot_transforms(&device, &queue, 1).unwrap();
-        let expected_displacement = impulse.x / properties.mass * 0.999 * crate::FIXED_DT_SECONDS;
+        let expected_displacement =
+            impulse.x / properties.mass * 0.999 * mechanic_core::TICK_SECONDS_F32;
         assert!(
             (snapshot[body as usize].position[0] - initial.x - expected_displacement).abs()
                 < 1.0e-5
         );
         let angular_velocity = properties.inverse_inertia * arm.cross(impulse) * 0.98;
-        let half_spin = angular_velocity * (0.5 * crate::FIXED_DT_SECONDS);
+        let half_spin = angular_velocity * (0.5 * mechanic_core::TICK_SECONDS_F32);
         let expected_rotation =
             bevy_math::Quat::from_xyzw(half_spin.x, half_spin.y, half_spin.z, 1.0).normalize();
         assert!(
@@ -9980,7 +9986,10 @@ mod tests {
         for tick in 1..=60 {
             gpu.dispatch_tick(&device, &queue, tick);
         }
-        let static_load_impulse = mass * 9.81 * crate::FIXED_DT_SECONDS * 0.62;
+        let static_load_impulse = mass
+            * mechanic_core::STANDARD_GRAVITY_M_S2_F32
+            * mechanic_core::TICK_SECONDS_F32
+            * 0.62;
         for tick in 61..=120 {
             gpu.apply_impulse(
                 &device,

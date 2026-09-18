@@ -473,7 +473,7 @@ impl Default for KinematicCapsuleConfig {
             jump_height: 0.75,
             walk_speed: 4.0,
             sprint_speed: 7.0,
-            gravity: 9.81,
+            gravity: mechanic_core::STANDARD_GRAVITY_M_S2,
             airborne_gravity: 24.0,
             mass: 80.0,
             ground_acceleration: 40.0,

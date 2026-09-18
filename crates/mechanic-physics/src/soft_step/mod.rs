@@ -16,12 +16,12 @@ mod tests;
 use std::{collections::BTreeMap, time::Instant};
 
 use bevy_math::DVec3;
-use mechanic_core::{CompiledCreation, CoordinateDrive};
+use mechanic_core::{CompiledCreation, CoordinateDrive, TICK_SECONDS};
 
 use crate::{
     BodyPose, CpuSnapshot, DriveCommand, DynamicsFactorization, ExternalImpulse,
     MachineCollisionGeometry, MachineKinematics, MachineMotion, MachineState, PhysicsError,
-    TICK_SECONDS, TerrainContactFeature, TerrainContactScene,
+    TerrainContactFeature, TerrainContactScene,
     free_motion::apply_external_impulses,
     joint_forces::{PassiveForce, validate_drive},
     joint_machine::bounds,

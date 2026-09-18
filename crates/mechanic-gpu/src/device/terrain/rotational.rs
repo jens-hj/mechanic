@@ -86,7 +86,7 @@ fn rotating_body_cannot_pass_through_terrain_between_clear_endpoint_poses() {
             assert!(fraction > 0.0 && fraction < 1.0);
             let spin = Quat::from_array(full_velocity.angular);
             let expected = (rotation
-                + (spin * rotation) * (0.5 * crate::FIXED_DT_SECONDS * fraction))
+                + (spin * rotation) * (0.5 * mechanic_core::TICK_SECONDS_F32 * fraction))
                 .normalize();
             assert!(
                 (expected - Quat::from_array(pose.rotation)).length() < 1.0e-4,
@@ -124,8 +124,9 @@ fn rotating_body_cannot_pass_through_terrain_between_clear_endpoint_poses() {
             // to a nearby surface, must retain the complete integration step.
             assert_eq!(state.diagnostics.contact_count, 0);
             let angular = Quat::from_array(state.velocities[0].angular);
-            let predicted =
-                (rotation + (angular * rotation) * (0.5 * crate::FIXED_DT_SECONDS)).normalize();
+            let predicted = (rotation
+                + (angular * rotation) * (0.5 * mechanic_core::TICK_SECONDS_F32))
+                .normalize();
             assert!(
                 predicted.dot(Quat::from_array(pose.rotation)).abs() > 1.0 - 1.0e-6,
                 "clear sweep unexpectedly shortened motion: {pose:?}"

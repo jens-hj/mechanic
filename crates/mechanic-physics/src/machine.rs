@@ -567,10 +567,10 @@ mod tests {
             MachineDynamics::assemble(&creation, &MachineDynamics::initial_roots(&creation), &[])
                 .unwrap();
         let mut force = model
-            .gravity_force(&creation, DVec3::new(0.0, -9.81, 0.0))
+            .gravity_force(&creation, mechanic_core::GRAVITY)
             .unwrap();
         model.factor(&[0.0; 6]).unwrap().solve(&mut force).unwrap();
-        assert!((force[1] + 9.81).abs() < 1e-12);
+        assert!((force[1] + mechanic_core::STANDARD_GRAVITY_M_S2).abs() < 1e-12);
         for index in [0, 2, 3, 4, 5] {
             assert!(force[index].abs() < 1e-12);
         }

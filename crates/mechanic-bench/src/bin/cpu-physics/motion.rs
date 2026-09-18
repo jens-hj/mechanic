@@ -71,7 +71,7 @@ pub(super) fn run(options: &scale::Options) -> Result<(), Box<dyn Error>> {
                 .into_iter()
                 .fold(0.0_f64, f64::max);
             let threshold = settings.continuous_travel * f64::from(settings.substeps)
-                / mechanic_physics::TICK_SECONDS
+                / mechanic_core::TICK_SECONDS
                 / reach;
             for speed in [0.0, 1.0, threshold * 0.99, threshold * 1.01, 500.0] {
                 let mut state = initial.clone();

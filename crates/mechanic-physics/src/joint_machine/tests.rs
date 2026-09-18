@@ -98,7 +98,7 @@ fn refreshed_terrain_manifolds_hold_a_free_body_without_velocity_or_pose_drift()
                 &[],
                 &[],
                 &mut state,
-                -DVec3::Y * 9.81,
+                mechanic_core::GRAVITY,
                 TICK_SECONDS,
                 fixed(1),
                 Some(SubstepContacts {
@@ -142,9 +142,9 @@ fn coupled_surface_substeps_hold_static_load_and_apply_kinetic_deceleration() {
             };
             state.velocities[0] = if sliding { 1.0 } else { 0.0 };
             let gravity = if sliding {
-                -DVec3::Y * 9.81
+                mechanic_core::GRAVITY
             } else {
-                DVec3::new(0.981, -9.81, 0.0)
+                DVec3::new(0.981, -mechanic_core::STANDARD_GRAVITY_M_S2, 0.0)
             };
             let mut coefficient = 0.0;
             for _ in 0..subdivisions {
@@ -171,7 +171,7 @@ fn coupled_surface_substeps_hold_static_load_and_apply_kinetic_deceleration() {
                 .unwrap();
             }
             let expected = if sliding {
-                1.0 - coefficient * 9.81 * TICK_SECONDS
+                1.0 - coefficient * mechanic_core::STANDARD_GRAVITY_M_S2 * TICK_SECONDS
             } else {
                 0.0
             };
@@ -206,7 +206,7 @@ fn terrain_support_and_suspension_share_the_implicit_force_response() {
         MachineDynamics::reconstruct_poses(&creation, &state.poses, &state.coordinates).unwrap();
     let initial_height = state.poses[0].position.y;
     let mass = f64::from(creation.compounds[1].mass_properties.mass);
-    let expected = -mass * 9.81 / f64::from(spring.rate());
+    let expected = -mass * mechanic_core::STANDARD_GRAVITY_M_S2 / f64::from(spring.rate());
     let passive = [PassiveForce::from_kind(creation.bearings[0].kind)];
     let mut diagnostics = JointTickDiagnostics {
         drive_impulses: vec![0.0],
@@ -221,7 +221,7 @@ fn terrain_support_and_suspension_share_the_implicit_force_response() {
             &passive,
             &creation.coordinate_drives,
             &mut state,
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             TICK_SECONDS,
             fixed(1),
             Some(SubstepContacts {
@@ -386,13 +386,14 @@ fn loaded_spring_reaches_the_authored_equilibrium_with_preload() {
         let spec = SuspensionSpec::new(Some(spring), Some(shock), None).unwrap();
         let creation = suspension(spec, true);
         let expected = f64::from(spec.passive_rows()[0][1])
-            - f64::from(creation.compounds[1].mass_properties.mass) * 9.81
+            - f64::from(creation.compounds[1].mass_properties.mass)
+                * mechanic_core::STANDARD_GRAVITY_M_S2
                 / f64::from(spring.rate());
         let initial = MachineState::at_rest(&creation);
         let mut world = CpuJointMachine::new(creation, 1, initial).unwrap();
         for _ in 0..360 {
             world
-                .step(DVec3::new(0.0, -9.81, 0.0), fixed(2), &[], &[])
+                .step(mechanic_core::GRAVITY, fixed(2), &[], &[])
                 .unwrap();
         }
         let error = (world.snapshot().state.coordinates[0] - expected).abs();
@@ -635,7 +636,7 @@ fn undamped_spring_oscillation_converges_without_artificial_decay() {
     let creation = suspension(spec, true);
     let mass = f64::from(creation.compounds[1].mass_properties.mass);
     let omega = (f64::from(spring.rate()) / mass).sqrt();
-    let equilibrium = -mass * 9.81 / f64::from(spring.rate());
+    let equilibrium = -mass * mechanic_core::STANDARD_GRAVITY_M_S2 / f64::from(spring.rate());
     let amplitude = 0.004;
     let mut errors = Vec::new();
     for substeps in [1, 2, 4, 8] {
@@ -645,7 +646,7 @@ fn undamped_spring_oscillation_converges_without_artificial_decay() {
         let mut maximum = 0.0_f64;
         for tick in 1..=60 {
             world
-                .step(DVec3::new(0.0, -9.81, 0.0), fixed(substeps), &[], &[])
+                .step(mechanic_core::GRAVITY, fixed(substeps), &[], &[])
                 .unwrap();
             let time = f64::from(tick) * TICK_SECONDS;
             let position = equilibrium + amplitude * (omega * time).cos();

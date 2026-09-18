@@ -262,11 +262,11 @@ pub(super) fn run(
                         normal: load.normal,
                         radius: load.patch_radius,
                         pressure_pa: (load.normal_impulse
-                            / (mechanic_physics::TICK_SECONDS
+                            / (mechanic_core::TICK_SECONDS
                                 * std::f64::consts::PI
                                 * load.patch_radius.powi(2)))
                             as f32,
-                        seconds: mechanic_physics::TICK_SECONDS as f32,
+                        seconds: mechanic_core::TICK_SECONDS as f32,
                     },
                 )?;
             }

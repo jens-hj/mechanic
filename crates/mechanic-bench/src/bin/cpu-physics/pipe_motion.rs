@@ -140,7 +140,7 @@ pub(super) fn scene_ticks(
         .into_iter()
         .fold(0.0_f64, f64::max);
     let threshold_speed = settings.continuous_travel * f64::from(settings.substeps)
-        / mechanic_physics::TICK_SECONDS
+        / mechanic_core::TICK_SECONDS
         / unit_travel;
     println!(
         "{}",

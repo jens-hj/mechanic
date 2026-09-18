@@ -1,12 +1,9 @@
 //! Transactional, collision-free reference integration for passive tree machines.
 
 use bevy_math::{DQuat, DVec3};
-use mechanic_core::{BearingKind, CompiledCreation, CoordinateDrive};
+use mechanic_core::{BearingKind, CompiledCreation, CoordinateDrive, TICK_SECONDS};
 
 use crate::{BodyPose, MachineDynamics, PhysicsError};
-
-/// External physics interval, independent of rendering and internal subdivisions.
-pub const TICK_SECONDS: f64 = 1.0 / 60.0;
 
 /// Reduced-coordinate state. Root velocities are world-space origin linear
 /// velocity then angular velocity; each tree joint owns one coordinate rate.

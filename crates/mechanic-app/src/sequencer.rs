@@ -13,7 +13,7 @@ use mechanic_core::{
     DriveRelease, DriveTarget, EngineKind, GearKey, GearKeyChord, GearSelection, PartId, PartSpec,
     ShiftMode,
 };
-use mechanic_gpu::{DRIVE_MODE_ANGLE, DRIVE_MODE_SPEED, FIXED_DT_SECONDS, GpuMechanismDrive};
+use mechanic_gpu::{DRIVE_MODE_ANGLE, DRIVE_MODE_SPEED, GpuMechanismDrive};
 
 /// Which of a program's keys are down, and which went down this frame.
 #[derive(Clone, Debug, Default)]
@@ -820,7 +820,7 @@ impl DriveSequencer {
 // A dwell is validated positive and at most MAX_DRIVE_DWELL_SECONDS, so the
 // tick count is a small positive integer well inside u64.
 fn dwell_ticks(seconds: f32) -> u64 {
-    (seconds / FIXED_DT_SECONDS).round().max(1.0) as u64
+    (seconds / mechanic_core::TICK_SECONDS_F32).round().max(1.0) as u64
 }
 
 /// Advances one bearing's cursor by one frame.

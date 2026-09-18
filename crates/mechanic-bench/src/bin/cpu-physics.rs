@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, error::Error, fs, path::Path, sync::Arc, time::
 use bevy_math::{DVec3, IVec3};
 use mechanic_core::{
     BuildCommand, BuildPose, CompiledCreation, ConstructionGraph, ContactCylinder, ContactPolytope,
-    CuboidSpec, DriveMode, GridRotation,
+    CuboidSpec, DriveMode, GRAVITY, GridRotation,
 };
 use mechanic_physics::{
     ConstraintBlock, ConstraintSolution, ContactFriction, CpuMachine, DriveCommand, DynamicsFactor,
@@ -42,7 +42,6 @@ mod world_drive;
 
 const ITERATIONS: usize = 256;
 const TOLERANCE: f64 = 1e-9;
-const GRAVITY: DVec3 = DVec3::new(0.0, -9.81, 0.0);
 
 type RecordedBlock = (
     Vec<Vec<f64>>,

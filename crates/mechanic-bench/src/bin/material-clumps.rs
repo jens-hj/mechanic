@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for tick in 0..ticks {
         let started = Instant::now();
         machine.step(
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             &settings,
             &[],
             &[],

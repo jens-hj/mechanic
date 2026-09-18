@@ -7,8 +7,8 @@ use bevy_math::{Mat3, Quat, Vec3, Vec4};
 use thiserror::Error;
 
 use crate::{
-    ActuatorAssignment, BearingId, CUBOID_DENSITY_KG_M3, ConstructionGraph, CuboidSpec,
-    DriveLimits, DriveTarget, EngineKind, FaceOwner, MaterialProperties, PartId, PartSpec,
+    ActuatorAssignment, BearingId, ConstructionGraph, CuboidSpec, DriveLimits, DriveTarget,
+    EngineKind, FaceOwner, MACHINE_PART_DENSITY_KG_M3, MaterialProperties, PartId, PartSpec,
     RegionId, ServoSpec, ShapeRegion,
     shape::{ConvexPiece, PartPiece, decompose, decompose_part},
 };
@@ -1776,17 +1776,23 @@ fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
         PartSpec::PipeBend(spec) => pipe_bend_mass_properties(spec),
         PartSpec::PipeJunction(spec) => pipe_junction_mass_properties(spec),
         PartSpec::Controller(controller) => {
-            cuboid_mass_properties(controller.cuboid(), CUBOID_DENSITY_KG_M3)
+            cuboid_mass_properties(controller.cuboid(), MACHINE_PART_DENSITY_KG_M3)
         }
-        PartSpec::Engine(engine) => cuboid_mass_properties(engine.cuboid(), CUBOID_DENSITY_KG_M3),
+        PartSpec::Engine(engine) => {
+            cuboid_mass_properties(engine.cuboid(), MACHINE_PART_DENSITY_KG_M3)
+        }
         PartSpec::Transmission(transmission) => {
-            cuboid_mass_properties(transmission.cuboid(), CUBOID_DENSITY_KG_M3)
+            cuboid_mass_properties(transmission.cuboid(), MACHINE_PART_DENSITY_KG_M3)
         }
-        PartSpec::Servo(servo) => cuboid_mass_properties(servo.cuboid(), CUBOID_DENSITY_KG_M3),
-        PartSpec::Seat(seat) => cuboid_mass_properties(seat.cuboid(), CUBOID_DENSITY_KG_M3),
-        PartSpec::Input(input) => cuboid_mass_properties(input.cuboid(), CUBOID_DENSITY_KG_M3),
+        PartSpec::Servo(servo) => {
+            cuboid_mass_properties(servo.cuboid(), MACHINE_PART_DENSITY_KG_M3)
+        }
+        PartSpec::Seat(seat) => cuboid_mass_properties(seat.cuboid(), MACHINE_PART_DENSITY_KG_M3),
+        PartSpec::Input(input) => {
+            cuboid_mass_properties(input.cuboid(), MACHINE_PART_DENSITY_KG_M3)
+        }
         PartSpec::DimensionLink(link) => {
-            cuboid_mass_properties(link.cuboid(), CUBOID_DENSITY_KG_M3)
+            cuboid_mass_properties(link.cuboid(), MACHINE_PART_DENSITY_KG_M3)
         }
     }
 }
@@ -2180,7 +2186,7 @@ fn cuboid_maximum(cuboid: &CompactCuboid, axis: usize) -> f32 {
 }
 
 const AUTHORED_CONTACT_PROPERTIES: MaterialProperties = MaterialProperties {
-    density_kg_m3: CUBOID_DENSITY_KG_M3,
+    density_kg_m3: MACHINE_PART_DENSITY_KG_M3,
     static_friction: 0.05,
     dynamic_friction: 0.05,
     restitution: 0.0,
@@ -2193,7 +2199,7 @@ const AUTHORED_CONTACT_PROPERTIES: MaterialProperties = MaterialProperties {
 fn band_contact_properties(spec: PartSpec, band: u8) -> MaterialProperties {
     spec.band(band).map_or(
         MaterialProperties {
-            density_kg_m3: CUBOID_DENSITY_KG_M3,
+            density_kg_m3: MACHINE_PART_DENSITY_KG_M3,
             ..AUTHORED_CONTACT_PROPERTIES
         },
         |(material, _)| material.properties(),
@@ -3971,7 +3977,7 @@ mod tests {
                 half_extents: Vec3::new(0.25, 0.25, 0.125),
             }
         );
-        let expected_mass = crate::CUBOID_DENSITY_KG_M3 * 0.5 * 0.5 * 0.25;
+        let expected_mass = crate::MACHINE_PART_DENSITY_KG_M3 * 0.5 * 0.5 * 0.25;
         assert!((compiled.compounds[0].mass_properties.mass - expected_mass).abs() < 1.0e-4);
     }
 

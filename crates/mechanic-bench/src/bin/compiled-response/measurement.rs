@@ -197,7 +197,10 @@ fn sample(
     } else {
         model.factor(&diagonal)?
     };
-    let mut incoming = model.gravity_force(creation, -DVec3::Y * (9.81 / 60.0))?;
+    let mut incoming = model.gravity_force(
+        creation,
+        mechanic_core::GRAVITY / f64::from(mechanic_core::TICK_RATE_HZ),
+    )?;
     factor.solve(&mut incoming)?;
     let factored = Instant::now();
     let blocks = if let Some((geometry, terrain)) = surface {

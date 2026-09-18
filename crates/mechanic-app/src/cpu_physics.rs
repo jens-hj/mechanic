@@ -275,7 +275,7 @@ impl CpuRoute {
                         } else {
                             self.machine.body_supported(row)
                         },
-                        mechanic_physics::TICK_SECONDS,
+                        mechanic_core::TICK_SECONDS,
                     );
                     if !mechanic_world::BreakageResponse::for_material(body.material).deposits
                         && body.settled_seconds >= 1.0
@@ -360,8 +360,8 @@ impl CpuRoute {
                 centre: mechanic_world::WorldPosition(self.origin + load.point),
                 normal: load.normal,
                 radius: load.patch_radius,
-                pressure_pa: (load.normal_impulse / (mechanic_physics::TICK_SECONDS * area)) as f32,
-                seconds: mechanic_physics::TICK_SECONDS as f32,
+                pressure_pa: (load.normal_impulse / (mechanic_core::TICK_SECONDS * area)) as f32,
+                seconds: mechanic_core::TICK_SECONDS as f32,
             }
         }));
         world.accumulate_breakage(
@@ -375,7 +375,7 @@ impl CpuRoute {
                         centre: mechanic_world::WorldPosition(self.origin + load.point),
                         normal: load.normal,
                         radius: load.patch_radius,
-                        stress_pa: load.footprint_impulse / (mechanic_physics::TICK_SECONDS * area),
+                        stress_pa: load.footprint_impulse / (mechanic_core::TICK_SECONDS * area),
                         work_j: load.work_j,
                     }
                 }),
@@ -728,7 +728,7 @@ fn body_pose(transform: &GpuTransform) -> BodyPose {
 
 /// Gravity the GPU runtime applies, in metres per second squared.
 pub(crate) fn gravity() -> DVec3 {
-    -DVec3::Y * 9.81
+    mechanic_core::GRAVITY
 }
 
 /// The publication format is `f32` by design; the solver's own state stays `f64`.

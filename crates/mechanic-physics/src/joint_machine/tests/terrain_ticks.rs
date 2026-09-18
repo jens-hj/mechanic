@@ -47,7 +47,7 @@ fn supported_ticks_validate_motion_before_publication_and_repeat_at_each_substep
             for tick in 1..=120 {
                 world
                     .step_candidate(
-                        -DVec3::Y * 9.81,
+                        mechanic_core::GRAVITY,
                         fixed(subdivisions),
                         &[],
                         &[],
@@ -262,7 +262,7 @@ fn changed_supporting_terrain_or_wrong_topology_cannot_publish_an_invalid_tick()
     let mut world = CpuJointMachine::new(creation, 7, initial).unwrap();
     world
         .step_candidate(
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             fixed(1),
             &[],
             &[],
@@ -295,7 +295,7 @@ fn changed_supporting_terrain_or_wrong_topology_cannot_publish_an_invalid_tick()
     scene.publish(2, &[chunk], &[]).unwrap();
     assert_eq!(
         world.step_candidate(
-            -DVec3::Y * 9.81,
+            mechanic_core::GRAVITY,
             JointTickSettings::default(),
             &[],
             &[],

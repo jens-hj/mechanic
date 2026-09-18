@@ -445,9 +445,11 @@ mod tests {
                 }
             };
             close(
-                &dense.gravity_force(&creation, DVec3::NEG_Y * 9.81).unwrap(),
+                &dense
+                    .gravity_force(&creation, mechanic_core::GRAVITY)
+                    .unwrap(),
                 &runtime
-                    .gravity_force(&creation, DVec3::NEG_Y * 9.81)
+                    .gravity_force(&creation, mechanic_core::GRAVITY)
                     .unwrap(),
             );
             close(
@@ -534,7 +536,7 @@ mod tests {
         for _ in 0..8 {
             machine
                 .step(
-                    DVec3::NEG_Y * 9.81,
+                    mechanic_core::GRAVITY,
                     &SoftStepSettings::default(),
                     &[],
                     &[],

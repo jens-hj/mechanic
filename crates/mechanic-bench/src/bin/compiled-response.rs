@@ -208,7 +208,7 @@ mod tests {
         )
         .unwrap();
         let mut acceleration = model
-            .gravity_force(&creation, DVec3::new(0.0, -9.81, 0.0))
+            .gravity_force(&creation, mechanic_core::GRAVITY)
             .unwrap();
         model
             .factor(&vec![0.0; acceleration.len()])
@@ -219,7 +219,7 @@ mod tests {
             let rows = creation.dynamics.body_velocities[body].clone();
             for (index, row) in rows.enumerate() {
                 let expected = if topology.is_root && index == 1 {
-                    -9.81
+                    -mechanic_core::STANDARD_GRAVITY_M_S2
                 } else {
                     0.0
                 };
@@ -343,11 +343,11 @@ mod tests {
                 Vec::new()
             };
             let a = first
-                .step(DVec3::new(0.0, -9.81, 0.0), settings, &[], &commands)
+                .step(mechanic_core::GRAVITY, settings, &[], &commands)
                 .unwrap()
                 .state_hash();
             let b = second
-                .step(DVec3::new(0.0, -9.81, 0.0), settings, &[], &commands)
+                .step(mechanic_core::GRAVITY, settings, &[], &commands)
                 .unwrap()
                 .state_hash();
             assert_eq!(a, b, "joint-only airborne tick {tick}");
@@ -391,7 +391,10 @@ mod tests {
         let size = creation.dynamics.elimination_parent.len();
         let factor = model.factor(&vec![0.0; size]).unwrap();
         let mut falling = model
-            .gravity_force(&creation, -DVec3::Y * (9.81 / 60.0))
+            .gravity_force(
+                &creation,
+                mechanic_core::GRAVITY / f64::from(mechanic_core::TICK_RATE_HZ),
+            )
             .unwrap();
         factor.solve(&mut falling).unwrap();
         let blocks = query

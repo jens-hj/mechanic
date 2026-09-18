@@ -41,12 +41,6 @@ pub use terrain::{
     TerrainStageMetrics, terrain_contacts,
 };
 
-/// Fixed 60 Hz physics frequency.
-pub const PHYSICS_TPS: u32 = 60;
-
-/// Fixed physics step duration in seconds.
-pub const FIXED_DT_SECONDS: f32 = 1.0 / 60.0;
-
 /// Maximum number of compound bodies accepted by the milestone runtime.
 pub const MAX_BODIES: usize = 131_072;
 

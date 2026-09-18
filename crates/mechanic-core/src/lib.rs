@@ -22,6 +22,7 @@ mod shape;
 mod solid;
 mod suspension;
 mod suspension_geometry;
+mod units;
 mod weld;
 
 pub use weld::{
@@ -108,14 +109,6 @@ pub use solid::{
     SurfacePatchKey, TopologyKey, TopologySource, evaluate_part_solid, evaluate_region_solid,
 };
 
-/// Legacy authored-machine density, in kg/m³.
-pub const CUBOID_DENSITY_KG_M3: f32 = 500.0;
-
-/// Maximum acceptable derived bearing-anchor separation, in metres.
-pub const ANCHOR_TOLERANCE_METERS: f32 = 0.000_01;
-
-/// Maximum acceptable derived bearing-axis separation, in degrees.
-pub const AXIS_TOLERANCE_DEGREES: f32 = 0.001;
 pub use appearance::{
     AppearanceError, MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, MaterialShift,
 };
@@ -132,4 +125,10 @@ pub use suspension::{
 pub use suspension_geometry::{
     SUSPENSION_FINISHES, SuspensionFinish, SuspensionMeshChunk, SuspensionMeshOwner,
     suspension_meshes,
+};
+
+pub use units::{
+    ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, GRAVITY, MACHINE_PART_DENSITY_KG_M3,
+    STANDARD_GRAVITY_M_S2, STANDARD_GRAVITY_M_S2_F32, TICK_RATE_HZ, TICK_SECONDS, TICK_SECONDS_F32,
+    rad_s_to_rpm, rpm_to_rad_s,
 };

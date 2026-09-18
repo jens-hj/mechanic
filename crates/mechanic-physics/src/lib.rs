@@ -28,7 +28,7 @@ pub mod reference {
     };
 }
 
-pub use free_motion::{CpuFreeMotion, CpuSnapshot, ExternalImpulse, MachineState, TICK_SECONDS};
+pub use free_motion::{CpuFreeMotion, CpuSnapshot, ExternalImpulse, MachineState};
 pub use joint_machine::DriveCommand;
 pub use machine::{BodyPose, MachineDynamics, SpatialMotion};
 pub use motion_path::{MachineMotion, MotionBound};
