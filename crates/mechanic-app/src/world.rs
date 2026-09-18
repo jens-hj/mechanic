@@ -3451,8 +3451,14 @@ fn integrate_terrain_remeshes(
         .map(|upsert| upsert.node.id)
         .collect::<Vec<_>>();
     let mut deferred = Vec::new();
+    // Publishing gets its own slice of the budget. Measured from the start of
+    // the frame, the bookkeeping above exhausts it on a large cut, and every
+    // frame then defers the same nodes without ever publishing one.
+    let publishing = std::time::Instant::now();
     for (offset, id) in dirty.iter().copied().enumerate() {
-        if !material_cutover && started.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS {
+        if !material_cutover
+            && publishing.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS
+        {
             deferred.extend_from_slice(&dirty[offset..]);
             break;
         }
@@ -3538,6 +3544,13 @@ fn integrate_terrain_remeshes(
         .collect::<BTreeSet<_>>();
     let retired = ready_obsolete_nodes(&removed, &current_active, &published);
     for &id in &current_active {
+        // Only a node held back by an obsolete owner is missing from the index.
+        // Re-inserting refits its whole ancestor path and re-issues a visibility
+        // command, which for every active node on every frame cost more than
+        // the rest of publication combined.
+        if runtime.active_terrain_index.contains(id) {
+            continue;
+        }
         let owners = removed
             .iter()
             .copied()
