@@ -1,6 +1,9 @@
 //! Stable global coordinates and floating-origin conversion.
 
-#![allow(clippy::cast_possible_truncation)] // Range checks precede f64-to-cell conversion.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "range checks precede f64-to-cell conversion"
+)]
 
 use bevy_math::{DVec3, IVec3, Vec3};
 use serde::{Deserialize, Serialize};

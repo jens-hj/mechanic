@@ -1,4 +1,7 @@
-#![allow(clippy::float_cmp)] // Recovery must consume exactly zero physical time.
+#![expect(
+    clippy::float_cmp,
+    reason = "recovery must consume exactly zero physical time"
+)]
 use super::*;
 
 #[test]

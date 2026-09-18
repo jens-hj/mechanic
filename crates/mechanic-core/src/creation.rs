@@ -614,7 +614,10 @@ impl CreationDocument {
     /// # Errors
     ///
     /// Returns [`CreationError::TooManyRows`] if a remapped row index exceeds `u32`.
-    #[allow(clippy::too_many_lines)] // Dense relationship remapping is one transaction.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "dense relationship remapping is one transaction"
+    )]
     pub fn append(&mut self, mut other: Self) -> Result<(), CreationError> {
         let frame_offset =
             u32::try_from(self.frames.len()).map_err(|_| CreationError::TooManyRows)?;
@@ -795,7 +798,10 @@ impl CreationDocument {
     /// # Panics
     ///
     /// Never in practice: the arenas already refuse to exceed `u32` indices.
-    #[allow(clippy::too_many_lines)] // The document snapshot keeps all index remapping together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the document snapshot keeps all index remapping together"
+    )]
     pub fn from_graph(graph: &ConstructionGraph, name: &str, sockets: &[BearingSocket]) -> Self {
         let view_to_build = graph.view_to_build();
         let graph = graph.canonicalized();
@@ -986,7 +992,10 @@ impl CreationDocument {
     /// Returns [`CreationError`] when the version is unsupported, an index
     /// names a row the file does not define, a value is outside its supported
     /// range, or the replayed commands do not describe a valid construction.
-    #[allow(clippy::too_many_lines)] // One replay pass per serialized record family.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one replay pass per serialized record family"
+    )]
     pub fn into_graph(self) -> Result<LoadedCreation, CreationError> {
         if self.version != CREATION_FORMAT_VERSION {
             return Err(CreationError::UnsupportedVersion(self.version));

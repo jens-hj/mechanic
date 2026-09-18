@@ -345,7 +345,10 @@ impl CpuRoute {
     }
 
     /// Feed accepted CPU loads to world-owned compaction using this query's origin.
-    #[allow(clippy::cast_possible_truncation)] // World density and pressure use f32.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "world density and pressure use f32"
+    )]
     pub(crate) fn accumulate_soil(&self, world: &mut crate::world::WorldRuntime) {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         if !*ENABLED.get_or_init(|| {
@@ -732,7 +735,7 @@ pub(crate) fn gravity() -> DVec3 {
 }
 
 /// The publication format is `f32` by design; the solver's own state stays `f64`.
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn narrow(value: f64) -> f32 {
     value as f32
 }

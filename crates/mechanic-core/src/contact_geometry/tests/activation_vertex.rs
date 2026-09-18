@@ -57,7 +57,10 @@ fn vertex_activation_requires_an_actual_corner_inside_the_finite_triangle() {
 }
 
 #[test]
-#[allow(clippy::unreadable_literal)] // Preserve the captured round-trip decimal geometry.
+#[expect(
+    clippy::unreadable_literal,
+    reason = "preserve the captured round-trip decimal geometry"
+)]
 fn a_near_parallel_wheel_corner_keeps_its_actual_finite_vertex_contact() {
     let shape = ContactPolytope {
         vertices: vec![

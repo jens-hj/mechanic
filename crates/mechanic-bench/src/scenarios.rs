@@ -29,7 +29,10 @@ pub(crate) fn build_bearing_chain(bearing_count: usize) -> Result<CompiledCreati
         .collect::<Vec<_>>();
     graph
         .apply_batch((0..bearing_count).map(|index| {
-            #[allow(clippy::cast_precision_loss)] // Exact existing bounded benchmark lattice.
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "exact existing bounded benchmark lattice"
+            )]
             let anchor = Vec3::new(index as f32 + 0.5, 0.5, 0.0);
             BuildCommand::AddBearing(BearingSpec::new(
                 FaceRef::part(parts[index], FaceKind::PositiveX),

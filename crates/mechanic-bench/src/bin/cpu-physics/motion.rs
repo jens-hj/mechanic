@@ -18,7 +18,10 @@ fn spawn(graph: &mut ConstructionGraph, ticks: IVec3) -> Result<PartId, Box<dyn 
     Ok(id)
 }
 
-#[allow(clippy::too_many_lines)] // Keep the paired fixture and measurement protocol together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the paired fixture and measurement protocol together"
+)]
 pub(super) fn run(options: &scale::Options) -> Result<(), Box<dyn Error>> {
     let settings = SoftStepConfig::default();
     for rotor in [true, false] {
@@ -130,7 +133,10 @@ pub(super) fn run(options: &scale::Options) -> Result<(), Box<dyn Error>> {
 }
 
 // Four driven cuboid wheels and a chassis: no saved-world or terrain assets.
-#[allow(clippy::too_many_lines)] // Keep paired vehicle setup and reported measurements together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep paired vehicle setup and reported measurements together"
+)]
 fn vehicle(options: &scale::Options) -> Result<(), Box<dyn Error>> {
     let mut graph = ConstructionGraph::new();
     let BuildOutcome::Spawned(chassis) = graph.apply(BuildCommand::Spawn(CuboidSpec::new(

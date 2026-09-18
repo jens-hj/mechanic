@@ -26,7 +26,6 @@ pub(super) fn direction(
     work
 }
 
-#[allow(clippy::too_many_arguments)] // The immutable linearization and explicit actual-work accumulator.
 fn solve(
     factor: &DynamicsFactor,
     blocks: &[ConstraintBlock],

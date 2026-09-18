@@ -1,11 +1,13 @@
 //! Non-interactive world reticle aligned with the ray used by every tool.
 
-#![allow(clippy::wildcard_imports)]
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy_mosaic::ui::*;
 use mosaic_macros::{component, view};
 
-#[allow(clippy::wildcard_imports)]
 use super::theme::*;
 
 #[component]

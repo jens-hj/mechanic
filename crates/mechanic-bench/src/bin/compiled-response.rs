@@ -367,7 +367,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Complete saved-car/finite-terrain fixture and external momentum check.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "complete saved-car/finite-terrain fixture and external momentum check"
+    )]
     fn saved_car_finite_terrain_response_repeats_and_balances_external_momentum() {
         let creation = car();
         let coordinates = vec![0.0; creation.dynamics.coordinate_bearings.len()];

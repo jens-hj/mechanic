@@ -1,6 +1,9 @@
 //! Density queries, kinematic walking, and terrain-foundation support.
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // Validated prototype dimensions become grid counts.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "validated prototype dimensions become grid counts"
+)]
 
 use std::{
     cmp::Ordering,
@@ -606,7 +609,10 @@ impl KinematicCapsule {
     }
 
     /// Advances one fixed tick against terrain and compiled construction.
-    #[allow(clippy::too_many_lines)] // Terrain preservation and construction response share one ordered solve.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "terrain preservation and construction response share one ordered solve"
+    )]
     pub fn tick<T: TerrainDensity>(
         &mut self,
         scene: &mut KinematicCollisionScene<'_, T>,

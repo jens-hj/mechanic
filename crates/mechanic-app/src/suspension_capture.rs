@@ -192,7 +192,11 @@ fn sample(index: usize) -> Option<(String, SuspensionSpec, f32)> {
         compression,
     ))
 }
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One opt-in capture state machine.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one opt-in capture state machine"
+)]
 fn advance(
     mut commands: Commands,
     mut capture: ResMut<Capture>,
@@ -322,7 +326,7 @@ fn advance(
                 timings.sort_by(f64::total_cmp);
                 if !timings.is_empty() {
                     let p95 = timings[(timings.len() * 95 / 100).min(timings.len() - 1)];
-                    #[allow(clippy::cast_precision_loss)]
+                    #[expect(clippy::cast_precision_loss)]
                     let mean = timings.iter().sum::<f64>() / timings.len() as f64;
                     let builds =
                         capture.frames.last().unwrap().1 - capture.frames.first().unwrap().1;
@@ -369,7 +373,7 @@ fn advance(
 }
 
 /// Native fixture input uses the same transaction handler as captured mouse motion.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn exercise(
     capture: Res<Capture>,
     mut graph: ResMut<crate::EditorGraph>,

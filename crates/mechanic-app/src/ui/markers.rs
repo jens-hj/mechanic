@@ -4,7 +4,10 @@
 //! any camera angle. The projection stays in the ECS — it needs the camera —
 //! and only the result, a point and a number, reaches the tree.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy::math::{Vec2, Vec3};
 use bevy::prelude::{Camera, GlobalTransform};
@@ -13,9 +16,7 @@ use mosaic_macros::{component, view};
 
 use super::Handles;
 use super::components::{OverlayBadge, OverlayBadgeProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use super::styles::*;
-#[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use crate::hotbar::Tool;
 use crate::{AppSimulation, EditorGraph};

@@ -1,6 +1,9 @@
 //! Reusable hold-Tab radial selector for materials, items, and terrain.
 
-#![allow(clippy::wildcard_imports)]
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy_mosaic::ui::*;
 use mechanic_core::ConstructionMaterial;
@@ -9,7 +12,6 @@ use mosaic_macros::{component, view};
 
 use crate::hotbar::WheelChoice;
 
-#[allow(clippy::wildcard_imports)]
 use super::theme::*;
 
 const WHEEL_SIZE: f32 = 380.0;

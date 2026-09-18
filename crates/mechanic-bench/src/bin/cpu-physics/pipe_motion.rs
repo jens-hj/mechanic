@@ -48,7 +48,7 @@ pub(super) fn run(path: &str, options: &scale::Options) -> Result<(), Box<dyn Er
 
 // Keep the same saved pipe 20 m away from optional unrelated builder geometry.
 // A diagnostic plane at authored y=4 isolates scene amplification from meshing.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(super) fn scene_ticks(
     path: &str,
     background: Option<&str>,

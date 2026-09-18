@@ -571,7 +571,7 @@ impl CylinderDimensions {
     }
 
     /// Axial length in whole quarter-metre grid units, rounded down.
-    #[allow(clippy::cast_possible_truncation)] // At most 32 units.
+    #[expect(clippy::cast_possible_truncation, reason = "at most 32 units")]
     pub const fn axial_length_units(self) -> u8 {
         (self.axial_length_ticks / GRID_UNIT_TICKS) as u8
     }
@@ -604,7 +604,7 @@ impl Default for CylinderDimensions {
 }
 
 /// Position ticks in one quarter-metre grid unit.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 100 ticks.
+#[expect(clippy::cast_possible_truncation, reason = "100 ticks")]
 const GRID_UNIT_TICKS: u16 = POSITION_TICKS_PER_GRID_UNIT as u16;
 
 /// Most material layers one part carries over its core.
@@ -810,7 +810,10 @@ fn unwind_layer_regions(mut envelope: LayerEnvelope, layers: MaterialLayers) -> 
 
 /// Validates a layer thickness; flat layers also return their even tick count,
 /// so the half-thickness centre shift stays on the position grid.
-#[allow(clippy::cast_possible_truncation)] // Checked against the 8 m envelope first.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "checked against the 8 m envelope first"
+)]
 fn layer_thickness_ticks(thickness: f32, flat: bool) -> Result<i32, LayerError> {
     if !thickness.is_finite() || thickness < MIN_LAYER_THICKNESS_METERS - 1.0e-5 {
         return Err(LayerError::ThicknessOutOfRange);
@@ -827,7 +830,10 @@ fn layer_thickness_ticks(thickness: f32, flat: bool) -> Result<i32, LayerError> 
 }
 
 /// Moves a pose along one of its rotated local axes by whole ticks.
-#[allow(clippy::cast_possible_truncation)] // Cardinal rotations keep whole ticks.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "cardinal rotations keep whole ticks"
+)]
 fn shifted_pose(pose: BuildPose, local_ticks: Vec3) -> BuildPose {
     let shift = (pose.rotation.quaternion() * local_ticks).round();
     BuildPose::from_position_ticks(
@@ -890,11 +896,12 @@ impl CylinderSpec {
     ///
     /// Returns [`LayerError`] when the thickness, face, layer count, or grown
     /// envelope is invalid.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )] // Validated tick lengths within 8 m.
+        clippy::cast_sign_loss,
+        reason = "validated tick lengths within 8 m"
+    )]
     pub fn with_layer(
         self,
         face: LayerFace,
@@ -980,11 +987,12 @@ impl CylinderSpec {
 
     /// The core this cylinder's layers were laid on.
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
-        clippy::cast_sign_loss
-    )] // Unwinds validated ticks within 8 m.
+        clippy::cast_sign_loss,
+        reason = "unwinds validated ticks within 8 m"
+    )]
     pub fn without_layers(self) -> Self {
         let mut outer = self.dimensions.outer_diameter;
         let mut inner = self.dimensions.inner_diameter;
@@ -1855,7 +1863,7 @@ impl PartSpec {
 
     /// Band owning a part-local point: the newest layer whose region contains
     /// it, or the core.
-    #[allow(clippy::cast_possible_truncation)] // At most MAX_PART_LAYERS.
+    #[expect(clippy::cast_possible_truncation, reason = "at most MAX_PART_LAYERS")]
     pub fn band_at_local_point(self, local: Vec3) -> u8 {
         self.layer_regions()
             .iter()
@@ -2176,7 +2184,7 @@ impl CuboidSpec {
     /// Returns [`LayerError`] when the face is not flat, the thickness is not a
     /// whole 5 mm step of at least 1 cm, the part has the most layers, or the
     /// envelope would exceed 8 m.
-    #[allow(clippy::cast_precision_loss)] // Tick counts within 8 m.
+    #[expect(clippy::cast_precision_loss, reason = "tick counts within 8 m")]
     pub fn with_layer(
         self,
         face: LayerFace,
@@ -2212,7 +2220,11 @@ impl CuboidSpec {
 
     /// The grid-aligned core this cuboid's layers were laid on.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // Whole ticks within 8 m.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "whole ticks within 8 m"
+    )]
     pub fn without_layers(self) -> Self {
         let shift = self
             .layers

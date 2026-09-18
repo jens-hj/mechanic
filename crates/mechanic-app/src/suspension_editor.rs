@@ -209,7 +209,10 @@ fn assembly(
     .map_err(|e| e.to_string())
 }
 
-#[allow(clippy::too_many_lines)] // One preview transaction covers component insertion and opposite-plate construction.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one preview transaction covers component insertion and opposite-plate construction"
+)]
 pub(super) fn refresh(
     graph: &ConstructionGraph,
     state: &mut EditorState,

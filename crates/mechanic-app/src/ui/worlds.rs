@@ -1,6 +1,9 @@
 //! Full-window Mosaic world list and creation form.
 
-#![allow(clippy::wildcard_imports)]
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use std::path::PathBuf;
 
@@ -10,9 +13,7 @@ use mosaic_macros::{component, view};
 use mosaic_widgets::input::{EventCtx, Key, KeyEvent, KeyEventKind};
 
 use super::components::{Action, ActionProps, PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)]
 use super::styles::*;
-#[allow(unused_imports, clippy::wildcard_imports)]
 use super::theme::*;
 use super::{Handles, UiIntent, WorldAction};
 use crate::world::{WorldListPhase, WorldListState};
@@ -286,7 +287,7 @@ fn row_status_color(status: &str) -> Color {
     }
 }
 
-#[allow(
+#[expect(
     clippy::cast_precision_loss,
     reason = "terrain startup counts are tiny compared with f32's exact integer range"
 )]

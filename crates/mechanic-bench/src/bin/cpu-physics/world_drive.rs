@@ -20,7 +20,11 @@ use mechanic_world::{
 /// Terrain meshed around each moving body, in bricks.
 const REACH_BRICKS: i32 = 2;
 
-#[allow(clippy::too_many_lines, clippy::cast_possible_truncation)] // Replay protocol; terrain samples use f32.
+#[expect(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    reason = "replay protocol; terrain samples use f32"
+)]
 pub(super) fn run(
     directory: &str,
     options: &scale::Options,
@@ -373,7 +377,7 @@ impl Window {
     fn record(&mut self, elapsed: f64, d: &mechanic_physics::SoftStepDiagnostics) {
         self.samples.push(elapsed);
         self.degraded += u64::from(d.degraded);
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         for (name, value) in [
             ("query_ms", d.query_ms),
             ("continuous_ms", d.continuous_ms),
@@ -413,7 +417,7 @@ impl Window {
     fn report(&mut self, tick: u64, speed: f64, chunks: usize, driving: bool) -> serde_json::Value {
         self.samples.sort_by(f64::total_cmp);
         self.total_samples.sort_by(f64::total_cmp);
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         let count = self.samples.len() as f64;
         let mut record = json!({
             "tick": tick,

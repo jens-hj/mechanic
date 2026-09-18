@@ -14,7 +14,10 @@ use mechanic_world::{
 };
 use std::{error::Error, sync::Arc, time::Instant};
 
-#[allow(clippy::too_many_lines)] // One explicit fixture, replay and result record.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one explicit fixture, replay and result record"
+)]
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().collect::<Vec<_>>();
     let ticks: u32 = args

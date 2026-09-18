@@ -30,7 +30,10 @@ fn render_frame(app: &mut App) {
 
 #[test]
 #[ignore = "requires a real GPU; run separately for each MECHANIC_RENDER_EXPERIMENT"]
-#[allow(clippy::too_many_lines)] // Keep offscreen setup and pixel proof in one fixture.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep offscreen setup and pixel proof in one fixture"
+)]
 fn terrain_experiment_renders_pixels_with_the_real_material() {
     let mode = crate::render_experiments::current();
     let mut app = App::new();

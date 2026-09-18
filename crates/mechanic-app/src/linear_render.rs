@@ -42,7 +42,10 @@ pub(super) struct LinearVisual {
 }
 
 #[derive(Default)]
-#[allow(clippy::type_complexity)] // Cached dimensions contain material-indexed owner meshes.
+#[expect(
+    clippy::type_complexity,
+    reason = "cached dimensions contain material-indexed owner meshes"
+)]
 pub(super) struct LinearRenderCache {
     specs: Vec<RailVisualSpec>,
     revision: Option<WorldPhysicsRevision>,
@@ -188,7 +191,7 @@ pub(super) fn socket_transforms(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn sync_attachment_highlight(
     commands: &mut Commands,
     graph: &ConstructionGraph,
@@ -252,7 +255,7 @@ fn sync_attachment_highlight(
 }
 
 /// Register after simulation visual synchronization; no startup system is needed.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(super) fn sync_linear_bearing_visuals(
     mut commands: Commands,
     graph: Res<EditorGraph>,

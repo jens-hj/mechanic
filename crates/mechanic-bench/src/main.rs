@@ -134,7 +134,7 @@ fn main() -> ExitCode {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn run() -> Result<bool, String> {
     let options = parse_options()?;
     if matches!(
@@ -643,7 +643,7 @@ fn build_suspension_one() -> Result<CompiledCreation, String> {
     let spring = SpringSpec::default();
     let suspension =
         SuspensionSpec::new(Some(spring), None, None).map_err(|error| error.to_string())?;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     let spacing_ticks = ((suspension.initial_length() + 0.625) / 0.0025).round() as i32;
     let base = spawned_part(
         graph
@@ -691,7 +691,7 @@ fn build_suspension_one() -> Result<CompiledCreation, String> {
 }
 
 /// Repository-owned reproduction of the TEST2 vehicle's expensive topology.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn build_test2_car() -> Result<CompiledCreation, String> {
     let mut graph = ConstructionGraph::new();
     let chassis = spawned_part(
@@ -934,7 +934,6 @@ fn test2_phase_drives(
     drives
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn run_player_collision_benchmark(options: Options) -> Result<bool, String> {
     let construction_started = Instant::now();
     let static_creation = build_player_collision_creation(PLAYER_STATIC_COLLIDER_COUNT, 32, true)?;
@@ -1150,8 +1149,10 @@ impl Drop for TerrainBenchWorkers {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // Bounded benchmark coordinates become terrain cells.
-#[allow(clippy::too_many_lines)] // Keeps one benchmark sample loop and its report together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps one benchmark sample loop and its report together"
+)]
 fn run_terrain_benchmark(options: Options) -> Result<bool, String> {
     const PUBLISH_BUDGET_MS: f64 = 2.0;
     let seed = WorldSeed(0x0054_4552_5241_494e);
@@ -1571,7 +1572,7 @@ fn optional_milliseconds(value: Option<f64>) -> String {
     )
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 fn node_overlaps_region(node: TerrainNodeId, centre: WorldPosition, radius: f64) -> bool {
     let minimum = bevy_math::DVec3::from_array(
         node.minimum_cell_i64()

@@ -1,5 +1,5 @@
 //! Numerical port of `fx_pack/fx.js`. Sustained rates are its expected 60 Hz density.
-#![allow(
+#![expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
@@ -152,7 +152,7 @@ impl Particles {
     fn direction(&mut self) -> Vec3 {
         self.vector().normalize_or(Vec3::Y)
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn shard(
         &mut self,
         kind: Kind,
@@ -374,7 +374,7 @@ impl Particles {
             _ => {}
         }
     }
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names)]
     fn connector(&mut self, f: EmitterFrame) {
         let origin = f.origin.translation;
         let t = self.clock;
@@ -396,7 +396,6 @@ impl Particles {
             self.trace(Kind::Connector, a, b, Vec3::ZERO, 0.18, 2);
         }
     }
-    #[allow(clippy::many_single_char_names)]
     fn connector_stream(&mut self, origin: Vec3, target: Vec3, t: f32) {
         let mut prev = origin;
         for i in 1..=11 {

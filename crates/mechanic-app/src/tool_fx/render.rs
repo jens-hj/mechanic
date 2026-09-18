@@ -109,7 +109,7 @@ pub(super) struct InstanceData {
     pub endpoint: [f32; 4],
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn queue_custom(
     transparent_3d_draw_functions: Res<DrawFunctions<Transparent3d>>,
     custom_pipeline: Res<CustomPipeline>,

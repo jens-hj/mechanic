@@ -5,7 +5,10 @@ use bevy_math::{DVec3, Quat, Vec3};
 use mechanic_core::{BuildCommand, BuildPose, ConstructionGraph, CuboidSpec};
 
 #[test]
-#[allow(clippy::too_many_lines)] // Keep the impact and its separation controls together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the impact and its separation controls together"
+)]
 fn rotating_body_cannot_pass_through_terrain_between_clear_endpoint_poses() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =

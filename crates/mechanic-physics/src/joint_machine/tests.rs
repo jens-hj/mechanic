@@ -24,7 +24,7 @@ fn spawn(graph: &mut ConstructionGraph, ticks: IVec3, dimensions: [u8; 3]) -> Pa
 fn suspension(spec: SuspensionSpec, anchored: bool) -> CompiledCreation {
     let mut graph = ConstructionGraph::new();
     let root = spawn(&mut graph, IVec3::ZERO, [4, 4, 4]);
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     // Fixture construction spacing is bounded and on the authored lattice.
     let spacing = ((spec.initial_length() + 0.625) / 0.0025).round() as i32;
     let tip = spawn(&mut graph, IVec3::Y * spacing, [1, 1, 1]);

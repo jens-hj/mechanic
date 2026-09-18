@@ -266,7 +266,10 @@ fn a_car_crashing_into_a_wall_stays_in_front_of_it() {
             launch(&creation, &mut state, body, DVec3::X * 40.0, DVec3::ZERO);
         }
     }
-    #[allow(clippy::cast_possible_truncation)] // A wall a few metres from the origin.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "A wall a few metres from the origin"
+    )]
     let wall = (front + 6.0) as f32;
     let mut world = World::with_wall(creation, state, wall);
     for tick in 1..=90 {
@@ -427,7 +430,10 @@ fn spawn(graph: &mut ConstructionGraph, ticks: IVec3, dimensions: [u8; 3]) -> Pa
 fn suspension(spec: SuspensionSpec, anchored: bool) -> CompiledCreation {
     let mut graph = ConstructionGraph::new();
     let root = spawn(&mut graph, IVec3::ZERO, [4, 4, 4]);
-    #[allow(clippy::cast_possible_truncation)] // Bounded fixture spacing on the lattice.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded fixture spacing on the lattice"
+    )]
     let spacing = ((spec.initial_length() + 0.625) / 0.0025).round() as i32;
     let tip = spawn(&mut graph, IVec3::Y * spacing, [1, 1, 1]);
     graph
@@ -483,7 +489,10 @@ fn four_bar(anchored: bool) -> CompiledCreation {
 fn twin_suspension(spec: SuspensionSpec) -> CompiledCreation {
     let mut graph = ConstructionGraph::new();
     let root = spawn(&mut graph, IVec3::ZERO, [4, 4, 4]);
-    #[allow(clippy::cast_possible_truncation)] // Bounded fixture spacing on the lattice.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded fixture spacing on the lattice"
+    )]
     let spacing = ((spec.initial_length() + 0.625) / 0.0025).round() as i32;
     let plate = spawn(&mut graph, IVec3::Y * spacing, [4, 1, 4]);
     let strut = |x: f32| {
@@ -988,7 +997,7 @@ fn a_wheel_rolled_into_a_low_kerb_never_passes_through_it() {
     const FACE: f64 = 1.5;
     const HEIGHT: f64 = 0.1;
     let (creation, state) = rolling_wheel(3.0);
-    #[allow(clippy::cast_possible_truncation)] // Exact small constants.
+    #[expect(clippy::cast_possible_truncation, reason = "exact small constants")]
     let mut world = World::over(creation, state, kerb(FACE as f32, HEIGHT as f32));
     for tick in 1..=120 {
         let axle = world.tick(GRAVITY).poses[0].position;

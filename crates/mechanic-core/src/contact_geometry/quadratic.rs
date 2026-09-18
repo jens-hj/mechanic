@@ -88,7 +88,6 @@ impl ContactVelocity {
     /// Adds rotation about a parent-local anchor to a velocity at the child origin.
     /// The local axis and parent quaternion must be normalized. Frame transforms
     /// and anchor subtraction use outward intervals, including cancellation.
-    #[allow(clippy::too_many_arguments)] // Explicit parent frame, joint geometry, rate and child origin.
     #[must_use]
     pub fn rotated(
         self,
@@ -206,7 +205,10 @@ impl ContactPolytope {
     ///
     /// # Errors
     /// Rejects invalid geometry, non-finite kinematics or negative time/acceleration.
-    #[allow(clippy::too_many_arguments)] // Both solids' origins and velocities.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "both solids' origins and velocities"
+    )]
     pub fn convex_motion_prefix(
         &self,
         origin: DVec3,

@@ -5,7 +5,11 @@
 //! default themes below preserve the measurements and colours the overlay was
 //! authored with.
 
-#[allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
+
 use bevy_mosaic::ui::*;
 
 /// Where the design's two typefaces are looked for.
@@ -162,7 +166,7 @@ pub(crate) fn typography() -> MechanicType {
 }
 
 /// Resolves an authored font weight into Mosaic's integer text weight.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "theme weights are clamped and rounded before conversion"

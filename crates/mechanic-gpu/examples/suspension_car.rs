@@ -63,7 +63,7 @@ fn bearing(
     id
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let destination = std::env::args_os().nth(1).map_or_else(
         || PathBuf::from("creations/suspension-car.mech"),

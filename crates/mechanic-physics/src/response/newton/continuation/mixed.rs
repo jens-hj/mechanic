@@ -17,7 +17,6 @@ struct Point {
     coupling: Vec<f64>,
 }
 
-#[allow(clippy::too_many_lines)] // Complete local pivoting transforms all companion rows together.
 fn prepare(
     at: &super::smoothing::Point,
     rows: &[&Vec<f64>],
@@ -124,7 +123,6 @@ fn prepare(
     point
 }
 
-#[allow(clippy::too_many_lines)] // Assemble, solve, and reconstruct the same bounded Schur system.
 pub(super) fn direction(
     factor: &DynamicsFactor,
     rows: &[&Vec<f64>],

@@ -117,7 +117,7 @@ impl FeatureDrag {
     }
 
     /// Quantized positive amount proposed by the current pointer ray.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     pub(crate) fn proposed_amount(
         &mut self,
         snap: ShapeSnap,
@@ -644,7 +644,7 @@ fn edge_point(
         .collect::<Vec<_>>();
     let upper = cells.iter().position(|&cell| cell > position)?;
     let (low, high) = (cells[upper - 1], cells[upper]);
-    #[allow(clippy::cast_precision_loss)] // Cell counts are small.
+    #[expect(clippy::cast_precision_loss, reason = "cell counts are small")]
     let blend = (position - low) as f32 / (high - low) as f32;
 
     let mut low_index = [0_u16; 3];
@@ -734,7 +734,10 @@ pub(crate) fn drag_offset(
     clamp_into_region(region, drag.index, proposed)
 }
 
-#[allow(clippy::cast_possible_truncation)] // Travel is bounded by the region.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "travel is bounded by the region"
+)]
 fn round_to_i32(value: f32) -> i32 {
     value.round().clamp(-4096.0, 4096.0) as i32
 }
@@ -893,5 +896,4 @@ pub(crate) fn vertex_marker_size(distance: f32) -> f32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 mod tests;

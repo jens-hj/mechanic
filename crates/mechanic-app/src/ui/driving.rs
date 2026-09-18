@@ -1,6 +1,9 @@
 //! Read-only instruments for the vehicle occupied by the player.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy::prelude::Vec3;
 use bevy_mosaic::ui::*;
@@ -9,7 +12,6 @@ use mosaic_core::Rect;
 use mosaic_macros::{component, view};
 
 use super::components::{PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)] // Consumed by view! expansion.
 use super::styles::*;
 use super::theme::{accent, ink};
 use crate::sequencer::{DriveSequencer, GearboxRuntime};
@@ -76,7 +78,7 @@ pub(crate) fn capture(
 }
 
 /// Seat-body translation, not wheel spin or camera motion, per simulated second.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 fn vehicle_speed_kmh(simulation: &AppSimulation, seat: PartId) -> Option<f32> {
     let creation = simulation.creation.as_ref()?;
     let body = creation

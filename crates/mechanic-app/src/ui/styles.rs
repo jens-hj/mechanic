@@ -1,9 +1,12 @@
 //! Shared Mosaic styles for the product overlay.
 
-#[allow(clippy::wildcard_imports)] // Mosaic's style vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
+
 use bevy_mosaic::ui::*;
 
-#[allow(clippy::wildcard_imports)] // Design tokens are intentionally bare in styles.
 use super::theme::*;
 
 mosaic_macros::style! {

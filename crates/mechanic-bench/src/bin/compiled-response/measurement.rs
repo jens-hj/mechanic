@@ -8,7 +8,10 @@ use mechanic_physics::{
 };
 use std::{error::Error, time::Instant};
 
-#[allow(clippy::too_many_lines)] // Matched acquisition, repeatability checks and complete result record.
+#[expect(
+    clippy::too_many_lines,
+    reason = "matched acquisition, repeatability checks and complete result record"
+)]
 pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let path = arguments.first().ok_or(

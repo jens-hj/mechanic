@@ -1,6 +1,6 @@
 //! Sparse promotion and persistent subtractive terrain edits.
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#![expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 
 use std::{
     array,
@@ -219,7 +219,10 @@ impl TerrainBrick {
         }
     }
 
-    #[allow(clippy::cast_sign_loss)] // Depth is finite and positive before quantisation.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "depth is finite and positive before quantisation"
+    )]
     fn compress(&mut self, local: IVec3, depth: f32) -> Option<f32> {
         let index = local_index(local)?;
         let sample = &mut self.cells[index];

@@ -136,7 +136,10 @@ fn fixture() -> (App, Handle<Shader>, Entity, Entity) {
     (app, shader, terrain, readback)
 }
 
-#[allow(clippy::cast_precision_loss)] // Small, bounded procedural fixture grid.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "small, bounded procedural fixture grid"
+)]
 fn terrain_patch(blended: bool, side: u32) -> Mesh {
     let mut positions = Vec::new();
     let mut normals = Vec::new();

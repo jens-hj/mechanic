@@ -671,7 +671,10 @@ impl SuspensionSpec {
     /// Axisymmetric component masses in the construction pose. The axial centre
     /// is measured from the source plate; inertia is about each component centre.
     /// Shared plates occur exactly once each, and wire mass is split between mounts.
-    #[allow(clippy::missing_panics_doc)] // Constructor validation guarantees shock packaging.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "constructor validation guarantees shock packaging"
+    )]
     pub fn mass_elements(self) -> Vec<SuspensionMassElement> {
         let p = self.plates();
         let length = self.initial_length();
@@ -758,7 +761,10 @@ impl SuspensionSpec {
     /// First row: spring stiffness, build-pose spring compression, compression
     /// damping, rebound damping. Second row: rubber stiffness, free length,
     /// contact compression, initial assembly compression.
-    #[allow(clippy::missing_panics_doc)] // Constructor validation guarantees every stop has a host.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "constructor validation guarantees every stop has a host"
+    )]
     pub fn passive_rows(self) -> [[f32; 4]; 2] {
         let spring = self.spring();
         let shock = self.shock();
@@ -862,7 +868,10 @@ impl From<SuspensionSpec> for SuspensionInputs {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // Exact retained input bits and stationary zero forces are the contract.
+#[expect(
+    clippy::float_cmp,
+    reason = "exact retained input bits and stationary zero forces are the contract"
+)]
 mod tests {
     use super::*;
     #[test]

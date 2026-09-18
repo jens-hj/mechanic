@@ -1,4 +1,7 @@
-#![allow(clippy::float_cmp)] // Holds and pure lifts preserve these rows exactly.
+#![expect(
+    clippy::float_cmp,
+    reason = "holds and pure lifts preserve these rows exactly"
+)]
 
 use super::*;
 use bevy::math::DVec3;
@@ -27,7 +30,7 @@ fn pose(position: Vec3, rotation: Quat) -> GpuTransform {
     }
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[expect(clippy::unnecessary_wraps)]
 fn flat_terrain(center: Vec3, radius: f32) -> Option<f32> {
     Some(radius - center.y)
 }

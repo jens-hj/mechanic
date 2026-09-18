@@ -1,9 +1,12 @@
 //! Screen-upright controls anchored to suspension geometry; the reticle owns input.
-#![allow(clippy::wildcard_imports)]
+
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
+
 use super::Handles;
-#[allow(unused_imports)]
 use super::styles::*;
-#[allow(clippy::wildcard_imports)]
 use super::theme::{accent, dial};
 use crate::suspension_controls::{Aim, Control, Parameter, Target};
 use bevy::prelude::{Camera, GlobalTransform, Vec2, Vec3};
@@ -64,7 +67,7 @@ pub(crate) struct Bounds {
 pub(crate) type Layout =
     std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<CalloutKey, Bounds>>>;
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(crate) fn capture(
     state: &crate::EditorState,
     graph: &crate::ConstructionGraph,
@@ -135,7 +138,7 @@ pub(crate) fn capture(
         (2, spec.bump_stop().is_some(), "Bump Stop"),
     ] {
         if present {
-            #[allow(clippy::cast_precision_loss)]
+            #[expect(clippy::cast_precision_loss)]
             let offset = component as f32 * 34.0;
             add(
                 CalloutKey::Control(Control::Component(component), false),
@@ -347,7 +350,7 @@ pub(crate) fn capture(
         ) else {
             continue;
         };
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         let position = right + Vec2::Y * (112.0 + index as f32 * 36.0);
         lines.push((at + side * 64.0, at + side * 76.0));
         lines.push((at + side * 76.0, position - side * 130.0));

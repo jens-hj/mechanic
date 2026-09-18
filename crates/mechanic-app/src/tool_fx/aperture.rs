@@ -23,7 +23,6 @@ impl MaterialExtension for ApertureExtension {
         "shaders/freeze_aperture.wgsl".into()
     }
 }
-#[allow(clippy::too_many_arguments)]
 fn sync(
     mut commands: Commands,
     fx: Res<super::ToolFx>,

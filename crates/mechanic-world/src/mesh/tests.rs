@@ -1,4 +1,4 @@
-#![allow(clippy::cast_possible_truncation, clippy::float_cmp)]
+#![expect(clippy::cast_possible_truncation, clippy::float_cmp)]
 use bevy_math::{DVec3, Vec3};
 
 use super::{PreparedTerrainRegion, TerrainIndexGroups, TerrainMeshRequest, mesh_chunk};
@@ -293,7 +293,10 @@ fn untouched_surface_remains_smooth_and_covered_at_every_lod() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // The fixture assembles both sides of one complete LOD face.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture assembles both sides of one complete LOD face"
+)]
 fn transition_surface_has_no_open_interior_edges() {
     type Point = [i64; 3];
     type Edge = (Point, Point);
@@ -492,7 +495,10 @@ fn transition_surface_occupies_an_inset_band() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // The fixture compares both complete sides of one edited LOD seam.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture compares both complete sides of one edited LOD seam"
+)]
 fn edited_transition_coarse_edge_matches_coarse_regular_surface() {
     type Point = [i64; 3];
     type Edge = (Point, Point);

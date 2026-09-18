@@ -12,6 +12,11 @@
 //! moment later. Nothing in a view touches a resource, and nothing in the world
 //! knows a view exists.
 
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
+
 mod chroma;
 mod components;
 mod control_block;
@@ -58,7 +63,6 @@ use mechanic_world::TerrainMaterial;
 
 pub(crate) use control_block::{EditTarget, LocatedJoint};
 
-#[allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
 use bevy_mosaic::ui::*;
 use mosaic_macros::{component, view};
 
@@ -74,7 +78,6 @@ use material_wheel::{RadialSelector, RadialSelectorProps};
 use pause::{PauseMenu, PauseMenuProps};
 use performance::{PerformanceOverlay, PerformanceOverlayProps};
 use reticle::{WorldReticle, WorldReticleProps};
-#[allow(unused_imports, clippy::wildcard_imports)]
 // Style constants are consumed by `view!` expansion.
 use styles::*;
 use suspension::{SuspensionOverlay, SuspensionOverlayProps};
@@ -503,7 +506,7 @@ pub(crate) struct ToolSelection<'w> {
     material: ResMut<'w, SelectedMaterial>,
 }
 
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[expect(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 // Bevy system parameters are value-typed wrappers and independent resources.
 pub(crate) fn drain(
     mut ui: Option<NonSendMut<AppUi>>,
@@ -556,7 +559,7 @@ pub(crate) fn drain(
 }
 
 /// Shows the panels what the world now says.
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[expect(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 // Bevy system parameters are value-typed wrappers and independent resources.
 pub(crate) fn push(
     ui: Option<NonSendMut<AppUi>>,
@@ -659,7 +662,10 @@ pub(crate) fn push(
 /// Its own system because what it says is drawn from most of the editor at
 /// once, and grouping those reads anywhere else would drag them into a system
 /// that has no other use for them.
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 pub(crate) fn push_help(ui: Option<NonSendMut<AppUi>>, sources: help::Sources) {
     let Some(mut ui) = ui else {
         return;
@@ -672,7 +678,10 @@ pub(crate) fn push_help(ui: Option<NonSendMut<AppUi>>, sources: help::Sources) {
 }
 
 /// Projects each driven joint's number onto the screen.
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 pub(crate) fn push_markers(
     ui: Option<NonSendMut<AppUi>>,
     graph: Res<EditorGraph>,
@@ -691,7 +700,10 @@ pub(crate) fn push_markers(
 }
 
 /// Projects live block-sheet dimensions onto the screen.
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 pub(crate) fn push_dimensions(
     ui: Option<NonSendMut<AppUi>>,
     state: Res<EditorState>,
@@ -709,7 +721,7 @@ pub(crate) fn push_dimensions(
 }
 
 /// Mirrors the transient world selector into the typed overlay components.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn push_player(ui: Option<NonSendMut<AppUi>>, wheel: Res<MaterialWheelState>) {
     let Some(mut ui) = ui else {
         return;
@@ -726,7 +738,10 @@ pub(crate) fn push_player(ui: Option<NonSendMut<AppUi>>, wheel: Res<MaterialWhee
 }
 
 /// Publishes the throttled performance snapshot into the retained overlay.
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 pub(crate) fn push_performance(
     ui: Option<NonSendMut<AppUi>>,
     metrics: Res<crate::performance::PerformanceMetrics>,
@@ -742,7 +757,10 @@ pub(crate) fn push_performance(
 }
 
 /// Updates instruments at 10 Hz without another GPU readback or changing physics.
-#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 pub(crate) fn push_driving(
     ui: Option<NonSendMut<AppUi>>,
     simulation: Res<AppSimulation>,
@@ -776,7 +794,11 @@ pub(crate) fn push_driving(
 ///
 /// Last of the overlay's systems, because it reports on a tree the others have
 /// finished changing.
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)] // Bevy system parameters are value-typed wrappers.
+#[expect(
+    clippy::needless_pass_by_value,
+    clippy::too_many_arguments,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 pub(crate) fn sync_input(
     mosaic: Option<NonSend<MosaicContext>>,
     ui: Option<NonSend<AppUi>>,
@@ -826,7 +848,7 @@ fn escape_is_consumed(mosaic_keyboard: bool, menu_open: bool, capturing: bool) -
 }
 
 /// Resolves reticle controls against the native Mosaic layout from the last frame.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(crate) fn push_suspension(
     ui: Option<NonSend<AppUi>>,
     mut state: ResMut<EditorState>,

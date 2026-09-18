@@ -1,6 +1,9 @@
 //! Smooth terrain mesh, collision, and spatial-query contracts.
 
-#![allow(clippy::cast_possible_truncation)] // GPU vertices and barycentrics are explicitly f32.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "GPU vertices and barycentrics are explicitly f32"
+)]
 
 use std::{array, collections::HashMap, time::Instant};
 
@@ -51,7 +54,10 @@ impl WorldBounds {
 
 impl TerrainNodeId {
     /// Inclusive global owning bounds, including shared boundary triangles.
-    #[allow(clippy::cast_precision_loss)] // Finite-world cell coordinates fit exactly in f64.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "finite-world cell coordinates fit exactly in f64"
+    )]
     pub fn world_bounds(self) -> WorldBounds {
         WorldBounds {
             minimum: WorldPosition(DVec3::from_array(
@@ -993,7 +999,10 @@ fn make_vertices_node_local(chunk: &mut TerrainMeshChunk) {
     }
 }
 
-#[allow(clippy::too_many_lines)] // Fine and coarse halo preparation share indexing contracts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "fine and coarse halo preparation share indexing contracts"
+)]
 fn sample_halo(
     field: &TerrainField,
     edits: &PreparedTerrainRegion<'_>,

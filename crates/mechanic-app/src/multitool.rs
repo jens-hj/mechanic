@@ -1390,7 +1390,7 @@ fn spawn_strike(
         });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn update(
     time: Res<Time>,
     input: MultitoolInput,
@@ -1760,7 +1760,7 @@ fn viewmodel_transform(state: &MultitoolState) -> Transform {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 mod tests {
     use super::*;
 

@@ -110,11 +110,12 @@ impl LinearMeshChunk {
 /// Only the carriage's outer half-width is snapped; its inner profile retains
 /// the original 2 mm lateral and 2.5 mm ceiling clearances.
 #[must_use]
-#[allow(
+#[expect(
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)] // Bounded dimension-derived fixing counts and literal asset profiles.
+    clippy::cast_sign_loss,
+    reason = "bounded dimension-derived fixing counts and literal asset profiles"
+)]
 pub fn linear_bearing_meshes(dimensions: LinearBearingDimensions) -> Vec<LinearMeshChunk> {
     let mut chunks: Vec<_> = [LinearMeshOwner::Rail, LinearMeshOwner::Carriage]
         .into_iter()

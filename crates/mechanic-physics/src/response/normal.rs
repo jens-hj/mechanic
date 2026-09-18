@@ -11,7 +11,10 @@ pub(crate) struct Seed {
     pub basis_storage: usize,
 }
 
-#[allow(clippy::too_many_lines, clippy::float_cmp)] // Ordered primal/dual steps with one bounded active basis.
+#[expect(
+    clippy::too_many_lines,
+    reason = "ordered primal/dual steps with one bounded active basis"
+)]
 pub(crate) fn seed(
     factor: &DynamicsFactor,
     blocks: &[ConstraintBlock],

@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-#[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
+#[expect(clippy::too_many_lines, clippy::cast_possible_truncation)]
 fn high_speed_steering_returns_to_center_after_release() {
     let (device, queue) = test_device().expect("this regression requires a GPU adapter");
     let document: mechanic_core::CreationDocument = ron::from_str(include_str!(

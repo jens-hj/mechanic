@@ -153,7 +153,7 @@ fn normalized_fov(document: &SettingsDocument) -> f32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 

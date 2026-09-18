@@ -6,7 +6,10 @@
 //! re-evaluates a binding instead of rebuilding the element. Elements
 //! surviving an edit is what lets a drag keep the pointer it captured.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,9 +27,7 @@ use super::model::{
 };
 use crate::control_panel::SpeedUnit;
 use crate::ui::components::{Action, ActionProps, PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use crate::ui::styles::*;
-#[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use crate::ui::theme::*;
 
 /// Text room left in a capacity tile after its padding, badge, and gap.
@@ -461,7 +462,6 @@ fn gearbox_mismatch(model: State<PanelModel>, kind: EngineKind) -> Element {
     }
 }
 
-#[allow(clippy::too_many_lines)] // The compact toolbar keeps related gearbox controls together.
 fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
     let model = handles.model;
     let auto = handles.clone();
@@ -564,11 +564,12 @@ fn gearbox_toolbar(handles: &Handles, kind: EngineKind) -> Element {
     }
 }
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)] // The snapped divider is clamped to a non-negative range of at most eighteen.
+    clippy::cast_sign_loss,
+    reason = "the snapped divider is clamped to a non-negative range of at most eighteen"
+)]
 fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
     if kind != EngineKind::Gas {
         return view! {
@@ -670,7 +671,10 @@ fn gear_strip(handles: &Handles, kind: EngineKind) -> Element {
     }
 }
 
-#[allow(unused_braces)] // Mosaic conditionals require expression blocks in style values.
+#[expect(
+    unused_braces,
+    reason = "mosaic conditionals require expression blocks in style values"
+)]
 fn ratio_card(handles: &Handles, kind: EngineKind, index: usize) -> Element {
     let model = handles.model;
     let controls = ratio_controls(handles, kind, index);
@@ -1619,7 +1623,10 @@ impl Dial {
 /// the joint would point. A speed reading is a fraction of the joint's own
 /// ceiling drawn as half a turn either way, which keeps a fast joint and a slow
 /// one legible at the same size.
-#[allow(clippy::too_many_lines)] // Joint-kind-specific drag surfaces share one state binding.
+#[expect(
+    clippy::too_many_lines,
+    reason = "joint-kind-specific drag surfaces share one state binding"
+)]
 fn dial_face(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let handles = handles.clone();
     let model = handles.model;

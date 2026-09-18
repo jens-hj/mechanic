@@ -919,7 +919,7 @@ fn push_block_endpoint_choice(
     });
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn integral_block_span(start: f32, endpoint: f32, block_size: f32) -> Option<i32> {
     let steps = ((endpoint - start) / block_size).round();
     let span = steps as i32;
@@ -2231,7 +2231,7 @@ pub(crate) fn stage_bearing_block_batch(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn stage_bearing_block_batch_in_bounds(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
@@ -2809,7 +2809,7 @@ pub(crate) fn validate_cylinder_candidate_in_bounds(
     validate_part_in_bounds(graph, PartSpec::Cylinder(candidate.spec), bounds)
 }
 
-#[allow(dead_code)] // Retained as the focused straight-cylinder staging seam used by regression tests.
+#[cfg(test)]
 pub(crate) fn stage_cylinder_from_source(
     graph: &ConstructionGraph,
     candidate: CylinderPlacementCandidate,
@@ -2824,7 +2824,6 @@ pub(crate) fn stage_cylinder_from_source(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn stage_bearing_cylinder_in_bounds(
     graph: &ConstructionGraph,
     candidate: CylinderPlacementCandidate,
@@ -3103,7 +3102,7 @@ fn pipe_path_segments(
     Ok((directions, lengths))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_pipe_segment(
     pieces: &mut Vec<PipeRunPiece>,
     points: &[Vec3],
@@ -3213,7 +3212,10 @@ pub(crate) fn stage_pipe_run(
     stage_pipe_run_in_bounds(graph, pieces, attachment, PlacementBounds::Garage)
 }
 
-#[allow(clippy::too_many_lines)] // Validate and connect every pipe piece in one atomic transaction.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validate and connect every pipe piece in one atomic transaction"
+)]
 pub(crate) fn stage_pipe_run_in_bounds(
     graph: &ConstructionGraph,
     pieces: &[PipeRunPiece],
@@ -3814,7 +3816,7 @@ impl<'a> From<LinearAttachment<'a>> for BearingAttachment<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn stage_block_volume_in_bounds(
     graph: &ConstructionGraph,
     index: &PlacementSnapIndex,
@@ -3908,7 +3910,7 @@ pub(crate) fn stage_linear_cylinder_in_bounds(
 
 /// Validates and commits a regular block volume without constructing any
 /// all-pairs candidate sets.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn stage_connected_block_volume_in_bounds(
     graph: &ConstructionGraph,
     index: &PlacementSnapIndex,
@@ -4226,7 +4228,10 @@ enum FixedPartSpawn {
     DimensionLink(DimensionLinkId),
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Placement, bearing attachment, and welding share one transaction.
+#[expect(
+    clippy::too_many_lines,
+    reason = "placement, bearing attachment, and welding share one transaction"
+)]
 fn stage_connected_part_batch(
     graph: &ConstructionGraph,
     start: PlacementCandidate,
@@ -4586,13 +4591,13 @@ fn snap_world_to_position_ticks(position: Vec3) -> IVec3 {
     (position / POSITION_TICK_METERS).round().as_ivec3()
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn rounded_position_tick(meters: f32) -> i32 {
     debug_assert!(meters.is_finite());
     (meters / POSITION_TICK_METERS).round() as i32
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn rounded_position_tick_f64(meters: f64) -> i32 {
     debug_assert!(meters.is_finite());
     (meters / f64::from(POSITION_TICK_METERS)).round() as i32
@@ -6328,7 +6333,6 @@ fn profile_cells(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn annular_profile_cells(
     face: &FaceGeometry,
     origin: Vec3,

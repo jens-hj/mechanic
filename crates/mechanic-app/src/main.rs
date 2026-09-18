@@ -1,6 +1,9 @@
 //! Construction prototype with a GPU-physics preview.
 
-#![allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -956,7 +959,7 @@ const fn exit_disposition(construction_dirty: bool) -> ExitDisposition {
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
+#[expect(clippy::fn_params_excessive_bools)]
 // The booleans are independent, ordered input owners; the return value is their priority.
 const fn escape_target(
     pause_open: bool,
@@ -984,7 +987,7 @@ fn begin_pause_frame(mut pause: ResMut<PauseMenuState>) {
     pause.begin_frame();
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn handle_pause_escape(
     keyboard: Res<ButtonInput<KeyCode>>,
     overlay: Res<ui::UiInput>,
@@ -1080,7 +1083,6 @@ fn cancel_one_world_escape_owner(graph: &mut ConstructionGraph, state: &mut Edit
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn handle_pause_request(
     mut pause: ResMut<PauseMenuState>,
     mut settings: ResMut<AppSettings>,
@@ -1203,7 +1205,7 @@ enum DeleteTarget {
 }
 
 // Keep the asynchronous scene lifecycle and its publication boundary together.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn maintain_space_simulation(
     space: Res<State<world::AppSpace>>,
     worlds: Res<world::WorldListState>,
@@ -1472,7 +1474,7 @@ const fn world_physics_result_is_current(
     completed.0 == desired.0 && completed.1 == desired.1
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn prepare_world_physics(
     graph: ConstructionGraph,
     generation: u64,
@@ -2026,7 +2028,10 @@ mod world_physics_publication_tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Share the moving-frame fixture across both joint kinds.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "share the moving-frame fixture across both joint kinds"
+    )]
     fn promoted_closure_recovers_motion_in_a_rotated_world_frame() {
         use mechanic_core::BearingSpec;
         use mechanic_gpu::GpuVelocity;
@@ -2473,7 +2478,10 @@ fn save_shortcut_requested(actions: &ButtonInput<GameAction>) -> bool {
 /// `p` and `s` type into its name field, and Escape is its own to handle. The
 /// control-block panel owns the keyboard the same way, and the two must never
 /// both be typing, so neither can open over the other.
-#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bevy system resources are explicit parameters"
+)]
 fn handle_creation_menu_shortcut(
     actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
@@ -2511,7 +2519,10 @@ fn handle_creation_menu_shortcut(
     });
 }
 
-#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bevy system resources are explicit parameters"
+)]
 fn handle_dimension_link_interaction(
     actions: Res<ButtonInput<GameAction>>,
     graph: Res<EditorGraph>,
@@ -2560,7 +2571,7 @@ fn handle_dimension_link_interaction(
 ///
 /// Editor and live simulation hits both work. Remembered wiring selection must
 /// not take this shared interaction key away from seat entry or exit.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn handle_control_panel_shortcut(
     actions: Res<ButtonInput<GameAction>>,
     menu: Res<CreationMenuState>,
@@ -2623,7 +2634,7 @@ fn handle_control_panel_shortcut(
     panel.open(controller);
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn handle_seat_interaction(
     actions: Res<ButtonInput<GameAction>>,
     overlay: Res<ui::UiInput>,
@@ -2786,7 +2797,10 @@ fn seat_surface_distance(
 ///
 /// Runs immediately before the tick is dispatched, so a state entered this
 /// frame takes effect in the same tick rather than the next one.
-#[allow(clippy::too_many_arguments)] // Bevy systems receive each independent resource explicitly.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bevy systems receive each independent resource explicitly"
+)]
 fn run_drive_sequencer(
     keyboard: Res<ButtonInput<KeyCode>>,
     overlay: Res<ui::UiInput>,
@@ -2851,7 +2865,7 @@ fn run_drive_sequencer(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn step_drive_programs(
     simulation: &AppSimulation,
     frozen: &freeze::DimensionFreeze,
@@ -2891,7 +2905,7 @@ fn step_drive_programs(
 }
 
 /// Signed joint speeds from the two transform snapshots already read for rendering.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 fn measured_engine_speeds(
     graph: &ConstructionGraph,
     simulation: &AppSimulation,
@@ -3018,7 +3032,10 @@ mod transmission_speed_tests {
 }
 
 /// Applies whatever the creations modal decided this frame.
-#[allow(clippy::too_many_arguments)] // Bevy system resources are explicit parameters.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bevy system resources are explicit parameters"
+)]
 fn handle_creation_request(
     mut menu: ResMut<CreationMenuState>,
     mut graph: ResMut<EditorGraph>,
@@ -3266,7 +3283,10 @@ fn graph_bounds(graph: &ConstructionGraph, sockets: &[PlacedBearing]) -> Option<
 ///
 /// World walking runs after this system, so collision and rendered machinery consume
 /// the same newest valid transform publication.
-#[allow(clippy::too_many_lines)] // Keep capture and validated publication in visible order.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep capture and validated publication in visible order"
+)]
 fn poll_simulation_readbacks(
     mut simulation: ResMut<AppSimulation>,
     frozen: Res<freeze::DimensionFreeze>,
@@ -3377,7 +3397,7 @@ fn poll_simulation_readbacks(
     frozen.overlay(&mut simulation);
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity
@@ -3574,11 +3594,7 @@ fn transform_from_gpu(transform: GpuTransform) -> Transform {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::type_complexity
-)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn advance_simulation(
     time: (Res<Time>, Res<Time<Real>>),
     mut world_runtime: ResMut<world::WorldRuntime>,
@@ -3903,7 +3919,7 @@ fn advance_simulation(
 ///
 /// This owns no terrain state on purpose: static blocks are drawn only from
 /// here, so a pending terrain collision publication must never delay them.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn refresh_published_construction_visuals(
     simulation: &mut AppSimulation,
     published_graph: &ConstructionGraph,
@@ -4898,7 +4914,10 @@ fn authored_preview_material(
     material
 }
 
-#[allow(clippy::too_many_lines)] // The app schedule is kept in visible execution order.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the app schedule is kept in visible execution order"
+)]
 fn main() {
     // Validate before starting the renderer; diagnostic modes are never persisted.
     let render_experiment = render_experiments::current();
@@ -5088,7 +5107,10 @@ fn main() {
         .run();
 }
 
-#[allow(clippy::too_many_lines)] // One-time Bevy scene composition is clearest in declaration order.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one-time Bevy scene composition is clearest in declaration order"
+)]
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -5762,7 +5784,7 @@ pub(crate) fn avatar_pose(position: Vec3, scale: Vec3, rotation: Quat) -> Transf
         .with_scale(scale)
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(crate) fn spawn_player_avatar(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -5909,7 +5931,7 @@ pub(crate) fn spawn_player_avatar(
     commands.insert_resource(avatar_materials);
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn sync_player_avatar(
     player: Res<PlayerState>,
     view: Single<&PlayerCamera, With<MainCamera>>,
@@ -6133,7 +6155,7 @@ fn shape_tool_is_busy(tool: Option<Tool>, state: &EditorState) -> bool {
             || !state.selected_vertices.is_empty())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn handle_shortcuts(
     actions: Res<ButtonInput<GameAction>>,
     mut graph: ResMut<EditorGraph>,
@@ -6357,7 +6379,6 @@ fn pipette_at_ray(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_pipette_setup(
     setup: PipetteSetup,
     graph: &ConstructionGraph,
@@ -6965,7 +6986,7 @@ fn handle_tool_change(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn update_hover(
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
@@ -7439,7 +7460,7 @@ fn update_hover(
     );
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn refresh_block_drag(
     graph: &ConstructionGraph,
     state: &mut EditorState,
@@ -7821,7 +7842,6 @@ fn closest_axis_parameter(
         .then(|| (-axis_direction.dot(offset) + parallel * ray_direction.dot(offset)) / denominator)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn bearing_offset_from_rays(
     plane_origin: Vec3,
     plane_normal: Vec3,
@@ -8081,7 +8101,7 @@ fn clear_editor_hover(state: &mut EditorState) {
     state.world_hovered_part = world_hovered_part;
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn refresh_tool_preview_with_cylinder(
     graph: &ConstructionGraph,
     state: &mut EditorState,
@@ -8770,7 +8790,7 @@ fn refresh_tool_preview(graph: &ConstructionGraph, state: &mut EditorState, tool
 /// tools rather than through them. A drag previews live by rebuilding the
 /// construction mesh each frame and commits one batched command on release,
 /// which keeps a whole symmetric edit to a single undo entry.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_shape_actions(
     actions: Res<ButtonInput<GameAction>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -9015,7 +9035,7 @@ fn leave_feature_shape(state: &mut EditorState) {
     state.hovered_source_feature = None;
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_feature_shape_actions(
     actions: &ButtonInput<GameAction>,
     keys: &ButtonInput<KeyCode>,
@@ -9914,7 +9934,6 @@ fn subdivide_region(
 ///
 /// Returns whether it consumed the frame, which a nudge does so the pointer
 /// does not also act on the same input.
-#[allow(clippy::too_many_arguments)]
 fn handle_shape_keyboard(
     actions: &ButtonInput<GameAction>,
     camera_transform: &GlobalTransform,
@@ -10132,8 +10151,8 @@ fn region_focus_is_active(
 ///
 /// Only vertices near the pointer appear, so choosing the tool does not bury the
 /// build in handles.
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments)]
+#[expect(clippy::too_many_lines)]
 fn sync_shape_nodes(
     graph: Res<EditorGraph>,
     state: Res<EditorState>,
@@ -10451,7 +10470,7 @@ fn write_overlay(
     Visibility::Visible
 }
 
-#[allow(clippy::type_complexity, clippy::too_many_lines)]
+#[expect(clippy::type_complexity, clippy::too_many_lines)]
 fn sync_placement_overlays(
     state: Res<EditorState>,
     selection: Res<SelectedTool>,
@@ -10597,7 +10616,7 @@ fn sync_placement_overlays(
 }
 
 /// Overlay meshes live in the gesture's grid; moving its frame requires no mesh rebuild.
-#[allow(clippy::type_complexity)]
+#[expect(clippy::type_complexity)]
 fn sync_edit_overlay_transforms(
     state: Res<EditorState>,
     mut overlays: Query<
@@ -10624,7 +10643,7 @@ fn sync_edit_overlay_transforms(
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn placement_origin_meters(bounds: PlacementBounds) -> Vec3 {
     match bounds {
         PlacementBounds::Garage
@@ -10634,17 +10653,16 @@ fn placement_origin_meters(bounds: PlacementBounds) -> Vec3 {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn position_ticks(position: Vec3) -> IVec3 {
     (position / POSITION_TICK_METERS).round().as_ivec3()
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn position_tick(position: f32) -> i32 {
     (position / POSITION_TICK_METERS).round() as i32
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn placement_lattice_geometry(
     selection_low: Vec3,
     selection_high: Vec3,
@@ -10715,7 +10733,7 @@ fn placement_lattice_geometry(
     geometry
 }
 
-#[allow(clippy::too_many_arguments, clippy::cast_possible_truncation)]
+#[expect(clippy::too_many_arguments, clippy::cast_possible_truncation)]
 fn append_planar_lattice(
     selection_low: Vec3,
     selection_high: Vec3,
@@ -10800,7 +10818,7 @@ fn append_lattice_line(
     );
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 fn lattice_coordinates(low: f32, high: f32, axis: usize, grid: PlacementGrid) -> Vec<f32> {
     let step = grid.step_ticks();
     let phase = if axis == 1 {
@@ -10886,7 +10904,6 @@ fn smart_snap_range_geometry(
     geometry
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_snap_range_outline(
     selection_low: Vec3,
     selection_high: Vec3,
@@ -11271,7 +11288,7 @@ fn handle_chroma_actions(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 // Tool-specific input flows remain readable together.
 fn handle_build_actions(
     motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
@@ -12766,7 +12783,10 @@ fn visible_bearing_count(graph: &ConstructionGraph, placed_bearings: &[PlacedBea
             .count()
 }
 
-#[allow(clippy::too_many_lines)] // Click, drag, and bearing attachment share one transaction.
+#[expect(
+    clippy::too_many_lines,
+    reason = "click, drag, and bearing attachment share one transaction"
+)]
 fn handle_block_actions(
     actions: &ButtonInput<GameAction>,
     graph: &mut ConstructionGraph,
@@ -12987,7 +13007,7 @@ fn handle_block_actions(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_hammer_actions(
     actions: Res<ButtonInput<GameAction>>,
     time: Res<Time>,
@@ -13492,7 +13512,7 @@ fn raycast_bearing_annulus(
     nearest.is_finite().then_some(nearest)
 }
 
-#[allow(
+#[expect(
     clippy::type_complexity,
     clippy::too_many_arguments,
     clippy::too_many_lines
@@ -13761,7 +13781,6 @@ fn control_link_count(graph: &ConstructionGraph) -> usize {
         + graph.seat_controller_links().count()
 }
 
-#[allow(clippy::type_complexity)]
 fn update_joint_xray(
     graph: Res<EditorGraph>,
     mut state: ResMut<EditorState>,
@@ -13809,7 +13828,7 @@ struct ChromaPreviewParams<'w> {
     materials: ResMut<'w, Assets<StandardMaterial>>,
 }
 
-#[allow(
+#[expect(
     clippy::type_complexity,
     clippy::too_many_arguments,
     clippy::too_many_lines
@@ -14377,7 +14396,6 @@ fn show_cylinder_preview(
     *preview.2 = Visibility::Visible;
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 // Tool-specific guidance is kept together with its HUD layout.
 fn tool_status_line(
     tool: impl Into<Option<Tool>>,
@@ -14832,7 +14850,7 @@ fn combined_material_construction_mesh(
 
 /// Builds the construction mesh, substituting `preview` for the region it names
 /// so a cage drag can be seen before it is committed.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn combined_construction_mesh_filtered(
     graph: &ConstructionGraph,
     preview: Option<&(RegionId, ShapeRegion)>,
@@ -15031,7 +15049,7 @@ fn union_render_groups(parents: &mut [usize], first: usize, second: usize) {
     }
 }
 
-#[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
+#[expect(clippy::cast_precision_loss)]
 fn append_merged_block_cuboids(
     blocks: &[(usize, CuboidSpec)],
     positions: &mut Vec<[f32; 3]>,
@@ -15161,7 +15179,7 @@ fn ordinary_materials(spec: PartSpec) -> impl Iterator<Item = ConstructionMateri
 
 /// Draws a layered part band by band into `material`'s mesh from its
 /// evaluated solid, colouring each band with its own appearance.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_layered_part(
     graph: &ConstructionGraph,
     placement: BuildTransform,
@@ -15800,7 +15818,7 @@ fn simulation_material_is_present_for_compound(
     })
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn combined_simulation_mesh_filtered(
     graph: &ConstructionGraph,
     creation: &CompiledCreation,
@@ -16404,7 +16422,7 @@ struct BearingProfilePlan {
     relief_meters: f32,
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn bearing_profile_plan(outer_radius: f32, inner_radius: f32) -> BearingProfilePlan {
     let wall = outer_radius - inner_radius;
     let middle = (wall - BEARING_LAND_METERS - BEARING_LIP_METERS).max(0.0005);
@@ -16434,7 +16452,7 @@ fn bearing_u_repeat(radius: f32) -> f32 {
         .max(1.0)
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn append_bearing_cylinder(
     anchor: Vec3,
     axis: Vec3,
@@ -16595,7 +16613,7 @@ enum BearingRingNormal {
     Radial(f32),
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_bearing_face_strip(
     center: Vec3,
     normal: Vec3,
@@ -16640,7 +16658,7 @@ fn append_bearing_face_strip(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_bearing_profile_ring(
     center: Vec3,
     radius: f32,
@@ -16723,7 +16741,6 @@ fn stitch_bearing_side(upper: u32, lower: u32, outward: bool, indices: &mut Vec<
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn append_cylinder_shape(
     center: Vec3,
     rotation: Quat,
@@ -16746,7 +16763,7 @@ fn append_cylinder_shape(
     );
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn append_cylinder_shape_with_end_faces(
     center: Vec3,
     rotation: Quat,
@@ -16878,7 +16895,6 @@ fn append_cylinder_shape_with_end_faces(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_pipe_bend_shape(
     corner: Vec3,
     rotation: Quat,
@@ -16901,7 +16917,7 @@ fn append_pipe_bend_shape(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_pipe_bend_shape_with_end_faces(
     corner: Vec3,
     rotation: Quat,
@@ -16993,7 +17009,7 @@ fn append_pipe_bend_shape_with_end_faces(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_pipe_bend_end_faces(
     corner: Vec3,
     rotation: Quat,
@@ -17121,7 +17137,10 @@ fn append_overlay_segment(
 }
 
 /// Spin arc, arrow head, and optional angle-limit ticks for one driven bearing.
-#[allow(clippy::too_many_arguments)] // Overlay builders thread three mesh buffers.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "overlay builders thread three mesh buffers"
+)]
 fn append_drive_indicator(
     anchor: Vec3,
     axis: Vec3,
@@ -17284,7 +17303,7 @@ const WIRE_HOVER_BLOCK_SCALE: f32 = 1.14;
 
 /// Draws the joint or control block the pointer is over, slightly oversized, so
 /// what a wire would land on is visible before the button goes down.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn update_wire_hover_preview(
     graph: Res<EditorGraph>,
     state: Res<EditorState>,
@@ -17569,7 +17588,7 @@ fn append_mesh_quad_with_normals(
     indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn append_annular_cylinder_with_end_faces(
     anchor: Vec3,
     axis: Vec3,
@@ -18022,7 +18041,6 @@ impl BuildTransform {
 /// interior to the region are dropped: a cell face whose neighbour is also part
 /// of the region is inside the solid, and a piece face with no grid provenance
 /// is interior to its own cell.
-#[allow(clippy::too_many_arguments)]
 fn append_region(
     region: &ShapeRegion,
     placement: BuildTransform,
@@ -18055,7 +18073,6 @@ fn append_region(
 /// Emits an evaluated feature boundary. Tessellation seams are retained only
 /// as triangle edges; surface provenance controls hard versus smooth normals,
 /// while the ordinary triplanar projection preserves material scale.
-#[allow(clippy::too_many_arguments)]
 fn append_evaluated_solid(
     solid: &mechanic_core::EvaluatedSolid,
     placement: BuildTransform,
@@ -18103,7 +18120,7 @@ fn evaluated_smooth_normals(solid: &mechanic_core::EvaluatedSolid) -> HashMap<(u
 }
 
 /// Emits the evaluated boundary of one material band, or every band.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_evaluated_band(
     solid: &mechanic_core::EvaluatedSolid,
     placement: BuildTransform,
@@ -18255,7 +18272,7 @@ fn box_face_is_interior(
 }
 
 /// Emits one axis-aligned face of a box, wound outward.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_axis_quad(
     center: Vec3,
     half_extents: Vec3,
@@ -18298,7 +18315,11 @@ const MATERIAL_TEXTURE_PIXELS_PER_BLOCK: f32 = 512.0;
 const MATERIAL_TEXTURE_METERS_PER_REPEAT: f32 =
     GRID_UNIT_METERS * MATERIAL_TEXTURE_PIXELS_PER_SIDE / MATERIAL_TEXTURE_PIXELS_PER_BLOCK;
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One dispatch per ordinary part kind, geometry then texture.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one dispatch per ordinary part kind, geometry then texture"
+)]
 fn append_textured_part(
     spec: PartSpec,
     translation: Vec3,
@@ -18426,7 +18447,7 @@ fn append_textured_part(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_cylinder_texture_coordinates(
     translation: Vec3,
     rotation: Quat,
@@ -18486,7 +18507,7 @@ fn append_cylinder_texture_coordinates(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn append_pipe_bend_texture_coordinates(
     dimensions: PipeBendDimensions,
     translation: Vec3,
@@ -18542,7 +18563,10 @@ fn append_pipe_bend_texture_coordinates(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Appends every vertex stream of one authored cuboid.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "appends every vertex stream of one authored cuboid"
+)]
 fn append_authored_cuboid(
     translation: Vec3,
     rotation: Quat,
@@ -18577,7 +18601,10 @@ mod rendering_tests {
 
     #[test]
     #[ignore = "CPU-only saved-world visual rebuild measurement"]
-    #[allow(clippy::too_many_lines)] // Keep the saved-world stage measurements together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the saved-world stage measurements together"
+    )]
     fn measure_builder_body_mesh_rebuild() {
         let source = std::env::var("MECHANIC_EDIT_FIXTURE").ok().map_or_else(
             || {
@@ -18806,7 +18833,10 @@ mod rendering_tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Keep the rendering transition and its ECS fixture together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the rendering transition and its ECS fixture together"
+    )]
     fn deleting_last_dimension_link_restores_static_creation_visuals() {
         use super::{
             AuthoredPartVisual, BearingVisual, ConstructionVisual, EditorGraph, EditorState,
@@ -18937,7 +18967,10 @@ mod rendering_tests {
     /// readiness must never be part of that path: while terrain streams, a
     /// pending cut once left new static blocks solid but invisible.
     #[test]
-    #[allow(clippy::too_many_lines)] // Keep the publication regression and its ECS fixture together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the publication regression and its ECS fixture together"
+    )]
     fn newly_published_static_blocks_reach_the_shared_construction_mesh() {
         use super::{
             AppSimulation, BearingVisual, ConstructionVisual, EditorState, EditorVisuals,
@@ -19066,7 +19099,10 @@ mod rendering_tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Keep the preview regression and its ECS fixture together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the preview regression and its ECS fixture together"
+    )]
     fn live_static_meshes_preview_an_uncommitted_feature_drag() {
         use super::{
             AppSimulation, BearingVisual, ConstructionVisual, EditorState, EditorVisuals,
@@ -19191,7 +19227,10 @@ mod rendering_tests {
 
     #[test]
     #[ignore = "requires a real GPU adapter"]
-    #[allow(clippy::too_many_lines)] // Keep the publication regression and its ECS fixture together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the publication regression and its ECS fixture together"
+    )]
     fn grounded_functional_blocks_keep_visuals_during_live_publication() {
         use bevy::prelude::*;
 
@@ -19373,7 +19412,6 @@ mod rendering_tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Exercise the actual body bundle through Bevy visibility and transform propagation.
     fn immutable_body_meshes_cull_offscreen_and_follow_motion_and_origin_rebases() {
         use bevy::camera::{
             CameraProjection,
@@ -25101,7 +25139,7 @@ mod history_tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn bearing_attachment_round_trips_exact_ids_and_cancels_transients() {
         let mut graph = ConstructionGraph::new();
         let support = spawn_cube(&mut graph, IVec3::new(0, 2, 0));

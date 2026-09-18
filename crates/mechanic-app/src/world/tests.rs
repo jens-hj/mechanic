@@ -842,7 +842,10 @@ fn linked_creation_does_not_mobilize_unrelated_world_construction() {
 
 #[test]
 #[ignore = "requires a real GPU adapter"]
-#[allow(clippy::too_many_lines)] // Exercise the app owner and GPU publication together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "exercise the app owner and GPU publication together"
+)]
 fn real_gpu_terrain_publication_preserves_motion_and_rejects_failed_replacements() {
     use mechanic_world::{TerrainTriangleGroupMask, TriangleBvh, TriangleBvhTriangle};
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -1051,7 +1054,6 @@ fn physics_waits_until_local_terrain_is_current() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // Exercise edits through the foundation publication system.
 fn bearing_and_upper_block_edits_preserve_ground_weld_until_last_foot_is_removed() {
     let mut graph = ConstructionGraph::new();
     let mut parts = Vec::new();

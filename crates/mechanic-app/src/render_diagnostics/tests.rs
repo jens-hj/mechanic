@@ -181,7 +181,6 @@ fn submit_and_wait(render: &mut SubApp, device: &wgpu::Device, queue: &wgpu::Que
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // Keep the real renderer setup and regression together.
 fn bevy_pbr_keeps_opaque_timings_when_a_shadow_timestamp_is_missing() {
     use bevy::camera::RenderTarget;
     use bevy::render::{RenderPlugin, pipelined_rendering::PipelinedRenderingPlugin};

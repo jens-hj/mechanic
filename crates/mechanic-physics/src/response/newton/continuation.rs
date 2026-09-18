@@ -21,7 +21,7 @@ pub(in crate::response) struct Continuation {
     pub evaluations: usize,
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(in crate::response) fn propose(
     factor: &DynamicsFactor,
     blocks: &[ConstraintBlock],

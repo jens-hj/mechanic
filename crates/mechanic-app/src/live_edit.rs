@@ -202,7 +202,7 @@ pub(crate) fn refresh_context(
 }
 
 /// Preview meshes are authored in the active tool grid and follow its current pose.
-#[allow(clippy::type_complexity)]
+#[expect(clippy::type_complexity)]
 pub(crate) fn place_previews(
     state: Res<EditorState>,
     mut previews: Query<

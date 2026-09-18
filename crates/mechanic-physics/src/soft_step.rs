@@ -523,7 +523,10 @@ impl CpuMachine {
     /// Only invalid input: a wrong tick or generation, duplicate or invalid drive
     /// commands, invalid impulses or settings, or terrain geometry compiled for
     /// another topology. Invalid input changes nothing.
-    #[allow(clippy::too_many_lines)] // Validation, the substep loop and the sole publication stay together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validation, the substep loop and the sole publication stay together"
+    )]
     pub fn step(
         &mut self,
         gravity: DVec3,
@@ -897,7 +900,10 @@ impl CpuMachine {
 
     // Contacts at the current pose, and the margin each collider row was queried
     // with.
-    #[allow(clippy::too_many_arguments)] // Query context and per-group selection share one fallback policy.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "query context and per-group selection share one fallback policy"
+    )]
     fn contacts(
         &self,
         terrain: SoftStepTerrain<'_>,

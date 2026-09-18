@@ -52,7 +52,7 @@ pub(super) struct Capture {
 struct Backdrop;
 #[derive(Component)]
 struct Link;
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn setup(
     mut commands: Commands,
     visuals: Res<crate::EditorVisuals>,
@@ -103,7 +103,7 @@ const NAMES: [&str; 7] = [
     "freeze",
     "lift_edit",
 ];
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn advance(
     time: Res<Time>,
     mut capture: ResMut<Capture>,
@@ -236,7 +236,7 @@ fn advance(
         let mut samples = std::mem::take(&mut capture.samples);
         samples.sort_by(f32::total_cmp);
         let n = samples.len();
-        #[allow(clippy::cast_precision_loss)]
+        #[expect(clippy::cast_precision_loss)]
         let mean = samples.iter().sum::<f32>() / n.max(1) as f32;
         let record = serde_json::json!({"effect":name,"background":if bright {"bright"}else{"dark"},"frames":n,"mean_ms":mean,"p95_ms":samples.get(n*95/100),"particle_draws":capture.max_particle_draws,"bloom_passes":if stage.is_multiple_of(7) {0}else{2*(super::bloom().max_mip_dimension.ilog2().max(2)-1)}});
         let path = directory().unwrap().join(format!(

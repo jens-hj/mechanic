@@ -136,7 +136,10 @@ impl<'a> MachineMotion<'a> {
     /// # Errors
     /// Rejects invalid state/dimensions, non-finite motion, or overflow. A closed
     /// loop follows its tree path; closure equations are not projected.
-    #[allow(clippy::too_many_lines)] // Root and joint bounds follow the same ordered reconstruction schedule.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "root and joint bounds follow the same ordered reconstruction schedule"
+    )]
     pub fn new(
         creation: &'a CompiledCreation,
         generation: u64,

@@ -15,7 +15,10 @@ use mechanic_world::{
 };
 use std::{error::Error, sync::Arc, time::Instant};
 
-#[allow(clippy::too_many_lines)] // Keep the benchmark's ordered measurement stages visible together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the benchmark's ordered measurement stages visible together"
+)]
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().collect::<Vec<_>>();
     let name = args.get(1).map_or("rock", String::as_str);

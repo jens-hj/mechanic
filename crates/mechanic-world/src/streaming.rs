@@ -1,6 +1,6 @@
 //! Balanced adaptive-octree selection and generation-aware streaming state.
 
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#![expect(clippy::cast_precision_loss)]
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},

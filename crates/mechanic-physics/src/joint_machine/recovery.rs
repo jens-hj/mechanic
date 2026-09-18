@@ -7,7 +7,6 @@ use super::{
 };
 use crate::terrain_contacts::CONTACT_ACTIVATION_DISTANCE;
 
-#[allow(clippy::too_many_arguments)] // Preserve the operation boundary in failure diagnostics.
 pub(super) fn correct(
     creation: &CompiledCreation,
     drives: &[CoordinateDrive],
@@ -21,7 +20,10 @@ pub(super) fn correct(
     })
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // Explicit immutable scene and unpublished state.
+#[expect(
+    clippy::too_many_lines,
+    reason = "explicit immutable scene and unpublished state"
+)]
 fn correct_candidate(
     creation: &CompiledCreation,
     drives: &[CoordinateDrive],

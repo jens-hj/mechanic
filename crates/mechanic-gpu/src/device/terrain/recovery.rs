@@ -29,7 +29,10 @@ pub(in crate::device) struct PositionRecovery {
 }
 
 impl PositionRecovery {
-    #[allow(clippy::too_many_lines)] // Keep the three scratch-only binding contracts together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the three scratch-only binding contracts together"
+    )]
     pub(in crate::device) fn new(gpu: &GpuPhysics, device: &wgpu::Device) -> Self {
         let gate = create_sized_buffer(
             device,

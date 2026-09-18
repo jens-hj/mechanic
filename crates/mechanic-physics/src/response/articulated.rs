@@ -51,7 +51,6 @@ impl ArticulatedFactor {
             + self.scratch.lock().expect("factor scratch lock").capacity() * size_of::<Vector>()
     }
 
-    #[allow(clippy::too_many_lines)] // Ordered spatial inertia construction and joint elimination.
     pub(super) fn new(
         creation: &CompiledCreation,
         roots: &[BodyPose],
@@ -62,7 +61,6 @@ impl ArticulatedFactor {
         Self::from_poses(creation, &poses, diagonal)
     }
 
-    #[allow(clippy::too_many_lines)]
     pub(super) fn from_poses(
         creation: &CompiledCreation,
         poses: &[BodyPose],
@@ -79,7 +77,10 @@ impl ArticulatedFactor {
         Ok(factor)
     }
 
-    #[allow(clippy::too_many_lines)] // Rebuild numeric values in retained body/factor arenas.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "rebuild numeric values in retained body/factor arenas"
+    )]
     pub(super) fn refit(
         &mut self,
         creation: &CompiledCreation,

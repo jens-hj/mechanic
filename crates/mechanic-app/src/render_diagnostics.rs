@@ -33,7 +33,10 @@ const FAILED: u8 = 3;
 pub(crate) struct ProfiledCamera;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[allow(clippy::struct_field_names)] // Milliseconds throughout the diagnostic boundary.
+#[expect(
+    clippy::struct_field_names,
+    reason = "milliseconds throughout the diagnostic boundary"
+)]
 pub(crate) struct GpuBreakdown {
     pub(crate) prepass_ms: Option<f64>,
     pub(crate) opaque_ms: Option<f64>,
@@ -116,7 +119,6 @@ fn unavailable_sample(status: GpuSampleStatus, total_pairs: u32) -> GpuSample {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-#[allow(clippy::struct_field_names)] // Keep units explicit at the UI boundary.
 pub(crate) struct Snapshot {
     pub(crate) acquire_cpu_ms: Option<f64>,
     pub(crate) render_cpu_ms: Option<f64>,
@@ -609,7 +611,10 @@ fn read_breakdown(bytes: &[u8], groups: &[PassGroup], period: f32) -> GpuSample 
             .unwrap(),
         total_pairs,
     };
-    #[allow(clippy::cast_precision_loss)] // Convert relative ticks, not absolute timestamps.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "convert relative ticks, not absolute timestamps"
+    )]
     let milliseconds = |ticks: u64| ticks as f64 * f64::from(period) / 1_000_000.0;
     let group_ms = |group| {
         // An incomplete shadow cascade must not discard valid opaque timings, but

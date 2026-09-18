@@ -328,7 +328,7 @@ function_keys! {
 #[cfg(test)]
 // The wheel deltas compared here are products of small integers and a power of
 // two, which f32 represents exactly; an epsilon would only hide a wrong scale.
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 mod tests {
     use super::{InputState, LINE_HEIGHT_PX, key_from, pointer_button_from, wheel_delta};
     use bevy::input::ButtonState;

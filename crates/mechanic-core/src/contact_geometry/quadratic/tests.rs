@@ -3,7 +3,7 @@ use crate::contact_geometry::tests::{cube, floor};
 use bevy_math::DQuat;
 
 #[test]
-#[allow(clippy::float_cmp)] // Exact full-interval sentinel.
+#[expect(clippy::float_cmp, reason = "exact full-interval sentinel")]
 fn tangential_translation_does_not_consume_normal_clearance() {
     let origin = DVec3::Y * (0.5 + 1e-8);
     let shape = cube().transformed(origin, DQuat::IDENTITY).unwrap();

@@ -304,7 +304,10 @@ fn conservative_sweep_matches_exact_translation_and_reports_exhaustion() {
 }
 
 #[test]
-#[allow(clippy::unreadable_literal)] // Exact captured wheel geometry, preserving the failing floating-point inputs.
+#[expect(
+    clippy::unreadable_literal,
+    reason = "exact captured wheel geometry, preserving the failing floating-point inputs"
+)]
 fn near_parallel_wheel_faces_keep_activation_points_inside_the_gap_bound() {
     let body = ContactPolytope {
         vertices: vec![

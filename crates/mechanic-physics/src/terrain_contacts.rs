@@ -254,7 +254,10 @@ impl MachineCollisionGeometry {
     ///
     /// # Errors
     /// Rejects invalid compiled geometry or body references.
-    #[allow(clippy::too_many_lines)] // Compile immutable geometry and both hierarchy levels together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "compile immutable geometry and both hierarchy levels together"
+    )]
     pub fn new(
         creation: &CompiledCreation,
         topology_generation: u64,
@@ -1004,7 +1007,7 @@ impl TerrainContactScene {
         )
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn query_groups(
         &self,
         machine: &MachineCollisionGeometry,
@@ -1667,7 +1670,6 @@ fn valid_bounds(bounds: WorldBounds) -> bool {
         && bounds.minimum.0.cmple(bounds.maximum.0).all()
 }
 
-#[allow(clippy::too_many_lines)] // Validate the entire immutable hierarchy once at publication.
 fn validate_chunk(chunk: &TerrainCollisionChunk) -> Result<(), PhysicsError> {
     let invalid = PhysicsError::InvalidCollision;
     let bvh = &chunk.triangle_bvh;

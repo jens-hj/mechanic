@@ -132,7 +132,7 @@ fn mosaic_pass(
     let texture = target.main_texture();
     // Extents are pixel counts, and f32 holds every integer below 2^24
     // exactly; no target is 16 million pixels on a side.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(clippy::cast_precision_loss)]
     let size = Size::new(texture.width() as f32, texture.height() as f32);
 
     // The pipelines are baked against the target format, so a format change is

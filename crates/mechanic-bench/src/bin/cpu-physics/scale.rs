@@ -20,7 +20,10 @@ pub(super) struct Options {
     pub hold: bool,
 }
 
-#[allow(clippy::too_many_lines)] // Explicit replay protocol and raw evidence in one ordered pass.
+#[expect(
+    clippy::too_many_lines,
+    reason = "explicit replay protocol and raw evidence in one ordered pass"
+)]
 pub(super) fn run(options: &Options) -> Result<(), Box<dyn Error>> {
     if options.floor && options.copies != 1 {
         return Err(

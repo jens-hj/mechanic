@@ -58,7 +58,7 @@ fn wheel() -> Result<CompiledCreation, Box<dyn Error>> {
     Ok(graph.compile()?)
 }
 
-#[allow(clippy::cast_precision_loss)] // Tick counts are far below 2^52.
+#[expect(clippy::cast_precision_loss, reason = "tick counts are far below 2^52")]
 fn roll(floor: &str, height: &dyn Fn(f64) -> f64, speed: f64) -> Result<(), Box<dyn Error>> {
     let creation = wheel()?;
     let axle = creation.cylinders[0].local_rotation.as_dquat() * DVec3::Y;
@@ -143,7 +143,10 @@ fn percentile(samples: &mut [f64], fraction: usize) -> f64 {
 
 // A strip of `CELL`-sized square cells along +X, two triangles each, with a
 // balanced hierarchy over consecutive cells.
-#[allow(clippy::cast_possible_truncation)] // Metre coordinates well inside f32.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "metre coordinates well inside f32"
+)]
 fn tessellated(height: &dyn Fn(f64) -> f64) -> Arc<TerrainCollisionChunk> {
     const COLUMNS: u32 = 400;
     const ROWS: u32 = 32;

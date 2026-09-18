@@ -40,7 +40,7 @@ fn terrain(field: &TerrainField, position: DVec3, generation: u64) -> Vec<Terrai
     chunks
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().collect();
     let plane = args.iter().any(|arg| arg == "--plane");

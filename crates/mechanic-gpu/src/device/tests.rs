@@ -1680,7 +1680,7 @@ fn suspension_test_creation_with_anchor(
     };
     for copy in 0..copies {
         let base_ticks = IVec3::new(0, 200, copy * 1600);
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         let spacing_ticks = ((spec.initial_length() + 0.625) / 0.0025).round() as i32;
         let offset = if vertical { IVec3::Y } else { IVec3::X } * spacing_ticks;
         let mut spawn = |ticks, dimensions| {
@@ -2004,7 +2004,7 @@ fn suspension_floating_mount_receives_bottom_out_reaction() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // Held velocities must be exactly zero.
+#[expect(clippy::float_cmp, reason = "held velocities must be exactly zero")]
 fn suspension_holds_suppress_passive_forces_and_release_restores_spring_motion() {
     use mechanic_core::{ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec};
     let (device, queue) = test_device().expect("suspension regression requires a GPU");
@@ -2131,7 +2131,7 @@ fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     .ok()
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn colliding_pipe_mechanism(grounded: bool) -> mechanic_core::CompiledCreation {
     let mut graph = ConstructionGraph::new();
     let pose = |ticks, rotation| BuildPose::from_position_ticks(IVec3::from_array(ticks), rotation);
@@ -2463,14 +2463,13 @@ fn pipe_bend_suspension_car_fixture() -> ArticulatedCarFixture {
     pipe_bend_suspension_car_fixture_with_steering_torque(64_000.0)
 }
 
-#[allow(clippy::too_many_lines)]
 fn pipe_bend_suspension_car_fixture_with_steering_torque(
     steering_torque: f32,
 ) -> ArticulatedCarFixture {
     pipe_bend_car_fixture(steering_torque, false)
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn pipe_bend_car_fixture(steering_torque: f32, front_steering_only: bool) -> ArticulatedCarFixture {
     let mut graph = ConstructionGraph::new();
     let static_marker = spawned_part(
@@ -3157,7 +3156,7 @@ fn authoritative_readback_keeps_velocities_and_coordinates_with_their_tick() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // Held velocities must remain exactly zero.
+#[expect(clippy::float_cmp, reason = "held velocities must remain exactly zero")]
 fn held_rotational_and_linear_components_ignore_drives_impulses_and_reconstruction() {
     let Some((device, queue)) = test_device() else {
         return;
@@ -3871,7 +3870,7 @@ fn steering_servos_reach_angle_without_overshooting() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn production_servos_hold_steering_under_first_gear_gas_drive() {
     const FIRST_GEAR_RATIO: f32 = 3.0;
     const COMMAND_SPEED: f32 = std::f32::consts::TAU * 6.0;
@@ -4038,7 +4037,7 @@ fn production_servos_hold_steering_under_first_gear_gas_drive() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn front_steered_car_turns_through_ground_friction() {
     let Some((device, queue)) = test_device() else {
         return;
@@ -4162,7 +4161,7 @@ fn front_steered_car_turns_through_ground_friction() {
 mod steering;
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn sustained_gas_drive_stays_forward_with_bounded_longitudinal_slip() {
     const COMMAND_SPEED: f32 = std::f32::consts::TAU * 6.0;
     const WHEEL_RADIUS: f32 = 0.475;

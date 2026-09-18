@@ -6,7 +6,10 @@
 //! asked for twice) stays in [`CreationMenuState`]; this only shows what that
 //! state says and reports what was clicked.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use std::path::PathBuf;
 
@@ -16,9 +19,7 @@ use mosaic_macros::{component, view};
 use mosaic_widgets::input::{EventCtx, Key, KeyEvent, KeyEventKind};
 
 use super::components::{Action, ActionProps, PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use super::styles::*;
-#[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use super::{CreationsAction, Handles, UiIntent};
 use crate::creation_menu::CreationMenuState;

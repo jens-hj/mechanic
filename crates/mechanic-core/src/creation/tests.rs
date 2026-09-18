@@ -495,7 +495,10 @@ fn invalid_frames_and_dense_membership_are_rejected() {
 
 /// A short tower welded to the ground, carrying a driven bearing, a
 /// control block, a hollow sliced cylinder, and one loose ring.
-#[allow(clippy::too_many_lines)] // Shared persistence fixture includes all connection records.
+#[expect(
+    clippy::too_many_lines,
+    reason = "shared persistence fixture includes all connection records"
+)]
 fn sample() -> (ConstructionGraph, Vec<BearingSocket>) {
     let mut graph = ConstructionGraph::new();
     // A 1.0 x 0.5 x 1.0 m slab resting on the ground plane.

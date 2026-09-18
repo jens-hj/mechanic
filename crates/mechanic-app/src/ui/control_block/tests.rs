@@ -68,7 +68,10 @@ fn wired() -> (ConstructionGraph, DriveLinkId) {
 
 /// Exercises the same graph writer as the controller's preset buttons.
 #[test]
-#[allow(clippy::too_many_lines)] // Hardware fixture plus assertions across both gear ranges.
+#[expect(
+    clippy::too_many_lines,
+    reason = "hardware fixture plus assertions across both gear ranges"
+)]
 fn drive_preset_uses_two_gas_engines_and_the_full_gear_range() {
     use bevy::ecs::system::SystemState;
     use bevy::prelude::World;

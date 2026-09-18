@@ -306,7 +306,7 @@ impl ShapeRegion {
                 new_index[axis] = inserted;
                 let lerp = |low: i16, high: i16| {
                     let value = f64::from(low).mul_add(1.0 - blend, f64::from(high) * blend);
-                    #[allow(clippy::cast_possible_truncation)] // Offsets are tiny.
+                    #[expect(clippy::cast_possible_truncation, reason = "offsets are tiny")]
                     let rounded = value.round() as i16;
                     rounded
                 };

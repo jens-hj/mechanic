@@ -417,7 +417,10 @@ impl CpuJointMachine {
         self.step_candidate(gravity, settings, impulses, commands, Some(terrain))
     }
 
-    #[allow(clippy::too_many_lines)] // Keep command validation, bounded retries, and the sole commit point together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep command validation, bounded retries, and the sole commit point together"
+    )]
     fn step_candidate(
         &mut self,
         gravity: DVec3,
@@ -641,7 +644,10 @@ impl TerrainSubstep<'_> {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)] // Direct numerical probes prepare exactly one initial pose model.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "direct numerical probes prepare exactly one initial pose model"
+)]
 fn substep(
     creation: &CompiledCreation,
     passive: &[PassiveForce],
@@ -671,7 +677,11 @@ fn substep(
     )
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One ordered numerical substep with explicit inputs and work accounting.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one ordered numerical substep with explicit inputs and work accounting"
+)]
 fn integrate_substep(
     creation: &CompiledCreation,
     passive: &[PassiveForce],
@@ -1100,7 +1110,10 @@ fn integrate_substep(
     Err(PhysicsError::NotConverged)
 }
 
-#[allow(clippy::too_many_arguments)] // Explicit immutable numerical inputs; no hidden runtime state.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit immutable numerical inputs; no hidden runtime state"
+)]
 fn midpoint_rhs(
     creation: &CompiledCreation,
     passive: &[PassiveForce],

@@ -40,7 +40,7 @@ struct ArcRow<'a> {
     homogeneous: bool,
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(in crate::response) fn propose(
     factor: &DynamicsFactor,
     blocks: &[ConstraintBlock],
@@ -321,7 +321,6 @@ fn evaluate(
     equations::evaluate(problem, x, epsilon, stable)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn refine(
     problem: &Problem<'_>,
     x: &mut Vec<f64>,
@@ -374,7 +373,6 @@ fn refine(
     false
 }
 
-#[allow(clippy::too_many_lines)]
 fn correct_arc(
     problem: &Problem<'_>,
     predicted: &[f64],
@@ -488,7 +486,6 @@ fn scaled_norm(values: &[f64], arc: f64, scales: &[f64]) -> f64 {
         .fold(0.0, |sum, (v, scale)| sum.hypot(v / scale))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn consider(
     problem: &Problem<'_>,
     blocks: &[ConstraintBlock],

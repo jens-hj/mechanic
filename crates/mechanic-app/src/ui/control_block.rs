@@ -111,7 +111,10 @@ pub(crate) fn write_gearbox(
 }
 
 /// The half of [`write_joint`] that already knows which control block is open.
-#[allow(clippy::too_many_lines)] // Keep one transactional edit and its validation together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep one transactional edit and its validation together"
+)]
 fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
     let rows = panel_rows(&target.graph.0, controller);
     let Some(row) = rows.iter().find(|row| row.links.contains(&intent.lane)) else {
@@ -345,7 +348,10 @@ fn capacity_error(graph: &mechanic_core::ConstructionGraph, controller: PartId) 
 }
 
 /// Reads the open control block's wires into what the panel draws.
-#[allow(clippy::cast_precision_loss)] // Construction counts are far below f32's exact integer range.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "construction counts are far below f32's exact integer range"
+)]
 pub(crate) fn capture(
     panel: &ControlPanelState,
     graph: &EditorGraph,
@@ -468,7 +474,7 @@ fn chord_symbol(chord: GearKeyChord) -> Option<char> {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 // Editor-scale part and joint counts remain far below f32's exact integer
 // range, and the result is display/physics scalar data.
 fn actuator_capability(

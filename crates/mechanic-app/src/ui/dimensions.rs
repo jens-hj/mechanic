@@ -1,6 +1,9 @@
 //! Screen-upright dimensions for the live block-sheet preview.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy::math::{Vec2, Vec3};
 use bevy::prelude::{Camera, GlobalTransform};
@@ -9,9 +12,7 @@ use mosaic_macros::{component, view};
 
 use super::Handles;
 use super::components::{OverlayBadge, OverlayBadgeProps, PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use super::styles::*;
-#[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use crate::{AppSimulation, EditorState};
 

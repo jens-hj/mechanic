@@ -1,4 +1,7 @@
-#![allow(clippy::float_cmp)] // Exact litres-per-cell accounting is intentional.
+#![expect(
+    clippy::float_cmp,
+    reason = "exact litres-per-cell accounting is intentional"
+)]
 use bevy_math::DVec3;
 
 use super::{TerrainEditError, TerrainOctree, decode_brick, encode_brick};

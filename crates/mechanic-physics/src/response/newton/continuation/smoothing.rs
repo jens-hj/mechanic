@@ -125,7 +125,10 @@ pub(super) fn evaluate(
 
 // A merged manifold is one point: its rolling disk radius depends on every
 // smoothed normal in the block, so the derivative couples all of its rows.
-#[allow(clippy::too_many_arguments)] // One block's rows, laws, iterate and smoothing width.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one block's rows, laws, iterate and smoothing width"
+)]
 fn manifold_point(
     block: &ConstraintBlock,
     info: &BlockLayout,
@@ -193,7 +196,10 @@ fn manifold_point(
 
 // Smoothed projection of two rows onto a disk whose radius depends on smoothed
 // normals; `radius_terms` holds each `(row, d radius / d at[row])`.
-#[allow(clippy::too_many_arguments)] // Shared block-wide output buffers and the disk definition.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared block-wide output buffers and the disk definition"
+)]
 fn smoothed_disk(
     at: &[f64],
     projection: &mut [f64],

@@ -45,7 +45,6 @@ impl MachineDynamics {
     ///
     /// # Errors
     /// Rejects non-finite state, wrong row counts, and oversized reference scenes.
-    #[allow(clippy::too_many_lines)] // Mirrors the ordered pose, Jacobian, and inertia passes.
     pub fn assemble(
         creation: &CompiledCreation,
         roots: &[BodyPose],
@@ -80,7 +79,7 @@ impl MachineDynamics {
             } else {
                 let parent = topology.parent_body as usize;
                 let arm = centers[body] - centers[parent];
-                #[allow(clippy::needless_range_loop)]
+                #[expect(clippy::needless_range_loop)]
                 // Parent and child rows share the same indexed arena.
                 for column in 0..size {
                     let motion = jacobians[parent][column];
@@ -591,7 +590,7 @@ mod tests {
             .unwrap();
         let mut state = MachineState::at_rest(&creation);
         for (index, velocity) in state.velocities.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)] // Bounded fixture dimension.
+            #[expect(clippy::cast_precision_loss, reason = "bounded fixture dimension")]
             {
                 *velocity = 0.2 * (index as f64 * 0.7).cos();
             }

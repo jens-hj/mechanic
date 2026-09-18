@@ -1,6 +1,9 @@
 //! Compact controls for the Matter Manipulator's session-wide appearance brush.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use std::{cell::Cell, rc::Rc};
 
@@ -13,9 +16,7 @@ use mosaic_macros::{component, view};
 
 use super::Handles;
 use super::components::{PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use super::styles::*;
-#[allow(unused_imports, clippy::wildcard_imports)]
 use super::theme::*;
 use crate::chroma::representative_srgb;
 use crate::controls::GameAction;

@@ -7,7 +7,10 @@
 //! its near corner, and a round cap reaches half a stroke past its endpoint, so
 //! a bar of a given length is a line that much shorter.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy_mosaic::ui::*;
 use mechanic_core::ConstructionMaterial;
@@ -16,9 +19,7 @@ use mosaic_macros::{component, view};
 use mosaic_widgets::input::{EventCtx, PointerButton};
 
 use super::components::{OverlayBadge, OverlayBadgeProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use super::styles::*;
-#[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use super::{Handles, UiIntent};
 use crate::chroma::representative_srgb;
@@ -260,7 +261,10 @@ fn tool_slot(handles: &Handles, tool: MainTool) -> Element {
     }
 }
 
-#[allow(clippy::too_many_lines)] // One view tree plus a short icon dispatch per mode.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one view tree plus a short icon dispatch per mode"
+)]
 fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
     let handles = handles.clone();
     let selection = handles.hotbar;
@@ -524,7 +528,10 @@ pub(crate) fn material_thumbnail(material: ConstructionMaterial) -> Element {
 ///
 /// A fixed frame, because everything inside it is placed by coordinate: an
 /// unsized canvas shrinks onto its own drawing and slides it into the corner.
-#[allow(clippy::too_many_lines)] // Nine drawings, each a short list of coordinates.
+#[expect(
+    clippy::too_many_lines,
+    reason = "nine drawings, each a short list of coordinates"
+)]
 pub(super) fn icon(tool: Tool) -> Element {
     match tool {
         Tool::Block => view! {

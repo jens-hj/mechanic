@@ -498,7 +498,7 @@ impl ConstructionGraph {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn compile_graph(
     graph: &ConstructionGraph,
     externally_static_parts: &BTreeSet<PartId>,
@@ -1180,7 +1180,7 @@ fn validate_actuator_programs(graph: &ConstructionGraph) -> Result<(), TopologyE
     Ok(())
 }
 
-#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+#[expect(clippy::too_many_lines, clippy::cast_precision_loss)]
 // Graph counts are far below f32's exact-integer range in any compilable
 // creation; converting them keeps the torque-sharing arithmetic readable.
 fn resolve_coordinate_actuation(
@@ -1509,7 +1509,7 @@ impl CompiledCreation {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn calculate_mass_properties<'a>(
     parts: impl Iterator<Item = (PartId, PartSpec)> + Clone + 'a,
     is_static: bool,
@@ -1829,7 +1829,10 @@ fn pipe_bend_mass_properties(spec: crate::PipeBendSpec) -> PartMassProperties {
 
 /// Integrates a junction's sampled solid: a pyramid from its centre to each
 /// outer triangle, minus the matching pyramid to the bore.
-#[allow(clippy::cast_possible_truncation)] // Metre-scale fittings fit f32 mass properties.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "metre-scale fittings fit f32 mass properties"
+)]
 fn pipe_junction_mass_properties(spec: crate::PipeJunctionSpec) -> PartMassProperties {
     use bevy_math::{DMat3, DVec3};
     let density = f64::from(spec.material.properties().density_kg_m3);
@@ -1888,7 +1891,6 @@ fn cuboid_mass_properties(spec: CuboidSpec, density_kg_m3: f32) -> PartMassPrope
 /// volumes make the sum independent of where that reference sits.
 ///
 /// For a simplex, `∫ x⊗x dV = (V/20)(Σᵢ wᵢ⊗wᵢ + (Σᵢ wᵢ)⊗(Σᵢ wᵢ))`.
-#[allow(clippy::cast_precision_loss)]
 fn region_world_mass(region: &ShapeRegion) -> WorldMassProperties {
     let mut volume = 0.0_f32;
     let mut first_moment = Vec3::ZERO;
@@ -2141,7 +2143,7 @@ fn material_key(material: MaterialProperties) -> [u32; 6] {
     ]
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_possible_truncation)]
 fn quantized_coordinate(value: f32) -> i64 {
     f64::from(value).mul_add(1_000_000.0, 0.0).round() as i64
 }

@@ -527,7 +527,6 @@ impl ContactPolytope {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // Bounded finite clipping and explicit gap feasibility checks.
     fn proximity_with_bound(
         &self,
         triangle: [DVec3; 3],
@@ -768,7 +767,6 @@ impl ContactPolytope {
     ///
     /// # Errors
     /// Rejects invalid motion, pose, triangle, tolerance, or an empty work bound.
-    #[allow(clippy::too_many_arguments)] // Explicit initial pose and independent numerical bounds.
     pub fn rigid_triangle_sweep(
         &self,
         triangle: [DVec3; 3],

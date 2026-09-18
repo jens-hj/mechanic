@@ -1,13 +1,14 @@
 //! Small composition primitives shared by the overlay's panels.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy_mosaic::ui::*;
 use mosaic_macros::{component, view};
 
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use super::styles::*;
-#[allow(clippy::wildcard_imports)] // Design tokens are read as bare names.
 use super::theme::*;
 
 /// A standard overlay surface. Callers own its size and placement.

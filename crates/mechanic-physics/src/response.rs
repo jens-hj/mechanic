@@ -448,7 +448,6 @@ impl<'a> PreparedConstraints<'a> {
     ///
     /// # Errors
     /// Rejects invalid targets/settings, malformed warm starts, or inconsistent rows.
-    #[allow(clippy::too_many_lines)] // Keep sweep updates and final residual verification together.
     pub fn solve_from(
         &mut self,
         targets: &[f64],
@@ -459,7 +458,10 @@ impl<'a> PreparedConstraints<'a> {
         self.solve_with_contact_trial(targets, initial_impulses, max_iterations, tolerance, true)
     }
 
-    #[allow(clippy::too_many_lines)] // Original residual validation remains after the bounded active-set trial.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "original residual validation remains after the bounded active-set trial"
+    )]
     fn solve_with_contact_trial(
         &mut self,
         targets: &[f64],

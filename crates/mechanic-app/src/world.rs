@@ -1,6 +1,6 @@
 //! Bounded procedural-world prototype state and playable terrain tools.
 
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
@@ -996,7 +996,10 @@ fn application_world_store() -> WorldStore {
 }
 
 impl FromWorld for WorldRuntime {
-    #[allow(clippy::too_many_lines)] // Initialize one coherent world and its persisted material ownership.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "initialize one coherent world and its persisted material ownership"
+    )]
     fn from_world(_world: &mut World) -> Self {
         let store = application_world_store();
         let loaded = store
@@ -1797,7 +1800,7 @@ enum TransferAttempt {
     Refused(String),
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn transfer_active_assembly(
     space: AppSpace,
     runtime: &mut WorldRuntime,
@@ -1935,7 +1938,7 @@ fn transfer_active_assembly(
     TransferAttempt::Transferred
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn toggle_space(
     actions: Res<ButtonInput<GameAction>>,
     space: Res<State<AppSpace>>,
@@ -2010,7 +2013,7 @@ fn toggle_space(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn enter_world(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -2321,7 +2324,7 @@ fn full_rgba8_mip_byte_count(mut width: u32, mut height: u32) -> usize {
     usize::try_from(texel_count.saturating_mul(4)).unwrap_or(usize::MAX)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn leave_world(
     mut commands: Commands,
     entities: Query<Entity, With<WorldOwned>>,
@@ -2383,7 +2386,7 @@ fn leave_world(
     *exposure = exposure_for_space(AppSpace::Garage);
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn walk_world(
     time: Res<Time>,
     actions: Res<ButtonInput<GameAction>>,
@@ -2788,7 +2791,10 @@ fn select_and_size_brush(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Independent Bevy resources own brush input and output.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "independent Bevy resources own brush input and output"
+)]
 fn use_brush(
     actions: Res<ButtonInput<GameAction>>,
     camera: Single<&GlobalTransform, With<MainCamera>>,
@@ -3287,7 +3293,10 @@ fn acknowledge_complete_terrain_pipeline(runtime: &mut WorldRuntime, workers_idl
     }
 }
 
-#[allow(clippy::too_many_lines)] // Publication is one atomic frame-budgeted state transition.
+#[expect(
+    clippy::too_many_lines,
+    reason = "publication is one atomic frame-budgeted state transition"
+)]
 fn integrate_terrain_remeshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -3757,7 +3766,10 @@ fn foundation_edit_is_ready(
 const FOUNDATION_SYNC_FRAME_BUDGET: Duration = Duration::from_millis(2);
 const FOUNDATION_SYNC_MAX_PARTS_PER_FRAME: usize = 32;
 
-#[allow(clippy::too_many_lines)] // Revision staging and bounded support sampling form one cutover.
+#[expect(
+    clippy::too_many_lines,
+    reason = "revision staging and bounded support sampling form one cutover"
+)]
 pub(crate) fn sync_world_foundations(
     graph: Res<EditorGraph>,
     history: Res<EditorHistory>,

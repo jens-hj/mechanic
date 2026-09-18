@@ -320,7 +320,7 @@ pub(crate) fn hover(
 }
 
 type Preview = (ConstructionGraph, Vec<PartId>, ConstructionFrame);
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn build_candidate(
     graph: &ConstructionGraph,
     simulation: &AppSimulation,
@@ -804,7 +804,7 @@ pub(crate) fn preview_mesh(
 #[derive(Component)]
 pub(crate) struct WeldFeatureVisual;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn draw_features(
     graph: Res<crate::EditorGraph>,
     state: Res<EditorState>,
@@ -922,7 +922,6 @@ fn feature_geometry(
     geometry
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_revealed_vertices(
     graph: &ConstructionGraph,
     state: &EditorState,

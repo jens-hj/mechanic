@@ -1,6 +1,9 @@
 //! Compact, pointer-transparent performance diagnostics.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy_mosaic::ui::*;
 use mechanic_gpu::MAX_CONTACT_PAIRS;
@@ -8,9 +11,7 @@ use mosaic_core::theme::color;
 use mosaic_macros::{component, view};
 
 use super::components::{PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
 use super::styles::*;
-#[allow(clippy::wildcard_imports)] // Design tokens are read as bare names.
 use super::theme::*;
 use crate::performance::PerformanceSnapshot;
 
@@ -59,7 +60,7 @@ impl Tone {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
     let timings = snapshot.kernel_timings.unwrap_or_default();
     let has_kernel_timings = snapshot.kernel_timings.is_some();

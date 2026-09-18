@@ -191,7 +191,10 @@ impl SuspensionMeshChunk {
     }
     /// Updates cached vertices without changing topology, allocations or UVs.
     /// Nonfinite compression uses full extension; finite values clamp to travel.
-    #[allow(clippy::missing_panics_doc)] // Private cached state guarantees matching component specs.
+    #[expect(
+        clippy::missing_panics_doc,
+        reason = "private cached state guarantees matching component specs"
+    )]
     pub fn update_deformation(&mut self, compression: f32) {
         let compression = if compression.is_finite() {
             compression.clamp(0.0, self.spec.compression_limit().0)
@@ -370,7 +373,7 @@ fn plate_meshes(spec: SuspensionSpec, opposite: bool, chunks: &mut Vec<Suspensio
     chunks.push(bright);
     // Guide fasteners face upward on both plates: inward on the source,
     // outward on the opposite plate. Keep their caps 0.1/0.3 mm proud.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let bolts = ((PI * (plate.diameter - 0.036) / 0.055 / 2.0).round() as u16 * 2).max(6);
     for (finish, radius, height, proud) in [(10, 0.011, 0.0016, 0.0001), (9, 0.008, 0.0018, 0.0003)]
     {
@@ -503,7 +506,10 @@ fn coil_meshes(spec: SuspensionSpec, chunks: &mut Vec<SuspensionMeshChunk>) {
     caps.deformation = Deformation::Coil { samples };
     chunks.push(caps);
 }
-#[allow(clippy::too_many_lines)] // One rigid assembly follows the supplied hardware profile.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one rigid assembly follows the supplied hardware profile"
+)]
 fn shock_meshes(spec: SuspensionSpec, chunks: &mut Vec<SuspensionMeshChunk>) {
     let shock = spec.shock().expect("shock host");
     let plate = spec.plates();
@@ -605,7 +611,7 @@ fn shock_meshes(spec: SuspensionSpec, chunks: &mut Vec<SuspensionMeshChunk>) {
         );
         let base = stop.od() / 2.0;
         let tip = (rs * 1.25).max(base * 0.52);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ribs = (stop.length() / (stop.od() * 0.55)).round().clamp(3.0, 6.0) as u16;
         let mut profile = vec![[rs * 1.02, 0.0], [base, 0.0]];
         for i in 0..ribs {

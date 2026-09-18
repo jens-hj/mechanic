@@ -7,7 +7,6 @@ use crate::{
 };
 use mechanic_core::{CompiledCreation, CoordinateDrive};
 
-#[allow(clippy::too_many_arguments)] // Preserve the operation boundary in failure diagnostics.
 pub(super) fn activate(
     creation: &CompiledCreation,
     model: &MachineDynamics,
@@ -31,7 +30,6 @@ pub(super) fn activate(
     })
 }
 
-#[allow(clippy::too_many_arguments)] // Explicit pose model, constraints, command bounds and transaction-local state.
 fn activate_candidate(
     creation: &CompiledCreation,
     model: &MachineDynamics,

@@ -1,6 +1,9 @@
 //! CPU construction collision scene built from the authoritative compiled geometry.
 
-#![allow(clippy::cast_possible_truncation)] // Validated controller dimensions enter the retained f32 construction frame.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "validated controller dimensions enter the retained f32 construction frame"
+)]
 
 use bevy_math::{DVec3, Mat3, Quat, Vec3};
 use mechanic_core::{ColliderShape, CompiledCreation, LocalCollider, MassProperties};

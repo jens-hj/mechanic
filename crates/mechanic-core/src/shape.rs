@@ -702,7 +702,10 @@ const fn gcd(mut a: i64, mut b: i64) -> i64 {
 ///
 /// The ordering is only used to wind a polygon whose vertices are at least one
 /// lattice step apart, so float angles are ample.
-#[allow(clippy::cast_precision_loss)] // At most eight coplanar hull vertices.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "at most eight coplanar hull vertices"
+)]
 fn order_polygon(points: &[IVec3], on_plane: &[usize], normal: IVec3) -> Vec<usize> {
     if on_plane.len() < 3 {
         return on_plane.to_vec();
@@ -732,7 +735,7 @@ fn order_polygon(points: &[IVec3], on_plane: &[usize], normal: IVec3) -> Vec<usi
 ///
 /// Volumes and centroids are accumulated as exact integers and converted once
 /// at the end; the magnitudes involved are a handful of lattice steps cubed.
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 fn build_piece(corners: &[IVec3; 8], indices: &[usize], cell: IVec3) -> Option<ConvexPiece> {
     let points = distinct_points(corners, indices);
     if points.len() < 4 {
@@ -891,11 +894,12 @@ const fn positive_face(axis: usize) -> FaceKind {
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::many_single_char_names,
-    clippy::type_complexity
-)] // Tests quantise geometry back to lattice steps to compare it exactly.
+    clippy::type_complexity,
+    reason = "tests quantise geometry back to lattice steps to compare it exactly"
+)]
 mod tests;

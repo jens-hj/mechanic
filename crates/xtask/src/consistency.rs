@@ -33,6 +33,10 @@ const CHECKS: &[Check] = &[
         name: "modules live where their name says, without #[path]",
         run: no_path_attributes,
     },
+    Check {
+        name: "lint suppressions are #[expect], or #[allow] with a reason",
+        run: no_bare_allow,
+    },
 ];
 
 /// Runs every check and reports all violations together.
@@ -129,6 +133,32 @@ fn no_path_attributes(root: &Path) -> Result<Vec<String>, String> {
         }
         for (index, line) in read(&path)?.lines().enumerate() {
             if line.trim_start().starts_with("#[path") {
+                violations.push(format!("{}:{}", relative(root, &path), index + 1));
+            }
+        }
+    }
+    Ok(violations)
+}
+
+fn no_bare_allow(root: &Path) -> Result<Vec<String>, String> {
+    let mut violations = Vec::new();
+    for path in rust_sources(root)? {
+        let text = read(&path)?;
+        let lines: Vec<&str> = text.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            let attribute = line.trim_start();
+            if !(attribute.starts_with("#[allow(") || attribute.starts_with("#![allow(")) {
+                continue;
+            }
+            // The attribute may wrap; it ends at the first line closing it.
+            let end = lines[index..]
+                .iter()
+                .position(|candidate| candidate.contains(")]"))
+                .map_or(index, |offset| index + offset);
+            if !lines[index..=end]
+                .iter()
+                .any(|part| part.contains("reason ="))
+            {
                 violations.push(format!("{}:{}", relative(root, &path), index + 1));
             }
         }

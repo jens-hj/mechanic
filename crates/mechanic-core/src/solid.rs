@@ -5,7 +5,7 @@
 //! collision.  Feature references name logical edges rather than tessellation
 //! segments, so a rounded cylinder rim remains one selectable chain.
 
-#![allow(
+#![expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
@@ -790,7 +790,7 @@ fn incident_surface_families(segments: &[&EdgeSegment]) -> Vec<SurfacePatchKey> 
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn push_fillet_junction_plane(
     feature: ShapeFeatureId,
     vertex: DVec3,
@@ -1113,7 +1113,7 @@ struct Stitched {
     logical_edges: Vec<LogicalEdge>,
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn stitch(cells: &[PolyCell]) -> Result<(Stitched, Vec<EdgeSegment>), SolidError> {
     let mut occurrences = BTreeMap::<FaceSignature, Vec<(usize, usize)>>::new();
     for (cell_index, cell) in cells.iter().enumerate() {
@@ -1587,7 +1587,10 @@ fn cylinder_cells(spec: crate::CylinderSpec) -> Vec<PolyCell> {
 /// is one plane. Inside one 15-degree wedge a wall or bore boundary is a single
 /// chord plane, the same polygon the wedge walls use. Either way both halves
 /// of a split share an identical face and stitch away as interior.
-#[allow(clippy::too_many_lines)] // One split per layer reads better whole.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one split per layer reads better whole"
+)]
 fn partition_layers(cells: Vec<PolyCell>, spec: PartSpec) -> Vec<PolyCell> {
     const SPLIT_TOLERANCE: f64 = 1.0e-6;
     const BAND_INTERFACE_PATCH: u32 = 0x4000_0000;

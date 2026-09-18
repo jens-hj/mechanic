@@ -395,7 +395,7 @@ pub(crate) struct FreezeInput<'w, 's> {
     windows: Query<'w, 's, &'static Window>,
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn update(
     time: Res<Time>,
     mut frozen: ResMut<DimensionFreeze>,
@@ -1029,7 +1029,7 @@ fn terrain_clear(
 /// Terrain samples follow collider faces, so a wide plate's width does not
 /// become an artificial vertical clearance radius. Face interiors are sampled
 /// at 5 cm intervals as well as edges and vertices.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss
@@ -1159,11 +1159,6 @@ fn path_clear(
 
 /// Midpoint spheres inflated by a bound on translation and rotation cover the
 /// complete subsegment. Existing conservative terrain overlaps may only decrease.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
 #[cfg(test)]
 fn external_path_clear(
     creation: &CompiledCreation,
@@ -1194,7 +1189,7 @@ fn external_path_clear_cached(
     })
 }
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss

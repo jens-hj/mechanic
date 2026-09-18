@@ -218,7 +218,7 @@ impl Drop for Recorder {
 }
 
 /// F9 arms a capture only when enabled. Streaming must stay idle for fifteen seconds.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn sample(
     keyboard: Res<ButtonInput<KeyCode>>,
     time: Res<Time<Real>>,

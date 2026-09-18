@@ -210,7 +210,7 @@ fn a_cap_contact_stays_put_as_the_cylinder_spins() {
 struct Stream(u64);
 
 impl Stream {
-    #[allow(clippy::cast_precision_loss)] // 53 random bits are exact.
+    #[expect(clippy::cast_precision_loss, reason = "53 random bits are exact")]
     fn next(&mut self) -> f64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
@@ -239,7 +239,7 @@ impl Stream {
 
 // Lowest cylinder entry above a dense grid of triangle points, found only from
 // the inside test: an independent upper bound on the exact minimum.
-#[allow(clippy::cast_precision_loss)] // Small grid counts.
+#[expect(clippy::cast_precision_loss, reason = "small grid counts")]
 fn sampled_minimum(cylinder: &ContactCylinder, triangle: [DVec3; 3]) -> Option<f64> {
     const GRID: usize = 48;
     const SCAN: usize = 160;
@@ -379,7 +379,7 @@ fn clearance_never_exceeds_the_distance_or_a_contact_separation() {
         }
         let clearance = cylinder.triangle_clearance(triangle);
         separated += usize::from(clearance > 0.0);
-        #[allow(clippy::cast_precision_loss)] // Small grid counts.
+        #[expect(clippy::cast_precision_loss, reason = "small grid counts")]
         let sampled = (0..=GRID)
             .flat_map(|i| (0..=GRID - i).map(move |j| [i, j]))
             .map(|[i, j]| {

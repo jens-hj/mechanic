@@ -26,7 +26,10 @@ pub(super) struct NewtonWork {
     pub contact_storage: usize,
 }
 
-#[allow(clippy::too_many_arguments)] // The same immutable Newton linearization for both bounded execution routes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same immutable Newton linearization for both bounded execution routes"
+)]
 pub(super) fn direction(
     factor: &DynamicsFactor,
     blocks: &[ConstraintBlock],

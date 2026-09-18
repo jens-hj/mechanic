@@ -466,7 +466,10 @@ fn resolve_face(face: PlannedFace, parts: &[PartId]) -> FaceRef {
     }
 }
 
-#[allow(clippy::too_many_lines)] // The structural spanning tree is clearest in build order.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the structural spanning tree is clearest in build order"
+)]
 fn add_grounded_structure(
     plan: &mut ShowcasePlan,
 ) -> Result<[[usize; OVERHEAD_SITES]; 2], DimensionError> {

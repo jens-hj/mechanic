@@ -245,7 +245,7 @@ fn suppress_input(
     scroll.delta = Vec2::ZERO;
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn advance(
     mut commands: Commands,
     mut run: ResMut<Run>,

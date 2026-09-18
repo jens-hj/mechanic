@@ -19,7 +19,10 @@ fn generated_caves_stop_wall_and_ceiling_impacts() {
     check_generated_impacts(true);
 }
 
-#[allow(clippy::too_many_lines)] // Keep real-mesher setup and impact acceptance together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep real-mesher setup and impact acceptance together"
+)]
 fn check_generated_impacts(caves: bool) {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =

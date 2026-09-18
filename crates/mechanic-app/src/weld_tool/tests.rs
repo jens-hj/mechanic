@@ -269,7 +269,7 @@ fn a_locked_destination_tracks_motion_without_a_stationary_drag_jump() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn initial_hover_snaps_both_axes_and_drag_keeps_the_snapped_alignment() {
     let (mut graph, _, _) = scene();
     let simulation = AppSimulation::default();
@@ -441,7 +441,10 @@ fn hover_matches_face_grids_on_independently_rotated_and_offset_parts() {
     }
 }
 
-#[allow(clippy::too_many_lines)] // Complete pointer gesture and history round trip.
+#[expect(
+    clippy::too_many_lines,
+    reason = "complete pointer gesture and history round trip"
+)]
 fn socket_gesture(kind: mechanic_core::BearingKind) {
     let (mut graph, source, destination) = scene();
     let simulation = AppSimulation::default();

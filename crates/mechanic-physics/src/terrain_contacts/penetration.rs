@@ -67,7 +67,10 @@ impl TerrainContactScene {
     ///
     /// # Errors
     /// Rejects incompatible topology, invalid settings, or uncertifiable geometry.
-    #[allow(clippy::too_many_lines)] // Ordered candidate traversal with explicit failed-work accounting.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ordered candidate traversal with explicit failed-work accounting"
+    )]
     pub fn validate_penetration(
         &self,
         machine: &MachineCollisionGeometry,

@@ -18,7 +18,7 @@ pub(super) struct Evaluation {
     pub maximum: f64,
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(super) fn evaluate(
     problem: &Problem<'_>,
     x: &[f64],
@@ -149,7 +149,7 @@ pub(super) fn evaluate(
 }
 
 // Fixed bounds are exact authored constraints; no barrier interior exists there.
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 fn scalar(
     bounds: crate::ImpulseBounds,
     impulse: f64,

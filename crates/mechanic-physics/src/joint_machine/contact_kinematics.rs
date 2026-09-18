@@ -14,7 +14,7 @@ pub(super) struct ContactPoint {
     pub other: Option<(usize, DVec3)>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn endpoint_targets(
     creation: &CompiledCreation,
     initial: &MachineState,

@@ -339,7 +339,7 @@ pub(crate) fn avatar_alpha(pullback: f32) -> f32 {
         .clamp(0.0, 1.0)
 }
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss
@@ -383,7 +383,7 @@ const fn chroma_config_should_close(
     selector_pressed || another_panel_open || !chroma_active
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn update_material_wheel(
     actions: Res<ButtonInput<GameAction>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -469,7 +469,7 @@ pub(crate) fn update_material_wheel(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn update_player_camera(
     time: Res<Time>,
     actions: Res<ButtonInput<GameAction>>,
@@ -569,5 +569,5 @@ fn update_cursor_capture(
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 mod tests;

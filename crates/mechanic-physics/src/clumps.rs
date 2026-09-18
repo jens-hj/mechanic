@@ -23,7 +23,10 @@ impl PreparedClumpBodies {
     ///
     /// # Errors
     /// Rejects malformed clumps, authored state, geometry or row capacity.
-    #[allow(clippy::cast_possible_truncation)] // Validated small fragment geometry and material masses.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "validated small fragment geometry and material masses"
+    )]
     pub fn new(
         base: &CompiledCreation,
         state: &MachineState,

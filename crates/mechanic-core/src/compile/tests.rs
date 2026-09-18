@@ -625,7 +625,7 @@ fn a_cage_vertex_cannot_be_pushed_out_of_the_region() {
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss, clippy::similar_names)]
+#[expect(clippy::cast_precision_loss, clippy::similar_names)]
 fn region_inertia_matches_numerical_integration_of_the_same_pieces() {
     // The analytic integration is derived, so check it against a brute-force
     // sum over a dense sample of the solid it claims to describe.

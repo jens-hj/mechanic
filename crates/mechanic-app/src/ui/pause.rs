@@ -1,15 +1,16 @@
 //! Full-window pause modal and its inline exit confirmation.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy_mosaic::ui::*;
 use mosaic_core::Effect;
 use mosaic_macros::{component, view};
 
 use super::components::{Action, ActionProps};
-#[allow(unused_imports)]
 use super::styles::*;
-#[allow(unused_imports, clippy::wildcard_imports)]
 use super::theme::*;
 use super::{Handles, PauseAction, UiIntent};
 use crate::pause_menu::PausePage;

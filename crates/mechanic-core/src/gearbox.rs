@@ -74,7 +74,10 @@ impl fmt::Display for GearKey {
 }
 
 /// One gearbox key and its optional modifier keys.
-#[allow(clippy::struct_excessive_bools)] // A chord independently records the four platform modifiers.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "A chord independently records the four platform modifiers"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GearKeyChord {
     /// Main physical key.

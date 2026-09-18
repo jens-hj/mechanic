@@ -77,7 +77,10 @@
 //! gestures. Backdrop filters sample Mosaic's own root rather than the Bevy
 //! scene behind them, so a glass panel reads as glass over nothing.
 
-#![allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 
 mod context;
 mod frame;

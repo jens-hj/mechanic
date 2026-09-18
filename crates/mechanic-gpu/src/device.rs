@@ -751,7 +751,6 @@ impl GpuPhysics {
     /// # Panics
     ///
     /// wgpu may panic if `device` is invalid or rejects an embedded WGSL module.
-    #[allow(clippy::too_many_lines)]
     pub fn new_with_config(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -776,7 +775,7 @@ impl GpuPhysics {
     /// # Panics
     ///
     /// wgpu may panic if `device` is invalid or rejects an embedded WGSL module.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     pub fn new_with_pipelines(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1576,7 +1575,6 @@ impl GpuPhysics {
     }
 
     /// Encodes and submits one 60 Hz integration/publication pass.
-    #[allow(clippy::too_many_lines)]
     pub fn dispatch_tick(
         &self,
         device: &wgpu::Device,
@@ -1609,7 +1607,7 @@ impl GpuPhysics {
         Ok(self.encode_and_submit_tick(device, queue, tick_index))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn encode_and_submit_tick(
         &self,
         device: &wgpu::Device,
@@ -2193,7 +2191,7 @@ impl GpuPhysics {
         debug_assert_eq!(final_is_a, mechanism.final_is_a);
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn encode_collision_passes(&self, encoder: &mut wgpu::CommandEncoder) {
         let collision = &self.collision;
         let lbvh = &collision.lbvh;
@@ -2918,7 +2916,7 @@ impl GpuPhysics {
     }
 }
 
-#[allow(
+#[expect(
     clippy::similar_names,
     clippy::too_many_arguments,
     clippy::too_many_lines
@@ -3686,7 +3684,7 @@ fn create_mechanism_resources(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn create_lbvh_resources(
     device: &wgpu::Device,
     pipelines: &GpuPhysicsPipelines,
@@ -3963,7 +3961,7 @@ fn create_lbvh_resources(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn create_collision_resources(
     device: &wgpu::Device,
     pipelines: &GpuPhysicsPipelines,
@@ -4488,7 +4486,6 @@ fn direct_compute_pass(
     pass.dispatch_workgroups(workgroups, 1, 1);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn indirect_compute_pass(
     encoder: &mut wgpu::CommandEncoder,
     label: &str,
@@ -4604,7 +4601,7 @@ fn wrapping_u32(value: u64) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss)]
 fn diagnostic_units(value: u32) -> f32 {
     value as f32 / 1_000_000.0
 }

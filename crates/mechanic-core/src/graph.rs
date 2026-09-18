@@ -2292,7 +2292,10 @@ impl ConstructionGraph {
         id
     }
 
-    #[allow(clippy::too_many_lines)] // One exhaustive command dispatch reads better whole.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive command dispatch reads better whole"
+    )]
     fn apply_validated(&mut self, command: BuildCommand) -> Result<BuildOutcome, GraphError> {
         match command {
             BuildCommand::Spawn(spec) => {
@@ -3379,7 +3382,7 @@ impl ConstructionGraph {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn validate_bearing(&self, spec: BearingSpec) -> Result<(), GraphError> {
         if spec.source == spec.target {
             return Err(GraphError::SameFace);
@@ -3780,7 +3783,6 @@ fn point_in_convex_polygon(point: Vec2, vertices: &[Vec2]) -> bool {
     true
 }
 
-#[allow(clippy::too_many_arguments)]
 fn annular_profile_cells(
     face: &FaceGeometry,
     origin: Vec3,

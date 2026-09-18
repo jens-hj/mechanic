@@ -159,7 +159,10 @@ const fn performance_present_mode(open: bool) -> PresentMode {
 }
 
 /// Samples existing Bevy and physics diagnostics; it never waits for the GPU.
-#[allow(clippy::similar_names, clippy::too_many_lines)] // CPU/GPU pairs deliberately share metric names; one flat snapshot.
+#[expect(
+    clippy::too_many_lines,
+    reason = "CPU/GPU pairs deliberately share metric names; one flat snapshot"
+)]
 pub(crate) fn sample(
     time: Res<Time<Real>>,
     diagnostics: Res<DiagnosticsStore>,

@@ -195,7 +195,7 @@ fn loaded_bounds_place_player_outside_and_facing_the_creation() {
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss)] // Test sector counts are small.
+#[expect(clippy::cast_precision_loss, reason = "test sector counts are small")]
 fn material_sectors_run_clockwise_from_the_top_and_centre_cancels() {
     let context = Some(WheelChoice::ConstructionMaterial(
         ConstructionMaterial::Steel,
@@ -212,7 +212,7 @@ fn material_sectors_run_clockwise_from_the_top_and_centre_cancels() {
 }
 
 #[test]
-#[allow(clippy::cast_precision_loss)] // Test sector counts are small.
+#[expect(clippy::cast_precision_loss, reason = "test sector counts are small")]
 fn item_and_terrain_selectors_cover_every_contextual_sector() {
     for (index, item) in PlaceableItem::ALL.into_iter().enumerate() {
         let angle = TAU * index as f32 / PlaceableItem::ALL.len() as f32;

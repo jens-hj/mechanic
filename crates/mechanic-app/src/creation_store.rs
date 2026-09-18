@@ -269,7 +269,7 @@ mod tests {
                 .map(|index| PartDoc::Cuboid {
                     dimensions: [1, 1, 1],
                     pose: PoseDoc {
-                        #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+                        #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
                         translation_ticks: [index as i32 * 100, 50, 0],
                         rotation: [0, 0, 0],
                     },

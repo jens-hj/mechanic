@@ -277,7 +277,7 @@ impl Publication {
 }
 
 /// Returns true while placement owns the publication boundary.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn maintain(
     graph: &mut EditorGraph,
     state: &mut EditorState,

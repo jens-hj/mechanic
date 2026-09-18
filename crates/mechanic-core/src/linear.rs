@@ -48,7 +48,11 @@ impl LinearBearingDimensions {
     ///
     /// # Errors
     /// Returns an error for non-finite, out-of-range, or off-grid dimensions.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Validated positive, integral ticks fit u16.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "validated positive, integral ticks fit u16"
+    )]
     pub fn new(length: f32, width: f32) -> Result<Self, LinearBearingError> {
         if !(0.25..=8.0).contains(&length) {
             return Err(LinearBearingError::Length);

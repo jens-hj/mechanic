@@ -56,7 +56,10 @@ struct ClearPrefix {
     drive_impulses: Vec<(usize, f64)>,
 }
 
-#[allow(clippy::too_many_arguments)] // Explicit immutable terrain lifetime and transactional candidate.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit immutable terrain lifetime and transactional candidate"
+)]
 pub(super) fn advance_interval(
     creation: &CompiledCreation,
     passive: &[PassiveForce],
@@ -81,7 +84,12 @@ pub(super) fn advance_interval(
     )
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::float_cmp)] // Exact remaining-time sentinel; approximate equality could discard time.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::float_cmp,
+    reason = "exact remaining-time sentinel; approximate equality could discard time"
+)]
 pub(super) fn advance_interval_cached<const REUSE: bool>(
     creation: &CompiledCreation,
     passive: &[PassiveForce],
@@ -386,7 +394,6 @@ pub(super) fn advance_interval_cached<const REUSE: bool>(
 
 // Per-trial trace for diagnosing a search that never localizes an event, gated
 // like `MECHANIC_TRACE_CONTINUATION`. Brackets are the state entering the trial.
-#[allow(clippy::too_many_arguments)] // One line per trial needs the whole search state.
 fn trace_trial(
     trial: usize,
     elapsed: f64,
@@ -418,7 +425,6 @@ fn trace_trial(
     );
 }
 
-#[allow(clippy::too_many_arguments)] // Preserve the operation boundary in failure diagnostics.
 pub(super) fn validate_path(
     creation: &CompiledCreation,
     state: &MachineState,
@@ -442,7 +448,10 @@ pub(super) fn validate_path(
     })
 }
 
-#[allow(clippy::too_many_lines)] // Keep ordered query accounting and acceptance checks together.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep ordered query accounting and acceptance checks together"
+)]
 fn validate_path_candidate(
     creation: &CompiledCreation,
     state: &MachineState,
@@ -574,7 +583,6 @@ fn validate_path_candidate(
 // A fully clear and independently depth-certified path can finish inside the
 // fixed numerical-zero contact window without producing a sweep hit. Its actual
 // endpoint feature, never the bracket or its time width, authorizes activation.
-#[allow(clippy::too_many_arguments)]
 fn activate_clear_endpoint(
     creation: &CompiledCreation,
     drives: &[CoordinateDrive],
@@ -615,7 +623,10 @@ fn contains_hit(query: &crate::TerrainContactQuery, hit: TerrainSweepHit) -> boo
         .any(|feature| feature.touches(hit.collider, hit.target))
 }
 
-#[allow(clippy::too_many_arguments)] // Fresh endpoint geometry and incoming velocity; no cached impulse.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fresh endpoint geometry and incoming velocity; no cached impulse"
+)]
 pub(super) fn activate_endpoint(
     creation: &CompiledCreation,
     drives: &[CoordinateDrive],
@@ -703,7 +714,10 @@ impl SustainingSurface {
         Ok(result)
     }
 
-    #[allow(clippy::too_many_arguments)] // Immutable material trajectory and explicit event-speed policy.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "immutable material trajectory and explicit event-speed policy"
+    )]
     pub fn reversal(
         &self,
         creation: &CompiledCreation,

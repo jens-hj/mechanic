@@ -308,7 +308,10 @@ impl GearboxRuntime {
     }
 
     /// Applies every matching manual binding. Duplicate chords intentionally all fire.
-    #[allow(clippy::too_many_arguments)] // Runtime inputs stay explicit at the simulation boundary.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "runtime inputs stay explicit at the simulation boundary"
+    )]
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn step(
         &mut self,
@@ -333,7 +336,7 @@ impl GearboxRuntime {
     }
 
     /// Pauses selected controller lanes, including pending shifts and cooldowns.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(crate) fn step_with_suspension(
         &mut self,
         graph: &ConstructionGraph,
@@ -816,7 +819,7 @@ impl DriveSequencer {
 ///
 /// Always at least one tick, so a very short dwell still holds for a frame
 /// rather than collapsing into an instant chain of handoffs.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 // A dwell is validated positive and at most MAX_DRIVE_DWELL_SECONDS, so the
 // tick count is a small positive integer well inside u64.
 fn dwell_ticks(seconds: f32) -> u64 {

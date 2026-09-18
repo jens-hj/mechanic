@@ -119,7 +119,7 @@ fn spawn(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
 }
 
 /// Capture before the gesture mutates hover/context or publishes a replacement.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn capture_gesture(
     mut fx: ResMut<ToolFx>,
     history: Res<EditorHistory>,
@@ -189,7 +189,7 @@ struct FxInput<'w, 's> {
     windows: Query<'w, 's, &'static Window>,
     camera: Query<'w, 's, &'static GlobalTransform, With<MainCamera>>,
 }
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 fn update(
     time: Res<Time>,
     mut fx: ResMut<ToolFx>,

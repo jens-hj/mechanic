@@ -266,7 +266,10 @@ impl TerrainGpuScene {
         ))
     }
 
-    #[allow(clippy::too_many_lines)] // Validate the complete allocation plan before the first GPU write.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "validate the complete allocation plan before the first GPU write"
+    )]
     pub(super) fn upload(
         &mut self,
         device: &wgpu::Device,
@@ -606,7 +609,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Exercise the complete accepted-scene lifecycle on one adapter.
     fn incremental_publication_reuses_chunks_and_rejects_stale_output_before_writes() {
         use crate::{GpuPhysics, GpuPhysicsConfig};
         use mechanic_core::{BuildCommand, BuildPose, ConstructionGraph, CuboidSpec};

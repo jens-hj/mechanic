@@ -111,11 +111,12 @@ impl MaterialExtension for ChromaMaterialExtension {
 /// Encodes one constant appearance into the standard vertex-color channel.
 /// Every component remains nonzero so the shader can undo Bevy's ordinary
 /// vertex-color multiplication before interpreting the payload.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)] // Validated ranges keep the packed value exactly inside 15 bits.
+    clippy::cast_sign_loss,
+    reason = "validated ranges keep the packed value exactly inside 15 bits"
+)]
 pub(crate) fn encode_appearance(appearance: MaterialAppearance) -> [f32; 4] {
     let (mode, color) = match appearance.color {
         MaterialColor::Baked => (0_u32, [1.0, 1.0, 1.0]),
@@ -268,7 +269,7 @@ pub(crate) fn representative_srgb(
     recolor_reference(linear, 1.0, profile.mean_oklab_lightness, appearance).map(linear_to_srgb8)
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 // Clamping before the cast makes the rounded result an exact RGB8 channel.
 fn linear_to_srgb8(channel: f32) -> u8 {
     let encoded = if channel <= 0.003_130_8 {

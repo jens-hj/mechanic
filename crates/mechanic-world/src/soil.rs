@@ -1,6 +1,6 @@
 //! Game-tuned plastic compaction, not measured soil data. Compression removes
 //! volume; displaced material and clumps are separate work.
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+#![expect(clippy::cast_possible_truncation)]
 
 use std::collections::BTreeMap;
 

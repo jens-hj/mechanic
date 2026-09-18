@@ -639,7 +639,10 @@ pub(super) mod tests {
         penetration
     }
 
-    #[allow(clippy::too_many_lines)] // Keep fixture setup and tick acceptance together.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep fixture setup and tick acceptance together"
+    )]
     fn check_dense_terrain_impact(curvature: f32, tilt: f32) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =

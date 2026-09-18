@@ -37,7 +37,10 @@ fn paint(rgb: [u8; 3]) -> MaterialAppearance {
     )
 }
 
-#[allow(clippy::too_many_lines)] // Keep the six declarative stations beside their shared assembly recipe.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the six declarative stations beside their shared assembly recipe"
+)]
 fn main() -> Result<()> {
     let destination = std::env::args_os().nth(1).map_or_else(
         || PathBuf::from("creations/suspension-playground.mech"),

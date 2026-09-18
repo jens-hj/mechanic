@@ -1,4 +1,7 @@
-#![allow(clippy::needless_pass_by_value)] // Bevy system parameters are value-typed wrappers.
+#![expect(
+    clippy::needless_pass_by_value,
+    reason = "bevy system parameters are value-typed wrappers"
+)]
 
 //! A Mosaic panel composited over a live Bevy scene.
 //!
@@ -73,7 +76,10 @@ fn setup_overlay(mosaic: NonSend<MosaicContext>) {
 /// without fighting Bevy's prelude — both define `State`, `Children` and
 /// `Interaction`. This is the pattern to copy.
 mod panel {
-    #[allow(clippy::wildcard_imports)] // The authoring vocabulary is meant to be globbed.
+    #[expect(
+        clippy::wildcard_imports,
+        reason = "the authoring vocabulary is meant to be globbed"
+    )]
     use bevy_mosaic::ui::*;
 
     pub fn build(ui: &Ui) -> Element {

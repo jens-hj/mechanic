@@ -33,7 +33,7 @@ fn chain(joints: i32, anchored: bool, reversed: bool) -> CompiledCreation {
         } else {
             (a, b, Vec3::X)
         };
-        #[allow(clippy::cast_precision_loss)] // Bounded fixture body count.
+        #[expect(clippy::cast_precision_loss, reason = "bounded fixture body count")]
         let anchor = Vec3::X * (index as f32 + 0.5);
         graph
             .apply(BuildCommand::AddBearing(BearingSpec::new(

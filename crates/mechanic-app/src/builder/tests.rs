@@ -1981,7 +1981,10 @@ fn free_candidates_snap_globally_and_face_the_view_cardinally() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One table exercises every standalone spawn path.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table exercises every standalone spawn path"
+)]
 fn every_standalone_tool_stages_an_isolated_free_part() {
     let point = Vec3::new(0.0, 7.5, 0.0);
     let direction = Vec3::NEG_Z;

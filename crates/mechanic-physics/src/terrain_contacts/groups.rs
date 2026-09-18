@@ -407,7 +407,6 @@ impl ContactGroups {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)] // Integrate solver motion against query allowances.
     pub(crate) fn advance(
         &mut self,
         geometry: &MachineCollisionGeometry,

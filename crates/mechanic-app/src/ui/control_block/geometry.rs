@@ -50,7 +50,10 @@ const MAX_SWEEP_DEGREES: f32 = 359.9;
 
 /// Centre of the state card at `index`, along the lane.
 pub(crate) fn card_center_x(index: usize) -> f32 {
-    #[allow(clippy::cast_precision_loss)] // A lane holds at most eight cards.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "A lane holds at most eight cards"
+    )]
     let index = index as f32;
     PADX + NODE_W / 2.0 + index * (NODE_W + GAP)
 }
@@ -67,7 +70,10 @@ pub(crate) fn add_card_left(states: usize) -> f32 {
 
 /// Full width of a lane holding `states` cards, plus room for the placeholder.
 pub(crate) fn lane_width(states: usize) -> f32 {
-    #[allow(clippy::cast_precision_loss)] // A lane holds at most eight cards.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "A lane holds at most eight cards"
+    )]
     let states = states as f32;
     PADX * 2.0 + (states + 1.0) * NODE_W + states * GAP
 }
@@ -80,7 +86,10 @@ pub(crate) fn band(wires: usize, pad: f32) -> f32 {
     if wires == 0 {
         return 34.0;
     }
-    #[allow(clippy::cast_precision_loss)] // A lane holds at most eight wires.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "A lane holds at most eight wires"
+    )]
     let wires = wires as f32;
     26.0 + (wires - 1.0) * RANK + pad
 }
@@ -105,14 +114,20 @@ pub(crate) fn lane_height(release_wires: usize, dwell_wires: usize) -> f32 {
 
 /// The lane line a wire of the given rank runs along, above the cards.
 pub(crate) fn release_wire_lane(top: f32, rank: usize) -> f32 {
-    #[allow(clippy::cast_precision_loss)] // A lane holds at most eight wires.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "A lane holds at most eight wires"
+    )]
     let rank = rank as f32;
     top - 26.0 - rank * RANK
 }
 
 /// The lane line a wire of the given rank runs along, below the cards.
 pub(crate) fn dwell_wire_lane(top: f32, rank: usize) -> f32 {
-    #[allow(clippy::cast_precision_loss)] // A lane holds at most eight wires.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "A lane holds at most eight wires"
+    )]
     let rank = rank as f32;
     top + NODE_H + 26.0 + rank * RANK
 }

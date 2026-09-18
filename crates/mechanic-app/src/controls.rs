@@ -469,7 +469,7 @@ impl GameAction {
 
 /// Modifier keys attached to one input.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 pub(crate) struct Modifiers {
     pub(crate) shift: bool,
     pub(crate) control: bool,
@@ -674,7 +674,7 @@ impl From<SavedControls> for Controls {
 }
 
 impl Default for Controls {
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn default() -> Self {
         use GameAction as A;
         use KeyCode as K;

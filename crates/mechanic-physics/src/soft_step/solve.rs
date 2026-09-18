@@ -502,7 +502,6 @@ impl Closure {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // Mirrors `normal`, which the stops share.
     fn solve(
         &self,
         velocities: &mut [f64],
@@ -762,7 +761,11 @@ impl Scratch {
 }
 
 /// Integrates forces, solves and advances positions over one substep.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One ordered substep with explicit inputs and work accounting.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one ordered substep with explicit inputs and work accounting"
+)]
 pub(super) fn substep(
     machine: &Machine<'_>,
     state: &mut MachineState,
@@ -1061,7 +1064,10 @@ pub(super) struct Substep {
 // collision the soft contacts would miss, with each collider's travel bound and
 // the largest body rotation over that fraction. Sweep assemblies whose trial
 // path exceeds either the activation threshold or proven contact coverage.
-#[allow(clippy::too_many_arguments)] // The query needs both motion and current contact coverage.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the query needs both motion and current contact coverage"
+)]
 fn continuous_fraction(
     creation: &CompiledCreation,
     state: &MachineState,
@@ -1303,7 +1309,10 @@ fn limit_impulse<'a>(joints: &'a mut JointImpulses, limit: &Limit) -> &'a mut f6
     }
 }
 
-#[allow(clippy::too_many_arguments)] // One ordered pass over every row family.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one ordered pass over every row family"
+)]
 fn pass(
     contacts: &mut [Contact],
     points: &[PointRows],
@@ -1376,7 +1385,10 @@ fn pass(
 
 // A one-sided row: speculative while separated, soft while overlapping, and
 // unbiased during relaxation so pushes don't add energy.
-#[allow(clippy::too_many_arguments)] // Shared by contacts and joint limits.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared by contacts and joint limits"
+)]
 fn normal(
     row: &Row,
     velocities: &mut [f64],

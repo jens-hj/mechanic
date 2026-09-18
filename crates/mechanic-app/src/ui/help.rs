@@ -6,7 +6,10 @@
 //! is mostly [`capture`], reading the whole editor once a frame and writing
 //! down what it found.
 
-#![allow(clippy::wildcard_imports)] // Mosaic's authoring vocabulary is meant to be globbed.
+#![allow(
+    clippy::wildcard_imports,
+    reason = "Mosaic's authoring vocabulary is meant to be globbed"
+)]
 
 use bevy::ecs::system::{Res, SystemParam};
 use bevy_mosaic::ui::*;
@@ -16,9 +19,11 @@ use mosaic_macros::{component, view};
 
 use super::Handles;
 use super::components::{PanelSurface, PanelSurfaceProps};
-#[allow(unused_imports)] // Style constants are consumed by `view!` expansion.
+#[expect(
+    unused_imports,
+    reason = "style constants are consumed by `view!` expansion"
+)]
 use super::styles::*;
-#[allow(clippy::wildcard_imports)] // The design tokens are read as bare names.
 use super::theme::*;
 use crate::camera::PlayerState;
 use crate::controls::GameAction;
@@ -144,7 +149,10 @@ fn linear_controls(controls: &crate::controls::Controls, rotate: &str) -> String
 }
 
 /// Reads the editor into what the panel says.
-#[allow(clippy::too_many_lines)] // One line of prose per editor state, in the order they are shown.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one line of prose per editor state, in the order they are shown"
+)]
 pub(crate) fn capture(sources: &Sources) -> Model {
     let Sources {
         graph,

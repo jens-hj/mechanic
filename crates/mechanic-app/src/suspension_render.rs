@@ -377,7 +377,7 @@ fn set_chunk_material(
 }
 
 /// Synchronizes cached suspension visuals after the simulation snapshot updates.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(super) fn sync_suspension_visuals(
     mut commands: Commands,
     graph: Res<EditorGraph>,

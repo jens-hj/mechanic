@@ -16,7 +16,7 @@ struct Point {
     rhs: Vec<f64>,
 }
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub(super) fn direction(
     problem: &Problem<'_>,
     at: &Evaluation,

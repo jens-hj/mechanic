@@ -133,7 +133,6 @@ pub(crate) enum GearboxEdit {
 type Wire = (DriveLimits, DriveProgram, DriveName);
 
 /// Applies SI edits while keeping programmable travel within the physical stops.
-#[allow(clippy::too_many_lines)] // Linear target and limit edits share one validation boundary.
 pub(crate) fn apply_linear_edit(
     limits: DriveLimits,
     mut linear: LinearDriveLimits,
@@ -256,7 +255,10 @@ fn clamp_linear_program(program: DriveProgram, limits: LinearDriveLimits) -> Dri
 /// out of range, a state that is not there — leaving the joint as it was. That
 /// is the same answer for "you typed nonsense" and "that click does nothing",
 /// because in both cases the right behaviour is to change nothing.
-#[allow(clippy::too_many_lines)] // One match arm per thing the panel can change.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per thing the panel can change"
+)]
 pub(crate) fn apply_edit(
     limits: DriveLimits,
     program: DriveProgram,
@@ -693,7 +695,10 @@ pub(crate) struct LaneModel {
 
 impl LaneModel {
     /// Reads one joint's configuration into what the panel draws.
-    #[allow(clippy::too_many_arguments)] // A flat immutable snapshot at the graph/UI seam.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A flat immutable snapshot at the graph/UI seam"
+    )]
     pub(crate) fn capture(
         id: DriveLinkId,
         number: usize,

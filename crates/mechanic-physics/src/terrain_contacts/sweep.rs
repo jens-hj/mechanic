@@ -171,7 +171,7 @@ impl TerrainContactScene {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn sweep_contact_groups(
         &self,
         machine: &MachineCollisionGeometry,
@@ -195,7 +195,12 @@ impl TerrainContactScene {
         )
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::float_cmp)] // Ordered bounded traversal; excluded supports require separate path validation.
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::float_cmp,
+        reason = "ordered bounded traversal; excluded supports require separate path validation"
+    )]
     fn sweep_internal(
         &self,
         machine: &MachineCollisionGeometry,

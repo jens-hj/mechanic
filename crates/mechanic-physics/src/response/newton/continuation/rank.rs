@@ -6,7 +6,6 @@ fn norm(values: &[f64]) -> f64 {
     values.iter().fold(0.0, |sum, value| sum.hypot(*value))
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn least_squares(
     matrix: &[f64],
     rhs: &[f64],

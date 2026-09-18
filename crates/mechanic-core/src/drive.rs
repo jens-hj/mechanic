@@ -311,7 +311,7 @@ impl DriveName {
         Self {
             bytes,
             // `end` is capped at MAX_DRIVE_NAME_BYTES, which fits in a `u8`.
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             len: end as u8,
         }
     }

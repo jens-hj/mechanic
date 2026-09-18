@@ -1,6 +1,9 @@
 //! Versioned deterministic terrain and guaranteed cave generation.
 
-#![allow(clippy::cast_possible_truncation)] // Noise and seed contracts intentionally narrow.
+#![expect(
+    clippy::cast_possible_truncation,
+    reason = "noise and seed contracts intentionally narrow"
+)]
 
 use std::{
     collections::{HashMap, VecDeque},
