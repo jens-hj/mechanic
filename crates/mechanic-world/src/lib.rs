@@ -14,14 +14,13 @@ mod mesh;
 mod persistence;
 mod query;
 mod soil;
+mod streaming;
+mod transvoxel;
+
 pub use breakage::{
     BreakageAccumulator, BreakagePatch, BreakageResponse, ExtractionCell, MATERIAL_QUANTUM_M3,
 };
 pub use clumps::{ClumpCollection, MAX_ACTIVE_CLUMPS, MaterialClump, MaterialTransfer};
-mod streaming;
-pub use soil::{SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
-mod transvoxel;
-
 pub use construction_collision::{
     ConstructionBodyPose, ConstructionCollisionIndex, ConstructionCollisionMetrics,
     ConstructionContact, KinematicCollisionScene,
@@ -56,6 +55,7 @@ pub use query::{
     KinematicInput, KinematicSupport, KinematicTickResult, TerrainDensity, TerrainScene,
     TerrainSpatialIndex, WorldConstructionEditability, raycast_density,
 };
+pub use soil::{SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
 pub use streaming::{
     ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainPublicationDelta,
     TerrainPublicationUpsert, TerrainReadiness, TerrainSelection, TerrainSelectionDelta,

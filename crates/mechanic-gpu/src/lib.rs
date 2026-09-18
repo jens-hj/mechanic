@@ -3,6 +3,7 @@
 mod abi;
 mod collision;
 mod device;
+mod limits;
 mod render;
 mod runtime;
 mod scheduler;
@@ -27,6 +28,10 @@ pub use device::{
     GpuTickReadback, GpuTickSubmission, PreparedTerrainUpdate, SnapshotBuffers,
     TerrainPreparationCache, TerrainPreparationRequest, TerrainResidency, TerrainUploadStats,
 };
+pub use limits::{
+    BROADPHASE_HASH_CAPACITY, MAX_BEARINGS, MAX_BODIES, MAX_COLLIDERS, MAX_CONTACT_PAIRS,
+    MAX_CONVEX_SHAPE_SLOTS, SNAPSHOT_RING_SIZE,
+};
 pub use render::{
     TerrainRenderAcknowledgement, TerrainRenderArena, TerrainRenderArenaLimits, TerrainRenderChunk,
     TerrainRenderDelta, TerrainRenderDirtyRanges, TerrainRenderError,
@@ -40,28 +45,3 @@ pub use terrain::{
     TerrainBufferLimits, TerrainContact, TerrainContactShape, TerrainPhysicsScene,
     TerrainStageMetrics, terrain_contacts,
 };
-
-/// Maximum number of compound bodies accepted by the milestone runtime.
-pub const MAX_BODIES: usize = 131_072;
-
-/// Maximum number of passive bearings accepted by the milestone runtime.
-pub const MAX_BEARINGS: usize = 262_144;
-
-/// Maximum uploaded collider rows.
-pub const MAX_COLLIDERS: usize = 131_072;
-
-/// Maximum `vec4` slots in the packed convex-shape buffer.
-///
-/// One shaped piece needs at most eight vertices, twelve face planes, and
-/// eighteen edge directions, so this holds a large shaped creation while
-/// staying a fixed allocation like every other buffer here.
-pub const MAX_CONVEX_SHAPE_SLOTS: usize = 1_048_576;
-
-/// Fixed candidate/contact capacity. Overflow blocks publication.
-pub const MAX_CONTACT_PAIRS: usize = 2_097_152;
-
-/// Power-of-two spatial broadphase table capacity.
-pub const BROADPHASE_HASH_CAPACITY: usize = 262_144;
-
-/// Number of published snapshots retained entirely on the GPU.
-pub const SNAPSHOT_RING_SIZE: usize = 3;

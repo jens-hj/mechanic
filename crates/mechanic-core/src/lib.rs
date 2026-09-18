@@ -12,12 +12,11 @@ mod gearbox;
 mod geometry;
 mod graph;
 mod id;
-mod runtime_bodies;
-pub use runtime_bodies::RuntimeBox;
 mod linear;
 mod linear_geometry;
 mod pipe_junction;
 mod region;
+mod runtime_bodies;
 mod shape;
 mod solid;
 mod suspension;
@@ -25,11 +24,9 @@ mod suspension_geometry;
 mod units;
 mod weld;
 
-pub use weld::{
-    WeldAlignment, WeldCollider, WeldConstraint, WeldFeature, WeldFeatureRef, WeldMaterialPatch,
-    WeldPick, WeldPlacement, WeldRejection, WeldSelection, WeldSnap, weld_contact_square,
+pub use appearance::{
+    AppearanceError, MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, MaterialShift,
 };
-
 pub use compile::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
     CompiledCreation, CompiledCylinder, CoordinateDrive, DriveMode, GearSelection, LocalCollider,
@@ -49,14 +46,13 @@ pub use creation::{
     SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc,
     WeldDoc,
 };
-pub use dynamics::{CompiledDynamics, DynamicsComponent, LoopConstraintPattern, SpatialInertia};
-
 pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
     DriveLimitsError, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
     DriveTarget, DriveTrigger, LinearDriveLimits, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
     MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
 };
+pub use dynamics::{CompiledDynamics, DynamicsComponent, LoopConstraintPattern, SpatialInertia};
 pub use edit::ConstructionEditDelta;
 pub use frame::{ConstructionFrame, ConstructionFrameId, FrameError};
 pub use gearbox::{
@@ -83,20 +79,23 @@ pub use graph::{
     MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec,
     SeatControllerLinkSpec, StructuralComponent, WeldSpec,
 };
+pub use id::{
+    BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
+    ShapeFeatureId, WeldId,
+};
 pub use linear::{
     BearingKind, CarriageFace, LINEAR_METERS_PER_RADIAN, LINEAR_METERS_PER_REVOLUTION,
     LinearBearing, LinearBearingDimensions, LinearBearingError,
+};
+pub use linear_geometry::{
+    LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,
 };
 pub use pipe_junction::{
     PipeJunctionBox, PipeJunctionSurface, PipeJunctionTriangle, pipe_junction_triangles,
     pipe_junction_wall_boxes,
 };
-
-pub use id::{
-    BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
-    ShapeFeatureId, WeldId,
-};
 pub use region::{CageIndex, RegionError, ShapeRegion};
+pub use runtime_bodies::RuntimeBox;
 pub use shape::{
     CellGrid, ConvexFace, ConvexPiece, GridFace, MAX_PIECE_EDGES, MAX_PIECE_FACES,
     MAX_PIECE_VERTICES, PartPiece, decompose, decompose_part, face_neighbour_offset,
@@ -107,27 +106,20 @@ pub use solid::{
     EvaluatedSolid, LogicalEdge, ShapeFeature, SolidError, SolidOwner, SurfacePatch,
     SurfacePatchKey, TopologyKey, TopologySource, evaluate_part_solid, evaluate_region_solid,
 };
-
-pub use appearance::{
-    AppearanceError, MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, MaterialShift,
-};
-
-pub use linear_geometry::{
-    LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,
-};
-
 pub use suspension::{
     BumpStopSpec, CompressionLimit, MountPlates, ShockBodyEnd, ShockGeometry, ShockSpec,
     SpringSpec, SuspensionError, SuspensionMassElement, SuspensionSpec,
 };
-
 pub use suspension_geometry::{
     SUSPENSION_FINISHES, SuspensionFinish, SuspensionMeshChunk, SuspensionMeshOwner,
     suspension_meshes,
 };
-
 pub use units::{
     ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, GRAVITY, MACHINE_PART_DENSITY_KG_M3,
     STANDARD_GRAVITY_M_S2, STANDARD_GRAVITY_M_S2_F32, TICK_RATE_HZ, TICK_SECONDS, TICK_SECONDS_F32,
     rad_s_to_rpm, rpm_to_rad_s,
+};
+pub use weld::{
+    WeldAlignment, WeldCollider, WeldConstraint, WeldFeature, WeldFeatureRef, WeldMaterialPatch,
+    WeldPick, WeldPlacement, WeldRejection, WeldSelection, WeldSnap, weld_contact_square,
 };
