@@ -200,7 +200,7 @@ pub(crate) fn sample(
     let creation = simulation.creation.as_ref().filter(|_| running);
     let readback = simulation
         .last_tick_readback
-        .filter(|_| running && simulation.cpu.is_none());
+        .filter(|_| running && simulation.tick_route() == Route::Gpu);
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(bevy::diagnostic::Diagnostic::smoothed);
@@ -228,7 +228,7 @@ pub(crate) fn sample(
         physics_route: simulation
             .creation
             .as_ref()
-            .map(|_| simulation.cpu.as_ref().map_or(Route::Gpu, |_| Route::Cpu)),
+            .map(|_| simulation.tick_route()),
         cpu_degraded_ticks: simulation
             .cpu
             .as_ref()

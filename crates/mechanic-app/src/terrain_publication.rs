@@ -250,7 +250,8 @@ pub(crate) fn publish(
     if world.material_publication_pending() {
         return Ok(false);
     }
-    if simulation.cpu.is_none() && !world.clumps.bodies.is_empty() {
+    if simulation.tick_route() == crate::cpu_physics::Route::Gpu && !world.clumps.bodies.is_empty()
+    {
         return Err(
             "Loose material requires CPU physics; this world cannot run on the GPU route"
                 .to_owned(),

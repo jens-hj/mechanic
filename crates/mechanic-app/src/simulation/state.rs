@@ -10,11 +10,21 @@ use bevy::prelude::{Quat, Resource, Vec3, error, format};
 use mechanic_core::{CompiledCreation, ConstructionGraph, PartId};
 use mechanic_gpu::{GpuPhysics, GpuTickReadback, GpuTransform, GpuVelocity};
 
+/// The compiled scene and whichever solver ticks it.
+///
+/// The two backends are not alternatives held in one slot. `gpu` is the resident
+/// scene: it exists whenever a creation is simulated and always owns terrain
+/// preparation, drive resolution, and the buffers the renderer reads. `cpu` is
+/// the tick route layered over it, and can be dropped mid-run: a tick the CPU
+/// solver cannot complete hands the last published state to the GPU runtime.
+/// Ask [`AppSimulation::tick_route`] which solver ticks rather than testing the
+/// fields.
 #[derive(Resource, Default)]
 pub(crate) struct AppSimulation {
+    /// The resident GPU scene.
     pub(crate) gpu: Option<GpuPhysics>,
-    /// CPU solver, absent only under `MECHANIC_PHYSICS=gpu`. The GPU scene
-    /// stays resident; this replaces only the tick that publishes state.
+    /// CPU solver, absent under `MECHANIC_PHYSICS=gpu` or after it handed a
+    /// tick it could not complete to the GPU runtime.
     pub(crate) cpu: Option<Box<cpu_physics::CpuRoute>>,
     pub(crate) creation: Option<CompiledCreation>,
     /// Exact graph snapshot represented by `creation` and the live GPU scene.
@@ -120,6 +130,15 @@ pub(crate) fn stop_failed_simulation(
 }
 
 impl AppSimulation {
+    /// Which solver advances published ticks right now.
+    pub(crate) fn tick_route(&self) -> cpu_physics::Route {
+        if self.cpu.is_some() {
+            cpu_physics::Route::Cpu
+        } else {
+            cpu_physics::Route::Gpu
+        }
+    }
+
     pub(crate) fn is_running(&self) -> bool {
         (self.gpu.is_some() || self.cpu.as_ref().is_some_and(|cpu| cpu.has_clumps()))
             && self.failure.is_none()

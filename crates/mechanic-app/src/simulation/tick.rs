@@ -37,7 +37,7 @@ pub(crate) fn poll_simulation_readbacks(
     mut state: ResMut<EditorState>,
     render_device: Res<RenderDevice>,
 ) {
-    if !simulation.is_running() || simulation.cpu.is_some() {
+    if !simulation.is_running() || simulation.tick_route() == cpu_physics::Route::Cpu {
         // The CPU route publishes each tick as it completes it; there is no queue.
         return;
     }
@@ -161,7 +161,7 @@ pub(crate) fn advance_simulation(
     mut construction_visuals: Query<(&ConstructionVisual, &mut Visibility), Without<BearingVisual>>,
 ) {
     if !(simulation.is_running()
-        || (simulation.cpu.is_some()
+        || (simulation.tick_route() == cpu_physics::Route::Cpu
             && !world_runtime.clumps.bodies.is_empty()
             && simulation.failure.is_none()))
     {
@@ -237,7 +237,7 @@ pub(crate) fn advance_simulation(
     }
 
     let ticks = {
-        let available = if simulation.cpu.is_some() {
+        let available = if simulation.tick_route() == cpu_physics::Route::Cpu {
             MAXIMUM_TICKS_PER_FRAME
         } else {
             simulation
