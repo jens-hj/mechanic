@@ -14,6 +14,7 @@ mod graph;
 mod id;
 mod linear;
 mod linear_geometry;
+mod obb;
 mod pipe_junction;
 mod region;
 mod runtime_bodies;
@@ -89,6 +90,9 @@ pub use linear::{
 };
 pub use linear_geometry::{
     LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,
+};
+pub use obb::{
+    Obb, ObbContact, ObbContactManifold, ObbContactPoint, obb_contact_manifold, obb_sat,
 };
 pub use pipe_junction::{
     PipeJunctionBox, PipeJunctionSurface, PipeJunctionTriangle, pipe_junction_triangles,

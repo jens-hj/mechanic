@@ -1,3 +1,5 @@
+//! The fixed-step physics clock: turns frame time into whole ticks due.
+
 use std::time::Duration;
 
 use mechanic_core::TICK_RATE_HZ;
@@ -12,15 +14,6 @@ pub struct ScheduledTicks {
 }
 
 impl ScheduledTicks {
-    /// First scheduled tick index, if the batch is non-empty.
-    pub const fn first(self) -> Option<u64> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.first)
-        }
-    }
-
     /// Number of fixed ticks due. Backlog is never silently dropped.
     pub const fn count(self) -> u64 {
         self.count
@@ -65,13 +58,8 @@ impl FixedStepScheduler {
         ScheduledTicks { first, count }
     }
 
-    /// Fraction between the latest complete tick and the next tick for rendering.
-    pub fn interpolation_alpha(&self) -> f64 {
-        let phase = u32::try_from(self.phase).unwrap_or(u32::MAX);
-        f64::from(phase) / 1_000_000_000.0
-    }
-
     /// Next monotonic tick index.
+    #[cfg(test)]
     pub const fn next_tick(&self) -> u64 {
         self.next_tick
     }

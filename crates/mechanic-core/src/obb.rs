@@ -1,3 +1,5 @@
+//! Oriented-box overlap on the CPU: separating-axis test and a reference contact manifold.
+
 use bevy_math::{Quat, Vec3};
 
 /// Oriented cuboid used by the CPU narrowphase reference.
@@ -13,7 +15,7 @@ pub struct Obb {
 
 /// Minimum-translation result from all 15 cuboid SAT axes.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SatContact {
+pub struct ObbContact {
     /// Unit normal pointing from the first OBB toward the second.
     pub normal: Vec3,
     /// Non-negative overlap along the minimum axis.
@@ -22,7 +24,7 @@ pub struct SatContact {
 
 /// One persistent-manifold candidate.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ContactPoint {
+pub struct ObbContactPoint {
     /// World-space contact position.
     pub position: Vec3,
     /// Overlap associated with this point.
@@ -31,20 +33,20 @@ pub struct ContactPoint {
 
 /// Deterministically reduced contact manifold with at most four points.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ContactManifold {
+pub struct ObbContactManifold {
     /// Normal shared by every point, directed from A to B.
     pub normal: Vec3,
     /// Stable contact points. Face contacts retain up to four corners.
-    pub points: Vec<ContactPoint>,
+    pub points: Vec<ObbContactPoint>,
 }
 
 /// Runs OBB-vs-OBB separating-axis tests for three face axes from each box and
 /// nine edge cross products.
-pub fn obb_sat(a: Obb, b: Obb) -> Option<SatContact> {
+pub fn obb_sat(a: Obb, b: Obb) -> Option<ObbContact> {
     let a_axes = axes(a.orientation);
     let b_axes = axes(b.orientation);
     let center_delta = b.center - a.center;
-    let mut minimum = SatContact {
+    let mut minimum = ObbContact {
         normal: Vec3::X,
         penetration: f32::INFINITY,
     };
@@ -65,7 +67,7 @@ pub fn obb_sat(a: Obb, b: Obb) -> Option<SatContact> {
 
 /// Builds a small CPU reference manifold from the SAT result. Vertex-in-box
 /// candidates cover face contacts; an edge-contact fallback guarantees one point.
-pub fn obb_contact_manifold(a: Obb, b: Obb) -> Option<ContactManifold> {
+pub fn obb_contact_manifold(a: Obb, b: Obb) -> Option<ObbContactManifold> {
     let sat = obb_sat(a, b)?;
     let mut candidates = Vec::with_capacity(8);
     for vertex in vertices(a) {
@@ -90,11 +92,11 @@ pub fn obb_contact_manifold(a: Obb, b: Obb) -> Option<ContactManifold> {
             .then(left.z.total_cmp(&right.z))
     });
     candidates.truncate(4);
-    Some(ContactManifold {
+    Some(ObbContactManifold {
         normal: sat.normal,
         points: candidates
             .into_iter()
-            .map(|position| ContactPoint {
+            .map(|position| ObbContactPoint {
                 position,
                 penetration: sat.penetration,
             })
@@ -107,7 +109,7 @@ fn test_axis(
     b: Obb,
     center_delta: Vec3,
     axis: Vec3,
-    minimum: &mut SatContact,
+    minimum: &mut ObbContact,
 ) -> Option<()> {
     let radius_a = projection_radius(a, axis);
     let radius_b = projection_radius(b, axis);

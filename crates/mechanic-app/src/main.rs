@@ -43,6 +43,7 @@ mod performance_capture;
 mod publication_frame_tests;
 mod render_diagnostics;
 mod render_experiments;
+mod scheduler;
 mod sequencer;
 mod settings;
 mod shape_tool;
@@ -133,11 +134,12 @@ use mechanic_core::{
     part_cells,
 };
 use mechanic_gpu::{
-    FixedStepScheduler, GpuExternalImpulse, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines,
-    GpuTickReadback, GpuTransform, GpuVelocity,
+    GpuExternalImpulse, GpuPhysics, GpuPhysicsConfig, GpuPhysicsPipelines, GpuTickReadback,
+    GpuTransform, GpuVelocity,
 };
 use pause_menu::{PauseMenuState, PauseRequest};
 use performance::PerformanceMetrics;
+use scheduler::FixedStepScheduler;
 use sequencer::{DriveKeyState, DriveSequencer, GearboxRuntime, geared_gpu_drive_rows};
 use settings::AppSettings;
 
@@ -25352,12 +25354,13 @@ mod history_tests {
 mod showcase_loading_tests {
     use std::time::Duration;
 
+    use crate::scheduler::FixedStepScheduler;
     use bevy::prelude::{IVec3, Quat, Vec3};
     use mechanic_core::{
         BuildCommand, BuildOutcome, BuildPose, CuboidSpec, GridRotation, PartId, SeatSpec,
         TopologyError,
     };
-    use mechanic_gpu::{FixedStepScheduler, GpuTransform};
+    use mechanic_gpu::GpuTransform;
 
     use super::{
         AppSimulation, ConstructionGraph, EditorHistory, EditorSnapshot, EditorState,

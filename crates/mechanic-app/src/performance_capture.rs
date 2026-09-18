@@ -462,7 +462,7 @@ mod tests {
     }
     #[test]
     fn replay_counts_wall_time_during_terrain_holds() {
-        let mut scheduler = mechanic_gpu::FixedStepScheduler::new();
+        let mut scheduler = crate::scheduler::FixedStepScheduler::new();
         let mut next = 1;
         let mut backlog = scheduler.advance(Duration::from_secs(2)).count();
         assert_eq!(replay_batch(&mut next, &mut backlog, 0, 181), 1..1);

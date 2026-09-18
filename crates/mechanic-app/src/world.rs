@@ -1405,7 +1405,7 @@ fn collision_free(
             }
             // Cuboids retain their exact oriented box. Curved/featured parts use
             // a conservative authored box until transfer shares evaluated overlap.
-            mechanic_gpu::obb_sat(
+            mechanic_core::obb_sat(
                 transfer_part_box(*incoming, frame),
                 transfer_part_box(*existing, other_frame),
             )
@@ -1414,16 +1414,19 @@ fn collision_free(
     })
 }
 
-fn transfer_part_box(spec: PartSpec, frame: mechanic_core::ConstructionFrame) -> mechanic_gpu::Obb {
+fn transfer_part_box(
+    spec: PartSpec,
+    frame: mechanic_core::ConstructionFrame,
+) -> mechanic_core::Obb {
     if let Some(cuboid) = spec.as_cuboid() {
-        return mechanic_gpu::Obb {
+        return mechanic_core::Obb {
             center: frame.point(cuboid.pose.translation()),
             orientation: frame.rotation() * cuboid.pose.rotation.quaternion(),
             half_extents: cuboid.size_meters() * 0.5,
         };
     }
     let (low, high) = part_world_bounds(spec);
-    mechanic_gpu::Obb {
+    mechanic_core::Obb {
         center: frame.point((low + high) * 0.5),
         orientation: frame.rotation(),
         half_extents: (high - low) * 0.5,

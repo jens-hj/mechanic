@@ -1,12 +1,10 @@
 //! GPU physics ABI, fixed-capacity runtime state, and custom compute dispatch.
 
 mod abi;
-mod collision;
 mod device;
 mod limits;
 mod render;
 mod runtime;
-mod scheduler;
 mod shaders;
 mod terrain;
 
@@ -17,9 +15,6 @@ pub use abi::{
     GpuMechanismCoordinate, GpuMechanismDrive, GpuPair, GpuPersistentManifold, GpuSpatialInertia,
     GpuTickConfig, GpuTransform, GpuVelocity, INVALID_NUMERIC_FLAG, MANIFOLD_OVERFLOW_FLAG,
     PAIR_OVERFLOW_FLAG, pack_convex_counts,
-};
-pub use collision::{
-    ContactManifold, ContactPoint, Obb, SatContact, obb_contact_manifold, obb_sat,
 };
 pub use device::{
     EXTERNAL_IMPULSE_BATCH_CAPACITY, GpuBodyStateError, GpuCompletedTickReadback,
@@ -41,7 +36,6 @@ pub use runtime::{
     CapacityKind, FailureStatus, PhysicsRuntime, PublishedGpuState, SimulationStatus,
     TickStatistics,
 };
-pub use scheduler::{FixedStepScheduler, ScheduledTicks};
 pub use terrain::{
     TerrainBufferLimits, TerrainContact, TerrainContactShape, TerrainPhysicsScene,
     TerrainStageMetrics, terrain_contacts,
