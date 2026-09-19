@@ -7,9 +7,10 @@ pushes and pulls whatever is attached to its head.
 Tap Rotate to choose an end mount or one of four side mounts. Hold left-click on
 a flat construction face and move the mouse to set the closed length; press
 Rotate while holding to switch to the stage count; release to place. Right-click
-cancels. Then attach blocks or cylinders to the head crown with the block or
-cylinder tool, or weld an existing assembly onto it. Everything rigidly attached
-to the head moves as one body.
+cancels. A placed piston is complete: its head is a body of its own, so it can
+be wired, programmed, and run with nothing on it. Attach blocks or cylinders to
+the head crown with the block or cylinder tool, or weld an existing assembly onto
+it; everything attached to the head joins the head body and moves as one.
 
 ## The rule
 
@@ -63,8 +64,16 @@ stop and can be pulled out to full stroke by a load.
   WGSL change, and the creation format is unchanged at 17.
 - Hardware mass follows the guide: the body and intermediate stage tubes weigh on
   the supporting body, the solid last stage and its aluminium crown on the head
-  body. A 2-block single-stage piston is 190 kg. An unattached piston weighs
-  wholly on its support.
+  body. A 2-block single-stage piston is 190 kg.
+- Placing a piston adds a joint row with no target (`BearingSpec::bare`). Only
+  hardware whose `JointKind::owns_head()` may have one. Compilation gives each
+  such head a compound of its own, holding the head-side hardware mass and no
+  parts or colliders; every part attached through the piston is unioned into
+  it, so bare and attached rows are one joint. The creation document writes a
+  bare row by omitting `target`, which leaves attached rows and the format
+  version unchanged.
+- A wired piston or linear bearing shows a straight arrow along its travel
+  instead of a spin arc.
 - `piston_meshes` ports the asset pack's `game` detail level: banded barrel, skin
   pads, ports, glands, keyed stages, tapped head crown, and saddle brackets. The
   mesh is built once per configuration; extension only translates each stage.
@@ -83,7 +92,9 @@ stop and can be pulled out to full stroke by a load.
 - The pack's port discs stand 0.5 mm proud of the 250 mm section. Here they sit
   0.2 mm inside it so a side-mounted piston stays within its block.
 
-Pistons, like rails and suspension, have no colliders of their own.
+Pistons, like rails and suspension, have no colliders of their own, so a bare
+head extends through whatever is in front of it; only parts built on the head
+push things.
 
 ## Verification
 
