@@ -21,7 +21,7 @@ use mechanic_core::{BumpStopSpec, ShockSpec, SpringSpec, SuspensionSpec};
 /// Expose their source sockets to the same picking and editing path as new hardware.
 pub(crate) fn sync_sockets(graph: &ConstructionGraph, state: &mut EditorState) {
     for (_, bearing) in graph.bearings() {
-        if !matches!(bearing.kind, mechanic_core::BearingKind::Suspension(_)) {
+        if !matches!(bearing.kind, mechanic_core::JointKind::Suspension(_)) {
             continue;
         }
         let socket = PlacedBearing {
@@ -130,7 +130,7 @@ pub(super) fn drag_actions(
         && let Some(socket) = state.suspension.preview
         && let Some((_, direction)) = state.pointer_ray
     {
-        if let mechanic_core::BearingKind::Suspension(spec) = socket.kind {
+        if let mechanic_core::JointKind::Suspension(spec) = socket.kind {
             if let Some(spring) = spec.spring() {
                 state.suspension.spring = spring;
             }
@@ -253,7 +253,7 @@ pub(super) fn refresh(
                 .and_then(|socket| crate::suspension_controls::Target(socket).resolve(state))
                 .and_then(|i| state.placed_bearings.get(i))
                 .and_then(|s| {
-                    if let mechanic_core::BearingKind::Suspension(spec) = s.kind {
+                    if let mechanic_core::JointKind::Suspension(spec) = s.kind {
                         Some(spec)
                     } else {
                         None
@@ -304,7 +304,7 @@ pub(super) fn refresh(
         match result {
             Ok(spec) => {
                 let socket = PlacedBearing {
-                    kind: mechanic_core::BearingKind::Suspension(spec),
+                    kind: mechanic_core::JointKind::Suspension(spec),
                     ..drag.socket
                 };
                 let half = spec.plates().diameter / 2.0;
@@ -360,9 +360,9 @@ pub(super) fn refresh(
     let host = state
         .hovered_bearing
         .and_then(|i| state.placed_bearings.get(i).copied().map(|s| (i, s)))
-        .filter(|(_, s)| matches!(s.kind, mechanic_core::BearingKind::Suspension(_)));
+        .filter(|(_, s)| matches!(s.kind, mechanic_core::JointKind::Suspension(_)));
     let rubber_target = tool == Tool::Cylinder && material == ConstructionMaterial::Rubber
-        && host.is_some_and(|(_,s)| matches!(s.kind, mechanic_core::BearingKind::Suspension(spec) if spec.shock().is_some()));
+        && host.is_some_and(|(_,s)| matches!(s.kind, mechanic_core::JointKind::Suspension(spec) if spec.shock().is_some()));
     // A piston head takes attachments exactly as a suspension's opposite plate does.
     let plate = state
         .hovered_bearing
@@ -398,7 +398,7 @@ pub(super) fn refresh(
     }
     let result = (|| -> Result<PlacedBearing, String> {
         if let Some((index, socket)) = host {
-            let mechanic_core::BearingKind::Suspension(spec) = socket.kind else {
+            let mechanic_core::JointKind::Suspension(spec) = socket.kind else {
                 unreachable!()
             };
             state.suspension.insertion = Some(index);
@@ -427,7 +427,7 @@ pub(super) fn refresh(
             )
             .map_err(|e| e.to_string())?;
             return Ok(PlacedBearing {
-                kind: mechanic_core::BearingKind::Suspension(replacement),
+                kind: mechanic_core::JointKind::Suspension(replacement),
                 ..socket
             });
         }
@@ -455,12 +455,12 @@ pub(super) fn refresh(
             anchor,
             axis: face.normal,
             dimensions,
-            kind: mechanic_core::BearingKind::Suspension(spec),
+            kind: mechanic_core::JointKind::Suspension(spec),
         })
     })();
     match result {
         Ok(mut socket) => {
-            let mechanic_core::BearingKind::Suspension(spec) = socket.kind else {
+            let mechanic_core::JointKind::Suspension(spec) = socket.kind else {
                 unreachable!()
             };
             socket.dimensions =
@@ -497,7 +497,7 @@ pub(super) fn place(
     let Some(mut socket) = state.suspension.preview else {
         return;
     };
-    if let mechanic_core::BearingKind::Suspension(spec) = socket.kind {
+    if let mechanic_core::JointKind::Suspension(spec) = socket.kind {
         socket.dimensions =
             BearingDimensions::new(spec.plates().diameter, 0.0).expect("validated mount plates");
     }
@@ -509,7 +509,7 @@ pub(super) fn place(
             .find(|(_, b)| bearing_uses_socket(b, old))
             .map(|(id, _)| id);
         if let Some(bearing) = joint {
-            let mechanic_core::BearingKind::Suspension(spec) = socket.kind else {
+            let mechanic_core::JointKind::Suspension(spec) = socket.kind else {
                 return;
             };
             if let Err(e) = graph.apply(BuildCommand::SetSuspension { bearing, spec }) {
@@ -589,7 +589,7 @@ pub(crate) fn apply_settings(
     let Some(socket) = state.placed_bearings.get(index).copied() else {
         return;
     };
-    let mechanic_core::BearingKind::Suspension(current) = socket.kind else {
+    let mechanic_core::JointKind::Suspension(current) = socket.kind else {
         return;
     };
     let replacement = match current.with_components(
@@ -615,7 +615,7 @@ pub(crate) fn apply_settings(
         return;
     }
     state.suspension.preview = Some(PlacedBearing {
-        kind: mechanic_core::BearingKind::Suspension(replacement),
+        kind: mechanic_core::JointKind::Suspension(replacement),
         ..socket
     });
     state.suspension.insertion = Some(index);
@@ -631,7 +631,7 @@ fn selected_component(
     state: &EditorState,
     socket: PlacedBearing,
 ) -> usize {
-    let mechanic_core::BearingKind::Suspension(spec) = socket.kind else {
+    let mechanic_core::JointKind::Suspension(spec) = socket.kind else {
         return 0;
     };
     if let Some((index, component)) = state.suspension.picked_component
@@ -665,7 +665,7 @@ pub(super) fn remove_component(
     let Some(socket) = state.placed_bearings.get(index).copied() else {
         return false;
     };
-    let mechanic_core::BearingKind::Suspension(spec) = socket.kind else {
+    let mechanic_core::JointKind::Suspension(spec) = socket.kind else {
         return false;
     };
     let replacement = match selected_component(graph, state, socket) {
@@ -678,7 +678,7 @@ pub(super) fn remove_component(
     match replacement {
         Ok(Some(spec)) => {
             state.suspension.preview = Some(PlacedBearing {
-                kind: mechanic_core::BearingKind::Suspension(spec),
+                kind: mechanic_core::JointKind::Suspension(spec),
                 ..socket
             });
             state.suspension.insertion = Some(index);
@@ -707,7 +707,7 @@ pub(super) fn paint(
     let Some(socket) = state.placed_bearings.get(index).copied() else {
         return false;
     };
-    let mechanic_core::BearingKind::Suspension(spec) = socket.kind else {
+    let mechanic_core::JointKind::Suspension(spec) = socket.kind else {
         return false;
     };
     if actions.just_pressed(GameAction::Primary) || actions.just_pressed(GameAction::Secondary) {
@@ -719,7 +719,7 @@ pub(super) fn paint(
                 brush
             };
         state.suspension.preview = Some(PlacedBearing {
-            kind: mechanic_core::BearingKind::Suspension(spec.with_appearances(appearances)),
+            kind: mechanic_core::JointKind::Suspension(spec.with_appearances(appearances)),
             ..socket
         });
         state.suspension.insertion = Some(index);
@@ -757,7 +757,7 @@ pub(super) fn sample_appearance(
     state: &EditorState,
 ) -> Option<MaterialAppearance> {
     let socket = *state.placed_bearings.get(state.hovered_bearing?)?;
-    let mechanic_core::BearingKind::Suspension(spec) = socket.kind else {
+    let mechanic_core::JointKind::Suspension(spec) = socket.kind else {
         return None;
     };
     Some(spec.appearances()[selected_component(graph, state, socket)])
@@ -768,7 +768,7 @@ mod tests {
     use super::*;
     use bevy::math::{IVec3, Vec3};
     use mechanic_core::{
-        BearingKind, BuildOutcome, BuildPose, CuboidSpec, FaceKind, FaceRef, GridRotation,
+        BuildOutcome, BuildPose, CuboidSpec, FaceKind, FaceRef, GridRotation, JointKind,
     };
 
     fn fixture(spec: SuspensionSpec) -> (ConstructionGraph, EditorState) {
@@ -790,7 +790,7 @@ mod tests {
             anchor: Vec3::Y * 0.25,
             axis: Vec3::Y,
             dimensions: BearingDimensions::new(spec.plates().diameter, 0.0).unwrap(),
-            kind: BearingKind::Suspension(spec),
+            kind: JointKind::Suspension(spec),
         };
         let state = EditorState {
             placed_bearings: vec![socket],
@@ -879,7 +879,7 @@ mod tests {
         assert_eq!(graph.bearings().next().unwrap().0, id);
         assert_eq!(
             graph.bearing(id).unwrap().kind,
-            BearingKind::Suspension(updated)
+            JointKind::Suspension(updated)
         );
         assert!(crate::editor::history::apply_history_action(
             crate::editor::history::HistoryAction::Undo,
@@ -887,10 +887,7 @@ mod tests {
             &mut state,
             &mut history
         ));
-        assert_eq!(
-            graph.bearing(id).unwrap().kind,
-            BearingKind::Suspension(spec)
-        );
+        assert_eq!(graph.bearing(id).unwrap().kind, JointKind::Suspension(spec));
         assert!(crate::editor::history::apply_history_action(
             crate::editor::history::HistoryAction::Redo,
             &mut graph,
@@ -899,7 +896,7 @@ mod tests {
         ));
         assert_eq!(
             graph.bearing(id).unwrap().kind,
-            BearingKind::Suspension(updated)
+            JointKind::Suspension(updated)
         );
     }
     #[test]
@@ -920,7 +917,7 @@ mod tests {
                 CylinderDimensions::default()
             ));
             assert!(state.preview_error.is_none(), "{:?}", state.preview_error);
-            let BearingKind::Suspension(preview) = state.suspension.preview.unwrap().kind else {
+            let JointKind::Suspension(preview) = state.suspension.preview.unwrap().kind else {
                 panic!("preview")
             };
             if tool == Tool::Spring {
@@ -928,7 +925,7 @@ mod tests {
             } else {
                 assert_eq!(preview.spring(), host.spring());
             }
-            assert_eq!(state.placed_bearings[0].kind, BearingKind::Suspension(host));
+            assert_eq!(state.placed_bearings[0].kind, JointKind::Suspension(host));
         }
     }
     #[test]
@@ -958,7 +955,7 @@ mod tests {
             valid
         ));
         assert!(state.preview_error.is_none());
-        let BearingKind::Suspension(preview) = state.suspension.preview.unwrap().kind else {
+        let JointKind::Suspension(preview) = state.suspension.preview.unwrap().kind else {
             panic!("stop")
         };
         assert_eq!(
@@ -994,7 +991,7 @@ mod tests {
         state.preview_error = Some(PlacementError::Graph("component already installed".into()));
         let mut history = EditorHistory::default();
         assert!(remove_component(&mut graph, &mut state, &mut history, 0));
-        let BearingKind::Suspension(remaining) = state.placed_bearings[0].kind else {
+        let JointKind::Suspension(remaining) = state.placed_bearings[0].kind else {
             panic!("mounts")
         };
         assert!(remaining.spring().is_none());
@@ -1035,7 +1032,7 @@ mod tests {
         actions.release(GameAction::Primary);
         drag_actions(&mut graph, &mut state, &mut history, &actions);
         assert_eq!(history.undo.len(), 1);
-        let BearingKind::Suspension(spec) = state.placed_bearings[0].kind else {
+        let JointKind::Suspension(spec) = state.placed_bearings[0].kind else {
             panic!("suspension");
         };
         assert!(spec.bump_stop().is_some());

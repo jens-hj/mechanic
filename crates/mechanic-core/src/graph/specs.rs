@@ -160,7 +160,7 @@ impl DriveLinkSpec {
     }
 
     /// Creates a stationary linear program spanning a translational joint's
-    /// full physical travel, as [`crate::BearingKind::bounds`] reports it.
+    /// full physical travel, as [`crate::JointKind::bounds`] reports it.
     ///
     /// # Panics
     /// Panics if the bounds violate the drive envelope invariants, which
@@ -268,7 +268,7 @@ impl ActuatorInventory {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BearingSpec {
     /// Permitted motion and physical rail geometry.
-    pub kind: crate::BearingKind,
+    pub kind: crate::JointKind,
     /// Face whose outward normal establishes the bearing axis.
     pub source: FaceRef,
     /// Compatible face on the attached side. `None` is a joint whose moving
@@ -286,7 +286,7 @@ impl BearingSpec {
     /// Creates a bearing specification. Geometry is validated on insertion.
     pub const fn new(source: FaceRef, target: FaceRef, shared_anchor: Vec3, axis: Vec3) -> Self {
         Self {
-            kind: crate::BearingKind::Rotational,
+            kind: crate::JointKind::Rotational,
             source,
             target: Some(target),
             shared_anchor,
@@ -305,7 +305,7 @@ impl BearingSpec {
         source: FaceRef,
         shared_anchor: Vec3,
         axis: Vec3,
-        kind: crate::BearingKind,
+        kind: crate::JointKind,
     ) -> Self {
         let mut spec = Self::new(source, source, shared_anchor, axis);
         spec.target = None;
@@ -315,7 +315,7 @@ impl BearingSpec {
 
     /// Selects the physical bearing variant. Geometry is validated on insertion.
     #[must_use]
-    pub const fn with_kind(mut self, kind: crate::BearingKind) -> Self {
+    pub const fn with_kind(mut self, kind: crate::JointKind) -> Self {
         self.kind = kind;
         self
     }

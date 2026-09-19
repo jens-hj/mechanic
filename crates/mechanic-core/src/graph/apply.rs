@@ -398,14 +398,14 @@ impl ConstructionGraph {
                 let current = *self
                     .bearing(bearing)
                     .ok_or(GraphError::MissingBearing(bearing))?;
-                let crate::BearingKind::Suspension(old) = current.kind else {
+                let crate::JointKind::Suspension(old) = current.kind else {
                     return Err(GraphError::IncompatibleDrive);
                 };
                 old.validate_edit(spec, true)?;
                 let ids = self
                     .bearings()
                     .filter(|(_, b)| {
-                        matches!(b.kind, crate::BearingKind::Suspension(_))
+                        matches!(b.kind, crate::JointKind::Suspension(_))
                             && b.source == current.source
                             && b.shared_anchor == current.shared_anchor
                             && b.axis == current.axis
@@ -418,7 +418,7 @@ impl ConstructionGraph {
                         .bearings
                         .get_mut(id)
                         .expect("existing attachment")
-                        .kind = crate::BearingKind::Suspension(spec);
+                        .kind = crate::JointKind::Suspension(spec);
                 }
                 for id in ids {
                     candidate

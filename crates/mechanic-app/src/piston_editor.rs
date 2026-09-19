@@ -14,8 +14,8 @@ use crate::simulation::state::AppSimulation;
 use crate::{builder, piston_render};
 use bevy::prelude::{ButtonInput, Res, ResMut, Transform, Vec3};
 use mechanic_core::{
-    BearingDimensions, BearingKind, BearingSocket, BearingSpec, BuildCommand, ConstructionGraph,
-    FaceOwner, Piston, PistonDimensions, PistonMount,
+    BearingDimensions, BearingSocket, BearingSpec, BuildCommand, ConstructionGraph, FaceOwner,
+    JointKind, Piston, PistonDimensions, PistonMount,
 };
 
 /// Pointer travel, in radians, that steps a dragged count by one.
@@ -137,7 +137,7 @@ impl PistonToolState {
 
 fn piston_of(socket: PlacedBearing) -> Option<Piston> {
     match socket.kind {
-        BearingKind::Piston(piston) => Some(piston),
+        JointKind::Piston(piston) => Some(piston),
         _ => None,
     }
 }
@@ -149,7 +149,7 @@ pub(super) fn preview_socket(
     if let Some(drag) = state.piston.drag {
         let piston = piston_of(drag.socket)?;
         return Some(PlacedBearing {
-            kind: BearingKind::Piston(Piston {
+            kind: JointKind::Piston(Piston {
                 dimensions: state.piston.dimensions,
                 ..piston
             }),
@@ -178,7 +178,7 @@ pub(super) fn preview_socket(
         anchor,
         axis,
         dimensions: BearingDimensions::default(),
-        kind: BearingKind::Piston(Piston {
+        kind: JointKind::Piston(Piston {
             dimensions: state.piston.dimensions,
             mount,
         }),
@@ -413,7 +413,7 @@ mod tests {
         (
             graph,
             PlacedBearing {
-                kind: BearingKind::Piston(Piston {
+                kind: JointKind::Piston(Piston {
                     dimensions: PistonDimensions::default(),
                     mount,
                 }),

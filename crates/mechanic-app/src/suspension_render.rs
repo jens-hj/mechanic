@@ -10,7 +10,7 @@ use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };
 use mechanic_core::{
-    BearingKind, CompiledCreation, ConstructionFrame, ConstructionGraph, FaceOwner,
+    CompiledCreation, ConstructionFrame, ConstructionGraph, FaceOwner, JointKind,
     SUSPENSION_FINISHES, SuspensionMeshChunk, SuspensionMeshOwner, SuspensionSpec,
     suspension_meshes,
 };
@@ -89,7 +89,7 @@ impl VisualSpec {
             && self.socket.axis.distance_squared(other.socket.axis) < 1e-10
     }
     fn suspension(self) -> SuspensionSpec {
-        let BearingKind::Suspension(spec) = self.socket.kind else {
+        let JointKind::Suspension(spec) = self.socket.kind else {
             unreachable!("suspension visual")
         };
         spec
@@ -102,7 +102,7 @@ fn visual_specs(
 ) -> Vec<VisualSpec> {
     let mut specs = Vec::new();
     for (id, bearing) in graph.bearings() {
-        if !matches!(bearing.kind, BearingKind::Suspension(_)) {
+        if !matches!(bearing.kind, JointKind::Suspension(_)) {
             continue;
         }
         let joint =
@@ -128,7 +128,7 @@ fn visual_specs(
         }
     }
     for &socket in sockets {
-        if !matches!(socket.kind, BearingKind::Suspension(_)) {
+        if !matches!(socket.kind, JointKind::Suspension(_)) {
             continue;
         }
         let source_body = creation.and_then(|c| {
@@ -246,7 +246,7 @@ fn render_pose(
     let (mut transform, compression) = if let Some(host) = spec.preview_host {
         let host_spec = VisualSpec {
             socket: PlacedBearing {
-                kind: BearingKind::Suspension(host),
+                kind: JointKind::Suspension(host),
                 ..spec.socket
             },
             preview_valid: None,
@@ -416,7 +416,7 @@ pub(super) fn sync_suspension_visuals(
     if let Some(socket) = state
         .suspension
         .preview
-        .filter(|socket| matches!(socket.kind, BearingKind::Suspension(_)))
+        .filter(|socket| matches!(socket.kind, JointKind::Suspension(_)))
     {
         let mut preview = preview_spec(
             socket,
@@ -437,7 +437,7 @@ pub(super) fn sync_suspension_visuals(
             .iter_mut()
             .find(|s| crate::suspension_controls::Target(s.socket) == gesture.target)
     {
-        spec.socket.kind = BearingKind::Suspension(gesture.draft);
+        spec.socket.kind = JointKind::Suspension(gesture.draft);
         spec.preview_valid = Some(gesture.error.is_none());
         spec.preview_host = Some(gesture.original);
     }
@@ -657,12 +657,12 @@ pub(super) fn raycast_scene_component(
         let mut cache = cache.borrow_mut();
         cache.retain(|(spec, _)| {
             sockets.iter().any(
-                |s| matches!(s.kind, BearingKind::Suspension(other) if same_geometry(*spec, other)),
+                |s| matches!(s.kind, JointKind::Suspension(other) if same_geometry(*spec, other)),
             )
         });
         let mut hit: Option<(usize, f32, SuspensionMeshOwner)> = None;
         for (index, &socket) in sockets.iter().enumerate() {
-            let BearingKind::Suspension(spec) = socket.kind else {
+            let JointKind::Suspension(spec) = socket.kind else {
                 continue;
             };
             let (pose, compression) = socket_pose(graph, simulation, socket);

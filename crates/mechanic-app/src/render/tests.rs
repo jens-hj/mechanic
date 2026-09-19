@@ -2431,7 +2431,7 @@ fn unattached_bearing_is_included_in_the_visible_bearing_mesh() {
         unreachable!()
     };
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -2470,7 +2470,7 @@ fn combined_bearing_mesh_preserves_each_bearings_dimensions() {
         .unwrap();
     let placed_dimensions = BearingDimensions::new(0.40, 0.0).unwrap();
     let placed = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(parts[1], FaceKind::PositiveY),
         anchor: Vec3::new(1.0, 1.0, 0.0),
@@ -2534,7 +2534,7 @@ fn reusable_socket_with_multiple_attachments_renders_as_one_ring() {
         part
     });
     let socket = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(support, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -2609,7 +2609,7 @@ fn simulation_bearing_mesh_follows_attached_and_unattached_source_bodies() {
         ))
         .unwrap();
     let placed = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(parts[0], FaceKind::PositiveY),
         anchor: Vec3::new(0.0, 1.0, 0.0),
@@ -3001,10 +3001,10 @@ fn drive_overlay_is_empty_without_a_wire_and_mirrors_the_spin_direction() {
 #[test]
 fn a_sliding_joints_drive_arrow_runs_straight_along_its_travel_and_flips_with_the_target() {
     use crate::render::mesh::drive::{append_travel_indicator, travel_line};
-    let piston = mechanic_core::BearingKind::Piston(mechanic_core::Piston::default());
+    let piston = mechanic_core::JointKind::Piston(mechanic_core::Piston::default());
     let (start, end) = travel_line(piston, Vec3::Y).expect("a piston slides");
     assert!(start.abs_diff_eq(Vec3::ZERO, 1.0e-6));
-    assert!(travel_line(mechanic_core::BearingKind::Rotational, Vec3::Y).is_none());
+    assert!(travel_line(mechanic_core::JointKind::Rotational, Vec3::Y).is_none());
 
     let arrow = |target| {
         let (mut positions, mut normals, mut indices) = (Vec::new(), Vec::new(), Vec::new());

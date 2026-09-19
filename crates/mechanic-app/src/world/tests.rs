@@ -1122,7 +1122,7 @@ fn bearing_and_upper_block_edits_preserve_ground_weld_until_last_foot_is_removed
         .resource_mut::<EditorState>()
         .placed_bearings
         .push(crate::editor::build_actions::PlacedBearing {
-            kind: mechanic_core::BearingKind::Rotational,
+            kind: mechanic_core::JointKind::Rotational,
             axis: Vec3::ZERO,
             source: FaceRef::part(platform, FaceKind::PositiveY),
             anchor: Vec3::new(0.25, 0.5, 0.125),

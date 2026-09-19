@@ -300,7 +300,7 @@ pub(crate) fn graph_bounds(
                 .map(|socket| (socket.kind, socket.anchor, socket.axis)),
         )
     {
-        if let mechanic_core::BearingKind::Suspension(spec) = kind {
+        if let mechanic_core::JointKind::Suspension(spec) = kind {
             let rotation = Quat::from_rotation_arc(Vec3::Y, axis);
             for mesh in mechanic_core::suspension_meshes(spec, spec.starting_compression()) {
                 for point in mesh.positions {
@@ -310,7 +310,7 @@ pub(crate) fn graph_bounds(
                 }
             }
         }
-        if let mechanic_core::BearingKind::Linear(rail) = kind
+        if let mechanic_core::JointKind::Linear(rail) = kind
             && let Ok(rotation) = rail.rotation(axis)
         {
             for chunk in mechanic_core::linear_bearing_meshes(rail.dimensions) {
@@ -321,7 +321,7 @@ pub(crate) fn graph_bounds(
                 }
             }
         }
-        if let mechanic_core::BearingKind::Piston(piston) = kind
+        if let mechanic_core::JointKind::Piston(piston) = kind
             && let Ok(rotation) = piston.rotation(axis)
         {
             let base = piston.base_center(anchor, axis);
@@ -359,7 +359,7 @@ mod tests {
         let (part, _) = graph.parts().next().expect("the preset has parts");
         let mut state = EditorState::default();
         state.placed_bearings.push(PlacedBearing {
-            kind: mechanic_core::BearingKind::Rotational,
+            kind: mechanic_core::JointKind::Rotational,
             axis: Vec3::ZERO,
             source: FaceRef::part(part, FaceKind::PositiveY),
             anchor: Vec3::new(0.25, 1.5, -0.75),

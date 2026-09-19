@@ -1,7 +1,7 @@
 //! Transactional, collision-free reference integration for passive tree machines.
 
 use bevy_math::{DQuat, DVec3};
-use mechanic_core::{BearingKind, CompiledCreation, CoordinateDrive, TICK_SECONDS};
+use mechanic_core::{CompiledCreation, CoordinateDrive, JointKind, TICK_SECONDS};
 
 use crate::{BodyPose, MachineDynamics, PhysicsError};
 
@@ -107,7 +107,7 @@ impl CpuFreeMotion {
             || creation
                 .bearings
                 .iter()
-                .any(|b| b.kind != BearingKind::Rotational)
+                .any(|b| b.kind != JointKind::Rotational)
             || creation
                 .coordinate_drives
                 .iter()

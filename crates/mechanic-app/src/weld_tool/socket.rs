@@ -5,8 +5,8 @@ use crate::editor::build_actions::PlacedBearing;
 use crate::simulation::state::AppSimulation;
 use bevy::prelude::*;
 use mechanic_core::{
-    BearingKind, BearingSpec, BuildCommand, CarriageFace, ConstructionFrame, ConstructionGraph,
-    FaceOwner, PartId, RigidLinkSpec, WeldFeature, WeldSelection,
+    BearingSpec, BuildCommand, CarriageFace, ConstructionFrame, ConstructionGraph, FaceOwner,
+    JointKind, PartId, RigidLinkSpec, WeldFeature, WeldSelection,
 };
 
 pub(super) fn append_outline(
@@ -18,7 +18,7 @@ pub(super) fn append_outline(
         crate::editor::overlay::append_overlay_bar(frame.point(a), frame.point(b), 0.010, geometry);
     };
     match socket.kind {
-        BearingKind::Rotational => {
+        JointKind::Rotational => {
             let (u, v) = crate::render::mesh::drive::axis_tangents(socket.axis);
             for diameter in [
                 socket.dimensions.inner_diameter(),
@@ -33,7 +33,7 @@ pub(super) fn append_outline(
                 }
             }
         }
-        BearingKind::Suspension(_) | BearingKind::Piston(_) => {
+        JointKind::Suspension(_) | JointKind::Piston(_) => {
             let Some((center, radius)) = socket.moving_plate() else {
                 return;
             };
@@ -46,7 +46,7 @@ pub(super) fn append_outline(
                 line(point(i), point(i + 1));
             }
         }
-        BearingKind::Linear(rail) => {
+        JointKind::Linear(rail) => {
             let Ok(rotation) = rail.rotation(socket.axis) else {
                 return;
             };
@@ -155,12 +155,12 @@ pub(crate) fn pick(
 
 fn surface(
     socket: PlacedBearing,
-    occupied: Option<BearingKind>,
+    occupied: Option<JointKind>,
     origin: Vec3,
     direction: Vec3,
 ) -> Option<(f32, PlacedBearing, Vec3, Vec3, Vec3)> {
     match socket.kind {
-        BearingKind::Rotational => {
+        JointKind::Rotational => {
             if direction.dot(socket.axis) >= -1.0e-6 {
                 return None;
             }
@@ -181,7 +181,7 @@ fn surface(
                 crate::render::mesh::drive::axis_tangents(socket.axis).0,
             ))
         }
-        BearingKind::Suspension(_) | BearingKind::Piston(_) => {
+        JointKind::Suspension(_) | JointKind::Piston(_) => {
             let normal = socket.axis;
             let denominator = direction.dot(normal);
             if denominator >= -1.0e-6 {
@@ -201,7 +201,7 @@ fn surface(
                 crate::render::mesh::drive::axis_tangents(normal).0,
             ))
         }
-        BearingKind::Linear(rail) => {
+        JointKind::Linear(rail) => {
             let rotation = rail.rotation(socket.axis).ok()?;
             [
                 CarriageFace::Top,
@@ -210,7 +210,7 @@ fn surface(
             ]
             .into_iter()
             .filter_map(|face| {
-                if matches!(occupied, Some(BearingKind::Linear(other)) if other.face != face) {
+                if matches!(occupied, Some(JointKind::Linear(other)) if other.face != face) {
                     return None;
                 }
                 let normal = rotation * face.normal();
@@ -232,7 +232,7 @@ fn surface(
                     return None;
                 }
                 let mut socket = socket;
-                socket.kind = BearingKind::Linear(mechanic_core::LinearBearing { face, ..rail });
+                socket.kind = JointKind::Linear(mechanic_core::LinearBearing { face, ..rail });
                 Some((distance, socket, point, normal, socket.axis))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -315,7 +315,7 @@ mod tests {
             anchor: builder::face_geometry_from_ref(face, Some(&graph)).center,
             axis: Vec3::Y,
             dimensions: mechanic_core::BearingDimensions::new(1.0, 0.05).unwrap(),
-            kind: BearingKind::Rotational,
+            kind: JointKind::Rotational,
         };
         for (part, x, offset) in [(first, 0.0, -0.26), (second, -2.0, 0.26)] {
             let source = super::super::pick(
@@ -370,7 +370,7 @@ mod tests {
             anchor: Vec3::Y * 7.25,
             axis: Vec3::X,
             dimensions: mechanic_core::BearingDimensions::default(),
-            kind: BearingKind::Linear(rail),
+            kind: JointKind::Linear(rail),
         };
         assert!(
             pick(
@@ -391,7 +391,7 @@ mod tests {
             let normal = rotation * face.normal();
             let center = socket.anchor + rotation * face.origin(rail.dimensions);
             let hit = surface(socket, None, center + normal, -normal).unwrap();
-            assert!(matches!(hit.1.kind, BearingKind::Linear(selected) if selected.face == face));
+            assert!(matches!(hit.1.kind, JointKind::Linear(selected) if selected.face == face));
             assert!(hit.2.abs_diff_eq(center, 1.0e-5));
             let occupied = surface(socket, Some(socket.kind), center + normal, -normal);
             assert_eq!(occupied.is_some(), face == CarriageFace::Top);

@@ -14,7 +14,7 @@ use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };
 use mechanic_core::{
-    BearingKind, CompiledCreation, ConstructionGraph, ConstructionMaterial, FaceOwner,
+    CompiledCreation, ConstructionGraph, ConstructionMaterial, FaceOwner, JointKind,
     LINEAR_FINISHES, LinearBearing, LinearBearingDimensions, LinearMeshOwner,
     linear_bearing_meshes,
 };
@@ -72,7 +72,7 @@ fn visual_specs(
 ) -> Vec<RailVisualSpec> {
     let mut specs = Vec::new();
     for (id, bearing) in graph.bearings() {
-        let BearingKind::Linear(rail) = bearing.kind else {
+        let JointKind::Linear(rail) = bearing.kind else {
             continue;
         };
         let compiled = creation.and_then(|creation| {
@@ -102,7 +102,7 @@ fn visual_specs(
         }
     }
     for socket in sockets {
-        let BearingKind::Linear(rail) = socket.kind else {
+        let JointKind::Linear(rail) = socket.kind else {
             continue;
         };
         let body = creation.and_then(|creation| {
@@ -208,11 +208,13 @@ fn sync_attachment_highlight(
     cache: &mut LinearRenderCache,
 ) {
     let socket = state.linear_attachment.filter(|socket| {
-        matches!(selected.active_editor_tool(), Some(Tool::Block | Tool::Cylinder))
-            && matches!(socket.kind, BearingKind::Linear(rail) if !graph.bearings().any(|(_, bearing)| {
-                bearing_uses_socket(bearing, *socket)
-                    && matches!(bearing.kind, BearingKind::Linear(occupied) if occupied.face != rail.face)
-            }))
+        matches!(
+            selected.active_editor_tool(),
+            Some(Tool::Block | Tool::Cylinder)
+        ) && matches!(socket.kind, JointKind::Linear(rail) if !graph.bearings().any(|(_, bearing)| {
+            bearing_uses_socket(bearing, *socket)
+                && matches!(bearing.kind, JointKind::Linear(occupied) if occupied.face != rail.face)
+        }))
     });
     let Some(socket) = socket else {
         if let Some(entity) = cache.attachment_entity.take() {
@@ -220,7 +222,7 @@ fn sync_attachment_highlight(
         }
         return;
     };
-    let BearingKind::Linear(rail) = socket.kind else {
+    let JointKind::Linear(rail) = socket.kind else {
         return;
     };
     let (_, carriage) = socket_transforms(graph, simulation, socket);
@@ -297,7 +299,7 @@ pub(super) fn sync_linear_bearing_visuals(
     );
     if selected.active_editor_tool() == Some(Tool::LinearBearing)
         && let Some(socket) = linear_editor::preview_socket(graph, &state)
-        && let BearingKind::Linear(rail) = socket.kind
+        && let JointKind::Linear(rail) = socket.kind
     {
         specs.push(RailVisualSpec {
             source: socket.source,
@@ -493,7 +495,7 @@ mod tests {
             ..default()
         };
         let socket = PlacedBearing {
-            kind: BearingKind::Linear(LinearBearing {
+            kind: JointKind::Linear(LinearBearing {
                 dimensions: LinearBearingDimensions::default(),
                 mount_normal: Vec3::Y,
                 face: mechanic_core::CarriageFace::Top,

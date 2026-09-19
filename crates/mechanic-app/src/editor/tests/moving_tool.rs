@@ -282,7 +282,7 @@ fn rotational_and_linear_attachments_and_controller_wiring_return_to_build_space
         assert_eq!(
             matches!(
                 compiled.bearings[0].kind,
-                mechanic_core::BearingKind::Linear(_)
+                mechanic_core::JointKind::Linear(_)
             ),
             linear
         );

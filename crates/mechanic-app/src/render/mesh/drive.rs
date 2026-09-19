@@ -11,7 +11,7 @@ use bevy::mesh::Indices;
 use bevy::prelude::{Mesh, Quat, Vec3};
 use bevy::render::render_resource::PrimitiveTopology;
 use mechanic_core::{
-    BearingDimensions, BearingKind, CompiledCreation, ConstructionGraph, DriveState, DriveTarget,
+    BearingDimensions, CompiledCreation, ConstructionGraph, DriveState, DriveTarget, JointKind,
     PartId,
 };
 use mechanic_gpu::GpuTransform;
@@ -143,20 +143,20 @@ const TRAVEL_ARROW_HEAD: f32 = 0.12;
 
 /// The build-space line a sliding joint travels along, relative to its anchor,
 /// running the way a positive target moves it. Turning joints have none.
-pub(crate) fn travel_line(kind: BearingKind, axis: Vec3) -> Option<(Vec3, Vec3)> {
+pub(crate) fn travel_line(kind: JointKind, axis: Vec3) -> Option<(Vec3, Vec3)> {
     match kind {
-        BearingKind::Piston(piston) => {
+        JointKind::Piston(piston) => {
             let base = piston.base_center(Vec3::ZERO, axis);
             Some((
                 base,
                 base + axis * (piston.dimensions.closed() + TRAVEL_ARROW_OVERSHOOT),
             ))
         }
-        BearingKind::Linear(rail) => {
+        JointKind::Linear(rail) => {
             let half = axis * (rail.dimensions.length() / 2.0 + TRAVEL_ARROW_OVERSHOOT);
             Some((-half, half))
         }
-        BearingKind::Rotational | BearingKind::Suspension(_) => None,
+        JointKind::Rotational | JointKind::Suspension(_) => None,
     }
 }
 

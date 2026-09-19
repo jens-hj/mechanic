@@ -15,7 +15,7 @@ fn fixture() -> (ConstructionGraph, PlacedBearing) {
     };
     let spec = SuspensionSpec::new(None, Some(ShockSpec::default()), None).unwrap();
     let socket = PlacedBearing {
-        kind: BearingKind::Suspension(spec),
+        kind: JointKind::Suspension(spec),
         source: FaceRef::part(part, FaceKind::PositiveY),
         axis: Vec3::Y,
         anchor: Vec3::Y * 0.125,
@@ -32,7 +32,7 @@ fn moving_ghost_and_fit_feedback_reuse_geometry() {
     moved.socket.axis = Vec3::Z;
     moved.preview_valid = Some(false);
     assert!(original.same_geometry(moved));
-    moved.socket.kind = BearingKind::Suspension(
+    moved.socket.kind = JointKind::Suspension(
         SuspensionSpec::new(Some(mechanic_core::SpringSpec::default()), None, None).unwrap(),
     );
     assert!(!original.same_geometry(moved));
@@ -143,7 +143,7 @@ fn insertion_preview_retains_nonzero_joint_compression_and_source_pose() {
         .unwrap();
     let mut preview = preview_spec(
         PlacedBearing {
-            kind: BearingKind::Suspension(replacement),
+            kind: JointKind::Suspension(replacement),
             ..socket
         },
         true,
@@ -248,7 +248,7 @@ fn stopped_snapshot_retains_build_pose_and_starting_compression() {
 #[test]
 fn damping_and_camera_motion_share_render_and_pick_geometry_keys() {
     let (_, socket) = fixture();
-    let BearingKind::Suspension(spec) = socket.kind else {
+    let JointKind::Suspension(spec) = socket.kind else {
         panic!("suspension");
     };
     let changed = crate::suspension_controls::Parameter::Compression
@@ -257,7 +257,7 @@ fn damping_and_camera_motion_share_render_and_pick_geometry_keys() {
     assert!(same_geometry(spec, changed));
     let a = preview_spec(socket, true, None);
     let mut b = a;
-    b.socket.kind = BearingKind::Suspension(changed);
+    b.socket.kind = JointKind::Suspension(changed);
     b.socket.anchor += Vec3::X;
     b.preview_valid = None;
     assert!(a.same_geometry(b));

@@ -498,10 +498,10 @@ pub(crate) fn update_wire_hover_preview(
     };
     let placement = match hovered {
         Some(WireEnd::Bearing(index)) => state.placed_bearings.get(index).and_then(|&socket| {
-            if matches!(socket.kind, mechanic_core::BearingKind::Suspension(_)) {
+            if matches!(socket.kind, mechanic_core::JointKind::Suspension(_)) {
                 return None;
             }
-            if let mechanic_core::BearingKind::Linear(rail) = socket.kind {
+            if let mechanic_core::JointKind::Linear(rail) = socket.kind {
                 let (_, carriage) = linear_render::socket_transforms(&graph.0, &simulation, socket);
                 return Some(carriage.mul_transform(
                     Transform::from_translation(Vec3::new(0.0, 0.055, 0.0)).with_scale(
@@ -513,7 +513,7 @@ pub(crate) fn update_wire_hover_preview(
                     ),
                 ));
             }
-            if let mechanic_core::BearingKind::Piston(piston) = socket.kind {
+            if let mechanic_core::JointKind::Piston(piston) = socket.kind {
                 let (body, _) = piston_render::socket_transforms(&graph.0, &simulation, socket);
                 let closed = piston.dimensions.closed();
                 let section = mechanic_core::PistonDimensions::SECTION;
@@ -555,12 +555,12 @@ pub(crate) fn update_wire_hover_preview(
                 Some(WireEnd::Bearing(index)) => state.placed_bearings.get(index).map_or_else(
                     degenerate_overlay_mesh,
                     |socket| match socket.kind {
-                        mechanic_core::BearingKind::Rotational => {
+                        mechanic_core::JointKind::Rotational => {
                             single_bearing_mesh(socket.dimensions)
                         }
-                        mechanic_core::BearingKind::Linear(_)
-                        | mechanic_core::BearingKind::Suspension(_)
-                        | mechanic_core::BearingKind::Piston(_) => Cuboid::default().into(),
+                        mechanic_core::JointKind::Linear(_)
+                        | mechanic_core::JointKind::Suspension(_)
+                        | mechanic_core::JointKind::Piston(_) => Cuboid::default().into(),
                     },
                 ),
                 Some(WireEnd::Controller(_) | WireEnd::Input(_) | WireEnd::Seat(_)) => {

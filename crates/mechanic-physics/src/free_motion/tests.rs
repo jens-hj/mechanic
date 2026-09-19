@@ -366,7 +366,7 @@ fn authored_drive_and_loop_constraints_cannot_be_silently_ignored() {
         Err(PhysicsError::UnsupportedFreeMotion)
     ));
     let mut creation = tree(false, false);
-    creation.bearings[0].kind = BearingKind::Suspension(
+    creation.bearings[0].kind = JointKind::Suspension(
         mechanic_core::SuspensionSpec::new(Some(mechanic_core::SpringSpec::default()), None, None)
             .unwrap(),
     );

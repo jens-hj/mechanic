@@ -1,10 +1,10 @@
 //! Generate and exercise the saved suspension comparison platform.
 use bevy_math::{IVec3, Vec3};
 use mechanic_core::{
-    BearingKind, BearingSpec, BuildCommand, BuildOutcome, BuildPose, BumpStopSpec,
-    ConstructionGraph, ConstructionMaterial, CreationDocument, CuboidSpec, FaceKind, FaceRef,
-    GridRotation, MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, PartId,
-    ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec, WeldSpec,
+    BearingSpec, BuildCommand, BuildOutcome, BuildPose, BumpStopSpec, ConstructionGraph,
+    ConstructionMaterial, CreationDocument, CuboidSpec, FaceKind, FaceRef, GridRotation, JointKind,
+    MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, PartId, ShockBodyEnd,
+    ShockSpec, SpringSpec, SuspensionSpec, WeldSpec,
 };
 use mechanic_gpu::GpuPhysics;
 use std::{error::Error, path::PathBuf};
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
                 ),
                 Vec3::Y,
             )
-            .with_kind(BearingKind::Suspension(spec.with_appearances(appearances))),
+            .with_kind(JointKind::Suspension(spec.with_appearances(appearances))),
         ))?;
         println!(
             "{label}: rate {:.1} N/mm, travel {:.1} mm",

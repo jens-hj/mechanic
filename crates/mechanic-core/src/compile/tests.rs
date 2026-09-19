@@ -24,7 +24,7 @@ fn unattached_suspension_socket_adds_carried_mass_center_and_inertia_once() {
     )
     .unwrap();
     let socket = crate::BearingSocket {
-        kind: crate::BearingKind::Suspension(spec),
+        kind: crate::JointKind::Suspension(spec),
         axis: Vec3::X,
         source: FaceRef::part(source, FaceKind::PositiveX),
         anchor: Vec3::new(0.5, 0.5, 0.0),
@@ -86,7 +86,7 @@ fn attached_suspension_socket_does_not_duplicate_either_endpoint_mass() {
     )
     .unwrap();
     let socket = crate::BearingSocket {
-        kind: crate::BearingKind::Suspension(spec),
+        kind: crate::JointKind::Suspension(spec),
         axis: Vec3::X,
         source: FaceRef::part(source, FaceKind::PositiveX),
         anchor: Vec3::new(0.5, 0.5, 0.0),

@@ -251,11 +251,11 @@ pub(in crate::device) fn create_mechanism_resources(
                     ),
                     local_axis_b: vec4(bearing.local_axis_b, 0.0),
                     suspension: match bearing.kind {
-                        mechanic_core::BearingKind::Suspension(s) => s.passive_rows()[0],
+                        mechanic_core::JointKind::Suspension(s) => s.passive_rows()[0],
                         _ => [0.0; 4],
                     },
                     bump_stop: match bearing.kind {
-                        mechanic_core::BearingKind::Suspension(s) => s.passive_rows()[1],
+                        mechanic_core::JointKind::Suspension(s) => s.passive_rows()[1],
                         _ => [0.0; 4],
                     },
                     metadata: [

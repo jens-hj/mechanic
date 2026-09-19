@@ -4,7 +4,7 @@
 //! piston-area damping (22,000 N·s/m³). Single-stage shock packaging is a game
 //! construction rule, not a physical law. All user dimensions use 2.5 mm ticks.
 
-use crate::BearingMassElement;
+use crate::JointMassElement;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -661,12 +661,12 @@ impl SuspensionSpec {
         clippy::missing_panics_doc,
         reason = "constructor validation guarantees shock packaging"
     )]
-    pub fn mass_elements(self) -> Vec<BearingMassElement> {
+    pub fn mass_elements(self) -> Vec<JointMassElement> {
         let p = self.plates();
         let length = self.initial_length();
         let mut elements = Vec::new();
         let mut add = |opposite, mass, center, radius, height| {
-            elements.push(BearingMassElement {
+            elements.push(JointMassElement {
                 opposite,
                 mass,
                 center,

@@ -395,9 +395,9 @@ fn compile_graph(
             bearing.axis.to_array().map(f32::to_bits),
             bearing.kind.bounds().map(f32::to_bits),
             match bearing.kind {
-                crate::BearingKind::Rotational => (0, 0, [0; 3], 0),
-                crate::BearingKind::Suspension(_) => (2, 0, [0; 3], 0),
-                crate::BearingKind::Piston(piston) => (
+                crate::JointKind::Rotational => (0, 0, [0; 3], 0),
+                crate::JointKind::Suspension(_) => (2, 0, [0; 3], 0),
+                crate::JointKind::Piston(piston) => (
                     3,
                     u32::from(piston.dimensions.blocks()),
                     match piston.mount {
@@ -408,7 +408,7 @@ fn compile_graph(
                     },
                     piston.dimensions.stages(),
                 ),
-                crate::BearingKind::Linear(rail) => (
+                crate::JointKind::Linear(rail) => (
                     1,
                     rail.dimensions.width().to_bits(),
                     rail.mount_normal.to_array().map(f32::to_bits),

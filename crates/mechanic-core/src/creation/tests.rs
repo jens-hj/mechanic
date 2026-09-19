@@ -42,11 +42,11 @@ fn suspension_document() -> CreationDocument {
                 Vec3::new(0.5, 0.5, 0.0),
                 Vec3::X,
             )
-            .with_kind(crate::BearingKind::Suspension(spec)),
+            .with_kind(crate::JointKind::Suspension(spec)),
         ))
         .unwrap();
     let socket = BearingSocket {
-        kind: crate::BearingKind::Suspension(spec),
+        kind: crate::JointKind::Suspension(spec),
         axis: Vec3::Y,
         source: FaceRef::part(source, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -159,17 +159,14 @@ fn tool_view_snapshot_restores_canonical_parts_and_socket_frames() {
         mount_normal: Vec3::Y,
         face: crate::CarriageFace::Top,
     };
-    let sockets = [
-        crate::BearingKind::Rotational,
-        crate::BearingKind::Linear(rail),
-    ]
-    .map(|kind| BearingSocket {
-        kind,
-        axis: Vec3::X,
-        source: FaceRef::part(part, FaceKind::PositiveY),
-        anchor: Vec3::Y * 0.5,
-        dimensions: BearingDimensions::default(),
-    });
+    let sockets =
+        [crate::JointKind::Rotational, crate::JointKind::Linear(rail)].map(|kind| BearingSocket {
+            kind,
+            axis: Vec3::X,
+            source: FaceRef::part(part, FaceKind::PositiveY),
+            anchor: Vec3::Y * 0.5,
+            dimensions: BearingDimensions::default(),
+        });
     let document = CreationDocument::from_graph(&view, "View snapshot", &sockets);
     let restored = round_trip(&document).into_graph().unwrap();
     for ((original, _), (loaded, _)) in graph.parts().zip(restored.graph.parts()) {
@@ -197,7 +194,7 @@ fn tool_view_snapshot_restores_canonical_parts_and_socket_frames() {
                 .abs_diff_eq(frame.point(Vec3::Y * 0.5), 1.0e-5)
         );
         assert!(socket.axis.abs_diff_eq(frame.vector(Vec3::X), 1.0e-5));
-        if let crate::BearingKind::Linear(rail) = socket.kind {
+        if let crate::JointKind::Linear(rail) = socket.kind {
             assert!(rail.mount_normal.abs_diff_eq(frame.vector(Vec3::Y), 1.0e-5));
         }
     }
@@ -213,7 +210,7 @@ fn canonical_socket_snapshot_preserves_exact_coordinate_bits() {
     );
     let normal = Vec3::new(-0.0, 1.0, -0.0);
     let socket = BearingSocket {
-        kind: crate::BearingKind::Linear(crate::LinearBearing {
+        kind: crate::JointKind::Linear(crate::LinearBearing {
             dimensions: crate::LinearBearingDimensions::default(),
             mount_normal: normal,
             face: crate::CarriageFace::Top,
@@ -233,7 +230,7 @@ fn canonical_socket_snapshot_preserves_exact_coordinate_bits() {
         saved.axis.map(f32::to_bits),
         socket.axis.to_array().map(f32::to_bits)
     );
-    let crate::BearingKind::Linear(rail) = saved.kind else {
+    let crate::JointKind::Linear(rail) = saved.kind else {
         unreachable!()
     };
     assert_eq!(
@@ -601,7 +598,7 @@ fn sample() -> (ConstructionGraph, Vec<BearingSocket>) {
 
     // A ring placed on the rotor's top face with nothing attached through it.
     let sockets = vec![BearingSocket {
-        kind: crate::BearingKind::Rotational,
+        kind: crate::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(rotor, FaceKind::PositiveY),
         anchor: Vec3::new(0.0, 1.0, 0.0),
@@ -1433,7 +1430,7 @@ fn shape_feature_order_and_topology_provenance_round_trip() {
     let patch_face = FaceRef::patch(part, FaceKind::PositiveX, patch);
     let patch_geometry = graph.face_geometry(patch_face).unwrap();
     let socket = BearingSocket {
-        kind: crate::BearingKind::Rotational,
+        kind: crate::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: patch_face,
         anchor: patch_geometry.center,

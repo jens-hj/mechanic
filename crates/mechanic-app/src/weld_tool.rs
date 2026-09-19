@@ -755,7 +755,7 @@ pub(crate) fn preview_mesh(
     for (_, joint) in graph.bearings().filter(|(_, joint)| {
         included(joint.source.owner)
             && joint.target.is_some_and(|target| included(target.owner))
-            && matches!(joint.kind, mechanic_core::BearingKind::Rotational)
+            && matches!(joint.kind, mechanic_core::JointKind::Rotational)
             && !sockets
                 .iter()
                 .any(|&socket| crate::editor::build_actions::bearing_uses_socket(joint, socket))
@@ -772,7 +772,7 @@ pub(crate) fn preview_mesh(
         );
     }
     for socket in &sockets {
-        if matches!(socket.kind, mechanic_core::BearingKind::Rotational)
+        if matches!(socket.kind, mechanic_core::JointKind::Rotational)
             && let Some(face) = builder::try_face_geometry_from_ref(socket.source, Some(graph))
         {
             crate::render::mesh::bearing::append_bearing_cylinder(

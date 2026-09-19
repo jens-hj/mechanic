@@ -113,7 +113,7 @@ pub struct CompiledConvex {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompiledBearing {
     /// Explicit motion kind and physical travel independent of drive settings.
-    pub kind: crate::BearingKind,
+    pub kind: crate::JointKind,
     /// Source editable bearing.
     pub source_bearing: BearingId,
     /// Source compound row.

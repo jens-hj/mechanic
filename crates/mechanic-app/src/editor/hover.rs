@@ -187,7 +187,7 @@ pub(crate) fn update_hover(
         ray.direction.as_vec3(),
     );
     state.suspension.picked_component = suspension_pick.and_then(|(index, _, owner)| {
-        let mechanic_core::BearingKind::Suspension(spec) = state.placed_bearings[index].kind else {
+        let mechanic_core::JointKind::Suspension(spec) = state.placed_bearings[index].kind else {
             return None;
         };
         Some((index, suspension_editor::component_index(spec, owner)))
@@ -261,7 +261,7 @@ pub(crate) fn update_hover(
             && selected_material
                 .as_deref()
                 .is_some_and(|m| m.0 == ConstructionMaterial::Rubber)
-            && matches!(socket.kind, mechanic_core::BearingKind::Suspension(spec) if spec.shock().is_some());
+            && matches!(socket.kind, mechanic_core::JointKind::Suspension(spec) if spec.shock().is_some());
         let opposite = matches!(
             selection.active_editor_tool(),
             Some(Tool::Block | Tool::Cylinder)
@@ -944,7 +944,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
         && !state
             .hovered_bearing
             .and_then(|index| state.placed_bearings.get(index))
-            .is_some_and(|socket| matches!(socket.kind, mechanic_core::BearingKind::Linear(_)))
+            .is_some_and(|socket| matches!(socket.kind, mechanic_core::JointKind::Linear(_)))
         && !builder::face_is_flat(graph, hit.face)
         && !matches!(tool, Tool::Shape | Tool::Hammer)
     {
@@ -956,7 +956,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
         && state
             .placed_bearings
             .get(index)
-            .is_some_and(|socket| matches!(socket.kind, mechanic_core::BearingKind::Linear(_)))
+            .is_some_and(|socket| matches!(socket.kind, mechanic_core::JointKind::Linear(_)))
     {
         state.preview = None;
         state.cylinder_preview = None;
@@ -968,7 +968,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
                 (bearing_uses_socket(bearing, state.placed_bearings[index])).then_some(bearing.kind)
             })
             .and_then(|kind| {
-                if let mechanic_core::BearingKind::Linear(rail) = kind {
+                if let mechanic_core::JointKind::Linear(rail) = kind {
                     Some(rail.face)
                 } else {
                     None
@@ -977,7 +977,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
         if let Some((socket, point)) =
             linear_editor::selected_socket_on_face(state, index, occupied)
         {
-            let mechanic_core::BearingKind::Linear(rail) = socket.kind else {
+            let mechanic_core::JointKind::Linear(rail) = socket.kind else {
                 unreachable!()
             };
             state.attachment_bearing = Some(index);

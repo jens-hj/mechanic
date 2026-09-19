@@ -3,9 +3,7 @@ use crate::ConstructionGraph;
 use crate::editor::build_actions::PlacedBearing;
 use crate::editor::state::EditorState;
 use bevy::prelude::*;
-use mechanic_core::{
-    BearingKind, BumpStopSpec, ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec,
-};
+use mechanic_core::{BumpStopSpec, JointKind, ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Parameter {
@@ -214,7 +212,7 @@ impl Target {
             s.source == self.0.source
                 && s.anchor.distance_squared(self.0.anchor) < 1e-10
                 && s.axis.distance_squared(self.0.axis) < 1e-10
-                && matches!(s.kind, BearingKind::Suspension(_))
+                && matches!(s.kind, JointKind::Suspension(_))
         })
     }
 }
@@ -316,7 +314,7 @@ pub(crate) fn validate_draft(
             .resolve(state)
             .ok_or("Suspension target disappeared")?;
         let socket = state.placed_bearings[index];
-        if socket.kind != BearingKind::Suspension(gesture.original) {
+        if socket.kind != JointKind::Suspension(gesture.original) {
             return Err("Suspension changed; adjustment cancelled".into());
         }
         let spec = gesture.parameter.edit(
@@ -374,7 +372,7 @@ pub(crate) fn actions(
             return true;
         }
         if !gesture.target.resolve(state).is_some_and(|i| {
-            state.placed_bearings[i].kind == BearingKind::Suspension(gesture.original)
+            state.placed_bearings[i].kind == JointKind::Suspension(gesture.original)
         }) {
             state.suspension.controls.dismiss();
             state.feedback = Some("Suspension changed; adjustment cancelled".into());
@@ -432,7 +430,7 @@ pub(crate) fn actions(
                 let Some(index) = target.resolve(state) else {
                     return true;
                 };
-                let BearingKind::Suspension(original) = state.placed_bearings[index].kind else {
+                let JointKind::Suspension(original) = state.placed_bearings[index].kind else {
                     return true;
                 };
                 let target = Target(state.placed_bearings[index]);

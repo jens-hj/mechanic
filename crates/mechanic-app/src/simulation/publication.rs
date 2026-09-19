@@ -806,7 +806,7 @@ pub(crate) fn coordinate_from_body_states(
     let angular_b = Vec3::from_slice(&velocity_b.angular[..3]);
     let axis = rotation_a * bearing.local_axis_a;
     let (position, velocity) = match bearing.kind {
-        mechanic_core::BearingKind::Rotational => {
+        mechanic_core::JointKind::Rotational => {
             let initial = creation.compounds[a].root_rotation.conjugate()
                 * creation.compounds[b].root_rotation;
             let delta = (rotation_a.conjugate() * rotation_b * initial.conjugate()).normalize();
@@ -817,9 +817,9 @@ pub(crate) fn coordinate_from_body_states(
                 - std::f32::consts::PI;
             (position, (angular_b - angular_a).dot(axis))
         }
-        mechanic_core::BearingKind::Linear(_)
-        | mechanic_core::BearingKind::Suspension(_)
-        | mechanic_core::BearingKind::Piston(_) => {
+        mechanic_core::JointKind::Linear(_)
+        | mechanic_core::JointKind::Suspension(_)
+        | mechanic_core::JointKind::Piston(_) => {
             let arm_a = rotation_a * bearing.local_anchor_a;
             let arm_b = rotation_b * bearing.local_anchor_b;
             let separation = Vec3::from_slice(&pose_b.position[..3]) + arm_b

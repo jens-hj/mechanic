@@ -1016,7 +1016,7 @@ error: extern location for bevy_math does not exist: /Users/jens/repos/mechanic/
 error: extern location for mechanic_core does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmechanic_core-ba34692243b75ae3.rlib
  --> crates/mechanic-physics/src/free_motion.rs:4:5
   |
-4 | use mechanic_core::{BearingKind, CompiledCreation, CoordinateDrive};
+4 | use mechanic_core::{JointKind, CompiledCreation, CoordinateDrive};
   |     ^^^^^^^^^^^^^
 
 error: extern location for mechanic_world does not exist: /Users/jens/repos/mechanic/target/debug/deps/libmechanic_world-6677f22de3ccda5e.rlib

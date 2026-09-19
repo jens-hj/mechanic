@@ -64,7 +64,7 @@ pub(super) fn suspension_test_creation_with_anchor(
                     base_ticks.as_vec3() * 0.0025 + axis * 0.5,
                     axis,
                 )
-                .with_kind(mechanic_core::BearingKind::Suspension(spec)),
+                .with_kind(mechanic_core::JointKind::Suspension(spec)),
             ))
             .unwrap();
     }
@@ -264,7 +264,7 @@ pub(super) fn suspension_shock_bottoms_and_rubber_supports_load_in_both_body_ori
 
 #[test]
 pub(super) fn suspension_passive_forces_preserve_mixed_loop_closures_in_both_routes() {
-    use mechanic_core::{BearingKind, ShockSpec, SpringSpec, SuspensionSpec};
+    use mechanic_core::{JointKind, ShockSpec, SpringSpec, SuspensionSpec};
     let (device, queue) = test_device().expect("suspension regression requires a GPU");
     let spec = SuspensionSpec::new(
         Some(SpringSpec::default()),
@@ -278,7 +278,7 @@ pub(super) fn suspension_passive_forces_preserve_mixed_loop_closures_in_both_rou
         let mut creation = mixed_linear_creation(copies, true);
         for bearing in &mut creation.bearings {
             if bearing.kind.is_translational() {
-                bearing.kind = BearingKind::Suspension(spec);
+                bearing.kind = JointKind::Suspension(spec);
             }
         }
         assert_eq!(

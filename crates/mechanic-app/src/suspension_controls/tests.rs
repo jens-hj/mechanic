@@ -30,7 +30,7 @@ pub(crate) fn fixture() -> (EditorGraph, EditorState) {
         anchor: Vec3::Y * 0.25,
         axis: Vec3::Y,
         dimensions: mechanic_core::BearingDimensions::new(spec.plates().diameter, 0.0).unwrap(),
-        kind: BearingKind::Suspension(spec),
+        kind: JointKind::Suspension(spec),
     };
     let mut state = EditorState {
         placed_bearings: vec![socket],
@@ -200,7 +200,7 @@ fn targets_survive_reordering_and_cancel_when_replaced() {
 #[test]
 fn independent_inputs_and_attached_spacing_are_preserved() {
     let (_, state) = fixture();
-    let BearingKind::Suspension(spec) = state.placed_bearings[0].kind else {
+    let JointKind::Suspension(spec) = state.placed_bearings[0].kind else {
         panic!("suspension")
     };
     let changed = Parameter::SpringLength.edit(spec, 0.55, true).unwrap();
@@ -277,7 +277,7 @@ fn graph_only_showcase_controls_survive_save_load_and_cardinal_transforms() {
     let socket = *state
         .placed_bearings
         .iter()
-        .find(|s| matches!(s.kind, BearingKind::Suspension(s) if s.shock().is_some()))
+        .find(|s| matches!(s.kind, JointKind::Suspension(s) if s.shock().is_some()))
         .unwrap();
     state.suspension.controls.select(socket, 1);
     let mut history = EditorHistory::default();

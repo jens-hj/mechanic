@@ -34,8 +34,8 @@ fn face(graph: &ConstructionGraph, part: PartId, kind: FaceKind) -> Pick {
 #[test]
 fn socket_picking_and_publication_follow_the_live_destination_frame() {
     for kind in [
-        mechanic_core::BearingKind::Rotational,
-        mechanic_core::BearingKind::Linear(mechanic_core::LinearBearing {
+        mechanic_core::JointKind::Rotational,
+        mechanic_core::JointKind::Linear(mechanic_core::LinearBearing {
             dimensions: mechanic_core::LinearBearingDimensions::default(),
             mount_normal: Vec3::Y,
             face: mechanic_core::CarriageFace::Top,
@@ -48,7 +48,7 @@ fn socket_picking_and_publication_follow_the_live_destination_frame() {
         let socket = crate::editor::build_actions::PlacedBearing {
             source: mount.face,
             anchor: mount.selection.point,
-            axis: if matches!(kind, mechanic_core::BearingKind::Rotational) {
+            axis: if matches!(kind, mechanic_core::JointKind::Rotational) {
                 Vec3::Y
             } else {
                 Vec3::X
@@ -93,7 +93,7 @@ fn socket_picking_and_publication_follow_the_live_destination_frame() {
         };
         let ray_point = socket.anchor
             + Vec3::Y
-            + if matches!(kind, mechanic_core::BearingKind::Rotational) {
+            + if matches!(kind, mechanic_core::JointKind::Rotational) {
                 Vec3::X * 0.08
             } else {
                 Vec3::ZERO

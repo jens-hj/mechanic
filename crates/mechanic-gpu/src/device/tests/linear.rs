@@ -37,7 +37,7 @@ pub(super) fn mixed_linear_creation(
             .unwrap();
         let z = f32::from(i16::try_from(copy).unwrap()) * 4.0;
         let linear_kind = |normal, length| {
-            mechanic_core::BearingKind::Linear(mechanic_core::LinearBearing {
+            mechanic_core::JointKind::Linear(mechanic_core::LinearBearing {
                 dimensions: mechanic_core::LinearBearingDimensions::new(length, 0.1).unwrap(),
                 mount_normal: normal,
                 face: mechanic_core::CarriageFace::Top,
@@ -105,9 +105,9 @@ pub(super) fn assert_mixed_linear_constraints(
             - qa * bearing.local_anchor_a;
         let axis = qa * bearing.local_axis_a;
         let (position_error, rotation_error) = match bearing.kind {
-            mechanic_core::BearingKind::Linear(_)
-            | mechanic_core::BearingKind::Suspension(_)
-            | mechanic_core::BearingKind::Piston(_) => {
+            mechanic_core::JointKind::Linear(_)
+            | mechanic_core::JointKind::Suspension(_)
+            | mechanic_core::JointKind::Piston(_) => {
                 let displacement = delta.dot(axis);
                 let [lower, upper] = bearing.kind.bounds();
                 let residual = delta - axis * displacement.clamp(lower, upper);
@@ -117,7 +117,7 @@ pub(super) fn assert_mixed_linear_constraints(
                     2.0 * rotation.xyz().length().atan2(rotation.w.abs()),
                 )
             }
-            mechanic_core::BearingKind::Rotational => {
+            mechanic_core::JointKind::Rotational => {
                 let other_axis = qb * bearing.local_axis_b;
                 (
                     delta.length(),
@@ -210,7 +210,7 @@ pub(super) fn linear_mixed_loops_enforce_narrower_closure_stops_in_all_routes() 
                 .bearings
                 .iter()
                 .filter(|b| b.coordinate_index.is_none())
-                .all(|b| matches!(b.kind, mechanic_core::BearingKind::Linear(_)))
+                .all(|b| matches!(b.kind, mechanic_core::JointKind::Linear(_)))
         );
         assert_eq!(
             uses_fused_velocity_schedule(
@@ -268,7 +268,7 @@ pub(super) fn linear_mixed_loops_lock_orientation_after_off_centre_impacts() {
         for bearing in creation
             .bearings
             .iter()
-            .filter(|bearing| matches!(bearing.kind, mechanic_core::BearingKind::Rotational))
+            .filter(|bearing| matches!(bearing.kind, mechanic_core::JointKind::Rotational))
         {
             let child = &creation.compounds[bearing.compound_b as usize];
             gpu.apply_impulse(
@@ -330,7 +330,7 @@ pub(super) fn linear_test_creation(axis: Vec3, grounded: bool) -> mechanic_core:
                 Vec3::new(0.5, 0.5, 0.0),
                 axis,
             )
-            .with_kind(mechanic_core::BearingKind::Linear(
+            .with_kind(mechanic_core::JointKind::Linear(
                 mechanic_core::LinearBearing {
                     dimensions: mechanic_core::LinearBearingDimensions::default(),
                     mount_normal: Vec3::X,

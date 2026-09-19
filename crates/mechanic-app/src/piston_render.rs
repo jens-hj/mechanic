@@ -18,7 +18,7 @@ use bevy::{
     asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology,
 };
 use mechanic_core::{
-    BearingKind, CompiledCreation, ConstructionGraph, FaceOwner, PISTON_FINISHES, Piston,
+    CompiledCreation, ConstructionGraph, FaceOwner, JointKind, PISTON_FINISHES, Piston,
     PistonMeshOwner, piston_meshes,
 };
 
@@ -75,7 +75,7 @@ fn visual_specs(
 ) -> Vec<PistonVisualSpec> {
     let mut specs = Vec::new();
     for (id, bearing) in graph.bearings() {
-        let BearingKind::Piston(piston) = bearing.kind else {
+        let JointKind::Piston(piston) = bearing.kind else {
             continue;
         };
         let compiled = creation.and_then(|creation| {
@@ -105,7 +105,7 @@ fn visual_specs(
         }
     }
     for socket in sockets {
-        let BearingKind::Piston(piston) = socket.kind else {
+        let JointKind::Piston(piston) = socket.kind else {
             continue;
         };
         let body = creation.and_then(|creation| {
@@ -275,7 +275,7 @@ pub(super) fn sync_piston_visuals(
     );
     if selected.active_editor_tool() == Some(Tool::Piston)
         && let Some(socket) = piston_editor::preview_socket(graph, &state)
-        && let BearingKind::Piston(piston) = socket.kind
+        && let JointKind::Piston(piston) = socket.kind
     {
         specs.push(PistonVisualSpec {
             source: socket.source,
@@ -452,7 +452,7 @@ mod tests {
                     Vec3::Y * 0.25,
                     Vec3::Y,
                 )
-                .with_kind(BearingKind::Piston(piston)),
+                .with_kind(JointKind::Piston(piston)),
             ))
             .unwrap();
         let creation = graph.compile().unwrap();
@@ -503,7 +503,7 @@ mod tests {
     fn an_unattached_socket_renders_collapsed_on_its_support() {
         let (spec, simulation) = spec(0.0);
         let socket = PlacedBearing {
-            kind: BearingKind::Piston(spec.piston),
+            kind: JointKind::Piston(spec.piston),
             axis: Vec3::X,
             source: spec.source,
             anchor: spec.anchor + Vec3::X,

@@ -416,7 +416,7 @@ fn promoted_closure_recovers_motion_in_a_rotated_world_frame() {
     for linear in [false, true] {
         if linear {
             compiled.bearings[0].kind =
-                mechanic_core::BearingKind::Linear(mechanic_core::LinearBearing {
+                mechanic_core::JointKind::Linear(mechanic_core::LinearBearing {
                     dimensions: mechanic_core::LinearBearingDimensions::default(),
                     mount_normal: Vec3::Y,
                     face: mechanic_core::CarriageFace::Top,

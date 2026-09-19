@@ -9,8 +9,8 @@ use crate::{
 };
 use bevy_math::{DQuat, IVec3, Vec3};
 use mechanic_core::{
-    BearingKind, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-    DriveMode, FaceKind, FaceRef, GRAVITY, GridRotation, PartId, ShockBodyEnd, ShockSpec,
+    BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec, DriveMode,
+    FaceKind, FaceRef, GRAVITY, GridRotation, JointKind, PartId, ShockBodyEnd, ShockSpec,
     SpringSpec, SuspensionSpec,
 };
 use mechanic_world::TerrainMaterial;
@@ -444,7 +444,7 @@ fn suspension(spec: SuspensionSpec, anchored: bool) -> CompiledCreation {
                 Vec3::Y * 0.5,
                 Vec3::Y,
             )
-            .with_kind(BearingKind::Suspension(spec)),
+            .with_kind(JointKind::Suspension(spec)),
         ))
         .unwrap();
     graph
@@ -503,7 +503,7 @@ fn twin_suspension(spec: SuspensionSpec) -> CompiledCreation {
                 Vec3::new(x, 0.5, 0.0),
                 Vec3::Y,
             )
-            .with_kind(BearingKind::Suspension(spec)),
+            .with_kind(JointKind::Suspension(spec)),
         )
     };
     graph.apply_batch([strut(-0.25), strut(0.25)]).unwrap();
@@ -915,7 +915,7 @@ fn piston_lift(bare: bool) -> CompiledCreation {
     let mut graph = ConstructionGraph::new();
     let support = spawn(&mut graph, IVec3::new(0, 200, 0), [4, 4, 4]);
     let source = FaceRef::part(support, FaceKind::PositiveY);
-    let kind = BearingKind::Piston(mechanic_core::Piston {
+    let kind = JointKind::Piston(mechanic_core::Piston {
         dimensions: mechanic_core::PistonDimensions::new(2, 4).unwrap(),
         mount: mechanic_core::PistonMount::End,
     });

@@ -42,7 +42,7 @@ use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PlacedBearing {
-    pub(crate) kind: mechanic_core::BearingKind,
+    pub(crate) kind: mechanic_core::JointKind,
     pub(crate) axis: Vec3,
     pub(crate) source: mechanic_core::FaceRef,
     pub(crate) anchor: Vec3,
@@ -54,15 +54,15 @@ impl PlacedBearing {
     /// piston offers to attachments.
     pub(crate) fn moving_plate(self) -> Option<(Vec3, f32)> {
         match self.kind {
-            mechanic_core::BearingKind::Suspension(spec) => Some((
+            mechanic_core::JointKind::Suspension(spec) => Some((
                 self.anchor + self.axis * spec.initial_length(),
                 spec.plates().diameter / 2.0,
             )),
-            mechanic_core::BearingKind::Piston(piston) => Some((
+            mechanic_core::JointKind::Piston(piston) => Some((
                 piston.head_center(self.anchor, self.axis, 0.0),
                 piston.dimensions.head_radius(),
             )),
-            mechanic_core::BearingKind::Rotational | mechanic_core::BearingKind::Linear(_) => None,
+            mechanic_core::JointKind::Rotational | mechanic_core::JointKind::Linear(_) => None,
         }
     }
 }
@@ -756,7 +756,7 @@ pub(crate) fn handle_build_actions(
                     dimensions,
                 } => {
                     let socket = PlacedBearing {
-                        kind: mechanic_core::BearingKind::Rotational,
+                        kind: mechanic_core::JointKind::Rotational,
                         axis: Vec3::ZERO,
                         source,
                         anchor,
@@ -850,7 +850,7 @@ pub(crate) fn handle_build_actions(
                     } else {
                         let previous = EditorSnapshot::capture(&graph.0, state);
                         state.placed_bearings.push(PlacedBearing {
-                            kind: mechanic_core::BearingKind::Rotational,
+                            kind: mechanic_core::JointKind::Rotational,
                             axis: Vec3::ZERO,
                             source,
                             anchor,
@@ -1094,19 +1094,16 @@ pub(crate) fn bearing_uses_socket(
         && bearing.shared_anchor.abs_diff_eq(socket.anchor, 1.0e-5)
         && bearing.dimensions == socket.dimensions
         && match (bearing.kind, socket.kind) {
-            (mechanic_core::BearingKind::Rotational, mechanic_core::BearingKind::Rotational) => {
-                true
+            (mechanic_core::JointKind::Rotational, mechanic_core::JointKind::Rotational) => true,
+            (mechanic_core::JointKind::Suspension(a), mechanic_core::JointKind::Suspension(b)) => {
+                a == b
             }
-            (
-                mechanic_core::BearingKind::Suspension(a),
-                mechanic_core::BearingKind::Suspension(b),
-            ) => a == b,
-            (mechanic_core::BearingKind::Linear(a), mechanic_core::BearingKind::Linear(b)) => {
+            (mechanic_core::JointKind::Linear(a), mechanic_core::JointKind::Linear(b)) => {
                 a.dimensions == b.dimensions
                     && a.mount_normal.abs_diff_eq(b.mount_normal, 1.0e-5)
                     && bearing.axis.abs_diff_eq(socket.axis, 1.0e-5)
             }
-            (mechanic_core::BearingKind::Piston(a), mechanic_core::BearingKind::Piston(b)) => {
+            (mechanic_core::JointKind::Piston(a), mechanic_core::JointKind::Piston(b)) => {
                 a == b && bearing.axis.abs_diff_eq(socket.axis, 1.0e-5)
             }
             _ => false,
@@ -1140,7 +1137,7 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
     let mut next_bearings = Vec::with_capacity(placed_bearings.len());
     let mut migrations = Vec::<(
         PlacedBearing,
-        Vec<(mechanic_core::FaceRef, mechanic_core::BearingKind)>,
+        Vec<(mechanic_core::FaceRef, mechanic_core::JointKind)>,
     )>::new();
     let mut unsupported_target_sets = Vec::<HashSet<PartId>>::new();
 
@@ -1169,7 +1166,7 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
             })
             .collect::<Vec<_>>();
         let replacement = match socket.kind {
-            mechanic_core::BearingKind::Rotational | mechanic_core::BearingKind::Suspension(_) => {
+            mechanic_core::JointKind::Rotational | mechanic_core::JointKind::Suspension(_) => {
                 bearing_support_face_excluding(
                     graph,
                     socket.source,
@@ -1178,7 +1175,7 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
                     &deleted,
                 )
             }
-            mechanic_core::BearingKind::Linear(rail) => builder::linear_support_face_excluding(
+            mechanic_core::JointKind::Linear(rail) => builder::linear_support_face_excluding(
                 graph,
                 socket.source,
                 socket.anchor,
@@ -1187,7 +1184,7 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
                 &deleted,
             ),
             // A piston goes with its support; it has no other face to move to.
-            mechanic_core::BearingKind::Piston(_) => None,
+            mechanic_core::JointKind::Piston(_) => None,
         };
         if let Some(source) = replacement {
             let migrated = PlacedBearing { source, ..socket };
@@ -1221,12 +1218,12 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
         .into_iter()
         .flat_map(|(socket, targets)| {
             let axis = match socket.kind {
-                mechanic_core::BearingKind::Rotational => {
+                mechanic_core::JointKind::Rotational => {
                     face_geometry_from_ref(socket.source, Some(&staged)).normal
                 }
-                mechanic_core::BearingKind::Linear(_)
-                | mechanic_core::BearingKind::Suspension(_)
-                | mechanic_core::BearingKind::Piston(_) => socket.axis,
+                mechanic_core::JointKind::Linear(_)
+                | mechanic_core::JointKind::Suspension(_)
+                | mechanic_core::JointKind::Piston(_) => socket.axis,
             };
             targets.into_iter().map(move |(target, kind)| {
                 BuildCommand::AddBearing(
@@ -1277,7 +1274,7 @@ pub(crate) fn handle_block_actions(
                 state.feedback = Some(error.to_string());
                 return;
             }
-            let mechanic_core::BearingKind::Linear(rail) = socket.kind else {
+            let mechanic_core::JointKind::Linear(rail) = socket.kind else {
                 unreachable!()
             };
             (
@@ -1439,7 +1436,7 @@ pub(crate) fn handle_block_actions(
             ..
         } => {
             let socket = PlacedBearing {
-                kind: mechanic_core::BearingKind::Rotational,
+                kind: mechanic_core::JointKind::Rotational,
                 axis: Vec3::ZERO,
                 source,
                 anchor,

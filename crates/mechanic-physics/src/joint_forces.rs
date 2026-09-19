@@ -1,6 +1,6 @@
 //! SI joint force laws using the same compiled parameters as the GPU backend.
 
-use mechanic_core::{BearingKind, CoordinateDrive, DriveMode};
+use mechanic_core::{CoordinateDrive, DriveMode, JointKind};
 
 use crate::PhysicsError;
 
@@ -11,8 +11,8 @@ pub(crate) struct PassiveForce {
 }
 
 impl PassiveForce {
-    pub fn from_kind(kind: BearingKind) -> Self {
-        if let BearingKind::Suspension(spec) = kind {
+    pub fn from_kind(kind: JointKind) -> Self {
+        if let JointKind::Suspension(spec) = kind {
             let [spring, bump] = spec.passive_rows();
             Self {
                 spring: spring.map(f64::from),

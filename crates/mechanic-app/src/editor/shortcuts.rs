@@ -66,7 +66,7 @@ pub(crate) fn handle_control_panel_shortcut(
         && state
             .placed_bearings
             .get(index)
-            .is_some_and(|s| matches!(s.kind, mechanic_core::BearingKind::Suspension(_)))
+            .is_some_and(|s| matches!(s.kind, mechanic_core::JointKind::Suspension(_)))
     {
         if selection.active_editor_tool() == Some(Tool::Connector) {
             let socket = state.placed_bearings[index];
@@ -205,12 +205,12 @@ pub(crate) enum PipetteSetup {
 
 pub(crate) fn pipette_socket(socket: PlacedBearing) -> PipetteSetup {
     match socket.kind {
-        mechanic_core::BearingKind::Rotational => PipetteSetup::Bearing(socket.dimensions),
-        mechanic_core::BearingKind::Linear(rail) => PipetteSetup::Linear(rail, socket.axis),
-        mechanic_core::BearingKind::Suspension(spec) => {
+        mechanic_core::JointKind::Rotational => PipetteSetup::Bearing(socket.dimensions),
+        mechanic_core::JointKind::Linear(rail) => PipetteSetup::Linear(rail, socket.axis),
+        mechanic_core::JointKind::Suspension(spec) => {
             PipetteSetup::Suspension(spec, usize::from(spec.spring().is_none()))
         }
-        mechanic_core::BearingKind::Piston(piston) => PipetteSetup::Piston(piston, socket.axis),
+        mechanic_core::JointKind::Piston(piston) => PipetteSetup::Piston(piston, socket.axis),
     }
 }
 
@@ -260,7 +260,7 @@ pub(crate) fn pipette_at_ray(
             direction,
         ) && part.is_none_or(|part| distance < part.distance)
             && bearing.is_none_or(|(_, ring_distance)| distance < ring_distance)
-            && let mechanic_core::BearingKind::Suspension(spec) = state.placed_bearings[index].kind
+            && let mechanic_core::JointKind::Suspension(spec) = state.placed_bearings[index].kind
         {
             return Some(PipetteSetup::Suspension(
                 spec,
@@ -311,7 +311,7 @@ pub(crate) fn pipette_at_ray(
         direction,
     ) && part.is_none_or(|part| distance < part.distance)
         && bearing.is_none_or(|(_, ring_distance)| distance <= ring_distance + 1.0e-6)
-        && let mechanic_core::BearingKind::Suspension(spec) = state.placed_bearings[index].kind
+        && let mechanic_core::JointKind::Suspension(spec) = state.placed_bearings[index].kind
     {
         return Some(PipetteSetup::Suspension(
             spec,

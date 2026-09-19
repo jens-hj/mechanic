@@ -7,7 +7,7 @@ Arrow Left/Right adjusts length by 250 mm; Shift adjusts width by 25 mm. Ctrl re
 ## Implemented
 
 - `LinearBearingDimensions` validates 0.25–8 m length and 0.05–0.40 m width on the 2.5 mm lattice. Default rail dimensions are 1 m × 100 mm; snapped carriage width is 130 mm. Physical travel is length minus 150 mm.
-- `BearingKind` distinguishes rotational joints from linear rail frames. Linear joints select one top/side carriage face, reject a conflicting occupied face, and compile physical bounds separately from programming.
+- `JointKind` distinguishes rotational joints from linear rail frames. Linear joints select one top/side carriage face, reject a conflicting occupied face, and compile physical bounds separately from programming.
 - `linear_bearing_meshes` ports the archive's profiles, chamfers, stops, and fixings into renderer-independent Rust mesh chunks. Eight finish definitions and separate rail/carriage ownership are exposed for renderer integration.
 - GPU bearing rows encode the kind in `local_axis_a.w` and physical bounds in `local_anchor_a.w`/`local_anchor_b.w`. Coordinate state uses position and velocity, with units determined by the bearing kind. Buffer sizes for bearing and coordinate rows remain unchanged. Collision world-inertia scratch rows now also carry position, retaining the eight-storage-buffer limit for contact projection.
 - Linear tree kinematics, five bilateral velocity constraints, predictive unilateral stops, drive forces, floating-mount reactions, and mixed-joint closure Jacobians are implemented. Translation closure corrections use full affine steps; rotational corrections retain damping.

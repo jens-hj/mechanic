@@ -13,6 +13,7 @@ mod geometry;
 mod graph;
 mod hardware_mesh;
 mod id;
+mod joint;
 mod linear;
 mod linear_geometry;
 mod obb;
@@ -89,9 +90,10 @@ pub use id::{
     BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
     ShapeFeatureId, WeldId,
 };
+pub use joint::{JointKind, JointMassElement};
 pub use linear::{
-    BearingKind, BearingMassElement, CarriageFace, LINEAR_METERS_PER_RADIAN,
-    LINEAR_METERS_PER_REVOLUTION, LinearBearing, LinearBearingDimensions, LinearBearingError,
+    CarriageFace, LINEAR_METERS_PER_RADIAN, LINEAR_METERS_PER_REVOLUTION, LinearBearing,
+    LinearBearingDimensions, LinearBearingError,
 };
 pub use linear_geometry::{
     LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,

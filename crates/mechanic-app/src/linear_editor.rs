@@ -13,7 +13,7 @@ use crate::simulation::state::AppSimulation;
 use crate::{builder, linear_render};
 use bevy::prelude::{ButtonInput, Res, ResMut, Transform, Vec3};
 use mechanic_core::{
-    BearingDimensions, BearingKind, CarriageFace, ConstructionGraph, FaceOwner, LinearBearing,
+    BearingDimensions, CarriageFace, ConstructionGraph, FaceOwner, JointKind, LinearBearing,
     LinearBearingDimensions, PartId,
 };
 
@@ -120,7 +120,7 @@ pub(super) fn preview_socket(
         anchor,
         axis,
         dimensions: BearingDimensions::default(),
-        kind: BearingKind::Linear(LinearBearing {
+        kind: JointKind::Linear(LinearBearing {
             dimensions: state.linear.dimensions,
             mount_normal: face.normal,
             face: CarriageFace::Top,
@@ -135,7 +135,7 @@ pub(super) fn refresh(graph: &ConstructionGraph, state: &mut EditorState) {
         if let Err(error) = validate_socket_bounds(socket, state.placement_bounds) {
             return Some(error);
         }
-        let BearingKind::Linear(rail) = socket.kind else {
+        let JointKind::Linear(rail) = socket.kind else {
             unreachable!()
         };
         (!builder::linear_mount_overlaps_face(
@@ -157,7 +157,7 @@ fn validate_socket_bounds(
     socket: PlacedBearing,
     bounds: builder::PlacementBounds,
 ) -> Result<(), PlacementError> {
-    let BearingKind::Linear(rail) = socket.kind else {
+    let JointKind::Linear(rail) = socket.kind else {
         return Ok(());
     };
     let rotation = rail
@@ -185,7 +185,7 @@ pub(super) fn place(
         state.feedback = Some(error.to_string());
         return;
     }
-    let BearingKind::Linear(rail) = socket.kind else {
+    let JointKind::Linear(rail) = socket.kind else {
         return;
     };
     if !builder::linear_mount_overlaps_face(graph, socket.source, socket.anchor, rail, socket.axis)
@@ -232,7 +232,7 @@ pub(super) fn raycast(
     origin: Vec3,
     direction: Vec3,
 ) -> Option<f32> {
-    let BearingKind::Linear(rail) = socket.kind else {
+    let JointKind::Linear(rail) = socket.kind else {
         return None;
     };
     let dims = rail.dimensions;
@@ -262,7 +262,7 @@ pub(super) fn raycast(
 }
 
 pub(super) fn build_poses(socket: PlacedBearing) -> Option<(Transform, Transform)> {
-    let BearingKind::Linear(rail) = socket.kind else {
+    let JointKind::Linear(rail) = socket.kind else {
         return None;
     };
     let pose =
@@ -308,7 +308,7 @@ pub(super) fn selected_socket_on_face(
     occupied: Option<CarriageFace>,
 ) -> Option<(PlacedBearing, Vec3)> {
     let mut socket = *state.placed_bearings.get(index)?;
-    let BearingKind::Linear(mut rail) = socket.kind else {
+    let JointKind::Linear(mut rail) = socket.kind else {
         return None;
     };
     let (origin, direction) = state.pointer_ray?;
@@ -343,7 +343,7 @@ pub(super) fn selected_socket_on_face(
     }
     let (face, distance) = nearest?;
     rail.face = face;
-    socket.kind = BearingKind::Linear(rail);
+    socket.kind = JointKind::Linear(rail);
     Some((socket, origin + direction * distance))
 }
 
@@ -351,7 +351,7 @@ pub(super) fn attachment(
     socket: PlacedBearing,
     targets: &[PartId],
 ) -> builder::LinearAttachment<'_> {
-    let BearingKind::Linear(rail) = socket.kind else {
+    let JointKind::Linear(rail) = socket.kind else {
         unreachable!()
     };
     builder::LinearAttachment {
@@ -385,7 +385,7 @@ mod tests {
                 anchor: Vec3::Y * 0.125,
                 dimensions: BearingDimensions::default(),
                 axis: Vec3::X,
-                kind: BearingKind::Linear(LinearBearing {
+                kind: JointKind::Linear(LinearBearing {
                     dimensions: LinearBearingDimensions::default(),
                     mount_normal: Vec3::Y,
                     face: CarriageFace::Top,
@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn rail_overhang_is_allowed_only_within_the_complete_construction_bounds() {
         let (graph, socket) = socket();
-        let BearingKind::Linear(rail) = socket.kind else {
+        let JointKind::Linear(rail) = socket.kind else {
             unreachable!()
         };
         assert!(builder::linear_mount_overlaps_face(
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn carriage_attachment_picks_top_and_sides_but_not_end_faces() {
         let (_, socket) = socket();
-        let BearingKind::Linear(rail) = socket.kind else {
+        let JointKind::Linear(rail) = socket.kind else {
             unreachable!()
         };
         let mut state = EditorState {
@@ -557,7 +557,7 @@ mod tests {
             let center = socket.anchor + face.origin(rail.dimensions);
             state.pointer_ray = Some((center + face.normal(), -face.normal()));
             let (picked, point) = selected_socket(&state, 0).unwrap();
-            let BearingKind::Linear(picked) = picked.kind else {
+            let JointKind::Linear(picked) = picked.kind else {
                 unreachable!()
             };
             assert_eq!(picked.face, face);

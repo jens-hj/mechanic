@@ -1,8 +1,8 @@
 use super::{Piston, PistonDimensions, PistonError, PistonMount};
 use crate::{
-    BearingKind, BearingSocket, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
-    ConstructionGraph, CuboidSpec, DriveLinkSpec, DriveProgram, DriveState, DriveTarget, FaceKind,
-    FaceRef, GraphError, GridRotation, PartId,
+    BearingSocket, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph,
+    CuboidSpec, DriveLinkSpec, DriveProgram, DriveState, DriveTarget, FaceKind, FaceRef,
+    GraphError, GridRotation, JointKind, PartId,
 };
 use bevy_math::{IVec3, Vec3};
 
@@ -106,7 +106,7 @@ fn piston_graph(side: bool) -> (ConstructionGraph, BearingSpec) {
         anchor,
         axis,
     )
-    .with_kind(BearingKind::Piston(piston));
+    .with_kind(JointKind::Piston(piston));
     (graph, bearing)
 }
 
@@ -149,7 +149,7 @@ fn a_bare_piston_is_a_joint_whose_head_body_later_attachments_join() {
         let head = &compiled.compounds[compiled.bearings[0].compound_b as usize];
         assert!(head.source_parts.is_empty());
         assert!(!head.is_static);
-        let BearingKind::Piston(piston) = attached.kind else {
+        let JointKind::Piston(piston) = attached.kind else {
             unreachable!()
         };
         let head_mass = piston
@@ -180,7 +180,7 @@ fn only_hardware_with_its_own_head_has_a_joint_before_anything_is_attached() {
         attached.source,
         attached.shared_anchor,
         attached.axis,
-        BearingKind::Rotational,
+        JointKind::Rotational,
     );
     assert_eq!(
         graph.apply(BuildCommand::AddBearing(rotary)),
@@ -191,7 +191,7 @@ fn only_hardware_with_its_own_head_has_a_joint_before_anything_is_attached() {
 #[test]
 fn a_head_attachment_off_the_crown_plane_is_rejected() {
     let (mut graph, mut bearing) = piston_graph(false);
-    let BearingKind::Piston(ref mut piston) = bearing.kind else {
+    let JointKind::Piston(ref mut piston) = bearing.kind else {
         unreachable!()
     };
     piston.dimensions = dimensions(3, 4);

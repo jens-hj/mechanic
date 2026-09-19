@@ -4,7 +4,7 @@
 //! stage draws its own whole length, so the extended length always lands on a
 //! block line.
 
-use crate::{BearingMassElement, GRID_UNIT_METERS};
+use crate::{GRID_UNIT_METERS, JointMassElement};
 use bevy_math::{Mat3, Quat, Vec3};
 use core::f32::consts::PI;
 use serde::{Deserialize, Serialize};
@@ -146,14 +146,14 @@ impl PistonDimensions {
     ///
     /// The body and every intermediate stage ride with the source mount; the
     /// solid last stage and its crown ride with whatever the head carries.
-    pub fn mass_elements(self) -> Vec<BearingMassElement> {
+    pub fn mass_elements(self) -> Vec<JointMassElement> {
         let closed = self.closed();
         let tube = |stage: u8| {
             let outer = self.section(stage) / 2.0;
             let inner = outer - Self::WALL;
             let mass = PI * (outer * outer - inner * inner) * closed * STEEL_DENSITY_KG_M3;
             let radii = outer * outer + inner * inner;
-            BearingMassElement {
+            JointMassElement {
                 opposite: false,
                 mass,
                 center: closed / 2.0,
@@ -162,7 +162,7 @@ impl PistonDimensions {
             }
         };
         let radius = self.head_radius();
-        let solid = |mass: f32, center: f32, height: f32| BearingMassElement {
+        let solid = |mass: f32, center: f32, height: f32| JointMassElement {
             opposite: true,
             mass,
             center,

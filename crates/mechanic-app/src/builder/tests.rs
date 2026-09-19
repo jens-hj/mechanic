@@ -374,7 +374,7 @@ fn linear_block_and_cylinder_direct_attachments_share_one_moving_compound() {
     assert_eq!(compiled.bearings.len(), 1);
     assert!(matches!(
         compiled.bearings[0].kind,
-        mechanic_core::BearingKind::Linear(_)
+        mechanic_core::JointKind::Linear(_)
     ));
     let side_rail = LinearBearing {
         face: CarriageFace::PositiveSide,
@@ -4180,7 +4180,7 @@ fn linear_bent_pipe_joins_existing_carriage_attachments_as_one_compound() {
     assert_eq!(compiled.bearings.len(), 1);
     assert!(matches!(
         compiled.bearings[0].kind,
-        mechanic_core::BearingKind::Linear(_)
+        mechanic_core::JointKind::Linear(_)
     ));
     assert_eq!(
         graph.part_count(),

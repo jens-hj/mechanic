@@ -90,7 +90,7 @@ pub(super) fn colliding_pipe_mechanism(grounded: bool) -> mechanic_core::Compile
                 Vec3::ZERO,
                 Vec3::X,
             )
-            .with_kind(mechanic_core::BearingKind::Linear(
+            .with_kind(mechanic_core::JointKind::Linear(
                 mechanic_core::LinearBearing {
                     dimensions: mechanic_core::LinearBearingDimensions::new(1.75, 0.4).unwrap(),
                     mount_normal: Vec3::Y,

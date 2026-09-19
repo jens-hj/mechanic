@@ -47,7 +47,7 @@ fn piston_test_creation(side: bool, grounded: bool, bare: bool) -> mechanic_core
     }
     let source = FaceRef::part(support, FaceKind::PositiveY);
     let anchor = Vec3::new(0.0, 1.0, 0.0);
-    let kind = mechanic_core::BearingKind::Piston(mechanic_core::Piston {
+    let kind = mechanic_core::JointKind::Piston(mechanic_core::Piston {
         dimensions: mechanic_core::PistonDimensions::new(2, 4).unwrap(),
         mount,
     });

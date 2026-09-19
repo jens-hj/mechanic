@@ -445,7 +445,7 @@ fn hover_matches_face_grids_on_independently_rotated_and_offset_parts() {
     clippy::too_many_lines,
     reason = "complete pointer gesture and history round trip"
 )]
-fn socket_gesture(kind: mechanic_core::BearingKind) {
+fn socket_gesture(kind: mechanic_core::JointKind) {
     let (mut graph, source, destination) = scene();
     let simulation = AppSimulation::default();
     let world = crate::world::WorldRuntime::from_world(&mut World::new());
@@ -457,7 +457,7 @@ fn socket_gesture(kind: mechanic_core::BearingKind) {
     let socket = crate::editor::build_actions::PlacedBearing {
         source: face,
         anchor: builder::face_geometry_from_ref(face, Some(&graph)).center,
-        axis: if matches!(kind, mechanic_core::BearingKind::Rotational) {
+        axis: if matches!(kind, mechanic_core::JointKind::Rotational) {
             Vec3::Y
         } else {
             Vec3::X
@@ -466,7 +466,7 @@ fn socket_gesture(kind: mechanic_core::BearingKind) {
         kind,
     };
     state.placed_bearings.push(socket);
-    let destination_ray = if matches!(kind, mechanic_core::BearingKind::Rotational) {
+    let destination_ray = if matches!(kind, mechanic_core::JointKind::Rotational) {
         ray(2.08)
     } else {
         ray(2.0)
@@ -570,12 +570,12 @@ fn socket_gesture(kind: mechanic_core::BearingKind) {
 
 #[test]
 fn weld_gesture_attaches_to_rotational_bearing_and_undoes() {
-    socket_gesture(mechanic_core::BearingKind::Rotational);
+    socket_gesture(mechanic_core::JointKind::Rotational);
 }
 
 #[test]
 fn weld_gesture_attaches_to_linear_carriage_and_undoes() {
-    socket_gesture(mechanic_core::BearingKind::Linear(
+    socket_gesture(mechanic_core::JointKind::Linear(
         mechanic_core::LinearBearing {
             dimensions: mechanic_core::LinearBearingDimensions::default(),
             mount_normal: Vec3::Y,

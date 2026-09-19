@@ -253,7 +253,7 @@ mod tests {
         let mut graph = ConstructionGraph::new();
         let support = spawn_cube(&mut graph, IVec3::new(0, 2, 0));
         let socket = PlacedBearing {
-            kind: mechanic_core::BearingKind::Rotational,
+            kind: mechanic_core::JointKind::Rotational,
             axis: Vec3::ZERO,
             source: FaceRef::part(support, FaceKind::PositiveY),
             anchor: Vec3::Y,

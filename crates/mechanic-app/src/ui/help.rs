@@ -174,7 +174,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
     let linear_attachment = state
         .attachment_bearing
         .and_then(|index| state.placed_bearings.get(index))
-        .is_some_and(|socket| matches!(socket.kind, mechanic_core::BearingKind::Linear(_)));
+        .is_some_and(|socket| matches!(socket.kind, mechanic_core::JointKind::Linear(_)));
     let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
         && selection.matter_mode == MatterMode::Terrain;
     let item_mode = selection.tool == Some(MainTool::MatterManipulator)
@@ -511,7 +511,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     stop.od() * 1000.0
                 )
             } else if matches!(selected_tool, Tool::Spring | Tool::Shock) {
-                state.suspension.preview.and_then(|s| if let mechanic_core::BearingKind::Suspension(spec) = s.kind { Some(spec) } else { None }).map_or_else(|| "Suspension · choose a flat construction face or compatible shared mounts".into(), |spec| format!("Suspension · {:.1} mm extended · {:.1} mm travel · limited by {:?} · Connector to adjust", spec.extended_length()*1000.0, spec.compression_limit().0*1000.0, spec.compression_limit().1))
+                state.suspension.preview.and_then(|s| if let mechanic_core::JointKind::Suspension(spec) = s.kind { Some(spec) } else { None }).map_or_else(|| "Suspension · choose a flat construction face or compatible shared mounts".into(), |spec| format!("Suspension · {:.1} mm extended · {:.1} mm travel · limited by {:?} · Connector to adjust", spec.extended_length()*1000.0, spec.compression_limit().0*1000.0, spec.compression_limit().1))
             } else if selected_tool == Tool::Piston {
                 let dimensions = state.piston.dimensions;
                 format!(

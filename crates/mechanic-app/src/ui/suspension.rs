@@ -82,7 +82,7 @@ pub(crate) fn capture(
         return Model::default();
     };
     let socket = state.placed_bearings[index];
-    let mechanic_core::BearingKind::Suspension(committed) = socket.kind else {
+    let mechanic_core::JointKind::Suspension(committed) = socket.kind else {
         return Model::default();
     };
     let spec = controls.gesture.as_ref().map_or(committed, |g| g.draft);

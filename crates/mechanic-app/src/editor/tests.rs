@@ -176,7 +176,7 @@ fn connector_can_begin_wiring_a_moving_bearing() {
         unreachable!()
     };
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -986,7 +986,7 @@ fn moving_frame_bearing_raycast_uses_composed_anchor_and_axis() {
     .unwrap();
     graph.reframe_parts([part], frame).unwrap();
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: frame.point(Vec3::Y * 0.5),
@@ -1750,7 +1750,7 @@ fn wiring_picks_a_bearing_through_the_hole_the_ring_pick_misses() {
         unreachable!()
     };
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -1811,7 +1811,7 @@ fn connector_pick_follows_a_simulated_bearing() {
         unreachable!()
     };
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -1876,7 +1876,7 @@ fn placed_bearing_is_picked_before_support_and_attaches_on_release() {
         unreachable!()
     };
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -1970,7 +1970,7 @@ fn oversized_bearing_claims_offset_block_preview_and_highlights_attachment() {
         unreachable!()
     };
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -2030,7 +2030,7 @@ fn bearing_claims_an_offset_pipe_preview_but_centres_it_by_default() {
         unreachable!()
     };
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(part, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -2074,7 +2074,7 @@ fn right_click_through_bearing_hole_deletes_block_but_keeps_bearing() {
     });
     let center_face = FaceRef::part(parts[0], FaceKind::PositiveY);
     let bearing = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(parts[1], FaceKind::PositiveY),
         anchor: Vec3::new(0.0, 0.25, 0.0),
@@ -2160,7 +2160,7 @@ fn deleting_current_support_rehomes_bearing_to_remaining_ring_support() {
         unreachable!()
     };
     let socket = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(supports[0], FaceKind::PositiveY),
         anchor: Vec3::new(0.0, 0.25, 0.0),
@@ -2207,7 +2207,7 @@ fn deleting_current_support_rehomes_bearing_to_remaining_ring_support() {
 
 #[test]
 fn deleting_linear_support_preserves_occupied_side_and_travel_axis() {
-    use mechanic_core::{BearingKind, CarriageFace, LinearBearing, LinearBearingDimensions};
+    use mechanic_core::{CarriageFace, JointKind, LinearBearing, LinearBearingDimensions};
     let mut graph = ConstructionGraph::new();
     let supports = [IVec3::new(0, 1, 0), IVec3::new(1, 1, 0)].map(|center| {
         let spec =
@@ -2227,7 +2227,7 @@ fn deleting_linear_support_preserves_occupied_side_and_travel_axis() {
         anchor: Vec3::new(0.0, 0.375, 0.0),
         axis: Vec3::X,
         dimensions: BearingDimensions::default(),
-        kind: BearingKind::Linear(LinearBearing {
+        kind: JointKind::Linear(LinearBearing {
             face: CarriageFace::Top,
             ..rail
         }),
@@ -2265,7 +2265,7 @@ fn deleting_linear_support_preserves_occupied_side_and_travel_axis() {
         mechanic_core::FaceOwner::Part(supports[1])
     );
     let bearing = graph.bearings().next().unwrap().1;
-    assert_eq!(bearing.kind, BearingKind::Linear(rail));
+    assert_eq!(bearing.kind, JointKind::Linear(rail));
     assert_eq!(bearing.axis, Vec3::X);
     assert_eq!(graph.compile().unwrap().bearings.len(), 1);
 }
@@ -2295,7 +2295,7 @@ fn deleting_reusable_socket_removes_all_of_its_joint_attachments() {
         target
     });
     let socket = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source: FaceRef::part(support, FaceKind::PositiveY),
         anchor: Vec3::Y,
@@ -2458,7 +2458,7 @@ fn wired_socket_graph() -> (ConstructionGraph, PlacedBearing, PartId) {
         unreachable!()
     };
     let socket = PlacedBearing {
-        kind: mechanic_core::BearingKind::Rotational,
+        kind: mechanic_core::JointKind::Rotational,
         axis: Vec3::ZERO,
         source,
         anchor,
@@ -2744,7 +2744,7 @@ fn wiring_an_unattached_socket_reports_that_it_has_no_joint_yet() {
     let mut state = EditorState {
         hovered_bearing: Some(0),
         placed_bearings: vec![PlacedBearing {
-            kind: mechanic_core::BearingKind::Rotational,
+            kind: mechanic_core::JointKind::Rotational,
             axis: Vec3::ZERO,
             source: FaceRef::part(block, FaceKind::PositiveX),
             anchor: Vec3::new(0.5, 0.5, 0.0),

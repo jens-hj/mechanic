@@ -1,8 +1,8 @@
 //! Generate a wide-track, four-wheel-drive suspension test car and exercise it on the GPU.
 use bevy_math::{Quat, Vec3};
 use mechanic_core::{
-    BearingDoc, BearingKind, BumpStopSpec, ConstructionGraph, ConstructionMaterial,
-    CreationDocument, DriveTarget, FaceKind, FaceOwnerDoc, FaceRefDoc, InputSeatLinkDoc,
+    BearingDoc, BumpStopSpec, ConstructionGraph, ConstructionMaterial, CreationDocument,
+    DriveTarget, FaceKind, FaceOwnerDoc, FaceRefDoc, InputSeatLinkDoc, JointKind,
     MaterialAppearance, MaterialColor, MaterialDye, MaterialFinish, PartDoc, PoseDoc, RigidLinkDoc,
     SeatControllerLinkDoc, ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec,
 };
@@ -48,7 +48,7 @@ fn bearing(
     target: FaceRefDoc,
     anchor: [f32; 3],
     axis: [f32; 3],
-    kind: BearingKind,
+    kind: JointKind,
 ) -> u32 {
     let id = u32::try_from(doc.bearings.len()).unwrap();
     doc.bearings.push(BearingDoc {
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
                 face(carrier, FaceKind::PositiveY),
                 [xf, 1.125, zf],
                 [0.0, -1.0, 0.0],
-                BearingKind::Suspension(suspension),
+                JointKind::Suspension(suspension),
             );
             let knuckle = block(&mut doc, [1, 1, 1], pose(i32::from(x), 200, i32::from(z)));
             if x < 0 {
@@ -120,7 +120,7 @@ fn main() -> Result<()> {
                     face(knuckle, FaceKind::PositiveY),
                     [xf, 0.625, zf],
                     [0.0, -1.0, 0.0],
-                    BearingKind::Rotational,
+                    JointKind::Rotational,
                 ));
             } else {
                 doc.rigid_links.push(RigidLinkDoc {
@@ -156,7 +156,7 @@ fn main() -> Result<()> {
                 face(wheel, FaceKind::NegativeY),
                 [xf, 0.5, zf + f32::from(sign) * 0.125],
                 [0.0, 0.0, f32::from(sign)],
-                BearingKind::Rotational,
+                JointKind::Rotational,
             ));
         }
     }

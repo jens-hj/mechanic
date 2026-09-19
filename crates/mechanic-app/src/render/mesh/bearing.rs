@@ -19,7 +19,7 @@ pub(crate) fn combined_bearing_mesh(
     let mut tangents = Vec::new();
     let mut indices = Vec::new();
     for (_, bearing) in graph.bearings().filter(|(_, bearing)| {
-        matches!(bearing.kind, mechanic_core::BearingKind::Rotational)
+        matches!(bearing.kind, mechanic_core::JointKind::Rotational)
             && !placed_bearings
                 .iter()
                 .any(|&socket| bearing_uses_socket(bearing, socket))

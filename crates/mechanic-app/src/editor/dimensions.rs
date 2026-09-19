@@ -318,7 +318,7 @@ pub(crate) fn handle_cylinder_dimension_shortcuts(
     };
     if material.is_some_and(|material| material.0 == ConstructionMaterial::Rubber)
         && state.hovered_bearing.and_then(|index| state.placed_bearings.get(index))
-            .is_some_and(|s| matches!(s.kind, mechanic_core::BearingKind::Suspension(spec) if spec.shock().is_some())) {
+            .is_some_and(|s| matches!(s.kind, mechanic_core::JointKind::Suspension(spec) if spec.shock().is_some())) {
         let stop = state.suspension.stop;
         let increment = f32::from(direction) * 0.0025;
         let (length, od) = match target {

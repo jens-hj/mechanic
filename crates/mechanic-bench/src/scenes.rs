@@ -2,10 +2,10 @@
 
 use bevy_math::{IVec3, Vec3};
 use mechanic_core::{
-    BearingKind, BearingSpec, BuildCommand, BuildOutcome, BuildPose, CompiledCreation,
-    ConstructionGraph, ConstructionMaterial, CoordinateDrive, CuboidSpec, CylinderDimensions,
-    CylinderSpec, DriveMode, FaceKind, FaceRef, GridRotation, PartId, PipeBendDimensions,
-    PipeBendSpec, RigidLinkSpec, ShapeRegion, SpringSpec, SuspensionSpec, WeldSpec,
+    BearingSpec, BuildCommand, BuildOutcome, BuildPose, CompiledCreation, ConstructionGraph,
+    ConstructionMaterial, CoordinateDrive, CuboidSpec, CylinderDimensions, CylinderSpec, DriveMode,
+    FaceKind, FaceRef, GridRotation, JointKind, PartId, PipeBendDimensions, PipeBendSpec,
+    RigidLinkSpec, ShapeRegion, SpringSpec, SuspensionSpec, WeldSpec,
 };
 use mechanic_gpu::{DRIVE_MODE_ANGLE, DRIVE_MODE_PASSIVE, DRIVE_MODE_SPEED, GpuMechanismDrive};
 
@@ -64,7 +64,7 @@ pub(crate) fn build_suspension_one() -> Result<CompiledCreation, String> {
                 Vec3::new(0.0, 1.0, 0.0),
                 Vec3::Y,
             )
-            .with_kind(BearingKind::Suspension(suspension)),
+            .with_kind(JointKind::Suspension(suspension)),
         ))
         .map_err(|error| error.to_string())?;
     graph.compile().map_err(|error| error.to_string())

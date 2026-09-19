@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CreationDocument,
-    CuboidSpec, FaceKind, FaceRef, GridRotation, PartId,
+    CuboidSpec, FaceKind, FaceRef, GridRotation, JointKind, PartId,
 };
 use bevy_math::IVec3;
 
@@ -53,7 +53,7 @@ fn live_compiled_rows_reject_mismatched_target_units() {
         [row.min_angle, row.max_angle].map(f32::to_bits),
         bearing.kind.bounds().map(f32::to_bits)
     );
-    creation.bearings[0].kind = BearingKind::Rotational;
+    creation.bearings[0].kind = JointKind::Rotational;
     let row = creation.coordinate_drive_row(
         0,
         crate::DriveTarget::LinearSpeed(1.0),
@@ -62,7 +62,7 @@ fn live_compiled_rows_reject_mismatched_target_units() {
     assert_eq!(row.mode, crate::DriveMode::Passive);
     assert_eq!(
         [row.min_angle, row.max_angle].map(f32::to_bits),
-        BearingKind::Rotational.bounds().map(f32::to_bits)
+        JointKind::Rotational.bounds().map(f32::to_bits)
     );
 }
 
@@ -103,10 +103,10 @@ fn attached_and_unattached_linear_sockets_survive_creation_transforms() {
                 (transformed.anchor - (yaw * socket.anchor + Vec3::new(1.0, 2.0, -0.5))).length()
                     < 1.0e-6
             );
-            let BearingKind::Linear(original) = socket.kind else {
+            let JointKind::Linear(original) = socket.kind else {
                 unreachable!()
             };
-            let BearingKind::Linear(rail) = transformed.kind else {
+            let JointKind::Linear(rail) = transformed.kind else {
                 panic!("lost rail socket")
             };
             assert_eq!(rail.dimensions, original.dimensions);
@@ -123,7 +123,7 @@ fn a_carriage_cannot_attach_on_a_second_face() {
     let target = spawn_block(&mut graph, IVec3::new(0, 954, 76), GridRotation::default());
     let mut side = bearing;
     side.target = Some(FaceRef::part(target, FaceKind::NegativeZ));
-    let BearingKind::Linear(ref mut rail) = side.kind else {
+    let JointKind::Linear(ref mut rail) = side.kind else {
         unreachable!()
     };
     rail.face = CarriageFace::PositiveSide;
@@ -356,7 +356,7 @@ fn rail_graph(face: CarriageFace, rotation: GridRotation) -> (ConstructionGraph,
         orientation * Vec3::new(0.0, 0.25, 0.0) + offset.as_vec3() / 400.0,
         orientation * Vec3::X,
     )
-    .with_kind(BearingKind::Linear(rail));
+    .with_kind(JointKind::Linear(rail));
     (graph, bearing)
 }
 
@@ -406,7 +406,7 @@ fn top_and_side_attachments_compile_in_every_cardinal_orientation() {
 #[test]
 fn maximum_rail_can_overhang_a_single_support_block() {
     let (mut graph, mut bearing) = rail_graph(CarriageFace::Top, GridRotation::default());
-    let BearingKind::Linear(ref mut rail) = bearing.kind else {
+    let JointKind::Linear(ref mut rail) = bearing.kind else {
         unreachable!()
     };
     rail.dimensions = LinearBearingDimensions::new(8.0, 0.1).unwrap();
@@ -478,13 +478,13 @@ fn transformed_linear_creation_preserves_frame_face_and_dimensions() {
             document
         );
         let compiled = restored.graph.compile().unwrap();
-        let BearingKind::Linear(rail) = compiled.bearings[0].kind else {
+        let JointKind::Linear(rail) = compiled.bearings[0].kind else {
             panic!("lost linear joint")
         };
         assert_eq!(rail.face, face);
         assert_eq!(rail.dimensions, LinearBearingDimensions::default());
         let yaw = GridRotation::new(0, 1, 0).quaternion();
-        let BearingKind::Linear(original) = bearing.kind else {
+        let JointKind::Linear(original) = bearing.kind else {
             unreachable!()
         };
         assert!((rail.mount_normal - yaw * original.mount_normal).length() < 1.0e-6);

@@ -51,7 +51,7 @@ pub const CREATION_FORMAT_VERSION: u32 = 17;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BearingSocket {
     /// Physical motion variant and rail frame.
-    pub kind: crate::BearingKind,
+    pub kind: crate::JointKind,
     /// World-space travel axis for a linear socket.
     pub axis: Vec3,
     /// Face the ring sits on.
@@ -912,7 +912,7 @@ impl CreationDocument {
             .sockets
             .iter()
             .map(|socket| {
-                if let crate::BearingKind::Linear(rail) = socket.kind {
+                if let crate::JointKind::Linear(rail) = socket.kind {
                     rail.rotation(Vec3::from_array(socket.axis))?;
                 }
                 let socket = BearingSocket {

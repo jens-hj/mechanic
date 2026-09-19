@@ -23,8 +23,8 @@ use super::{
     PlacementSupport, Result, SurfaceHit, ToString, Vec, Vec3,
 };
 use mechanic_core::{
-    BearingDimensions, BearingId, BearingKind, BearingSpec, BuildPose, ConstructionGraph,
-    CuboidSpec, CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef, GridRotation,
+    BearingDimensions, BearingId, BearingSpec, BuildPose, ConstructionGraph, CuboidSpec,
+    CylinderDimensions, CylinderSpec, FaceKind, FaceOwner, FaceRef, GridRotation, JointKind,
     LinearBearing, LinearBearingDimensions, POSITION_TICK_METERS, PartId,
 };
 use std::collections::HashSet;
@@ -34,7 +34,7 @@ pub(super) struct BearingAttachment<'a> {
     pub(super) source: FaceRef,
     pub(super) anchor: Vec3,
     pub(super) dimensions: BearingDimensions,
-    pub(super) kind: BearingKind,
+    pub(super) kind: JointKind,
     pub(super) axis: Vec3,
     pub(super) rigid_targets: &'a [PartId],
 }
@@ -51,7 +51,7 @@ impl<'a> BearingAttachment<'a> {
             source,
             anchor,
             dimensions,
-            kind: BearingKind::Rotational,
+            kind: JointKind::Rotational,
             axis: face_geometry_from_ref(source, Some(graph)).normal,
             rigid_targets,
         }
@@ -74,7 +74,7 @@ impl<'a> From<LinearAttachment<'a>> for BearingAttachment<'a> {
             source: attachment.source,
             anchor: attachment.anchor,
             dimensions: BearingDimensions::default(),
-            kind: BearingKind::Linear(attachment.rail),
+            kind: JointKind::Linear(attachment.rail),
             axis: attachment.axis,
             rigid_targets: attachment.rigid_targets,
         }
@@ -98,7 +98,7 @@ pub(super) fn validate_linear_attachment(
         bearing.source == attachment.source
             && bearing.shared_anchor.abs_diff_eq(attachment.anchor, CONTACT_EPSILON)
             && bearing.axis.abs_diff_eq(attachment.axis, CONTACT_EPSILON)
-            && matches!(bearing.kind, BearingKind::Linear(existing) if existing.face != attachment.rail.face)
+            && matches!(bearing.kind, JointKind::Linear(existing) if existing.face != attachment.rail.face)
     }) {
         return Err(PlacementError::Graph("the carriage already has attachments on another face".into()));
     }

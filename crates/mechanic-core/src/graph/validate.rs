@@ -524,15 +524,15 @@ impl ConstructionGraph {
     /// Returns the same frame, axis, and anchor errors an attached bearing would.
     pub fn validate_socket(&self, socket: crate::BearingSocket) -> Result<(), GraphError> {
         let spec = match socket.kind {
-            crate::BearingKind::Suspension(spec) => spec,
-            crate::BearingKind::Piston(piston) => {
+            crate::JointKind::Suspension(spec) => spec,
+            crate::JointKind::Piston(piston) => {
                 if matches!(socket.source.owner, FaceOwner::Ground) {
                     return Err(GraphError::BearingOnGround);
                 }
                 let source = self.face_geometry(socket.source)?;
                 return piston_mount(piston, socket.anchor, socket.axis, &source).map(|_| ());
             }
-            crate::BearingKind::Rotational | crate::BearingKind::Linear(_) => return Ok(()),
+            crate::JointKind::Rotational | crate::JointKind::Linear(_) => return Ok(()),
         };
         if matches!(socket.source.owner, FaceOwner::Ground) {
             return Err(GraphError::BearingOnGround);
@@ -600,7 +600,7 @@ impl ConstructionGraph {
         }
         let source = self.face_geometry(spec.source)?;
         let target = self.face_geometry(target)?;
-        if let crate::BearingKind::Suspension(suspension) = spec.kind {
+        if let crate::JointKind::Suspension(suspension) = spec.kind {
             if self.bearings().any(|(_, existing)| {
                 existing.source == spec.source
                     && existing.shared_anchor.distance(spec.shared_anchor) < ANCHOR_TOLERANCE_METERS
@@ -645,7 +645,7 @@ impl ConstructionGraph {
             }
             return Ok(());
         }
-        if let crate::BearingKind::Piston(piston) = spec.kind {
+        if let crate::JointKind::Piston(piston) = spec.kind {
             if self.bearings().any(|(_, existing)| {
                 existing.source == spec.source
                     && existing.shared_anchor.distance(spec.shared_anchor) < ANCHOR_TOLERANCE_METERS
@@ -674,11 +674,11 @@ impl ConstructionGraph {
             }
             return Ok(());
         }
-        if let crate::BearingKind::Linear(rail) = spec.kind {
+        if let crate::JointKind::Linear(rail) = spec.kind {
             if self.bearings().any(|(_, existing)| {
                 existing.source == spec.source
                     && existing.shared_anchor.distance(spec.shared_anchor) < ANCHOR_TOLERANCE_METERS
-                    && matches!(existing.kind, crate::BearingKind::Linear(other) if other != rail)
+                    && matches!(existing.kind, crate::JointKind::Linear(other) if other != rail)
             }) {
                 return Err(GraphError::LinearCarriageOccupied);
             }

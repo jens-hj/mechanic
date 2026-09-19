@@ -248,7 +248,7 @@ fn advance(
                 .expect("showcase document");
                 graph.0 = document.into_graph().expect("showcase graph").graph;
                 crate::suspension_editor::sync_sockets(&graph.0, &mut editor);
-                let socket = *editor.placed_bearings.iter().find(|s| matches!(s.kind, mechanic_core::BearingKind::Suspension(s) if s.spring().is_some() && s.shock().is_some())).expect("combined station");
+                let socket = *editor.placed_bearings.iter().find(|s| matches!(s.kind, mechanic_core::JointKind::Suspension(s) if s.spring().is_some() && s.shock().is_some())).expect("combined station");
                 editor.suspension.controls.select(socket, 1);
                 editor.construction_mesh_dirty = true;
                 Vec::new()
@@ -274,7 +274,7 @@ fn advance(
                 editor
                     .placed_bearings
                     .push(crate::editor::build_actions::PlacedBearing {
-                        kind: mechanic_core::BearingKind::Suspension(spec),
+                        kind: mechanic_core::JointKind::Suspension(spec),
                         axis: Vec3::Y,
                         source,
                         anchor,

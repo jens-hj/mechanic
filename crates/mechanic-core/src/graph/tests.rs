@@ -47,7 +47,7 @@ fn suspension_fixture() -> (ConstructionGraph, [BearingSpec; 2]) {
             Vec3::new(0.5, 0.5, 0.0),
             Vec3::X,
         )
-        .with_kind(crate::BearingKind::Suspension(spec))
+        .with_kind(crate::JointKind::Suspension(spec))
     });
     (graph, bearings)
 }
@@ -83,7 +83,7 @@ fn suspension_shared_mounts_compile_once_and_live_edits_preserve_attachment_ids(
     for id in ids {
         assert_eq!(
             graph.bearing(id).unwrap().kind,
-            crate::BearingKind::Suspension(changed)
+            crate::JointKind::Suspension(changed)
         );
     }
     assert_eq!(graph.compile().unwrap().bearings.len(), 1);
@@ -108,7 +108,7 @@ fn suspension_shared_mounts_compile_once_and_live_edits_preserve_attachment_ids(
     for id in ids {
         assert_eq!(
             graph.bearing(id).unwrap().kind,
-            crate::BearingKind::Suspension(changed)
+            crate::JointKind::Suspension(changed)
         );
     }
 }
@@ -137,7 +137,7 @@ fn suspension_attachment_rejects_bad_axes_support_spacing_and_conflicting_specs(
         );
     }
     let mut wrong_spacing = bearings[0];
-    wrong_spacing.kind = crate::BearingKind::Suspension(
+    wrong_spacing.kind = crate::JointKind::Suspension(
         crate::SuspensionSpec::new(
             Some(crate::SpringSpec::default()),
             Some(
@@ -154,7 +154,7 @@ fn suspension_attachment_rejects_bad_axes_support_spacing_and_conflicting_specs(
     );
     graph.apply(BuildCommand::AddBearing(bearings[0])).unwrap();
     let mut bad = bearings[1];
-    bad.kind = crate::BearingKind::Suspension(
+    bad.kind = crate::JointKind::Suspension(
         crate::SuspensionSpec::new(Some(crate::SpringSpec::default()), None, None).unwrap(),
     );
     assert_eq!(

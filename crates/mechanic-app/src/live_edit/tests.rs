@@ -1,7 +1,7 @@
 use super::*;
 use mechanic_core::{
-    BearingDimensions, BearingKind, BuildCommand, BuildOutcome, BuildPose, CuboidSpec, FaceKind,
-    FaceRef, GridRotation,
+    BearingDimensions, BuildCommand, BuildOutcome, BuildPose, CuboidSpec, FaceKind, FaceRef,
+    GridRotation, JointKind,
 };
 use mechanic_gpu::GpuTransform;
 
@@ -24,7 +24,7 @@ fn framed_graph() -> (ConstructionGraph, PartId, ConstructionFrame) {
 fn socket(part: PartId, frame: ConstructionFrame) -> PlacedBearing {
     transform_bearing(
         PlacedBearing {
-            kind: BearingKind::Rotational,
+            kind: JointKind::Rotational,
             axis: Vec3::X,
             source: FaceRef::part(part, FaceKind::PositiveX),
             anchor: Vec3::new(1.25, 2.0, 0.0),

@@ -448,7 +448,7 @@ pub(crate) fn simulation_body_has_bearing(
     placed_bearings: &[PlacedBearing],
 ) -> bool {
     creation.bearings.iter().any(|bearing| {
-        matches!(bearing.kind, mechanic_core::BearingKind::Rotational)
+        matches!(bearing.kind, mechanic_core::JointKind::Rotational)
             && bearing.compound_a == compound
             && graph.bearing(bearing.source_bearing).is_some_and(|source| {
                 !placed_bearings

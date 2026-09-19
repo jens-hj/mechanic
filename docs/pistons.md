@@ -57,7 +57,7 @@ stop and can be pulled out to full stroke by a load.
 ## Implemented
 
 - `PistonDimensions`, `PistonMount` and `Piston` in `mechanic-core` validate the
-  counts and the mounting frame. `BearingKind::Piston` is translational with
+  counts and the mounting frame. `JointKind::Piston` is translational with
   bounds `[0, stroke]`. The solvers, GPU upload, and drive compilation are
   generic over `is_translational()` and `bounds()`; there is no solver, ABI, or
   WGSL change, and the creation format is unchanged at 17.

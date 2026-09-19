@@ -1,8 +1,8 @@
 use super::*;
 use bevy_math::{IVec3, Vec3};
 use mechanic_core::{
-    BearingKind, BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec,
-    FaceKind, FaceRef, GridRotation, PartId, ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec,
+    BearingSpec, BuildCommand, BuildOutcome, BuildPose, ConstructionGraph, CuboidSpec, FaceKind,
+    FaceRef, GridRotation, JointKind, PartId, ShockBodyEnd, ShockSpec, SpringSpec, SuspensionSpec,
 };
 
 fn spawn(graph: &mut ConstructionGraph, ticks: IVec3, dimensions: [u8; 3]) -> PartId {
@@ -36,7 +36,7 @@ fn suspension(spec: SuspensionSpec, anchored: bool) -> CompiledCreation {
                 Vec3::Y * 0.5,
                 Vec3::Y,
             )
-            .with_kind(BearingKind::Suspension(spec)),
+            .with_kind(JointKind::Suspension(spec)),
         ))
         .unwrap();
     graph
@@ -411,7 +411,7 @@ fn progressive_rubber_and_damping_satisfy_the_actual_midpoint_force_equation() {
     let mut world = CpuJointMachine::new(creation, 1, initial.clone()).unwrap();
     world.step(DVec3::ZERO, fixed(1), &[], &[]).unwrap();
     let state = &world.snapshot().state;
-    let force = PassiveForce::from_kind(BearingKind::Suspension(spec)).force(
+    let force = PassiveForce::from_kind(JointKind::Suspension(spec)).force(
         0.5 * (initial.coordinates[0] + state.coordinates[0]),
         0.5 * (initial.velocities[0] + state.velocities[0]),
     );

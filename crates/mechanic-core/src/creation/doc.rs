@@ -280,7 +280,7 @@ fn deserialize_target<'de, D: serde::Deserializer<'de>>(
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BearingDoc {
     /// Motion kind and complete rail configuration.
-    pub kind: crate::BearingKind,
+    pub kind: crate::JointKind,
     /// Face whose outward normal establishes the axis.
     pub source: FaceRefDoc,
     /// Compatible face on the attached side; absent for a bare piston head.
@@ -305,7 +305,7 @@ pub struct BearingDoc {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BearingSocketDoc {
     /// Physical motion variant and rail frame.
-    pub kind: crate::BearingKind,
+    pub kind: crate::JointKind,
     /// World-space travel axis for a linear socket.
     pub axis: [f32; 3],
     /// Face the ring sits on.
