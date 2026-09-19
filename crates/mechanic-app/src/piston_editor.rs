@@ -455,6 +455,56 @@ mod tests {
     }
 
     #[test]
+    fn a_piston_carrying_a_head_block_wires_to_a_controller_on_either_mount() {
+        for (mount, axis) in [
+            (PistonMount::End, Vec3::Y),
+            (
+                PistonMount::Side {
+                    mount_normal: Vec3::Y,
+                },
+                Vec3::X,
+            ),
+        ] {
+            let (graph, socket) = socket(mount, axis);
+            let candidate = builder::plate_block_candidate(socket).unwrap();
+            let staged = builder::stage_plate_block(
+                &graph,
+                socket,
+                candidate,
+                &[],
+                builder::PlacementBounds::World {
+                    origin: bevy::math::DVec2::ZERO,
+                },
+            );
+            let mut graph = staged.unwrap();
+            let BuildOutcome::Spawned(controller) = graph
+                .apply(BuildCommand::SpawnController(
+                    mechanic_core::ControllerSpec::new(BuildPose::new(
+                        bevy::math::IVec3::new(0, 40, 0),
+                        mechanic_core::GridRotation::default(),
+                    )),
+                ))
+                .unwrap()
+            else {
+                panic!("expected controller");
+            };
+            let mut state = EditorState {
+                placed_bearings: vec![socket],
+                ..Default::default()
+            };
+            let mut history = crate::EditorHistory::default();
+            let message = crate::editor::wiring::connect_drive_wire(
+                &mut graph,
+                &mut state,
+                &mut history,
+                controller,
+                0,
+            );
+            assert_eq!(graph.drive_link_count(), 1, "{message}");
+        }
+    }
+
+    #[test]
     fn dragging_steps_one_count_at_a_time_and_stops_at_the_pack_limits() {
         let (_, socket) = socket(PistonMount::End, Vec3::Y);
         let drag = PistonDrag {
