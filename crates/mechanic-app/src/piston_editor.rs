@@ -71,7 +71,7 @@ pub(super) fn controls(
     let hint = match state.piston.drag {
         Some(PistonDrag { stages: false, .. }) => "drag closed length · R stages · release places",
         Some(PistonDrag { stages: true, .. }) => "drag stages · R closed length · release places",
-        None => "R mount · hold to size",
+        None => "R mount · hold to size · build on the head, then wire it",
     };
     state.feedback = Some(format!(
         "Piston — {} blocks closed · {} stages · {:.2} m stroke · {} blocks extended · {mount} — {hint}",

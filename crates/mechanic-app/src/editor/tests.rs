@@ -2752,7 +2752,7 @@ fn wiring_an_unattached_socket_reports_that_it_has_no_joint_yet() {
     let mut history = EditorHistory::default();
 
     let message = connect_drive_wire(&mut graph, &mut state, &mut history, controller, 0);
-    assert!(message.contains("Attach a part"), "{message}");
+    assert!(message.starts_with("Cannot wire"), "{message}");
     assert_eq!(graph.drive_link_count(), 0);
 }
 
