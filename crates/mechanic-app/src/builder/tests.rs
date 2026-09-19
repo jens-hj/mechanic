@@ -3082,7 +3082,7 @@ fn one_bearing_groups_multiple_direct_attachments_into_one_rotor() {
     for candidate in candidates {
         let rigid_targets = graph
             .bearings()
-            .filter_map(|(_, bearing)| match bearing.target.owner {
+            .filter_map(|(_, bearing)| match bearing.target.unwrap().owner {
                 FaceOwner::Part(part) => Some(part),
                 FaceOwner::Ground => None,
             })

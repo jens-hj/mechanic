@@ -158,7 +158,8 @@ pub(crate) fn locked_bearings(graph: &ConstructionGraph) -> Vec<BearingId> {
 }
 
 pub(super) fn bearing_is_locked(graph: &ConstructionGraph, spec: &BearingSpec) -> bool {
-    let (FaceOwner::Part(source), FaceOwner::Part(target)) = (spec.source.owner, spec.target.owner)
+    let (FaceOwner::Part(source), Some(FaceOwner::Part(target))) =
+        (spec.source.owner, spec.target.map(|face| face.owner))
     else {
         return false;
     };

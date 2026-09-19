@@ -99,7 +99,10 @@ pub(super) fn rigid_link_references(link: RigidLinkSpec, part: PartId) -> bool {
 }
 
 pub(super) fn bearing_references(bearing: BearingSpec, part: PartId) -> bool {
-    face_references(bearing.source, part) || face_references(bearing.target, part)
+    face_references(bearing.source, part)
+        || bearing
+            .target
+            .is_some_and(|target| face_references(target, part))
 }
 
 pub(super) fn point_on_face(point: Vec3, face: &FaceGeometry) -> bool {

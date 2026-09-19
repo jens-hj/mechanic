@@ -279,8 +279,11 @@ impl ConstructionGraph {
                 }
             }
             for (_, bearing) in self.bearings.iter() {
-                let endpoints = match (bearing.source.owner, bearing.target.owner) {
-                    (FaceOwner::Part(first), FaceOwner::Part(second)) => Some((first, second)),
+                let endpoints = match (bearing.source.owner, bearing.target.map(|face| face.owner))
+                {
+                    (FaceOwner::Part(first), Some(FaceOwner::Part(second))) => {
+                        Some((first, second))
+                    }
                     _ => None,
                 };
                 if let Some((first, second)) = endpoints {

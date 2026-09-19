@@ -423,7 +423,9 @@ pub(crate) fn weld_preview_mesh(
     {
         if graph.bearings().any(|(_, joint)| {
             joint.source == spec.source
-                && !matches!(joint.target.owner, FaceOwner::Part(part) if parts.contains(&part))
+                && joint.target.is_some_and(
+                    |target| !matches!(target.owner, FaceOwner::Part(part) if parts.contains(&part)),
+                )
         }) {
             continue;
         }

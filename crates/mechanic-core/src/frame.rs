@@ -401,7 +401,9 @@ impl ConstructionGraph {
         for (id, mut bearing) in bearings {
             let included = |owner| matches!(owner, FaceOwner::Part(part) if parts.contains(&part));
             let first = included(bearing.source.owner);
-            let second = included(bearing.target.owner);
+            let second = bearing
+                .target
+                .map_or(first, |target| included(target.owner));
             if first != second {
                 return Err(FrameError::PartialBearing(id));
             }

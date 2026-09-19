@@ -271,8 +271,9 @@ pub struct BearingSpec {
     pub kind: crate::BearingKind,
     /// Face whose outward normal establishes the bearing axis.
     pub source: FaceRef,
-    /// Compatible face on the attached side.
-    pub target: FaceRef,
+    /// Compatible face on the attached side. `None` is a joint whose moving
+    /// side is the hardware's own head with nothing built on it yet.
+    pub target: Option<FaceRef>,
     /// Shared world-space anchor selected on both faces.
     pub shared_anchor: Vec3,
     /// Unit world-space axis, equal to the source-face normal.
@@ -287,7 +288,7 @@ impl BearingSpec {
         Self {
             kind: crate::BearingKind::Rotational,
             source,
-            target,
+            target: Some(target),
             shared_anchor,
             axis,
             dimensions: BearingDimensions {
@@ -295,6 +296,21 @@ impl BearingSpec {
                 inner_diameter: BearingDimensions::DEFAULT_INNER_DIAMETER,
             },
         }
+    }
+
+    /// Creates the joint of hardware that carries its own moving head, before
+    /// anything is attached to that head.
+    #[must_use]
+    pub const fn bare(
+        source: FaceRef,
+        shared_anchor: Vec3,
+        axis: Vec3,
+        kind: crate::BearingKind,
+    ) -> Self {
+        let mut spec = Self::new(source, source, shared_anchor, axis);
+        spec.target = None;
+        spec.kind = kind;
+        spec
     }
 
     /// Selects the physical bearing variant. Geometry is validated on insertion.

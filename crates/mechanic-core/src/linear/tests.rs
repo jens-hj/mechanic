@@ -122,7 +122,7 @@ fn a_carriage_cannot_attach_on_a_second_face() {
     graph.apply(BuildCommand::AddBearing(bearing)).unwrap();
     let target = spawn_block(&mut graph, IVec3::new(0, 954, 76), GridRotation::default());
     let mut side = bearing;
-    side.target = FaceRef::part(target, FaceKind::NegativeZ);
+    side.target = Some(FaceRef::part(target, FaceKind::NegativeZ));
     let BearingKind::Linear(ref mut rail) = side.kind else {
         unreachable!()
     };
@@ -268,7 +268,7 @@ fn one_engine_shares_linear_force_and_gearing_preserves_output_power() {
     let original = *graph.bearing(first.bearing).unwrap();
     let second_target = spawn_block(&mut graph, IVec3::new(200, 990, 0), GridRotation::default());
     let second = BearingSpec {
-        target: FaceRef::part(second_target, FaceKind::NegativeY),
+        target: Some(FaceRef::part(second_target, FaceKind::NegativeY)),
         shared_anchor: original.shared_anchor + Vec3::X * 0.5,
         ..original
     };
@@ -448,7 +448,7 @@ fn deleting_either_attachment_removes_its_linear_joint() {
         let face = if delete_source {
             bearing.source
         } else {
-            bearing.target
+            bearing.target.unwrap()
         };
         let crate::FaceOwner::Part(part) = face.owner else {
             unreachable!()

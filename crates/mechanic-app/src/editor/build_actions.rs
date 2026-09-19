@@ -550,7 +550,7 @@ pub(crate) fn handle_build_actions(
         return;
     }
     if tool == Tool::Piston {
-        piston_editor::drag_actions(&graph.0, state, &mut history, &actions);
+        piston_editor::drag_actions(&mut graph.0, state, &mut history, &actions);
         return;
     }
     if tool == Tool::Cylinder
@@ -1072,7 +1072,7 @@ pub(crate) fn bearing_location_occupied(
         .iter()
         .any(|bearing| same_surface(bearing.source) && bearing.anchor.abs_diff_eq(anchor, 1.0e-5))
         || graph.bearings().any(|(_, bearing)| {
-            (same_surface(bearing.source) || same_surface(bearing.target))
+            (same_surface(bearing.source) || bearing.target.is_some_and(same_surface))
                 && bearing.shared_anchor.abs_diff_eq(anchor, 1.0e-5)
         })
 }
@@ -1123,7 +1123,7 @@ pub(crate) fn bearing_socket_targets(
             if !bearing_uses_socket(bearing, socket) {
                 return None;
             }
-            match bearing.target.owner {
+            match bearing.target?.owner {
                 FaceOwner::Part(part) => Some(part),
                 FaceOwner::Ground => None,
             }
@@ -1159,9 +1159,10 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
                 if !bearing_uses_socket(bearing, socket) {
                     return None;
                 }
-                match bearing.target.owner {
+                let target = bearing.target?;
+                match target.owner {
                     FaceOwner::Part(part) if !deleted.contains(&part) => {
-                        Some((bearing.target, bearing.kind))
+                        Some((target, bearing.kind))
                     }
                     FaceOwner::Part(_) | FaceOwner::Ground => None,
                 }

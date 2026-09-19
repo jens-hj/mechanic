@@ -745,7 +745,7 @@ pub(crate) fn preview_mesh(
         .filter(|socket| {
             !graph.bearings().any(|(_, joint)| {
                 crate::editor::build_actions::bearing_uses_socket(joint, *socket)
-                    && !included(joint.target.owner)
+                    && joint.target.is_some_and(|target| !included(target.owner))
             })
         })
         .collect::<Vec<_>>();
@@ -754,7 +754,7 @@ pub(crate) fn preview_mesh(
     let mut indices = Vec::new();
     for (_, joint) in graph.bearings().filter(|(_, joint)| {
         included(joint.source.owner)
-            && included(joint.target.owner)
+            && joint.target.is_some_and(|target| included(target.owner))
             && matches!(joint.kind, mechanic_core::BearingKind::Rotational)
             && !sockets
                 .iter()

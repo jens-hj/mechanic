@@ -18,6 +18,7 @@ pub(super) fn calculate_mass_properties<'a>(
     regions: &[(RegionId, &ShapeRegion)],
     graph: &ConstructionGraph,
     sockets: &[crate::BearingSocket],
+    heads: &[super::HeadKey],
 ) -> Result<MassProperties, TopologyError> {
     let member_parts = parts.clone().map(|(id, _)| id).collect::<BTreeSet<_>>();
     let mut hardware_masses = Vec::new();
@@ -34,16 +35,21 @@ pub(super) fn calculate_mass_properties<'a>(
             bearing.source,
             bearing.shared_anchor.to_array().map(f32::to_bits),
         );
-        for element in elements {
-            let owner = if element.opposite {
-                bearing.target.owner
+        // Which side of this joint the compound holds: a head it owns, or
+        // the part on that side.
+        let holds = |opposite: bool| {
+            if opposite && bearing.kind.owns_head() {
+                return heads.contains(&super::head_key(bearing));
+            }
+            let face = if opposite {
+                bearing.target
             } else {
-                bearing.source.owner
+                Some(bearing.source)
             };
-            let FaceOwner::Part(owner) = owner else {
-                continue;
-            };
-            if !member_parts.contains(&owner) {
+            matches!(face.map(|face| face.owner), Some(FaceOwner::Part(owner)) if member_parts.contains(&owner))
+        };
+        for element in elements {
+            if !holds(element.opposite) {
                 continue;
             }
             // A shared mounting assembly can have several attached parts.
@@ -61,14 +67,7 @@ pub(super) fn calculate_mass_properties<'a>(
             });
         }
         for opposite in [false, true] {
-            let owner = if opposite {
-                bearing.target.owner
-            } else {
-                bearing.source.owner
-            };
-            if let FaceOwner::Part(owner) = owner
-                && member_parts.contains(&owner)
-            {
+            if holds(opposite) {
                 seen_mounts.push((key, opposite));
             }
         }
@@ -106,7 +105,13 @@ pub(super) fn calculate_mass_properties<'a>(
                 + outer * (element.axial_inertia - element.transverse_inertia),
         }));
     }
-    let identifying_part = parts.clone().next().expect("weld groups are non-empty").0;
+    // A bare head has no part of its own; its support identifies it.
+    let identifying_part = parts
+        .clone()
+        .next()
+        .map(|(id, _)| id)
+        .or_else(|| heads.first().map(|&(support, _)| support))
+        .expect("a compound has a part or a mounted head");
     // A part inside a region has no mass of its own: the region owns its
     // geometry, so counting both would weigh the build twice.
     let contributions = parts

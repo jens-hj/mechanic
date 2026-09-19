@@ -14,8 +14,8 @@ use crate::simulation::state::AppSimulation;
 use crate::{builder, piston_render};
 use bevy::prelude::{ButtonInput, Res, ResMut, Transform, Vec3};
 use mechanic_core::{
-    BearingDimensions, BearingKind, BearingSocket, ConstructionGraph, FaceOwner, Piston,
-    PistonDimensions, PistonMount,
+    BearingDimensions, BearingKind, BearingSocket, BearingSpec, BuildCommand, ConstructionGraph,
+    FaceOwner, Piston, PistonDimensions, PistonMount,
 };
 
 /// Pointer travel, in radians, that steps a dragged count by one.
@@ -71,7 +71,7 @@ pub(super) fn controls(
     let hint = match state.piston.drag {
         Some(PistonDrag { stages: false, .. }) => "drag closed length · R stages · release places",
         Some(PistonDrag { stages: true, .. }) => "drag stages · R closed length · release places",
-        None => "R mount · hold to size · build on the head, then wire it",
+        None => "R mount · hold to size",
     };
     state.feedback = Some(format!(
         "Piston — {} blocks closed · {} stages · {:.2} m stroke · {} blocks extended · {mount} — {hint}",
@@ -239,7 +239,9 @@ pub(super) fn refresh(graph: &ConstructionGraph, state: &mut EditorState) {
         socket.and_then(|socket| validate_socket(graph, socket, state.placement_bounds).err());
 }
 
-fn place(graph: &ConstructionGraph, state: &mut EditorState, history: &mut EditorHistory) {
+/// Places the piston together with its joint: the head is a body of its own,
+/// so the piston can be wired and run before anything is built on it.
+fn place(graph: &mut ConstructionGraph, state: &mut EditorState, history: &mut EditorHistory) {
     let Some(socket) = preview_socket(graph, state) else {
         return;
     };
@@ -252,15 +254,23 @@ fn place(graph: &ConstructionGraph, state: &mut EditorState, history: &mut Edito
         return;
     }
     let previous = EditorSnapshot::capture(graph, state);
+    if let Err(error) = graph.apply(BuildCommand::AddBearing(BearingSpec::bare(
+        socket.source,
+        socket.anchor,
+        socket.axis,
+        socket.kind,
+    ))) {
+        state.feedback = Some(error.to_string());
+        return;
+    }
     state.placed_bearings.push(socket);
     history.commit(previous);
     state.construction_mesh_dirty = true;
-    state.feedback = Some("Piston placed — attach construction to the head".to_owned());
 }
 
 /// Press holds the piston where it is aimed, the pointer sizes it, release places it.
 pub(super) fn drag_actions(
-    graph: &ConstructionGraph,
+    graph: &mut ConstructionGraph,
     state: &mut EditorState,
     history: &mut EditorHistory,
     actions: &ButtonInput<GameAction>,
@@ -455,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn a_piston_carrying_a_head_block_wires_to_a_controller_on_either_mount() {
+    fn a_bare_piston_wires_to_a_controller_and_keeps_its_wire_when_built_on() {
         for (mount, axis) in [
             (PistonMount::End, Vec3::Y),
             (
@@ -465,18 +475,19 @@ mod tests {
                 Vec3::X,
             ),
         ] {
-            let (graph, socket) = socket(mount, axis);
-            let candidate = builder::plate_block_candidate(socket).unwrap();
-            let staged = builder::stage_plate_block(
-                &graph,
+            let (mut graph, socket) = socket(mount, axis);
+            let mut state = EditorState::default();
+            state.piston.drag = Some(PistonDrag {
                 socket,
-                candidate,
-                &[],
-                builder::PlacementBounds::World {
-                    origin: bevy::math::DVec2::ZERO,
-                },
-            );
-            let mut graph = staged.unwrap();
+                direction: Vec3::Z,
+                dimensions: PistonDimensions::default(),
+                stages: false,
+            });
+            let mut history = EditorHistory::default();
+            place(&mut graph, &mut state, &mut history);
+            assert_eq!(state.placed_bearings, vec![socket]);
+            assert_eq!(graph.bearings().count(), 1);
+
             let BuildOutcome::Spawned(controller) = graph
                 .apply(BuildCommand::SpawnController(
                     mechanic_core::ControllerSpec::new(BuildPose::new(
@@ -488,11 +499,6 @@ mod tests {
             else {
                 panic!("expected controller");
             };
-            let mut state = EditorState {
-                placed_bearings: vec![socket],
-                ..Default::default()
-            };
-            let mut history = crate::EditorHistory::default();
             let message = crate::editor::wiring::connect_drive_wire(
                 &mut graph,
                 &mut state,
@@ -501,6 +507,25 @@ mod tests {
                 0,
             );
             assert_eq!(graph.drive_link_count(), 1, "{message}");
+            let bare = graph.compile().unwrap();
+            assert_eq!(bare.bearings.len(), 1);
+            assert_eq!(bare.coordinate_drives.len(), 1);
+
+            let candidate = builder::plate_block_candidate(socket).unwrap();
+            let graph = builder::stage_plate_block(
+                &graph,
+                socket,
+                candidate,
+                &[],
+                builder::PlacementBounds::World {
+                    origin: bevy::math::DVec2::ZERO,
+                },
+            )
+            .unwrap();
+            let built = graph.compile().unwrap();
+            assert_eq!(built.bearings.len(), 1);
+            assert_eq!(built.coordinate_drives.len(), 1);
+            assert_eq!(built.compounds.len(), bare.compounds.len());
         }
     }
 

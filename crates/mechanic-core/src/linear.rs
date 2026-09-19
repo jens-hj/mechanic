@@ -254,6 +254,12 @@ impl BearingKind {
         matches!(self, Self::Piston(_))
     }
 
+    /// Whether the hardware's moving side is a body of its own, so the joint
+    /// exists before anything is attached to it.
+    pub const fn owns_head(self) -> bool {
+        matches!(self, Self::Piston(_))
+    }
+
     /// Carries the world-space mounting frame through a rotation of construction space.
     pub fn rotate(&mut self, rotate: impl Fn(Vec3) -> Vec3) {
         match self {

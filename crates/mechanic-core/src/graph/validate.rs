@@ -471,7 +471,9 @@ impl ConstructionGraph {
         }
         for (_, bearing) in self.bearings.iter() {
             if self.face_is_on_owner(bearing.source, owner)
-                || self.face_is_on_owner(bearing.target, owner)
+                || bearing
+                    .target
+                    .is_some_and(|target| self.face_is_on_owner(target, owner))
             {
                 self.validate_bearing(*bearing)?;
             }
@@ -561,18 +563,43 @@ impl ConstructionGraph {
         Ok(())
     }
 
+    /// A joint with nothing on its moving side: only hardware that carries its
+    /// own head has one.
+    fn validate_bare_bearing(&self, spec: BearingSpec) -> Result<(), GraphError> {
+        if !spec.kind.owns_head() {
+            return Err(GraphError::BearingWithoutTarget);
+        }
+        if self.bearings().any(|(_, existing)| {
+            existing.source == spec.source
+                && existing.shared_anchor.distance(spec.shared_anchor) < ANCHOR_TOLERANCE_METERS
+                && existing.kind != spec.kind
+        }) {
+            return Err(GraphError::PistonHeadOccupied);
+        }
+        self.validate_socket(crate::BearingSocket {
+            kind: spec.kind,
+            axis: spec.axis,
+            source: spec.source,
+            anchor: spec.shared_anchor,
+            dimensions: spec.dimensions,
+        })
+    }
+
     #[expect(clippy::too_many_lines)]
     pub(super) fn validate_bearing(&self, spec: BearingSpec) -> Result<(), GraphError> {
-        if spec.source == spec.target {
+        let Some(target) = spec.target else {
+            return self.validate_bare_bearing(spec);
+        };
+        if spec.source == target {
             return Err(GraphError::SameFace);
         }
         if matches!(spec.source.owner, FaceOwner::Ground)
-            || matches!(spec.target.owner, FaceOwner::Ground)
+            || matches!(target.owner, FaceOwner::Ground)
         {
             return Err(GraphError::BearingOnGround);
         }
         let source = self.face_geometry(spec.source)?;
-        let target = self.face_geometry(spec.target)?;
+        let target = self.face_geometry(target)?;
         if let crate::BearingKind::Suspension(suspension) = spec.kind {
             if self.bearings().any(|(_, existing)| {
                 existing.source == spec.source

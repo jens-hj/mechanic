@@ -88,8 +88,24 @@ fn compile_graph(
         .enumerate()
         .map(|(dense, (id, _))| (*id, dense))
         .collect::<BTreeMap<_, _>>();
-    let mut weld_groups = DisjointSet::new(part_rows.len());
-    let mut directly_grounded = vec![false; part_rows.len()];
+    // Hardware that carries its own head adds a node for it, so everything
+    // attached to one head is one rigid body even when nothing is attached.
+    let mut head_nodes = BTreeMap::<HeadKey, usize>::new();
+    for (_, bearing) in graph.bearings.iter() {
+        if bearing.kind.owns_head() {
+            let next = part_rows.len() + head_nodes.len();
+            head_nodes.entry(head_key(bearing)).or_insert(next);
+        }
+    }
+    let mut weld_groups = DisjointSet::new(part_rows.len() + head_nodes.len());
+    let mut directly_grounded = vec![false; part_rows.len() + head_nodes.len()];
+    for (_, bearing) in graph.bearings.iter() {
+        if let Some(&head) = head_nodes.get(&head_key(bearing))
+            && let Some(FaceOwner::Part(target)) = bearing.target.map(|face| face.owner)
+        {
+            weld_groups.union(head, dense_by_part[&target]);
+        }
+    }
 
     for part in externally_static_parts {
         if let Some(&dense) = dense_by_part.get(part) {
@@ -120,6 +136,14 @@ fn compile_graph(
             .or_default()
             .push(dense);
     }
+    // A bare head is a body with no parts.
+    let mut heads_by_group = BTreeMap::<usize, Vec<HeadKey>>::new();
+    for (&key, &node) in &head_nodes {
+        let group = weld_groups.find(node);
+        grouped.entry(group).or_default();
+        heads_by_group.entry(group).or_default().push(key);
+    }
+    let mut compound_by_head = BTreeMap::<HeadKey, u32>::new();
 
     let mut compounds = Vec::with_capacity(grouped.len());
     let collider_capacity = part_rows
@@ -184,8 +208,12 @@ fn compile_graph(
         }
     }
 
-    for member_rows in grouped.values() {
+    for (group, member_rows) in &grouped {
         let compound_index = u32::try_from(compounds.len()).expect("compound count fits u32");
+        let member_heads = heads_by_group.get(group).map_or(&[][..], Vec::as_slice);
+        for &head in member_heads {
+            compound_by_head.insert(head, compound_index);
+        }
         let is_static = member_rows.iter().any(|&row| directly_grounded[row]);
         let source_parts = member_rows
             .iter()
@@ -214,6 +242,7 @@ fn compile_graph(
             &region_shapes,
             graph,
             sockets,
+            member_heads,
         )?;
         let collider_start = u32::try_from(colliders.len()).expect("collider count fits u32");
         for &row in member_rows {
@@ -334,11 +363,16 @@ fn compile_graph(
         let FaceOwner::Part(part_a) = bearing.source.owner else {
             unreachable!("graph validation rejects ground bearings")
         };
-        let FaceOwner::Part(part_b) = bearing.target.owner else {
-            unreachable!("graph validation rejects ground bearings")
-        };
         let compound_a = compound_lookup[&part_a];
-        let compound_b = compound_lookup[&part_b];
+        let compound_b = match compound_by_head.get(&head_key(bearing)) {
+            Some(&head) if bearing.kind.owns_head() => head,
+            _ => {
+                let Some(FaceOwner::Part(part_b)) = bearing.target.map(|face| face.owner) else {
+                    unreachable!("graph validation rejects ground and bare bearings")
+                };
+                compound_lookup[&part_b]
+            }
+        };
         if compound_a == compound_b {
             // Welding a loop shut can leave a bearing with both sides in one
             // rigid body. The weld already fixes their relative pose, so the
@@ -505,6 +539,17 @@ fn compile_graph(
         coordinate_drives,
         cylinders,
     })
+}
+
+/// Identifies the moving head of one mounted piece of hardware by its
+/// supporting part and anchor.
+pub(super) type HeadKey = (PartId, [u32; 3]);
+
+pub(super) fn head_key(bearing: &crate::BearingSpec) -> HeadKey {
+    let FaceOwner::Part(support) = bearing.source.owner else {
+        unreachable!("graph validation rejects ground bearings")
+    };
+    (support, bearing.shared_anchor.to_array().map(f32::to_bits))
 }
 
 fn floating_component_root(compounds: &[CompiledCompound], component: &[u32]) -> Option<u32> {

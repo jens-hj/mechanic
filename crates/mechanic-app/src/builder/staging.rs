@@ -944,8 +944,10 @@ pub(super) fn bearing_connected_weld_scope(
     graph
         .bearings()
         .any(|(_, bearing)| {
-            [bearing.source.owner, bearing.target.owner]
+            [Some(bearing.source), bearing.target]
                 .into_iter()
+                .flatten()
+                .map(|face| face.owner)
                 .any(|owner| matches!(owner, FaceOwner::Part(part) if members.contains(&part)))
         })
         .then_some(members)

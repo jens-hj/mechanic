@@ -380,6 +380,16 @@ impl ConstructionGraph {
             }
             BuildCommand::AddBearing(spec) => {
                 self.validate_bearing(spec)?;
+                if spec.target.is_none()
+                    && self.bearings().any(|(_, existing)| {
+                        existing.target.is_none()
+                            && existing.source == spec.source
+                            && existing.shared_anchor.distance(spec.shared_anchor)
+                                < crate::ANCHOR_TOLERANCE_METERS
+                    })
+                {
+                    return Err(GraphError::PistonHeadOccupied);
+                }
                 let id = self.bearings.insert(spec);
                 self.pending = None;
                 Ok(BuildOutcome::BearingAdded(id))

@@ -275,7 +275,9 @@ impl CreationDocument {
         }
         for bearing in &mut other.bearings {
             add_face(&mut bearing.source)?;
-            add_face(&mut bearing.target)?;
+            if let Some(target) = &mut bearing.target {
+                add_face(target)?;
+            }
         }
         for link in &mut other.drive_links {
             add_part(&mut link.controller)?;
@@ -505,7 +507,7 @@ impl CreationDocument {
                 .map(|(_, bearing)| BearingDoc {
                     kind: bearing.kind,
                     source: face(bearing.source),
-                    target: face(bearing.target),
+                    target: bearing.target.map(&face),
                     anchor: bearing.shared_anchor.to_array(),
                     axis: bearing.axis.to_array(),
                     outer_diameter: bearing.dimensions.outer_diameter(),
@@ -808,18 +810,24 @@ impl CreationDocument {
         }
         let first_bearing = final_connections.len();
         for bearing in &self.bearings {
+            let source = resolve_face(bearing.source, &part_ids, &feature_ids)?;
+            let target = bearing
+                .target
+                .map(|target| resolve_face(target, &part_ids, &feature_ids))
+                .transpose()?;
+            let mut spec = BearingSpec::new(
+                source,
+                target.unwrap_or(source),
+                Vec3::from_array(bearing.anchor),
+                Vec3::from_array(bearing.axis),
+            );
+            spec.target = target;
             final_connections.push(BuildCommand::AddBearing(
-                BearingSpec::new(
-                    resolve_face(bearing.source, &part_ids, &feature_ids)?,
-                    resolve_face(bearing.target, &part_ids, &feature_ids)?,
-                    Vec3::from_array(bearing.anchor),
-                    Vec3::from_array(bearing.axis),
-                )
-                .with_kind(bearing.kind)
-                .with_dimensions(BearingDimensions::new(
-                    bearing.outer_diameter,
-                    bearing.inner_diameter,
-                )?),
+                spec.with_kind(bearing.kind)
+                    .with_dimensions(BearingDimensions::new(
+                        bearing.outer_diameter,
+                        bearing.inner_diameter,
+                    )?),
             ));
         }
         let outcomes = graph.apply_batch(final_connections)?;

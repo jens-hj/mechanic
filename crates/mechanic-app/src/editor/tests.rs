@@ -2191,7 +2191,10 @@ fn deleting_current_support_rehomes_bearing_to_remaining_ring_support() {
     );
     let bearing = graph.bearings().next().unwrap().1;
     assert_eq!(bearing.source, sockets[0].source);
-    assert_eq!(bearing.target, FaceRef::part(target, FaceKind::NegativeY));
+    assert_eq!(
+        bearing.target,
+        Some(FaceRef::part(target, FaceKind::NegativeY))
+    );
     assert_eq!(graph.compile().unwrap().bearings.len(), 1);
 
     let (graph, sockets, migrated) =

@@ -520,12 +520,11 @@ pub(super) fn ensure_pipe_part_replaceable(
         return refuse("shaped pipes cannot branch");
     }
     let owner = FaceOwner::Part(part);
-    if graph
-        .bearings()
-        .any(|(_, bearing)| bearing.source.owner == owner || bearing.target.owner == owner)
-        || graph
-            .rigid_links()
-            .any(|(_, link)| link.first == part || link.second == part)
+    if graph.bearings().any(|(_, bearing)| {
+        bearing.source.owner == owner || bearing.target.is_some_and(|target| target.owner == owner)
+    }) || graph
+        .rigid_links()
+        .any(|(_, link)| link.first == part || link.second == part)
     {
         return refuse("pipes with bearings or rigid links cannot branch");
     }

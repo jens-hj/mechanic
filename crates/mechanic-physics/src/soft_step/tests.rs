@@ -910,30 +910,42 @@ fn a_joint_limit_holds_against_a_stalled_motor() {
 }
 
 // An anchored one-metre base with a collapsed 2 x 4 piston on top and a block on its head.
-fn piston_lift() -> CompiledCreation {
+/// A 2 x 4 end-mounted piston on a static base, bare or carrying a block on its head.
+fn piston_lift(bare: bool) -> CompiledCreation {
     let mut graph = ConstructionGraph::new();
-    let base = spawn(&mut graph, IVec3::new(0, 200, 0), [4, 4, 4]);
-    let load = spawn(&mut graph, IVec3::new(0, 650, 0), [1, 1, 1]);
-    graph
-        .apply(BuildCommand::AddBearing(
-            BearingSpec::new(
-                FaceRef::part(base, FaceKind::PositiveY),
-                FaceRef::part(load, FaceKind::NegativeY),
-                Vec3::Y,
-                Vec3::Y,
-            )
-            .with_kind(BearingKind::Piston(mechanic_core::Piston {
-                dimensions: mechanic_core::PistonDimensions::new(2, 4).unwrap(),
-                mount: mechanic_core::PistonMount::End,
-            })),
-        ))
-        .unwrap();
-    graph.compile_with_static_parts(vec![base]).unwrap()
+    let support = spawn(&mut graph, IVec3::new(0, 200, 0), [4, 4, 4]);
+    let source = FaceRef::part(support, FaceKind::PositiveY);
+    let kind = BearingKind::Piston(mechanic_core::Piston {
+        dimensions: mechanic_core::PistonDimensions::new(2, 4).unwrap(),
+        mount: mechanic_core::PistonMount::End,
+    });
+    let bearing = if bare {
+        BearingSpec::bare(source, Vec3::Y, Vec3::Y, kind)
+    } else {
+        let load = spawn(&mut graph, IVec3::new(0, 650, 0), [1, 1, 1]);
+        BearingSpec::new(
+            source,
+            FaceRef::part(load, FaceKind::NegativeY),
+            Vec3::Y,
+            Vec3::Y,
+        )
+        .with_kind(kind)
+    };
+    graph.apply(BuildCommand::AddBearing(bearing)).unwrap();
+    graph.compile_with_static_parts(vec![support]).unwrap()
 }
 
 #[test]
 fn a_piston_lifts_its_load_to_each_programmed_extension_and_rests_collapsed_without_power() {
-    let creation = piston_lift();
+    piston_reaches_programmed_extensions(piston_lift(false));
+}
+
+#[test]
+fn a_bare_piston_extends_its_own_head_to_each_programmed_extension() {
+    piston_reaches_programmed_extensions(piston_lift(true));
+}
+
+fn piston_reaches_programmed_extensions(creation: CompiledCreation) {
     let seek = |target| CoordinateDrive {
         mode: DriveMode::Angle,
         target_angle: target,

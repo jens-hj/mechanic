@@ -127,6 +127,68 @@ fn end_and_side_mounted_pistons_compile_to_one_bounded_translation() {
 }
 
 #[test]
+fn a_bare_piston_is_a_joint_whose_head_body_later_attachments_join() {
+    for side in [false, true] {
+        let (mut graph, attached) = piston_graph(side);
+        let bare = BearingSpec::bare(
+            attached.source,
+            attached.shared_anchor,
+            attached.axis,
+            attached.kind,
+        );
+        graph.apply(BuildCommand::AddBearing(bare)).unwrap();
+        assert_eq!(
+            graph.apply(BuildCommand::AddBearing(bare)),
+            Err(GraphError::PistonHeadOccupied)
+        );
+
+        // The loose head block is a third body until it is attached.
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.compounds.len(), 3);
+        assert_eq!(compiled.bearings.len(), 1);
+        let head = &compiled.compounds[compiled.bearings[0].compound_b as usize];
+        assert!(head.source_parts.is_empty());
+        assert!(!head.is_static);
+        let BearingKind::Piston(piston) = attached.kind else {
+            unreachable!()
+        };
+        let head_mass = piston
+            .dimensions
+            .mass_elements()
+            .iter()
+            .filter(|element| element.opposite)
+            .map(|element| element.mass)
+            .sum::<f32>();
+        assert!((head.mass_properties.mass - head_mass).abs() < 1.0e-3);
+
+        graph.apply(BuildCommand::AddBearing(attached)).unwrap();
+        let compiled = graph.compile().unwrap();
+        assert_eq!(compiled.compounds.len(), 2);
+        assert_eq!(compiled.bearings.len(), 1);
+        assert_eq!(
+            compiled.loop_topology.bearing_coordinates.len(),
+            2,
+            "both rows address the one joint"
+        );
+    }
+}
+
+#[test]
+fn only_hardware_with_its_own_head_has_a_joint_before_anything_is_attached() {
+    let (mut graph, attached) = piston_graph(false);
+    let rotary = BearingSpec::bare(
+        attached.source,
+        attached.shared_anchor,
+        attached.axis,
+        BearingKind::Rotational,
+    );
+    assert_eq!(
+        graph.apply(BuildCommand::AddBearing(rotary)),
+        Err(GraphError::BearingWithoutTarget)
+    );
+}
+
+#[test]
 fn a_head_attachment_off_the_crown_plane_is_rejected() {
     let (mut graph, mut bearing) = piston_graph(false);
     let BearingKind::Piston(ref mut piston) = bearing.kind else {
@@ -218,12 +280,23 @@ fn a_piston_wire_programs_extension_from_collapsed_and_cannot_be_reversed() {
 fn pistons_survive_serialization_and_creation_transforms() {
     let (mut graph, bearing) = piston_graph(true);
     graph.apply(BuildCommand::AddBearing(bearing)).unwrap();
-    let mut document = crate::CreationDocument::from_graph(&graph, "piston", &[]);
+    graph
+        .apply(BuildCommand::AddBearing(BearingSpec::bare(
+            bearing.source,
+            bearing.shared_anchor,
+            bearing.axis,
+            bearing.kind,
+        )))
+        .unwrap();
+    let document = crate::CreationDocument::from_graph(&graph, "piston", &[]);
     let encoded = ron::to_string(&document).unwrap();
-    let decoded: crate::CreationDocument = ron::from_str(&encoded).unwrap();
-    assert_eq!(decoded.bearings[0].kind, bearing.kind);
+    let mut document: crate::CreationDocument = ron::from_str(&encoded).unwrap();
+    assert_eq!(document.bearings[0].kind, bearing.kind);
+    assert!(document.bearings[0].target.is_some());
+    assert!(document.bearings[1].target.is_none());
     document.transform_cardinal(1, IVec3::ZERO);
     let loaded = document.into_graph().unwrap();
+    assert_eq!(loaded.graph.bearings().count(), 2);
     let (_, turned) = loaded.graph.bearings().next().unwrap();
     assert!(
         turned.axis.abs_diff_eq(Vec3::NEG_Z, 1.0e-5),

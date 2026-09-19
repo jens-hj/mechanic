@@ -53,7 +53,7 @@ fn bearing(
     let id = u32::try_from(doc.bearings.len()).unwrap();
     doc.bearings.push(BearingDoc {
         source,
-        target,
+        target: Some(target),
         anchor,
         axis,
         kind,

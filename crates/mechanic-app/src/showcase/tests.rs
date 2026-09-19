@@ -216,7 +216,7 @@ fn assert_bearings_are_centered_on_face_overlaps(graph: &mechanic_core::Construc
             mechanic_core::FaceOwner::Part(part) => graph.part(part).unwrap(),
             mechanic_core::FaceOwner::Ground => unreachable!(),
         };
-        let target = match bearing.target.owner {
+        let target = match bearing.target.unwrap().owner {
             mechanic_core::FaceOwner::Part(part) => graph.part(part).unwrap(),
             mechanic_core::FaceOwner::Ground => unreachable!(),
         };

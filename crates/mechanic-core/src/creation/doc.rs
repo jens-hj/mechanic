@@ -256,6 +256,26 @@ pub struct RigidLinkDoc {
     pub second: u32,
 }
 
+/// Writes a present target as the bare face row, so attached bearings keep their shape.
+#[expect(clippy::ref_option, reason = "serde passes the field by reference")]
+fn serialize_target<S: serde::Serializer>(
+    target: &Option<FaceRefDoc>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    target
+        .as_ref()
+        .expect("an absent target is skipped")
+        .serialize(serializer)
+}
+
+fn deserialize_target<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<FaceRefDoc>, D::Error> {
+    use serde::Deserialize;
+    FaceRefDoc::deserialize(deserializer).map(Some)
+}
+
 /// One-degree-of-freedom bearing in its serialized form.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BearingDoc {
@@ -263,8 +283,14 @@ pub struct BearingDoc {
     pub kind: crate::BearingKind,
     /// Face whose outward normal establishes the axis.
     pub source: FaceRefDoc,
-    /// Compatible face on the attached side.
-    pub target: FaceRefDoc,
+    /// Compatible face on the attached side; absent for a bare piston head.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_target",
+        deserialize_with = "deserialize_target"
+    )]
+    pub target: Option<FaceRefDoc>,
     /// Shared world-space anchor.
     pub anchor: [f32; 3],
     /// Unit world-space axis.

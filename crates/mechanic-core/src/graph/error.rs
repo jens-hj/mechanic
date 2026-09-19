@@ -25,6 +25,9 @@ pub enum GraphError {
     /// A rail already has an attachment on a different carriage face.
     #[error("a linear carriage can only have one occupied attachment face")]
     LinearCarriageOccupied,
+    /// Only hardware that carries its own head has a joint before anything is attached.
+    #[error("this bearing needs a part on both sides")]
+    BearingWithoutTarget,
     /// A piston head already carries an attachment for a different piston.
     #[error("a piston head can only carry one piston's attachments")]
     PistonHeadOccupied,

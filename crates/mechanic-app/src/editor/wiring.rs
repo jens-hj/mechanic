@@ -330,12 +330,7 @@ pub(crate) fn connect_drive_wire(
     };
     let bearings = socket_bearings(graph, socket);
     if bearings.is_empty() {
-        return if matches!(socket.kind, mechanic_core::BearingKind::Piston(_)) {
-            "Cannot wire an empty piston — build or weld onto its head first"
-        } else {
-            "Cannot wire an empty bearing — attach a part through it first"
-        }
-        .to_owned();
+        return "Cannot wire an empty bearing — attach a part through it first".to_owned();
     }
 
     let existing = graph

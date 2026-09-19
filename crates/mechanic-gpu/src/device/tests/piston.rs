@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// A one-metre base carrying a collapsed 2 x 4 piston with a block on its head.
-fn piston_test_creation(side: bool, grounded: bool) -> mechanic_core::CompiledCreation {
+/// A one-metre base carrying a collapsed 2 x 4 piston, bare or with a block on its head.
+fn piston_test_creation(side: bool, grounded: bool, bare: bool) -> mechanic_core::CompiledCreation {
     let mut graph = ConstructionGraph::new();
     let mut spawn = |dimensions, ticks| {
         spawned_part(
@@ -18,7 +18,7 @@ fn piston_test_creation(side: bool, grounded: bool) -> mechanic_core::CompiledCr
                 .unwrap(),
         )
     };
-    let base = spawn([4, 4, 4], IVec3::new(0, 200, 0));
+    let support = spawn([4, 4, 4], IVec3::new(0, 200, 0));
     let (mount, axis, head, face) = if side {
         (
             mechanic_core::PistonMount::Side {
@@ -36,28 +36,28 @@ fn piston_test_creation(side: bool, grounded: bool) -> mechanic_core::CompiledCr
             FaceKind::NegativeY,
         )
     };
-    let load = spawn([1, 1, 1], head);
+    let load = (!bare).then(|| spawn([1, 1, 1], head));
     if grounded {
         graph
             .apply(BuildCommand::Weld(WeldSpec {
-                first: FaceRef::part(base, FaceKind::NegativeY),
+                first: FaceRef::part(support, FaceKind::NegativeY),
                 second: FaceRef::ground(),
             }))
             .unwrap();
     }
+    let source = FaceRef::part(support, FaceKind::PositiveY);
+    let anchor = Vec3::new(0.0, 1.0, 0.0);
+    let kind = mechanic_core::BearingKind::Piston(mechanic_core::Piston {
+        dimensions: mechanic_core::PistonDimensions::new(2, 4).unwrap(),
+        mount,
+    });
     graph
-        .apply(BuildCommand::AddBearing(
-            BearingSpec::new(
-                FaceRef::part(base, FaceKind::PositiveY),
-                FaceRef::part(load, face),
-                Vec3::new(0.0, 1.0, 0.0),
-                axis,
-            )
-            .with_kind(mechanic_core::BearingKind::Piston(mechanic_core::Piston {
-                dimensions: mechanic_core::PistonDimensions::new(2, 4).unwrap(),
-                mount,
-            })),
-        ))
+        .apply(BuildCommand::AddBearing(load.map_or_else(
+            || BearingSpec::bare(source, anchor, axis, kind),
+            |load| {
+                BearingSpec::new(source, FaceRef::part(load, face), anchor, axis).with_kind(kind)
+            },
+        )))
         .unwrap();
     graph.compile().unwrap()
 }
@@ -89,7 +89,7 @@ fn piston_drive(mode: DriveMode, target: f32) -> CoordinateDrive {
 #[test]
 fn piston_extends_to_programmed_lengths_and_holds_its_load_against_gravity() {
     let (device, queue) = test_device().expect("piston GPU regression requires an adapter");
-    let mut creation = piston_test_creation(false, true);
+    let mut creation = piston_test_creation(false, true, false);
     creation.coordinate_drives[0] = piston_drive(DriveMode::Angle, 1.0);
     let gpu = GpuPhysics::new_with_config(
         &device,
@@ -127,7 +127,7 @@ fn piston_extends_to_programmed_lengths_and_holds_its_load_against_gravity() {
 #[test]
 fn unpowered_piston_stays_collapsed_under_its_load() {
     let (device, queue) = test_device().expect("piston GPU regression requires an adapter");
-    let creation = piston_test_creation(false, true);
+    let creation = piston_test_creation(false, true, false);
     let gpu = GpuPhysics::new_with_config(
         &device,
         &queue,
@@ -151,7 +151,7 @@ fn unpowered_piston_stays_collapsed_under_its_load() {
 #[test]
 fn side_mounted_piston_under_sustained_power_stops_at_full_stroke() {
     let (device, queue) = test_device().expect("piston GPU regression requires an adapter");
-    let mut creation = piston_test_creation(true, true);
+    let mut creation = piston_test_creation(true, true, false);
     creation.coordinate_drives[0] = piston_drive(DriveMode::Speed, 1.5);
     let gpu = GpuPhysics::new_with_config(
         &device,
@@ -178,7 +178,7 @@ fn side_mounted_piston_under_sustained_power_stops_at_full_stroke() {
 #[test]
 fn extending_piston_pushes_a_floating_base_back() {
     let (device, queue) = test_device().expect("piston GPU regression requires an adapter");
-    let mut creation = piston_test_creation(true, false);
+    let mut creation = piston_test_creation(true, false, false);
     creation.coordinate_drives[0] = piston_drive(DriveMode::Speed, 1.5);
     let bearing = creation.bearings[0];
     let base = creation.compounds[bearing.compound_a as usize].root_translation;
@@ -202,4 +202,23 @@ fn extending_piston_pushes_a_floating_base_back() {
         movement.x < -0.01,
         "the base received no reaction: {movement:?}"
     );
+}
+
+#[test]
+fn bare_piston_extends_its_own_head_with_collisions_running() {
+    let (device, queue) = test_device().expect("piston GPU regression requires an adapter");
+    for side in [false, true] {
+        let mut creation = piston_test_creation(side, true, true);
+        creation.coordinate_drives[0] = piston_drive(DriveMode::Angle, 1.0);
+        let gpu =
+            GpuPhysics::new_with_config(&device, &queue, &creation, GpuPhysicsConfig::default())
+                .unwrap();
+        for tick in 1..=180 {
+            gpu.dispatch_tick(&device, &queue, tick);
+            let (position, _) = linear_test_snapshot(&gpu, &device, &queue, &creation, tick);
+            if tick > 120 {
+                assert!((position - 1.0).abs() < 0.001, "side {side}: {position}");
+            }
+        }
+    }
 }
