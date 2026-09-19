@@ -39,9 +39,7 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
     let source = std::fs::read_to_string(path)?;
     let instance: mechanic_world::WorldCreationInstanceDoc = ron::from_str(&source)?;
     let loaded = instance.creation.into_graph()?;
-    let creation = loaded
-        .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)?;
+    let creation = loaded.graph.compile_with_sockets([], &loaded.sockets)?;
     let mut roots = MachineDynamics::initial_roots(&creation);
     let surface = if finite {
         Some(finite_support::scene(&creation, &mut roots)?)

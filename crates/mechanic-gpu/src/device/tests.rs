@@ -5,6 +5,7 @@ mod impulses;
 mod linear;
 mod pendulums;
 mod pipelines;
+mod piston;
 mod steering;
 mod suspension;
 mod terrain_scenes;

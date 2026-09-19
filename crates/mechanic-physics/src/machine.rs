@@ -586,7 +586,7 @@ mod tests {
         let loaded = doc.creation.into_graph().unwrap();
         let creation = loaded
             .graph
-            .compile_with_suspension_sockets([], &loaded.sockets)
+            .compile_with_sockets([], &loaded.sockets)
             .unwrap();
         let mut state = MachineState::at_rest(&creation);
         for (index, velocity) in state.velocities.iter_mut().enumerate() {

@@ -14,8 +14,55 @@ use crate::{
     ANCHOR_TOLERANCE_METERS, BearingId, CuboidSpec, DriveProgram, FaceOwner, FaceRef, PartSpec,
     ShapeFeature, ShapeRegion, SolidError, SolidOwner,
 };
-use bevy_math::IVec3;
+use bevy_math::{IVec3, Quat, Vec3};
 use std::collections::BTreeSet;
+
+/// Checks a piston's frame and that its mount lies on the supporting face,
+/// returning the piston's local-to-world rotation.
+fn piston_mount(
+    piston: crate::Piston,
+    anchor: Vec3,
+    axis: Vec3,
+    source: &FaceGeometry,
+) -> Result<Quat, GraphError> {
+    let rotation = piston.rotation(axis)?;
+    let half_section = crate::PistonDimensions::SECTION / 2.0;
+    let mount = match piston.mount {
+        crate::PistonMount::End => FaceGeometry {
+            center: anchor,
+            normal: axis,
+            tangent_u: source.tangent_u,
+            tangent_v: source.tangent_v,
+            profile: FaceProfile::Annulus {
+                inner_radius: 0.0,
+                outer_radius: half_section,
+            },
+        },
+        crate::PistonMount::Side { mount_normal } => FaceGeometry {
+            center: anchor,
+            normal: mount_normal,
+            tangent_u: axis,
+            tangent_v: axis.cross(mount_normal),
+            profile: FaceProfile::Rectangle {
+                half_u: piston.dimensions.closed() / 2.0,
+                half_v: half_section,
+            },
+        },
+    };
+    if source.normal.dot(mount.normal) < 1.0 - axis_cosine_tolerance() {
+        return Err(match piston.mount {
+            crate::PistonMount::End => GraphError::InvalidBearingAxis,
+            crate::PistonMount::Side { .. } => GraphError::BearingFacesNotOpposed,
+        });
+    }
+    if !anchor.is_finite()
+        || (source.center - anchor).dot(source.normal).abs() > ANCHOR_TOLERANCE_METERS
+        || !profiles_overlap(&mount, source)
+    {
+        return Err(GraphError::BearingAnchorOutsideFaces);
+    }
+    Ok(rotation)
+}
 
 impl ConstructionGraph {
     pub(super) fn validate_weld(&self, spec: WeldSpec) -> Result<(), GraphError> {
@@ -169,10 +216,10 @@ impl ConstructionGraph {
         let bearing = self
             .bearing(bearing)
             .ok_or(GraphError::MissingBearing(bearing))?;
-        if matches!(bearing.kind, crate::BearingKind::Suspension(_)) {
+        if !bearing.kind.accepts_drive() {
             return Err(GraphError::IncompatibleDrive);
         }
-        let linear = matches!(bearing.kind, crate::BearingKind::Linear(_));
+        let linear = bearing.kind.is_translational();
         if program
             .states()
             .iter()
@@ -201,6 +248,13 @@ impl ConstructionGraph {
             .get(spec.bearing)
             .ok_or(GraphError::MissingBearing(spec.bearing))?;
         self.validate_drive_units(spec.bearing, spec.program, spec.linear_limits)?;
+        if spec.reversed
+            && self
+                .bearing(spec.bearing)
+                .is_some_and(|bearing| bearing.kind.is_one_sided())
+        {
+            return Err(GraphError::IncompatibleDrive);
+        }
         if self
             .drive_links
             .iter()
@@ -461,12 +515,22 @@ impl ConstructionGraph {
         }
     }
 
-    pub(crate) fn validate_suspension_socket(
-        &self,
-        socket: crate::BearingSocket,
-    ) -> Result<(), GraphError> {
-        let crate::BearingKind::Suspension(spec) = socket.kind else {
-            return Ok(());
+    /// Checks an unattached suspension or piston socket, whose hardware the
+    /// compiler weighs, against its supporting face. Other kinds always pass.
+    ///
+    /// # Errors
+    /// Returns the same frame, axis, and anchor errors an attached bearing would.
+    pub fn validate_socket(&self, socket: crate::BearingSocket) -> Result<(), GraphError> {
+        let spec = match socket.kind {
+            crate::BearingKind::Suspension(spec) => spec,
+            crate::BearingKind::Piston(piston) => {
+                if matches!(socket.source.owner, FaceOwner::Ground) {
+                    return Err(GraphError::BearingOnGround);
+                }
+                let source = self.face_geometry(socket.source)?;
+                return piston_mount(piston, socket.anchor, socket.axis, &source).map(|_| ());
+            }
+            crate::BearingKind::Rotational | crate::BearingKind::Linear(_) => return Ok(()),
         };
         if matches!(socket.source.owner, FaceOwner::Ground) {
             return Err(GraphError::BearingOnGround);
@@ -549,6 +613,35 @@ impl ConstructionGraph {
                 || (target.center - opposite).dot(spec.axis).abs() > ANCHOR_TOLERANCE_METERS
                 || !profiles_overlap(&mount, &source)
                 || !profiles_overlap(&other, &target)
+            {
+                return Err(GraphError::BearingAnchorOutsideFaces);
+            }
+            return Ok(());
+        }
+        if let crate::BearingKind::Piston(piston) = spec.kind {
+            if self.bearings().any(|(_, existing)| {
+                existing.source == spec.source
+                    && existing.shared_anchor.distance(spec.shared_anchor) < ANCHOR_TOLERANCE_METERS
+                    && existing.kind != spec.kind
+            }) {
+                return Err(GraphError::PistonHeadOccupied);
+            }
+            let rotation = piston_mount(piston, spec.shared_anchor, spec.axis, &source)?;
+            if target.normal.dot(spec.axis) > -1.0 + axis_cosine_tolerance() {
+                return Err(GraphError::BearingFacesNotOpposed);
+            }
+            let head = FaceGeometry {
+                center: piston.head_center(spec.shared_anchor, spec.axis, 0.0),
+                normal: spec.axis,
+                tangent_u: rotation * Vec3::X,
+                tangent_v: rotation * Vec3::Z,
+                profile: FaceProfile::Annulus {
+                    inner_radius: 0.0,
+                    outer_radius: piston.dimensions.head_radius(),
+                },
+            };
+            if (target.center - head.center).dot(spec.axis).abs() > ANCHOR_TOLERANCE_METERS
+                || !profiles_overlap(&head, &target)
             {
                 return Err(GraphError::BearingAnchorOutsideFaces);
             }

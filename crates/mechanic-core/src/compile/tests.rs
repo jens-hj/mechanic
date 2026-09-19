@@ -31,9 +31,7 @@ fn unattached_suspension_socket_adds_carried_mass_center_and_inertia_once() {
         dimensions: BearingDimensions::default(),
     };
     let bare = graph.compile().unwrap().compounds[0].mass_properties;
-    let compiled = graph
-        .compile_with_suspension_sockets([], &[socket])
-        .unwrap();
+    let compiled = graph.compile_with_sockets([], &[socket]).unwrap();
     let actual = compiled.compounds[0].mass_properties;
     let elements = spec.mass_elements();
     let added_mass: f32 = elements.iter().map(|element| element.mass).sum();
@@ -61,13 +59,9 @@ fn unattached_suspension_socket_adds_carried_mass_center_and_inertia_once() {
     assert!(actual.inertia.abs_diff_eq(expected_inertia, 0.001));
     assert_eq!(
         compiled,
-        graph
-            .compile_with_suspension_sockets([], &[socket, socket])
-            .unwrap()
+        graph.compile_with_sockets([], &[socket, socket]).unwrap()
     );
-    let anchored = graph
-        .compile_with_suspension_sockets([source], &[socket])
-        .unwrap();
+    let anchored = graph.compile_with_sockets([source], &[socket]).unwrap();
     assert!(anchored.compounds[0].is_static);
     assert!(anchored.compounds[0].mass_properties.inverse_mass.abs() < f32::EPSILON);
     assert!((anchored.compounds[0].mass_properties.mass - total_mass).abs() < 0.001);
@@ -110,12 +104,7 @@ fn attached_suspension_socket_does_not_duplicate_either_endpoint_mass() {
         ))
         .unwrap();
     let attached = graph.compile().unwrap();
-    assert_eq!(
-        attached,
-        graph
-            .compile_with_suspension_sockets([], &[socket])
-            .unwrap()
-    );
+    assert_eq!(attached, graph.compile_with_sockets([], &[socket]).unwrap());
     let total_mass: f32 = attached
         .compounds
         .iter()

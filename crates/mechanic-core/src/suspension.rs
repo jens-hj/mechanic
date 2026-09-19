@@ -4,6 +4,7 @@
 //! piston-area damping (22,000 N·s/m³). Single-stage shock packaging is a game
 //! construction rule, not a physical law. All user dimensions use 2.5 mm ticks.
 
+use crate::BearingMassElement;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -461,21 +462,6 @@ pub enum CompressionLimit {
     BumpStop,
 }
 
-/// One axisymmetric mass contribution, assigned to a rigid mount.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SuspensionMassElement {
-    /// True for the opposite attachment; false for the source.
-    pub opposite: bool,
-    /// Mass in kg.
-    pub mass: f32,
-    /// Axial centre relative to the source plane, in metres.
-    pub center: f32,
-    /// Inertia about the suspension axis, in kg·m².
-    pub axial_inertia: f32,
-    /// Inertia about either transverse axis, in kg·m².
-    pub transverse_inertia: f32,
-}
-
 /// Independent components sharing one pair of rigid mounts.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "SuspensionInputs", into = "SuspensionInputs")]
@@ -675,12 +661,12 @@ impl SuspensionSpec {
         clippy::missing_panics_doc,
         reason = "constructor validation guarantees shock packaging"
     )]
-    pub fn mass_elements(self) -> Vec<SuspensionMassElement> {
+    pub fn mass_elements(self) -> Vec<BearingMassElement> {
         let p = self.plates();
         let length = self.initial_length();
         let mut elements = Vec::new();
         let mut add = |opposite, mass, center, radius, height| {
-            elements.push(SuspensionMassElement {
+            elements.push(BearingMassElement {
                 opposite,
                 mass,
                 center,

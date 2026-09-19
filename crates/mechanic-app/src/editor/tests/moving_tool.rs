@@ -262,7 +262,7 @@ fn rotational_and_linear_attachments_and_controller_wiring_return_to_build_space
                 mechanic_core::DriveLinkSpec::new_linear(
                     controller,
                     bearing,
-                    LinearBearingDimensions::default(),
+                    LinearBearingDimensions::default().bounds(),
                 )
             } else {
                 mechanic_core::DriveLinkSpec::new(controller, bearing)

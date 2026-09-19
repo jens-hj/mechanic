@@ -669,7 +669,7 @@ fn builder_pipe_hierarchy_matches_exhaustive_pairs_at_rotated_poses() {
     let loaded = instance.creation.into_graph().unwrap();
     let creation = loaded
         .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)
+        .compile_with_sockets([], &loaded.sockets)
         .unwrap();
     let geometry = MachineCollisionGeometry::new(&creation, 1).unwrap();
     let state = crate::MachineState::at_rest(&creation);

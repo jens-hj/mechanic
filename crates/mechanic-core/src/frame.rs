@@ -408,9 +408,7 @@ impl ConstructionGraph {
             if first {
                 bearing.shared_anchor = transform.point(bearing.shared_anchor);
                 bearing.axis = transform.vector(bearing.axis);
-                if let crate::BearingKind::Linear(rail) = &mut bearing.kind {
-                    rail.mount_normal = transform.vector(rail.mount_normal);
-                }
+                bearing.kind.rotate(|vector| transform.vector(vector));
                 *staged.bearings.get_mut(id).expect("bearing is live") = bearing;
             }
         }

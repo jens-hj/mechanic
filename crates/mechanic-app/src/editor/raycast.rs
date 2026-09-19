@@ -6,7 +6,7 @@ use crate::pose::{
     live_placed_bearing_pose, simulation_bearing_pose, simulation_placed_bearing_pose,
 };
 use crate::simulation::state::AppSimulation;
-use crate::{builder, linear_editor, suspension_render};
+use crate::{builder, linear_editor, piston_editor, suspension_render};
 use bevy::prelude::{Quat, Vec3};
 use mechanic_core::{BearingDimensions, CompiledCreation, ConstructionGraph, FaceOwner, PartId};
 use mechanic_gpu::GpuTransform;
@@ -121,6 +121,9 @@ pub(crate) fn raycast_placed_bearings(
     rotational
         .into_iter()
         .chain(linear_editor::raycast_scene(
+            graph, simulation, bearings, origin, direction,
+        ))
+        .chain(piston_editor::raycast_scene(
             graph, simulation, bearings, origin, direction,
         ))
         .chain(suspension)

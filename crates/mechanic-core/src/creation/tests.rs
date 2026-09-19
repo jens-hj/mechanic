@@ -61,7 +61,7 @@ fn suspension_round_trip_and_cardinal_placement_preserve_attached_and_socket_mas
     let original = round_trip(&document).into_graph().unwrap();
     let original_compiled = original
         .graph
-        .compile_with_suspension_sockets([], &original.sockets)
+        .compile_with_sockets([], &original.sockets)
         .unwrap();
     let mut transformed = round_trip(&document);
     transformed.transform_cardinal(1, IVec3::new(8, 0, 4));
@@ -79,7 +79,7 @@ fn suspension_round_trip_and_cardinal_placement_preserve_attached_and_socket_mas
     assert!(bearing.axis.abs_diff_eq(Vec3::NEG_Z, 1.0e-6));
     let compiled = loaded
         .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)
+        .compile_with_sockets([], &loaded.sockets)
         .unwrap();
     for (before, after) in original_compiled.compounds.iter().zip(&compiled.compounds) {
         assert!((before.mass_properties.mass - after.mass_properties.mass).abs() < 0.001);

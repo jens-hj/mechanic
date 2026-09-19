@@ -7,12 +7,12 @@ use crate::editor::preview::EditorVisuals;
 use crate::editor::raycast::hovered_part;
 use crate::editor::state::{EditorGraph, EditorState};
 use crate::hotbar::{SelectedTool, Tool};
-use crate::linear_render;
 use crate::pose::live_placed_bearing_pose;
 use crate::render::mesh::bearing::single_bearing_mesh;
 use crate::render::mesh::drive::wire_drag_preview_mesh;
 use crate::render::mesh::primitives::degenerate_overlay_mesh;
 use crate::simulation::state::AppSimulation;
+use crate::{linear_render, piston_render};
 use bevy::prelude::{
     Assets, ButtonInput, Component, Cuboid, Local, Mesh, Quat, Res, ResMut, Single, Transform,
     Vec3, With, format,
@@ -351,13 +351,10 @@ pub(crate) fn connect_drive_wire(
             .map(|&bearing| {
                 BuildCommand::AddDriveLink(
                     match graph.bearing(bearing).expect("live bearing").kind {
-                        mechanic_core::BearingKind::Rotational
-                        | mechanic_core::BearingKind::Suspension(_) => {
-                            DriveLinkSpec::new(controller, bearing)
+                        kind if kind.is_translational() && kind.accepts_drive() => {
+                            DriveLinkSpec::new_linear(controller, bearing, kind.bounds())
                         }
-                        mechanic_core::BearingKind::Linear(rail) => {
-                            DriveLinkSpec::new_linear(controller, bearing, rail.dimensions)
-                        }
+                        _ => DriveLinkSpec::new(controller, bearing),
                     },
                 )
             })
@@ -448,6 +445,11 @@ pub(crate) fn reverse_drive_wires(
     if links.is_empty() {
         return None;
     }
+    if socket.kind.is_one_sided() {
+        return Some(
+            "A piston extends one way from collapsed; its wire has no direction".to_owned(),
+        );
+    }
     let previous = EditorSnapshot::capture(graph, state);
     let mut staged = graph.begin_edit();
     let commands = links
@@ -511,6 +513,18 @@ pub(crate) fn update_wire_hover_preview(
                     ),
                 ));
             }
+            if let mechanic_core::BearingKind::Piston(piston) = socket.kind {
+                let (body, _) = piston_render::socket_transforms(&graph.0, &simulation, socket);
+                let closed = piston.dimensions.closed();
+                let section = mechanic_core::PistonDimensions::SECTION;
+                return Some(
+                    body.mul_transform(
+                        Transform::from_translation(Vec3::Y * (closed / 2.0)).with_scale(
+                            Vec3::new(section, closed, section) * WIRE_HOVER_BLOCK_SCALE,
+                        ),
+                    ),
+                );
+            }
             let (anchor, axis) = live_placed_bearing_pose(&graph.0, &simulation, socket)?;
             Some(
                 Transform::from_translation(anchor)
@@ -545,7 +559,8 @@ pub(crate) fn update_wire_hover_preview(
                             single_bearing_mesh(socket.dimensions)
                         }
                         mechanic_core::BearingKind::Linear(_)
-                        | mechanic_core::BearingKind::Suspension(_) => Cuboid::default().into(),
+                        | mechanic_core::BearingKind::Suspension(_)
+                        | mechanic_core::BearingKind::Piston(_) => Cuboid::default().into(),
                     },
                 ),
                 Some(WireEnd::Controller(_) | WireEnd::Input(_) | WireEnd::Seat(_)) => {

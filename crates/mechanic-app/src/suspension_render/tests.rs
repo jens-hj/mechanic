@@ -121,8 +121,8 @@ fn finish_modulation_preserves_guide_colour_over_existing_dark_textures() {
 #[test]
 fn insertion_preview_retains_nonzero_joint_compression_and_source_pose() {
     let (graph, socket) = fixture();
-    let candidate = crate::builder::suspension_block_candidate(socket).unwrap();
-    let graph = crate::builder::stage_suspension_block(
+    let candidate = crate::builder::plate_block_candidate(socket).unwrap();
+    let graph = crate::builder::stage_plate_block(
         &graph,
         socket,
         candidate,

@@ -337,6 +337,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::LinearBearing, _, _, _) => {
                 "Place the rail underside on a flat face; attach blocks or cylinders to one carriage face: top or either side. End faces are unavailable; both rail ends remain physical stops.".to_owned()
             }
+            (false, Tool::Piston, _, _, _) => {
+                "R picks end mount or one of four side mounts. Hold left-click and move to set closed length; R switches to stages; release to place. Attach blocks or cylinders to the head.".to_owned()
+            }
             (false, Tool::Hammer, _, _, _) => {
                 "The Hammer is available in the live World".to_owned()
             }
@@ -442,6 +445,10 @@ pub(crate) fn capture(sources: &Sources) -> Model {
         format!("{rotate}  Cycle delete plane ({})", drag.plane.label())
     } else if selected_tool == Tool::LinearBearing {
         format!("{rotate}  Rotate travel direction (4 directions)")
+    } else if selected_tool == Tool::Piston {
+        format!(
+            "{rotate}  Cycle mount (end, 4 side directions); closed length / stages while holding"
+        )
     } else {
         format!("{rotate}  Cycle plane while dragging or deleting")
     };
@@ -505,6 +512,14 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 )
             } else if matches!(selected_tool, Tool::Spring | Tool::Shock) {
                 state.suspension.preview.and_then(|s| if let mechanic_core::BearingKind::Suspension(spec) = s.kind { Some(spec) } else { None }).map_or_else(|| "Suspension · choose a flat construction face or compatible shared mounts".into(), |spec| format!("Suspension · {:.1} mm extended · {:.1} mm travel · limited by {:?} · Connector to adjust", spec.extended_length()*1000.0, spec.compression_limit().0*1000.0, spec.compression_limit().1))
+            } else if selected_tool == Tool::Piston {
+                let dimensions = state.piston.dimensions;
+                format!(
+                    "Piston · {} blocks closed · {} stages · {:.2} m stroke · extension measured from collapsed",
+                    dimensions.blocks(),
+                    dimensions.stages(),
+                    dimensions.stroke()
+                )
             } else if selected_tool == Tool::LinearBearing {
                 let dimensions = state.linear.dimensions;
                 format!(
@@ -529,6 +544,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                         | Tool::Cylinder
                         | Tool::Bearing
                         | Tool::LinearBearing
+                        | Tool::Piston
                         | Tool::Spring
                         | Tool::Shock
                         | Tool::Controller
@@ -589,6 +605,7 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
         Some(
             Tool::Bearing
             | Tool::LinearBearing
+            | Tool::Piston
             | Tool::Spring
             | Tool::Shock
             | Tool::Hammer

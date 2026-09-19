@@ -971,7 +971,14 @@ pub(crate) fn update_previews(
             }
         }
         (
-            Some(Tool::Hammer | Tool::Connector | Tool::LinearBearing | Tool::Spring | Tool::Shock),
+            Some(
+                Tool::Hammer
+                | Tool::Connector
+                | Tool::LinearBearing
+                | Tool::Piston
+                | Tool::Spring
+                | Tool::Shock,
+            ),
             _,
         ) => {}
     }

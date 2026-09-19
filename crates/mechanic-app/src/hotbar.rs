@@ -14,6 +14,7 @@ pub(crate) enum Tool {
     Cylinder,
     Bearing,
     LinearBearing,
+    Piston,
     Spring,
     Shock,
     Weld,
@@ -136,6 +137,7 @@ pub(crate) enum PlaceableItem {
     #[default]
     Bearing,
     LinearBearing,
+    Piston,
     Spring,
     Shock,
     ControlBlock,
@@ -244,9 +246,10 @@ impl WheelContext {
 }
 
 impl PlaceableItem {
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::Bearing,
         Self::LinearBearing,
+        Self::Piston,
         Self::Spring,
         Self::Shock,
         Self::ControlBlock,
@@ -267,6 +270,7 @@ impl PlaceableItem {
         match self {
             Self::Bearing => Tool::Bearing,
             Self::LinearBearing => Tool::LinearBearing,
+            Self::Piston => Tool::Piston,
             Self::Spring => Tool::Spring,
             Self::Shock => Tool::Shock,
             Self::ControlBlock => Tool::Controller,
@@ -284,6 +288,7 @@ impl PlaceableItem {
         match tool {
             Tool::Bearing => Some(Self::Bearing),
             Tool::LinearBearing => Some(Self::LinearBearing),
+            Tool::Piston => Some(Self::Piston),
             Tool::Spring => Some(Self::Spring),
             Tool::Shock => Some(Self::Shock),
             Tool::Controller => Some(Self::ControlBlock),
@@ -307,6 +312,7 @@ impl Tool {
             Self::Layer => "Layer",
             Self::Bearing => "Bearing",
             Self::LinearBearing => "Linear Bearing",
+            Self::Piston => "Piston",
             Self::Spring => "Spring",
             Self::Shock => "Shock",
             Self::Weld => "Weld",
@@ -452,6 +458,7 @@ mod tests {
             [
                 PlaceableItem::Bearing,
                 PlaceableItem::LinearBearing,
+                PlaceableItem::Piston,
                 PlaceableItem::Spring,
                 PlaceableItem::Shock,
                 PlaceableItem::ControlBlock,

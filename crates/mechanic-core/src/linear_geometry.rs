@@ -6,6 +6,7 @@
 use bevy_math::{Vec2, Vec3};
 
 use crate::LinearBearingDimensions;
+use crate::hardware_mesh::triangulate;
 
 /// A material slot using the existing aluminium or steel texture family.
 #[derive(Clone, Copy, Debug)]
@@ -275,47 +276,6 @@ fn profile(
             chunks[cap].triangle(p, Vec3::X * sign);
         }
     }
-}
-
-fn triangulate(points: &[Vec2], orientation: f32) -> Vec<[usize; 3]> {
-    let mut remaining: Vec<_> = (0..points.len()).collect();
-    let mut triangles = Vec::with_capacity(points.len() - 2);
-    while remaining.len() > 3 {
-        let ear = (0..remaining.len())
-            .find(|&i| {
-                let indices = [
-                    remaining[(i + remaining.len() - 1) % remaining.len()],
-                    remaining[i],
-                    remaining[(i + 1) % remaining.len()],
-                ];
-                let [a, b, c] = indices.map(|index| points[index]);
-                if (b - a).perp_dot(c - b) * orientation <= 0.0 {
-                    return false;
-                }
-                !remaining.iter().any(|index| {
-                    if indices.contains(index) {
-                        return false;
-                    }
-                    let p = points[*index];
-                    [
-                        (b - a).perp_dot(p - a),
-                        (c - b).perp_dot(p - b),
-                        (a - c).perp_dot(p - c),
-                    ]
-                    .iter()
-                    .all(|cross| cross * orientation >= -1.0e-10)
-                })
-            })
-            .expect("linear slide profiles are simple polygons");
-        triangles.push([
-            remaining[(ear + remaining.len() - 1) % remaining.len()],
-            remaining[ear],
-            remaining[(ear + 1) % remaining.len()],
-        ]);
-        remaining.remove(ear);
-    }
-    triangles.push([remaining[0], remaining[1], remaining[2]]);
-    triangles
 }
 
 fn fixing(mesh: &mut LinearMeshChunk, centre: Vec3, radius: f32, normal: Vec3) {

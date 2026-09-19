@@ -41,7 +41,8 @@ use crate::simulation::visuals::sync_simulation_visual_cache;
 use crate::world::world_playing;
 use crate::{
     avatar, controls, freeze, linear_editor, linear_render, live_edit, performance,
-    performance_capture, scene, suspension_render, tool_fx, ui, weld_tool,
+    performance_capture, piston_editor, piston_render, scene, suspension_render, tool_fx, ui,
+    weld_tool,
 };
 
 /// Startup phases other plugins order themselves against.
@@ -207,6 +208,7 @@ impl Plugin for FramePlugin {
                 (
                     handle_bearing_dimension_shortcuts,
                     linear_editor::controls,
+                    piston_editor::controls,
                     handle_cylinder_dimension_shortcuts,
                 )
                     .chain()
@@ -255,6 +257,7 @@ impl Plugin for FramePlugin {
                     maintain_space_simulation,
                     sync_simulation_visual_cache,
                     linear_render::sync_linear_bearing_visuals,
+                    piston_render::sync_piston_visuals,
                     suspension_render::sync_suspension_visuals,
                     run_drive_sequencer,
                     advance_simulation.run_if(world_playing),

@@ -26,7 +26,11 @@ fn linear_wire() -> (ConstructionGraph, crate::DriveLinkSpec) {
     let controller = spawn_controller(&mut graph);
     (
         graph,
-        crate::DriveLinkSpec::new_linear(controller, id, LinearBearingDimensions::default()),
+        crate::DriveLinkSpec::new_linear(
+            controller,
+            id,
+            LinearBearingDimensions::default().bounds(),
+        ),
     )
 }
 

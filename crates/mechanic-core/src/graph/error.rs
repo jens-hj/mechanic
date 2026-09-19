@@ -25,6 +25,9 @@ pub enum GraphError {
     /// A rail already has an attachment on a different carriage face.
     #[error("a linear carriage can only have one occupied attachment face")]
     LinearCarriageOccupied,
+    /// A piston head already carries an attachment for a different piston.
+    #[error("a piston head can only carry one piston's attachments")]
+    PistonHeadOccupied,
     /// Program units or programmable travel do not match the physical joint.
     #[error(
         "drive targets and limits must match the bearing kind and remain inside physical travel"
@@ -33,6 +36,9 @@ pub enum GraphError {
     /// Invalid linear-bearing frame.
     #[error(transparent)]
     LinearBearing(#[from] crate::LinearBearingError),
+    /// Invalid piston dimensions or mounting frame.
+    #[error(transparent)]
+    Piston(#[from] crate::PistonError),
     /// Invalid suspension geometry or attempted powered suspension.
     #[error(transparent)]
     Suspension(#[from] crate::SuspensionError),

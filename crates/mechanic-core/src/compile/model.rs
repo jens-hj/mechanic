@@ -495,8 +495,7 @@ impl CompiledCreation {
             return CoordinateDrive::PASSIVE;
         };
         let linear = bearing.kind.is_translational();
-        if target.is_linear() != linear || matches!(bearing.kind, crate::BearingKind::Suspension(_))
-        {
+        if target.is_linear() != linear || !bearing.kind.accepts_drive() {
             let [min_angle, max_angle] = bearing.kind.bounds();
             return CoordinateDrive {
                 min_angle,

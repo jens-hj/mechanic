@@ -427,7 +427,7 @@ mod tests {
         let loaded = doc.creation.into_graph().unwrap();
         let creation = loaded
             .graph
-            .compile_with_suspension_sockets([], &loaded.sockets)
+            .compile_with_sockets([], &loaded.sockets)
             .unwrap();
         for phase in [0.0_f64, 0.1, -0.2] {
             let mut state = MachineState::at_rest(&creation);
@@ -512,7 +512,7 @@ mod tests {
         let loaded = document.into_graph().unwrap();
         let creation = loaded
             .graph
-            .compile_with_suspension_sockets([], &loaded.sockets)
+            .compile_with_sockets([], &loaded.sockets)
             .unwrap();
         let centre = |poses: &[BodyPose]| {
             poses

@@ -800,6 +800,10 @@ pub(crate) fn preview_mesh(
         graph, parts, &sockets,
     ))
     .expect("rail and part previews share triangle attributes");
+    mesh.merge(&crate::piston_render::weld_preview_mesh(
+        graph, parts, &sockets,
+    ))
+    .expect("piston and part previews share triangle attributes");
     mesh
 }
 

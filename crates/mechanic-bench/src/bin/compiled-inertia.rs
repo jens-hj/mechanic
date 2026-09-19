@@ -104,9 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let source = std::fs::read_to_string(&arguments[0])?;
         let doc: mechanic_world::WorldCreationInstanceDoc = ron::from_str(&source)?;
         let loaded = doc.creation.into_graph()?;
-        loaded
-            .graph
-            .compile_with_suspension_sockets([], &loaded.sockets)?
+        loaded.graph.compile_with_sockets([], &loaded.sockets)?
     };
     measure(&Experiment::new(creation)?, &arguments[0], articulated)
 }

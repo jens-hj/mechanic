@@ -338,9 +338,7 @@ fn saved_car() -> Result<CompiledCreation, Box<dyn Error>> {
         "../../../tests/fixtures/driven_car_instance.ron"
     ))?;
     let loaded = instance.creation.into_graph()?;
-    Ok(loaded
-        .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)?)
+    Ok(loaded.graph.compile_with_sockets([], &loaded.sockets)?)
 }
 
 // Cuboids of the given block dimensions at lattice positions.

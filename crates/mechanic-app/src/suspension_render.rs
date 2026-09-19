@@ -342,7 +342,7 @@ pub(super) fn render_mesh(
 /// Captures reuse this same material path as interactive suspension rendering.
 pub(super) fn finish_material(
     base: &ConstructionRenderMaterial,
-    finish: mechanic_core::SuspensionFinish,
+    finish: mechanic_core::HardwareFinish,
 ) -> ConstructionRenderMaterial {
     let mut material = base.clone();
     let representative = super::chroma::material_profile(finish.material).representative_srgb;

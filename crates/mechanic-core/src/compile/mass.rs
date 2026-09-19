@@ -20,17 +20,21 @@ pub(super) fn calculate_mass_properties<'a>(
     sockets: &[crate::BearingSocket],
 ) -> Result<MassProperties, TopologyError> {
     let member_parts = parts.clone().map(|(id, _)| id).collect::<BTreeSet<_>>();
-    let mut suspension_masses = Vec::new();
+    let mut hardware_masses = Vec::new();
     let mut seen_mounts = Vec::new();
     for (_, bearing) in graph.bearings() {
-        let crate::BearingKind::Suspension(spec) = bearing.kind else {
+        let elements = bearing.kind.mass_elements();
+        if elements.is_empty() {
             continue;
-        };
+        }
+        let origin = bearing
+            .kind
+            .mass_origin(bearing.shared_anchor, bearing.axis);
         let key = (
             bearing.source,
             bearing.shared_anchor.to_array().map(f32::to_bits),
         );
-        for element in spec.mass_elements() {
+        for element in elements {
             let owner = if element.opposite {
                 bearing.target.owner
             } else {
@@ -49,9 +53,9 @@ pub(super) fn calculate_mass_properties<'a>(
             }
             let axis = bearing.axis;
             let outer = Mat3::from_cols(axis * axis.x, axis * axis.y, axis * axis.z);
-            suspension_masses.push(WorldMassProperties {
+            hardware_masses.push(WorldMassProperties {
                 mass: element.mass,
-                center: bearing.shared_anchor + axis * element.center,
+                center: origin + axis * element.center,
                 inertia: Mat3::IDENTITY * element.transverse_inertia
                     + outer * (element.axial_inertia - element.transverse_inertia),
             });
@@ -71,9 +75,10 @@ pub(super) fn calculate_mass_properties<'a>(
     }
     let mut seen_sockets = Vec::new();
     for socket in sockets {
-        let crate::BearingKind::Suspension(spec) = socket.kind else {
+        let elements = socket.kind.mass_elements();
+        if elements.is_empty() {
             continue;
-        };
+        }
         let FaceOwner::Part(owner) = socket.source.owner else {
             continue;
         };
@@ -83,7 +88,7 @@ pub(super) fn calculate_mass_properties<'a>(
         let key = (socket.source, socket.anchor.to_array().map(f32::to_bits));
         if seen_sockets.contains(&key)
             || graph.bearings().any(|(_, bearing)| {
-                matches!(bearing.kind, crate::BearingKind::Suspension(_))
+                !bearing.kind.mass_elements().is_empty()
                     && bearing.source == socket.source
                     && bearing.shared_anchor == socket.anchor
             })
@@ -92,14 +97,13 @@ pub(super) fn calculate_mass_properties<'a>(
         }
         seen_sockets.push(key);
         let axis = socket.axis;
+        let origin = socket.kind.mass_origin(socket.anchor, axis);
         let outer = Mat3::from_cols(axis * axis.x, axis * axis.y, axis * axis.z);
-        suspension_masses.extend(spec.mass_elements().into_iter().map(|element| {
-            WorldMassProperties {
-                mass: element.mass,
-                center: socket.anchor + axis * element.center,
-                inertia: Mat3::IDENTITY * element.transverse_inertia
-                    + outer * (element.axial_inertia - element.transverse_inertia),
-            }
+        hardware_masses.extend(elements.into_iter().map(|element| WorldMassProperties {
+            mass: element.mass,
+            center: origin + axis * element.center,
+            inertia: Mat3::IDENTITY * element.transverse_inertia
+                + outer * (element.axial_inertia - element.transverse_inertia),
         }));
     }
     let identifying_part = parts.clone().next().expect("weld groups are non-empty").0;
@@ -139,7 +143,7 @@ pub(super) fn calculate_mass_properties<'a>(
 
     let contributions = contributions
         .into_iter()
-        .chain(suspension_masses)
+        .chain(hardware_masses)
         .collect::<Vec<_>>();
     let total_mass = contributions.iter().map(|body| body.mass).sum::<f32>();
     let center_of_mass = contributions

@@ -415,6 +415,13 @@ pub(crate) fn update_hover(
         ray.origin,
         ray_direction,
     ))
+    .chain(piston_editor::raycast_scene(
+        &graph.0,
+        None,
+        &state.placed_bearings,
+        ray.origin,
+        ray_direction,
+    ))
     .chain(suspension_pick.map(|(index, distance, _)| (index, distance)))
     .min_by(|a, b| a.1.total_cmp(&b.1));
     let Some(tool) = selection.active_editor_tool() else {
@@ -447,6 +454,7 @@ pub(crate) fn update_hover(
                 cylinder_settings.dimensions.outer_diameter(),
             ))),
             Tool::LinearBearing
+            | Tool::Piston
             | Tool::Spring
             | Tool::Shock
             | Tool::Block
@@ -1528,6 +1536,10 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
         ) => None,
         (Tool::LinearBearing, _) => {
             linear_editor::refresh(graph, state);
+            state.preview_error.clone()
+        }
+        (Tool::Piston, _) => {
+            piston_editor::refresh(graph, state);
             state.preview_error.clone()
         }
         (Tool::Bearing, _) => state.hovered.and_then(|hit| {

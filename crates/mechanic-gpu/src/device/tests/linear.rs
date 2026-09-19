@@ -105,7 +105,9 @@ pub(super) fn assert_mixed_linear_constraints(
             - qa * bearing.local_anchor_a;
         let axis = qa * bearing.local_axis_a;
         let (position_error, rotation_error) = match bearing.kind {
-            mechanic_core::BearingKind::Linear(_) | mechanic_core::BearingKind::Suspension(_) => {
+            mechanic_core::BearingKind::Linear(_)
+            | mechanic_core::BearingKind::Suspension(_)
+            | mechanic_core::BearingKind::Piston(_) => {
                 let displacement = delta.dot(axis);
                 let [lower, upper] = bearing.kind.bounds();
                 let residual = delta - axis * displacement.clamp(lower, upper);

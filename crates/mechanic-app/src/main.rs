@@ -33,6 +33,8 @@ mod multitool;
 mod pause_menu;
 mod performance;
 mod performance_capture;
+mod piston_editor;
+mod piston_render;
 mod pose;
 mod render;
 mod render_diagnostics;

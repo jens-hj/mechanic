@@ -378,15 +378,11 @@ impl CreationDocument {
             bearing.anchor =
                 (rotate_y_vec3(Vec3::from_array(bearing.anchor), yaw) + translation).to_array();
             bearing.axis = rotate_y_vec3(Vec3::from_array(bearing.axis), yaw).to_array();
-            if let crate::BearingKind::Linear(rail) = &mut bearing.kind {
-                rail.mount_normal = rotate_y_vec3(rail.mount_normal, yaw);
-            }
+            bearing.kind.rotate(|vector| rotate_y_vec3(vector, yaw));
         }
         for socket in &mut self.sockets {
             socket.axis = rotate_y_vec3(Vec3::from_array(socket.axis), yaw).to_array();
-            if let crate::BearingKind::Linear(rail) = &mut socket.kind {
-                rail.mount_normal = rotate_y_vec3(rail.mount_normal, yaw);
-            }
+            socket.kind.rotate(|vector| rotate_y_vec3(vector, yaw));
             socket.anchor =
                 (rotate_y_vec3(Vec3::from_array(socket.anchor), yaw) + translation).to_array();
         }
@@ -569,9 +565,7 @@ impl CreationDocument {
                     if view_to_build != crate::ConstructionFrame::IDENTITY {
                         socket.anchor = view_to_build.point(socket.anchor);
                         socket.axis = view_to_build.vector(socket.axis);
-                        if let crate::BearingKind::Linear(ref mut rail) = socket.kind {
-                            rail.mount_normal = view_to_build.vector(rail.mount_normal);
-                        }
+                        socket.kind.rotate(|vector| view_to_build.vector(vector));
                     }
                     socket
                 })
@@ -923,7 +917,7 @@ impl CreationDocument {
                         socket.inner_diameter,
                     )?,
                 };
-                graph.validate_suspension_socket(socket)?;
+                graph.validate_socket(socket)?;
                 Ok(socket)
             })
             .collect::<Result<Vec<_>, CreationError>>()?;

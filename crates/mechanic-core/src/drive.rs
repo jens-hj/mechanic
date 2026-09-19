@@ -11,6 +11,10 @@ pub const MAX_DRIVE_SPEED_RAD_S: f32 =
 /// Largest supported drive angle magnitude, in radians.
 pub const MAX_DRIVE_LIMIT_RADIANS: f32 = core::f32::consts::TAU;
 
+/// Largest programmable linear displacement, in metres: the stroke of the
+/// longest piston, which exceeds the half travel of the longest rail.
+pub const MAX_LINEAR_TRAVEL_METERS: f32 = 12.0;
+
 /// Largest number of states one driven bearing can hold.
 pub const MAX_DRIVE_STATES: usize = 8;
 
@@ -185,7 +189,7 @@ impl DriveTarget {
             return Err(DriveProgramError::NonFiniteTarget);
         }
         match self {
-            Self::LinearPosition(position) if position.abs() > 3.925 => {
+            Self::LinearPosition(position) if position.abs() > MAX_LINEAR_TRAVEL_METERS => {
                 Err(DriveProgramError::AngleOutOfRange)
             }
             Self::LinearSpeed(speed)
@@ -885,7 +889,11 @@ impl LinearDriveLimits {
         if !max_force.is_finite() || max_force <= 0.0 {
             return Err(DriveLimitsError::NonPositiveTorque);
         }
-        if !minimum.is_finite() || !maximum.is_finite() || minimum < -3.925 || maximum > 3.925 {
+        if !minimum.is_finite()
+            || !maximum.is_finite()
+            || minimum < -MAX_LINEAR_TRAVEL_METERS
+            || maximum > MAX_LINEAR_TRAVEL_METERS
+        {
             return Err(DriveLimitsError::LimitOutOfRange);
         }
         if minimum >= maximum {

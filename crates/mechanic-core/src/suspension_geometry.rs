@@ -2,41 +2,22 @@
 //! mounting face. Compression is in metres, measured from maximum extension.
 //! Topology and UVs are cached; deformation updates positions and normals only.
 
-use crate::{ConstructionMaterial, ShockBodyEnd, SpringSpec, SuspensionSpec};
+use crate::hardware_mesh::{self, MeshSink, lathe};
+use crate::{ConstructionMaterial, HardwareFinish, ShockBodyEnd, SpringSpec, SuspensionSpec};
 use bevy_math::Vec3;
 use core::f32::consts::{PI, TAU};
 
-/// Existing construction texture and procedural finish modulation.
-#[derive(Clone, Copy, Debug)]
-pub struct SuspensionFinish {
-    /// Stable finish name.
-    pub name: &'static str,
-    /// Construction texture family.
-    pub material: ConstructionMaterial,
-    /// sRGB base colour.
-    pub color: [u8; 3],
-    /// Perceptual roughness.
-    pub roughness: f32,
-    /// Metallic reflectance.
-    pub metalness: f32,
-}
 const fn finish(
     name: &'static str,
     material: ConstructionMaterial,
     color: [u8; 3],
     roughness: f32,
     metalness: f32,
-) -> SuspensionFinish {
-    SuspensionFinish {
-        name,
-        material,
-        color,
-        roughness,
-        metalness,
-    }
+) -> HardwareFinish {
+    HardwareFinish::new(name, material, color, roughness, metalness)
 }
 /// Original guide finish contrast, using existing textures without an atlas.
-pub const SUSPENSION_FINISHES: [SuspensionFinish; 12] = [
+pub const SUSPENSION_FINISHES: [HardwareFinish; 12] = [
     finish(
         "plate",
         ConstructionMaterial::Aluminium,
@@ -160,6 +141,19 @@ pub struct SuspensionMeshChunk {
     rest_normals: Vec<[f32; 3]>,
     deformation: Deformation,
 }
+impl MeshSink for SuspensionMeshChunk {
+    fn vertex_count(&self) -> u32 {
+        u32::try_from(self.positions.len()).expect("bounded mesh")
+    }
+    fn vertex(&mut self, p: Vec3, n: Vec3, uv: [f32; 2]) {
+        self.positions.push(p.to_array());
+        self.normals.push(n.to_array());
+        self.uvs.push(uv);
+    }
+    fn triangles(&mut self, indices: &[u32]) {
+        self.indices.extend_from_slice(indices);
+    }
+}
 impl SuspensionMeshChunk {
     fn new(
         spec: SuspensionSpec,
@@ -179,11 +173,6 @@ impl SuspensionMeshChunk {
             rest_normals: Vec::new(),
             deformation,
         }
-    }
-    fn vertex(&mut self, p: Vec3, n: Vec3, uv: [f32; 2]) {
-        self.positions.push(p.to_array());
-        self.normals.push(n.to_array());
-        self.uvs.push(uv);
     }
     fn freeze(&mut self) {
         self.rest_positions.clone_from(&self.positions);
@@ -254,48 +243,6 @@ impl SuspensionMeshChunk {
     }
 }
 
-// Each profile edge has its own vertices, retaining hard machined corners.
-fn lathe(
-    chunk: &mut SuspensionMeshChunk,
-    profile: &[[f32; 2]],
-    segments: u16,
-    offset: Vec3,
-    flip: bool,
-) {
-    for edge in profile.windows(2) {
-        let [r0, y0] = edge[0];
-        let [r1, y1] = edge[1];
-        let normal = Vec3::new(y1 - y0, r0 - r1, 0.0).normalize_or_zero();
-        let base = u32::try_from(chunk.positions.len()).expect("bounded mesh");
-        for i in 0..=segments {
-            let theta = TAU * f32::from(i) / f32::from(segments);
-            let (s, c) = theta.sin_cos();
-            for [r, y] in edge {
-                let mut p = Vec3::new(r * c, *y, r * s);
-                let mut n = Vec3::new(normal.x * c, normal.y, normal.x * s);
-                if flip {
-                    p.x = -p.x;
-                    p.y = -p.y;
-                    n.x = -n.x;
-                    n.y = -n.y;
-                }
-                let uv = if (y1 - y0).abs() < 1e-7 {
-                    [r * c / 1.5, r * s / 1.5]
-                } else {
-                    [theta * r / 1.5, y / 1.5]
-                };
-                chunk.vertex(p + offset, n, uv);
-            }
-        }
-        for i in 0..u32::from(segments) {
-            let a = base + 2 * i;
-            // Y tangent cross angular tangent points outward.
-            chunk
-                .indices
-                .extend_from_slice(&[a, a + 1, a + 2, a + 2, a + 1, a + 3]);
-        }
-    }
-}
 fn ring(
     chunk: &mut SuspensionMeshChunk,
     outer: f32,
@@ -305,19 +252,7 @@ fn ring(
     flip: bool,
     offset: Vec3,
 ) {
-    lathe(
-        chunk,
-        &[
-            [inner, y],
-            [outer, y],
-            [outer, y + height],
-            [inner, y + height],
-            [inner, y],
-        ],
-        28,
-        offset,
-        flip,
-    );
+    hardware_mesh::ring(chunk, [outer, inner], height, y, 28, flip, offset);
 }
 fn rigid(spec: SuspensionSpec, opposite: bool, finish: usize) -> SuspensionMeshChunk {
     SuspensionMeshChunk::new(

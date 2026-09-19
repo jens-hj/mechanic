@@ -6,9 +6,7 @@ pub(super) fn run(path: &str, options: &scale::Options) -> Result<(), Box<dyn Er
     let instance: mechanic_world::WorldCreationInstanceDoc =
         ron::from_str(&std::fs::read_to_string(path)?)?;
     let loaded = instance.creation.into_graph()?;
-    let creation = loaded
-        .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)?;
+    let creation = loaded.graph.compile_with_sockets([], &loaded.sockets)?;
     let state = MachineState::at_rest(&creation);
     let geometry = MachineCollisionGeometry::new(&creation, 1)?;
     let scene = TerrainContactScene::default();
@@ -72,9 +70,7 @@ pub(super) fn scene_ticks(
     };
     document.append(pipe)?;
     let loaded = document.into_graph()?;
-    let unfixed = loaded
-        .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)?;
+    let unfixed = loaded.graph.compile_with_sockets([], &loaded.sockets)?;
     let mut fixed = Vec::new();
     for collider in &unfixed.colliders {
         let body = &unfixed.compounds[collider.compound_index as usize];
@@ -89,9 +85,7 @@ pub(super) fn scene_ticks(
     }
     fixed.sort();
     fixed.dedup();
-    let creation = loaded
-        .graph
-        .compile_with_suspension_sockets(fixed, &loaded.sockets)?;
+    let creation = loaded.graph.compile_with_sockets(fixed, &loaded.sockets)?;
     let bearing = creation
         .bearings
         .iter()

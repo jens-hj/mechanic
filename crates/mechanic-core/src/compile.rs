@@ -37,7 +37,7 @@ impl ConstructionGraph {
     /// Returns [`TopologyError`] when the graph is empty, a bearing collapses
     /// into a weld group, or derived mass properties are invalid.
     pub fn compile(&self) -> Result<CompiledCreation, TopologyError> {
-        self.compile_with_suspension_sockets([], &[])
+        self.compile_with_sockets([], &[])
     }
 
     /// Compiles the graph while treating compounds containing any supplied part as static.
@@ -52,17 +52,17 @@ impl ConstructionGraph {
         &self,
         static_parts: impl IntoIterator<Item = PartId>,
     ) -> Result<CompiledCreation, TopologyError> {
-        self.compile_with_suspension_sockets(static_parts, &[])
+        self.compile_with_sockets(static_parts, &[])
     }
 
-    /// Compiles suspension sockets as carried mass on their source compounds.
+    /// Compiles suspension and piston sockets as carried mass on their source compounds.
     ///
     /// An unattached socket contributes its entire assembly mass and inertia.
-    /// Sockets already represented by an attached suspension bearing are ignored.
+    /// Sockets already represented by an attached bearing are ignored.
     ///
     /// # Errors
     /// Returns the same topology and capacity errors as [`Self::compile`].
-    pub fn compile_with_suspension_sockets(
+    pub fn compile_with_sockets(
         &self,
         static_parts: impl IntoIterator<Item = PartId>,
         sockets: &[crate::BearingSocket],
@@ -363,6 +363,17 @@ fn compile_graph(
             match bearing.kind {
                 crate::BearingKind::Rotational => (0, 0, [0; 3], 0),
                 crate::BearingKind::Suspension(_) => (2, 0, [0; 3], 0),
+                crate::BearingKind::Piston(piston) => (
+                    3,
+                    u32::from(piston.dimensions.blocks()),
+                    match piston.mount {
+                        crate::PistonMount::End => [0; 3],
+                        crate::PistonMount::Side { mount_normal } => {
+                            mount_normal.to_array().map(f32::to_bits)
+                        }
+                    },
+                    piston.dimensions.stages(),
+                ),
                 crate::BearingKind::Linear(rail) => (
                     1,
                     rail.dimensions.width().to_bits(),

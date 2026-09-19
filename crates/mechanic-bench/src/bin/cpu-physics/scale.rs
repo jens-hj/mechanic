@@ -61,9 +61,7 @@ pub(super) fn run(options: &Options) -> Result<(), Box<dyn Error>> {
         }
     }
     let loaded = combined.into_graph()?;
-    let creation = loaded
-        .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)?;
+    let creation = loaded.graph.compile_with_sockets([], &loaded.sockets)?;
     let mut state = MachineState::at_rest(&creation);
     let origin = instance.root_pose.translation.0;
     if !instance.joint_coordinates.is_empty() {

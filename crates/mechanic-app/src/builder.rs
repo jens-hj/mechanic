@@ -15,9 +15,10 @@ pub(crate) use bearings::{
     bearing_overlaps_candidate, bearing_overlaps_cylinder_candidate, bearing_support_face,
     bearing_support_face_excluding, center_cylinder_candidate_on_bearing, linear_block_candidate,
     linear_cylinder_candidate, linear_mount_overlaps_face, linear_support_face_excluding,
-    newly_locked_bearings, stage_bearing_attachment_in_bounds, stage_linear_block_batch_in_bounds,
-    stage_linear_block_volume_in_bounds, stage_linear_cylinder_in_bounds, stage_suspension_block,
-    stage_suspension_cylinder, suspension_block_candidate, suspension_cylinder_candidate,
+    newly_locked_bearings, plate_block_candidate, plate_cylinder_candidate,
+    stage_bearing_attachment_in_bounds, stage_linear_block_batch_in_bounds,
+    stage_linear_block_volume_in_bounds, stage_linear_cylinder_in_bounds, stage_plate_block,
+    stage_plate_cylinder,
 };
 #[cfg(test)]
 pub(crate) use bearings::{bearing_anchor_from_hit, stage_bearing_attachment};

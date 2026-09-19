@@ -363,14 +363,19 @@ pub(super) fn refresh(
         .filter(|(_, s)| matches!(s.kind, mechanic_core::BearingKind::Suspension(_)));
     let rubber_target = tool == Tool::Cylinder && material == ConstructionMaterial::Rubber
         && host.is_some_and(|(_,s)| matches!(s.kind, mechanic_core::BearingKind::Suspension(spec) if spec.shock().is_some()));
-    if let Some((_, socket)) = host
+    // A piston head takes attachments exactly as a suspension's opposite plate does.
+    let plate = state
+        .hovered_bearing
+        .and_then(|i| state.placed_bearings.get(i).copied())
+        .filter(|socket| socket.moving_plate().is_some());
+    if let Some(socket) = plate
         && matches!(tool, Tool::Block | Tool::Cylinder)
         && !rubber_target
     {
         state.suspension.attachment = Some(socket);
         state.preview_error = None;
         if tool == Tool::Block {
-            match builder::suspension_block_candidate(socket) {
+            match builder::plate_block_candidate(socket) {
                 Ok(mut candidate) => {
                     candidate.spec = candidate.spec.with_material(material);
                     state.preview = Some(candidate);
@@ -378,7 +383,7 @@ pub(super) fn refresh(
                 Err(e) => state.preview_error = Some(e),
             }
         } else {
-            match builder::suspension_cylinder_candidate(socket, cylinder_dimensions) {
+            match builder::plate_cylinder_candidate(socket, cylinder_dimensions) {
                 Ok(mut candidate) => {
                     candidate.spec = candidate.spec.with_material(material);
                     state.cylinder_preview = Some(candidate);
@@ -540,7 +545,7 @@ pub(super) fn attach(
                 .preview
                 .ok_or(PlacementError::BearingOutsideFace)
                 .and_then(|candidate| {
-                    builder::stage_suspension_block(
+                    builder::stage_plate_block(
                         graph,
                         socket,
                         candidate,
@@ -553,7 +558,7 @@ pub(super) fn attach(
                 .cylinder_preview
                 .ok_or(PlacementError::BearingOutsideFace)
                 .and_then(|candidate| {
-                    builder::stage_suspension_cylinder(
+                    builder::stage_plate_cylinder(
                         graph,
                         socket,
                         candidate,
@@ -859,10 +864,9 @@ mod tests {
         .unwrap();
         let (mut graph, mut state) = fixture(spec);
         let socket = state.placed_bearings[0];
-        let candidate = builder::suspension_block_candidate(socket).unwrap();
-        graph =
-            builder::stage_suspension_block(&graph, socket, candidate, &[], state.placement_bounds)
-                .unwrap();
+        let candidate = builder::plate_block_candidate(socket).unwrap();
+        graph = builder::stage_plate_block(&graph, socket, candidate, &[], state.placement_bounds)
+            .unwrap();
         assert_eq!(graph.bearing_count(), 1);
         assert_eq!(graph.compile().unwrap().bearings.len(), 1);
         let id = graph.bearings().next().unwrap().0;

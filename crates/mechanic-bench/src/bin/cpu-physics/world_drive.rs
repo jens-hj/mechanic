@@ -62,9 +62,7 @@ pub(super) fn run(
         edits: &edits,
     };
 
-    let loose = loaded
-        .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)?;
+    let loose = loaded.graph.compile_with_sockets([], &loaded.sockets)?;
     let mut bounds = BTreeMap::new();
     for collider in &loose.colliders {
         let body = &loose.compounds[collider.compound_index as usize];
@@ -103,7 +101,7 @@ pub(super) fn run(
         .collect::<Vec<_>>();
     let creation = loaded
         .graph
-        .compile_with_suspension_sockets(anchored.iter().copied(), &loaded.sockets)?;
+        .compile_with_sockets(anchored.iter().copied(), &loaded.sockets)?;
     let geometry = MachineCollisionGeometry::new(&creation, 1)?;
 
     let throttle = DriveKey::new('W').ok_or("invalid key")?;

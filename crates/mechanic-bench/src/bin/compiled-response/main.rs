@@ -92,7 +92,7 @@ mod tests {
         let loaded = instance.creation.into_graph().unwrap();
         loaded
             .graph
-            .compile_with_suspension_sockets([], &loaded.sockets)
+            .compile_with_sockets([], &loaded.sockets)
             .unwrap()
     }
 

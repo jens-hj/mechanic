@@ -159,20 +159,18 @@ impl DriveLinkSpec {
         }
     }
 
-    /// Creates a centred linear program with the rail's full physical travel.
+    /// Creates a stationary linear program spanning a translational joint's
+    /// full physical travel, as [`crate::BearingKind::bounds`] reports it.
     ///
     /// # Panics
-    /// Panics if validated rail dimensions violate the drive envelope invariants.
-    pub fn new_linear(
-        controller: PartId,
-        bearing: BearingId,
-        dimensions: crate::LinearBearingDimensions,
-    ) -> Self {
-        let [minimum, maximum] = dimensions.bounds();
+    /// Panics if the bounds violate the drive envelope invariants, which
+    /// validated rail and piston dimensions never do.
+    pub fn new_linear(controller: PartId, bearing: BearingId, bounds: [f32; 2]) -> Self {
+        let [minimum, maximum] = bounds;
         let mut link = Self::new(controller, bearing);
         link.linear_limits = Some(
             crate::LinearDriveLimits::new(1.0, f32::MAX, minimum, maximum)
-                .expect("validated rail travel"),
+                .expect("validated linear travel"),
         );
         link.program = DriveProgram::new(
             &[crate::DriveState::new(DriveTarget::LinearSpeed(0.0)).expect("zero speed")],

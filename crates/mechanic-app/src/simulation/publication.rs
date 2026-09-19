@@ -342,7 +342,7 @@ pub(crate) fn prepare_world_physics(
             CompiledCreation::default()
         } else {
             graph
-                .compile_with_suspension_sockets(anchored, &suspension_sockets)
+                .compile_with_sockets(anchored, &suspension_sockets)
                 .map_err(|error| error.to_string())?
         };
         let compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
@@ -817,7 +817,9 @@ pub(crate) fn coordinate_from_body_states(
                 - std::f32::consts::PI;
             (position, (angular_b - angular_a).dot(axis))
         }
-        mechanic_core::BearingKind::Linear(_) | mechanic_core::BearingKind::Suspension(_) => {
+        mechanic_core::BearingKind::Linear(_)
+        | mechanic_core::BearingKind::Suspension(_)
+        | mechanic_core::BearingKind::Piston(_) => {
             let arm_a = rotation_a * bearing.local_anchor_a;
             let arm_b = rotation_b * bearing.local_anchor_b;
             let separation = Vec3::from_slice(&pose_b.position[..3]) + arm_b

@@ -11,11 +11,14 @@ mod frame;
 mod gearbox;
 mod geometry;
 mod graph;
+mod hardware_mesh;
 mod id;
 mod linear;
 mod linear_geometry;
 mod obb;
 mod pipe_junction;
+mod piston;
+mod piston_geometry;
 mod region;
 mod runtime_bodies;
 mod shape;
@@ -51,7 +54,7 @@ pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
     DriveLimitsError, DriveName, DriveProgram, DriveProgramError, DriveRelease, DriveState,
     DriveTarget, DriveTrigger, LinearDriveLimits, MAX_DRIVE_DWELL_SECONDS, MAX_DRIVE_LIMIT_RADIANS,
-    MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
+    MAX_DRIVE_NAME_BYTES, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES, MAX_LINEAR_TRAVEL_METERS,
 };
 pub use dynamics::{CompiledDynamics, DynamicsComponent, LoopConstraintPattern, SpatialInertia};
 pub use edit::ConstructionEditDelta;
@@ -81,13 +84,14 @@ pub use graph::{
     MIN_BEARING_DIAMETER_GAP, MIN_BEARING_OUTER_DIAMETER, PendingOperation, RigidLinkSpec,
     SeatControllerLinkSpec, StructuralComponent, WeldSpec,
 };
+pub use hardware_mesh::HardwareFinish;
 pub use id::{
     BearingId, DriveLinkId, InputSeatLinkId, PartId, RegionId, RigidLinkId, SeatControllerLinkId,
     ShapeFeatureId, WeldId,
 };
 pub use linear::{
-    BearingKind, CarriageFace, LINEAR_METERS_PER_RADIAN, LINEAR_METERS_PER_REVOLUTION,
-    LinearBearing, LinearBearingDimensions, LinearBearingError,
+    BearingKind, BearingMassElement, CarriageFace, LINEAR_METERS_PER_RADIAN,
+    LINEAR_METERS_PER_REVOLUTION, LinearBearing, LinearBearingDimensions, LinearBearingError,
 };
 pub use linear_geometry::{
     LINEAR_FINISHES, LinearFinish, LinearMeshChunk, LinearMeshOwner, linear_bearing_meshes,
@@ -97,6 +101,8 @@ pub use pipe_junction::{
     PipeJunctionBox, PipeJunctionSurface, PipeJunctionTriangle, pipe_junction_triangles,
     pipe_junction_wall_boxes,
 };
+pub use piston::{Piston, PistonDimensions, PistonError, PistonMount};
+pub use piston_geometry::{PISTON_FINISHES, PistonMeshChunk, PistonMeshOwner, piston_meshes};
 pub use region::{CageIndex, RegionError, ShapeRegion};
 pub use runtime_bodies::RuntimeBox;
 pub use shape::{
@@ -111,11 +117,10 @@ pub use solid::{
 };
 pub use suspension::{
     BumpStopSpec, CompressionLimit, MountPlates, ShockBodyEnd, ShockGeometry, ShockSpec,
-    SpringSpec, SuspensionError, SuspensionMassElement, SuspensionSpec,
+    SpringSpec, SuspensionError, SuspensionSpec,
 };
 pub use suspension_geometry::{
-    SUSPENSION_FINISHES, SuspensionFinish, SuspensionMeshChunk, SuspensionMeshOwner,
-    suspension_meshes,
+    SUSPENSION_FINISHES, SuspensionMeshChunk, SuspensionMeshOwner, suspension_meshes,
 };
 pub use units::{
     ANCHOR_TOLERANCE_METERS, AXIS_TOLERANCE_DEGREES, GRAVITY, MACHINE_PART_DENSITY_KG_M3,

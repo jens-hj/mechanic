@@ -126,7 +126,7 @@ fn settle_captured(instance: &str, ticks: u64) -> (MachineState, Vec<f64>, f64) 
     let loaded = instance.creation.into_graph().unwrap();
     let creation = loaded
         .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)
+        .compile_with_sockets([], &loaded.sockets)
         .unwrap();
     let shapes = collision_shapes(&creation);
     let lowest_points = |state: &MachineState| {

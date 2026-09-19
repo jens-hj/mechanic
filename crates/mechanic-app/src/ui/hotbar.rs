@@ -590,6 +590,16 @@ pub(super) fn icon(tool: Tool) -> Element {
                     fill:accent.speed stroke:(width:2px color:ink.fg)
             }
         },
+        Tool::Piston => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:5px y:12px) size:(w:16px h:16px) radius:2px exponent:1
+                    fill:ink.muted stroke:(width:2px color:ink.fg)
+                line from:(x:21px y:20px) to:(x:33px y:20px)
+                    stroke:(width:6px color:accent.speed)
+                line from:(x:34px y:11px) to:(x:34px y:29px)
+                    stroke:(width:3px color:ink.fg)
+            }
+        },
         Tool::Weld => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
                 line from:(x:10.58px y:26.1px) to:(x:29.42px y:12.9px)

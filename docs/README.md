@@ -15,6 +15,7 @@ follows.
 
 - [Independent suspension](suspension.md)
 - [Linear bearings](linear-bearings.md)
+- [Pistons](pistons.md)
 - [Feature weld placement](feature-weld-placement.md)
 - [Live construction editing and dimension-link freezing](live-construction-editing.md)
 - [Multitool guide](multitool/GUIDE.md)

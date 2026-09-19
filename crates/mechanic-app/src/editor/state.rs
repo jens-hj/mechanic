@@ -13,7 +13,10 @@ use crate::editor::raycast::SimulationHit;
 use crate::editor::shape_actions::{DEFAULT_LAYER_THICKNESS_METERS, LayerPreview, RegionDrag};
 use crate::editor::wiring::WireDrag;
 use crate::simulation::publication::WorldPhysicsRevision;
-use crate::{linear_editor, live_edit, shape_tool, suspension_editor, weld_publication, weld_tool};
+use crate::{
+    linear_editor, live_edit, piston_editor, shape_tool, suspension_editor, weld_publication,
+    weld_tool,
+};
 use bevy::prelude::{Resource, Vec2, Vec3};
 use mechanic_core::{CageIndex, ConstructionGraph, PartId, RegionId};
 
@@ -33,6 +36,7 @@ pub(crate) struct EditorState {
     pub(crate) edit_context: Option<live_edit::EditContext>,
     pub(crate) world_hovered_part: Option<PartId>,
     pub(crate) linear: linear_editor::LinearToolState,
+    pub(crate) piston: piston_editor::PistonToolState,
     pub(crate) suspension: suspension_editor::SuspensionToolState,
     pub(crate) linear_attachment: Option<PlacedBearing>,
     pub(crate) placement_bounds: PlacementBounds,

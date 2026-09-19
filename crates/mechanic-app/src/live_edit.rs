@@ -87,9 +87,7 @@ pub(crate) fn transform_bearing(
 ) -> PlacedBearing {
     bearing.anchor = frame.point(bearing.anchor);
     bearing.axis = frame.vector(bearing.axis);
-    if let mechanic_core::BearingKind::Linear(rail) = &mut bearing.kind {
-        rail.mount_normal = frame.vector(rail.mount_normal);
-    }
+    bearing.kind.rotate(|vector| frame.vector(vector));
     bearing
 }
 

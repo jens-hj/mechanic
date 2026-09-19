@@ -206,9 +206,7 @@ impl ConstructionGraph {
         for (id, mut bearing) in bearings {
             bearing.shared_anchor = transform.point(bearing.shared_anchor);
             bearing.axis = transform.vector(bearing.axis);
-            if let crate::BearingKind::Linear(rail) = &mut bearing.kind {
-                rail.mount_normal = transform.vector(rail.mount_normal);
-            }
+            bearing.kind.rotate(|vector| transform.vector(vector));
             if let Some(destination) = self.bearings.get_mut(id) {
                 *destination = bearing;
             }

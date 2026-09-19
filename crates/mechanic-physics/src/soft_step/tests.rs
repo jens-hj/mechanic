@@ -665,7 +665,7 @@ fn captured(instance: &str) -> (CompiledCreation, MachineState) {
     let loaded = instance.creation.into_graph().unwrap();
     let creation = loaded
         .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)
+        .compile_with_sockets([], &loaded.sockets)
         .unwrap();
     let mut state = MachineState::at_rest(&creation);
     let lowest = clearance(&creation, &state);
@@ -907,6 +907,65 @@ fn a_joint_limit_holds_against_a_stalled_motor() {
     }
     let state = &world.machine.snapshot().state;
     assert!(state.velocities[row].abs() < 0.05, "{state:?}");
+}
+
+// An anchored one-metre base with a collapsed 2 x 4 piston on top and a block on its head.
+fn piston_lift() -> CompiledCreation {
+    let mut graph = ConstructionGraph::new();
+    let base = spawn(&mut graph, IVec3::new(0, 200, 0), [4, 4, 4]);
+    let load = spawn(&mut graph, IVec3::new(0, 650, 0), [1, 1, 1]);
+    graph
+        .apply(BuildCommand::AddBearing(
+            BearingSpec::new(
+                FaceRef::part(base, FaceKind::PositiveY),
+                FaceRef::part(load, FaceKind::NegativeY),
+                Vec3::Y,
+                Vec3::Y,
+            )
+            .with_kind(BearingKind::Piston(mechanic_core::Piston {
+                dimensions: mechanic_core::PistonDimensions::new(2, 4).unwrap(),
+                mount: mechanic_core::PistonMount::End,
+            })),
+        ))
+        .unwrap();
+    graph.compile_with_static_parts(vec![base]).unwrap()
+}
+
+#[test]
+fn a_piston_lifts_its_load_to_each_programmed_extension_and_rests_collapsed_without_power() {
+    let creation = piston_lift();
+    let seek = |target| CoordinateDrive {
+        mode: DriveMode::Angle,
+        target_angle: target,
+        max_speed: 2.0,
+        max_acceleration: 100.0,
+        source_a_max_acceleration: 100.0,
+        source_a_no_load_speed: 2.0,
+        min_angle: 0.0,
+        max_angle: 2.0,
+        ..CoordinateDrive::PASSIVE
+    };
+    let state = MachineState::at_rest(&creation);
+    let mut world = World::new(creation, state);
+    for pose in &mut world.machine.completed.state.poses {
+        pose.position.y += 10.0;
+    }
+    for _ in 0..30 {
+        let state = world.tick(GRAVITY);
+        assert!(state.coordinates[0].abs() < 1e-3, "{state:?}");
+    }
+    for target in [1.0_f32, 0.25, 2.0] {
+        let command = world.command(0, seek(target));
+        world.tick_with(GRAVITY, &[command]);
+        for _ in 0..180 {
+            world.tick(GRAVITY);
+        }
+        let reached = world.machine.snapshot().state.coordinates[0];
+        assert!(
+            (reached - f64::from(target)).abs() < 0.01,
+            "target {target}: reached {reached}"
+        );
+    }
 }
 
 #[test]
@@ -1327,7 +1386,7 @@ fn spinning_pipe_preserves_distant_wishbone_support_and_free_rotation() {
         .unwrap();
     let creation = loaded
         .graph
-        .compile_with_suspension_sockets([root], &loaded.sockets)
+        .compile_with_sockets([root], &loaded.sockets)
         .unwrap();
     let pipe_body = creation
         .colliders

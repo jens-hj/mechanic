@@ -141,7 +141,7 @@ fn suspension_travel_with_rotating_ancestors_stays_inside_the_envelope() {
     let loaded = instance.creation.into_graph().unwrap();
     let creation = loaded
         .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)
+        .compile_with_sockets([], &loaded.sockets)
         .unwrap();
     let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
     let mut initial = MachineState::at_rest(&creation);
@@ -383,7 +383,7 @@ fn a_car_moving_as_one_keeps_its_internal_contacts_but_not_its_terrain_contacts(
     let loaded = instance.creation.into_graph().unwrap();
     let creation = loaded
         .graph
-        .compile_with_suspension_sockets([], &loaded.sockets)
+        .compile_with_sockets([], &loaded.sockets)
         .unwrap();
     let geometry = MachineCollisionGeometry::new(&creation, 7).unwrap();
     let assembly = (0..geometry.assembly_count)

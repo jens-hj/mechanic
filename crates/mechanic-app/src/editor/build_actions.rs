@@ -30,8 +30,8 @@ use crate::editor::wiring::{
 use crate::hotbar::{SelectedMaterial, SelectedTool, Tool};
 use crate::simulation::state::AppSimulation;
 use crate::{
-    builder, hotbar, linear_editor, live_edit, suspension_controls, suspension_editor, ui,
-    weld_tool, world,
+    builder, hotbar, linear_editor, live_edit, piston_editor, suspension_controls,
+    suspension_editor, ui, weld_tool, world,
 };
 use bevy::prelude::{ButtonInput, IVec3, Res, ResMut, Vec3, format, vec};
 use mechanic_core::{
@@ -47,6 +47,24 @@ pub(crate) struct PlacedBearing {
     pub(crate) source: mechanic_core::FaceRef,
     pub(crate) anchor: Vec3,
     pub(crate) dimensions: BearingDimensions,
+}
+
+impl PlacedBearing {
+    /// Centre and radius, at the build pose, of the round plate a suspension or
+    /// piston offers to attachments.
+    pub(crate) fn moving_plate(self) -> Option<(Vec3, f32)> {
+        match self.kind {
+            mechanic_core::BearingKind::Suspension(spec) => Some((
+                self.anchor + self.axis * spec.initial_length(),
+                spec.plates().diameter / 2.0,
+            )),
+            mechanic_core::BearingKind::Piston(piston) => Some((
+                piston.head_center(self.anchor, self.axis, 0.0),
+                piston.dimensions.head_radius(),
+            )),
+            mechanic_core::BearingKind::Rotational | mechanic_core::BearingKind::Linear(_) => None,
+        }
+    }
 }
 
 pub(crate) fn appearance_target(
@@ -206,6 +224,10 @@ pub(crate) fn handle_build_actions(
         if actions.just_released(GameAction::Primary) && state.suspension.drag.take().is_some() {
             clear_hover(state);
             state.feedback = Some("Suspension drag cancelled over interface".to_owned());
+        }
+        if actions.just_released(GameAction::Primary) && state.piston.drag.take().is_some() {
+            clear_hover(state);
+            state.feedback = Some("Piston placement cancelled over interface".to_owned());
         }
         if actions.just_released(GameAction::Primary) && state.block_drag.take().is_some() {
             clear_hover(state);
@@ -527,6 +549,10 @@ pub(crate) fn handle_build_actions(
         suspension_editor::drag_actions(&mut graph.0, state, &mut history, &actions);
         return;
     }
+    if tool == Tool::Piston {
+        piston_editor::drag_actions(&graph.0, state, &mut history, &actions);
+        return;
+    }
     if tool == Tool::Cylinder
         && (state.suspension.insertion.is_some() || state.suspension.drag.is_some())
     {
@@ -783,6 +809,7 @@ pub(crate) fn handle_build_actions(
         Tool::Layer => unreachable!("layer actions are handled before this match"),
         Tool::Weld => unreachable!("weld actions are handled by weld_tool"),
         Tool::LinearBearing => linear_editor::place(&graph.0, state, &mut history),
+        Tool::Piston => unreachable!("piston actions are handled before this match"),
         Tool::Spring | Tool::Shock => suspension_editor::place(&mut graph.0, state, &mut history),
         Tool::Bearing => {
             let Some(hit) = state.hovered else {
@@ -1079,6 +1106,9 @@ pub(crate) fn bearing_uses_socket(
                     && a.mount_normal.abs_diff_eq(b.mount_normal, 1.0e-5)
                     && bearing.axis.abs_diff_eq(socket.axis, 1.0e-5)
             }
+            (mechanic_core::BearingKind::Piston(a), mechanic_core::BearingKind::Piston(b)) => {
+                a == b && bearing.axis.abs_diff_eq(socket.axis, 1.0e-5)
+            }
             _ => false,
         }
 }
@@ -1155,6 +1185,8 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
                 socket.axis,
                 &deleted,
             ),
+            // A piston goes with its support; it has no other face to move to.
+            mechanic_core::BearingKind::Piston(_) => None,
         };
         if let Some(source) = replacement {
             let migrated = PlacedBearing { source, ..socket };
@@ -1192,7 +1224,8 @@ pub(crate) fn stage_part_deletion_preserving_bearings(
                     face_geometry_from_ref(socket.source, Some(&staged)).normal
                 }
                 mechanic_core::BearingKind::Linear(_)
-                | mechanic_core::BearingKind::Suspension(_) => socket.axis,
+                | mechanic_core::BearingKind::Suspension(_)
+                | mechanic_core::BearingKind::Piston(_) => socket.axis,
             };
             targets.into_iter().map(move |(target, kind)| {
                 BuildCommand::AddBearing(

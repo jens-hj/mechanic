@@ -559,13 +559,13 @@ pub(super) fn bearing_ring_contains_face_center(
     )
 }
 
-pub(crate) fn suspension_block_candidate(
+pub(crate) fn plate_block_candidate(
     socket: crate::editor::build_actions::PlacedBearing,
 ) -> Result<PlacementCandidate, PlacementError> {
-    let BearingKind::Suspension(spec) = socket.kind else {
+    let Some((plate, _)) = socket.moving_plate() else {
         return Err(PlacementError::BearingOutsideFace);
     };
-    let center = socket.anchor + socket.axis * (spec.initial_length() + 0.125);
+    let center = plate + socket.axis * 0.125;
     Ok(PlacementCandidate {
         spec: CuboidSpec::new(
             [1; 3],
@@ -576,20 +576,19 @@ pub(crate) fn suspension_block_candidate(
         )
         .map_err(|e| PlacementError::Graph(e.to_string()))?,
         attached_face: face_for_normal(-socket.axis),
-        anchor: Some(socket.anchor + socket.axis * spec.initial_length()),
+        anchor: Some(plate),
         support: PlacementSupport::Bearing,
     })
 }
 
-pub(crate) fn suspension_cylinder_candidate(
+pub(crate) fn plate_cylinder_candidate(
     socket: crate::editor::build_actions::PlacedBearing,
     dimensions: CylinderDimensions,
 ) -> Result<CylinderPlacementCandidate, PlacementError> {
-    let BearingKind::Suspension(spec) = socket.kind else {
+    let Some((plate, _)) = socket.moving_plate() else {
         return Err(PlacementError::BearingOutsideFace);
     };
-    let center =
-        socket.anchor + socket.axis * (spec.initial_length() + dimensions.axial_length() / 2.0);
+    let center = plate + socket.axis * (dimensions.axial_length() / 2.0);
     Ok(CylinderPlacementCandidate {
         spec: CylinderSpec::new(
             dimensions,
@@ -599,12 +598,12 @@ pub(crate) fn suspension_cylinder_candidate(
             ),
         ),
         attached_face: FaceKind::NegativeY,
-        anchor: Some(socket.anchor + socket.axis * spec.initial_length()),
+        anchor: Some(plate),
         support: PlacementSupport::Bearing,
     })
 }
 
-pub(super) fn suspension_attachment(
+pub(super) fn plate_attachment(
     socket: crate::editor::build_actions::PlacedBearing,
     targets: &[PartId],
 ) -> BearingAttachment<'_> {
@@ -618,7 +617,7 @@ pub(super) fn suspension_attachment(
     }
 }
 
-pub(crate) fn stage_suspension_block(
+pub(crate) fn stage_plate_block(
     graph: &ConstructionGraph,
     socket: crate::editor::build_actions::PlacedBearing,
     candidate: PlacementCandidate,
@@ -629,13 +628,13 @@ pub(crate) fn stage_suspension_block(
         graph,
         candidate,
         &[candidate.spec],
-        Some(suspension_attachment(socket, targets)),
+        Some(plate_attachment(socket, targets)),
         None,
         bounds,
     )
 }
 
-pub(crate) fn stage_suspension_cylinder(
+pub(crate) fn stage_plate_cylinder(
     graph: &ConstructionGraph,
     socket: crate::editor::build_actions::PlacedBearing,
     candidate: CylinderPlacementCandidate,
@@ -645,7 +644,7 @@ pub(crate) fn stage_suspension_cylinder(
     stage_connected_cylinder(
         graph,
         candidate,
-        Some(suspension_attachment(socket, targets)),
+        Some(plate_attachment(socket, targets)),
         None,
         bounds,
     )

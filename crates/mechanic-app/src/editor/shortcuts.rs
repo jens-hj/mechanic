@@ -21,7 +21,9 @@ use crate::pause_menu::PauseMenuState;
 use crate::render::authored::{AUTHORED_ORIENTATION_COUNT, AUTHORED_ORIENTATIONS};
 use crate::render::mesh::drive::axis_tangents;
 use crate::simulation::state::AppSimulation;
-use crate::{camera, linear_editor, live_edit, suspension_editor, suspension_render, ui};
+use crate::{
+    camera, linear_editor, live_edit, piston_editor, suspension_editor, suspension_render, ui,
+};
 use bevy::prelude::{
     ButtonInput, Camera, GlobalTransform, Res, ResMut, Single, Vec2, Vec3, Window, With, format,
 };
@@ -197,6 +199,7 @@ pub(crate) enum PipetteSetup {
     Bearing(BearingDimensions),
     Linear(mechanic_core::LinearBearing, Vec3),
     Suspension(mechanic_core::SuspensionSpec, usize),
+    Piston(mechanic_core::Piston, Vec3),
     Part(PartId),
 }
 
@@ -207,6 +210,7 @@ pub(crate) fn pipette_socket(socket: PlacedBearing) -> PipetteSetup {
         mechanic_core::BearingKind::Suspension(spec) => {
             PipetteSetup::Suspension(spec, usize::from(spec.spring().is_none()))
         }
+        mechanic_core::BearingKind::Piston(piston) => PipetteSetup::Piston(piston, socket.axis),
     }
 }
 
@@ -263,13 +267,19 @@ pub(crate) fn pipette_at_ray(
                 suspension_editor::component_index(spec, owner),
             ));
         }
-        if let Some((index, distance)) = linear_editor::raycast_scene(
-            graph,
-            Some(simulation),
-            &state.placed_bearings,
-            origin,
-            direction,
-        ) && part.is_none_or(|part| distance < part.distance)
+        let sockets = &state.placed_bearings;
+        if let Some((index, distance)) =
+            linear_editor::raycast_scene(graph, Some(simulation), sockets, origin, direction)
+                .into_iter()
+                .chain(piston_editor::raycast_scene(
+                    graph,
+                    Some(simulation),
+                    sockets,
+                    origin,
+                    direction,
+                ))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+            && part.is_none_or(|part| distance < part.distance)
             && bearing.is_none_or(|(_, ring_distance)| distance < ring_distance)
         {
             return Some(pipette_socket(state.placed_bearings[index]));
@@ -366,6 +376,7 @@ pub(crate) fn apply_pipette_setup(
                 .unwrap_or(0);
             Tool::LinearBearing
         }
+        PipetteSetup::Piston(piston, axis) => state.piston.adopt(piston, axis),
         PipetteSetup::Bearing(dimensions) => {
             bearing_settings.dimensions = dimensions;
             Tool::Bearing

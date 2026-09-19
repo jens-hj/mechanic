@@ -321,6 +321,18 @@ pub(crate) fn graph_bounds(
                 }
             }
         }
+        if let mechanic_core::BearingKind::Piston(piston) = kind
+            && let Ok(rotation) = piston.rotation(axis)
+        {
+            let base = piston.base_center(anchor, axis);
+            for chunk in mechanic_core::piston_meshes(piston) {
+                for point in chunk.positions {
+                    let point = base + rotation * Vec3::from_array(point);
+                    minimum = minimum.min(point);
+                    maximum = maximum.max(point);
+                }
+            }
+        }
     }
     minimum.is_finite().then_some((minimum, maximum))
 }
