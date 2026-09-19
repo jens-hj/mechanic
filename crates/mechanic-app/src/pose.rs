@@ -58,6 +58,24 @@ pub(crate) fn simulation_bearing_pose(
     ))
 }
 
+/// How far the body carrying a bearing's mount has turned from its build pose.
+pub(crate) fn simulation_bearing_rotation(
+    graph: &ConstructionGraph,
+    creation: &CompiledCreation,
+    transforms: &[GpuTransform],
+    bearing: &mechanic_core::BearingSpec,
+) -> Option<Quat> {
+    let compiled = creation
+        .bearings
+        .iter()
+        .find(|compiled| graph.bearing(compiled.source_bearing) == Some(bearing))?;
+    let body = compiled.compound_a as usize;
+    Some(
+        Quat::from_array(transforms.get(body)?.rotation)
+            * creation.compounds.get(body)?.root_rotation.conjugate(),
+    )
+}
+
 pub(crate) fn simulation_placed_bearing_pose(
     graph: &ConstructionGraph,
     creation: &CompiledCreation,

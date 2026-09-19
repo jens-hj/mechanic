@@ -1,17 +1,18 @@
 //! Drive indicator, wire, and drive x-ray overlay meshes.
 
 use crate::editor::build_actions::{PlacedBearing, bearing_uses_socket};
-use crate::pose::{simulation_bearing_pose, simulation_part_pose};
+use crate::pose::{simulation_bearing_pose, simulation_bearing_rotation, simulation_part_pose};
 use crate::render::mesh::primitives::{
     append_mesh_quad, append_mesh_triangle, degenerate_overlay_mesh,
 };
 use crate::sequencer::DriveSequencer;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
-use bevy::prelude::{Mesh, Vec3};
+use bevy::prelude::{Mesh, Quat, Vec3};
 use bevy::render::render_resource::PrimitiveTopology;
 use mechanic_core::{
-    BearingDimensions, CompiledCreation, ConstructionGraph, DriveState, DriveTarget, PartId,
+    BearingDimensions, BearingKind, CompiledCreation, ConstructionGraph, DriveState, DriveTarget,
+    PartId,
 };
 use mechanic_gpu::GpuTransform;
 
@@ -134,6 +135,73 @@ pub(crate) fn append_drive_indicator(
     }
 }
 
+/// How far past its hardware a travel arrow reaches, in metres.
+const TRAVEL_ARROW_OVERSHOOT: f32 = 0.25;
+
+/// Length of a travel arrow's head, in metres; it is half as wide.
+const TRAVEL_ARROW_HEAD: f32 = 0.12;
+
+/// The build-space line a sliding joint travels along, relative to its anchor,
+/// running the way a positive target moves it. Turning joints have none.
+pub(crate) fn travel_line(kind: BearingKind, axis: Vec3) -> Option<(Vec3, Vec3)> {
+    match kind {
+        BearingKind::Piston(piston) => {
+            let base = piston.base_center(Vec3::ZERO, axis);
+            Some((
+                base,
+                base + axis * (piston.dimensions.closed() + TRAVEL_ARROW_OVERSHOOT),
+            ))
+        }
+        BearingKind::Linear(rail) => {
+            let half = axis * (rail.dimensions.length() / 2.0 + TRAVEL_ARROW_OVERSHOOT);
+            Some((-half, half))
+        }
+        BearingKind::Rotational | BearingKind::Suspension(_) => None,
+    }
+}
+
+/// Straight arrow along a sliding joint's travel, pointing the way it is asked to move.
+pub(crate) fn append_travel_indicator(
+    start: Vec3,
+    end: Vec3,
+    state: DriveState,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    let signed = match state.target() {
+        DriveTarget::Angle(value)
+        | DriveTarget::LinearPosition(value)
+        | DriveTarget::Speed(value)
+        | DriveTarget::LinearSpeed(value) => value,
+    };
+    let (tail, tip) = if signed.is_sign_negative() {
+        (end, start)
+    } else {
+        (start, end)
+    };
+    let Some(along) = (tip - tail).try_normalize() else {
+        return;
+    };
+    let neck = tip - along * TRAVEL_ARROW_HEAD;
+    // Crossed ribbons and heads so the arrow reads from any camera angle.
+    let (tangent_u, tangent_v) = axis_tangents(along);
+    for (face, side) in [(tangent_u, tangent_v), (tangent_v, tangent_u)] {
+        append_overlay_segment(tail, neck, face, positions, normals, indices);
+        append_mesh_triangle(
+            [
+                tip,
+                neck - side * TRAVEL_ARROW_HEAD * 0.5,
+                neck + side * TRAVEL_ARROW_HEAD * 0.5,
+            ],
+            face,
+            positions,
+            normals,
+            indices,
+        );
+    }
+}
+
 /// Straight wire from a driven bearing to the control block steering it.
 pub(crate) fn append_drive_wire(
     anchor: Vec3,
@@ -187,7 +255,7 @@ pub(crate) fn combined_drive_xray_mesh(
         |bearing, controller| {
             Some((
                 bearing.shared_anchor,
-                bearing.axis,
+                Quat::IDENTITY,
                 graph.part_position(controller)?,
             ))
         },
@@ -213,21 +281,22 @@ pub(crate) fn combined_simulation_drive_xray_mesh(
         placed_bearings,
         sequencer,
         |bearing, controller| {
-            let (anchor, axis) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
-            Some((anchor, axis, part_position(controller)?))
+            let (anchor, _) = simulation_bearing_pose(graph, creation, transforms, bearing)?;
+            let turned = simulation_bearing_rotation(graph, creation, transforms, bearing)?;
+            Some((anchor, turned, part_position(controller)?))
         },
         part_position,
     )
 }
 
-/// Shared overlay builder. `pose` resolves one bearing and its control block to
-/// world space, which is the only thing that differs between build and
-/// simulation.
+/// Shared overlay builder. `pose` resolves one bearing's anchor, how far its
+/// mount has turned from the build pose, and its control block to world space,
+/// which is the only thing that differs between build and simulation.
 pub(crate) fn drive_xray_mesh(
     graph: &ConstructionGraph,
     placed_bearings: &[PlacedBearing],
     sequencer: &DriveSequencer,
-    pose: impl Fn(&mechanic_core::BearingSpec, PartId) -> Option<(Vec3, Vec3, Vec3)>,
+    pose: impl Fn(&mechanic_core::BearingSpec, PartId) -> Option<(Vec3, Quat, Vec3)>,
     part_position: impl Fn(PartId) -> Option<Vec3>,
 ) -> Mesh {
     let mut positions = Vec::new();
@@ -262,23 +331,34 @@ pub(crate) fn drive_xray_mesh(
         }
         drawn.push(bearing.shared_anchor);
 
-        let Some((anchor, axis, controller_center)) = pose(bearing, spec.controller) else {
+        let Some((anchor, turned, controller_center)) = pose(bearing, spec.controller) else {
             continue;
         };
-        let dimensions = placed_bearings
-            .iter()
-            .find(|socket| bearing_uses_socket(bearing, **socket))
-            .map_or(bearing.dimensions, |socket| socket.dimensions);
-        append_drive_indicator(
-            anchor,
-            axis,
-            dimensions,
-            state,
-            travel,
-            &mut positions,
-            &mut normals,
-            &mut indices,
-        );
+        if let Some((start, end)) = travel_line(bearing.kind, bearing.axis) {
+            append_travel_indicator(
+                anchor + turned * start,
+                anchor + turned * end,
+                state,
+                &mut positions,
+                &mut normals,
+                &mut indices,
+            );
+        } else {
+            let dimensions = placed_bearings
+                .iter()
+                .find(|socket| bearing_uses_socket(bearing, **socket))
+                .map_or(bearing.dimensions, |socket| socket.dimensions);
+            append_drive_indicator(
+                anchor,
+                turned * bearing.axis,
+                dimensions,
+                state,
+                travel,
+                &mut positions,
+                &mut normals,
+                &mut indices,
+            );
+        }
         append_drive_wire(
             anchor,
             controller_center,

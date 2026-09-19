@@ -2999,6 +2999,46 @@ fn drive_overlay_is_empty_without_a_wire_and_mirrors_the_spin_direction() {
 }
 
 #[test]
+fn a_sliding_joints_drive_arrow_runs_straight_along_its_travel_and_flips_with_the_target() {
+    use crate::render::mesh::drive::{append_travel_indicator, travel_line};
+    let piston = mechanic_core::BearingKind::Piston(mechanic_core::Piston::default());
+    let (start, end) = travel_line(piston, Vec3::Y).expect("a piston slides");
+    assert!(start.abs_diff_eq(Vec3::ZERO, 1.0e-6));
+    assert!(travel_line(mechanic_core::BearingKind::Rotational, Vec3::Y).is_none());
+
+    let arrow = |target| {
+        let (mut positions, mut normals, mut indices) = (Vec::new(), Vec::new(), Vec::new());
+        append_travel_indicator(
+            start,
+            end,
+            DriveState::new(target).unwrap(),
+            &mut positions,
+            &mut normals,
+            &mut indices,
+        );
+        positions.into_iter().map(Vec3::from).collect::<Vec<_>>()
+    };
+    let extending = arrow(DriveTarget::LinearPosition(1.0));
+    assert!(
+        extending
+            .iter()
+            .all(|point| point.x.abs() < 0.07 && point.z.abs() < 0.07)
+    );
+    assert!(extending.iter().any(|point| point.abs_diff_eq(end, 1.0e-6)));
+    let retracting = arrow(DriveTarget::LinearSpeed(-1.0));
+    assert!(
+        retracting
+            .iter()
+            .any(|point| point.abs_diff_eq(start, 1.0e-6))
+    );
+    assert!(
+        !retracting
+            .iter()
+            .any(|point| point.abs_diff_eq(end, 1.0e-6))
+    );
+}
+
+#[test]
 fn default_zero_speed_overlay_mirrors_the_wires_direction() {
     let with_default_program = |reversed| {
         let mut graph = hinged_pair_with_control_block(reversed);
