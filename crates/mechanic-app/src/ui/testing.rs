@@ -11,7 +11,8 @@ use bevy_mosaic::ui::{PaintCmd, Shape, TextStyle};
 use mosaic_core::{Rect, Scope, Size, Vector2};
 use mosaic_widgets::Ui;
 use mosaic_widgets::input::{
-    Modifiers, PointerButton, PointerEvent, PointerEventKind, PointerType,
+    Key, KeyEvent, KeyEventKind, Modifiers, PointerButton, PointerEvent, PointerEventKind,
+    PointerType,
 };
 
 use super::{Handles, OverlayShell, OverlayShellProps, UiIntent, load_fonts, theme};
@@ -286,15 +287,55 @@ impl Overlay {
         }
     }
 
+    /// Presses, moves and lets go, with modifiers held throughout: a drag the
+    /// gesture actually finishes, which is what a widget acting on
+    /// [`DragPhase::End`] needs.
+    pub(crate) fn drag_held(&self, from: Vector2, to: Vector2, modifiers: Modifiers) {
+        let midpoint = Vector2::new(f32::midpoint(from.x, to.x), f32::midpoint(from.y, to.y));
+        self.modified(
+            PointerEventKind::Down(PointerButton::Primary),
+            from,
+            modifiers,
+        );
+        for at in [midpoint, to] {
+            self.modified(PointerEventKind::Move, at, modifiers);
+        }
+        self.modified(PointerEventKind::Up(PointerButton::Primary), to, modifiers);
+    }
+
     /// Sends one pointer event and lets the tree settle.
     pub(crate) fn dispatch(&self, kind: PointerEventKind, at: Vector2) {
+        self.modified(kind, at, Modifiers::default());
+    }
+
+    /// Sends one pointer event with modifiers held, and lets the tree settle.
+    pub(crate) fn modified(&self, kind: PointerEventKind, at: Vector2, modifiers: Modifiers) {
         self.ui.dispatch_pointer(PointerEvent {
             kind,
             position: at,
             pointer_type: PointerType::Mouse,
-            modifiers: Modifiers::default(),
+            modifiers,
             timestamp: std::time::Duration::ZERO,
         });
+        self.settle();
+    }
+
+    /// Types a run of characters at whatever holds the keyboard focus.
+    pub(crate) fn type_text(&self, text: &str) {
+        for character in text.chars() {
+            self.press(Key::Character(character.to_string()));
+        }
+    }
+
+    /// Presses and releases one key at whatever holds the keyboard focus.
+    pub(crate) fn press(&self, key: Key) {
+        for kind in [KeyEventKind::Down { repeat: false }, KeyEventKind::Up] {
+            self.ui.dispatch_key(KeyEvent {
+                kind,
+                key: key.clone(),
+                modifiers: Modifiers::default(),
+            });
+        }
         self.settle();
     }
 }

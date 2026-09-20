@@ -6,7 +6,7 @@ use mechanic_core::{
     GearboxConfig, GridRotation,
 };
 use mosaic_core::{Rect, Vector2};
-use mosaic_widgets::input::{PointerButton, PointerEventKind};
+use mosaic_widgets::input::{Key, Modifiers, PointerButton, PointerEventKind};
 
 use super::geometry;
 use super::model::{BearingSlots, EngineLaneModel, Mode, PanelEdit, StateModel};
@@ -700,4 +700,180 @@ fn clicking_an_unbound_keycap_arms_a_key_capture() {
         Some((link, 0)),
         "clicking an empty keycap is how a state waits for its key",
     );
+}
+
+/// A lane whose only state waits a second before handing back to itself,
+/// which is what puts a dwell pill on the wire below the cards.
+fn waiting(overlay: &Overlay, seconds: f32) {
+    overlay.handles.block.model.update(|model| {
+        let Some(lane) = model.lanes.first_mut() else {
+            return;
+        };
+        if let Some(state) = lane.states.first_mut() {
+            state.dwell = Some((seconds, 0));
+        }
+        lane.dwell_wires = vec![super::model::WireModel {
+            source: 0,
+            target: 0,
+            label: format!("{} s", super::model::dwell_text(seconds)),
+        }];
+    });
+    overlay.settle();
+}
+
+/// The dwell pill on the wire below the cards: the widest of the pill-high
+/// boxes down there, the narrower ones being its own icon and text.
+fn dwell_pill(overlay: &Overlay) -> Rect {
+    overlay
+        .rects()
+        .into_iter()
+        .map(|(_, rect)| rect)
+        .filter(|rect| {
+            (rect.size.height - 24.0).abs() < 0.5
+                && rect.size.width < 200.0
+                && rect.origin.y > geometry::NODE_H
+        })
+        .max_by(|a, b| a.size.width.total_cmp(&b.size.width))
+        .expect("the dwell pill is laid out below the cards")
+}
+
+/// The bug this guards against: the field asked for a share of the leftover
+/// room inside a pill that hugs its contents and has none, so it laid out
+/// zero pixels wide — nothing to see, and nothing to put a caret in.
+#[test]
+fn the_dwell_field_opens_wide_enough_to_type_in() {
+    let (overlay, _link) = open();
+    waiting(&overlay, 1.0);
+    let pill = dwell_pill(&overlay);
+
+    overlay.click(pill.center());
+
+    let widths: Vec<f32> = overlay
+        .rects()
+        .into_iter()
+        .map(|(_, rect)| rect)
+        .filter(|rect| (rect.size.height - 24.0).abs() < 0.5 && rect.origin.y > geometry::NODE_H)
+        .map(|rect| rect.size.width)
+        .collect();
+    assert!(
+        widths.iter().any(|width| *width > 20.0 && *width < 100.0),
+        "the opened field must have room to type in; the boxes on the wire were {widths:?}",
+    );
+}
+
+#[test]
+fn typing_a_dwell_and_pressing_enter_sets_it() {
+    let (overlay, link) = open();
+    waiting(&overlay, 1.0);
+    let pill = dwell_pill(&overlay);
+
+    overlay.click(pill.center());
+    overlay.type_text("2.5");
+    overlay.press(Key::Enter);
+
+    assert_eq!(
+        edits(&overlay)
+            .into_iter()
+            .map(|intent| intent.edit)
+            .collect::<Vec<_>>(),
+        vec![PanelEdit::SetDwell {
+            state: 0,
+            seconds: 2.5
+        }],
+        "the joint is {link:?}",
+    );
+}
+
+/// Opening the field, backing out, and opening it again: the second open
+/// builds a fresh field rather than re-adopting the freed one, and it takes
+/// the keyboard just as the first did.
+#[test]
+fn a_dwell_field_can_be_backed_out_of_and_opened_again() {
+    let (overlay, _link) = open();
+    waiting(&overlay, 1.0);
+    let pill = dwell_pill(&overlay);
+
+    overlay.click(pill.center());
+    overlay.press(Key::Escape);
+    overlay.click(dwell_pill(&overlay).center());
+    overlay.type_text("3");
+    overlay.press(Key::Enter);
+
+    assert_eq!(last_dwell(&overlay), Some(3.0));
+}
+
+#[test]
+fn dragging_a_dwell_pill_steps_the_wait_by_whole_seconds() {
+    let (overlay, _link) = open();
+    waiting(&overlay, 1.0);
+    let pill = dwell_pill(&overlay);
+    let at = pill.center();
+
+    overlay.drag_held(at, at + Vector2::new(36.0, 0.0), Modifiers::default());
+
+    let seconds = last_dwell(&overlay).expect("the drag set a dwell");
+    assert!(
+        (seconds - 4.0).abs() < 0.001,
+        "three steps right adds three seconds; got {seconds}",
+    );
+}
+
+#[test]
+fn dragging_a_dwell_pill_down_shortens_the_wait() {
+    let (overlay, _link) = open();
+    waiting(&overlay, 5.0);
+    let pill = dwell_pill(&overlay);
+    let at = pill.center();
+
+    overlay.drag_held(at, at + Vector2::new(0.0, 24.0), Modifiers::default());
+
+    let seconds = last_dwell(&overlay).expect("the drag set a dwell");
+    assert!(
+        (seconds - 3.0).abs() < 0.001,
+        "two steps down takes two seconds off; got {seconds}",
+    );
+}
+
+#[test]
+fn a_held_modifier_makes_a_scrubbed_step_finer() {
+    for (modifiers, step) in [
+        (
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+            0.25,
+        ),
+        (
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            0.1,
+        ),
+    ] {
+        let (overlay, _link) = open();
+        waiting(&overlay, 1.0);
+        let pill = dwell_pill(&overlay);
+        let at = pill.center();
+
+        overlay.drag_held(at, at + Vector2::new(24.0, 0.0), modifiers);
+
+        let seconds = last_dwell(&overlay).expect("the drag set a dwell");
+        assert!(
+            (seconds - (1.0 + 2.0 * step)).abs() < 0.001,
+            "two steps of {step} from one second; got {seconds}",
+        );
+    }
+}
+
+/// The wait the last drive edit asked for.
+fn last_dwell(overlay: &Overlay) -> Option<f32> {
+    edits(overlay)
+        .into_iter()
+        .rev()
+        .find_map(|intent| match intent.edit {
+            PanelEdit::SetDwell { seconds, .. } => Some(seconds),
+            _ => None,
+        })
 }

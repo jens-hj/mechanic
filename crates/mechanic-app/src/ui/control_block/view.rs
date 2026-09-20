@@ -1285,27 +1285,63 @@ fn wire_label_at(
     })
 }
 
-/// How long one wire's dwell is, as it would be typed.
-fn wire_dwell_text(model: State<PanelModel>, id: DriveLinkId, rank: usize) -> String {
-    lane_read(model, id, String::new(), |joint| {
+/// How long one wire's dwell is, in seconds.
+fn wire_dwell_seconds(model: State<PanelModel>, id: DriveLinkId, rank: usize) -> f32 {
+    lane_read(model, id, 0.0, |joint| {
         joint
             .dwell_wires
             .get(rank)
             .and_then(|found| joint.states.get(found.source))
             .and_then(|state| state.dwell)
-            .map_or_else(String::new, |(seconds, _)| format!("{seconds:.1}"))
+            .map_or(0.0, |(seconds, _)| seconds)
     })
+}
+
+/// How long one wire's dwell is, as it would be typed.
+fn wire_dwell_text(model: State<PanelModel>, id: DriveLinkId, rank: usize) -> String {
+    super::model::dwell_text(wire_dwell_seconds(model, id, rank))
+}
+
+/// How far the pointer travels for one step of a scrubbed number.
+const SCRUB_PIXELS_PER_STEP: f32 = 12.0;
+
+/// How wide a number being typed on a wire's pill is.
+///
+/// Fixed rather than shared with the pill: the pill hugs its contents, and a
+/// field asking for a share of the leftover room inside a box that has none
+/// lays out zero pixels wide — invisible, and with nothing to click to put
+/// the caret in.
+const FIELD_WIDTH: f32 = 44.0;
+
+/// What one step of a scrubbed dwell is worth, in seconds.
+///
+/// The finer modifier wins when both are held: someone reaching for Ctrl
+/// wants the tenth of a second, whatever else their hand is resting on.
+const fn scrub_step_seconds(shift: bool, ctrl: bool) -> f32 {
+    if ctrl {
+        0.1
+    } else if shift {
+        0.25
+    } else {
+        1.0
+    }
 }
 
 /// One wire's pill.
 ///
 /// A release pill names a state and only steps through them; a dwell pill
-/// carries a number, so clicking it opens a field.
+/// carries a number, so clicking it opens a field and dragging it scrubs.
 fn wire_label(handles: &Handles, id: DriveLinkId, rank: usize, release: bool) -> Element {
     let handles = handles.clone();
+    let scrubbing = handles.clone();
     let model = handles.model;
     let typing: State<bool> = State::new(false);
     let buffer: State<String> = State::new(String::new());
+    // What the dwell read when the drag started. The world answers a scrub
+    // part-way through, so counting steps off the live reading would apply
+    // every step twice.
+    let grabbed: State<f32> = State::new(0.0);
+    let scrubbed: State<bool> = State::new(false);
     let commit: Rc<dyn Fn()> = Rc::new({
         let handles = handles.clone();
         move || {
@@ -1344,15 +1380,47 @@ fn wire_label(handles: &Handles, id: DriveLinkId, rank: usize, release: bool) ->
             })
             font-color:{ if release { color(accent.key) } else { color(accent.time) } }
             hover { fill:port.fill-over }
+            // Dragging the pill is how a dwell is set without typing it:
+            // right and up add, left and down take away, a step at a time.
+            @drag:{ move |event: &DragEvent, _: &mut EventCtx| {
+                if release || typing.get_untracked() || event.phase == DragPhase::Cancel {
+                    return;
+                }
+                if event.phase == DragPhase::Start {
+                    grabbed.set(wire_dwell_seconds(model, id, rank));
+                    scrubbed.set(true);
+                }
+                let step = scrub_step_seconds(event.modifiers.shift, event.modifiers.ctrl);
+                let steps = ((event.delta.x - event.delta.y) / SCRUB_PIXELS_PER_STEP).round();
+                let edit = PanelEdit::SetDwell {
+                    state: wire_source(model, id, rank, release),
+                    seconds: grabbed.get_untracked() + steps * step,
+                };
+                if event.phase == DragPhase::End {
+                    scrubbing.edit(id, edit);
+                } else {
+                    scrubbing.dragging(id, edit);
+                }
+            } }
             @click:{
-                if !release && !typing.get_untracked() {
-                    buffer.set(wire_dwell_text(model, id, rank));
+                // The release that ends a scrub still reads as a click, and
+                // it must not also open the field over the number just set.
+                if scrubbed.get_untracked() {
+                    scrubbed.set(false);
+                } else if !release && !typing.get_untracked() {
+                    buffer.set(String::new());
                     typing.set(true);
                 }
             } {
             if release { icon size:13px label-release } else { icon size:13px label-dwell }
             if $typing {
-                (editable_field(buffer, Rc::clone(&commit), typing))
+                (editable_field(
+                    buffer,
+                    Rc::clone(&commit),
+                    typing,
+                    Dimension::Px(FIELD_WIDTH),
+                    wire_dwell_text(model, id, rank),
+                ))
             } else {
                 text font-size:11px font-weight:700 text-wrap:none {
                     wire_text(model, id, rank, release)
@@ -2073,7 +2141,13 @@ fn name_field(handles: &Handles, id: DriveLinkId) -> Element {
                 }
             } {
             if $editing {
-                (editable_field(buffer, Rc::clone(&commit), editing))
+                (editable_field(
+                    buffer,
+                    Rc::clone(&commit),
+                    editing,
+                    Dimension::Fr(1.0),
+                    String::new(),
+                ))
             } else {
                 text width:1fr font-family:typeface.display font-size:text-size.value
                     font-weight:{ resolved_weight(text_weight.medium) } text-wrap:none
@@ -2308,10 +2382,32 @@ fn preset_button(handles: &Handles, id: DriveLinkId, which: Preset) -> Element {
     }
 }
 
-/// A number being typed, which commits on Enter and backs out on Escape.
-fn editable_field(buffer: State<String>, commit: Rc<dyn Fn()>, typing: State<bool>) -> Element {
+/// A value being typed, which commits on Enter and backs out on Escape.
+///
+/// Focused as it is built: the click that opened it was spent on whatever was
+/// showing the value, so without this the caret is nowhere and the keystrokes
+/// go to the world instead of the field.
+///
+/// A caller wanting the value replaced rather than amended opens the field
+/// empty and passes the old value as `hint`: the caret lands after whatever
+/// the buffer already holds, so a pre-filled number is typed *onto* rather
+/// than over, and there is nowhere to put a select-all before the first
+/// keystroke arrives.
+fn editable_field(
+    buffer: State<String>,
+    commit: Rc<dyn Fn()>,
+    typing: State<bool>,
+    width: Dimension,
+    hint: String,
+) -> Element {
+    let field = view! {
+        input #mechanic.field width:1fr height:24px font-size:12px fill:#00000000
+            pad:(horizontal:0px vertical:0px) stroke:(width:0px color:#00000000)
+            placeholder:{ hint } buffer
+    };
+    field.focus();
     view! {
-        row width:1fr height:24px align:center
+        row width:{ width } height:24px align:center
             @key:{ move |event: &KeyEvent, ctx: &mut EventCtx| {
                 if !matches!(event.kind, KeyEventKind::Down { .. }) { return; }
                 match event.key {
@@ -2320,8 +2416,7 @@ fn editable_field(buffer: State<String>, commit: Rc<dyn Fn()>, typing: State<boo
                     _ => {}
                 }
             } } {
-            input #mechanic.field width:1fr height:24px font-size:12px fill:#00000000
-                pad:(horizontal:0px vertical:0px) stroke:(width:0px color:#00000000) buffer
+            (field)
         }
     }
 }

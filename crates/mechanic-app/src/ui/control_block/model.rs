@@ -601,6 +601,37 @@ fn preset_program(preset: Preset, limits: DriveLimits) -> Option<(DriveLimits, D
     }
 }
 
+/// Where a force stops reading in newtons and starts reading in kilonewtons.
+const KILONEWTON: f32 = 1_000.0;
+
+/// A rail's force, in the unit that keeps it to four significant figures.
+///
+/// A rail strong enough to carry a machine is tens of thousands of newtons,
+/// and six digits in a tile this size is a number nobody reads — the
+/// kilonewtons are what the rail is actually specified in.
+pub(crate) fn force_text(newtons: f32) -> String {
+    if newtons.abs() < KILONEWTON {
+        return format!("{newtons:.0} N");
+    }
+    format!("{:.1} kN", newtons / KILONEWTON)
+}
+
+/// A dwell written the way it is typed and scrubbed: as many decimals as the
+/// number actually has, up to the tenth of a second a scrub can reach.
+///
+/// Fixed to one decimal it could not show a quarter-second step at all, and
+/// every whole second would read as a measurement it is not.
+pub(crate) fn dwell_text(seconds: f32) -> String {
+    let mut text = format!("{:.2}", (seconds * 100.0).round() / 100.0);
+    while text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    text
+}
+
 /// One wire drawn between two state cards.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct WireModel {
@@ -819,7 +850,7 @@ impl LaneModel {
             return "NONE".to_owned();
         }
         if self.is_linear {
-            return format!("{:.0} N", self.torque);
+            return force_text(self.torque);
         }
         match self.actuator {
             ActuatorAssignment::Unpowered => "NONE".to_owned(),
@@ -902,7 +933,7 @@ fn wires(states: &[StateModel], kind: WireKind) -> Vec<WireModel> {
                 Some(WireModel {
                     source,
                     target: usize::from(target).min(states.len().saturating_sub(1)),
-                    label: format!("{seconds:.1} s"),
+                    label: format!("{} s", dwell_text(seconds)),
                 })
             }
         })

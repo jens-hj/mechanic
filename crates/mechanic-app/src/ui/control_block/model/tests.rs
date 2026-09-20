@@ -473,3 +473,30 @@ fn a_preset_keeps_the_joints_name_and_its_dwellless_states_valid() {
     );
     let _ = DriveDwell::new(1.0, None).expect("dwells still validate");
 }
+
+#[test]
+fn a_dwell_reads_with_only_the_decimals_it_has() {
+    for (seconds, expected) in [
+        (1.0, "1"),
+        (10.0, "10"),
+        (1.5, "1.5"),
+        (1.25, "1.25"),
+        (0.1, "0.1"),
+        (600.0, "600"),
+    ] {
+        assert_eq!(super::dwell_text(seconds), expected);
+    }
+}
+
+#[test]
+fn a_rail_force_reads_in_kilonewtons_once_it_runs_to_four_digits() {
+    for (newtons, expected) in [
+        (0.0, "0 N"),
+        (350.0, "350 N"),
+        (999.0, "999 N"),
+        (1_000.0, "1.0 kN"),
+        (301_593.0, "301.6 kN"),
+    ] {
+        assert_eq!(super::force_text(newtons), expected);
+    }
+}
