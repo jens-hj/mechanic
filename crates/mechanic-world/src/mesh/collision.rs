@@ -23,6 +23,9 @@ pub struct TerrainCollisionChunk {
     pub indices: Vec<u32>,
     /// One weight per [`TerrainMaterial`] at each vertex.
     pub material_weights: Vec<[f32; TerrainMaterial::COUNT]>,
+    /// Plastic compaction at each vertex, in compaction steps. A chunk that
+    /// lists none is uncompacted ground.
+    pub compaction: Vec<u8>,
     /// Global owning bounds.
     pub bounds: WorldBounds,
     /// Generation invalidating old manifolds after replacement.

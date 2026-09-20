@@ -2,7 +2,7 @@
 
 use mechanic_core::{ConstructionMaterial, SurfaceResponse};
 
-use crate::{TerrainCollisionChunk, TerrainMaterial};
+use crate::{SoilResponse, TerrainCollisionChunk, TerrainMaterial};
 
 /// Invalid per-vertex material weights or triangle indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -52,6 +52,40 @@ impl TerrainCollisionChunk {
             restitution: response[2],
             rolling_resistance: response[3],
         })
+    }
+}
+
+impl TerrainCollisionChunk {
+    /// Pressure the ground under a triangle carries before it yields, in
+    /// pascals: its heaviest material's bearing capacity, hardened by the
+    /// compaction already there. Infinite for rock and ore, which never yield.
+    ///
+    /// # Errors
+    /// Rejects missing, negative, non-finite, or all-zero weights.
+    pub fn triangle_yield_pa(&self, indices: [u32; 3]) -> Result<f32, TerrainMaterialError> {
+        let mut weights = [0.0_f32; TerrainMaterial::COUNT];
+        let mut compaction = 0_u8;
+        for index in indices {
+            let source = self
+                .material_weights
+                .get(index as usize)
+                .ok_or(TerrainMaterialError)?;
+            for (weight, &source) in weights.iter_mut().zip(source) {
+                if !source.is_finite() || source < 0.0 {
+                    return Err(TerrainMaterialError);
+                }
+                *weight += source;
+            }
+            compaction = compaction.max(self.compaction.get(index as usize).copied().unwrap_or(0));
+        }
+        let material = TerrainMaterial::ALL
+            .into_iter()
+            .filter(|material| weights[usize::from(material.code())] > 0.0)
+            .max_by(|a, b| {
+                weights[usize::from(a.code())].total_cmp(&weights[usize::from(b.code())])
+            })
+            .ok_or(TerrainMaterialError)?;
+        Ok(SoilResponse::for_material(material).capacity_pa(compaction))
     }
 }
 
@@ -163,5 +197,30 @@ mod tests {
         assert!(chunk.triangle_surface_response([0, 1, 2]).is_err());
         chunk.material_weights = vec![[0.0; TerrainMaterial::COUNT]; 3];
         assert!(chunk.triangle_surface_response([0, 1, 2]).is_err());
+    }
+
+    #[test]
+    fn ground_strength_follows_the_heaviest_material_and_its_compaction() {
+        let mut chunk = TerrainCollisionChunk::default();
+        for material in [
+            TerrainMaterial::Soil,
+            TerrainMaterial::Soil,
+            TerrainMaterial::Sand,
+        ] {
+            let mut weights = [0.0; TerrainMaterial::COUNT];
+            weights[usize::from(material.code())] = 1.0;
+            chunk.material_weights.push(weights);
+        }
+        let soil = SoilResponse::for_material(TerrainMaterial::Soil);
+        let loose = chunk.triangle_yield_pa([0, 1, 2]).unwrap();
+        assert!((loose - soil.bearing_capacity_pa).abs() < 1.0);
+        chunk.compaction = vec![0, 255, 0];
+        let packed = chunk.triangle_yield_pa([0, 1, 2]).unwrap();
+        assert!(packed > loose * 10.0);
+        let mut rock = [0.0; TerrainMaterial::COUNT];
+        rock[usize::from(TerrainMaterial::Rock.code())] = 1.0;
+        chunk.material_weights = vec![rock; 3];
+        assert!(chunk.triangle_yield_pa([0, 1, 2]).unwrap().is_infinite());
+        assert!(chunk.triangle_yield_pa([0, 1, 3]).is_err());
     }
 }

@@ -8,6 +8,7 @@ mod clumps;
 mod construction_collision;
 mod coordinates;
 mod edits;
+mod footprint;
 mod generation;
 mod material_response;
 mod mesh;
@@ -36,6 +37,7 @@ pub use edits::{
     TerrainNodeSummary, TerrainOctree, TerrainOctreeSnapshot, TerrainSource, decode_brick,
     encode_brick,
 };
+pub use footprint::LoadFootprint;
 pub use generation::{CaveEdge, CaveGraph, CaveNode, TerrainField, TerrainMaterial, TerrainSample};
 pub use material_response::TerrainMaterialError;
 pub use mesh::{
@@ -55,7 +57,7 @@ pub use query::{
     KinematicInput, KinematicSupport, KinematicTickOutcome, TerrainDensity, TerrainScene,
     TerrainSpatialIndex, raycast_density,
 };
-pub use soil::{SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
+pub use soil::{GROUND_NORMAL_MIN_Y, SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
 pub use streaming::{
     ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainPublicationDelta,
     TerrainPublicationUpsert, TerrainReadiness, TerrainSelection, TerrainSelectionStats,

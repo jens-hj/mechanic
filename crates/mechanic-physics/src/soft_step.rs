@@ -248,12 +248,12 @@ impl SoftStepDiagnostics {
     }
 }
 
-/// Terrain-facing load integrated over the last accepted simulation tick.
+/// One terrain manifold's load integrated over the last accepted simulation tick.
 #[derive(Clone, Copy, Debug)]
 pub struct TerrainLoad {
     /// Source body in the published simulation topology.
     pub body: usize,
-    /// Contact position relative to the terrain query's floating origin.
+    /// Footprint centre relative to the terrain query's floating origin.
     pub point: DVec3,
     /// Outward unit terrain normal.
     pub normal: DVec3,
@@ -263,11 +263,48 @@ pub struct TerrainLoad {
     pub tangent_impulse: DVec3,
     /// Physical work dissipated by accepted substeps, in joules.
     pub work_j: f64,
-    /// Integrated resultant load over this contact's whole support footprint.
-    /// Shared by its points; use for stress, never sum it across those points.
+    /// Velocity of the body's surface over the ground, averaged by the work it
+    /// did there, in m/s. Zero for a load that did no work.
+    pub slip_velocity: DVec3,
+    /// Integrated resultant of the normal and tangential load, in N s.
     pub footprint_impulse: f64,
-    /// Estimated circular support radius, in metres.
-    pub patch_radius: f64,
+    /// Ground the manifold presses on.
+    pub footprint: mechanic_world::LoadFootprint,
+}
+
+impl TerrainLoad {
+    /// Pressure this load put on the ground over one tick, for compaction.
+    /// `origin` is the terrain query's floating origin.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "world density and pressure use f32"
+    )]
+    pub fn soil_patch(&self, origin: DVec3) -> mechanic_world::SoilPatch {
+        mechanic_world::SoilPatch {
+            centre: mechanic_world::WorldPosition(origin + self.point),
+            normal: self.normal,
+            footprint: self.footprint,
+            pressure_pa: (self.normal_impulse / (TICK_SECONDS * self.footprint.area())) as f32,
+            seconds: TICK_SECONDS as f32,
+        }
+    }
+
+    /// Stress, work and sideways crushing this load delivered over one tick,
+    /// for breakage. `origin` is the terrain query's floating origin.
+    pub fn breakage_patch(&self, origin: DVec3) -> mechanic_world::BreakagePatch {
+        let area = TICK_SECONDS * self.footprint.area();
+        let sideways = (1.0 - self.normal.y * self.normal.y).max(0.0).sqrt();
+        mechanic_world::BreakagePatch {
+            centre: mechanic_world::WorldPosition(origin + self.point),
+            normal: self.normal,
+            footprint: self.footprint,
+            stress_pa: self.footprint_impulse / area,
+            work_j: self.work_j,
+            crush_pa: self.normal_impulse * sideways / area,
+            throw: self.slip_velocity,
+            seconds: TICK_SECONDS,
+        }
+    }
 }
 
 /// CPU machine stepped by the soft-step solver. Tree joints are exact by
@@ -286,8 +323,10 @@ pub struct CpuMachine {
     warm: BTreeMap<TerrainContactFeature, [f64; 5]>,
     terrain_loads: Vec<TerrainLoad>,
     supported: Vec<bool>,
-    load_features: Vec<(TerrainContactFeature, usize)>,
+    load_features: Vec<(LoadKey, usize)>,
     load_order: Vec<usize>,
+    footprint_points: Vec<DVec3>,
+    failing_colliders: Vec<usize>,
     /// Suspension laws of loop-closing bearings, in `dynamics.loops` order.
     closure_passive: Vec<PassiveForce>,
     /// Loop-closure impulses carried into the next tick.
@@ -358,6 +397,8 @@ impl CpuMachine {
             warm: BTreeMap::new(),
             terrain_loads: Vec::new(),
             load_features: Vec::new(),
+            footprint_points: Vec::new(),
+            failing_colliders: Vec::new(),
             load_order: Vec::new(),
         })
     }
@@ -610,6 +651,11 @@ impl CpuMachine {
                 )
             },
         );
+        assign_footprints(
+            &mut contacts,
+            &mut self.load_order,
+            &mut self.footprint_points,
+        );
         diagnostics.contacts = contacts.len();
 
         let machine = Machine {
@@ -741,6 +787,14 @@ impl CpuMachine {
                                 Some((&groups, &margins)),
                                 &mut diagnostics,
                             );
+                            self.failing_colliders.clear();
+                            self.failing_colliders.extend(
+                                contacts
+                                    .iter()
+                                    .filter(|contact| contact.is_failing())
+                                    .map(|contact| contact.source.feature.collider),
+                            );
+                            self.failing_colliders.sort_unstable();
                             contacts.retain(|contact| {
                                 !groups.includes(
                                     terrain.geometry,
@@ -748,13 +802,27 @@ impl CpuMachine {
                                     contact.source.other_body,
                                 )
                             });
-                            contacts.extend(refreshed);
+                            let failing = &self.failing_colliders;
+                            contacts.extend(refreshed.into_iter().map(|mut contact| {
+                                if failing
+                                    .binary_search(&contact.source.feature.collider)
+                                    .is_ok()
+                                {
+                                    contact.inherit_failing();
+                                }
+                                contact
+                            }));
                             contacts.sort_by_key(|contact| {
                                 (
                                     contact.source.feature.corner >= SUBMERGED_CORNERS,
                                     contact.source.feature,
                                 )
                             });
+                            assign_footprints(
+                                &mut contacts,
+                                &mut self.load_order,
+                                &mut self.footprint_points,
+                            );
                             groups.refreshed(
                                 terrain.geometry,
                                 &margins,
@@ -868,10 +936,10 @@ impl CpuMachine {
                 if contact.impulses[0] <= 0.0 {
                     continue;
                 }
-                if contact.source.normal.y >= 0.25 {
+                if contact.source.normal.y >= mechanic_world::GROUND_NORMAL_MIN_Y {
                     self.supported[contact.source.body] = true;
                 }
-                if contact.source.normal.y <= -0.25
+                if contact.source.normal.y <= -mechanic_world::GROUND_NORMAL_MIN_Y
                     && let Some(body) = contact.source.other_body
                 {
                     self.supported[body] = true;
@@ -1070,13 +1138,64 @@ fn sane(
     true
 }
 
-// Reuse all three vectors. Manifold numbers are local to each collider, so the
-// collider is part of the grouping key even when several colliders share a body.
+// Body, collider and manifold: manifold numbers are local to each collider, so
+// the collider is part of the key even when several colliders share a body.
+type LoadKey = (usize, usize, usize);
+
+fn load_key(source: &crate::TerrainContact) -> LoadKey {
+    (source.body, source.feature.collider, source.manifold)
+}
+
+// Every terrain contact learns the ground its manifold presses on. Called
+// whenever the contact list is rebuilt, before the solver needs the area.
+fn assign_footprints(contacts: &mut [Contact], order: &mut Vec<usize>, points: &mut Vec<DVec3>) {
+    order.clear();
+    order.extend(
+        contacts
+            .iter()
+            .enumerate()
+            .filter(|(_, contact)| {
+                matches!(
+                    contact.source.feature.obstacle,
+                    crate::ContactObstacle::Terrain { .. }
+                )
+            })
+            .map(|(index, _)| index),
+    );
+    order.sort_unstable_by_key(|&index| load_key(&contacts[index].source));
+    let mut start = 0;
+    while start < order.len() {
+        let key = load_key(&contacts[order[start]].source);
+        let end = start
+            + order[start..]
+                .iter()
+                .take_while(|&&index| load_key(&contacts[index].source) == key)
+                .count();
+        points.clear();
+        points.extend(
+            order[start..end]
+                .iter()
+                .map(|&index| contacts[index].source.terrain_point),
+        );
+        let (centre, footprint) =
+            mechanic_world::LoadFootprint::spanning(points, contacts[order[start]].source.normal);
+        for &index in &order[start..end] {
+            contacts[index].footprint = solve::Footprint {
+                centre,
+                shape: footprint,
+                points: end - start,
+            };
+        }
+        start = end;
+    }
+}
+
+// Reuse all three vectors.
 fn collect_terrain_loads(
     contacts: &[Contact],
     held: &[bool],
     loads: &mut Vec<TerrainLoad>,
-    features: &mut Vec<(TerrainContactFeature, usize)>,
+    keys: &mut Vec<(LoadKey, usize)>,
     order: &mut Vec<usize>,
 ) {
     order.clear();
@@ -1092,76 +1211,65 @@ fn collect_terrain_loads(
             })
             .map(|(index, _)| index),
     );
-    order.sort_unstable_by_key(|&index| {
-        let source = contacts[index].source;
-        (source.body, source.feature.collider, source.manifold)
-    });
+    order.sort_unstable_by_key(|&index| load_key(&contacts[index].source));
     let mut start = 0;
     while start < order.len() {
-        let first = contacts[order[start]].source;
-        let mut end = start + 1;
-        while end < order.len() {
-            let next = contacts[order[end]].source;
-            if (next.body, next.feature.collider, next.manifold)
-                != (first.body, first.feature.collider, first.manifold)
-            {
-                break;
-            }
-            end += 1;
-        }
+        let first = &contacts[order[start]];
+        let key = load_key(&first.source);
+        let end = start
+            + order[start..]
+                .iter()
+                .take_while(|&&index| load_key(&contacts[index].source) == key)
+                .count();
         let group = &order[start..end];
-        let normal_load: f64 = group.iter().map(|&index| contacts[index].impulses[0]).sum();
-        let tangent_load: DVec3 = group
-            .iter()
-            .map(|&index| contacts[index].tangent_impulse)
-            .sum();
-        let footprint_impulse = normal_load.hypot(tangent_load.length());
-        let mut distance = 0.0;
-        let mut pairs = 0_u32;
-        for (i, &a) in group.iter().enumerate() {
-            for &b in &group[i + 1..] {
-                distance += contacts[a]
-                    .source
-                    .terrain_point
-                    .distance(contacts[b].source.terrain_point);
-                pairs += 1;
-            }
-        }
-        let radius = if pairs == 0 {
-            mechanic_world::TERRAIN_CELL_METERS
-        } else {
-            (0.5 * distance / f64::from(pairs)).clamp(mechanic_world::TERRAIN_CELL_METERS, 0.3)
-        };
+        start = end;
+        let mut normal_impulse = 0.0;
+        let mut tangent_impulse = DVec3::ZERO;
+        let mut work_j = 0.0;
+        let mut slip = DVec3::ZERO;
         for &index in group {
             let contact = &contacts[index];
-            let impulse = contact.impulses[0];
-            if !impulse.is_finite() || impulse <= 0.0 {
-                continue;
-            }
-            let source = contact.source;
-            match features.binary_search_by_key(&source.feature, |&(feature, _)| feature) {
-                Ok(index) => {
-                    let load = &mut loads[features[index].1];
-                    load.normal_impulse += impulse;
-                    load.tangent_impulse += contact.tangent_impulse;
-                    load.work_j += contact.work_j;
-                    load.footprint_impulse += footprint_impulse;
-                }
-                Err(index) => {
-                    features.insert(index, (source.feature, loads.len()));
-                    loads.push(TerrainLoad {
-                        body: source.body,
-                        point: source.terrain_point,
-                        normal: source.normal,
-                        normal_impulse: impulse,
-                        tangent_impulse: contact.tangent_impulse,
-                        work_j: contact.work_j,
-                        footprint_impulse,
-                        patch_radius: radius,
-                    });
-                }
+            if contact.impulses[0].is_finite() && contact.impulses[0] > 0.0 {
+                normal_impulse += contact.impulses[0];
+                tangent_impulse += contact.tangent_impulse;
+                work_j += contact.work_j;
+                slip += contact.slip_velocity * contact.work_j;
             }
         }
-        start = end;
+        if normal_impulse <= 0.0 {
+            continue;
+        }
+        let footprint_impulse = normal_impulse.hypot(tangent_impulse.length());
+        match keys.binary_search_by_key(&key, |&(key, _)| key) {
+            Ok(index) => {
+                let load = &mut loads[keys[index].1];
+                load.normal_impulse += normal_impulse;
+                load.tangent_impulse += tangent_impulse;
+                let total = load.work_j + work_j;
+                if total > 0.0 {
+                    load.slip_velocity = (load.slip_velocity * load.work_j + slip) / total;
+                }
+                load.work_j = total;
+                load.footprint_impulse += footprint_impulse;
+            }
+            Err(index) => {
+                keys.insert(index, (key, loads.len()));
+                loads.push(TerrainLoad {
+                    body: first.source.body,
+                    point: first.footprint.centre,
+                    normal: first.source.normal,
+                    normal_impulse,
+                    tangent_impulse,
+                    work_j,
+                    slip_velocity: if work_j > 0.0 {
+                        slip / work_j
+                    } else {
+                        DVec3::ZERO
+                    },
+                    footprint_impulse,
+                    footprint: first.footprint.shape,
+                });
+            }
+        }
     }
 }

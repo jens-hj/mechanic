@@ -85,6 +85,13 @@ Row laws:
   energy.
 - **Friction and rolling** are disks limited by the normal impulse. Static
   friction applies below 0.05 m/s of slip at the start of the tick.
+- **Failing ground.** A terrain contact knows the hardened bearing capacity under
+  it and its manifold's footprint. Once its load passes what that ground carries,
+  its rows act straight up and horizontally instead of along the surface, and
+  the horizontal disk is limited by the ground's strength rather than the load.
+  It releases at half the limit, and a contact re-queried on a collider already
+  breaking the ground starts out failing. Rock, ore, body pairs and rolling
+  cylinders never fail.
 - **Drives** are clamped to `drive_budget` per substep. **Joint limits** are
   normal rows on the coordinate.
 - **Loop closures** are solved after limits and before contacts (below).
@@ -356,7 +363,12 @@ sweep and re-query counts.
 `~/.local/share/Mechanic/worlds/test`. It prints the construction's size, then
 one record per simulated second with the fastest body's speed, p50 and maximum
 tick time, and mean query, continuous and solve time, sweeps, re-queries,
-candidate triangles and pairs, and contacts.
+candidate triangles and pairs, and contacts. `--soil` compacts the ground
+under load. `--tool` also breaks it into counted spoil, ignores the world's
+saved clumps, and adds a `tool` object per second: each joint's position, speed
+and mean drive effort, ground load, slip work, footprint sizes, cells broken out
+and the materials under load. `car-drive` and `car-drop` take
+`--ground rock|soil|sand|cover`.
 
 `reference-fixtures` prints one record per captured exact-solver solve: rows,
 convergence, residual, iterations, time and worst contact-law violation.

@@ -345,6 +345,16 @@ impl WorldRuntime {
             return;
         }
         self.soil_ticks = 0;
+        // A material transfer waits for an idle edit queue. While broken ground is
+        // waiting to leave, compaction holds its commits so a pressing tool's
+        // steady 10 Hz edits cannot starve the digging they accompany.
+        if !self
+            .pending_breakage
+            .ready(&self.edits, &self.field, self.clumps.available().min(1))
+            .is_empty()
+        {
+            return;
+        }
         let ready = self.pending_soil.take_ready();
         if self.pending_terrain_edits.len().saturating_add(ready.len()) > MAX_PENDING_TERRAIN_EDITS
         {

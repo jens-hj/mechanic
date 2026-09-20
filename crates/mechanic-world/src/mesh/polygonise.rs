@@ -26,6 +26,7 @@ pub(super) struct MeshVertex {
     pub(super) position: DVec3,
     pub(super) normal: Vec3,
     pub(super) material: TerrainMaterial,
+    pub(super) compaction: u8,
 }
 
 pub(super) fn polygonise_cube(
@@ -104,6 +105,7 @@ pub(super) fn crossing(
             .lerp(samples[empty].normal, along as f32)
             .normalize_or(Vec3::Y),
         material: crossing_material(samples[solid], samples[empty]),
+        compaction: samples[solid].sample.compaction,
     }
 }
 
@@ -233,6 +235,8 @@ pub(super) fn append_triangle(
             weights.map(f32::to_bits),
         );
         *target = if let Some(&known) = chunk.vertex_cache.vertices.get(&key) {
+            let shared = &mut chunk.compaction[known as usize];
+            *shared = (*shared).max(vertex.compaction);
             known
         } else {
             let index =
@@ -240,6 +244,7 @@ pub(super) fn append_triangle(
             chunk.vertices.push(position);
             chunk.normals.push(normal);
             chunk.material_weights.push(weights);
+            chunk.compaction.push(vertex.compaction);
             chunk.vertex_cache.vertices.insert(key, index);
             index
         };

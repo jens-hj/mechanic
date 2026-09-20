@@ -32,15 +32,39 @@ pub(super) struct Machine<'a> {
 /// immovable body.
 const HELD_INERTIA: f64 = 1.0e12;
 
+/// The ground a contact's terrain manifold presses on, shared by its points.
+#[derive(Clone, Copy)]
+pub(super) struct Footprint {
+    pub centre: DVec3,
+    pub shape: mechanic_world::LoadFootprint,
+    /// Contact points sharing this footprint.
+    pub points: usize,
+}
+
+/// How the ground under a terrain contact answers its load.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ground {
+    /// Within its strength: it pushes along its normal and grips by friction.
+    Holding,
+    /// Soft ground pressed past its strength. It still carries the body,
+    /// straight up, but holds it sideways no harder than intact ground at its
+    /// limit: a tooth is not locked into the dimple it presses.
+    Failing,
+}
+
 /// One contact point, followed through its bodies' motion for the whole tick.
 pub(super) struct Contact {
     pub source: TerrainContact,
+    /// Set for terrain contacts once the whole contact list is known.
+    pub footprint: Footprint,
     /// Accumulated normal, two tangent and two rolling impulses per substep.
     pub impulses: [f64; 5],
     /// Physical contact work for this accepted substep, not solver iterations.
     pub work_j: f64,
     /// World-space tangential impulse for this substep.
     pub tangent_impulse: DVec3,
+    /// How the body's surface slid over the opposing one this substep, in m/s.
+    pub slip_velocity: DVec3,
     physical_speeds: [f64; 3],
     queried_pose: BodyPose,
     other_queried_pose: Option<BodyPose>,
@@ -57,12 +81,82 @@ pub(super) struct Contact {
     sliding: bool,
     approach: f64,
     loaded: bool,
+    ground: Ground,
     /// Approach and slip not yet captured, which happens at the first substep
     /// this contact is solved in.
     fresh: bool,
 }
 
 impl Contact {
+    // Largest normal impulse the ground under this point can answer with grip
+    // over `dt`. Ground pressed past its strength is failing: it still stops
+    // the body until the terrain gives way, but it holds no more sideways than
+    // intact ground at its limit would.
+    //
+    // A rolling cylinder is exempt. Against a rigid mesh it touches along a
+    // line, but a wheel on soft ground sinks until its patch carries it, so it
+    // is never past the ground's strength for long; it digs by slipping.
+    fn grip_limit(&self, dt: f64) -> f64 {
+        if self.round.is_some() {
+            return f64::INFINITY;
+        }
+        let points = f64::from(
+            u32::try_from(self.footprint.points)
+                .unwrap_or(u32::MAX)
+                .max(1),
+        );
+        self.source.yield_pa * self.footprint.shape.area() / points * dt
+    }
+
+    // Decided before each substep's rows from the load the contact last carried.
+    // Released at half the limit so a contact near it does not flicker.
+    fn settle_ground(&mut self, dt: f64) {
+        // A contact not yet solved keeps what it inherited.
+        if self.fresh && self.is_failing() {
+            return;
+        }
+        let limit = self.grip_limit(dt);
+        let load = self.impulses[0];
+        let failing = self.source.other_body.is_none()
+            && self.source.normal.y >= mechanic_world::GROUND_NORMAL_MIN_Y
+            && load
+                > if self.is_failing() {
+                    0.5 * limit
+                } else {
+                    limit
+                };
+        self.ground = if failing {
+            Ground::Failing
+        } else {
+            Ground::Holding
+        };
+    }
+
+    /// Whether the ground under this contact is pressed past its strength.
+    pub fn is_failing(&self) -> bool {
+        self.ground == Ground::Failing
+    }
+
+    /// A contact found where its collider was already breaking the ground
+    /// starts out failing, instead of locking the body for its first substep.
+    pub fn inherit_failing(&mut self) {
+        if self.source.other_body.is_none()
+            && self.grip_limit(1.0).is_finite()
+            && self.source.normal.y >= mechanic_world::GROUND_NORMAL_MIN_Y
+        {
+            self.ground = Ground::Failing;
+        }
+    }
+
+    // Normal and two tangents the rows act along.
+    fn frame(&self) -> [DVec3; 3] {
+        if self.is_failing() {
+            [DVec3::Y, DVec3::Z, DVec3::X]
+        } else {
+            [self.source.normal, self.tangent_u, self.tangent_v]
+        }
+    }
+
     pub fn new(
         source: TerrainContact,
         poses: &[BodyPose],
@@ -111,10 +205,20 @@ impl Contact {
             sliding: false,
             work_j: 0.0,
             tangent_impulse: DVec3::ZERO,
+            slip_velocity: DVec3::ZERO,
             physical_speeds: [0.0; 3],
             approach: 0.0,
             loaded: false,
+            ground: Ground::Holding,
             fresh: true,
+            footprint: Footprint {
+                centre: source.terrain_point,
+                shape: mechanic_world::LoadFootprint::square(
+                    source.normal,
+                    mechanic_world::LoadFootprint::MINIMUM_HALF_EXTENT,
+                ),
+                points: 1,
+            },
             source,
         }
     }
@@ -159,27 +263,28 @@ impl Contact {
             (Some(body), Some(local)) => world(body, local),
             _ => self.other_anchor,
         };
+        let [normal, tangent_u, tangent_v] = self.frame();
         let separation = self.source.separation
             + self
                 .source
                 .normal
                 .dot((anchor - self.anchor) - (other - self.other_anchor));
+        // Height above the surface rather than distance from it.
+        let separation = if self.is_failing() {
+            separation / self.source.normal.y
+        } else {
+            separation
+        };
         let mut point = self.source;
         point.body_point = anchor;
         point.terrain_point = other;
         let ranges = model.contact_ranges(&point);
         let count = if self.rolling.is_some() { 5 } else { 3 };
         output.rows.resize_with(count, Row::default);
-        for (row, direction) in [
-            self.source.normal,
-            self.tangent_u,
-            self.tangent_v,
-            self.tangent_u,
-            self.tangent_v,
-        ]
-        .into_iter()
-        .enumerate()
-        .take(count)
+        for (row, direction) in [normal, tangent_u, tangent_v, tangent_u, tangent_v]
+            .into_iter()
+            .enumerate()
+            .take(count)
         {
             model.contact_row(&point, direction, row >= 3, jacobian)?;
             output.rows[row].refresh_local(factor, jacobian, response, &ranges)?;
@@ -816,7 +921,8 @@ pub(super) fn substep(
     }
     scratch.jacobian.resize(state.velocities.len(), 0.0);
     let points = &mut scratch.points[..contacts.len()];
-    for (contact, point) in contacts.iter().zip(points.iter_mut()) {
+    for (contact, point) in contacts.iter_mut().zip(points.iter_mut()) {
+        contact.settle_ground(dt);
         contact.rows(
             &model,
             factor,
@@ -1040,8 +1146,9 @@ pub(super) fn substep(
         // Impulses already changed the accepted velocity. A CCD position clamp
         // must not discount that delivered work a second time.
         contact.work_j = impact_work + slip_work;
-        contact.tangent_impulse =
-            contact.tangent_u * contact.impulses[1] + contact.tangent_v * contact.impulses[2];
+        let [_, tangent_u, tangent_v] = contact.frame();
+        contact.tangent_impulse = tangent_u * contact.impulses[1] + tangent_v * contact.impulses[2];
+        contact.slip_velocity = tangent_u * average[1] + tangent_v * average[2];
     }
     diagnostics.constraints_ms += constraints_started.elapsed().as_secs_f64() * 1000.0;
     Ok(Substep {
@@ -1358,8 +1465,11 @@ fn pass(
             settings,
         );
         let load = contact.impulses[0];
+        let grip = contact.grip_limit(dt);
         contact.loaded |= load > 0.0;
-        let coefficient = if contact.sliding {
+        let coefficient = if contact.is_failing() {
+            1.0
+        } else if contact.sliding {
             contact.source.response[1]
         } else {
             contact.source.response[0]
@@ -1369,7 +1479,7 @@ fn pass(
             [&point.rows[1], &point.rows[2]],
             velocities,
             friction,
-            coefficient * load,
+            coefficient * load.min(grip),
         );
         if let Some(length) = contact.rolling {
             let [_, _, _, rolling @ ..] = &mut contact.impulses;

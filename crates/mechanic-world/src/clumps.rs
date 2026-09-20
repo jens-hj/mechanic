@@ -153,7 +153,9 @@ impl ClumpCollection {
             let mut minimum = first.cell.centre().0;
             let mut maximum = minimum;
             let mut quanta = 0_u32;
+            let mut throw = DVec3::ZERO;
             for source in &cells {
+                throw += source.throw;
                 minimum = minimum.min(source.cell.centre().0);
                 maximum = maximum.max(source.cell.centre().0);
                 quanta += u32::try_from(source.material_quanta()).ok()?;
@@ -171,7 +173,8 @@ impl ClumpCollection {
                 half_extents,
                 position: WorldPosition(centre),
                 rotation: DQuat::IDENTITY,
-                linear_velocity: DVec3::ZERO,
+                linear_velocity: throw
+                    / f64::from(u32::try_from(cells.len()).unwrap_or(u32::MAX).max(1)),
                 angular_velocity: DVec3::ZERO,
                 settled_seconds: 0.0,
                 sleeping: false,

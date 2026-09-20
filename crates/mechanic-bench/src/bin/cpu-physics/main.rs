@@ -50,7 +50,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut instance = None;
     let mut background = None;
     let mut soil = false;
+    let mut tool = false;
     let mut block_width = 8;
+    let mut floor = TerrainMaterial::Rock;
     let mut scale = scale::Options {
         copies: 1,
         connected: false,
@@ -74,9 +76,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--block-width" => {
                 block_width = args.next().ok_or("--block-width needs a value")?.parse()?;
             }
+            "--ground" => {
+                floor = match args.next().ok_or("--ground needs a value")?.as_str() {
+                    "rock" => TerrainMaterial::Rock,
+                    "soil" => TerrainMaterial::Soil,
+                    "sand" => TerrainMaterial::Sand,
+                    "cover" => TerrainMaterial::SurfaceCover,
+                    other => return Err(format!("unknown ground {other}").into()),
+                };
+            }
             "--soil" => soil = true,
             "--hold" => scale.hold = true,
             "--floor" => scale.floor = true,
+            "--tool" => tool = true,
             "--warmup" => scale.warmup = args.next().ok_or("--warmup needs a value")?.parse()?,
             "--ticks" => {
                 scale.ticks = args.next().ok_or("--ticks needs a value")?.parse()?;
@@ -89,6 +101,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if soil && !matches!(scenario.as_str(), "world-drive" | "large-surface") {
         return Err("--soil requires world-drive or large-surface".into());
+    }
+    if tool && scenario != "world-drive" {
+        return Err("--tool requires world-drive".into());
     }
     match scenario.as_str() {
         "builder-scale" => scale::run(&scale),
@@ -103,8 +118,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             &scale,
         ),
         "reference-fixtures" => reference_fixtures(),
-        "car-drop" => car(false),
-        "car-drive" => car(true),
+        "car-drop" => car(false, floor),
+        "car-drive" => car(true, floor),
         "block-pile" => block_pile(),
         "fast-impacts" => fast_impacts(),
         "four-bar" => four_bar(),
@@ -115,7 +130,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_deref()
                 .ok_or("world-drive needs --instance <world directory>")?,
             &scale,
-            soil,
+            world_drive::Ground { soil, tool },
         ),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
@@ -163,11 +178,18 @@ fn four_bar() -> Result<(), Box<dyn Error>> {
     for pose in &mut state.poses {
         pose.position.y += 0.3 - lowest;
     }
-    run("four-bar", &creation, state, 600, |_| Vec::new())
+    run(
+        "four-bar",
+        &creation,
+        state,
+        600,
+        TerrainMaterial::Rock,
+        |_| Vec::new(),
+    )
 }
 
 // The saved car dropped at 4 m/s, or settled and then driven on its speed drives.
-fn car(drive: bool) -> Result<(), Box<dyn Error>> {
+fn car(drive: bool, floor: TerrainMaterial) -> Result<(), Box<dyn Error>> {
     let creation = saved_car()?;
     let mut state = MachineState::at_rest(&creation);
     if !drive {
@@ -192,7 +214,7 @@ fn car(drive: bool) -> Result<(), Box<dyn Error>> {
         Vec::new()
     };
     let name = if drive { "car-drive" } else { "car-drop" };
-    run(name, &creation, state, 600, |tick| {
+    run(name, &creation, state, 600, floor, |tick| {
         if tick == 60 {
             commands
                 .iter()
@@ -227,7 +249,14 @@ fn block_pile() -> Result<(), Box<dyn Error>> {
     }
     let creation = graph.compile()?;
     let state = MachineState::at_rest(&creation);
-    run("block-pile", &creation, state, 600, |_| Vec::new())
+    run(
+        "block-pile",
+        &creation,
+        state,
+        600,
+        TerrainMaterial::Rock,
+        |_| Vec::new(),
+    )
 }
 
 fn run(
@@ -235,10 +264,11 @@ fn run(
     creation: &CompiledCreation,
     mut state: MachineState,
     ticks: u64,
+    floor: TerrainMaterial,
     commands: impl Fn(u64) -> Vec<DriveCommand>,
 ) -> Result<(), Box<dyn Error>> {
     let mut roots = state.poses.clone();
-    let (geometry, scene) = finite_support::scene(creation, &mut roots)?;
+    let (geometry, scene) = finite_support::scene_on(creation, &mut roots, floor)?;
     state.poses = roots;
     let start = state.poses[0].position;
     let settings = SoftStepConfig::default();

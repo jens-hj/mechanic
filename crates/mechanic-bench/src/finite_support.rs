@@ -11,9 +11,9 @@ use mechanic_world::{
 use std::error::Error;
 use std::sync::Arc;
 
-/// Seats the machine on a finite 128 m floor at `y = 0`: shifts `roots` so its
-/// lowest point sits 1 mm into the surface, and returns its collision geometry
-/// with that floor.
+/// Seats the machine on a finite 128 m rock floor at `y = 0`: shifts `roots` so
+/// its lowest point sits 1 mm into the surface, and returns its collision
+/// geometry with that floor.
 ///
 /// # Errors
 ///
@@ -21,6 +21,19 @@ use std::sync::Arc;
 pub fn scene(
     creation: &CompiledCreation,
     roots: &mut [BodyPose],
+) -> Result<(MachineCollisionGeometry, TerrainContactScene), Box<dyn Error>> {
+    scene_on(creation, roots, TerrainMaterial::Rock)
+}
+
+/// [`scene`] with the floor made of `material`.
+///
+/// # Errors
+///
+/// Returns the geometry or terrain-scene construction failure.
+pub fn scene_on(
+    creation: &CompiledCreation,
+    roots: &mut [BodyPose],
+    material: TerrainMaterial,
 ) -> Result<(MachineCollisionGeometry, TerrainContactScene), Box<dyn Error>> {
     let mut lowest = f64::INFINITY;
     for collider in &creation.colliders {
@@ -41,7 +54,7 @@ pub fn scene(
         maximum: WorldPosition(DVec3::new(64.0, 0.0, 64.0)),
     };
     let mut weights = [0.0; TerrainMaterial::COUNT];
-    weights[usize::from(TerrainMaterial::Rock.code())] = 1.0;
+    weights[usize::from(material.code())] = 1.0;
     let mask = TerrainTriangleGroupMask::REGULAR;
     let chunk = TerrainCollisionChunk {
         node: TerrainNodeId::ROOT,

@@ -118,6 +118,9 @@ pub struct TerrainContact {
     pub separation: f64,
     /// Static/kinetic friction, restitution, rolling resistance, in that order.
     pub response: [f64; 4],
+    /// Pressure the opposing ground carries before it yields, in pascals.
+    /// Infinite for rock, ore and other bodies.
+    pub yield_pa: f64,
 }
 
 /// Retained manifolds and actual collision query work. No solve is implied.

@@ -375,7 +375,7 @@ fn soil_fixture(
     let patch = crate::SoilPatch {
         centre: crate::WorldPosition(cell.centre().0 + DVec3::Y * 0.025),
         normal: DVec3::Y,
-        radius: 0.1,
+        footprint: crate::LoadFootprint::square(DVec3::Y, 0.1),
         pressure_pa: 80_000.0,
         seconds: 0.1,
     };
@@ -405,6 +405,7 @@ fn extraction_is_atomic_and_preserves_compressed_material_quantity() {
     let source = crate::ExtractionCell {
         cell,
         sample: terrain.sample_cell(&field, cell),
+        throw: DVec3::ZERO,
     };
     let clumps = crate::ClumpCollection::default();
     assert!(
@@ -430,6 +431,109 @@ fn extraction_is_atomic_and_preserves_compressed_material_quantity() {
     assert!(terrain.sample_cell(&field, cell).is_solid());
 }
 
+// A one-cell load on the fixture's exposed cell that does no work.
+fn still_load(centre: WorldPosition) -> crate::BreakagePatch {
+    crate::BreakagePatch {
+        centre,
+        normal: DVec3::Y,
+        footprint: crate::LoadFootprint::square(DVec3::Y, 0.025),
+        stress_pa: 1e9,
+        work_j: 0.0,
+        crush_pa: 0.0,
+        seconds: 1.0 / 60.0,
+        throw: DVec3::ZERO,
+    }
+}
+
+#[test]
+fn resting_weight_never_breaks_ground_however_heavy() {
+    let (field, terrain, soil, _) = soil_fixture(TerrainMaterial::Soil);
+    let mut damage = crate::BreakageAccumulator::default();
+    for _ in 0..600 {
+        damage.accumulate(&terrain, &field, still_load(soil.centre));
+    }
+    assert!(damage.ready(&terrain, &field, 256).is_empty());
+}
+
+#[test]
+fn soft_ground_driven_sideways_hard_enough_breaks_without_slip() {
+    let crushed = |material, crush_pa| {
+        let (field, terrain, soil, cell) = soil_fixture(material);
+        let mut damage = crate::BreakageAccumulator::default();
+        for _ in 0..60 {
+            damage.accumulate(
+                &terrain,
+                &field,
+                crate::BreakagePatch {
+                    crush_pa,
+                    ..still_load(soil.centre)
+                },
+            );
+        }
+        damage
+            .ready(&terrain, &field, 256)
+            .iter()
+            .any(|source| source.cell == cell)
+    };
+    assert!(crushed(TerrainMaterial::Soil, 5.0e6));
+    // A machine leaning on a slope pushes sideways well within this.
+    assert!(!crushed(TerrainMaterial::Soil, 100_000.0));
+    assert!(!crushed(TerrainMaterial::Rock, 1.0e9));
+}
+
+#[test]
+fn broken_material_leaves_along_the_tool_motion() {
+    let (field, terrain, soil, _) = soil_fixture(TerrainMaterial::Soil);
+    let mut damage = crate::BreakageAccumulator::default();
+    damage.accumulate(
+        &terrain,
+        &field,
+        crate::BreakagePatch {
+            work_j: 1e6,
+            throw: DVec3::X * 3.0,
+            ..still_load(soil.centre)
+        },
+    );
+    let ready = damage.ready(&terrain, &field, 256);
+    let transfer = crate::ClumpCollection::default()
+        .prepare_extraction(&terrain, &field, &ready)
+        .unwrap();
+    let thrown = transfer.clumps.bodies[&1].linear_velocity;
+    assert!(thrown.x > 1.0, "{thrown:?}");
+    assert!(thrown.y > 0.0, "spoil lifts clear of the cut: {thrown:?}");
+    assert!(thrown.z.abs() < 1e-9);
+
+    let mut damage = crate::BreakageAccumulator::default();
+    damage.accumulate(
+        &terrain,
+        &field,
+        crate::BreakagePatch {
+            work_j: 1e6,
+            throw: DVec3::X * 300.0,
+            ..still_load(soil.centre)
+        },
+    );
+    let fast = damage.ready(&terrain, &field, 256)[0].throw;
+    assert!(fast.length() < 4.0 + 1e-9, "{fast:?}");
+}
+
+#[test]
+fn a_knife_edge_compacts_the_cells_along_it_and_not_beside_it() {
+    let (field, terrain, soil, cell) = soil_fixture(TerrainMaterial::Soil);
+    let edge = crate::SoilPatch {
+        footprint: crate::LoadFootprint {
+            axis: DVec3::X,
+            half_length: 0.125,
+            half_width: crate::LoadFootprint::MINIMUM_HALF_EXTENT,
+        },
+        ..soil
+    };
+    let cells = terrain.soil_compressions(&field, edge).unwrap();
+    assert!(cells.len() >= 4, "{}", cells.len());
+    assert!(cells.iter().all(|compression| compression.cell.z == cell.z));
+    assert!(cells.iter().any(|compression| compression.cell.x != cell.x));
+}
+
 #[test]
 fn settled_soft_material_deposits_once_while_rock_stays_physical() {
     for material in [
@@ -442,6 +546,7 @@ fn settled_soft_material_deposits_once_while_rock_stays_physical() {
         let source = crate::ExtractionCell {
             cell,
             sample: terrain.sample_cell(&field, cell),
+            throw: DVec3::ZERO,
         };
         let mut transfer = crate::ClumpCollection::default()
             .prepare_extraction(&terrain, &field, &[source])
@@ -482,9 +587,12 @@ fn breakage_requires_stress_and_work_at_the_exposed_contact() {
     let mut patch = crate::BreakagePatch {
         centre: soil.centre,
         normal: DVec3::Y,
-        radius: 0.025,
+        footprint: crate::LoadFootprint::square(DVec3::Y, 0.025),
         stress_pa: 1e9,
         work_j: 0.0,
+        crush_pa: 0.0,
+        seconds: 1.0 / 60.0,
+        throw: DVec3::ZERO,
     };
     damage.accumulate(&terrain, &field, patch);
     assert!(damage.ready(&terrain, &field, 256).is_empty());
@@ -605,7 +713,7 @@ fn invalid_soil_pressure_does_not_promote_bricks() {
     let patch = crate::SoilPatch {
         centre: WorldPosition(DVec3::ZERO),
         normal: DVec3::Y,
-        radius: 0.1,
+        footprint: crate::LoadFootprint::square(DVec3::Y, 0.1),
         pressure_pa: f32::NAN,
         seconds: 0.1,
     };
@@ -680,7 +788,7 @@ fn a_small_soil_load_moves_procedural_surface_continuously_downward() {
                 crate::SoilPatch {
                     centre,
                     normal: DVec3::Y,
-                    radius: 0.15,
+                    footprint: crate::LoadFootprint::square(DVec3::Y, 0.15),
                     pressure_pa: 30_000.0,
                     seconds: 1.0 / 60.0,
                 },

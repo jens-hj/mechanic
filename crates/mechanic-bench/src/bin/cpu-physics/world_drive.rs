@@ -17,18 +17,27 @@ use mechanic_world::{
     mesh_chunk,
 };
 
+/// How the replayed ground answers the machine.
+#[derive(Clone, Copy)]
+pub(super) struct Ground {
+    /// Compact soft ground under load.
+    pub soil: bool,
+    /// Also break ground into counted spoil, report joint motion, ground load
+    /// and drive effort each second, and ignore the world's saved clumps.
+    pub tool: bool,
+}
+
 /// Terrain meshed around each moving body, in bricks.
 const REACH_BRICKS: i32 = 2;
 
-#[expect(
-    clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    reason = "replay protocol; terrain samples use f32"
-)]
+#[expect(clippy::too_many_lines, reason = "replay protocol")]
 pub(super) fn run(
     directory: &str,
     options: &scale::Options,
-    soil: bool,
+    Ground {
+        soil,
+        tool: probing,
+    }: Ground,
 ) -> Result<(), Box<dyn Error>> {
     let directory = Path::new(directory);
     let store = WorldStore::new(directory.parent().ok_or("world directory has no parent")?);
@@ -51,7 +60,7 @@ pub(super) fn run(
     }
     let loaded = instance.creation.into_graph()?;
     let (mut edits, clumps) = store.load_material_state(&world.name)?;
-    if !clumps.bodies.is_empty() {
+    if !clumps.bodies.is_empty() && !probing {
         return Err(
             "world-drive does not replay saved clumps; use the material-clumps benchmark".into(),
         );
@@ -149,6 +158,7 @@ pub(super) fn run(
     let mut meshed = BTreeMap::<BrickCoord, Arc<_>>::new();
     let mut publication = 0;
     let mut pending_soil = mechanic_world::SoilAccumulator::default();
+    let mut pending_breakage = mechanic_world::BreakageAccumulator::default();
     let mut invalidated = std::collections::BTreeSet::new();
     let mut probes = BTreeMap::<mechanic_world::WorldCell, f64>::new();
     let mut remeshes = 0_u64;
@@ -158,6 +168,7 @@ pub(super) fn run(
     let settings = SoftStepConfig::default();
     let mut machine = CpuMachine::new(creation.clone(), 1, MachineState::at_rest(&creation))?;
     let mut window = Window::default();
+    let mut tool = ToolWindow::default();
     let mut measured = Window::default();
     let mut measured_remeshes = 0_u64;
     for tick in 1..=options.warmup + options.ticks {
@@ -253,24 +264,30 @@ pub(super) fn run(
         machine.step(GRAVITY, &settings, &[], &commands, Some(step))?;
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
         window.record(elapsed, machine.diagnostics());
+        if probing {
+            tool.record(&machine);
+            for load in machine.terrain_loads() {
+                let below = WorldPosition(origin + load.point - load.normal * 0.025);
+                if let Ok(cell) = below.cell() {
+                    let sample = edits.sample_cell(&field, cell);
+                    *tool
+                        .ground
+                        .entry(format!("{:?}", sample.material))
+                        .or_default() += 1;
+                    tool.steepest_normal_y = tool.steepest_normal_y.min(load.normal.y - 1.0);
+                }
+            }
+        }
         let soil_started = Instant::now();
+        if soil && probing {
+            pending_breakage.discard_stale(&edits, &field);
+            for load in machine.terrain_loads() {
+                pending_breakage.accumulate(&edits, &field, load.breakage_patch(origin));
+            }
+        }
         if soil {
             for load in machine.terrain_loads() {
-                pending_soil.accumulate(
-                    &edits,
-                    &field,
-                    mechanic_world::SoilPatch {
-                        centre: WorldPosition(origin + load.point),
-                        normal: load.normal,
-                        radius: load.patch_radius,
-                        pressure_pa: (load.normal_impulse
-                            / (mechanic_core::TICK_SECONDS
-                                * std::f64::consts::PI
-                                * load.patch_radius.powi(2)))
-                            as f32,
-                        seconds: mechanic_core::TICK_SECONDS as f32,
-                    },
-                )?;
+                pending_soil.accumulate(&edits, &field, load.soil_patch(origin))?;
             }
             if tick % 6 == 0 {
                 let ready = pending_soil.take_ready();
@@ -290,8 +307,17 @@ pub(super) fn run(
                 }
                 let outcome = edits.compress_cells(&field, &ready);
                 sunk_metres += outcome.sunk_metres;
+                let mut changed = outcome.changed_brick_coordinates().to_vec();
+                // Spoil is counted, not simulated: this replay carries no clumps.
+                let sources =
+                    pending_breakage.ready(&edits, &field, mechanic_world::MAX_ACTIVE_CLUMPS);
+                if let Some(outcome) = edits.extract_cells(&field, &sources) {
+                    pending_breakage.committed(&sources);
+                    tool.cells_extracted += sources.len();
+                    changed.extend_from_slice(outcome.changed_brick_coordinates());
+                }
                 // Match streaming: leaf sampling/gradient halos include adjacent bricks.
-                for brick in outcome.changed_brick_coordinates() {
+                for brick in changed {
                     for z in -1..=1 {
                         for y in -1..=1 {
                             for x in -1..=1 {
@@ -341,6 +367,10 @@ pub(super) fn run(
             report["remesh_count"] = json!(remeshes);
             report["remesh_ms"] = json!(remesh_ms);
             report["kernel_coverage_complete"] = json!(false);
+            if probing {
+                let state = &machine.snapshot().state;
+                report["tool"] = std::mem::take(&mut tool).report(&creation, state);
+            }
             println!("{report}");
             remeshes = 0;
             remesh_ms = 0.0;
@@ -435,6 +465,92 @@ impl Window {
     }
 }
 
+/// What a powered tool did to the ground over one reporting window.
+#[derive(Default)]
+struct ToolWindow {
+    ticks: f64,
+    loaded_ticks: f64,
+    loads: f64,
+    normal_impulse: f64,
+    wall_impulse: f64,
+    tangent_impulse: f64,
+    work_j: f64,
+    peak_pressure_pa: f64,
+    peak_stress_pa: f64,
+    smallest_area_m2: Option<f64>,
+    largest_area_m2: f64,
+    drive_impulses: Vec<f64>,
+    cells_extracted: usize,
+    ground: BTreeMap<String, u64>,
+    steepest_normal_y: f64,
+}
+
+impl ToolWindow {
+    fn record(&mut self, machine: &CpuMachine) {
+        self.ticks += 1.0;
+        let loads = machine.terrain_loads();
+        self.loaded_ticks += f64::from(u8::from(!loads.is_empty()));
+        for load in loads {
+            let seconds = mechanic_core::TICK_SECONDS * load.footprint.area();
+            self.loads += 1.0;
+            self.normal_impulse += load.normal_impulse;
+            if load.normal.y < mechanic_world::GROUND_NORMAL_MIN_Y {
+                self.wall_impulse += load.normal_impulse;
+            }
+            self.tangent_impulse += load.tangent_impulse.length();
+            self.work_j += load.work_j;
+            self.peak_pressure_pa = self.peak_pressure_pa.max(load.normal_impulse / seconds);
+            self.peak_stress_pa = self.peak_stress_pa.max(load.footprint_impulse / seconds);
+            let area = load.footprint.area();
+            self.smallest_area_m2 = Some(self.smallest_area_m2.map_or(area, |a| a.min(area)));
+            self.largest_area_m2 = self.largest_area_m2.max(area);
+        }
+        let impulses = &machine.diagnostics().drive_impulses;
+        self.drive_impulses.resize(impulses.len(), 0.0);
+        for (total, impulse) in self.drive_impulses.iter_mut().zip(impulses) {
+            *total += impulse;
+        }
+    }
+
+    fn report(
+        self,
+        creation: &mechanic_core::CompiledCreation,
+        state: &MachineState,
+    ) -> serde_json::Value {
+        let seconds = self.ticks * mechanic_core::TICK_SECONDS;
+        let coordinates = state
+            .coordinates
+            .iter()
+            .zip(&creation.dynamics.coordinate_velocities)
+            .zip(&self.drive_impulses)
+            .map(|((position, &row), impulse)| {
+                json!({
+                    "position": position,
+                    "speed": state.velocities[row],
+                    // Newtons for a piston, newton metres for a bearing.
+                    "mean_drive_effort": impulse / seconds,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "coordinates": coordinates,
+            "loaded_ticks": self.loaded_ticks,
+            "mean_loads_per_tick": self.loads / self.ticks,
+            "mean_normal_force_n": self.normal_impulse / seconds,
+            "mean_wall_force_n": self.wall_impulse / seconds,
+            "mean_tangent_force_n": self.tangent_impulse / seconds,
+            "work_j": self.work_j,
+            "cells_extracted": self.cells_extracted,
+            "ground_under_loads": self.ground,
+            "steepest_normal_y": self.steepest_normal_y + 1.0,
+            "peak_pressure_pa": self.peak_pressure_pa,
+            "peak_stress_pa": self.peak_stress_pa,
+            "smallest_footprint_m2": self.smallest_area_m2,
+            "largest_footprint_m2": self.largest_area_m2,
+        })
+    }
+}
+
 /// Large steel footprint on generated ground, using the normal world replay.
 pub(super) fn large_surface(
     options: &scale::Options,
@@ -481,6 +597,6 @@ pub(super) fn large_surface(
             .to_str()
             .ok_or("invalid temporary path")?,
         options,
-        soil,
+        Ground { soil, tool: false },
     )
 }

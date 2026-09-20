@@ -78,7 +78,9 @@ Compacted samples retain continuous signed distances during meshing; binary
 excavation and fill retain bounded occupancy reconstruction. This prevents a
 sub-millimetre first load from snapping a procedural surface to the cell grid.
 The response is game tuning, not measured soil data. Only upward-facing ground
-(normal Y at least 0.25) compacts; walls and ceilings remain rigid.
+(normal Y at least 0.25) compacts; walls and ceilings remain rigid. Each terrain
+manifold reports one load over an oriented footprint: as long as its farthest
+points, as wide as they stray from that line, never narrower than half a cell.
 
 The app accumulates displacement without promoting terrain. Cells cross a 2 mm
 commit threshold and enter the existing asynchronous edit worker at most every
@@ -141,6 +143,14 @@ world that holds clumps. See
 conserves material in every measured run, but the 256-clump replay runs at a
 104 – 114 ms physics p95 on an i5-12600K, so no clump scale gate is claimed.
 
+Soft ground pressed past its hardened bearing capacity is failing: it carries
+the body straight up and holds it sideways with no more than its strength, so a
+pressed tool keeps turning and its slip digs. Soft ground driven sideways beyond
+four times its breakage stress is crushed without slip, and broken material
+leaves along the tool's motion. Rolling cylinders are exempt from the strength
+limit. A saved face drill that stalled on contact now bores 84 cm in 52 s; see
+[the ploughing report](performance-results/2026-09-20-ploughing/REPORT.md).
+
 ## Open work
 
 1. Articulated rotational CCD and crossings that start in overlap.
@@ -153,3 +163,5 @@ conserves material in every measured run, but the 256-clump replay runs at a
    comparison using a fixture with a realistic mass and an external feed force,
    the validation gaps listed in the clump report, and an in-app visual
    demonstration.
+6. Ploughing follow-up: play the face drill and a spinning wheel on sand in the
+   app, feed-limited spin, and steep faces that stay rigid until crushed.

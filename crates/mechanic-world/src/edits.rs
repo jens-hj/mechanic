@@ -168,16 +168,18 @@ impl TerrainOctree {
     ) -> Result<Vec<SoilCompression>, TerrainEditError> {
         patch.validate()?;
         let mut cells = Vec::new();
-        if patch.normal.y < 0.25 {
+        // Below the softest ground's strength nothing yields, however wide the load.
+        let softest = TerrainMaterial::ALL
+            .into_iter()
+            .map(|material| SoilResponse::for_material(material).bearing_capacity_pa)
+            .fold(f32::INFINITY, f32::min);
+        if patch.normal.y < crate::GROUND_NORMAL_MIN_Y || patch.pressure_pa <= softest {
             return Ok(cells);
         }
         // Include a short vertical search below a stale contact mesh. Each column
         // yields only its first exposed sample, never the whole supporting volume.
-        let extent = DVec3::new(
-            patch.radius,
-            patch.radius + TERRAIN_CELL_METERS * 2.0,
-            patch.radius,
-        );
+        let reach = patch.footprint.reach();
+        let extent = DVec3::new(reach, reach + TERRAIN_CELL_METERS * 2.0, reach);
         let minimum = cell_containing(patch.centre.0 - extent);
         let maximum = cell_containing(patch.centre.0 + extent);
         for z in minimum.z..=maximum.z {
@@ -193,8 +195,7 @@ impl TerrainOctree {
                         continue;
                     }
                     let offset = cell.centre().0 - patch.centre.0;
-                    let tangent = offset - patch.normal * offset.dot(patch.normal);
-                    if tangent.length_squared() <= patch.radius * patch.radius {
+                    if patch.footprint.contains(patch.normal, offset) {
                         let depth = SoilResponse::for_material(sample.material).depth(
                             sample.compaction,
                             patch.pressure_pa,

@@ -1484,7 +1484,7 @@ fn a_resting_body_reports_terrain_normal_load_matching_its_weight() {
                 .machine
                 .terrain_loads()
                 .iter()
-                .all(|load| (0.05..=0.3).contains(&load.patch_radius) && load.normal.y > 0.99)
+                .all(|load| load.footprint.area() >= 0.0025 && load.normal.y > 0.99)
         );
         world
             .machine
@@ -1561,6 +1561,87 @@ fn terrain_work_tracks_motion_and_not_stationary_contact_correction() {
                 .all(|load| load.work_j < 1e-8)
         );
     }
+}
+
+// The 128 m floor made of one material.
+fn floor(material: TerrainMaterial) -> std::sync::Arc<mechanic_world::TerrainCollisionChunk> {
+    let mut chunk = ground(None);
+    let mut weights = [0.0; TerrainMaterial::COUNT];
+    weights[usize::from(material.code())] = 1.0;
+    std::sync::Arc::make_mut(&mut chunk)
+        .material_weights
+        .fill(weights);
+    chunk
+}
+
+#[test]
+fn a_resting_body_loads_the_ground_its_corners_span() {
+    let mut world = box_above_floor(0.01, 0.0);
+    for _ in 0..60 {
+        world.tick(GRAVITY);
+    }
+    let loads = world.machine.terrain_loads();
+    assert!(!loads.is_empty());
+    assert!(
+        loads
+            .iter()
+            .all(|load| (load.footprint.area() - 1.0).abs() < 0.05)
+    );
+}
+
+#[test]
+fn overloaded_soft_ground_lets_a_body_slide_that_rock_holds() {
+    // Ten times gravity presses the cube far past what soil carries, and a
+    // sideways pull of three tenths of that is well inside Coulomb friction.
+    let pull = DVec3::new(3.0, -10.0, 0.0) * mechanic_core::STANDARD_GRAVITY_M_S2;
+    let travelled = |material| {
+        let (creation, _, _) = cube();
+        let mut state = MachineState::at_rest(&creation);
+        state.poses[0].position.y = 0.501;
+        let mut world = World::over(creation, state, floor(material));
+        let mut last = world.tick(pull);
+        for _ in 0..60 {
+            last = world.tick(pull);
+        }
+        assert!(clearance(world.creation(), &last) > -0.03);
+        last.poses[0].position.x
+    };
+    assert!(travelled(TerrainMaterial::Rock).abs() < 0.01);
+    assert!(travelled(TerrainMaterial::Soil) > 0.5);
+}
+
+#[test]
+fn soft_ground_within_its_strength_holds_like_any_other() {
+    // A third of gravity keeps the 1 m cube within what soil carries.
+    let pull = DVec3::new(0.1, -0.33, 0.0) * mechanic_core::STANDARD_GRAVITY_M_S2;
+    let (creation, _, _) = cube();
+    let mut state = MachineState::at_rest(&creation);
+    state.poses[0].position.y = 0.501;
+    let mut world = World::over(creation, state, floor(TerrainMaterial::Soil));
+    let mut last = world.tick(pull);
+    for _ in 0..60 {
+        last = world.tick(pull);
+    }
+    assert!(last.poses[0].position.x.abs() < 0.01);
+}
+
+#[test]
+fn a_sliding_body_reports_which_way_it_drags_over_the_ground() {
+    let mut world = box_above_floor(0.0, 0.0);
+    world.tick(GRAVITY);
+    let mut state = world.machine.snapshot().state.clone();
+    state.velocities[0] = 3.0;
+    let (creation, _, _) = cube();
+    let mut world = World::new(creation, state);
+    let mut dragged = DVec3::ZERO;
+    for _ in 0..10 {
+        world.tick(GRAVITY);
+        for load in world.machine.terrain_loads() {
+            dragged += load.slip_velocity * load.work_j;
+        }
+    }
+    assert!(dragged.x > 0.0, "{dragged:?}");
+    assert!(dragged.x > 10.0 * dragged.z.abs());
 }
 
 #[test]

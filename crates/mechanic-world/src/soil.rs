@@ -18,6 +18,10 @@ pub const MAX_SOIL_DEPTH_METRES: f32 = TERRAIN_CELL_METERS as f32 * 0.25;
 /// Minimum accumulated displacement before requesting a remesh.
 pub const SOIL_COMMIT_DEPTH_METRES: f32 = 0.002;
 
+/// Least upward component of a terrain normal that counts as ground. Steeper
+/// faces are walls: they carry no weight and never compact.
+pub const GROUND_NORMAL_MIN_Y: f64 = 0.25;
+
 /// Material's plastic bearing response.
 #[derive(Clone, Copy, Debug)]
 pub struct SoilResponse {
@@ -47,28 +51,32 @@ impl SoilResponse {
         }
     }
 
+    /// Pressure ground compacted this far carries before it yields, in pascals.
+    pub fn capacity_pa(self, compaction: u8) -> f32 {
+        self.bearing_capacity_pa * (1.0 + self.hardening * f32::from(compaction) / 255.0)
+    }
+
     /// Plastic displacement under a constant pressure, bounded per delivery.
     pub fn depth(self, compaction: u8, pressure_pa: f32, seconds: f32) -> f32 {
         if !pressure_pa.is_finite() || !seconds.is_finite() || pressure_pa <= 0.0 || seconds <= 0.0
         {
             return 0.0;
         }
-        let capacity =
-            self.bearing_capacity_pa * (1.0 + self.hardening * f32::from(compaction) / 255.0);
+        let capacity = self.capacity_pa(compaction);
         (self.yield_rate_m_s * (pressure_pa / capacity - 1.0).max(0.0) * seconds)
             .min(MAX_SOIL_DEPTH_METRES)
     }
 }
 
-/// Pressure on an upward-facing circular terrain patch in global coordinates.
+/// Pressure on an upward-facing terrain footprint in global coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SoilPatch {
     /// Global contact centre.
     pub centre: WorldPosition,
     /// Unit outward terrain normal. Walls and ceilings do not compact downward.
     pub normal: DVec3,
-    /// Tangential support radius, in metres.
-    pub radius: f64,
+    /// Ground the load presses on.
+    pub footprint: crate::LoadFootprint,
     /// Average normal pressure over the patch, in pascals.
     pub pressure_pa: f32,
     /// Duration of the applied pressure.
@@ -80,8 +88,7 @@ impl SoilPatch {
         if !self.centre.0.is_finite()
             || !self.normal.is_finite()
             || (self.normal.length_squared() - 1.0).abs() > 0.01
-            || !self.radius.is_finite()
-            || !(TERRAIN_CELL_METERS..=0.3).contains(&self.radius)
+            || !self.footprint.is_valid(self.normal)
             || !self.pressure_pa.is_finite()
             || self.pressure_pa < 0.0
             || !self.seconds.is_finite()
@@ -89,8 +96,9 @@ impl SoilPatch {
         {
             return Err(TerrainEditError::InvalidSoilPatch);
         }
-        if self.centre.0.x.abs() + self.radius >= crate::WORLD_HALF_EXTENT_METERS
-            || self.centre.0.z.abs() + self.radius >= crate::WORLD_HALF_EXTENT_METERS
+        let reach = self.footprint.reach();
+        if self.centre.0.x.abs() + reach >= crate::WORLD_HALF_EXTENT_METERS
+            || self.centre.0.z.abs() + reach >= crate::WORLD_HALF_EXTENT_METERS
         {
             return Err(TerrainEditError::UnbreakableBoundary);
         }

@@ -99,6 +99,7 @@ pub(super) fn cap_vertex(point: (LatticePoint, DVec3), outward: Vec3) -> MeshVer
         position: point.1,
         normal: outward,
         material: point.0.sample.material,
+        compaction: point.0.sample.compaction,
     }
 }
 
@@ -115,6 +116,7 @@ pub(super) fn cap_crossing(
         position: first.1.lerp(second.1, along),
         normal: outward,
         material,
+        compaction: first.0.sample.compaction.max(second.0.sample.compaction),
     }
 }
 
@@ -178,6 +180,7 @@ pub(super) fn generate_transition_face(
                         .lerp(second.0.normal, along as f32)
                         .normalize_or(face_normal(face)),
                     material: crossing_material(first.0, second.0),
+                    compaction: first.0.sample.compaction.max(second.0.sample.compaction),
                 };
                 if first_index < 9 || second_index < 9 {
                     apply_transition_inset(&mut vertex, chunk);

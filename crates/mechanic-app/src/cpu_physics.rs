@@ -263,7 +263,9 @@ impl CpuRoute {
                 body.linear_velocity = motions[row].linear;
                 body.angular_velocity = motions[row].angular;
                 let supported = self.machine.terrain_loads().iter().any(|load| {
-                    load.body == row && load.normal.y > 0.25 && load.normal_impulse > 0.0
+                    load.body == row
+                        && load.normal.y > mechanic_world::GROUND_NORMAL_MIN_Y
+                        && load.normal_impulse > 0.0
                 });
                 if !body.sleeping {
                     let soft =
@@ -344,10 +346,6 @@ impl CpuRoute {
     }
 
     /// Feed accepted CPU loads to world-owned compaction using this query's origin.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "world density and pressure use f32"
-    )]
     pub(crate) fn accumulate_soil(&self, world: &mut crate::world::WorldRuntime) {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         if !*ENABLED.get_or_init(|| {
@@ -356,31 +354,13 @@ impl CpuRoute {
         }) {
             return;
         }
-        world.accumulate_soil(self.machine.terrain_loads().iter().map(|load| {
-            let area = std::f64::consts::PI * load.patch_radius.powi(2);
-            mechanic_world::SoilPatch {
-                centre: mechanic_world::WorldPosition(self.origin + load.point),
-                normal: load.normal,
-                radius: load.patch_radius,
-                pressure_pa: (load.normal_impulse / (mechanic_core::TICK_SECONDS * area)) as f32,
-                seconds: mechanic_core::TICK_SECONDS as f32,
-            }
-        }));
+        let loads = self.machine.terrain_loads();
+        world.accumulate_soil(loads.iter().map(|load| load.soil_patch(self.origin)));
         world.accumulate_breakage(
-            self.machine
-                .terrain_loads()
+            loads
                 .iter()
                 .filter(|load| load.body < self.base_creation.compounds.len())
-                .map(|load| {
-                    let area = std::f64::consts::PI * load.patch_radius.powi(2);
-                    mechanic_world::BreakagePatch {
-                        centre: mechanic_world::WorldPosition(self.origin + load.point),
-                        normal: load.normal,
-                        radius: load.patch_radius,
-                        stress_pa: load.footprint_impulse / (mechanic_core::TICK_SECONDS * area),
-                        work_j: load.work_j,
-                    }
-                }),
+                .map(|load| load.breakage_patch(self.origin)),
         );
     }
 

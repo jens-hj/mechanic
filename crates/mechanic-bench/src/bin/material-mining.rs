@@ -9,7 +9,7 @@ use mechanic_physics::{
     SoftStepTerrain, TerrainContactScene,
 };
 use mechanic_world::{
-    BreakageAccumulator, BreakagePatch, BrickCoord, ClumpCollection, TerrainField, TerrainMaterial,
+    BreakageAccumulator, BrickCoord, ClumpCollection, TerrainField, TerrainMaterial,
     TerrainMeshRequest, TerrainNodeId, TerrainOctree, TerrainTransitionMask, WorldPosition,
     WorldSeed, mesh_chunk,
 };
@@ -149,24 +149,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             body.angular_velocity = DVec3::from_slice(&state.velocities[first + 3..first + 6]);
             body.update_settling(
                 machine.terrain_loads().iter().any(|load| {
-                    load.body == row && load.normal.y > 0.25 && load.normal_impulse > 0.0
+                    load.body == row
+                        && load.normal.y > mechanic_world::GROUND_NORMAL_MIN_Y
+                        && load.normal_impulse > 0.0
                 }),
                 TICK_SECONDS,
             );
         }
         for load in machine.terrain_loads().iter().filter(|load| load.body == 0) {
-            damage.accumulate(
-                &terrain,
-                &field,
-                BreakagePatch {
-                    centre: WorldPosition(load.point),
-                    normal: load.normal,
-                    radius: load.patch_radius,
-                    stress_pa: load.footprint_impulse
-                        / (TICK_SECONDS * std::f64::consts::PI * load.patch_radius.powi(2)),
-                    work_j: load.work_j,
-                },
-            );
+            damage.accumulate(&terrain, &field, load.breakage_patch(DVec3::ZERO));
         }
         let mut remesh_ms = 0.0;
         let mut publication_ms = 0.0;

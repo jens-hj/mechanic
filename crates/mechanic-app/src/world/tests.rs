@@ -2190,7 +2190,7 @@ fn soil_commits_on_sixth_tick_and_survives_world_reload() {
     let patch = mechanic_world::SoilPatch {
         centre: WorldPosition(DVec3::new(0.0, runtime.field.surface_height(0.0, 0.0), 0.0)),
         normal: DVec3::Y,
-        radius: 0.1,
+        footprint: mechanic_world::LoadFootprint::square(DVec3::Y, 0.1),
         pressure_pa: 1.0e6,
         seconds: 1.0 / 60.0,
     };
@@ -2249,6 +2249,7 @@ fn saving_an_unpublished_transfer_keeps_the_previous_material_owner() {
     let source = mechanic_world::ExtractionCell {
         cell,
         sample: runtime.edits.sample_cell(&field, cell),
+        throw: DVec3::ZERO,
     };
     let transfer = runtime
         .clumps

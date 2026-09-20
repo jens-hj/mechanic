@@ -97,6 +97,7 @@ fn material_snapshot_keeps_terrain_and_clumps_together() {
     let source = crate::ExtractionCell {
         cell,
         sample: terrain.sample_cell(&field, cell),
+        throw: bevy_math::DVec3::ZERO,
     };
     let transfer = crate::ClumpCollection::default()
         .prepare_extraction(&terrain, &field, &[source])

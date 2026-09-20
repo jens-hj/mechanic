@@ -90,6 +90,8 @@ pub struct TerrainMeshChunk {
     pub index_groups: TerrainIndexGroups,
     /// One weight per [`TerrainMaterial`] at each vertex.
     pub material_weights: Vec<[f32; TerrainMaterial::COUNT]>,
+    /// Plastic compaction of the ground at each vertex, in compaction steps.
+    pub compaction: Vec<u8>,
     /// Owning global bounds.
     pub bounds: WorldBounds,
     /// Triangle query structure.
@@ -146,6 +148,7 @@ impl TerrainMeshChunk {
             normals: self.normals.clone(),
             index_groups: self.index_groups.clone(),
             material_weights: self.material_weights.clone(),
+            compaction: self.compaction.clone(),
             indices: indices.to_owned(),
             bounds: self.bounds,
             generation: self.generation,
@@ -510,6 +513,7 @@ fn release_growth_slack(chunk: &mut TerrainMeshChunk) {
     chunk.vertices.shrink_to_fit();
     chunk.normals.shrink_to_fit();
     chunk.material_weights.shrink_to_fit();
+    chunk.compaction.shrink_to_fit();
     chunk.index_groups.regular.shrink_to_fit();
     for indices in chunk
         .index_groups
