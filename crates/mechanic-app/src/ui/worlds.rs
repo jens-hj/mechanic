@@ -98,8 +98,8 @@ pub(crate) fn WorldList(handles: Handles) -> Element {
                         text #mechanic.section font-color:accent.key "MECHANIC // WORLD GATE"
                         text #mechanic.title font-size:text-size.hero "DIMENSION ROUTING CONSOLE"
                     }
-                    col width:min-content height:min-content align:end gap:4px {
-                        row width:min-content height:min-content gap:7px align:center {
+                    col width:max-content height:min-content shrink:0 align:end gap:4px {
+                        row width:max-content height:min-content gap:7px align:center {
                             el width:8px height:8px radius:2px exponent:1 fill:status-color.good {}
                             text #mechanic.label font-color:status-color.good "SYSTEM READY"
                         }
@@ -112,7 +112,7 @@ pub(crate) fn WorldList(handles: Handles) -> Element {
                 if model.with(|found| found.loading) {
                     PanelSurface elevated:true width:fill height:1fr pad:32px fill:picker.sheet {
                         col width:fill height:fill align:center justify:center gap:18px {
-                            row width:min-content height:min-content align:center gap:10px {
+                            row width:max-content height:min-content align:center gap:10px {
                                 el width:12px height:12px radius:3px exponent:1 fill:accent.speed {}
                                 text #mechanic.section font-color:accent.speed
                                     "DIMENSION LINK // SYNCHRONIZING"
