@@ -124,6 +124,23 @@ impl ClumpCollection {
             && self.bodies.values().filter(|body| !body.sleeping).count() <= MAX_ACTIVE_CLUMPS
     }
 
+    /// Removes clumps lost inside solid ground and returns how many. Terrain
+    /// collides from outside only, so a clump that gets under the surface falls
+    /// without end. One whose centre and the space above its top are both solid
+    /// is back in the ground it came from.
+    pub fn absorb_buried(&mut self, terrain: &TerrainOctree, field: &TerrainField) -> usize {
+        let before = self.bodies.len();
+        self.bodies.retain(|_, body| {
+            let above = body.half_extents.max_element() + crate::TERRAIN_CELL_METERS;
+            ![DVec3::ZERO, DVec3::Y * above].into_iter().all(|offset| {
+                WorldPosition(body.position.0 + offset)
+                    .cell()
+                    .is_ok_and(|cell| terrain.sample_cell(field, cell).is_solid())
+            })
+        });
+        before - self.bodies.len()
+    }
+
     /// Prepares a complete ownership change on copies. Failure leaves both
     /// inputs untouched. The caller installs all outputs at one boundary.
     pub fn prepare_extraction(

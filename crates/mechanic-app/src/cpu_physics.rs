@@ -288,6 +288,10 @@ impl CpuRoute {
                 }
             }
         }
+        // The next terrain publication drops the absorbed bodies' rows.
+        if world.absorb_buried_clumps() > 0 {
+            world.material_motion();
+        }
     }
 
     pub(crate) fn prepare_clump_tick(

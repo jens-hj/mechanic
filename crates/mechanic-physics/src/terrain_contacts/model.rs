@@ -121,6 +121,8 @@ pub struct TerrainContact {
     /// Pressure the opposing ground carries before it yields, in pascals.
     /// Infinite for rock, ore and other bodies.
     pub yield_pa: f64,
+    /// Pressure that ground still resists with once it has yielded.
+    pub failed_pa: f64,
 }
 
 /// Retained manifolds and actual collision query work. No solve is implied.

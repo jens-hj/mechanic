@@ -59,7 +59,7 @@ pub(super) fn run(
         );
     }
     let loaded = instance.creation.into_graph()?;
-    let (mut edits, clumps) = store.load_material_state(&world.name)?;
+    let (mut edits, mut clumps) = store.load_material_state(&world.name)?;
     if !clumps.bodies.is_empty() && !probing {
         return Err(
             "world-drive does not replay saved clumps; use the material-clumps benchmark".into(),
@@ -111,7 +111,7 @@ pub(super) fn run(
     let creation = loaded
         .graph
         .compile_with_sockets(anchored.iter().copied(), &loaded.sockets)?;
-    let geometry = MachineCollisionGeometry::new(&creation, 1)?;
+    let mut geometry = MachineCollisionGeometry::new(&creation, 1)?;
 
     let throttle = DriveKey::new('W').ok_or("invalid key")?;
     let mut drives = creation.resolve_coordinate_drives(&loaded.graph);
@@ -142,6 +142,19 @@ pub(super) fn run(
         }
     }
 
+    // The app steps the world's loose material in the same machine, without
+    // the clumps it finds lost under the terrain.
+    let absorbed = clumps.absorb_buried(&edits, &field);
+    let mut initial = MachineState::at_rest(&creation);
+    let creation = if probing && !clumps.bodies.is_empty() {
+        let prepared =
+            mechanic_physics::PreparedClumpBodies::new(&creation, &initial, &clumps, origin, 1)?;
+        geometry = prepared.geometry;
+        initial = prepared.state;
+        prepared.creation
+    } else {
+        creation
+    };
     let dynamic = creation
         .compounds
         .iter()
@@ -151,7 +164,7 @@ pub(super) fn run(
         .collect::<Vec<_>>();
     println!(
         "{}",
-        json!({"kind":"metadata","soil":soil,"kernel_coverage_complete":false,"world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup})
+        json!({"kind":"metadata","soil":soil,"kernel_coverage_complete":false,"world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup,"saved_clumps":clumps.bodies.len(),"clumps_absorbed_underground":absorbed,"saved_clumps_awake":clumps.bodies.values().filter(|body| !body.sleeping).count(),"saved_clumps_depositable":clumps.bodies.values().filter(|body| body.can_deposit()).count()})
     );
 
     let mut scene = TerrainContactScene::default();
@@ -166,7 +179,7 @@ pub(super) fn run(
     let mut sunk_metres = 0.0;
     let mut maximum_rut = 0.0_f64;
     let settings = SoftStepConfig::default();
-    let mut machine = CpuMachine::new(creation.clone(), 1, MachineState::at_rest(&creation))?;
+    let mut machine = CpuMachine::new(creation.clone(), 1, initial)?;
     let mut window = Window::default();
     let mut tool = ToolWindow::default();
     let mut measured = Window::default();
@@ -265,6 +278,9 @@ pub(super) fn run(
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
         window.record(elapsed, machine.diagnostics());
         if probing {
+            if let Some(reason) = machine.diagnostics().degraded_reason {
+                *tool.degraded.entry(reason).or_default() += 1;
+            }
             tool.record(&machine);
             for load in machine.terrain_loads() {
                 let below = WorldPosition(origin + load.point - load.normal * 0.025);
@@ -482,6 +498,7 @@ struct ToolWindow {
     drive_impulses: Vec<f64>,
     cells_extracted: usize,
     ground: BTreeMap<String, u64>,
+    degraded: BTreeMap<&'static str, u64>,
     steepest_normal_y: f64,
 }
 
@@ -542,6 +559,7 @@ impl ToolWindow {
             "work_j": self.work_j,
             "cells_extracted": self.cells_extracted,
             "ground_under_loads": self.ground,
+            "degraded_reasons": self.degraded,
             "steepest_normal_y": self.steepest_normal_y + 1.0,
             "peak_pressure_pa": self.peak_pressure_pa,
             "peak_stress_pa": self.peak_stress_pa,

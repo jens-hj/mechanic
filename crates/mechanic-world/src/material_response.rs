@@ -56,13 +56,16 @@ impl TerrainCollisionChunk {
 }
 
 impl TerrainCollisionChunk {
-    /// Pressure the ground under a triangle carries before it yields, in
-    /// pascals: its heaviest material's bearing capacity, hardened by the
-    /// compaction already there. Infinite for rock and ore, which never yield.
+    /// Pressure the ground under a triangle carries before it yields, and the
+    /// pressure it still resists with once it has, in pascals. The first is its
+    /// heaviest material's bearing capacity hardened by the compaction already
+    /// there; the second is that capacity undisturbed, because ground that has
+    /// failed is broken up, however hard it was packed. Both are infinite for
+    /// rock and ore, which never yield.
     ///
     /// # Errors
     /// Rejects missing, negative, non-finite, or all-zero weights.
-    pub fn triangle_yield_pa(&self, indices: [u32; 3]) -> Result<f32, TerrainMaterialError> {
+    pub fn triangle_yield_pa(&self, indices: [u32; 3]) -> Result<[f32; 2], TerrainMaterialError> {
         let mut weights = [0.0_f32; TerrainMaterial::COUNT];
         let mut compaction = 0_u8;
         for index in indices {
@@ -85,7 +88,8 @@ impl TerrainCollisionChunk {
                 weights[usize::from(a.code())].total_cmp(&weights[usize::from(b.code())])
             })
             .ok_or(TerrainMaterialError)?;
-        Ok(SoilResponse::for_material(material).capacity_pa(compaction))
+        let response = SoilResponse::for_material(material);
+        Ok([response.capacity_pa(compaction), response.capacity_pa(0)])
     }
 }
 
@@ -212,15 +216,17 @@ mod tests {
             chunk.material_weights.push(weights);
         }
         let soil = SoilResponse::for_material(TerrainMaterial::Soil);
-        let loose = chunk.triangle_yield_pa([0, 1, 2]).unwrap();
+        let [loose, failed] = chunk.triangle_yield_pa([0, 1, 2]).unwrap();
         assert!((loose - soil.bearing_capacity_pa).abs() < 1.0);
+        assert!((failed - soil.bearing_capacity_pa).abs() < 1.0);
         chunk.compaction = vec![0, 255, 0];
-        let packed = chunk.triangle_yield_pa([0, 1, 2]).unwrap();
+        let [packed, failed] = chunk.triangle_yield_pa([0, 1, 2]).unwrap();
         assert!(packed > loose * 10.0);
+        assert!((failed - soil.bearing_capacity_pa).abs() < 1.0);
         let mut rock = [0.0; TerrainMaterial::COUNT];
         rock[usize::from(TerrainMaterial::Rock.code())] = 1.0;
         chunk.material_weights = vec![rock; 3];
-        assert!(chunk.triangle_yield_pa([0, 1, 2]).unwrap().is_infinite());
+        assert!(chunk.triangle_yield_pa([0, 1, 2]).unwrap()[1].is_infinite());
         assert!(chunk.triangle_yield_pa([0, 1, 3]).is_err());
     }
 }

@@ -514,11 +514,10 @@ impl TerrainContactScene {
                         f64::from(material.restitution).max(surface[2]),
                         (f64::from(material.rolling_resistance) * surface[3]).sqrt(),
                     ];
-                    let yield_pa = f64::from(
-                        chunk
-                            .triangle_yield_pa(indices)
-                            .map_err(|_| PhysicsError::InvalidCollision)?,
-                    );
+                    let yield_pa = chunk
+                        .triangle_yield_pa(indices)
+                        .map_err(|_| PhysicsError::InvalidCollision)?
+                        .map(f64::from);
                     supports.push((
                         node,
                         published,
@@ -607,7 +606,8 @@ impl TerrainContactScene {
                         depth: point.depth,
                         separation: (point.body_point - point.triangle_point).dot(point.normal),
                         response,
-                        yield_pa,
+                        yield_pa: yield_pa[0],
+                        failed_pa: yield_pa[1],
                     };
                     if !activation_recorded && contact.separation <= CONTACT_ACTIVATION_DISTANCE {
                         result.activation_features.push(contact.feature);
@@ -735,6 +735,7 @@ impl TerrainContactScene {
                     separation: (point.body_point - point.triangle_point).dot(point.normal),
                     response,
                     yield_pa: f64::INFINITY,
+                    failed_pa: f64::INFINITY,
                 };
                 if !activation_recorded && contact.separation <= PAIR_ACTIVATION_DISTANCE {
                     result.activation_features.push(contact.feature);

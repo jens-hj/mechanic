@@ -212,6 +212,15 @@ impl WorldRuntime {
         self.autosave.mutate(self.clock);
     }
 
+    /// Returns clumps lost under the terrain to the ground. Waits out a pending
+    /// material publication, whose prepared clumps would bring them back.
+    pub(crate) fn absorb_buried_clumps(&mut self) -> usize {
+        if self.pending_material.is_some() {
+            return 0;
+        }
+        self.clumps.absorb_buried(&self.edits, &self.field)
+    }
+
     pub(crate) fn accumulate_breakage(
         &mut self,
         patches: impl Iterator<Item = mechanic_world::BreakagePatch>,

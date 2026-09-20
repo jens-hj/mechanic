@@ -175,6 +175,10 @@ pub struct SoftStepDiagnostics {
     pub degraded: bool,
     /// First reason the tick degraded.
     pub degraded_reason: Option<&'static str>,
+    /// Whether the tick fell back to an earlier state. Its contact loads then
+    /// describe motion that never published. A clamped runaway body degrades
+    /// the tick without rolling it back, and everything else's loads stand.
+    pub rolled_back: bool,
     /// Contact query time, in milliseconds.
     pub query_ms: f64,
     /// Integration and solve time, in milliseconds.
@@ -884,6 +888,7 @@ impl CpuMachine {
                     state.velocities.fill(0.0);
                     last = None;
                     diagnostics.degrade("numerical substep");
+                    diagnostics.rolled_back = true;
                     self.pin(&mut state);
                     break;
                 }
@@ -912,6 +917,7 @@ impl CpuMachine {
                 state.clone_from(&self.completed.state);
                 state.velocities.fill(0.0);
                 diagnostics.degrade("final pose");
+                diagnostics.rolled_back = true;
             }
         }
         self.pin(&mut state);
@@ -927,11 +933,11 @@ impl CpuMachine {
             joints.closures
         };
 
-        if diagnostics.degraded {
+        if diagnostics.rolled_back {
             self.terrain_loads.clear();
         }
         self.supported.fill(false);
-        if !diagnostics.degraded {
+        if !diagnostics.rolled_back {
             for contact in &contacts {
                 if contact.impulses[0] <= 0.0 {
                     continue;

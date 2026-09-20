@@ -1645,6 +1645,43 @@ fn a_sliding_body_reports_which_way_it_drags_over_the_ground() {
 }
 
 #[test]
+fn a_runaway_body_does_not_hide_what_the_others_press_on_the_ground() {
+    // One cube rests on the floor; the other has fallen out of the world.
+    let creation = loose_cubes();
+    let mut state = MachineState::at_rest(&creation);
+    state.poses[0].position.y = 0.5;
+    state.poses[1].position.y = -100_000.0;
+    let rows = creation.dynamics.body_velocities[1].clone();
+    state.velocities[rows.start + 1] = -600.0;
+    let mut world = World::new(creation, state);
+    for _ in 0..30 {
+        let terrain = SoftStepTerrain {
+            scene: &world.scene,
+            geometry: &world.geometry,
+            topology_generation: GENERATION,
+            origin: DVec3::ZERO,
+        };
+        world
+            .machine
+            .step(GRAVITY, &world.settings, &[], &[], Some(terrain))
+            .unwrap();
+    }
+    assert_eq!(
+        world.machine.diagnostics().degraded_reason,
+        Some("speed limit")
+    );
+    assert!(
+        world
+            .machine
+            .terrain_loads()
+            .iter()
+            .any(|load| load.body == 0 && load.normal_impulse > 0.0),
+        "the resting cube still loads the ground"
+    );
+    assert!(world.machine.body_supported(0));
+}
+
+#[test]
 fn a_large_cube_settles_on_finely_meshed_generated_ground() {
     use mechanic_world::{
         BrickCoord, TerrainField, TerrainMeshRequest, TerrainNodeId, TerrainOctree,

@@ -535,6 +535,35 @@ fn a_knife_edge_compacts_the_cells_along_it_and_not_beside_it() {
 }
 
 #[test]
+fn a_clump_lost_under_the_ground_is_absorbed_and_one_lying_on_it_is_not() {
+    let (field, terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
+    let clump = |id, position| crate::MaterialClump {
+        id,
+        material: TerrainMaterial::Soil,
+        quanta: 510,
+        half_extents: DVec3::splat(0.025),
+        position: WorldPosition(position),
+        rotation: bevy_math::DQuat::IDENTITY,
+        linear_velocity: DVec3::ZERO,
+        angular_velocity: DVec3::ZERO,
+        settled_seconds: 0.0,
+        sleeping: false,
+    };
+    let surface = cell.centre().0 + DVec3::Y * 0.025;
+    let mut clumps = crate::ClumpCollection::default();
+    clumps
+        .bodies
+        .insert(1, clump(1, surface + DVec3::Y * 0.026));
+    clumps.bodies.insert(2, clump(2, surface - DVec3::Y * 0.3));
+    clumps
+        .bodies
+        .insert(3, clump(3, surface - DVec3::Y * 300_000.0));
+    clumps.next_id = 4;
+    assert_eq!(clumps.absorb_buried(&terrain, &field), 2);
+    assert_eq!(clumps.bodies.keys().copied().collect::<Vec<_>>(), [1]);
+}
+
+#[test]
 fn settled_soft_material_deposits_once_while_rock_stays_physical() {
     for material in [
         TerrainMaterial::Sand,

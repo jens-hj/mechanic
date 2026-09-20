@@ -55,6 +55,26 @@ Raw records: [before](drill-before.jsonl.gz), [after](drill-after.jsonl.gz).
 - In the app, compaction holds its 10 Hz commits while broken cells wait, since
   a material transfer needs an idle edit queue.
 
+## Why the app still showed nothing
+
+Played in the app, the head kept turning but no ground moved, and the world's
+72 resting clumps never settled back into terrain. Replaying the save **with
+its clumps as bodies** reproduced it: three clumps had got under the terrain,
+which collides from outside only, and were 345 km down at the solver's 500 m/s
+clamp. That clamp degraded every tick, and a degraded tick discarded every
+body's terrain loads, so nothing in that world could compact, break or settle.
+
+- A tick now discards its loads only when it rolled back. A clamped runaway
+  degrades the tick and everything else's loads stand.
+- A clump whose centre and the space above its top are both solid ground is
+  absorbed back into it (`ClumpCollection::absorb_buried`), each CPU tick.
+- `--tool` now steps the save's clumps in the machine, as the app does.
+
+With the clumps present and the save's current electric-only bearing
+(500 N·m): 3 clumps absorbed, 0 degraded ticks, 30 – 70 cells broken out per
+second, piston 1.00 → 1.35 m in 24 s. The head stalls under the 180 kN feed at
+that torque and digs by crushing; the 6.5 kN·m setup in the table keeps turning.
+
 ## Checks against regressions
 
 `car-drive --ground soil` and `--ground sand` travel 2.390 m and 2.412 m, equal
@@ -64,8 +84,8 @@ permanently overloading fresh ground.
 
 ## Not measured, and known limits
 
-- **The app was not run.** The replay applies edits synchronously and counts
-  spoil instead of simulating clumps. In the app, extraction waits on the
+- **The app was not run after the last fix.** The replay applies edits
+  synchronously and counts new spoil instead of simulating it. In the app, extraction waits on the
   asynchronous edit queue and the 256-clump budget, so a hole is expected to
   clog with its own spoil. Thrown clumps are covered by a unit test only.
 - Spin stays far below its 37.7 rad/s target while the servo feeds at full

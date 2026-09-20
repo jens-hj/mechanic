@@ -97,6 +97,17 @@ impl Contact {
     // line, but a wheel on soft ground sinks until its patch carries it, so it
     // is never past the ground's strength for long; it digs by slipping.
     fn grip_limit(&self, dt: f64) -> f64 {
+        self.ground_impulse(self.source.yield_pa, dt)
+    }
+
+    // What failed ground still holds with: broken up, it has lost whatever
+    // packing had hardened it.
+    fn failed_hold(&self, dt: f64) -> f64 {
+        self.ground_impulse(self.source.failed_pa, dt)
+    }
+
+    // This point's share of a pressure over its manifold's footprint for `dt`.
+    fn ground_impulse(&self, pressure_pa: f64, dt: f64) -> f64 {
         if self.round.is_some() {
             return f64::INFINITY;
         }
@@ -105,7 +116,7 @@ impl Contact {
                 .unwrap_or(u32::MAX)
                 .max(1),
         );
-        self.source.yield_pa * self.footprint.shape.area() / points * dt
+        pressure_pa * self.footprint.shape.area() / points * dt
     }
 
     // Decided before each substep's rows from the load the contact last carried.
@@ -1465,7 +1476,11 @@ fn pass(
             settings,
         );
         let load = contact.impulses[0];
-        let grip = contact.grip_limit(dt);
+        let grip = if contact.is_failing() {
+            contact.failed_hold(dt)
+        } else {
+            contact.grip_limit(dt)
+        };
         contact.loaded |= load > 0.0;
         let coefficient = if contact.is_failing() {
             1.0

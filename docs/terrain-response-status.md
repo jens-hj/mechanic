@@ -151,6 +151,12 @@ leaves along the tool's motion. Rolling cylinders are exempt from the strength
 limit. A saved face drill that stalled on contact now bores 84 cm in 52 s; see
 [the ploughing report](performance-results/2026-09-20-ploughing/REPORT.md).
 
+Terrain collides from outside only, so a clump that gets under the surface used
+to fall without end; clamped at the solver's speed limit it degraded every tick,
+and a degraded tick discarded every body's terrain loads, silencing compaction,
+breakage and settling for the whole world. Loads are now discarded only by a
+tick that rolled back, and a clump buried in solid ground is absorbed into it.
+
 ## Open work
 
 1. Articulated rotational CCD and crossings that start in overlap.
