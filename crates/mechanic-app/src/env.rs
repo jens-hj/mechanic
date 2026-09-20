@@ -5,7 +5,9 @@
 //! the accessors here with one of these names, so the full configuration surface
 //! is this file, and `docs/environment.md` documents exactly this list.
 
-use std::{ffi::OsString, path::PathBuf};
+use std::ffi::OsString;
+#[cfg(debug_assertions)]
+use std::path::PathBuf;
 
 /// `gpu` runs published ticks on the GPU runtime; anything else runs the CPU solver.
 pub(crate) const PHYSICS: &str = "MECHANIC_PHYSICS";
@@ -25,6 +27,7 @@ pub(crate) const PERF_LABEL: &str = "MECHANIC_PERF_LABEL";
 /// Adds per-pass terrain GPU timings to a capture.
 pub(crate) const PERF_TERRAIN_PASSES: &str = "MECHANIC_PERF_TERRAIN_PASSES";
 /// Directory receiving the tool-effect capture sequence.
+#[cfg(debug_assertions)]
 pub(crate) const FX_CAPTURE_DIR: &str = "MECHANIC_FX_CAPTURE_DIR";
 /// Directory receiving the suspension capture sequence.
 pub(crate) const SUSPENSION_CAPTURE_DIR: &str = "MECHANIC_SUSPENSION_CAPTURE_DIR";
@@ -76,6 +79,7 @@ pub(crate) fn raw(name: &str) -> Option<OsString> {
 }
 
 /// The variable as a path, when it is set at all.
+#[cfg(debug_assertions)]
 pub(crate) fn path(name: &str) -> Option<PathBuf> {
     raw(name).map(PathBuf::from)
 }
