@@ -345,15 +345,8 @@ pub(super) fn finish_material(
     finish: mechanic_core::HardwareFinish,
 ) -> ConstructionRenderMaterial {
     let mut material = base.clone();
-    let representative = super::chroma::material_profile(finish.material).representative_srgb;
-    let baked = Color::srgb_u8(representative[0], representative[1], representative[2]).to_linear();
     let target_color = Color::srgb_u8(finish.color[0], finish.color[1], finish.color[2]);
-    let target = target_color.to_linear();
-    material.base.base_color = Color::linear_rgb(
-        target.red / baked.red,
-        target.green / baked.green,
-        target.blue / baked.blue,
-    );
+    material.base.base_color = super::chroma::finish_base_color(finish.material, finish.color);
     material.base.perceptual_roughness = finish.roughness;
     material.base.metallic = finish.metalness;
     material.extension.base_lightness.x = bevy::color::Oklaba::from(target_color).lightness;

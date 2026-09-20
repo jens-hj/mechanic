@@ -4,7 +4,7 @@
 //! body, the last stage follows whatever the head carries, and the stages
 //! between them are placed from the measured extension, largest first.
 
-use crate::chroma::ConstructionRenderMaterial;
+use crate::chroma::{ConstructionRenderMaterial, finish_base_color};
 use crate::editor::build_actions::PlacedBearing;
 use crate::editor::preview::EditorVisuals;
 use crate::editor::state::{EditorGraph, EditorState};
@@ -229,6 +229,10 @@ fn render_mesh(chunk: mechanic_core::PistonMeshChunk) -> Mesh {
 }
 
 /// One material per guide finish, or `None` until the construction textures have loaded.
+///
+/// The base colour modulates the construction texture towards the guide
+/// colour; using the guide colour directly multiplies two dark values and
+/// leaves the piston near black.
 fn finish_materials(
     visuals: &EditorVisuals,
     construction_materials: &Assets<ConstructionRenderMaterial>,
@@ -239,7 +243,7 @@ fn finish_materials(
             let index = material_index(finish.material);
             let base = construction_materials.get(&visuals.construction_materials[index])?;
             let mut material = base.base.clone();
-            material.base_color = Color::srgb_u8(finish.color[0], finish.color[1], finish.color[2]);
+            material.base_color = finish_base_color(finish.material, finish.color);
             material.perceptual_roughness = finish.roughness;
             material.metallic = finish.metalness;
             Some(material)

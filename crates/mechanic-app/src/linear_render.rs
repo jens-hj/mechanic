@@ -1,6 +1,6 @@
 //! Cached procedural rail and carriage visuals sharing construction textures.
 
-use crate::chroma::ConstructionRenderMaterial;
+use crate::chroma::{ConstructionRenderMaterial, finish_base_color};
 use crate::editor::build_actions::{PlacedBearing, bearing_uses_socket};
 use crate::editor::preview::EditorVisuals;
 use crate::editor::state::{EditorGraph, EditorState};
@@ -331,14 +331,13 @@ pub(super) fn sync_linear_bearing_visuals(
         cache.materials = LINEAR_FINISHES
             .iter()
             .map(|finish| {
-                let mut material = if finish.aluminium {
-                    &aluminium.base
+                let (kind, base) = if finish.aluminium {
+                    (ConstructionMaterial::Aluminium, &aluminium.base)
                 } else {
-                    &steel.base
-                }
-                .clone();
-                material.base_color =
-                    Color::srgb_u8(finish.color[0], finish.color[1], finish.color[2]);
+                    (ConstructionMaterial::Steel, &steel.base)
+                };
+                let mut material = base.clone();
+                material.base_color = finish_base_color(kind, finish.color);
                 material.perceptual_roughness = finish.roughness;
                 material.metallic = finish.metalness;
                 materials.add(material)

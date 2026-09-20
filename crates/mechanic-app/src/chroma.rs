@@ -77,6 +77,19 @@ pub(crate) fn material_profile(material: ConstructionMaterial) -> MaterialColorP
     }
 }
 
+/// Base-colour multiplier that lands a guide finish on top of a construction
+/// texture, instead of multiplying two dark base colours into near black.
+pub(crate) fn finish_base_color(material: ConstructionMaterial, color: [u8; 3]) -> Color {
+    let representative = material_profile(material).representative_srgb;
+    let baked = Color::srgb_u8(representative[0], representative[1], representative[2]).to_linear();
+    let target = Color::srgb_u8(color[0], color[1], color[2]).to_linear();
+    Color::linear_rgb(
+        target.red / baked.red,
+        target.green / baked.green,
+        target.blue / baked.blue,
+    )
+}
+
 fn parse_hex(value: &str) -> [u8; 3] {
     let value = value
         .strip_prefix('#')
@@ -360,6 +373,32 @@ mod tests {
                 profile.representative_srgb,
                 "Baked leaves the generated representative color unchanged"
             );
+        }
+    }
+
+    #[test]
+    fn hardware_finishes_land_on_their_guide_colour_over_the_construction_texture() {
+        let finishes = mechanic_core::PISTON_FINISHES
+            .iter()
+            .map(|finish| (finish.material, finish.color))
+            .chain(mechanic_core::LINEAR_FINISHES.iter().map(|finish| {
+                let material = if finish.aluminium {
+                    ConstructionMaterial::Aluminium
+                } else {
+                    ConstructionMaterial::Steel
+                };
+                (material, finish.color)
+            }));
+        for (material, color) in finishes {
+            let representative = material_profile(material).representative_srgb;
+            let baked =
+                Color::srgb_u8(representative[0], representative[1], representative[2]).to_linear();
+            let multiplier = finish_base_color(material, color).to_linear();
+            let target = Color::srgb_u8(color[0], color[1], color[2]).to_linear();
+            assert!((baked.red * multiplier.red - target.red).abs() < 1e-6);
+            assert!((baked.green * multiplier.green - target.green).abs() < 1e-6);
+            assert!((baked.blue * multiplier.blue - target.blue).abs() < 1e-6);
+            assert!(multiplier.red > target.red);
         }
     }
 
