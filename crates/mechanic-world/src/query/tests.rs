@@ -179,6 +179,7 @@ fn capsule_lands_and_jumps_to_requested_height() {
         KinematicInput {
             movement: DVec2::ZERO,
             sprint: false,
+            crouch: false,
             jump: true,
             jump_held: false,
         },
@@ -252,6 +253,7 @@ fn holding_jump_during_a_fall_does_not_slow_gravity() {
         &mut capsule,
         &Plane,
         KinematicInput {
+            crouch: false,
             jump: true,
             jump_held: true,
             ..KinematicInput::default()
@@ -395,6 +397,7 @@ fn vertical_construction_contact_does_not_slow_a_fall() {
     let input = KinematicInput {
         movement: DVec2::X,
         sprint: false,
+        crouch: false,
         jump: false,
         jump_held: false,
     };
@@ -436,6 +439,7 @@ fn sprint_uses_configured_faster_speed() {
             KinematicInput {
                 movement: DVec2::X,
                 sprint: false,
+                crouch: false,
                 jump: false,
                 jump_held: false,
             },
@@ -446,6 +450,7 @@ fn sprint_uses_configured_faster_speed() {
             KinematicInput {
                 movement: DVec2::X,
                 sprint: true,
+                crouch: false,
                 jump: false,
                 jump_held: false,
             },
@@ -558,6 +563,7 @@ fn moving_support_carries_position_yaw_and_jump_velocity() {
         KinematicInput {
             movement: DVec2::ZERO,
             sprint: false,
+            crouch: false,
             jump: true,
             jump_held: false,
         },
@@ -624,6 +630,7 @@ fn construction_step_climbs_only_to_the_compiled_top_face() {
             KinematicInput {
                 movement: DVec2::X,
                 sprint: false,
+                crouch: false,
                 jump: false,
                 jump_held: false,
             },
@@ -697,6 +704,7 @@ fn construction_step_can_be_climbed_at_an_angle() {
         KinematicInput {
             movement: direction,
             sprint: false,
+            crouch: false,
             jump: false,
             jump_held: false,
         },
@@ -745,6 +753,7 @@ fn grazing_a_step_edge_does_not_repeat_step_and_fall() {
             KinematicInput {
                 movement: DVec2::X,
                 sprint: false,
+                crouch: false,
                 jump: false,
                 jump_held: false,
             },
@@ -836,4 +845,87 @@ fn active_octree_and_chunk_bvhs_match_direct_chunk_raycast() {
 
     index.remove(TerrainNodeId::leaf(nodes[0]));
     assert!(!index.contains(TerrainNodeId::leaf(nodes[0])));
+}
+
+struct Tunnel;
+
+impl TerrainDensity for Tunnel {
+    fn density(&self, position: WorldPosition) -> f32 {
+        let floor = -position.0.y;
+        let ceiling = position.0.y - TUNNEL_CEILING_METERS;
+        floor.max(ceiling) as f32
+    }
+
+    fn material(&self, _position: WorldPosition) -> TerrainMaterial {
+        TerrainMaterial::Rock
+    }
+}
+
+const TUNNEL_CEILING_METERS: f64 = 1.3;
+
+#[test]
+fn holding_crouch_shrinks_the_capsule_and_slows_it() {
+    let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(0.0, 1.0, 0.0)));
+    for _ in 0..120 {
+        tick_terrain(&mut capsule, &Plane, KinematicInput::default());
+    }
+    let crouching = KinematicInput {
+        movement: DVec2::Y,
+        sprint: false,
+        crouch: true,
+        jump: false,
+        jump_held: false,
+    };
+
+    for _ in 0..60 {
+        tick_terrain(&mut capsule, &Plane, crouching);
+    }
+
+    assert!(capsule.grounded);
+    assert!(capsule.crouched());
+    assert!((capsule.height - capsule.config.crouch_height).abs() < 1.0e-6);
+    assert!((capsule.crouch_fraction() - 1.0).abs() < 1.0e-6);
+    let start = capsule.position.0.z;
+    for _ in 0..60 {
+        tick_terrain(&mut capsule, &Plane, crouching);
+    }
+    let speed = (capsule.position.0.z - start).abs();
+    assert!(
+        speed < capsule.config.walk_speed,
+        "crouched capsule covered {speed} m in a second"
+    );
+
+    for _ in 0..60 {
+        tick_terrain(&mut capsule, &Plane, KinematicInput::default());
+    }
+    assert!(!capsule.crouched());
+    assert!((capsule.height - capsule.config.standing_height).abs() < 1.0e-6);
+}
+
+#[test]
+fn a_low_terrain_ceiling_keeps_the_capsule_crouched() {
+    let mut capsule = KinematicCapsule::new(WorldPosition(DVec3::new(0.0, 0.2, 0.0)));
+    capsule.height = capsule.config.crouch_height;
+    let crouching = KinematicInput {
+        movement: DVec2::ZERO,
+        sprint: false,
+        crouch: true,
+        jump: false,
+        jump_held: false,
+    };
+    for _ in 0..120 {
+        tick_terrain(&mut capsule, &Tunnel, crouching);
+    }
+    assert!(capsule.grounded);
+
+    for _ in 0..120 {
+        tick_terrain(&mut capsule, &Tunnel, KinematicInput::default());
+    }
+
+    assert!(capsule.crouched(), "capsule stood into the ceiling");
+    assert!(
+        capsule.position.0.y + capsule.height <= TUNNEL_CEILING_METERS,
+        "head reached {}",
+        capsule.position.0.y + capsule.height
+    );
 }

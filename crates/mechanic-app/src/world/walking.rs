@@ -56,6 +56,7 @@ pub(super) fn walk_world(
     if list.phase() != WorldListPhase::Playing {
         runtime.capsule.velocity = bevy::math::DVec3::ZERO;
         runtime.jump_queued = false;
+        player.crouch = 0.0;
         return;
     }
     let reactions_are_authoritative = simulation.is_running()
@@ -68,6 +69,7 @@ pub(super) fn walk_world(
         runtime.jump_queued = false;
         runtime.step_visual_offset = 0.0;
         runtime.walking_suspended = true;
+        player.crouch = 0.0;
         return;
     }
     if runtime.walking_suspended {
@@ -165,6 +167,7 @@ pub(super) fn walk_world(
             KinematicInput {
                 movement: bevy::math::DVec2::new(f64::from(movement.x), f64::from(movement.z)),
                 sprint: actions.pressed(GameAction::Sprint),
+                crouch: actions.pressed(GameAction::Crouch),
                 jump: tick == 0 && jump_queued,
                 jump_held: actions.pressed(GameAction::Jump),
             },
@@ -204,6 +207,7 @@ pub(super) fn walk_world(
         time.delta_secs(),
     );
     player.position = capsule_position + Vec3::Y * runtime.step_visual_offset;
+    player.crouch = capsule.crouch_fraction() as f32;
     runtime.document.player_pose.translation = capsule.position;
 }
 

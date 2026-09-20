@@ -411,8 +411,9 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             "WORLD  •  LIVE",
             Tone::Good,
             format!(
-                "{}  Garage     SPACE  Jump     SHIFT  Sprint     {}  Hide help",
+                "{}  Garage     SPACE  Jump     SHIFT  Sprint     {}  Crouch     {}  Hide help",
                 controls.label(GameAction::ToggleSpace),
+                controls.label(GameAction::Crouch),
                 controls.label(GameAction::ToggleHelp)
             ),
         )

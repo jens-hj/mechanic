@@ -14,6 +14,10 @@ pub struct KinematicCapsuleConfig {
     pub radius: f64,
     /// Standing height from feet to head.
     pub standing_height: f64,
+    /// Crouched height from feet to head.
+    pub crouch_height: f64,
+    /// Rate the capsule grows and shrinks between the two heights.
+    pub crouch_transition_speed: f64,
     /// Maximum ledge automatically stepped onto.
     pub step_height: f64,
     /// Maximum walkable surface angle in radians.
@@ -24,6 +28,8 @@ pub struct KinematicCapsuleConfig {
     pub walk_speed: f64,
     /// Horizontal sprinting speed.
     pub sprint_speed: f64,
+    /// Horizontal crouching speed.
+    pub crouch_speed: f64,
     /// Downward acceleration.
     pub gravity: f64,
     /// Downward acceleration used for the authored jump arc.
@@ -45,11 +51,14 @@ impl Default for KinematicCapsuleConfig {
         Self {
             radius: 0.30,
             standing_height: 1.8,
+            crouch_height: 1.0,
+            crouch_transition_speed: 6.0,
             step_height: 0.35,
             maximum_slope: 45.0_f64.to_radians(),
             jump_height: 0.75,
             walk_speed: 4.0,
             sprint_speed: 7.0,
+            crouch_speed: 1.8,
             gravity: mechanic_core::STANDARD_GRAVITY_M_S2,
             airborne_gravity: 24.0,
             mass: 80.0,
@@ -63,11 +72,17 @@ impl Default for KinematicCapsuleConfig {
 
 /// Input sampled for one fixed 60 Hz controller tick.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one field per held movement key sampled for the tick"
+)]
 pub struct KinematicInput {
     /// Desired horizontal world direction, clamped to unit length.
     pub movement: DVec2,
     /// Whether movement uses sprint speed.
     pub sprint: bool,
+    /// Whether the capsule should shrink to its crouched height.
+    pub crouch: bool,
     /// True only on the tick a jump is requested.
     pub jump: bool,
     /// Whether jump is still held, sustaining lift until release or the apex.
@@ -100,6 +115,9 @@ pub struct KinematicContactReaction {
 
 /// Maximum distinct contact reactions produced by one controller tick.
 pub const MAX_KINEMATIC_REACTIONS: usize = 8;
+
+/// Height difference below which the capsule counts as fully standing or crouched.
+const HEIGHT_EPSILON: f64 = 1.0e-6;
 
 /// Observable result of one fixed controller tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -160,6 +178,8 @@ pub struct KinematicCapsule {
     pub velocity: DVec3,
     /// Whether the last tick ended on a walkable surface.
     pub grounded: bool,
+    /// Current height from feet to head, between the crouched and standing heights.
+    pub height: f64,
     /// Movement limits.
     pub config: KinematicCapsuleConfig,
     /// Moving construction supporting the last tick, if any.
@@ -170,11 +190,13 @@ pub struct KinematicCapsule {
 impl KinematicCapsule {
     /// Creates a standing controller.
     pub fn new(position: WorldPosition) -> Self {
+        let config = KinematicCapsuleConfig::default();
         Self {
             position,
             velocity: DVec3::ZERO,
             grounded: false,
-            config: KinematicCapsuleConfig::default(),
+            height: config.standing_height,
+            config,
             support: None,
             jump_sustained: false,
         }
@@ -183,6 +205,81 @@ impl KinematicCapsule {
     /// Clears moving-platform state before seating or after collision-scene replacement.
     pub fn clear_support(&mut self) {
         self.support = None;
+    }
+
+    /// How far the capsule is crouched, `0.0` standing and `1.0` fully crouched.
+    pub fn crouch_fraction(&self) -> f64 {
+        let range = self.config.standing_height - self.config.crouch_height;
+        if range <= 0.0 {
+            return 0.0;
+        }
+        ((self.config.standing_height - self.height) / range).clamp(0.0, 1.0)
+    }
+
+    /// Whether the capsule is anywhere below its standing height.
+    pub fn crouched(&self) -> bool {
+        self.height < self.config.standing_height - HEIGHT_EPSILON
+    }
+
+    /// Movement limits whose `standing_height` is the capsule's current height, so
+    /// every swept query uses the crouched profile.
+    fn collision_config(&self) -> KinematicCapsuleConfig {
+        KinematicCapsuleConfig {
+            standing_height: self.height,
+            ..self.config
+        }
+    }
+
+    /// Grows or shrinks toward the height `input` asks for. Standing back up waits
+    /// until the volume the head would sweep into is clear.
+    fn resolve_height<T: TerrainDensity>(
+        &mut self,
+        scene: &mut KinematicCollisionScene<'_, T>,
+        crouch: bool,
+        delta_seconds: f64,
+    ) {
+        let target = if crouch {
+            self.config.crouch_height
+        } else {
+            self.config.standing_height
+        };
+        if (target - self.height).abs() <= HEIGHT_EPSILON {
+            self.height = target;
+            return;
+        }
+        let step = self.config.crouch_transition_speed * delta_seconds;
+        let next = if target > self.height {
+            (self.height + step).min(target)
+        } else {
+            (self.height - step).max(target)
+        };
+        if next > self.height && !self.head_fits_at(scene, next) {
+            return;
+        }
+        self.height = next;
+    }
+
+    /// Whether the head sphere clears terrain and construction at `height`.
+    fn head_fits_at<T: TerrainDensity>(
+        &self,
+        scene: &mut KinematicCollisionScene<'_, T>,
+        height: f64,
+    ) -> bool {
+        let radius = self.config.radius;
+        let head = KinematicCapsuleConfig {
+            standing_height: radius * 2.0,
+            ..self.config
+        };
+        let feet = WorldPosition(self.position.0 + DVec3::Y * (height - radius * 2.0));
+        if deepest_capsule_penetration(scene.terrain, feet, head).is_some() {
+            return false;
+        }
+        let floating_origin = scene.floating_origin;
+        scene.construction.as_deref_mut().is_none_or(|index| {
+            index
+                .cast_capsule(construction_feet(feet, floating_origin), Vec3::ZERO, head)
+                .is_none()
+        })
     }
 
     /// Advances one fixed tick against terrain and compiled construction.
@@ -223,7 +320,12 @@ impl KinematicCapsule {
         let started_grounded = self.grounded;
         let retained_support = self.support;
 
-        let speed = if input.sprint {
+        self.resolve_height(scene, input.crouch, delta_seconds);
+        let collision_config = self.collision_config();
+
+        let speed = if self.crouched() {
+            self.config.crouch_speed
+        } else if input.sprint {
             self.config.sprint_speed
         } else {
             self.config.walk_speed
@@ -289,7 +391,8 @@ impl KinematicCapsule {
             let mut remaining = displacement.as_vec3();
             let mut construction_ground = None;
             for _ in 0..5 {
-                let Some(mut contact) = index.cast_capsule(feet, remaining, self.config) else {
+                let Some(mut contact) = index.cast_capsule(feet, remaining, collision_config)
+                else {
                     feet += remaining;
                     break;
                 };
@@ -301,7 +404,7 @@ impl KinematicCapsule {
                         contact_feet,
                         feet.y - TERRAIN_CELL_METERS as f32 - 1.0e-3,
                         feet.y + 1.0e-3,
-                        self.config,
+                        collision_config,
                         None,
                     ) {
                         contact.normal = normal;
@@ -314,18 +417,21 @@ impl KinematicCapsule {
                     && remaining.x.mul_add(remaining.x, remaining.z * remaining.z) > 0.0
                 {
                     let raised = feet + Vec3::Y * self.config.step_height as f32;
-                    if index.cast_capsule(raised, remaining, self.config).is_none() {
+                    if index
+                        .cast_capsule(raised, remaining, collision_config)
+                        .is_none()
+                    {
                         let mut stepped = raised + remaining;
                         let downward = Vec3::NEG_Y * (self.config.step_height as f32 + 1.0e-3);
                         if let Some(mut step_floor) =
-                            index.cast_capsule(stepped, downward, self.config)
+                            index.cast_capsule(stepped, downward, collision_config)
                             && let Some((height, normal, surface_height)) = index
                                 .walkable_surface_height(
                                     step_floor.collider_index,
                                     stepped,
                                     feet.y + 1.0e-4,
                                     raised.y + 1.0e-3,
-                                    self.config,
+                                    collision_config,
                                     Some(remaining),
                                 )
                         {
@@ -414,8 +520,11 @@ impl KinematicCapsule {
             displacement = DVec3::ZERO;
 
             if construction_ground.is_none() && self.velocity.y <= 0.05 {
-                construction_ground =
-                    index.cast_capsule(feet, Vec3::NEG_Y * TERRAIN_CELL_METERS as f32, self.config);
+                construction_ground = index.cast_capsule(
+                    feet,
+                    Vec3::NEG_Y * TERRAIN_CELL_METERS as f32,
+                    collision_config,
+                );
             }
             if construction_ground.is_none()
                 && started_grounded
@@ -426,7 +535,7 @@ impl KinematicCapsule {
                     feet,
                     feet.y - self.config.step_height as f32 - 1.0e-3,
                     feet.y + self.config.step_height as f32 + 1.0e-3,
-                    self.config,
+                    collision_config,
                     None,
                 )
             {
@@ -446,7 +555,7 @@ impl KinematicCapsule {
                     feet,
                     feet.y - TERRAIN_CELL_METERS as f32 - 1.0e-3,
                     feet.y + 1.0e-3,
-                    self.config,
+                    collision_config,
                     None,
                 ) {
                     feet.y = height + 1.0e-4 / normal.y;
@@ -479,14 +588,14 @@ impl KinematicCapsule {
         let mut candidate = WorldPosition(self.position.0 + displacement);
         for _ in 0..5 {
             let Some((penetration, normal)) =
-                deepest_capsule_penetration(scene.terrain, candidate, self.config)
+                deepest_capsule_penetration(scene.terrain, candidate, collision_config)
             else {
                 break;
             };
             let walkable = f64::from(normal.y) >= self.config.maximum_slope.cos();
             if !walkable && (displacement.x != 0.0 || displacement.z != 0.0) {
                 let stepped = WorldPosition(candidate.0 + DVec3::Y * self.config.step_height);
-                if deepest_capsule_penetration(scene.terrain, stepped, self.config).is_none() {
+                if deepest_capsule_penetration(scene.terrain, stepped, collision_config).is_none() {
                     candidate = stepped;
                     continue;
                 }

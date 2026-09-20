@@ -149,6 +149,18 @@ fn descend_and_precision_placement_have_distinct_defaults() {
 }
 
 #[test]
+fn crouch_shares_control_with_precision_placement_without_conflicting() {
+    let controls = Controls::default();
+
+    assert_eq!(
+        controls.binding(GameAction::Crouch).0[0],
+        Some(InputChord::key(KeyCode::ControlLeft))
+    );
+    assert!(!controls.conflicts(GameAction::Crouch));
+    assert!(!controls.conflicts(GameAction::PrecisionPlacement));
+}
+
+#[test]
 fn shift_wheel_exposes_contextual_free_range_and_zoom_actions() {
     let controls = Controls::default();
     let mut keyboard = ButtonInput::default();

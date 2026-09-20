@@ -19,6 +19,7 @@ pub(crate) enum GameAction {
     MoveLeft,
     MoveRight,
     Sprint,
+    Crouch,
     Jump,
     Descend,
     Primary,
@@ -90,12 +91,13 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 71] = [
+    pub(crate) const ALL: [Self; 72] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
         Self::MoveRight,
         Self::Sprint,
+        Self::Crouch,
         Self::Jump,
         Self::Descend,
         Self::Primary,
@@ -215,6 +217,7 @@ impl GameAction {
             Self::MoveLeft => "Move Left",
             Self::MoveRight => "Move Right",
             Self::Sprint => "Sprint",
+            Self::Crouch => "Crouch",
             Self::Jump => "Jump",
             Self::Descend => "Descend",
             Self::Primary => "Primary Action",
@@ -294,6 +297,7 @@ impl GameAction {
             | Self::MoveLeft
             | Self::MoveRight
             | Self::Sprint
+            | Self::Crouch
             | Self::Jump
             | Self::Descend
             | Self::Primary
@@ -354,6 +358,7 @@ impl GameAction {
                 | Self::MoveLeft
                 | Self::MoveRight
                 | Self::Sprint
+                | Self::Crouch
                 | Self::Jump
                 | Self::Descend
                 | Self::Primary
@@ -385,6 +390,8 @@ impl GameAction {
             (self, other),
             (Self::Sprint, Self::FinePlacement | Self::SelectionModifier)
                 | (Self::FinePlacement | Self::SelectionModifier, Self::Sprint)
+                | (Self::Crouch, Self::PrecisionPlacement)
+                | (Self::PrecisionPlacement, Self::Crouch)
                 | (Self::ZoomIn, Self::FreePlacementRangeIncrease)
                 | (Self::FreePlacementRangeIncrease, Self::ZoomIn)
                 | (Self::ZoomOut, Self::FreePlacementRangeDecrease)
@@ -690,6 +697,11 @@ impl Default for Controls {
             A::Sprint,
             Some(InputChord::key(K::ShiftLeft)),
             Some(InputChord::key(K::ShiftRight)),
+        );
+        set(
+            A::Crouch,
+            Some(InputChord::key(K::ControlLeft)),
+            Some(InputChord::key(K::ControlRight)),
         );
         set(A::Jump, Some(InputChord::key(K::Space)), None);
         set(A::Descend, Some(InputChord::key(K::KeyC)), None);

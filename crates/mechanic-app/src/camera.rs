@@ -30,6 +30,7 @@ use crate::{
 };
 
 pub(crate) const EYE_HEIGHT: f32 = 1.65;
+pub(crate) const CROUCHED_EYE_HEIGHT: f32 = 0.92;
 pub(crate) const SEATED_EYE_HEIGHT: f32 = 0.475;
 pub(crate) const MAX_PULLBACK: f32 = 12.0;
 pub(crate) const AVATAR_HIDDEN_PULLBACK: f32 = 0.35;
@@ -52,6 +53,8 @@ pub(crate) struct PlayerState {
     pub(crate) position: Vec3,
     pub(crate) seat: Option<PartId>,
     pub(crate) input_captured: bool,
+    /// How far the player is crouched, `0.0` standing and `1.0` fully crouched.
+    pub(crate) crouch: f32,
 }
 
 impl Default for PlayerState {
@@ -60,6 +63,7 @@ impl Default for PlayerState {
             position: Vec3::new(0.0, garage::BUILD_MIN_Y, -6.0),
             seat: None,
             input_captured: false,
+            crouch: 0.0,
         }
     }
 }
@@ -335,6 +339,11 @@ fn clamp_to_platform_horizontal(position: Vec3) -> Vec3 {
     Vec3::new(clamped.x, position.y, clamped.z)
 }
 
+/// Eye height for a stance, dropping with the capsule as the player crouches.
+pub(crate) fn eye_height(crouch: f32) -> f32 {
+    EYE_HEIGHT.lerp(CROUCHED_EYE_HEIGHT, crouch.clamp(0.0, 1.0))
+}
+
 pub(crate) fn avatar_alpha(pullback: f32) -> f32 {
     ((pullback - AVATAR_HIDDEN_PULLBACK) / (AVATAR_OPAQUE_PULLBACK - AVATAR_HIDDEN_PULLBACK))
         .clamp(0.0, 1.0)
@@ -532,8 +541,10 @@ pub(crate) fn update_player_camera(
             );
             player.position = clamp_to_garage(player.position);
         }
-        **transform =
-            view.apply_pullback(player.position + Vec3::Y * EYE_HEIGHT, view.look_rotation());
+        **transform = view.apply_pullback(
+            player.position + Vec3::Y * eye_height(player.crouch),
+            view.look_rotation(),
+        );
         **global = GlobalTransform::from(**transform);
     }
 }

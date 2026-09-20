@@ -17,6 +17,7 @@ pub(crate) struct PlayerAvatar;
 #[derive(Component, Clone)]
 pub(crate) struct AvatarPart {
     pub(crate) standing: Transform,
+    pub(crate) crouched: Transform,
     pub(crate) seated: Transform,
 }
 
@@ -67,6 +68,17 @@ pub(crate) fn avatar_pose(position: Vec3, scale: Vec3, rotation: Quat) -> Transf
         .with_scale(scale)
 }
 
+/// Blends two authored poses so the stance follows the capsule's height instead of
+/// snapping between standing and crouched.
+pub(crate) fn blend_pose(from: Transform, to: Transform, factor: f32) -> Transform {
+    let factor = factor.clamp(0.0, 1.0);
+    Transform {
+        translation: from.translation.lerp(to.translation, factor),
+        rotation: from.rotation.slerp(to.rotation, factor),
+        scale: from.scale.lerp(to.scale, factor),
+    }
+}
+
 #[expect(clippy::too_many_lines)]
 pub(crate) fn spawn_player_avatar(
     commands: &mut Commands,
@@ -89,6 +101,11 @@ pub(crate) fn spawn_player_avatar(
                 Quat::IDENTITY,
             ),
             avatar_pose(
+                Vec3::new(0.00, 0.85, 0.05),
+                Vec3::new(0.30, 0.32, 0.28),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
                 Vec3::new(0.0, 0.54, 0.04),
                 Vec3::new(0.30, 0.32, 0.28),
                 Quat::IDENTITY,
@@ -100,6 +117,11 @@ pub(crate) fn spawn_player_avatar(
             avatar_pose(
                 Vec3::new(0.0, 1.12, 0.0),
                 Vec3::new(0.42, 0.52, 0.24),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(0.00, 0.60, 0.02),
+                Vec3::new(0.42, 0.46, 0.24),
                 Quat::IDENTITY,
             ),
             avatar_pose(
@@ -117,6 +139,11 @@ pub(crate) fn spawn_player_avatar(
                 Quat::IDENTITY,
             ),
             avatar_pose(
+                Vec3::new(-0.29, 0.56, 0.08),
+                Vec3::new(0.13, 0.46, 0.13),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
                 Vec3::new(-0.29, 0.16, 0.16),
                 Vec3::new(0.13, 0.48, 0.13),
                 Quat::from_rotation_x(-0.55),
@@ -128,6 +155,11 @@ pub(crate) fn spawn_player_avatar(
             avatar_pose(
                 Vec3::new(0.29, 1.08, 0.0),
                 Vec3::new(0.13, 0.55, 0.13),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(0.29, 0.56, 0.08),
+                Vec3::new(0.13, 0.46, 0.13),
                 Quat::IDENTITY,
             ),
             avatar_pose(
@@ -145,6 +177,11 @@ pub(crate) fn spawn_player_avatar(
                 Quat::IDENTITY,
             ),
             avatar_pose(
+                Vec3::new(-0.12, 0.26, 0.10),
+                Vec3::new(0.17, 0.40, 0.18),
+                Quat::from_rotation_x(-0.35),
+            ),
+            avatar_pose(
                 Vec3::new(-0.12, -0.05, 0.34),
                 Vec3::new(0.17, 0.62, 0.18),
                 Quat::from_rotation_x(core::f32::consts::FRAC_PI_2),
@@ -159,6 +196,11 @@ pub(crate) fn spawn_player_avatar(
                 Quat::IDENTITY,
             ),
             avatar_pose(
+                Vec3::new(0.12, 0.26, 0.10),
+                Vec3::new(0.17, 0.40, 0.18),
+                Quat::from_rotation_x(-0.35),
+            ),
+            avatar_pose(
                 Vec3::new(0.12, -0.05, 0.34),
                 Vec3::new(0.17, 0.62, 0.18),
                 Quat::from_rotation_x(core::f32::consts::FRAC_PI_2),
@@ -169,6 +211,11 @@ pub(crate) fn spawn_player_avatar(
             avatar_materials.boots.clone(),
             avatar_pose(
                 Vec3::new(-0.12, 0.10, 0.06),
+                Vec3::new(0.19, 0.20, 0.31),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
+                Vec3::new(-0.12, 0.10, 0.10),
                 Vec3::new(0.19, 0.20, 0.31),
                 Quat::IDENTITY,
             ),
@@ -187,6 +234,11 @@ pub(crate) fn spawn_player_avatar(
                 Quat::IDENTITY,
             ),
             avatar_pose(
+                Vec3::new(0.12, 0.10, 0.10),
+                Vec3::new(0.19, 0.20, 0.31),
+                Quat::IDENTITY,
+            ),
+            avatar_pose(
                 Vec3::new(0.12, -0.05, 0.72),
                 Vec3::new(0.19, 0.20, 0.31),
                 Quat::IDENTITY,
@@ -201,13 +253,17 @@ pub(crate) fn spawn_player_avatar(
             PlayerAvatar,
         ))
         .with_children(|avatar| {
-            for (name, material, standing, seated) in parts {
+            for (name, material, standing, crouched, seated) in parts {
                 avatar.spawn((
                     Name::new(name),
                     Mesh3d(cube.clone()),
                     MeshMaterial3d(material),
                     standing,
-                    AvatarPart { standing, seated },
+                    AvatarPart {
+                        standing,
+                        crouched,
+                        seated,
+                    },
                 ));
             }
         });
@@ -246,7 +302,7 @@ pub(crate) fn sync_player_avatar(
         *transform = if seated_pose.is_some() {
             part.seated
         } else {
-            part.standing
+            blend_pose(part.standing, part.crouched, player.crouch)
         };
     }
 }

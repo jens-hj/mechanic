@@ -142,6 +142,7 @@ fn framed_seat_pose_matches_authored_and_stopped_published_geometry() {
             position: Vec3::new(-100.0, 0.0, -100.0),
             seat: Some(seat),
             input_captured: true,
+            crouch: 0.0,
         },
         &graph,
         &simulation,
