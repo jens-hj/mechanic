@@ -247,24 +247,7 @@ pub(crate) fn publish(
     queue: &wgpu::Queue,
 ) -> Result<bool, String> {
     let origin = world.local_to_global(Vec3::ZERO).0;
-    if world.material_publication_pending() {
-        return Ok(false);
-    }
-    if simulation.tick_route() == crate::cpu_physics::Route::Gpu && !world.clumps.bodies.is_empty()
-    {
-        return Err(
-            "Loose material requires CPU physics; this world cannot run on the GPU route"
-                .to_owned(),
-        );
-    }
-    let mut positions = physics_body_positions(simulation);
-    positions.extend(
-        world
-            .clumps
-            .bodies
-            .values()
-            .map(|body| (body.position.0 - origin).as_vec3()),
-    );
+    let positions = physics_body_positions(simulation);
     let interest = interest_regions(world, &positions);
     let key = TerrainPublicationKey::new(origin, world.physics_terrain_near(&interest));
     let publication = &mut simulation.terrain_publication;
@@ -287,7 +270,6 @@ pub(crate) fn publish(
     // waits for a GPU preparation, which only matters if the GPU takes over.
     if settled || current {
         cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
-        cpu.publish_clumps(&world.clumps)?;
     }
     Ok(settled && cpu.is_ready())
 }

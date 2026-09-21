@@ -407,28 +407,29 @@ fn extraction_is_atomic_and_preserves_compressed_material_quantity() {
         sample: terrain.sample_cell(&field, cell),
         throw: DVec3::ZERO,
     };
-    let clumps = crate::ClumpCollection::default();
+    let mut clumps = crate::ClumpCollection::default();
     assert!(
         clumps
-            .prepare_extraction(&terrain, &field, &[source, source])
+            .extract(&mut terrain, &field, &[source, source], false)
             .is_none()
     );
     assert_eq!(terrain.sample_cell(&field, cell), source.sample);
-    let transfer = clumps
-        .prepare_extraction(&terrain, &field, &[source])
+    assert!(clumps.bodies.is_empty());
+    clumps
+        .extract(&mut terrain, &field, &[source], false)
         .unwrap();
-    assert!(!transfer.terrain.sample_cell(&field, cell).is_solid());
+    assert!(!terrain.sample_cell(&field, cell).is_solid());
     assert_eq!(
-        u64::from(transfer.clumps.bodies[&1].quanta),
+        u64::from(clumps.bodies[&1].quanta),
         source.material_quanta()
     );
+    // The cell is gone; what was read of it is stale.
     assert!(
-        transfer
-            .clumps
-            .prepare_extraction(&transfer.terrain, &field, &[source])
+        clumps
+            .extract(&mut terrain, &field, &[source], false)
             .is_none()
     );
-    assert!(terrain.sample_cell(&field, cell).is_solid());
+    assert_eq!(clumps.bodies.len(), 1);
 }
 
 // A one-cell load on the fixture's exposed cell that does no work.
@@ -483,7 +484,7 @@ fn soft_ground_driven_sideways_hard_enough_breaks_without_slip() {
 
 #[test]
 fn broken_material_leaves_along_the_tool_motion() {
-    let (field, terrain, soil, _) = soil_fixture(TerrainMaterial::Soil);
+    let (field, mut terrain, soil, _) = soil_fixture(TerrainMaterial::Soil);
     let mut damage = crate::BreakageAccumulator::default();
     damage.accumulate(
         &terrain,
@@ -495,14 +496,22 @@ fn broken_material_leaves_along_the_tool_motion() {
         },
     );
     let ready = damage.ready(&terrain, &field, 256);
-    let transfer = crate::ClumpCollection::default()
-        .prepare_extraction(&terrain, &field, &ready)
-        .unwrap();
-    let thrown = transfer.clumps.bodies[&1].linear_velocity;
+    let undisturbed = terrain.clone();
+    let mut clumps = crate::ClumpCollection::default();
+    clumps.extract(&mut terrain, &field, &ready, false).unwrap();
+    let thrown = clumps.bodies[&1].linear_velocity;
     assert!(thrown.x > 1.0, "{thrown:?}");
     assert!(thrown.y > 0.0, "spoil lifts clear of the cut: {thrown:?}");
     assert!(thrown.z.abs() < 1e-9);
 
+    // Past the budget for loose bodies, spoil is laid down where it was cut.
+    let mut laid = crate::ClumpCollection::default();
+    laid.extract(&mut undisturbed.clone(), &field, &ready, true)
+        .unwrap();
+    assert_eq!(laid.bodies[&1].linear_velocity, DVec3::ZERO);
+    assert!(laid.bodies[&1].can_deposit());
+
+    let terrain = undisturbed;
     let mut damage = crate::BreakageAccumulator::default();
     damage.accumulate(
         &terrain,
@@ -535,73 +544,62 @@ fn a_knife_edge_compacts_the_cells_along_it_and_not_beside_it() {
 }
 
 #[test]
-fn clumps_lost_under_the_ground_or_flung_away_are_dropped_and_the_rest_kept() {
-    let (field, terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
-    let clump = |id, position| crate::MaterialClump {
+fn crumbs_gather_until_they_fill_a_cell() {
+    let (field, mut terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
+    let above = WorldCell::new(cell.x, cell.y + 1, cell.z);
+    let crumb = |id, quanta: u32, offset: f64| crate::MaterialClump {
         id,
         material: TerrainMaterial::Soil,
-        quanta: 510,
-        half_extents: DVec3::splat(0.025),
-        position: WorldPosition(position),
+        quanta,
+        half_extents: DVec3::splat((f64::from(quanta) * crate::MATERIAL_QUANTUM_M3).cbrt() * 0.5),
+        position: WorldPosition(above.centre().0 + DVec3::X * offset),
         rotation: bevy_math::DQuat::IDENTITY,
         linear_velocity: DVec3::ZERO,
         angular_velocity: DVec3::ZERO,
-        settled_seconds: 0.0,
-        sleeping: false,
+        settled_seconds: crate::SETTLE_SECONDS,
+        sleeping: true,
     };
-    let surface = cell.centre().0 + DVec3::Y * 0.025;
-    let mut clumps = crate::ClumpCollection::default();
-    clumps
-        .bodies
-        .insert(1, clump(1, surface + DVec3::Y * 0.026));
-    clumps.bodies.insert(2, clump(2, surface - DVec3::Y * 0.3));
-    clumps
-        .bodies
-        .insert(3, clump(3, surface - DVec3::Y * 300_000.0));
-    // Shot out from under a powered tool, far faster than anything falls.
-    let mut ejected = clump(4, surface + DVec3::Y * 2.0);
-    ejected.linear_velocity = DVec3::new(300.0, 400.0, 0.0);
-    clumps.bodies.insert(4, ejected);
-    let mut dropped = clump(5, surface + DVec3::Y * 3.0);
-    dropped.linear_velocity = DVec3::Y * -60.0;
-    clumps.bodies.insert(5, dropped);
-    clumps.next_id = 6;
-    assert_eq!(clumps.absorb_lost(&terrain, &field), 3);
-    assert_eq!(clumps.bodies.keys().copied().collect::<Vec<_>>(), [1, 5]);
+    let mut clumps = crate::ClumpCollection {
+        next_id: 4,
+        bodies: [
+            (1, crumb(1, 300, -0.01)),
+            (2, crumb(2, 200, 0.0)),
+            (3, crumb(3, 100, 0.01)),
+        ]
+        .into(),
+    };
+    // Alone, none of them is enough ground to lay down.
+    assert!(clumps.settle(&mut terrain, &field, 1, &[above]).is_none());
+    assert_eq!(clumps.gather_crumbs(), 2);
+    assert_eq!(clumps.bodies.len(), 1);
+    assert!(clumps.bodies[&1].is_valid());
+    assert_eq!(clumps.bodies[&1].quanta, 600);
+    clumps.settle(&mut terrain, &field, 1, &[above]).unwrap();
+    assert!(terrain.sample_cell(&field, above).is_solid());
+    assert_eq!(clumps.bodies[&1].quanta, 90, "the rest stays loose");
+    assert!(clumps.bodies[&1].is_valid());
 }
 
 #[test]
-fn a_fragment_of_compacted_ground_settles_back_as_one_compacted_cell() {
-    let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
-    terrain.compress_patch(&field, patch).unwrap();
+fn settling_spoil_fills_the_hollow_beside_it_before_it_heaps() {
+    let (field, mut terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
+    // A one-cell pit next to where the spoil comes to rest.
+    let pit = WorldCell::new(cell.x + 1, cell.y, cell.z);
     let source = crate::ExtractionCell {
-        cell,
-        sample: terrain.sample_cell(&field, cell),
+        cell: pit,
+        sample: terrain.sample_cell(&field, pit),
         throw: DVec3::ZERO,
     };
-    let quanta = source.material_quanta();
-    assert!(quanta < 510, "the fixture compacts its cell");
-    let mut transfer = crate::ClumpCollection::default()
-        .prepare_extraction(&terrain, &field, &[source])
+    let mut clumps = crate::ClumpCollection::default();
+    clumps
+        .extract(&mut terrain, &field, &[source], false)
         .unwrap();
-    transfer
-        .clumps
-        .bodies
-        .get_mut(&1)
-        .unwrap()
-        .update_settling(true, 1.0);
-    let deposited = transfer
-        .clumps
-        .prepare_deposition(&transfer.terrain, &field, 1, &[cell])
-        .expect("less than a whole cell still settles");
-    assert!(deposited.clumps.bodies.is_empty());
-    let back = crate::ExtractionCell {
-        cell,
-        sample: deposited.terrain.sample_cell(&field, cell),
-        throw: DVec3::ZERO,
-    };
-    assert!(back.sample.is_solid());
-    assert_eq!(back.material_quanta(), quanta, "material is conserved");
+    let resting = WorldPosition(cell.centre().0 + DVec3::Y * crate::TERRAIN_CELL_METERS);
+    let targets = crate::spoil_targets(&terrain, &field, resting, |_| false);
+    assert_eq!(targets[0], pit);
+    assert!(targets.iter().all(|target| target.y >= pit.y));
+    let kept_clear = crate::spoil_targets(&terrain, &field, resting, |target| target == pit);
+    assert!(!kept_clear.contains(&pit));
 }
 
 #[test]
@@ -624,11 +622,12 @@ fn scattered_broken_cells_gather_into_one_clod_holding_all_their_material() {
             throw: DVec3::ZERO,
         }
     });
-    let transfer = crate::ClumpCollection::default()
-        .prepare_extraction(&terrain, &field, &sources)
+    let mut clumps = crate::ClumpCollection::default();
+    clumps
+        .extract(&mut terrain, &field, &sources, false)
         .unwrap();
-    assert_eq!(transfer.clumps.bodies.len(), 1);
-    let clod = &transfer.clumps.bodies[&1];
+    assert_eq!(clumps.bodies.len(), 1);
+    let clod = &clumps.bodies[&1];
     assert!(clod.is_valid());
     assert_eq!(
         u64::from(clod.quanta),
@@ -640,7 +639,7 @@ fn scattered_broken_cells_gather_into_one_clod_holding_all_their_material() {
     assert!(
         sources
             .iter()
-            .all(|source| !transfer.terrain.sample_cell(&field, source.cell).is_solid())
+            .all(|source| !terrain.sample_cell(&field, source.cell).is_solid())
     );
 }
 
@@ -652,35 +651,27 @@ fn settled_soft_material_deposits_once_while_rock_stays_physical() {
         TerrainMaterial::Rock,
         TerrainMaterial::Iron,
     ] {
-        let (field, terrain, _, cell) = soil_fixture(material);
+        let (field, mut terrain, _, cell) = soil_fixture(material);
         let source = crate::ExtractionCell {
             cell,
             sample: terrain.sample_cell(&field, cell),
             throw: DVec3::ZERO,
         };
-        let mut transfer = crate::ClumpCollection::default()
-            .prepare_extraction(&terrain, &field, &[source])
+        let mut clumps = crate::ClumpCollection::default();
+        clumps
+            .extract(&mut terrain, &field, &[source], false)
             .unwrap();
-        assert!(
-            transfer
-                .clumps
-                .prepare_deposition(&transfer.terrain, &field, 1, &[cell])
-                .is_none()
-        );
-        transfer
-            .clumps
+        assert!(clumps.settle(&mut terrain, &field, 1, &[cell]).is_none());
+        clumps
             .bodies
             .get_mut(&1)
             .unwrap()
             .update_settling(true, 1.0);
-        let deposited =
-            transfer
-                .clumps
-                .prepare_deposition(&transfer.terrain, &field, 1, &[cell, cell]);
+        let deposited = clumps.settle(&mut terrain, &field, 1, &[cell, cell]);
         if crate::BreakageResponse::for_material(material).deposits {
-            let deposited = deposited.unwrap();
-            assert!(deposited.clumps.bodies.is_empty());
-            let sample = deposited.terrain.sample_cell(&field, cell);
+            deposited.unwrap();
+            assert!(clumps.bodies.is_empty());
+            let sample = terrain.sample_cell(&field, cell);
             assert!(sample.is_solid());
             assert_eq!(sample.material, material);
             assert_eq!(sample.compaction, 0);

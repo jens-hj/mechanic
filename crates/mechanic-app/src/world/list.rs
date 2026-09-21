@@ -259,7 +259,7 @@ pub(super) fn install_world(
     runtime.document = document;
     runtime.edits = terrain;
     runtime.clumps = clumps;
-    runtime.pending_material = None;
+    runtime.spoil.reset();
     runtime.pending_breakage = mechanic_world::BreakageAccumulator::default();
     runtime.world_editor = Some(world_editor);
     runtime.pending_garage_editor = Some(garage_editor);

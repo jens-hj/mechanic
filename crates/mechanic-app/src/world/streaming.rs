@@ -19,9 +19,8 @@ use mechanic_core::ConstructionGraph;
 use mechanic_world::TerrainFace;
 use mechanic_world::{
     ActiveTerrainNode, FloatingOrigin, TerrainBoundsCache, TerrainMeshChunk, TerrainMeshMetrics,
-    TerrainMeshRequest, TerrainNodeId, TerrainOctree, TerrainSelection, WorldPosition,
-    mesh_chunk_profiled, select_active_nodes_with_interests, terrain_loading_worker_count,
-    terrain_worker_count,
+    TerrainMeshRequest, TerrainNodeId, TerrainSelection, WorldPosition, mesh_chunk_profiled,
+    select_active_nodes_cached, terrain_loading_worker_count, terrain_worker_count,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -45,15 +44,6 @@ pub(super) struct TerrainSelectionTaskResult {
     pub(super) focus: WorldPosition,
     pub(super) terrain_revision: u64,
     pub(super) elapsed_ms: f64,
-}
-
-pub(super) struct PendingMaterialPublication {
-    pub(super) previous: TerrainOctree,
-    pub(super) clumps: mechanic_world::ClumpCollection,
-    pub(super) sources: Vec<mechanic_world::ExtractionCell>,
-    /// Lowest and highest corner of the terrain this transfer changes, with the
-    /// neighbouring bricks whose seams and gradients read it.
-    pub(super) region: [bevy::math::DVec3; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -119,20 +109,7 @@ pub(super) fn update_terrain_selection(
         }
     }
 
-    let interests = runtime
-        .clumps
-        .bodies
-        .values()
-        .filter(|body| !body.sleeping)
-        .map(|body| body.position)
-        .collect::<Vec<_>>();
-    let clumps_moved = interests.len() != runtime.selection_clump_interests.len()
-        || interests
-            .iter()
-            .zip(&runtime.selection_clump_interests)
-            .any(|(a, b)| a.0.distance_squared(b.0) >= 64.0);
-    let needs_selection = clumps_moved
-        || runtime.selected_terrain_revision != runtime.terrain_revision
+    let needs_selection = runtime.selected_terrain_revision != runtime.terrain_revision
         || runtime
             .selection_focus
             .is_none_or(|previous| previous.0.distance(focus.0) >= RESELECT_DISTANCE_METRES);
@@ -141,17 +118,10 @@ pub(super) fn update_terrain_selection(
         let terrain = runtime.edits.snapshot();
         let terrain_revision = runtime.terrain_revision;
         let mut bounds_cache = core::mem::take(&mut runtime.terrain_bounds_cache);
-        runtime.selection_clump_interests.clone_from(&interests);
         runtime.terrain_selection_task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let started = std::time::Instant::now();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                select_active_nodes_with_interests(
-                    &field,
-                    &terrain,
-                    focus,
-                    &interests,
-                    &mut bounds_cache,
-                )
+                select_active_nodes_cached(&field, &terrain, focus, &mut bounds_cache)
             }))
             .map(|selection| TerrainSelectionTaskResult {
                 selection,
@@ -299,7 +269,6 @@ pub(super) fn integrate_terrain_remeshes(
     mut tasks: Query<(Entity, &mut TerrainMeshTask)>,
     mut diagnostics: ResMut<WorldDiagnostics>,
     mut list: ResMut<WorldListState>,
-    mut simulation: ResMut<AppSimulation>,
 ) {
     const INTEGRATION_BUDGET_MS: f64 = 2.0;
     let started = std::time::Instant::now();
@@ -352,44 +321,6 @@ pub(super) fn integrate_terrain_remeshes(
             if let Some(result) = runtime.staged_terrain.remove(&activated.id) {
                 runtime.active_terrain_index.insert(activated.id);
                 runtime.active_terrain.insert(activated.id, result.chunk);
-            }
-        }
-    }
-
-    // Material ownership waits for the complete replacement cut. Staged meshes
-    // remain invisible and physics retains the prior scene until this boundary.
-    let material_cutover = runtime.pending_material.is_some();
-    if material_cutover {
-        let pending = runtime
-            .pending_material
-            .as_ref()
-            .expect("pending material publication");
-        // Only the ground the transfer changes has to be in place. Waiting for
-        // the whole cut would hold digging, and everything staged meanwhile,
-        // for as long as distant terrain keeps streaming.
-        if !runtime.terrain_settled_within(pending.region) {
-            return;
-        }
-        // Without a CPU scene there is no second copy to keep consistent; the
-        // route reads terrain and clumps from the world when it starts.
-        if let Some(cpu) = simulation.cpu.as_mut() {
-            let active = runtime
-                .terrain_streamer
-                .current_active()
-                .map(|node| node.id)
-                .collect::<BTreeSet<_>>();
-            if let Err(error) = cpu.publish_material(
-                runtime
-                    .active_terrain
-                    .iter()
-                    .filter(|(id, _)| active.contains(id))
-                    .map(|(_, chunk)| chunk),
-                &pending.clumps,
-                runtime.floating_origin.0,
-            ) {
-                runtime.terrain_edit_error = Some(error.clone());
-                list.notice = Some(format!("Material publication failed: {error}"));
-                return;
             }
         }
     }
@@ -459,15 +390,8 @@ pub(super) fn integrate_terrain_remeshes(
     // the frame, the bookkeeping above exhausts it on a large cut, and every
     // frame then defers the same nodes without ever publishing one.
     let publishing = std::time::Instant::now();
-    // A cutover shows its own ground in the frame its clumps appear; the rest of
-    // the cut keeps to the budget.
-    let cutover_region = runtime
-        .pending_material
-        .as_ref()
-        .map(|pending| pending.region);
     for id in dirty.iter().copied() {
-        let forced = cutover_region.is_some_and(|[low, high]| node_overlaps(id, low, high));
-        if !forced && publishing.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS {
+        if publishing.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS {
             deferred.push(id);
             continue;
         }
@@ -639,12 +563,6 @@ pub(super) fn integrate_terrain_remeshes(
     )
     .unwrap_or(u32::MAX);
     acknowledge_complete_terrain_pipeline(&mut runtime, tasks.is_empty());
-    if material_cutover && let Some(pending) = runtime.pending_material.take() {
-        runtime.clumps = pending.clumps;
-        runtime.pending_breakage.committed(&pending.sources);
-        let now = runtime.clock;
-        runtime.autosave.mutate(now);
-    }
 }
 
 pub(super) fn node_overlaps(

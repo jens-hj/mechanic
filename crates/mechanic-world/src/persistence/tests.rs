@@ -99,14 +99,15 @@ fn material_snapshot_keeps_terrain_and_clumps_together() {
         sample: terrain.sample_cell(&field, cell),
         throw: bevy_math::DVec3::ZERO,
     };
-    let transfer = crate::ClumpCollection::default()
-        .prepare_extraction(&terrain, &field, &[source])
+    let mut broken = crate::ClumpCollection::default();
+    broken
+        .extract(&mut terrain, &field, &[source], false)
         .unwrap();
     store
-        .save_material_state("material", &transfer.terrain, &transfer.clumps)
+        .save_material_state("material", &terrain, &broken)
         .unwrap();
     let (loaded, clumps) = store.load_material_state("material").unwrap();
-    assert_eq!(clumps, transfer.clumps);
+    assert_eq!(clumps, broken);
     assert!(!loaded.sample_cell(&field, cell).is_solid());
     let path = store.directory_for("material").join("material.bin");
     let mut bytes = fs::read(&path).unwrap();

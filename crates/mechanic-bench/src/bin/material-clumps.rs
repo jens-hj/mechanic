@@ -1,18 +1,13 @@
-//! Reproducible CPU loose-material replay. JSONL includes actual body poses so
-//! the accompanying browser viewer can replay measured physics.
+//! Reproducible loose-material replay: clumps of every material poured onto
+//! generated ground, all awake. JSONL includes poses for the replay viewer.
 
 use bevy_math::{DQuat, DVec3};
-use mechanic_core::CompiledCreation;
-use mechanic_physics::{
-    CpuMachine, MachineState, PreparedClumpBodies, SoftStepConfig, SoftStepTerrain,
-    TerrainContactScene,
-};
+use mechanic_physics::{SpoilMachine, SpoilSolver, spoil_radius};
 use mechanic_world::{
-    ClumpCollection, MaterialClump, TerrainCollisionChunk, TerrainMaterial, TerrainNodeId,
-    TerrainTriangleGroupMask, TriangleBvh, TriangleBvhNode, TriangleBvhTriangle, WorldBounds,
-    WorldPosition,
+    ClumpCollection, MATERIAL_QUANTUM_M3, MaterialClump, TerrainField, TerrainMaterial,
+    TerrainOctree, WorldPosition, WorldSeed,
 };
-use std::{error::Error, sync::Arc, time::Instant};
+use std::{error::Error, time::Instant};
 
 #[expect(
     clippy::too_many_lines,
@@ -20,25 +15,31 @@ use std::{error::Error, sync::Arc, time::Instant};
 )]
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().collect::<Vec<_>>();
-    let ticks: u32 = args
-        .iter()
-        .position(|arg| arg == "--ticks")
-        .and_then(|i| args.get(i + 1))
-        .map_or(Ok(360), |value| value.parse())?;
+    let value = |name: &str| {
+        args.iter()
+            .position(|arg| arg == name)
+            .and_then(|index| args.get(index + 1))
+    };
+    let ticks: u32 = value("--ticks").map_or(Ok(360), |value| value.parse())?;
+    let bodies: u32 = value("--bodies").map_or(Ok(256), |value| value.parse())?;
     let trace = args.iter().any(|arg| arg == "--trace");
-    let base = CompiledCreation::default();
+    let field = TerrainField::new(WorldSeed(84));
+    let terrain = TerrainOctree::default();
+    let spawn = field.safe_spawn().0;
+    let surface = field.surface_height(spawn.x, spawn.z);
     let mut clumps = ClumpCollection::default();
-    for id in 1..=256_u32 {
+    for id in 1..=bodies {
         let index = id - 1;
+        let quanta = 510 * (1 + index % 8);
         let body = MaterialClump {
             id: u64::from(id),
             material: TerrainMaterial::ALL[index as usize % TerrainMaterial::COUNT],
-            quanta: 510 * 8,
-            half_extents: DVec3::splat(0.05),
+            quanta,
+            half_extents: DVec3::splat((f64::from(quanta) * MATERIAL_QUANTUM_M3).cbrt() * 0.5),
             position: WorldPosition(DVec3::new(
-                f64::from(index % 8) * 0.115 - 0.4,
-                0.15 + f64::from(index / 64) * 0.16,
-                f64::from((index / 8) % 8) * 0.115 - 0.4,
+                spawn.x + f64::from(index % 8) * 0.13 - 0.45,
+                surface + 0.3 + f64::from(index / 64) * 0.16,
+                spawn.z + f64::from((index / 8) % 8) * 0.13 - 0.45,
             )),
             rotation: DQuat::IDENTITY,
             linear_velocity: DVec3::ZERO,
@@ -48,123 +49,78 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         clumps.bodies.insert(body.id, body);
     }
-    clumps.next_id = 257;
+    clumps.next_id = u64::from(bodies) + 1;
     let quantity: u64 = clumps
         .bodies
         .values()
         .map(|body| u64::from(body.quanta))
         .sum();
-    let prepared = PreparedClumpBodies::new(
-        &base,
-        &MachineState::at_rest(&base),
-        &clumps,
-        DVec3::ZERO,
-        1,
-    )?;
-    let mut machine = CpuMachine::new(prepared.creation, 1, prepared.state)?;
-    let mut scene = TerrainContactScene::default();
-    scene.publish(1, &[floor()], &[])?;
-    let settings = SoftStepConfig::default();
+    let machine = SpoilMachine::default();
+    let mut solver = SpoilSolver::default();
     let mut timings = Vec::new();
-    let mut degraded = 0_u32;
-    let mut minimum_y = f64::INFINITY;
+    let mut awake = 0;
     for tick in 0..ticks {
+        // Every body stays awake: the measured case is the worst one.
+        for body in clumps.bodies.values_mut() {
+            body.sleeping = false;
+        }
         let started = Instant::now();
-        machine.step(
+        let step = solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &machine,
             mechanic_core::GRAVITY,
-            &settings,
-            &[],
-            &[],
-            Some(SoftStepTerrain {
-                scene: &scene,
-                geometry: &prepared.geometry,
-                topology_generation: 1,
-                origin: DVec3::ZERO,
-            }),
-        )?;
+            mechanic_core::TICK_SECONDS,
+        );
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         timings.push(elapsed_ms);
-        degraded += u32::from(machine.diagnostics().degraded);
-        for pose in &machine.snapshot().state.poses {
-            minimum_y = minimum_y.min(pose.position.y);
-        }
-        let mut record = serde_json::json!({ "scenario":"material-clumps", "tick":tick, "bodies":256,
-            "material_quanta":quantity, "physics_ms":elapsed_ms, "total_tick_ms":elapsed_ms,
-            "contacts":machine.diagnostics().contacts, "degraded":machine.diagnostics().degraded,
-            "remesh_ms":0, "publication_ms":0, "kernel_coverage_complete":false });
+        awake = step.awake;
+        let mut record = serde_json::json!({ "scenario":"material-clumps", "tick":tick, "bodies":bodies,
+            "awake":step.awake, "material_quanta":quantity, "physics_ms":elapsed_ms,
+            "total_tick_ms":elapsed_ms, "kernel_coverage_complete":false });
         if trace && tick % 3 == 0 {
             record["poses"] = serde_json::json!(
-                machine
-                    .snapshot()
-                    .state
-                    .poses
-                    .iter()
-                    .map(|pose| [
-                        pose.position.x,
-                        pose.position.y,
-                        pose.position.z,
-                        pose.rotation.x,
-                        pose.rotation.y,
-                        pose.rotation.z,
-                        pose.rotation.w
+                clumps
+                    .bodies
+                    .values()
+                    .map(|body| [
+                        body.position.0.x - spawn.x,
+                        body.position.0.y - surface,
+                        body.position.0.z - spawn.z,
+                        body.rotation.x,
+                        body.rotation.y,
+                        body.rotation.z,
+                        body.rotation.w
                     ])
                     .collect::<Vec<_>>()
             );
         }
         println!("{record}");
     }
+    let sunk = clumps
+        .bodies
+        .values()
+        .filter(|body| {
+            body.position.0.y + spoil_radius(body.quanta)
+                < field.surface_height(body.position.0.x, body.position.0.z)
+        })
+        .count();
+    let kept: u64 = clumps
+        .bodies
+        .values()
+        .map(|body| u64::from(body.quanta))
+        .sum();
     let p95 = mechanic_bench::stats::percentile_95_or_zero(&timings);
     println!(
         "{}",
-        serde_json::json!({"scenario":"material-clumps-summary", "bodies":256, "ticks":ticks,
-        "physics_p95_ms":p95, "total_tick_p95_ms":p95, "degraded_ticks":degraded,
-        "minimum_centre_y":minimum_y, "material_quanta":quantity, "kernel_coverage_complete":false,
-        "scope":"CPU clump contacts; all bodies remain active; extraction, deposition and app remeshing measured separately"})
+        serde_json::json!({"scenario":"material-clumps-summary", "bodies":bodies, "awake":awake, "ticks":ticks,
+        "physics_p95_ms":p95, "total_tick_p95_ms":p95, "sunk":sunk,
+        "material_quanta":kept, "kernel_coverage_complete":false,
+        "scope":"spoil solver on generated ground; all bodies remain awake; extraction, deposition and app remeshing measured separately"})
     );
-    if degraded > 0 || minimum_y < 0.035 {
-        return Err("clump replay failed its collision/solver check".into());
+    if sunk > 0 || kept != quantity {
+        return Err("clump replay lost material or let it under the ground".into());
     }
     Ok(())
-}
-
-fn floor() -> Arc<TerrainCollisionChunk> {
-    let bounds = WorldBounds {
-        minimum: WorldPosition(DVec3::new(-16.0, 0.0, -16.0)),
-        maximum: WorldPosition(DVec3::new(16.0, 0.0, 16.0)),
-    };
-    let mut weights = [0.0; TerrainMaterial::COUNT];
-    weights[TerrainMaterial::Rock.code() as usize] = 1.0;
-    let triangles = [[0, 1, 2], [0, 2, 3]]
-        .into_iter()
-        .map(|indices| TriangleBvhTriangle {
-            indices,
-            group_mask: TerrainTriangleGroupMask::REGULAR,
-        })
-        .collect();
-    Arc::new(TerrainCollisionChunk {
-        node: TerrainNodeId::ROOT,
-        generation: 1,
-        vertices: vec![
-            [-16.0, 0.0, -16.0],
-            [-16.0, 0.0, 16.0],
-            [16.0, 0.0, 16.0],
-            [16.0, 0.0, -16.0],
-        ],
-        indices: vec![0, 1, 2, 0, 2, 3],
-        material_weights: vec![weights; 4],
-        bounds,
-        triangle_bvh: TriangleBvh {
-            bounds,
-            triangles,
-            nodes: vec![TriangleBvhNode {
-                bounds,
-                first_triangle: 0,
-                triangle_count: 2,
-                group_mask: TerrainTriangleGroupMask::REGULAR,
-                ..Default::default()
-            }],
-        },
-        active_groups: TerrainTriangleGroupMask::REGULAR,
-        ..Default::default()
-    })
 }

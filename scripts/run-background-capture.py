@@ -59,7 +59,8 @@ def freeze_rejections(records):
 
 
 def run(binary, world, output, assets, drive=False, demonstration=False, place=None, straight=False,
-        foreground=False, identity=None, replay_ticks=None, physics="cpu", freeze=False, hammer=None):
+        foreground=False, identity=None, replay_ticks=None, physics="cpu", freeze=False, hammer=None,
+        from_start=False):
     if physics not in ("gpu", "cpu"):
         raise ValueError("physics must be gpu or cpu")
     binary, world, output, assets = [p.resolve() for p in (binary, world, output, assets)]
@@ -69,6 +70,8 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
         raise ValueError("asset root must contain the application's assets directory")
     if foreground and (demonstration or place is not None):
         raise ValueError("foreground comparison forbids demonstration and placement diagnostics")
+    if foreground and from_start:
+        raise ValueError("foreground comparison requires settled streaming")
     if foreground and identity is None:
         raise ValueError("foreground comparison requires --identity from a source-matched build")
     build_identity = json.loads(identity.read_text()) if identity else None
@@ -131,6 +134,9 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
                    MECHANIC_AUTO_DRIVING_FRAMES="1" if demonstration else "0",
                    MECHANIC_AUTO_PLACE=str(place) if place else "",
                    MECHANIC_AUTO_FREEZE="1" if freeze else "0")
+        if from_start:
+            # A world whose terrain keeps changing never settles its streaming.
+            env["MECHANIC_PERF_CAPTURE_FROM_START"] = "1"
         if hammer is not None:
             env["MECHANIC_AUTO_HAMMER"] = json.dumps(hammer)
         if replay_ticks is not None:
@@ -210,7 +216,9 @@ if __name__ == "__main__":
     parser.add_argument("--replay-ticks", type=int, help="Replay exactly N contiguous 60 Hz ticks, retaining backlog, then drain publication")
     parser.add_argument("--hammer", type=json.loads, help="Capture hammer JSON: body_index, local_point, impulse; optional repeat and body_local_impulse")
     parser.add_argument("--freeze", action="store_true", help="Freeze, raise, lower and release the linked creation")
+    parser.add_argument("--from-start", action="store_true", help="Record from world entry instead of waiting for settled streaming; includes warm-up")
     args = parser.parse_args()
     run(args.binary, args.world, args.output, args.assets,
         args.drive or args.straight, args.demonstration, args.place, args.straight,
-        args.foreground, args.identity, args.replay_ticks, args.physics, args.freeze, args.hammer)
+        args.foreground, args.identity, args.replay_ticks, args.physics, args.freeze, args.hammer,
+        args.from_start)

@@ -423,49 +423,6 @@ impl CpuMachine {
         &self.completed
     }
 
-    /// Installs a prepared topology between ticks, retaining the tick sequence
-    /// and holds on surviving authored bodies. Callers preserve state by stable
-    /// identity before preparing the replacement.
-    ///
-    /// # Errors
-    /// Leaves this machine unchanged if the replacement is invalid.
-    pub fn replace_bodies(
-        &mut self,
-        creation: CompiledCreation,
-        state: MachineState,
-        authored_bodies: usize,
-    ) -> Result<(), PhysicsError> {
-        let mut replacement = Self::new(creation, self.completed.topology_generation, state)?;
-        if authored_bodies > self.held.len() || authored_bodies > replacement.held.len() {
-            return Err(PhysicsError::InvalidDynamics);
-        }
-        replacement.completed.tick = self.completed.tick;
-        let mut held = vec![false; replacement.held.len()];
-        held[..authored_bodies].copy_from_slice(&self.held[..authored_bodies]);
-        let poses = replacement.completed.state.poses.clone();
-        replacement.hold(&held, &poses)?;
-        *self = replacement;
-        Ok(())
-    }
-
-    /// Holds only appended sleeping bodies, preserving construction holds.
-    ///
-    /// # Errors
-    /// Rejects a mask that does not match the runtime body suffix.
-    pub fn hold_runtime(
-        &mut self,
-        authored_bodies: usize,
-        sleeping: &[bool],
-    ) -> Result<(), PhysicsError> {
-        if authored_bodies + sleeping.len() != self.held.len() {
-            return Err(PhysicsError::InvalidCommand);
-        }
-        let mut held = self.held.clone();
-        held[authored_bodies..].copy_from_slice(sleeping);
-        let poses = self.completed.state.poses.clone();
-        self.hold(&held, &poses)
-    }
-
     /// Work and quality of the last tick.
     pub fn diagnostics(&self) -> &SoftStepDiagnostics {
         &self.diagnostics

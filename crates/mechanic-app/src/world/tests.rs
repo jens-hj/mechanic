@@ -2204,7 +2204,7 @@ fn soil_commits_on_sixth_tick_and_survives_world_reload() {
     let result =
         super::brush::execute_terrain_edit_batch(runtime.edits.clone(), &runtime.field, commands)
             .unwrap();
-    assert!(super::commit_terrain_edit_result(&mut runtime, result).0);
+    assert!(super::brush::commit_terrain_edit_result(&mut runtime, result).0);
     assert!(!runtime.pending_foundation_edit.is_empty());
     let store = WorldStore::new(&temporary.0);
     let name = runtime.document.name.clone();
@@ -2230,7 +2230,7 @@ fn soil_commits_on_sixth_tick_and_survives_world_reload() {
 }
 
 #[test]
-fn saving_an_unpublished_transfer_keeps_the_previous_material_owner() {
+fn settled_spoil_becomes_ground_in_one_step_and_saves_with_it() {
     let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);
     let document = store.create_world("Material", Some(91)).unwrap();
@@ -2239,43 +2239,47 @@ fn saving_an_unpublished_transfer_keeps_the_previous_material_owner() {
     let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
     runtime.store = store;
     install_world(&mut runtime, document).unwrap();
-    let centre = WorldPosition(DVec3::new(0.025, 200.025, 0.025));
-    let field = runtime.field.clone();
-    runtime
-        .edits
-        .add_sphere(&field, centre, 0.1, TerrainMaterial::Rock)
-        .unwrap();
-    let cell = centre.cell().unwrap();
-    let source = mechanic_world::ExtractionCell {
-        cell,
-        sample: runtime.edits.sample_cell(&field, cell),
-        throw: DVec3::ZERO,
+    let spawn = runtime.capsule.position.0;
+    let surface = runtime.field.surface_height(spawn.x, spawn.z);
+    let resting = WorldPosition(DVec3::new(spawn.x, surface + 0.05, spawn.z));
+    let clump = mechanic_world::MaterialClump {
+        id: 1,
+        material: TerrainMaterial::Soil,
+        quanta: 510 * 2 + 40,
+        half_extents: DVec3::splat(
+            (f64::from(510 * 2 + 40) * mechanic_world::MATERIAL_QUANTUM_M3).cbrt() * 0.5,
+        ),
+        position: resting,
+        rotation: bevy::math::DQuat::IDENTITY,
+        linear_velocity: DVec3::ZERO,
+        angular_velocity: DVec3::ZERO,
+        settled_seconds: mechanic_world::SETTLE_SECONDS,
+        sleeping: false,
     };
-    let transfer = runtime
-        .clumps
-        .prepare_extraction(&runtime.edits, &field, &[source])
-        .unwrap();
-    runtime.pending_material = Some(super::PendingMaterialPublication {
-        previous: runtime.edits.clone(),
-        clumps: transfer.clumps,
-        sources: vec![source],
-        region: [centre.0 - DVec3::splat(1.6), centre.0 + DVec3::splat(1.6)],
-    });
-    super::commit_terrain_edit_result(
-        &mut runtime,
-        super::TerrainEditTaskResult {
-            terrain: transfer.terrain,
-            outcomes: vec![transfer.outcome],
-            elapsed_ms: 0.0,
-        },
+    runtime.clumps.bodies.insert(1, clump);
+    runtime.clumps.next_id = 2;
+    let revision = runtime.terrain_revision;
+    runtime.transfer_material();
+    // Nothing is held back for a later frame: the ground and the spoil have
+    // changed hands, and physics was never asked to wait.
+    assert_ne!(runtime.terrain_revision, revision);
+    assert_eq!(
+        runtime.clumps.bodies[&1].quanta, 40,
+        "the crumb stays loose"
     );
     super::saving::save_all(&mut runtime).unwrap();
     let (saved, clumps) = runtime.store.load_material_state("Material").unwrap();
-    assert!(saved.sample_cell(&field, cell).is_solid());
-    assert!(clumps.bodies.is_empty());
-    super::brush::finish_terrain_edits(&mut runtime).unwrap();
-    assert!(runtime.edits.sample_cell(&field, cell).is_solid());
-    assert!(!runtime.material_publication_pending());
+    assert_eq!(clumps, runtime.clumps);
+    let field = runtime.field.clone();
+    let laid = mechanic_world::spoil_targets(&runtime.edits, &field, resting, |_| false);
+    let before = mechanic_world::spoil_targets(
+        &mechanic_world::TerrainOctree::default(),
+        &field,
+        resting,
+        |_| false,
+    );
+    assert_ne!(laid, before, "the hollow the spoil lay in has filled");
+    assert!(saved.sample_cell(&field, before[0]).is_solid());
 }
 
 /// Updates until `done`, failing instead of waiting forever on a stalled pipeline.
@@ -2289,7 +2293,7 @@ fn update_until(app: &mut App, what: &str, done: impl Fn(&App) -> bool) {
 }
 
 #[test]
-fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit() {
+fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_settle() {
     use bevy::prelude::IntoScheduleConfigs;
 
     bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
@@ -2346,16 +2350,7 @@ fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit
     app.world_mut().resource_mut::<WorldListState>().phase = WorldListPhase::Loading;
 
     update_until(&mut app, "the world never finished loading", |app| {
-        let playing = app.world().resource::<WorldListState>().phase() == WorldListPhase::Playing;
-        // A transfer holds terrain publication, and with it loading progress.
-        assert!(
-            playing
-                || !app
-                    .world()
-                    .resource::<WorldRuntime>()
-                    .material_publication_pending()
-        );
-        playing
+        app.world().resource::<WorldListState>().phase() == WorldListPhase::Playing
     });
     assert!(
         app.world()
@@ -2365,7 +2360,10 @@ fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_deposit
     );
 
     update_until(&mut app, "the clump never deposited", |app| {
-        let runtime = app.world().resource::<WorldRuntime>();
-        runtime.clumps.bodies.is_empty() && !runtime.material_publication_pending()
+        app.world()
+            .resource::<WorldRuntime>()
+            .clumps
+            .bodies
+            .is_empty()
     });
 }

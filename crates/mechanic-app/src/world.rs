@@ -12,6 +12,7 @@ mod foundations;
 mod list;
 mod saving;
 mod space;
+mod spoil;
 pub(crate) mod streaming;
 mod terrain_render;
 mod transfer;
@@ -19,8 +20,7 @@ mod walking;
 
 use brush::{
     MAX_PENDING_TERRAIN_EDITS, TerrainEditCommand, TerrainEditOperation, TerrainEditTaskResult,
-    TerrainStrokeSample, commit_terrain_edit_result, coordinate_terrain_edits,
-    select_and_size_brush, use_brush,
+    TerrainStrokeSample, coordinate_terrain_edits, select_and_size_brush, use_brush,
 };
 pub(crate) use foundations::sync_world_foundations;
 use foundations::{PendingFoundationSync, TerrainFoundation};
@@ -32,8 +32,8 @@ use space::{
     toggle_space,
 };
 use streaming::{
-    PendingMaterialPublication, TerrainAcknowledgements, TerrainMeshResult,
-    TerrainSelectionTaskResult, integrate_terrain_remeshes, schedule_terrain_remeshes,
+    TerrainAcknowledgements, TerrainMeshResult, TerrainSelectionTaskResult,
+    integrate_terrain_remeshes, schedule_terrain_remeshes,
 };
 use terrain_render::prepare_terrain_texture_mips;
 pub(crate) use terrain_render::{TerrainRenderMaterial, generate_rgba8_mip_chain};
@@ -47,12 +47,7 @@ use std::{
     time::Duration,
 };
 
-use bevy::{
-    camera::Exposure,
-    math::{DVec2, DVec3},
-    prelude::*,
-    tasks::Task,
-};
+use bevy::{camera::Exposure, math::DVec2, prelude::*, tasks::Task};
 use mechanic_core::{ConstructionGraph, CreationDocument, DimensionLinkId, PartId, PartSpec};
 use mechanic_gpu::GpuExternalImpulse;
 use mechanic_world::{
@@ -143,7 +138,9 @@ pub(crate) struct WorldRuntime {
     edits: TerrainOctree,
     pub(crate) clumps: mechanic_world::ClumpCollection,
     pending_breakage: mechanic_world::BreakageAccumulator,
-    pending_material: Option<PendingMaterialPublication>,
+    pub(crate) spoil: mechanic_physics::SpoilSolver,
+    spoil_machine: mechanic_physics::SpoilMachine,
+    spoil_seconds: f64,
     capsule: KinematicCapsule,
     floating_origin: FloatingOrigin,
     autosave: AutosaveState,
@@ -186,7 +183,6 @@ pub(crate) struct WorldRuntime {
     terrain_material: Option<Handle<TerrainRenderMaterial>>,
     terrain_texture_mips_pending: Vec<Handle<Image>>,
     selection_focus: Option<WorldPosition>,
-    selection_clump_interests: Vec<WorldPosition>,
     selected_terrain_revision: u64,
     construction_collision: Option<ConstructionCollisionIndex>,
     collision_revision: Option<(u64, u64)>,
@@ -206,37 +202,15 @@ pub(crate) struct WorldRuntime {
 }
 
 impl WorldRuntime {
-    pub(crate) fn material_publication_pending(&self) -> bool {
-        self.pending_material.is_some()
-    }
-
     pub(crate) fn material_motion(&mut self) {
         self.autosave.mutate(self.clock);
-    }
-
-    /// Whether the terrain overlapping this box is selected for the current
-    /// revision and active as selected. Streaming elsewhere does not count.
-    pub(crate) fn terrain_settled_within(&self, [low, high]: [DVec3; 2]) -> bool {
-        self.selected_terrain_revision == self.terrain_revision
-            && self
-                .terrain_streamer
-                .settled_where(|id| streaming::node_overlaps(id, low, high))
-    }
-
-    /// Drops clumps lost under the terrain or flung out of the world. Waits out a pending
-    /// material publication, whose prepared clumps would bring them back.
-    pub(crate) fn absorb_lost_clumps(&mut self) -> usize {
-        if self.pending_material.is_some() {
-            return 0;
-        }
-        self.clumps.absorb_lost(&self.edits, &self.field)
     }
 
     pub(crate) fn accumulate_breakage(
         &mut self,
         patches: impl Iterator<Item = mechanic_world::BreakagePatch>,
     ) {
-        if self.pending_material.is_some() || self.terrain_edit_error.is_some() {
+        if self.terrain_edit_error.is_some() {
             return;
         }
         self.pending_breakage
@@ -245,150 +219,6 @@ impl WorldRuntime {
             self.pending_breakage
                 .accumulate(&self.edits, &self.field, patch);
         }
-    }
-
-    // Empty cells around a settled clump that it may turn back into ground:
-    // none another fragment, a bucket or any other construction occupies.
-    fn deposit_targets(
-        &mut self,
-        id: u64,
-        position: WorldPosition,
-        clumps: &mechanic_world::ClumpCollection,
-    ) -> Option<Vec<mechanic_world::WorldCell>> {
-        let centre = position.cell().ok()?;
-        let mut targets = Vec::new();
-        for y in -3..=2 {
-            for z in -2..=2 {
-                for x in -2..=2 {
-                    targets.push(mechanic_world::WorldCell::new(
-                        centre.x + x,
-                        centre.y + y,
-                        centre.z + z,
-                    ));
-                }
-            }
-        }
-        let radius = mechanic_world::TERRAIN_CELL_METERS * 3.0_f64.sqrt() * 0.5;
-        targets.retain(|cell| {
-            clumps.bodies.values().all(|other| {
-                other.id == id
-                    || other.position.0.distance(cell.centre().0)
-                        > other.half_extents.length() + radius
-            })
-        });
-        if let Some(collision) = self.construction_collision.as_mut() {
-            let config = mechanic_world::KinematicCapsuleConfig {
-                radius,
-                standing_height: radius * 2.0,
-                step_height: 0.0,
-                ..Default::default()
-            };
-            let origin = self.floating_origin.0;
-            targets.retain(|cell| {
-                collision
-                    .cast_capsule(
-                        (cell.centre().0 - origin - DVec3::Y * radius).as_vec3(),
-                        Vec3::ZERO,
-                        config,
-                    )
-                    .is_none()
-            });
-        }
-        Some(targets)
-    }
-
-    fn begin_material_transfer(&mut self) {
-        // Physics waits out a transfer, so they are spaced for it to run between.
-        const TRANSFER_INTERVAL: Duration = Duration::from_millis(500);
-        // Cells one transfer breaks out. Loose bodies cost far more than ground,
-        // so a fast tool's spoil is metered; the rest stays broken and waits.
-        const CELLS_PER_TRANSFER: usize = 48;
-        // Settled clumps returned to the ground by one transfer.
-        const DEPOSITS_PER_TRANSFER: usize = 64;
-        if self.pending_material.is_some()
-            || self.terrain_edit_task.is_some()
-            || !self.pending_terrain_edits.is_empty()
-            || self.terrain_edit_error.is_some()
-            || self
-                .last_material_transfer
-                .is_some_and(|last| self.clock.saturating_sub(last) < TRANSFER_INTERVAL)
-        {
-            return;
-        }
-        let mut terrain = None;
-        let mut clumps = self.clumps.clone();
-        let mut outcomes = Vec::new();
-        let mut sources = Vec::new();
-        let depositable = self
-            .clumps
-            .bodies
-            .values()
-            .filter(|body| body.can_deposit())
-            .map(|body| (body.id, body.position))
-            .take(DEPOSITS_PER_TRANSFER)
-            .collect::<Vec<_>>();
-        for (id, position) in depositable {
-            let Some(targets) = self.deposit_targets(id, position, &clumps) else {
-                continue;
-            };
-            // Each deposit builds on the ground and clumps the last one left.
-            if let Some(transfer) = clumps.prepare_deposition(
-                terrain.as_ref().unwrap_or(&self.edits),
-                &self.field,
-                id,
-                &targets,
-            ) {
-                terrain = Some(transfer.terrain);
-                clumps = transfer.clumps;
-                outcomes.push(transfer.outcome);
-            }
-        }
-        if outcomes.is_empty() {
-            sources = self.pending_breakage.ready(
-                &self.edits,
-                &self.field,
-                self.clumps.available().min(CELLS_PER_TRANSFER),
-            );
-            if sources.is_empty() {
-                return;
-            }
-            let Some(transfer) = self
-                .clumps
-                .prepare_extraction(&self.edits, &self.field, &sources)
-            else {
-                return;
-            };
-            terrain = Some(transfer.terrain);
-            clumps = transfer.clumps;
-            outcomes.push(transfer.outcome);
-        }
-        let Some(terrain) = terrain else {
-            return;
-        };
-        let Some(region) = transfer_region(&outcomes) else {
-            return;
-        };
-        // The ground being changed must be what the player and physics see, or
-        // the clumps would appear inside terrain that has not given way yet.
-        if !self.terrain_settled_within(region) {
-            return;
-        }
-        self.last_material_transfer = Some(self.clock);
-        self.pending_material = Some(PendingMaterialPublication {
-            previous: self.edits.clone(),
-            clumps,
-            sources,
-            region,
-        });
-        commit_terrain_edit_result(
-            self,
-            TerrainEditTaskResult {
-                terrain,
-                outcomes,
-                elapsed_ms: 0.0,
-            },
-        );
-        self.pending_soil.clear();
     }
 
     /// Accumulates global CPU loads, submitting thresholded cells at 10 Hz.
@@ -412,17 +242,6 @@ impl WorldRuntime {
             return;
         }
         self.soil_ticks = 0;
-        // A material transfer waits for an idle edit queue. While broken ground is
-        // waiting to leave, compaction holds its commits so a pressing tool's
-        // steady 10 Hz edits cannot starve the digging they accompany. A transfer
-        // waits only for the ground it changes, so the hold is short.
-        if !self
-            .pending_breakage
-            .ready(&self.edits, &self.field, self.clumps.available().min(1))
-            .is_empty()
-        {
-            return;
-        }
         let ready = self.pending_soil.take_ready();
         if self.pending_terrain_edits.len().saturating_add(ready.len()) > MAX_PENDING_TERRAIN_EDITS
         {
@@ -811,7 +630,9 @@ impl FromWorld for WorldRuntime {
             pending_soil: mechanic_world::SoilAccumulator::default(),
             clumps,
             pending_breakage: mechanic_world::BreakageAccumulator::default(),
-            pending_material: None,
+            spoil: mechanic_physics::SpoilSolver::default(),
+            spoil_machine: mechanic_physics::SpoilMachine::default(),
+            spoil_seconds: 0.0,
             soil_ticks: 0,
             terrain_edit_task: None,
             terrain_edit_error: None,
@@ -846,7 +667,6 @@ impl FromWorld for WorldRuntime {
             terrain_material: None,
             terrain_texture_mips_pending: Vec::new(),
             selection_focus: None,
-            selection_clump_interests: Vec::new(),
             selected_terrain_revision: u64::MAX,
             construction_collision: None,
             collision_revision: None,
@@ -888,6 +708,9 @@ impl Plugin for WorldPrototypePlugin {
                     prepare_terrain_texture_mips,
                     schedule_terrain_remeshes.after(coordinate_terrain_edits),
                     integrate_terrain_remeshes.after(schedule_terrain_remeshes),
+                    spoil::step_spoil
+                        .after(FrameSet::Readback)
+                        .before(coordinate_terrain_edits),
                     clumps::sync_clump_rendering.after(integrate_terrain_remeshes),
                     sync_world_foundations
                         .after(integrate_terrain_remeshes)
@@ -921,24 +744,6 @@ pub(crate) fn prepare_fx_capture(
 ) {
     runtime.store = WorldStore::new(directory.join("worlds"));
     list.phase = WorldListPhase::Playing;
-}
-
-/// Lowest and highest corner of the bricks these edits changed, with the
-/// neighbouring bricks whose seams and gradients read them.
-fn transfer_region(outcomes: &[mechanic_world::TerrainEditOutcome]) -> Option<[DVec3; 2]> {
-    let corner = |brick: &mechanic_world::BrickCoord| {
-        DVec3::new(f64::from(brick.x), f64::from(brick.y), f64::from(brick.z))
-            * mechanic_world::BRICK_EDGE_METERS
-    };
-    let mut bricks = outcomes
-        .iter()
-        .flat_map(mechanic_world::TerrainEditOutcome::changed_brick_coordinates);
-    let first = bricks.next()?;
-    let (low, high) = bricks.fold((corner(first), corner(first)), |(low, high), brick| {
-        (low.min(corner(brick)), high.max(corner(brick)))
-    });
-    let halo = DVec3::splat(mechanic_world::BRICK_EDGE_METERS);
-    Some([low - halo, high + halo * 2.0])
 }
 
 #[cfg(test)]

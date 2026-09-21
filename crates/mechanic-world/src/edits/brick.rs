@@ -142,7 +142,6 @@ impl TerrainBrick {
         local: IVec3,
         material: TerrainMaterial,
         density: f32,
-        compaction: u8,
     ) -> bool {
         let Some(index) = local_index(local) else {
             return false;
@@ -155,7 +154,7 @@ impl TerrainBrick {
         *sample = TerrainSample {
             density,
             material,
-            compaction,
+            compaction: 0,
         };
         self.maximum_density = self.maximum_density.max(density);
         if previous_density <= self.minimum_density {

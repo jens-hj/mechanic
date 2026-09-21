@@ -69,10 +69,6 @@ pub(crate) struct Completed {
 pub(crate) struct CpuRoute {
     machine: CpuMachine,
     creation: CompiledCreation,
-    base_creation: CompiledCreation,
-    clump_ids: Vec<u64>,
-    clump_shapes: Vec<(u64, u32, bevy::math::DVec3)>,
-    clump_origin: DVec3,
     geometry: mechanic_physics::MachineCollisionGeometry,
     scene: TerrainContactScene,
     /// Mesh generation of every chunk in `scene`.
@@ -127,10 +123,6 @@ impl PreparedRoute {
             .map_err(|error| unsupported(&error))?;
         Ok(CpuRoute {
             machine,
-            base_creation: self.creation.clone(),
-            clump_ids: Vec::new(),
-            clump_shapes: Vec::new(),
-            clump_origin: DVec3::ZERO,
             creation: self.creation,
             geometry: self.geometry,
             scene: TerrainContactScene::default(),
@@ -147,208 +139,6 @@ impl PreparedRoute {
 }
 
 impl CpuRoute {
-    pub(crate) fn has_clumps(&self) -> bool {
-        !self.clump_ids.is_empty()
-    }
-    pub(crate) fn publish_material<'a>(
-        &mut self,
-        chunks: impl Iterator<Item = &'a TerrainMeshChunk>,
-        clumps: &mechanic_world::ClumpCollection,
-        origin: DVec3,
-    ) -> Result<(), String> {
-        let chunks = chunks.collect::<Vec<_>>();
-        let publication = self.publication + 1;
-        let mut scene = TerrainContactScene::default();
-        let upserts = chunks
-            .iter()
-            .map(|chunk| Arc::new(chunk.collision_chunk()))
-            .collect::<Vec<_>>();
-        scene
-            .publish(publication, &upserts, &[])
-            .map_err(|error| error.to_string())?;
-        let prepared = mechanic_physics::PreparedClumpBodies::new(
-            &self.base_creation,
-            &self.machine.snapshot().state,
-            clumps,
-            origin,
-            self.generation,
-        )
-        .map_err(|error| error.to_string())?;
-        self.machine
-            .replace_bodies(
-                prepared.creation.clone(),
-                prepared.state,
-                self.base_creation.compounds.len(),
-            )
-            .map_err(|error| error.to_string())?;
-        self.creation = prepared.creation;
-        self.geometry = prepared.geometry;
-        self.clump_ids = prepared.ids;
-        self.clump_origin = origin;
-        self.clump_shapes = clumps
-            .bodies
-            .values()
-            .map(|body| (body.id, body.quanta, body.half_extents))
-            .collect();
-        self.scene = scene;
-        self.publication = publication;
-        self.chunks = chunks
-            .iter()
-            .map(|chunk| (chunk.node, chunk.generation))
-            .collect();
-        self.origin = origin;
-        self.published = true;
-        Ok(())
-    }
-
-    /// Validates runtime body replacement before installing any changed rows.
-    pub(crate) fn publish_clumps(
-        &mut self,
-        clumps: &mechanic_world::ClumpCollection,
-    ) -> Result<(), String> {
-        let shapes = clumps
-            .bodies
-            .values()
-            .map(|body| (body.id, body.quanta, body.half_extents))
-            .collect::<Vec<_>>();
-        if shapes == self.clump_shapes && self.clump_origin == self.origin {
-            return Ok(());
-        }
-        let prepared = mechanic_physics::PreparedClumpBodies::new(
-            &self.base_creation,
-            &self.machine.snapshot().state,
-            clumps,
-            self.origin,
-            self.generation,
-        )
-        .map_err(|error| format!("cannot prepare material bodies: {error}"))?;
-        self.machine
-            .replace_bodies(
-                prepared.creation.clone(),
-                prepared.state,
-                self.base_creation.compounds.len(),
-            )
-            .map_err(|error| format!("cannot publish material bodies: {error}"))?;
-        self.creation = prepared.creation;
-        self.geometry = prepared.geometry;
-        self.clump_ids = prepared.ids;
-        self.clump_shapes = shapes;
-        self.clump_origin = self.origin;
-        Ok(())
-    }
-
-    /// Copies accepted clump poses into persistent world ownership.
-    pub(crate) fn update_clumps(&self, world: &mut crate::world::WorldRuntime) {
-        if self.clump_ids.iter().any(|id| {
-            world
-                .clumps
-                .bodies
-                .get(id)
-                .is_some_and(|body| !body.sleeping)
-        }) {
-            world.material_motion();
-        }
-        let state = &self.machine.snapshot().state;
-        let Ok(motions) =
-            MachineKinematics::published_motions(&self.creation, &state.poses, &state.velocities)
-        else {
-            return;
-        };
-        for (offset, id) in self.clump_ids.iter().enumerate() {
-            let row = self.base_creation.compounds.len() + offset;
-            if let Some(body) = world.clumps.bodies.get_mut(id) {
-                body.position =
-                    mechanic_world::WorldPosition(self.origin + state.poses[row].position);
-                body.rotation = state.poses[row].rotation;
-                body.linear_velocity = motions[row].linear;
-                body.angular_velocity = motions[row].angular;
-                let supported = self.machine.terrain_loads().iter().any(|load| {
-                    load.body == row
-                        && load.normal.y > mechanic_world::GROUND_NORMAL_MIN_Y
-                        && load.normal_impulse > 0.0
-                });
-                if !body.sleeping {
-                    let soft =
-                        mechanic_world::BreakageResponse::for_material(body.material).deposits;
-                    body.update_settling(
-                        if soft {
-                            supported
-                        } else {
-                            self.machine.body_supported(row)
-                        },
-                        mechanic_core::TICK_SECONDS,
-                    );
-                    if !mechanic_world::BreakageResponse::for_material(body.material).deposits
-                        && body.settled_seconds >= 1.0
-                    {
-                        body.sleeping = true;
-                        body.linear_velocity = DVec3::ZERO;
-                        body.angular_velocity = DVec3::ZERO;
-                    }
-                }
-            }
-        }
-        // The next terrain publication drops the absorbed bodies' rows.
-        if world.absorb_lost_clumps() > 0 {
-            world.material_motion();
-        }
-    }
-
-    pub(crate) fn prepare_clump_tick(
-        &mut self,
-        clumps: &mut mechanic_world::ClumpCollection,
-    ) -> Result<(), String> {
-        let state = &self.machine.snapshot().state;
-        let motions =
-            MachineKinematics::published_motions(&self.creation, &state.poses, &state.velocities)
-                .map_err(|error| error.to_string())?;
-        let mut available = clumps.available();
-        for (offset, id) in self.clump_ids.iter().enumerate() {
-            let Some(body) = clumps.bodies.get_mut(id) else {
-                continue;
-            };
-            if !body.sleeping || available == 0 {
-                continue;
-            }
-            let own_row = self.base_creation.compounds.len() + offset;
-            let wake = self.creation.colliders.iter().any(|collider| {
-                let row = collider.compound_index as usize;
-                if row == own_row
-                    || motions[row].linear.length() + motions[row].angular.length() < 0.05
-                {
-                    return false;
-                }
-                let radius = match &collider.shape {
-                    mechanic_core::ColliderShape::Cuboid { half_extents, .. } => {
-                        f64::from(half_extents.length())
-                    }
-                    mechanic_core::ColliderShape::Convex(convex) => convex
-                        .vertices
-                        .iter()
-                        .map(|v| f64::from(v.length()))
-                        .fold(0.0, f64::max),
-                };
-                let centre = state.poses[row].position
-                    + state.poses[row].rotation * collider.local_center.as_dvec3();
-                centre.distance(body.position.0 - self.origin)
-                    < radius + body.half_extents.length() + 0.05
-            });
-            if wake {
-                body.sleeping = false;
-                body.settled_seconds = 0.0;
-                available -= 1;
-            }
-        }
-        let sleeping = self
-            .clump_ids
-            .iter()
-            .map(|id| clumps.bodies.get(id).is_some_and(|body| body.sleeping))
-            .collect::<Vec<_>>();
-        self.machine
-            .hold_runtime(self.base_creation.compounds.len(), &sleeping)
-            .map_err(|error| error.to_string())
-    }
-
     /// Feed accepted CPU loads to world-owned compaction using this query's origin.
     pub(crate) fn accumulate_soil(&self, world: &mut crate::world::WorldRuntime) {
         static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -360,12 +150,7 @@ impl CpuRoute {
         }
         let loads = self.machine.terrain_loads();
         world.accumulate_soil(loads.iter().map(|load| load.soil_patch(self.origin)));
-        world.accumulate_breakage(
-            loads
-                .iter()
-                .filter(|load| load.body < self.base_creation.compounds.len())
-                .map(|load| load.breakage_patch(self.origin)),
-        );
+        world.accumulate_breakage(loads.iter().map(|load| load.breakage_patch(self.origin)));
     }
 
     /// Transfers the world-owned terrain cut across a construction publication.
@@ -564,14 +349,9 @@ impl CpuRoute {
     /// # Errors
     /// Returns a message when the solver refuses the mask or a held pose.
     pub(crate) fn hold(&mut self, held: &[bool], poses: &[GpuTransform]) -> Result<(), String> {
-        let mut poses = poses.iter().map(body_pose).collect::<Vec<_>>();
-        poses.extend_from_slice(
-            &self.machine.snapshot().state.poses[self.base_creation.compounds.len()..],
-        );
-        let mut held = held.to_vec();
-        held.resize(poses.len(), false);
+        let poses = poses.iter().map(body_pose).collect::<Vec<_>>();
         self.machine
-            .hold(&held, &poses)
+            .hold(held, &poses)
             .map_err(|error| format!("the CPU solver refused a body hold: {error}"))
     }
 
@@ -589,7 +369,6 @@ impl CpuRoute {
         let transforms = state
             .poses
             .iter()
-            .take(self.base_creation.compounds.len())
             .map(|pose| {
                 let position = pose.position.as_vec3();
                 GpuTransform {
@@ -600,7 +379,6 @@ impl CpuRoute {
             .collect();
         let velocities = motions
             .iter()
-            .take(self.base_creation.compounds.len())
             .map(|motion| {
                 let linear = motion.linear.as_vec3();
                 let angular = motion.angular.as_vec3();

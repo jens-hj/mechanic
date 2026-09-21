@@ -20,6 +20,7 @@ pub(super) fn sync_clump_rendering(
     let Some(material) = &runtime.terrain_material else {
         return;
     };
+    let started = std::time::Instant::now();
     let mut present = BTreeSet::new();
     for (entity, mut marker, mut transform, mesh) in &mut rendered {
         let Some(body) = runtime.clumps.bodies.get(&marker.id) else {
@@ -54,6 +55,10 @@ pub(super) fn sync_clump_rendering(
             WorldOwned,
         ));
     }
+    crate::performance_capture::record(
+        "clump_render_sync",
+        || serde_json::json!({"duration_ms": started.elapsed().as_secs_f64() * 1000.0, "clumps": runtime.clumps.bodies.len()}),
+    );
 }
 
 fn clump_transform(body: &mechanic_world::MaterialClump, origin: FloatingOrigin) -> Transform {

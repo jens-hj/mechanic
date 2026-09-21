@@ -10,12 +10,12 @@ use crate::{
     TerrainMaterial, TerrainOctree, WorldCell, WorldPosition,
 };
 
-/// Speed past which a clump is ejecta the world will not see again, in m/s.
-/// A fragment falling from 500 m arrives at about 100 m/s.
-const LOST_CLUMP_SPEED_M_S: f64 = 150.0;
+/// Awake loose bodies the world budgets for. Past it, freshly cut soft ground
+/// is laid straight back down as spoil instead of taking flight.
+pub const MAX_ACTIVE_CLUMPS: usize = 4_096;
 
-/// Maximum awake loose bodies in the initial CPU implementation.
-pub const MAX_ACTIVE_CLUMPS: usize = 256;
+/// How long soft spoil rests on the ground before it becomes ground, in seconds.
+pub const SETTLE_SECONDS: f64 = 0.25;
 
 /// A movable, world-owned quantity of material. Positions are global doubles.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -67,7 +67,9 @@ impl MaterialClump {
 
     /// Whether this soft clump has settled long enough to try depositing.
     pub fn can_deposit(&self) -> bool {
-        BreakageResponse::for_material(self.material).deposits && self.settled_seconds >= 1.0
+        BreakageResponse::for_material(self.material).deposits
+            && self.quanta >= 510
+            && self.settled_seconds >= SETTLE_SECONDS
     }
 
     /// Validates data before a saved or prepared body reaches physics.
@@ -118,167 +120,214 @@ impl ClumpCollection {
         MAX_ACTIVE_CLUMPS.saturating_sub(self.bodies.values().filter(|body| !body.sleeping).count())
     }
 
-    /// Checks identity, body data and the active budget on load/publication.
+    /// Checks identity and body data on load.
     pub fn is_valid(&self) -> bool {
         self.next_id > 0
             && self
                 .bodies
                 .iter()
                 .all(|(&id, body)| id == body.id && id < self.next_id && body.is_valid())
-            && self.bodies.values().filter(|body| !body.sleeping).count() <= MAX_ACTIVE_CLUMPS
     }
 
-    /// Removes clumps the world has lost and returns how many.
-    ///
-    /// Terrain collides from outside only, so a clump that gets under the
-    /// surface falls without end: one whose centre and the space above its top
-    /// are both solid is back in the ground it came from. A fragment pinched
-    /// between a powered tool and the ground can also leave faster than anything
-    /// thrown or dropped; it is gone before it lands, and terrain must not
-    /// stream after it.
-    pub fn absorb_lost(&mut self, terrain: &TerrainOctree, field: &TerrainField) -> usize {
-        let before = self.bodies.len();
-        self.bodies.retain(|_, body| {
-            let above = body.half_extents.max_element() + crate::TERRAIN_CELL_METERS;
-            let buried = [DVec3::ZERO, DVec3::Y * above].into_iter().all(|offset| {
-                WorldPosition(body.position.0 + offset)
-                    .cell()
-                    .is_ok_and(|cell| terrain.sample_cell(field, cell).is_solid())
-            });
-            !buried && body.linear_velocity.length() <= LOST_CLUMP_SPEED_M_S
-        });
-        before - self.bodies.len()
-    }
-
-    /// Prepares a complete ownership change on copies. Failure leaves both
-    /// inputs untouched. The caller installs all outputs at one boundary.
-    pub fn prepare_extraction(
-        &self,
-        terrain: &TerrainOctree,
+    /// Breaks the cells out of the terrain into clumps that leave along their
+    /// throw. Stale, repeated or malformed sources change nothing. With
+    /// `laid_down`, soft spoil is made ready to settle at once where it lies.
+    pub fn extract(
+        &mut self,
+        terrain: &mut TerrainOctree,
         field: &TerrainField,
         sources: &[ExtractionCell],
-    ) -> Option<MaterialTransfer> {
-        if !self.is_valid()
-            || sources
-                .iter()
-                .any(|source| source.cell.y > i32::MAX - 5 || !source.sample.density.is_finite())
+        laid_down: bool,
+    ) -> Option<TerrainEditOutcome> {
+        if sources
+            .iter()
+            .any(|source| source.cell.y > i32::MAX - 5 || !source.sample.density.is_finite())
         {
             return None;
         }
-        let mut terrain = terrain.clone();
-        let mut clumps = self.clone();
-        let groups = fragment_boxes(sources);
-        if groups.len() > clumps.available() || !crate::breakage::unique_sources(sources) {
-            return None;
-        }
-        let outcome = terrain.extract_cells(field, sources)?;
-        for cells in groups {
-            let id = clumps.next_id;
-            clumps.next_id = id.checked_add(1)?;
-            let first = cells.first()?;
-            let mut minimum = first.cell.centre().0;
-            let mut maximum = minimum;
-            let mut quanta = 0_u32;
-            let mut throw = DVec3::ZERO;
-            for source in &cells {
-                throw += source.throw;
-                minimum = minimum.min(source.cell.centre().0);
-                maximum = maximum.max(source.cell.centre().0);
-                quanta += u32::try_from(source.material_quanta()).ok()?;
+        let mut bodies = Vec::new();
+        let mut next_id = self.next_id;
+        for cells in fragment_boxes(sources) {
+            let id = next_id;
+            next_id = id.checked_add(1)?;
+            let mut body = fragment(id, &cells)?;
+            if laid_down && BreakageResponse::for_material(body.material).deposits {
+                body.linear_velocity = DVec3::ZERO;
+                body.settled_seconds = SETTLE_SECONDS;
             }
-            let count = f64::from(u32::try_from(cells.len()).ok()?);
-            let span = (maximum - minimum) / crate::TERRAIN_CELL_METERS + DVec3::ONE;
-            let (half_extents, centre) = if (span.element_product() - count).abs() < 0.5 {
-                // A whole cuboid keeps its shape. Packed cells hold less; the
-                // fragment is that much lower.
-                let mut half_extents =
-                    (maximum - minimum + DVec3::splat(crate::TERRAIN_CELL_METERS)) * 0.5;
-                let mut centre = (minimum + maximum) * 0.5;
-                let shrink = half_extents.y * (1.0 - f64::from(quanta) / (510.0 * count));
-                half_extents.y -= shrink;
-                centre.y -= shrink;
-                (half_extents, centre)
-            } else {
-                // Scattered cells gather into one clod of their volume, where
-                // they lay on average.
-                let volume = f64::from(quanta) * MATERIAL_QUANTUM_M3;
-                let mean = cells
-                    .iter()
-                    .map(|source| source.cell.centre().0)
-                    .sum::<DVec3>()
-                    / count;
-                (DVec3::splat(volume.cbrt() * 0.5), mean)
-            };
-            let body = MaterialClump {
-                id,
-                material: first.sample.material,
-                quanta,
-                half_extents,
-                position: WorldPosition(centre),
-                rotation: DQuat::IDENTITY,
-                linear_velocity: throw
-                    / f64::from(u32::try_from(cells.len()).unwrap_or(u32::MAX).max(1)),
-                angular_velocity: DVec3::ZERO,
-                settled_seconds: 0.0,
-                sleeping: false,
-            };
             if !body.is_valid() {
                 return None;
             }
-            clumps.bodies.insert(id, body);
+            bodies.push(body);
         }
-        Some(MaterialTransfer {
-            terrain,
-            clumps,
-            outcome,
-        })
+        let outcome = terrain.extract_cells(field, sources)?;
+        self.next_id = next_id;
+        self.bodies
+            .extend(bodies.into_iter().map(|body| (body.id, body)));
+        Some(outcome)
     }
 
-    /// Attempts supported whole-cell deposition; hard materials remain bodies.
-    pub fn prepare_deposition(
-        &self,
-        terrain: &TerrainOctree,
+    /// Turns whole cells of a settled soft clump back into ground at the first
+    /// free, supported targets. What is left of it stays loose.
+    pub fn settle(
+        &mut self,
+        terrain: &mut TerrainOctree,
         field: &TerrainField,
         id: u64,
         targets: &[WorldCell],
-    ) -> Option<MaterialTransfer> {
-        let body = self.bodies.get(&id)?;
+    ) -> Option<TerrainEditOutcome> {
+        let body = self.bodies.get_mut(&id)?;
         if !body.can_deposit() {
             return None;
         }
-        let mut terrain = terrain.clone();
         let (outcome, remaining) =
             terrain.deposit_material(field, targets, body.material, u64::from(body.quanta));
-        if remaining == u64::from(body.quanta) {
+        let remaining = u32::try_from(remaining).ok()?;
+        if remaining == body.quanta {
             return None;
         }
-        let mut clumps = self.clone();
         if remaining == 0 {
-            clumps.bodies.remove(&id);
+            self.bodies.remove(&id);
         } else {
-            let body = clumps.bodies.get_mut(&id)?;
-            let remaining = u32::try_from(remaining).ok()?;
-            let scale = (f64::from(remaining) / f64::from(body.quanta)).cbrt();
-            body.half_extents *= scale;
+            body.half_extents *= (f64::from(remaining) / f64::from(body.quanta)).cbrt();
             body.quanta = remaining;
-            body.settled_seconds = 0.0;
         }
-        Some(MaterialTransfer {
-            terrain,
-            clumps,
-            outcome,
-        })
+        Some(outcome)
+    }
+
+    /// Gathers soft crumbs, each less than a cell, that rest in the same
+    /// three-cell block into one clump, so that together they can become
+    /// ground. Returns how many clumps were folded into another.
+    pub fn gather_crumbs(&mut self) -> usize {
+        let mut blocks = BTreeMap::<_, Vec<u64>>::new();
+        for body in self.bodies.values() {
+            if body.quanta < 510
+                && body.settled_seconds >= SETTLE_SECONDS
+                && BreakageResponse::for_material(body.material).deposits
+                && let Ok(cell) = body.position.cell()
+            {
+                let block = [cell.x, cell.y, cell.z].map(|axis| axis.div_euclid(3));
+                blocks
+                    .entry((block, body.material.code()))
+                    .or_default()
+                    .push(body.id);
+            }
+        }
+        let mut folded = 0;
+        for ids in blocks.into_values().filter(|ids| ids.len() > 1) {
+            let mut quanta = 0_u32;
+            let mut centre = DVec3::ZERO;
+            for id in &ids[1..] {
+                let Some(crumb) = self.bodies.remove(id) else {
+                    continue;
+                };
+                quanta += crumb.quanta;
+                centre += crumb.position.0 * f64::from(crumb.quanta);
+                folded += 1;
+            }
+            let Some(body) = self.bodies.get_mut(&ids[0]) else {
+                continue;
+            };
+            centre += body.position.0 * f64::from(body.quanta);
+            body.quanta += quanta;
+            body.position = WorldPosition(centre / f64::from(body.quanta));
+            body.half_extents =
+                DVec3::splat((f64::from(body.quanta) * MATERIAL_QUANTUM_M3).cbrt() * 0.5);
+            body.sleeping = false;
+        }
+        folded
     }
 }
 
-/// Prepared terrain and bodies; neither is authoritative until jointly installed.
-pub struct MaterialTransfer {
-    /// Replacement terrain.
-    pub terrain: TerrainOctree,
-    /// Replacement material ownership.
-    pub clumps: ClumpCollection,
-    /// Dirty terrain footprint for meshing and foundation invalidation.
-    pub outcome: TerrainEditOutcome,
+/// Free, supported cells around resting spoil, lowest first and then nearest,
+/// so spoil fills the hollow it lies in before it builds a heap. `blocked`
+/// names cells something else occupies.
+pub fn spoil_targets(
+    terrain: &TerrainOctree,
+    field: &TerrainField,
+    position: WorldPosition,
+    mut blocked: impl FnMut(WorldCell) -> bool,
+) -> Vec<WorldCell> {
+    const REACH_CELLS: i32 = 2;
+    const LEVELS: i32 = 3;
+    let Ok(centre) = position.cell() else {
+        return Vec::new();
+    };
+    let mut targets = Vec::new();
+    for z in -REACH_CELLS..=REACH_CELLS {
+        for x in -REACH_CELLS..=REACH_CELLS {
+            // The column's surface near the spoil: the lowest free cell on ground.
+            let floor = (centre.y - 4..=centre.y + 2).rev().find(|&y| {
+                !terrain
+                    .sample_cell(field, WorldCell::new(centre.x + x, y, centre.z + z))
+                    .is_solid()
+                    && terrain
+                        .sample_cell(field, WorldCell::new(centre.x + x, y - 1, centre.z + z))
+                        .is_solid()
+            });
+            let Some(floor) = floor else {
+                continue;
+            };
+            for level in 0..LEVELS {
+                let cell = WorldCell::new(centre.x + x, floor + level, centre.z + z);
+                if blocked(cell) {
+                    break;
+                }
+                targets.push((cell.y, x * x + z * z, cell));
+            }
+        }
+    }
+    targets.sort_unstable_by_key(|&(height, distance, _)| (height, distance));
+    targets.into_iter().map(|(_, _, cell)| cell).collect()
+}
+
+// The clump a group of broken cells makes.
+fn fragment(id: u64, cells: &[ExtractionCell]) -> Option<MaterialClump> {
+    let first = cells.first()?;
+    let mut minimum = first.cell.centre().0;
+    let mut maximum = minimum;
+    let mut quanta = 0_u32;
+    let mut throw = DVec3::ZERO;
+    for source in cells {
+        throw += source.throw;
+        minimum = minimum.min(source.cell.centre().0);
+        maximum = maximum.max(source.cell.centre().0);
+        quanta += u32::try_from(source.material_quanta()).ok()?;
+    }
+    let count = f64::from(u32::try_from(cells.len()).ok()?);
+    let span = (maximum - minimum) / crate::TERRAIN_CELL_METERS + DVec3::ONE;
+    let (half_extents, centre) = if (span.element_product() - count).abs() < 0.5 {
+        // A whole cuboid keeps its shape. Packed cells hold less; the
+        // fragment is that much lower.
+        let mut half_extents = (maximum - minimum + DVec3::splat(crate::TERRAIN_CELL_METERS)) * 0.5;
+        let mut centre = (minimum + maximum) * 0.5;
+        let shrink = half_extents.y * (1.0 - f64::from(quanta) / (510.0 * count));
+        half_extents.y -= shrink;
+        centre.y -= shrink;
+        (half_extents, centre)
+    } else {
+        // Scattered cells gather into one clod of their volume, where they lay
+        // on average.
+        let volume = f64::from(quanta) * MATERIAL_QUANTUM_M3;
+        let mean = cells
+            .iter()
+            .map(|source| source.cell.centre().0)
+            .sum::<DVec3>()
+            / count;
+        (DVec3::splat(volume.cbrt() * 0.5), mean)
+    };
+    Some(MaterialClump {
+        id,
+        material: first.sample.material,
+        quanta,
+        half_extents,
+        position: WorldPosition(centre),
+        rotation: DQuat::IDENTITY,
+        linear_velocity: throw / count,
+        angular_velocity: DVec3::ZERO,
+        settled_seconds: 0.0,
+        sleeping: false,
+    })
 }
 
 // Greedy cuboids contain only ready cells of one material, however each was

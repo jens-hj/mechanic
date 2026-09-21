@@ -5,8 +5,7 @@
 use bevy_math::{DVec3, Vec3};
 use mechanic_core::{CompiledCreation, MaterialProperties, RuntimeBox, TICK_SECONDS};
 use mechanic_physics::{
-    CpuMachine, ExternalImpulse, MachineState, PreparedClumpBodies, SoftStepConfig,
-    SoftStepTerrain, TerrainContactScene,
+    CpuMachine, ExternalImpulse, MachineState, SoftStepConfig, SoftStepTerrain, TerrainContactScene,
 };
 use mechanic_world::{
     BreakageAccumulator, BrickCoord, ClumpCollection, TerrainField, TerrainMaterial,
@@ -74,9 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut state = MachineState::at_rest(&base);
     state.poses[0].position = centre + DVec3::Y * 0.602;
     let mut clumps = ClumpCollection::default();
-    let prepared = PreparedClumpBodies::new(&base, &state, &clumps, DVec3::ZERO, 1)?;
-    let mut geometry = prepared.geometry;
-    let mut machine = CpuMachine::new(prepared.creation, 1, prepared.state)?;
+    let geometry = mechanic_physics::MachineCollisionGeometry::new(&base, 1)?;
+    let mut machine = CpuMachine::new(base.clone(), 1, state)?;
+    let mut spoil = mechanic_physics::SpoilSolver::default();
     let mut scene = TerrainContactScene::default();
     scene.publish(1, &[Arc::new(chunk.collision_chunk())], &[])?;
     let mut damage = BreakageAccumulator::default();
@@ -139,79 +138,68 @@ fn main() -> Result<(), Box<dyn Error>> {
         let solve_ms = solve_started.elapsed().as_secs_f64() * 1000.0;
         solves.push(solve_ms);
         degraded += u32::from(machine.diagnostics().degraded);
-        for (offset, body) in clumps.bodies.values_mut().enumerate() {
-            let row = offset + 1;
-            let state = &machine.snapshot().state;
-            body.position = WorldPosition(state.poses[row].position);
-            body.rotation = state.poses[row].rotation;
-            let first = 6 + offset * 6;
-            body.linear_velocity = DVec3::from_slice(&state.velocities[first..first + 3]);
-            body.angular_velocity = DVec3::from_slice(&state.velocities[first + 3..first + 6]);
-            body.update_settling(
-                machine.terrain_loads().iter().any(|load| {
-                    load.body == row
-                        && load.normal.y > mechanic_world::GROUND_NORMAL_MIN_Y
-                        && load.normal_impulse > 0.0
-                }),
-                TICK_SECONDS,
-            );
-        }
+        let snapshot = machine.snapshot();
+        let motions = mechanic_physics::MachineKinematics::published_motions(
+            &base,
+            &snapshot.state.poses,
+            &snapshot.state.velocities,
+        )?;
+        let tool = mechanic_physics::SpoilMachine::new(
+            &base,
+            &snapshot.state.poses,
+            &motions,
+            DVec3::ZERO,
+        );
+        spoil.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &tool,
+            mechanic_core::GRAVITY,
+            TICK_SECONDS,
+        );
         for load in machine.terrain_loads().iter().filter(|load| load.body == 0) {
             damage.accumulate(&terrain, &field, load.breakage_patch(DVec3::ZERO));
         }
         let mut remesh_ms = 0.0;
         let mut publication_ms = 0.0;
         if tick % 6 == 0 {
-            let mut sources = Vec::new();
-            let mut transfer = None;
-            for body in clumps.bodies.values().filter(|body| body.can_deposit()) {
-                let cell = body.position.cell()?;
-                let mut targets = Vec::new();
-                for y in -3..=2 {
-                    for z in -2..=2 {
-                        for x in -2..=2 {
-                            targets.push(mechanic_world::WorldCell::new(
-                                cell.x + x,
-                                cell.y + y,
-                                cell.z + z,
-                            ));
-                        }
-                    }
-                }
-                transfer = clumps.prepare_deposition(&terrain, &field, body.id, &targets);
-                if transfer.is_some() {
-                    break;
-                }
+            let mut outcomes = Vec::new();
+            clumps.gather_crumbs();
+            let settled = clumps
+                .bodies
+                .values()
+                .filter(|body| body.can_deposit())
+                .map(|body| (body.id, body.position))
+                .collect::<Vec<_>>();
+            for (id, position) in settled {
+                let targets = mechanic_world::spoil_targets(&terrain, &field, position, |cell| {
+                    tool.overlaps(cell.centre().0, mechanic_world::TERRAIN_CELL_METERS * 0.5)
+                });
+                outcomes.extend(clumps.settle(&mut terrain, &field, id, &targets));
             }
-            if transfer.is_none() && (!settle || tick <= 90) {
-                sources = damage.ready(&terrain, &field, clumps.available());
-                if !sources.is_empty() {
-                    transfer = clumps.prepare_extraction(&terrain, &field, &sources);
-                }
+            if !settle || tick <= 90 {
+                let sources = damage.ready(&terrain, &field, clumps.available());
+                outcomes.extend(clumps.extract(&mut terrain, &field, &sources, false));
+                damage.committed(&sources);
             }
-            if let Some(transfer) = transfer {
+            if !outcomes.is_empty() {
+                let bricks = outcomes
+                    .iter()
+                    .flat_map(mechanic_world::TerrainEditOutcome::changed_brick_coordinates)
+                    .copied()
+                    .collect::<Vec<_>>();
+                spoil.ground_changed(bricks);
                 let remesh_started = Instant::now();
                 generation += 1;
-                chunk = make_chunk(&transfer.terrain, generation);
+                chunk = make_chunk(&terrain, generation);
                 remesh_ms = remesh_started.elapsed().as_secs_f64() * 1000.0;
                 let publication_started = Instant::now();
-                let prepared = PreparedClumpBodies::new(
-                    &base,
-                    &machine.snapshot().state,
-                    &transfer.clumps,
-                    DVec3::ZERO,
-                    1,
-                )?;
-                let mut next_scene = TerrainContactScene::default();
-                next_scene.publish(generation, &[Arc::new(chunk.collision_chunk())], &[])?;
-                machine.replace_bodies(prepared.creation, prepared.state, 1)?;
-                geometry = prepared.geometry;
-                scene = next_scene;
-                terrain = transfer.terrain;
-                clumps = transfer.clumps;
-                removed += transfer.outcome.total_removed_cells();
-                deposited += transfer.outcome.total_added_cells();
-                damage.committed(&sources);
+                scene.publish(generation, &[Arc::new(chunk.collision_chunk())], &[])?;
+                for outcome in &outcomes {
+                    removed += outcome.total_removed_cells();
+                    deposited += outcome.total_added_cells();
+                }
                 damage.discard_stale(&terrain, &field);
                 publication_ms = publication_started.elapsed().as_secs_f64() * 1000.0;
             }

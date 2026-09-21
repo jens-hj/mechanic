@@ -160,11 +160,7 @@ pub(crate) fn advance_simulation(
     mut meshes: ResMut<Assets<Mesh>>,
     mut construction_visuals: Query<(&ConstructionVisual, &mut Visibility), Without<BearingVisual>>,
 ) {
-    if !(simulation.is_running()
-        || (simulation.tick_route() == cpu_physics::Route::Cpu
-            && !world_runtime.clumps.bodies.is_empty()
-            && simulation.failure.is_none()))
-    {
+    if !simulation.is_running() {
         return;
     }
     let published_graph = simulation.published_graph.clone();
@@ -356,20 +352,15 @@ pub(crate) fn advance_simulation(
                     .expect("running simulation has creation");
                 let drive_rows =
                     geared_gpu_drive_rows(creation, &published_graph, &sequencer, &gearboxes);
-                let stepped = cpu
-                    .prepare_clump_tick(&mut world_runtime.clumps)
-                    .and_then(|()| {
-                        cpu.step(
-                            tick,
-                            cpu_physics::gravity(),
-                            &drive_rows,
-                            world_runtime.pending_player_reactions(),
-                        )
-                    });
+                let stepped = cpu.step(
+                    tick,
+                    cpu_physics::gravity(),
+                    &drive_rows,
+                    world_runtime.pending_player_reactions(),
+                );
                 world_runtime.clear_player_reactions();
                 match stepped {
                     Ok(completed) => {
-                        cpu.update_clumps(&mut world_runtime);
                         cpu.accumulate_soil(&mut world_runtime);
                         let publication_started = std::time::Instant::now();
                         let sequence = completed.sequence;
@@ -385,11 +376,6 @@ pub(crate) fn advance_simulation(
                         continue;
                     }
                     Err(message) => {
-                        if !world_runtime.clumps.bodies.is_empty() {
-                            stop_failed_simulation(&mut simulation, &mut state, message);
-                            simulation.cpu = cpu_route;
-                            return;
-                        }
                         // Physics in the world never pauses. The GPU runtime stays
                         // resident, so it takes over from the last CPU publication
                         // and runs this same tick; the next construction publication

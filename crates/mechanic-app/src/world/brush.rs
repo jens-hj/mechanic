@@ -94,9 +94,6 @@ pub(super) fn use_brush(
     selection: Res<SelectedTool>,
     material: Res<SelectedTerrainMaterial>,
 ) {
-    if runtime.material_publication_pending() {
-        return;
-    }
     if list.phase() != WorldListPhase::Playing {
         runtime.last_brush_edit = None;
         *preview.1 = Visibility::Hidden;
@@ -279,6 +276,9 @@ pub(super) fn commit_terrain_edit_result(
         }
     }
     runtime.edits = result.terrain;
+    runtime
+        .spoil
+        .ground_changed(changed_brick_coordinates.iter().copied());
     if changed {
         runtime.terrain_revision = runtime.terrain_revision.wrapping_add(1);
         runtime.terrain_acknowledgements.edit = runtime.terrain_revision;
@@ -297,19 +297,6 @@ pub(super) fn coordinate_terrain_edits(
     mut diagnostics: ResMut<WorldDiagnostics>,
     list: Res<WorldListState>,
 ) {
-    if runtime.pending_material.is_some() {
-        return;
-    }
-    // A transfer holds every staged mesh until the ground it changes is in
-    // place. Begun while loading, a saved clump that is already settled would
-    // hold the loading screen. Distant terrain still streaming does not delay
-    // it: the transfer checks only the terrain it touches.
-    if list.phase() == WorldListPhase::Playing && runtime.terrain_selection_task.is_none() {
-        runtime.begin_material_transfer();
-    }
-    if runtime.pending_material.is_some() {
-        return;
-    }
     let completed = runtime.terrain_edit_task.as_mut().and_then(check_ready);
     if let Some(completed) = completed {
         runtime.terrain_edit_task = None;
@@ -338,6 +325,11 @@ pub(super) fn coordinate_terrain_edits(
         }
     }
 
+    // Between one edit batch and the next, so neither overwrites the other.
+    if list.phase() == WorldListPhase::Playing {
+        runtime.transfer_material();
+    }
+
     if runtime.terrain_edit_task.is_some()
         || runtime.pending_terrain_edits.is_empty()
         || runtime.terrain_edit_error.is_some()
@@ -364,13 +356,6 @@ pub(super) fn coordinate_terrain_edits(
 }
 
 pub(super) fn finish_terrain_edits(runtime: &mut WorldRuntime) -> Result<(), String> {
-    // Leaving a world cancels an unpublished ownership change, preserving the
-    // last complete terrain/body pair. A future contact can retry extraction.
-    if let Some(pending) = runtime.pending_material.take() {
-        runtime.edits = pending.previous;
-        runtime.terrain_revision = runtime.terrain_revision.wrapping_add(1);
-        runtime.terrain_acknowledgements.edit = runtime.terrain_revision;
-    }
     if let Some(task) = runtime.terrain_edit_task.take() {
         let result = block_on(task)?;
         commit_terrain_edit_result(runtime, result);

@@ -4,7 +4,7 @@ use crate::editor::hammer::HammerInteraction;
 use crate::editor::history::{EditorHistory, EditorSnapshot, cancel_transient_editor_state};
 use crate::editor::state::{EditorGraph, EditorState};
 use crate::scheduler::FixedStepScheduler;
-use crate::simulation::state::{AppSimulation, LivePhysicsState, stop_failed_simulation};
+use crate::simulation::state::{AppSimulation, LivePhysicsState};
 use crate::{
     cpu_physics, freeze, performance_capture, showcase, suspension_editor, terrain_publication,
     weld_publication, world,
@@ -95,15 +95,6 @@ pub(crate) fn maintain_space_simulation(
         publication.ready = None;
         publication.failed_revision = None;
         *simulation = AppSimulation::default();
-        return;
-    }
-
-    if !cpu_physics::selected() && !runtime.clumps.bodies.is_empty() {
-        stop_failed_simulation(
-            &mut simulation,
-            &mut state,
-            "This world contains loose material and requires CPU physics".to_owned(),
-        );
         return;
     }
 
@@ -242,7 +233,7 @@ pub(crate) fn maintain_space_simulation(
     let Some(static_parts) = runtime.static_parts_for_physics(history.current_revision) else {
         return;
     };
-    if graph.0.part_count() == 0 && runtime.clumps.bodies.is_empty() {
+    if graph.0.part_count() == 0 {
         publication.pending = None;
         publication.ready = None;
         publication.failed_revision = None;

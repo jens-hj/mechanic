@@ -44,9 +44,6 @@ pub(super) fn walk_world(
     mut player: ResMut<PlayerState>,
     mut diagnostics: ResMut<WorldDiagnostics>,
 ) {
-    if runtime.material_publication_pending() {
-        return;
-    }
     sync_player_construction_collision(
         &mut runtime,
         &simulation,

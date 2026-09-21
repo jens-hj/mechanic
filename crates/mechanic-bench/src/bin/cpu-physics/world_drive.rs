@@ -111,7 +111,7 @@ pub(super) fn run(
     let creation = loaded
         .graph
         .compile_with_sockets(anchored.iter().copied(), &loaded.sockets)?;
-    let mut geometry = MachineCollisionGeometry::new(&creation, 1)?;
+    let geometry = MachineCollisionGeometry::new(&creation, 1)?;
 
     let throttle = DriveKey::new('W').ok_or("invalid key")?;
     let mut drives = creation.resolve_coordinate_drives(&loaded.graph);
@@ -142,19 +142,11 @@ pub(super) fn run(
         }
     }
 
-    // The app steps the world's loose material in the same machine, without
-    // the clumps it finds lost under the terrain.
-    let absorbed = clumps.absorb_lost(&edits, &field);
-    let mut initial = MachineState::at_rest(&creation);
-    let creation = if probing && !clumps.bodies.is_empty() {
-        let prepared =
-            mechanic_physics::PreparedClumpBodies::new(&creation, &initial, &clumps, origin, 1)?;
-        geometry = prepared.geometry;
-        initial = prepared.state;
-        prepared.creation
-    } else {
-        creation
-    };
+    // As in the app, loose material steps beside the machine, not in it.
+    let initial = MachineState::at_rest(&creation);
+    let mut spoil = mechanic_physics::SpoilSolver::default();
+    let mut reactions = Vec::new();
+    let mut spoil_machine = mechanic_physics::SpoilMachine::default();
     let dynamic = creation
         .compounds
         .iter()
@@ -164,7 +156,7 @@ pub(super) fn run(
         .collect::<Vec<_>>();
     println!(
         "{}",
-        json!({"kind":"metadata","soil":soil,"kernel_coverage_complete":false,"world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup,"saved_clumps":clumps.bodies.len(),"clumps_absorbed_underground":absorbed,"saved_clump_quanta":clumps.bodies.values().map(|body| body.quanta).collect::<Vec<_>>(),"saved_clumps_awake":clumps.bodies.values().filter(|body| !body.sleeping).count(),"saved_clumps_depositable":clumps.bodies.values().filter(|body| body.can_deposit()).count()})
+        json!({"kind":"metadata","soil":soil,"kernel_coverage_complete":false,"world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup,"saved_clumps":clumps.bodies.len(),"saved_clump_quanta":clumps.bodies.values().map(|body| body.quanta).collect::<Vec<_>>(),"saved_clumps_awake":clumps.bodies.values().filter(|body| !body.sleeping).count(),"saved_clumps_depositable":clumps.bodies.values().filter(|body| body.can_deposit()).count()})
     );
 
     let mut scene = TerrainContactScene::default();
@@ -274,9 +266,37 @@ pub(super) fn run(
             origin,
         };
         let started = Instant::now();
-        machine.step(GRAVITY, &settings, &[], &commands, Some(step))?;
+        machine.step(GRAVITY, &settings, &reactions, &commands, Some(step))?;
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
         window.record(elapsed, machine.diagnostics());
+        reactions.clear();
+        if probing {
+            let spoil_started = Instant::now();
+            let state = &machine.snapshot().state;
+            let motions =
+                MachineKinematics::published_motions(&creation, &state.poses, &state.velocities)?;
+            spoil_machine =
+                mechanic_physics::SpoilMachine::new(&creation, &state.poses, &motions, origin);
+            let stepped = spoil.step(
+                &mut clumps,
+                &edits,
+                &field,
+                &spoil_machine,
+                GRAVITY,
+                mechanic_core::TICK_SECONDS,
+            );
+            reactions.extend(stepped.reactions.iter().map(|reaction| {
+                mechanic_physics::ExternalImpulse {
+                    tick: tick + 1,
+                    topology_generation: 1,
+                    body: reaction.body,
+                    point: reaction.point - origin,
+                    impulse: reaction.impulse,
+                }
+            }));
+            tool.spoil_ms += spoil_started.elapsed().as_secs_f64() * 1000.0;
+            tool.spoil_awake = tool.spoil_awake.max(stepped.awake);
+        }
         if probing {
             if let Some(reason) = machine.diagnostics().degraded_reason {
                 *tool.degraded.entry(reason).or_default() += 1;
@@ -324,14 +344,38 @@ pub(super) fn run(
                 let outcome = edits.compress_cells(&field, &ready);
                 sunk_metres += outcome.sunk_metres;
                 let mut changed = outcome.changed_brick_coordinates().to_vec();
-                // Spoil is counted, not simulated: this replay carries no clumps.
-                let sources =
-                    pending_breakage.ready(&edits, &field, mechanic_world::MAX_ACTIVE_CLUMPS);
-                if let Some(outcome) = edits.extract_cells(&field, &sources) {
+                if probing {
+                    // The app's material transfer: settled spoil down, broken ground out.
+                    clumps.gather_crumbs();
+                    let settled = clumps
+                        .bodies
+                        .values()
+                        .filter(|body| body.can_deposit())
+                        .map(|body| (body.id, body.position))
+                        .take(64)
+                        .collect::<Vec<_>>();
+                    for (id, position) in settled {
+                        let targets =
+                            mechanic_world::spoil_targets(&edits, &field, position, |cell| {
+                                spoil_machine.overlaps(cell.centre().0, 0.025)
+                            });
+                        if let Some(outcome) = clumps.settle(&mut edits, &field, id, &targets) {
+                            tool.cells_deposited +=
+                                usize::try_from(outcome.total_added_cells()).unwrap_or(usize::MAX);
+                            changed.extend_from_slice(outcome.changed_brick_coordinates());
+                        }
+                    }
+                    pending_breakage.discard_stale(&edits, &field);
+                    let sources = pending_breakage.ready(&edits, &field, 512);
+                    let laid_down = clumps.available() == 0;
+                    if let Some(outcome) = clumps.extract(&mut edits, &field, &sources, laid_down) {
+                        tool.cells_extracted += sources.len();
+                        changed.extend_from_slice(outcome.changed_brick_coordinates());
+                    }
                     pending_breakage.committed(&sources);
-                    tool.cells_extracted += sources.len();
-                    changed.extend_from_slice(outcome.changed_brick_coordinates());
+                    tool.clumps = clumps.bodies.len();
                 }
+                spoil.ground_changed(changed.iter().copied());
                 // Match streaming: leaf sampling/gradient halos include adjacent bricks.
                 for brick in changed {
                     for z in -1..=1 {
@@ -497,6 +541,10 @@ struct ToolWindow {
     largest_area_m2: f64,
     drive_impulses: Vec<f64>,
     cells_extracted: usize,
+    cells_deposited: usize,
+    clumps: usize,
+    spoil_awake: usize,
+    spoil_ms: f64,
     ground: BTreeMap<String, u64>,
     degraded: BTreeMap<&'static str, u64>,
     steepest_normal_y: f64,
@@ -558,6 +606,10 @@ impl ToolWindow {
             "mean_tangent_force_n": self.tangent_impulse / seconds,
             "work_j": self.work_j,
             "cells_extracted": self.cells_extracted,
+            "cells_deposited": self.cells_deposited,
+            "clumps": self.clumps,
+            "spoil_awake": self.spoil_awake,
+            "spoil_ms_per_tick": self.spoil_ms / self.ticks.max(1.0),
             "ground_under_loads": self.ground,
             "degraded_reasons": self.degraded,
             "steepest_normal_y": self.steepest_normal_y + 1.0,

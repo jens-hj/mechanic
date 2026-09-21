@@ -58,14 +58,7 @@ pub(super) fn save_all(runtime: &mut WorldRuntime) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     runtime
         .store
-        .save_material_state(
-            &runtime.document.name,
-            runtime
-                .pending_material
-                .as_ref()
-                .map_or(&runtime.edits, |pending| &pending.previous),
-            &runtime.clumps,
-        )
+        .save_material_state(&runtime.document.name, &runtime.edits, &runtime.clumps)
         .map_err(|error| error.to_string())?;
     Ok(())
 }

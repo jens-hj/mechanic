@@ -8,7 +8,6 @@
 //! reduced-coordinate machine model, joint force laws and collision geometry.
 //! The soft-step solver runs closed mechanism loops; the exact reference does not.
 
-mod clumps;
 mod error;
 mod free_motion;
 mod joint_forces;
@@ -18,9 +17,9 @@ mod machine;
 mod motion_path;
 mod response;
 mod soft_step;
+mod spoil;
 mod terrain_contacts;
 
-pub use clumps::PreparedClumpBodies;
 pub use error::PhysicsError;
 pub use free_motion::{CpuFreeMotion, CpuSnapshot, ExternalImpulse, MachineState};
 pub use joint_machine::{
@@ -37,6 +36,7 @@ pub use response::{
 pub use soft_step::{
     CpuMachine, SoftStepConfig, SoftStepDiagnostics, SoftStepTerrain, TerrainLoad,
 };
+pub use spoil::{SpoilMachine, SpoilReaction, SpoilSolver, SpoilStep, spoil_radius};
 pub use terrain_contacts::{
     ContactObstacle, ContactTarget, MachineCollisionGeometry, TerrainContact,
     TerrainContactFeature, TerrainContactQuery, TerrainContactScene, TerrainImpactConstraints,

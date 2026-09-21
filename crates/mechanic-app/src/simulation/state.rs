@@ -140,8 +140,7 @@ impl AppSimulation {
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        (self.gpu.is_some() || self.cpu.as_ref().is_some_and(|cpu| cpu.has_clumps()))
-            && self.failure.is_none()
+        self.gpu.is_some() && self.failure.is_none()
     }
 
     pub(crate) fn live_part_pose(
