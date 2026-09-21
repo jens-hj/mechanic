@@ -11,7 +11,6 @@ use crate::controls::GameAction;
 use crate::editor::history::EditorHistory;
 use crate::editor::state::EditorGraph;
 use crate::simulation::state::AppSimulation;
-use bevy::math::DVec3;
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use mechanic_core::ConstructionGraph;
@@ -51,7 +50,7 @@ pub(super) fn walk_world(
         history.current_revision,
     );
     if list.phase() != WorldListPhase::Playing {
-        runtime.capsule.velocity = bevy::math::DVec3::ZERO;
+        runtime.capsule.reset_motion();
         runtime.jump_queued = false;
         player.crouch = 0.0;
         return;
@@ -60,8 +59,7 @@ pub(super) fn walk_world(
         && runtime.collision_revision == simulation.world_revision
         && runtime.collision_editor_revision == Some(history.current_revision);
     if player.seat.is_some() {
-        runtime.capsule.velocity = DVec3::ZERO;
-        runtime.capsule.clear_support();
+        runtime.capsule.reset_motion();
         runtime.controller_accumulator = 0.0;
         runtime.jump_queued = false;
         runtime.step_visual_offset = 0.0;
@@ -72,8 +70,7 @@ pub(super) fn walk_world(
     if runtime.walking_suspended {
         runtime.capsule.position =
             WorldPosition(runtime.floating_origin.0 + player.position.as_dvec3());
-        runtime.capsule.velocity = DVec3::ZERO;
-        runtime.capsule.clear_support();
+        runtime.capsule.reset_motion();
         runtime.step_visual_offset = 0.0;
         runtime.walking_suspended = false;
     }
@@ -400,7 +397,7 @@ pub(super) fn reset_player_collision_publication(runtime: &mut WorldRuntime) {
     runtime.collision_pose_revision = 0;
     runtime.collision_poses.clear();
     runtime.pending_player_reactions.clear();
-    runtime.capsule.clear_support();
+    runtime.capsule.reset_motion();
     runtime.jump_queued = false;
     runtime.step_visual_offset = 0.0;
 }

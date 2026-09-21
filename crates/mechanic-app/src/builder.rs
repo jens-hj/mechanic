@@ -7,6 +7,7 @@ pub(crate) mod layers;
 pub(crate) mod pipes;
 pub(crate) mod raycast;
 pub(crate) mod snap;
+pub(crate) mod spiral;
 pub(crate) mod staging;
 pub(crate) mod welds;
 

@@ -84,6 +84,7 @@ pub(crate) struct EditorState {
     pub(crate) layer_drag: Option<crate::builder::LayerDrag>,
     /// Last committed layer thickness in metres; zero until the first layer.
     pub(crate) layer_thickness: f32,
+    pub(crate) spiral: crate::editor::spiral::SpiralTool,
     pub(crate) delete_drag: Option<DeleteDrag>,
     pub(crate) delete_preview_revision: u64,
     pub(crate) placed_bearings: Vec<PlacedBearing>,

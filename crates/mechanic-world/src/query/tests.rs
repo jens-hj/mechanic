@@ -1,4 +1,5 @@
 mod bounds;
+mod locomotion;
 
 use std::{
     cell::Cell,

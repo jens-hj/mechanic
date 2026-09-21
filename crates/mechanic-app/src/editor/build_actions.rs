@@ -294,6 +294,10 @@ pub(crate) fn handle_build_actions(
         state.feedback = Some("Layer cancelled".to_owned());
         return;
     }
+    if tool == Tool::Spiral {
+        crate::editor::spiral::handle_spiral_actions(&actions, &mut graph.0, state, &mut history);
+        return;
+    }
     if tool == Tool::Connector
         && actions.just_pressed(GameAction::Secondary)
         && state.wire_drag.take().is_some()
@@ -807,6 +811,7 @@ pub(crate) fn handle_build_actions(
         Tool::Block => unreachable!("block actions are handled before this match"),
         Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),
         Tool::Layer => unreachable!("layer actions are handled before this match"),
+        Tool::Spiral => unreachable!("spiral actions are handled before this match"),
         Tool::Weld => unreachable!("weld actions are handled by weld_tool"),
         Tool::LinearBearing => linear_editor::place(&graph.0, state, &mut history),
         Tool::Piston => unreachable!("piston actions are handled before this match"),

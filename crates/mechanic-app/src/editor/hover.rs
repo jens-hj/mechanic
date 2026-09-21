@@ -471,6 +471,7 @@ pub(crate) fn update_hover(
             | Tool::DimensionLink
             | Tool::Shape
             | Tool::Layer
+            | Tool::Spiral
             | Tool::Chroma => raycast_surface(None),
         }
     };
@@ -930,6 +931,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
     state.cylinder_preview = None;
     state.pipe_branch_preview = None;
     state.layer_preview = None;
+    state.spiral.preview = None;
     state.bearing_preview_anchor = None;
     state.attachment_bearing = None;
     state.linear_attachment = None;
@@ -1394,6 +1396,9 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
                 }
             }
         }
+        (Tool::Spiral, _) => state
+            .hovered
+            .and_then(|hit| crate::editor::spiral::hover(graph, state, hit)),
         (Tool::Transmission, _) => state.hovered.and_then(|hit| {
             match transmission_candidate_from_hit_in_bounds(graph, hit, state.placement_bounds) {
                 Ok((_, candidate)) => {

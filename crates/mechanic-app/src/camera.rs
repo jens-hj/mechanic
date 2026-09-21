@@ -515,8 +515,12 @@ pub(crate) fn update_player_camera(
     {
         view.yaw -= motion.delta.x * MOUSE_SENSITIVITY;
         view.pitch = (view.pitch - motion.delta.y * MOUSE_SENSITIVITY).clamp(MIN_PITCH, MAX_PITCH);
+        // The terrain brush and the Spiral tool's taper take the wheel.
         let terrain_mode = selection.tool == Some(MainTool::MatterManipulator)
-            && selection.matter_mode == MatterMode::Terrain;
+            && matches!(
+                selection.matter_mode,
+                MatterMode::Terrain | MatterMode::Spiral
+            );
         let zoom = contextual_zoom_delta(
             actions.just_pressed(GameAction::ZoomIn),
             actions.just_pressed(GameAction::ZoomOut),

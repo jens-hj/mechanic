@@ -192,7 +192,7 @@ fn movement_bindings_never_also_nudge_shapes() {
 }
 
 #[test]
-fn defaults_bind_four_tools_and_seven_shift_modes_without_shadowing() {
+fn defaults_bind_four_tools_and_eight_shift_modes_without_shadowing() {
     let controls = Controls::default();
     for ((action, _), digit) in GameAction::TOOL_ACTIONS.into_iter().zip([
         KeyCode::Digit1,
@@ -210,6 +210,7 @@ fn defaults_bind_four_tools_and_seven_shift_modes_without_shadowing() {
         KeyCode::Digit5,
         KeyCode::Digit6,
         KeyCode::Digit7,
+        KeyCode::Digit8,
     ]) {
         assert_eq!(
             controls.binding(action).0[0],

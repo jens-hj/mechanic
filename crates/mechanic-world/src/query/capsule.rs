@@ -1,6 +1,10 @@
 //! The kinematic capsule the player walks as.
 
-use super::scene::{TerrainDensity, raycast_density};
+mod terrain;
+
+use terrain::support_height;
+
+use super::scene::TerrainDensity;
 use crate::construction_collision::{
     ConstructionBodyState, ConstructionContact, KinematicCollisionScene, construction_feet,
 };
@@ -22,6 +26,12 @@ pub struct KinematicCapsuleConfig {
     pub step_height: f64,
     /// Maximum walkable surface angle in radians.
     pub maximum_slope: f64,
+    /// Steepest lower-capsule contact that permits a recovery jump, in radians.
+    pub maximum_jump_slope: f64,
+    /// Seconds a jump remains available after losing ground contact.
+    pub jump_grace_seconds: f64,
+    /// Seconds a jump press waits for an eligible ground contact.
+    pub jump_buffer_seconds: f64,
     /// Peak ballistic jump height for a tap; holding jump adds up to 50%.
     pub jump_height: f64,
     /// Horizontal walking speed.
@@ -54,7 +64,10 @@ impl Default for KinematicCapsuleConfig {
             crouch_height: 1.0,
             crouch_transition_speed: 6.0,
             step_height: 0.35,
-            maximum_slope: 45.0_f64.to_radians(),
+            maximum_slope: 60.0_f64.to_radians(),
+            maximum_jump_slope: 80.0_f64.to_radians(),
+            jump_grace_seconds: 0.10,
+            jump_buffer_seconds: 0.15,
             jump_height: 0.75,
             walk_speed: 4.0,
             sprint_speed: 7.0,
@@ -185,6 +198,10 @@ pub struct KinematicCapsule {
     /// Moving construction supporting the last tick, if any.
     pub support: Option<KinematicSupport>,
     pub(super) jump_sustained: bool,
+    jump_grace_remaining: f64,
+    jump_buffer_remaining: f64,
+    jump_in_flight: bool,
+    jump_support_velocity: Vec3,
 }
 
 impl KinematicCapsule {
@@ -199,12 +216,45 @@ impl KinematicCapsule {
             config,
             support: None,
             jump_sustained: false,
+            jump_grace_remaining: 0.0,
+            jump_buffer_remaining: 0.0,
+            jump_in_flight: false,
+            jump_support_velocity: Vec3::ZERO,
         }
     }
 
     /// Clears moving-platform state before seating or after collision-scene replacement.
     pub fn clear_support(&mut self) {
         self.support = None;
+    }
+
+    /// Clears motion and pending jumps when seating, teleporting, or leaving walking mode.
+    pub fn reset_motion(&mut self) {
+        self.velocity = DVec3::ZERO;
+        self.grounded = false;
+        self.support = None;
+        self.jump_sustained = false;
+        self.jump_in_flight = false;
+        self.jump_grace_remaining = 0.0;
+        self.jump_buffer_remaining = 0.0;
+        self.jump_support_velocity = Vec3::ZERO;
+    }
+
+    fn try_jump(&mut self, held: bool, support_velocity: Vec3) -> bool {
+        if self.jump_buffer_remaining <= 0.0 || self.jump_grace_remaining <= 0.0 {
+            return false;
+        }
+        self.jump_buffer_remaining = 0.0;
+        self.jump_grace_remaining = 0.0;
+        self.jump_sustained = held;
+        self.jump_in_flight = true;
+        self.velocity.x += f64::from(support_velocity.x);
+        self.velocity.y = f64::from(support_velocity.y)
+            + (2.0 * self.config.airborne_gravity * self.config.jump_height).sqrt();
+        self.velocity.z += f64::from(support_velocity.z);
+        self.grounded = false;
+        self.support = None;
+        true
     }
 
     /// How far the capsule is crouched, `0.0` standing and `1.0` fully crouched.
@@ -317,6 +367,15 @@ impl KinematicCapsule {
         if self.grounded || !input.jump_held || self.velocity.y <= 0.0 {
             self.jump_sustained = false;
         }
+        self.jump_buffer_remaining = (self.jump_buffer_remaining - delta_seconds).max(0.0);
+        self.jump_grace_remaining = (self.jump_grace_remaining - delta_seconds).max(0.0);
+        if input.jump {
+            self.jump_buffer_remaining = self.config.jump_buffer_seconds.max(delta_seconds);
+        }
+        if self.grounded && !self.jump_in_flight {
+            self.jump_grace_remaining = self.config.jump_grace_seconds.max(delta_seconds);
+            self.jump_support_velocity = support_velocity;
+        }
         let started_grounded = self.grounded;
         let retained_support = self.support;
 
@@ -341,37 +400,31 @@ impl KinematicCapsule {
         let accelerated = move_toward(horizontal, target, acceleration * delta_seconds);
         self.velocity.x = accelerated.x;
         self.velocity.z = accelerated.y;
-        let stationary_grounded =
-            self.grounded && !input.jump && input.movement.length_squared() <= f64::EPSILON;
+        let jumped = self.try_jump(input.jump_held, self.jump_support_velocity);
+        let stationary_grounded = self.grounded && input.movement.length_squared() <= f64::EPSILON;
         if stationary_grounded {
             let still_supported = self.support.is_some()
-                || raycast_density(
+                || support_height(
                     scene.terrain,
                     self.position,
-                    DVec3::NEG_Y,
+                    collision_config,
+                    TERRAIN_CELL_METERS,
                     TERRAIN_CELL_METERS,
                 )
-                .is_some_and(|hit| f64::from(hit.normal.y) >= self.config.maximum_slope.cos());
+                .is_some();
             if still_supported {
                 self.velocity = DVec3::ZERO;
                 if self.support.is_none() && scene.construction.is_none() {
                     return result;
                 }
             }
+            // Rediscover construction contact so standing still still transmits weight.
             self.grounded = false;
             self.support = None;
         }
-        if input.jump && self.grounded {
-            self.jump_sustained = input.jump_held;
-            self.velocity.x += f64::from(support_velocity.x);
-            self.velocity.y = f64::from(support_velocity.y)
-                + (2.0 * self.config.airborne_gravity * self.config.jump_height).sqrt();
-            self.velocity.z += f64::from(support_velocity.z);
-            self.grounded = false;
-            self.support = None;
-        } else if self.grounded {
+        if self.grounded {
             self.velocity.y = 0.0;
-        } else {
+        } else if !jumped {
             // With the same launch speed, two-thirds gravity gives 1.5 times
             // the rise. Release permanently ends the boost for this jump.
             let gravity = if self.jump_sustained {
@@ -382,6 +435,12 @@ impl KinematicCapsule {
             self.velocity.y -= gravity * delta_seconds;
         }
 
+        // Collision projection can create upward velocity while walking uphill.
+        // Only an actual ascending jump suppresses support, not that projection.
+        let can_land = !self.jump_in_flight || self.velocity.y <= 0.0;
+        let descending = self.velocity.y <= 0.0;
+        let mut jump_contact = false;
+        let mut contact_velocity = Vec3::ZERO;
         let mut displacement = self.velocity * delta_seconds;
         if let Some(index) = scene.construction.as_deref_mut() {
             // A retained support supplies this tick's reference-frame delta and
@@ -411,8 +470,9 @@ impl KinematicCapsule {
                         contact.point.y = surface_height;
                     }
                 }
-                let walkable = f64::from(contact.normal.y) >= self.config.maximum_slope.cos();
+                let walkable = slope_within(contact.normal, self.config.maximum_slope);
                 if started_grounded
+                    && can_land
                     && !walkable
                     && remaining.x.mul_add(remaining.x, remaining.z * remaining.z) > 0.0
                 {
@@ -447,13 +507,24 @@ impl KinematicCapsule {
                     }
                 }
                 if contact.penetration > 0.0 {
-                    feet += contact.normal * (contact.penetration + 1.0e-4);
+                    if walkable && can_land {
+                        feet.y += (contact.penetration + 1.0e-4) / contact.normal.y;
+                    } else {
+                        feet += contact.normal * (contact.penetration + 1.0e-4);
+                    }
                 } else {
                     feet += remaining * contact.time_of_impact.max(0.0);
                 }
                 let body_velocity = index
                     .body_pose(contact.compound_index)
                     .map_or(Vec3::ZERO, |pose| pose.velocity_at(contact.point));
+                if can_land
+                    && contact.point.y <= feet.y + self.config.radius as f32 + 1.0e-3
+                    && slope_within(contact.normal, self.config.maximum_jump_slope)
+                {
+                    jump_contact = true;
+                    contact_velocity = body_velocity;
+                }
                 let player_velocity = self.velocity.as_vec3() + support_velocity;
                 let relative_velocity = player_velocity - body_velocity;
                 let normal_speed = relative_velocity.dot(contact.normal);
@@ -487,6 +558,7 @@ impl KinematicCapsule {
                     Vec3::ZERO
                 };
                 let player_impulse = contact.normal * impact_impulse + tangent_impulse;
+                let driven_horizontal = DVec2::new(self.velocity.x, self.velocity.z);
                 self.velocity += DVec3::from(player_impulse * inverse_player_mass);
                 if !index.body_is_static(contact.compound_index) {
                     result.push_reaction(KinematicContactReaction {
@@ -499,13 +571,23 @@ impl KinematicCapsule {
                 if into_surface < 0.0 {
                     self.velocity -= DVec3::from(contact.normal * into_surface);
                 }
+                if walkable && can_land {
+                    // Ground locomotion supplies traction: passive impact projection
+                    // must not turn commanded uphill speed into downhill drift.
+                    self.velocity.x = driven_horizontal.x;
+                    self.velocity.z = driven_horizontal.y;
+                }
                 let unused = 1.0 - contact.time_of_impact.clamp(0.0, 1.0);
                 remaining *= unused;
                 let into_remaining = remaining.dot(contact.normal);
                 if into_remaining < 0.0 {
-                    remaining -= contact.normal * into_remaining;
+                    if walkable && can_land {
+                        remaining.y -= into_remaining / contact.normal.y;
+                    } else {
+                        remaining -= contact.normal * into_remaining;
+                    }
                 }
-                if walkable && self.velocity.y <= f64::from(body_velocity.y + 0.05) {
+                if walkable && can_land {
                     construction_ground = Some(contact);
                 }
                 if walkable && stationary_grounded {
@@ -519,7 +601,7 @@ impl KinematicCapsule {
             }
             displacement = DVec3::ZERO;
 
-            if construction_ground.is_none() && self.velocity.y <= 0.05 {
+            if construction_ground.is_none() && can_land {
                 construction_ground = index.cast_capsule(
                     feet,
                     Vec3::NEG_Y * TERRAIN_CELL_METERS as f32,
@@ -528,7 +610,7 @@ impl KinematicCapsule {
             }
             if construction_ground.is_none()
                 && started_grounded
-                && !input.jump
+                && can_land
                 && let Some(support) = retained_support
                 && let Some((height, normal, surface_height)) = index.walkable_surface_height(
                     support.collider_index,
@@ -562,7 +644,7 @@ impl KinematicCapsule {
                     contact.normal = normal;
                     contact.point.y = surface_height;
                     construction_ground = Some(contact);
-                } else if f64::from(contact.normal.y) < self.config.maximum_slope.cos() {
+                } else if !slope_within(contact.normal, self.config.maximum_slope) {
                     construction_ground = None;
                 }
             }
@@ -586,17 +668,52 @@ impl KinematicCapsule {
         }
 
         let mut candidate = WorldPosition(self.position.0 + displacement);
+        let mut terrain_ground = false;
+        if can_land {
+            let reach = if started_grounded && !stationary_grounded {
+                self.config.step_height
+            } else {
+                TERRAIN_CELL_METERS
+            };
+            if let Some(height) =
+                support_height(scene.terrain, candidate, collision_config, reach, reach)
+            {
+                if !stationary_grounded || (height - candidate.0.y).abs() > 1.0e-3 {
+                    candidate.0.y = height;
+                }
+                terrain_ground = true;
+            }
+        }
         for _ in 0..5 {
-            let Some((penetration, normal)) =
+            let Some((penetration, normal, point)) =
                 deepest_capsule_penetration(scene.terrain, candidate, collision_config)
             else {
                 break;
             };
-            let walkable = f64::from(normal.y) >= self.config.maximum_slope.cos();
-            if !walkable && (displacement.x != 0.0 || displacement.z != 0.0) {
-                let stepped = WorldPosition(candidate.0 + DVec3::Y * self.config.step_height);
-                if deepest_capsule_penetration(scene.terrain, stepped, collision_config).is_none() {
-                    candidate = stepped;
+            let lower_contact = point.0.y <= candidate.0.y + self.config.radius + 1.0e-3;
+            let walkable = lower_contact && slope_within(normal, self.config.maximum_slope);
+            if can_land && lower_contact && slope_within(normal, self.config.maximum_jump_slope) {
+                jump_contact = true;
+                contact_velocity = Vec3::ZERO;
+            }
+            if walkable && can_land {
+                candidate.0.y += (f64::from(penetration) + 1.0e-4) / f64::from(normal.y);
+                terrain_ground = true;
+                continue;
+            }
+            if started_grounded && can_land && lower_contact && !walkable {
+                let raised = WorldPosition(candidate.0 + DVec3::Y * self.config.step_height);
+                if deepest_capsule_penetration(scene.terrain, raised, collision_config).is_none()
+                    && let Some(height) = support_height(
+                        scene.terrain,
+                        raised,
+                        collision_config,
+                        self.config.step_height,
+                        0.0,
+                    )
+                {
+                    candidate.0.y = height;
+                    terrain_ground = true;
                     continue;
                 }
             }
@@ -607,24 +724,23 @@ impl KinematicCapsule {
             }
         }
         self.position = candidate;
-
-        let construction_grounded = self.support.is_some();
-        self.grounded = construction_grounded;
-        if self.velocity.y <= 0.05
-            && let Some(hit) = raycast_density(
-                scene.terrain,
-                self.position,
-                DVec3::NEG_Y,
-                TERRAIN_CELL_METERS,
-            )
-            && f64::from(hit.normal.y) >= self.config.maximum_slope.cos()
-        {
-            // Keep the feet just outside the density surface so the next tick does not
-            // repeatedly resolve the same contact along a slope's lateral normal.
-            self.position = WorldPosition(hit.position.0 + DVec3::Y * 1.0e-4);
+        self.grounded = self.support.is_some();
+        if terrain_ground {
             self.velocity.y = 0.0;
             self.grounded = true;
             self.support = None;
+            contact_velocity = Vec3::ZERO;
+        }
+        if self.grounded || (jump_contact && descending) {
+            self.jump_in_flight = false;
+            self.jump_grace_remaining = self.config.jump_grace_seconds.max(delta_seconds);
+            if let Some(support) = self.support {
+                contact_velocity = support
+                    .previous_pose
+                    .velocity_at(support.previous_pose.transform_point(support.local_anchor));
+            }
+            self.jump_support_velocity = contact_velocity;
+            self.try_jump(input.jump_held, contact_velocity);
         }
         if !self.grounded {
             self.support = None;
@@ -662,7 +778,7 @@ pub(super) fn deepest_capsule_penetration(
     terrain: &impl TerrainDensity,
     feet: WorldPosition,
     config: KinematicCapsuleConfig,
-) -> Option<(f32, Vec3)> {
+) -> Option<(f32, Vec3, WorldPosition)> {
     let radius = config.radius;
     let middle_height = config.standing_height * 0.5;
     let upper_height = config.standing_height - radius;
@@ -693,11 +809,11 @@ pub(super) fn deepest_capsule_penetration(
 pub(super) fn update_deepest(
     terrain: &impl TerrainDensity,
     point: WorldPosition,
-    deepest: &mut Option<(f32, Vec3)>,
+    deepest: &mut Option<(f32, Vec3, WorldPosition)>,
 ) {
     let density = terrain.density(point);
-    if density > 0.0 && deepest.is_none_or(|(current, _)| density > current) {
-        *deepest = Some((density, density_normal(terrain, point)));
+    if density > 0.0 && deepest.is_none_or(|(current, _, _)| density > current) {
+        *deepest = Some((density, density_normal(terrain, point), point));
     }
 }
 
@@ -712,4 +828,9 @@ pub(super) fn density_normal(terrain: &impl TerrainDensity, position: WorldPosit
         sample(DVec3::Z) - sample(DVec3::NEG_Z),
     );
     (-gradient).as_vec3().normalize_or(Vec3::Y)
+}
+
+/// Inclusive slope comparison despite f32 contact-normal rounding.
+pub(super) fn slope_within(normal: Vec3, maximum: f64) -> bool {
+    f64::from(normal.y) + 1.0e-6 >= maximum.cos()
 }

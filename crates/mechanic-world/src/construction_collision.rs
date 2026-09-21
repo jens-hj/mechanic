@@ -325,7 +325,7 @@ impl ConstructionCollisionIndex {
     ) -> Option<(f32, Vec3, f32)> {
         let collider = self.colliders.get(collider_index as usize)?;
         let pose = *self.poses.get(collider.compound_index as usize)?;
-        let minimum_normal_y = config.maximum_slope.cos() as f32;
+        let minimum_normal_y = config.maximum_slope.cos() as f32 - 1.0e-6;
         let mut best = None;
         let mut consider = |surface_height: f32, normal: Vec3, contained: bool| {
             let feet_height = surface_height + config.radius as f32 * (normal.y.recip() - 1.0);

@@ -13,6 +13,7 @@ pub(crate) mod preview;
 pub(crate) mod raycast;
 pub(crate) mod shape_actions;
 pub(crate) mod shortcuts;
+pub(crate) mod spiral;
 pub(crate) mod state;
 pub(crate) mod wiring;
 

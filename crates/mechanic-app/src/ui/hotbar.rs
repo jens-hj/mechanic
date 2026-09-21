@@ -296,6 +296,7 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
         MatterMode::Terrain => terrain_icon(),
         MatterMode::Manipulate => icon(Tool::Shape),
         MatterMode::Chroma => icon(Tool::Chroma),
+        MatterMode::Spiral => icon(Tool::Spiral),
     };
     view! {
         stack width:{ Length::px(SLOT) } height:{ Length::px(SLOT) } align:center justify:center
@@ -400,6 +401,7 @@ fn contextual_choice(
 ) -> String {
     match matter_mode {
         MatterMode::Block | MatterMode::Cylinder | MatterMode::Layer => construction_material,
+        MatterMode::Spiral => "Cut or add a helix",
         MatterMode::Item => item,
         MatterMode::Terrain => terrain_material,
         MatterMode::Manipulate => shape_status,
@@ -710,6 +712,15 @@ pub(super) fn icon(tool: Tool) -> Element {
                 circle at:(x:10px y:14px) radius:3.5px exponent:1 fill:accent.key
                 circle at:(x:30px y:30px) radius:3px exponent:1 fill:ink.fg
                 circle at:(x:10px y:30px) radius:3px exponent:1 fill:ink.fg
+            }
+        },
+        // A shaft with three turns of flight across it.
+        Tool::Spiral => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                line from:(x:20px y:4px) to:(x:20px y:36px) stroke:(width:6px color:ink.muted)
+                line from:(x:8px y:13px) to:(x:32px y:7px) stroke:(width:4px color:accent.speed)
+                line from:(x:8px y:23px) to:(x:32px y:17px) stroke:(width:4px color:accent.speed)
+                line from:(x:8px y:33px) to:(x:32px y:27px) stroke:(width:4px color:accent.speed)
             }
         },
         Tool::Chroma => view! {

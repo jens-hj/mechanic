@@ -855,6 +855,32 @@ pub(crate) fn update_previews(
                 *action.2 = Visibility::Hidden;
             }
         }
+        (Some(Tool::Spiral), _) => {
+            // A ridge added onto a cylinder shows as a ghost around it. A cut
+            // lies inside the cylinder, where only its crests show through; the
+            // part itself is the preview once the spiral is on it.
+            let staged = state
+                .spiral
+                .preview
+                .filter(|preview| preview.spec != preview.target.spec);
+            if let Some(preview) = staged {
+                let specs = vec![PartSpec::Cylinder(preview.spec)];
+                sync_preview_mesh(
+                    &mut meshes,
+                    &visuals.block_drag_preview_mesh,
+                    &mut rendered_revisions.construction,
+                    ConstructionPreviewMeshKey::Layer(specs.clone()),
+                    || layer_preview_mesh(&specs),
+                );
+                action.0.0 = visuals.block_drag_preview_mesh.clone();
+                *action.1 = Transform::from_translation(preview.target.frame.translation())
+                    .with_rotation(preview.target.frame.rotation());
+                action.3.0 = action_material.clone();
+                *action.2 = Visibility::Visible;
+            } else {
+                *action.2 = Visibility::Hidden;
+            }
+        }
         (Some(Tool::Weld), pending) => {
             if let Some(part) = state
                 .world_hovered_part

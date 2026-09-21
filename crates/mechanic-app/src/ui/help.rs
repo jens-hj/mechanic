@@ -373,6 +373,22 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Q rotates; place a Dimension Link, aim at it, then press E to toggle it on or off"
                     .to_owned()
             }
+            (false, Tool::Spiral, _, _, _) => format!(
+                "Click a cylinder to spiral it, right-click to take it off; changes reshape the one you point at. {}/{} pitch, {}/{} ridge width, {}/{} depth, {}/{} starts, wheel taper, up/down tip, {} shape, {} hand, {} cut or add, {} wall or bore, {} picks up",
+                controls.label(GameAction::CylinderLengthDecrease),
+                controls.label(GameAction::CylinderLengthIncrease),
+                controls.label(GameAction::CylinderInnerDecrease),
+                controls.label(GameAction::CylinderInnerIncrease),
+                controls.label(GameAction::CylinderOuterDecrease),
+                controls.label(GameAction::CylinderOuterIncrease),
+                controls.label(GameAction::CylinderSweepDecrease),
+                controls.label(GameAction::CylinderSweepIncrease),
+                controls.label(GameAction::PipeTurn),
+                rotate,
+                controls.label(GameAction::ShapeMirrorX),
+                controls.label(GameAction::ShapeMirrorZ),
+                controls.label(GameAction::Interact),
+            ),
             (false, Tool::Shape, _, _, _) => {
                 "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows nudge"
                     .to_owned()
@@ -624,6 +640,7 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
             | Tool::Transmission
             | Tool::Seat
             | Tool::Shape
+            | Tool::Spiral
             | Tool::Chroma,
         ) => Tone::Speed,
         None => Tone::Muted,
