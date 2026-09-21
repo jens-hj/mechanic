@@ -96,8 +96,12 @@ per RLE record while retaining an eight-byte in-memory sample. Earlier brick
 versions are rejected; regenerate terrain-bearing pre-production worlds. The
 builder-world fixture has no terrain bricks and needs no format replacement.
 
-Compression removes volume without conserving material or producing berms.
-There are no clumps, material transfers or atomic terrain/body publication.
+Material is never made or destroyed. Every solid cell holds 510 quanta however
+packed it is: pressing packs a cell, and a cell pressed flat is squeezed out as
+510 quanta of spoil that settle beside whatever pressed it, which is the berm
+along a rut. Cells break out whole and settle whole, so the ground's solid cells
+and the clumps' quanta always add up. The player's terrain brush is outside
+this: it is a creative tool that adds and removes ground freely.
 The outstanding driving and collision work below remains open; this change does
 not claim those gates or a scale gate.
 
@@ -168,7 +172,9 @@ for, so physics never pauses. Soft spoil becomes ground after 0.25 s at rest in
 the lowest free cell within two cells, crumbs of less than a cell merge until
 they fill one, and only whole loose cells are laid down. The budget is 4,096
 awake clumps; past it, soft ground is laid straight back down. Scattered broken
-cells still gather into clods. On the saved face drill the CPU tick fell from a
+cells still gather into clods, soft clods that lie touching gather into clods of
+up to 27 cells, and anything lying still for a second sleeps, on the ground or
+on a deck. A deck or bucket holds spoil; only the ground takes it back. On the saved face drill the CPU tick fell from a
 44 ms median to 0.22 ms and digging runs continuously; see
 [the spoil report](performance-results/2026-09-21-spoil/REPORT.md).
 
@@ -180,7 +186,9 @@ cells still gather into clods. On the saved face drill the CPU tick fell from a
    installed car still overturns in the scripted sequence.
 4. Soil follow-up: remesh performance, a close-up visual rut demonstration, and
    a compact GPU load readback.
-5. Clump follow-up: spoil that stacks and rolls by its shape, a real angle of
+5. Clump follow-up: bulking (settled spoil looser than the ground it came
+   from, so it takes more room; it needs a looseness value per cell and so a new
+   brick format), spoil that stacks and rolls by its shape, a real angle of
    repose for settled spoil, an identical-tool resistance
    comparison using a fixture with a realistic mass and an external feed force,
    the validation gaps listed in the clump report, and an in-app visual

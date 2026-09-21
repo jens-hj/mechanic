@@ -58,6 +58,32 @@ reselection. One guess was wrong: the search for deposit cells cost 0.6 ms.
 
 The save format is unchanged.
 
+## Follow-up the same day: rest and conservation
+
+Played in the app, clods on a steel deck kept spinning, and some on the ground
+crept from facet to facet and never settled. A clump now lies on a collider as
+it lies on the ground: it rolls only with how it moves over what carries it,
+static friction holds it where it stopped on a slope it can hold, and anything
+still for a second sleeps until the deck moves or the ground changes. A deck or
+bucket holds spoil; only the ground takes it back.
+
+Material is now conserved exactly. Pressing used to destroy it twice: a packed
+cell counted as `510 − compaction` quanta, and a cell pressed flat vanished.
+Every solid cell now holds 510 quanta however packed, and a cell pressed flat
+leaves as 510 quanta of spoil beside whatever pressed it: the berm along a rut.
+The replay checks the balance and fails if a quantum is unaccounted for; over
+3,000 ticks the ground gave up 1,524 cells and the difference was 0.
+
+In the save's deepened bore, spoil fell back under the head, could not settle
+there and was stirred for ever; live clumps passed 1,600 and kept climbing. Soft
+clods of one material that lie touching now gather into clods of up to 27 cells.
+The same replay holds 110 – 170 clumps at 0.2 – 0.35 ms a tick. Spoil in flight
+is not gathered, so what is thrown looks as before.
+
+Since cells break out and settle whole, crumbs of less than a cell no longer
+arise. The 218 such crumbs in the save, left by the earlier build, gather over a
+3.2 m patch into the largest: 241 saved clumps became 46 within ten seconds.
+
 ## After
 
 Same capture, same save:
@@ -101,10 +127,16 @@ all kept awake:
 - The machine feels spoil one tick late and as one impulse per body.
 - Settled spoil spreads at most two cells, so heaps are steeper than a real
   angle of repose would leave them.
+- Settled spoil is as dense as the ground it came from. Looser spoil that takes
+  more room than the hole it left needs a looseness value per cell, and so a new
+  terrain brick format.
+- One tick in one 3,000-tick replay of the deepened bore hit the machine
+  solver's speed limit; the next replay had none.
 - Edit-to-mesh latency is whatever the streaming pipeline gives an edited node;
   edited nodes already go first. It was not measured separately.
 - The clod look and the focused-window frame rate have not been judged by eye.
 
 Raw results: [app before](app-before.jsonl.gz), [app after](app-after.jsonl.gz),
-[drill replay](drill-replay-after.jsonl.gz). Every record keeps
+[drill replay](drill-replay-after.jsonl.gz),
+[drill replay with the material balance](drill-replay-conserved.jsonl.gz). Every record keeps
 `kernel_coverage_complete: false`. No scale gate is claimed.
