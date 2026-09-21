@@ -3,6 +3,7 @@
 //! Game tuning, not measured soil data.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 use super::{EMPTY_DENSITY, TerrainBrick, TerrainEditOutcome, TerrainNodeId, TerrainOctree};
 use crate::{
@@ -21,6 +22,10 @@ const FLOOR_SEARCH_CELLS: i32 = 40;
 const RUN_COLUMNS: usize = 48;
 /// How far around a changed cell loose ground is looked over again, in cells.
 const DISTURBED_REACH: i32 = 3;
+/// Columns of held-back loose ground looked at again in one look-over.
+const RETRIED_COLUMNS: usize = 4;
+/// Most columns of held-back loose ground remembered.
+const MAX_WAITING_COLUMNS: usize = 4096;
 
 const DIRECTIONS: [(i32, i32); 8] = [
     (1, 0),
@@ -196,7 +201,8 @@ impl TerrainOctree {
     }
 }
 
-// Where one cell of spoil dropped at `start` comes to lie.
+// Where one cell of spoil dropped at `start` comes to lie. None where it cannot
+// be laid now: on no ground, or where it would run on but for a machine.
 fn run_downhill(
     laying: &Laying<'_>,
     occupied: &mut dyn FnMut(WorldCell) -> bool,
@@ -205,33 +211,73 @@ fn run_downhill(
     steps: &mut usize,
 ) -> Option<WorldCell> {
     let solid = |cell| laying.solid(cell);
-    // A clod lies with its centre above the ground, or just inside a heap.
-    let mut cell = (0..4)
+    // A clod lies with its centre above the ground, or inside a heap that was
+    // laid over it: then it comes up on top.
+    let first = (0..FLOOR_SEARCH_CELLS)
         .map(|up| WorldCell::new(start.x, start.y + up, start.z))
         .find(|&cell| !solid(cell))
         .and_then(|free| floor(&solid, occupied, free))?;
+    let run = run_from(&solid, occupied, first, repose, steps);
+    (!run.held_back).then_some(run.cell)
+}
+
+// Where loose ground comes to lie, and whether it would run on from there into
+// a column that takes nothing: a hole a machine works in. Laid there it would
+// stand as a tower beside the hole, so it is not laid at all.
+struct Run {
+    cell: WorldCell,
+    held_back: bool,
+}
+
+// Where loose ground at `first` runs to. It crosses level ground on its way
+// down, but stays where it is unless the run takes it lower.
+fn run_from(
+    solid: &impl Fn(WorldCell) -> bool,
+    occupied: &mut dyn FnMut(WorldCell) -> bool,
+    first: WorldCell,
+    repose: Repose,
+    steps: &mut usize,
+) -> Run {
+    let mut cell = first;
     let mut crossed = BTreeSet::from([(cell.x, cell.z)]);
+    let mut first_held_back = false;
+    let mut held_back = false;
     while crossed.len() <= RUN_COLUMNS && *steps > 0 {
         *steps -= 1;
         // Of the ways it would run, the one that takes it lowest.
-        let next = runs(&solid, occupied, cell, repose)
-            .into_iter()
-            .filter(|&(x, z)| !crossed.contains(&(cell.x + x, cell.z + z)))
-            .filter_map(|(x, z)| {
-                floor(
-                    &solid,
-                    occupied,
-                    WorldCell::new(cell.x + x, cell.y, cell.z + z),
-                )
-            })
-            .min_by_key(|lower| lower.y);
+        held_back = false;
+        let mut next: Option<WorldCell> = None;
+        for (x, z) in runs(solid, occupied, cell, repose) {
+            if crossed.contains(&(cell.x + x, cell.z + z)) {
+                continue;
+            }
+            match floor(
+                solid,
+                occupied,
+                WorldCell::new(cell.x + x, cell.y, cell.z + z),
+            ) {
+                Some(lower) if next.is_none_or(|lowest| lower.y < lowest.y) => next = Some(lower),
+                Some(_) => {}
+                None => held_back = true,
+            }
+        }
+        if cell == first {
+            first_held_back = held_back;
+        }
         let Some(next) = next else {
             break;
         };
+        held_back = false;
         crossed.insert((next.x, next.z));
         cell = next;
     }
-    Some(cell)
+    if cell.y >= first.y && !first_held_back {
+        return Run {
+            cell: first,
+            held_back: false,
+        };
+    }
+    Run { cell, held_back }
 }
 
 /// Loose ground to look over again: columns beside cells that changed.
@@ -239,6 +285,10 @@ fn run_downhill(
 pub struct SpoilSlump {
     // Column to the highest cell worth looking at and how far below it to look.
     columns: BTreeMap<(i32, i32), (i32, i32)>,
+    // Columns whose loose top would run but has nowhere to run to yet.
+    waiting: BTreeMap<(i32, i32), (i32, i32)>,
+    // The waiting column looked at last.
+    retried: Option<(i32, i32)>,
 }
 
 impl SpoilSlump {
@@ -287,27 +337,36 @@ impl SpoilSlump {
         }
     }
 
-    /// Whether any column waits to be looked over.
+    /// Whether no column is due to be looked over. Loose ground held back by a
+    /// machine does not count: it waits for as long as the machine stays.
     pub fn is_empty(&self) -> bool {
         self.columns.is_empty()
     }
 
     /// Looks over up to `columns` noted columns and returns the loose cells at
-    /// their tops that lie steeper than their repose, for the caller to break
-    /// out and lay again.
+    /// their tops that would run to lower ground, for the caller to break out
+    /// and lay again. Loose ground that would run but cannot, into a hole a
+    /// machine works in, is looked at again a few columns at a time until it
+    /// can. `steps` is the running allowed, spent here.
     pub fn take_unstable(
         &mut self,
         terrain: &TerrainOctree,
         field: &TerrainField,
         occupied: &mut dyn FnMut(WorldCell) -> bool,
         columns: usize,
+        steps: &mut usize,
     ) -> Vec<ExtractionCell> {
         let solid = |cell| terrain.sample_cell(field, cell).is_solid();
+        self.retry_waiting();
         let mut unstable = Vec::new();
         for _ in 0..columns {
+            if *steps == 0 {
+                break;
+            }
             let Some(((x, z), (top, depth))) = self.columns.pop_first() else {
                 break;
             };
+            self.waiting.remove(&(x, z));
             // The top of the column's ground near where it changed.
             let Some(cell) = (top - depth - DISTURBED_REACH - 1..=top + DISTURBED_REACH + 1)
                 .rev()
@@ -320,28 +379,56 @@ impl SpoilSlump {
             let Some(repose) = Repose::for_material(sample.material) else {
                 continue;
             };
-            // It slides only where it has somewhere to slide to.
-            if sample.looseness >= SLIDING_LOOSENESS
-                && cell.is_editable()
-                && runs(&solid, occupied, cell, repose)
-                    .into_iter()
-                    .any(|(x, z)| {
-                        floor(
-                            &solid,
-                            occupied,
-                            WorldCell::new(cell.x + x, cell.y, cell.z + z),
-                        )
-                        .is_some()
-                    })
-            {
+            if sample.looseness < SLIDING_LOOSENESS || !cell.is_editable() {
+                continue;
+            }
+            if runs(&solid, occupied, cell, repose).is_empty() {
+                // Held up by a machine alone, it waits for the machine to go.
+                if !runs(&solid, &mut |_| false, cell, repose).is_empty()
+                    && self.waiting.len() < MAX_WAITING_COLUMNS
+                {
+                    self.waiting.insert((x, z), (top, depth));
+                }
+                continue;
+            }
+            // It slides only where that takes it lower, as laying it again will.
+            let run = run_from(&solid, occupied, cell, repose, steps);
+            if run.cell.y < cell.y && !run.held_back {
                 unstable.push(ExtractionCell {
                     cell,
                     sample,
                     throw: bevy_math::DVec3::ZERO,
                 });
+            } else if *steps == 0 {
+                self.columns.insert((x, z), (top, depth));
+            } else if self.waiting.len() < MAX_WAITING_COLUMNS {
+                self.waiting.insert((x, z), (top, depth));
             }
         }
         unstable
+    }
+
+    // Notes the next few waiting columns to be looked over, in turn.
+    fn retry_waiting(&mut self) {
+        let after = self.retried.map_or(Bound::Unbounded, Bound::Excluded);
+        let mut retry = self
+            .waiting
+            .range((after, Bound::Unbounded))
+            .take(RETRIED_COLUMNS)
+            .map(|(&column, &span)| (column, span))
+            .collect::<Vec<_>>();
+        if retry.len() < RETRIED_COLUMNS {
+            retry.extend(
+                self.waiting
+                    .iter()
+                    .take(RETRIED_COLUMNS - retry.len())
+                    .map(|(&column, &span)| (column, span)),
+            );
+        }
+        self.retried = retry.last().map(|&(column, _)| column);
+        for (column, span) in retry {
+            self.columns.entry(column).or_insert(span);
+        }
     }
 }
 
@@ -646,5 +733,137 @@ mod tests {
         }
         assert_eq!(height(&terrain, &field, origin, 7, 7), 4);
         assert_eq!(height(&terrain, &field, origin, 8, 7), 0);
+    }
+
+    // Digs a pit beside a poured heap, through its edge, and notes the cut.
+    fn heap_beside_a_pit() -> (TerrainField, TerrainOctree, WorldCell, SpoilSlump) {
+        let mut slump = SpoilSlump::default();
+        let (field, mut terrain, origin) = slab(TerrainMaterial::Soil, &[]);
+        pour(
+            &mut terrain,
+            &field,
+            at(origin, 12, 20, 16),
+            TerrainMaterial::Soil,
+            60,
+            &mut |_| false,
+        );
+        for cell in dig_pit(&mut terrain, &field, origin) {
+            slump.disturb(cell);
+        }
+        assert!(height(&terrain, &field, origin, 13, 16) > 1, "no rim");
+        (field, terrain, origin, slump)
+    }
+
+    // Takes out everything above the pit's bottom; returns the cells taken.
+    fn dig_pit(
+        terrain: &mut TerrainOctree,
+        field: &TerrainField,
+        origin: WorldCell,
+    ) -> Vec<WorldCell> {
+        let dug = (3..32)
+            .flat_map(|y| (14..18).flat_map(move |x| (12..20).map(move |z| (x, y, z))))
+            .map(|(x, y, z)| at(origin, x, y, z))
+            .filter(|&cell| terrain.sample_cell(field, cell).is_solid())
+            .map(|cell| ExtractionCell {
+                cell,
+                sample: terrain.sample_cell(field, cell),
+                throw: bevy_math::DVec3::ZERO,
+            })
+            .collect::<Vec<_>>();
+        terrain.extract_cells(field, &dug).unwrap();
+        dug.into_iter().map(|source| source.cell).collect()
+    }
+
+    // A machine working at the bottom of that pit.
+    fn working(origin: WorldCell, cell: WorldCell) -> bool {
+        (14..18).contains(&(cell.x - origin.x))
+            && (12..20).contains(&(cell.z - origin.z))
+            && cell.y - origin.y <= 4
+    }
+
+    #[test]
+    fn spoil_at_the_rim_of_a_hole_a_machine_works_in_stands_until_the_machine_is_gone() {
+        let (field, mut terrain, origin, mut slump) = heap_beside_a_pit();
+        let mut clumps = ClumpCollection::default();
+        let mut breakage = crate::BreakageAccumulator::default();
+        let mut rest = |terrain: &mut TerrainOctree,
+                        slump: &mut SpoilSlump,
+                        occupied: &mut dyn FnMut(WorldCell) -> bool,
+                        transfers: usize| {
+            let mut moved = 0;
+            for _ in 0..transfers {
+                for body in clumps.bodies.values_mut() {
+                    body.update_settling(true, 1.0);
+                }
+                moved += clumps
+                    .transfer(
+                        terrain,
+                        &field,
+                        &mut breakage,
+                        slump,
+                        occupied,
+                        TransferLimits::default(),
+                    )
+                    .len();
+            }
+            assert!(clumps.bodies.is_empty());
+            moved
+        };
+        // What can slide away from the pit does; the rest waits.
+        rest(
+            &mut terrain,
+            &mut slump,
+            &mut |cell| working(origin, cell),
+            50,
+        );
+        assert_eq!(
+            rest(
+                &mut terrain,
+                &mut slump,
+                &mut |cell| working(origin, cell),
+                50
+            ),
+            0,
+            "spoil keeps breaking out with nowhere to go"
+        );
+        assert!(height(&terrain, &field, origin, 13, 16) > 1);
+        rest(&mut terrain, &mut slump, &mut |_| false, 400);
+        assert_eq!(height(&terrain, &field, origin, 13, 16), 0);
+        assert!(
+            terrain
+                .sample_cell(&field, at(origin, 14, 3, 16))
+                .is_solid()
+        );
+    }
+
+    #[test]
+    fn spoil_is_not_laid_where_it_would_run_on_but_for_a_machine() {
+        let (field, mut terrain, origin) = slab(TerrainMaterial::Soil, &[]);
+        dig_pit(&mut terrain, &field, origin);
+        let rim = at(origin, 13, 20, 16);
+        let before = height(&terrain, &field, origin, 13, 16);
+        let mut steps = 10_000;
+        let (outcome, left) = terrain.lay_spoil(
+            &field,
+            rim,
+            TerrainMaterial::Soil,
+            CELL_QUANTA,
+            &mut |cell| working(origin, cell),
+            &mut steps,
+        );
+        assert_eq!(left, CELL_QUANTA);
+        assert!(outcome.laid_cells.is_empty(), "a tower grows on the rim");
+        assert_eq!(height(&terrain, &field, origin, 13, 16), before);
+        // The machine gone, it is laid in the pit.
+        let (outcome, left) = terrain.lay_spoil(
+            &field,
+            rim,
+            TerrainMaterial::Soil,
+            CELL_QUANTA,
+            &mut |_| false,
+            &mut steps,
+        );
+        assert_eq!(left, 0);
+        assert!(outcome.laid_cells.iter().all(|cell| cell.y - origin.y == 3));
     }
 }

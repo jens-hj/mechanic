@@ -139,9 +139,10 @@ impl ClumpCollection {
         sources: &[ExtractionCell],
         laid_down: bool,
     ) -> Option<TerrainEditOutcome> {
-        if sources
-            .iter()
-            .any(|source| source.cell.y > i32::MAX - 5 || !source.sample.density.is_finite())
+        if sources.is_empty()
+            || sources
+                .iter()
+                .any(|source| source.cell.y > i32::MAX - 5 || !source.sample.density.is_finite())
         {
             return None;
         }
@@ -258,7 +259,8 @@ impl ClumpCollection {
                 outcomes.push(outcome);
             }
         }
-        let sliding = slump.take_unstable(terrain, field, occupied, limits.columns);
+        let mut steps = limits.steps;
+        let sliding = slump.take_unstable(terrain, field, occupied, limits.columns, &mut steps);
         if let Some(outcome) = self.extract(terrain, field, &sliding, true) {
             for source in &sliding {
                 slump.disturb(source.cell);
