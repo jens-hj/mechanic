@@ -627,15 +627,9 @@ pub(crate) fn append_part(
             normals,
             indices,
         ),
-        PartSpec::Cylinder(spec) => append_cylinder_shape(
-            spec.pose.translation(),
-            spec.pose.rotation.quaternion(),
-            spec.dimensions,
-            scale_factor,
-            positions,
-            normals,
-            indices,
-        ),
+        PartSpec::Cylinder(spec) => {
+            append_cylinder_part(spec, scale_factor, positions, normals, indices);
+        }
         PartSpec::PipeJunction(junction) => append_pipe_junction_shape(
             junction.pose.translation(),
             junction.pose.rotation.quaternion(),
@@ -654,6 +648,38 @@ pub(crate) fn append_part(
             normals,
             indices,
         ),
+    }
+}
+
+// A cylinder as drawn: plain, or with the spiral cut into its walls.
+fn append_cylinder_part(
+    spec: mechanic_core::CylinderSpec,
+    scale_factor: f32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    indices: &mut Vec<u32>,
+) {
+    let (translation, rotation) = (spec.pose.translation(), spec.pose.rotation.quaternion());
+    if spec.spiral().is_some() {
+        super::spiral::append_spiral_cylinder(
+            translation,
+            rotation,
+            spec,
+            scale_factor,
+            positions,
+            normals,
+            indices,
+        );
+    } else {
+        append_cylinder_shape(
+            translation,
+            rotation,
+            spec.dimensions,
+            scale_factor,
+            positions,
+            normals,
+            indices,
+        );
     }
 }
 
@@ -1051,6 +1077,17 @@ pub(crate) fn append_textured_part(
             normals,
             indices,
         ),
+        PartSpec::Cylinder(cylinder) if cylinder.spiral().is_some() => {
+            super::spiral::append_spiral_cylinder(
+                translation,
+                rotation,
+                cylinder,
+                1.0,
+                positions,
+                normals,
+                indices,
+            );
+        }
         PartSpec::Cylinder(cylinder) => append_cylinder_shape_with_end_faces(
             translation,
             rotation,
