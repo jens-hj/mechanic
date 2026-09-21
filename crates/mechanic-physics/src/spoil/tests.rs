@@ -233,3 +233,154 @@ fn spoil_heaps_instead_of_stacking_in_a_column() {
         assert!(body.position.0.y > ground - 0.02, "clump {id} sank");
     }
 }
+
+#[test]
+fn spoil_thrown_onto_a_deck_lies_still_and_falls_asleep() {
+    let (field, terrain, spot) = ground();
+    let centre = spot + DVec3::Y * 5.0;
+    let mut thrown = clump(1, TerrainMaterial::Soil, 2, centre + DVec3::Y * 0.4);
+    thrown.linear_velocity = DVec3::new(0.6, 0.0, 0.2);
+    thrown.angular_velocity = DVec3::new(3.0, 1.0, -2.0);
+    let mut clumps = collection([thrown]);
+    let mut solver = SpoilSolver::default();
+    for _ in 0..240 {
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &plate(centre, DVec3::ZERO),
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    let body = &clumps.bodies[&1];
+    assert!(
+        body.sleeping,
+        "still awake, turning at {:?}",
+        body.angular_velocity
+    );
+    assert_eq!(body.angular_velocity, DVec3::ZERO);
+    // A deck holds spoil; only the ground takes it back.
+    assert!(!body.can_deposit());
+    // It wakes when the deck moves under it.
+    solver.step(
+        &mut clumps,
+        &terrain,
+        &field,
+        &plate(centre, DVec3::X),
+        GRAVITY,
+        TICK_SECONDS,
+    );
+    assert!(!clumps.bodies[&1].sleeping);
+}
+
+#[test]
+fn spoil_on_rough_ground_stops_creeping_and_settles() {
+    let (field, terrain, spot) = ground();
+    let mut clumps = collection((0..12_u32).map(|index| {
+        let mut body = clump(
+            u64::from(index) + 1,
+            TerrainMaterial::Soil,
+            1 + index % 4,
+            spot + DVec3::new(
+                f64::from(index % 4) * 0.37,
+                0.4,
+                f64::from(index / 4) * 0.41,
+            ),
+        );
+        body.linear_velocity = DVec3::new(0.8, 0.0, -0.5);
+        body
+    }));
+    let mut solver = SpoilSolver::default();
+    let machine = SpoilMachine::default();
+    for _ in 0..150 {
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &machine,
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    let before = clumps
+        .bodies
+        .values()
+        .map(|body| body.position.0)
+        .collect::<Vec<_>>();
+    for _ in 0..30 {
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &machine,
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    for (body, before) in clumps.bodies.values().zip(before) {
+        assert!(
+            body.position.0.distance(before) < 1e-6,
+            "clump {} crept {} m",
+            body.id,
+            body.position.0.distance(before)
+        );
+        assert_eq!(body.angular_velocity, DVec3::ZERO);
+        assert!(body.can_deposit(), "clump {} never settled", body.id);
+    }
+}
+
+#[test]
+fn soft_clods_lying_together_gather_into_one_and_keep_their_material() {
+    let (field, terrain, spot) = ground();
+    let mut clumps = collection(
+        (0..6_u32)
+            .map(|index| {
+                clump(
+                    u64::from(index) + 1,
+                    TerrainMaterial::Soil,
+                    1,
+                    spot + DVec3::new(f64::from(index) * 0.03, 0.1, 0.0),
+                )
+            })
+            .chain([clump(
+                7,
+                TerrainMaterial::Rock,
+                1,
+                spot + DVec3::new(0.09, 0.2, 0.0),
+            )]),
+    );
+    let quanta = |clumps: &ClumpCollection| {
+        clumps
+            .bodies
+            .values()
+            .map(|body| u64::from(body.quanta))
+            .sum::<u64>()
+    };
+    let before = quanta(&clumps);
+    let mut solver = SpoilSolver::default();
+    for _ in 0..120 {
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &SpoilMachine::default(),
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    assert_eq!(
+        quanta(&clumps),
+        before,
+        "nothing is made or lost by gathering"
+    );
+    let soil = clumps
+        .bodies
+        .values()
+        .filter(|body| body.material == TerrainMaterial::Soil)
+        .count();
+    assert!(soil < 6, "{soil} clods never gathered");
+    assert!(clumps.bodies.values().all(MaterialClump::is_valid));
+    // Hard fragments stay what they broke into.
+    assert_eq!(clumps.bodies[&7].quanta, 510);
+}

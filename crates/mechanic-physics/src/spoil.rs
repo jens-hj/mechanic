@@ -25,8 +25,17 @@ const MAX_SPEED_M_S: f64 = 15.0;
 const LEAST_STRIDE_M: f64 = 0.04;
 /// Most looks at the ground along one tick's path.
 const MAX_STRIDES: u32 = 8;
-/// A hard fragment at rest this long falls asleep, in seconds.
+/// A clump at rest this long falls asleep, in seconds.
 const SLEEP_AFTER_S: f64 = 1.0;
+/// Soft clods that meet more gently than this stick together, in m/s.
+const STICK_SPEED_M_S: f64 = 0.5;
+/// The most one clod gathers by sticking, in cells: a clod, not a boulder.
+const CLOD_CELLS: u32 = 27;
+/// Slower than this over what carries it, a clump is held still, in m/s. A
+/// sphere on fine terrain otherwise creeps from one facet to the next for ever.
+const HOLD_SPEED_M_S: f64 = 0.12;
+/// A held clump stays where it was unless the tick moved it further, in metres.
+const HOLD_REACH_M: f64 = 0.01;
 
 /// What one body of the machine felt from the spoil during a tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -57,6 +66,8 @@ pub struct SpoilSolver {
     disturbed: BTreeSet<BrickCoord>,
     buckets: HashMap<IVec3, Vec<usize>>,
     touches: Vec<machine::Touch>,
+    /// Seconds each clump has lain still on anything at all.
+    resting: BTreeMap<u64, f64>,
 }
 
 struct Grain<'a> {
@@ -67,7 +78,11 @@ struct Grain<'a> {
     supported: bool,
     /// Touching the ground itself, not only spoil that does.
     grounded: bool,
-    ground_normal: DVec3,
+    /// Lying on the machine, or on spoil that does.
+    carried: bool,
+    /// Out of what the clump lies on, and how that moves.
+    rest_normal: DVec3,
+    rest_velocity: DVec3,
 }
 
 /// Radius of the sphere holding a clump's material, in metres.
@@ -122,7 +137,9 @@ impl SpoilSolver {
                     friction: f64::from(clump.material.surface_response().static_friction),
                     supported: false,
                     grounded: false,
-                    ground_normal: DVec3::Y,
+                    carried: false,
+                    rest_normal: DVec3::Y,
+                    rest_velocity: DVec3::ZERO,
                     clump,
                 }
             })
@@ -154,30 +171,19 @@ impl SpoilSolver {
                 &mut reactions,
             );
         }
-        self.separate(&mut grains, terrain, field);
-        for grain in grains.iter_mut().filter(|grain| !grain.clump.sleeping) {
+        let absorbed = self.separate(&mut grains, terrain, field);
+        for grain in grains
+            .iter_mut()
+            .filter(|grain| !grain.clump.sleeping && grain.clump.quanta > 0)
+        {
             step.awake += 1;
-            let clump = &mut *grain.clump;
-            // Clods tumble as they travel; the turning is for the eye only.
-            if grain.supported {
-                clump.angular_velocity = if clump.linear_velocity.length() < 0.05 {
-                    DVec3::ZERO
-                } else {
-                    grain.ground_normal.cross(clump.linear_velocity) / grain.radius
-                };
-            }
-            clump.rotation = (DQuat::from_scaled_axis(clump.angular_velocity * seconds)
-                * clump.rotation)
-                .normalize();
-            clump.update_settling(grain.supported, seconds);
-            if !mechanic_world::BreakageResponse::for_material(clump.material).deposits
-                && clump.settled_seconds >= SLEEP_AFTER_S
-            {
-                clump.sleeping = true;
-                clump.linear_velocity = DVec3::ZERO;
-                clump.angular_velocity = DVec3::ZERO;
-            }
+            self.turn_and_rest(grain, seconds);
         }
+        for id in absorbed {
+            clumps.bodies.remove(&id);
+        }
+        self.resting
+            .retain(|id, _| clumps.bodies.get(id).is_some_and(|clump| !clump.sleeping));
         step.reactions = reactions
             .into_iter()
             .filter(|(_, (impulse, _))| impulse.length_squared() > 0.0)
@@ -193,6 +199,39 @@ impl SpoilSolver {
         step
     }
 
+    // Turns a clump as it travels, counts how long it has lain still, and lets
+    // it fall asleep.
+    fn turn_and_rest(&mut self, grain: &mut Grain<'_>, seconds: f64) {
+        let clump = &mut *grain.clump;
+        // Clods tumble as they travel; the turning is for the eye only. On
+        // anything, they roll with how they move over it, and lie still on it.
+        let over = clump.linear_velocity - grain.rest_velocity;
+        let lying = grain.supported || grain.carried;
+        if lying {
+            clump.angular_velocity = if over.length() < 0.05 {
+                DVec3::ZERO
+            } else {
+                grain.rest_normal.cross(over) / grain.radius
+            };
+        }
+        clump.rotation = (DQuat::from_scaled_axis(clump.angular_velocity * seconds)
+            * clump.rotation)
+            .normalize();
+        // Only the ground takes spoil back; a deck or a bucket just holds it.
+        clump.update_settling(grain.supported, seconds);
+        if lying && over.length() < 0.05 {
+            let rested = self.resting.entry(clump.id).or_default();
+            *rested += seconds;
+            if *rested >= SLEEP_AFTER_S {
+                clump.sleeping = true;
+                clump.linear_velocity = DVec3::ZERO;
+                clump.angular_velocity = DVec3::ZERO;
+            }
+        } else {
+            self.resting.remove(&clump.id);
+        }
+    }
+
     #[expect(clippy::too_many_arguments, reason = "one grain's whole surroundings")]
     fn advance(
         &mut self,
@@ -206,7 +245,8 @@ impl SpoilSolver {
     ) {
         let mut velocity =
             (grain.clump.linear_velocity + gravity * seconds).clamp_length_max(MAX_SPEED_M_S);
-        let mut position = grain.clump.position.0;
+        let start = grain.clump.position.0;
+        let mut position = start;
         let stride = grain.radius.max(LEAST_STRIDE_M);
         #[expect(
             clippy::cast_possible_truncation,
@@ -228,6 +268,11 @@ impl SpoilSolver {
                 let entry = reactions.entry(touch.body).or_default();
                 entry.0 += impulse;
                 entry.1 += (point - machine.body_centre(touch.body)).cross(impulse);
+                if touch.normal.y > GROUND_NORMAL_MIN_Y {
+                    grain.carried = true;
+                    grain.rest_normal = touch.normal;
+                    grain.rest_velocity = touch.velocity;
+                }
             }
             for _ in 0..2 {
                 let Some((push, normal)) = self.ground_push(terrain, field, position, grain.radius)
@@ -239,11 +284,27 @@ impl SpoilSolver {
                 if normal.y > GROUND_NORMAL_MIN_Y {
                     grain.supported = true;
                     grain.grounded = true;
-                    grain.ground_normal = normal;
+                    grain.rest_normal = normal;
+                    grain.rest_velocity = DVec3::ZERO;
                 }
             }
         }
         self.touches = touches;
+        // Static friction: on a slope it can hold, a clump that has all but
+        // stopped stops, and stays where it was.
+        let holds = grain.rest_normal.y * grain.friction
+            > (1.0 - grain.rest_normal.y * grain.rest_normal.y)
+                .max(0.0)
+                .sqrt();
+        if (grain.grounded || grain.carried)
+            && holds
+            && (velocity - grain.rest_velocity).length() < HOLD_SPEED_M_S
+        {
+            velocity = grain.rest_velocity;
+            if grain.grounded && position.distance(start) < HOLD_REACH_M {
+                position = start;
+            }
+        }
         grain.clump.position = WorldPosition(position);
         grain.clump.linear_velocity = velocity;
     }
@@ -289,13 +350,15 @@ impl SpoilSolver {
         deepest.map(|(depth, normal)| (normal * depth, normal))
     }
 
-    // Pushes overlapping grains apart and takes out their closing speed.
+    // Pushes overlapping grains apart and takes out their closing speed. Soft
+    // clods of one material that meet gently become one; returns those absorbed.
     fn separate(
         &mut self,
         grains: &mut [Grain<'_>],
         terrain: &TerrainOctree,
         field: &TerrainField,
-    ) {
+    ) -> Vec<u64> {
+        let mut absorbed = Vec::new();
         for bucket in self.buckets.values_mut() {
             bucket.clear();
         }
@@ -329,45 +392,17 @@ impl SpoilSolver {
                         continue;
                     }
                     let (a, b) = pair(grains, first, second);
-                    let offset = b.clump.position.0 - a.clump.position.0;
-                    let reach = a.radius + b.radius;
-                    let distance = offset.length();
-                    if distance >= reach {
-                        continue;
+                    match meet(a, b) {
+                        Meeting::Apart => {}
+                        Meeting::Stuck => {
+                            absorbed.push(b.clump.id);
+                            pushed.push(first);
+                        }
+                        Meeting::Pushed => {
+                            pushed.push(first);
+                            pushed.push(second);
+                        }
                     }
-                    let normal = if distance > 1e-9 {
-                        offset / distance
-                    } else {
-                        DVec3::Y
-                    };
-                    // Spoil on the ground is not pressed into it by spoil on top.
-                    let a_held = a.grounded && normal.y > GROUND_NORMAL_MIN_Y;
-                    let b_held =
-                        b.clump.sleeping || (b.grounded && normal.y < -GROUND_NORMAL_MIN_Y);
-                    let share = match (a_held, b_held) {
-                        (false, true) => 1.0,
-                        (true, false) => 0.0,
-                        _ => b.mass / (a.mass + b.mass),
-                    };
-                    let closing = (a.clump.linear_velocity - b.clump.linear_velocity).dot(normal);
-                    if b.clump.sleeping && closing > 0.5 {
-                        b.clump.sleeping = false;
-                        b.clump.settled_seconds = 0.0;
-                    }
-                    a.clump.position.0 -= normal * (reach - distance) * share;
-                    b.clump.position.0 += normal * (reach - distance) * (1.0 - share);
-                    if closing > 0.0 {
-                        a.clump.linear_velocity -= normal * closing * share;
-                        b.clump.linear_velocity += normal * closing * (1.0 - share);
-                    }
-                    // A grain resting on a supported one is supported too.
-                    if normal.y < -GROUND_NORMAL_MIN_Y && (b.supported || b.clump.sleeping) {
-                        a.supported = true;
-                    } else if normal.y > GROUND_NORMAL_MIN_Y && a.supported {
-                        b.supported = true;
-                    }
-                    pushed.push(first);
-                    pushed.push(second);
                 }
             }
         }
@@ -387,7 +422,100 @@ impl SpoilSolver {
                 grain.clump.linear_velocity += change;
             }
         }
+        absorbed
     }
+}
+
+enum Meeting {
+    Apart,
+    /// The second grain was folded into the first.
+    Stuck,
+    Pushed,
+}
+
+// Resolves two grains that may overlap: gathers them into one, or pushes them
+// apart and takes out their closing speed.
+fn meet(a: &mut Grain<'_>, b: &mut Grain<'_>) -> Meeting {
+    if a.clump.quanta == 0 || b.clump.quanta == 0 {
+        return Meeting::Apart;
+    }
+    let offset = b.clump.position.0 - a.clump.position.0;
+    let reach = a.radius + b.radius;
+    let distance = offset.length();
+    if distance >= reach {
+        return Meeting::Apart;
+    }
+    let normal = if distance > 1e-9 {
+        offset / distance
+    } else {
+        DVec3::Y
+    };
+    // Spoil on the ground is not pressed into it by spoil on top.
+    let a_held = a.grounded && normal.y > GROUND_NORMAL_MIN_Y;
+    let b_held = b.clump.sleeping || (b.grounded && normal.y < -GROUND_NORMAL_MIN_Y);
+    let share = match (a_held, b_held) {
+        (false, true) => 1.0,
+        (true, false) => 0.0,
+        _ => b.mass / (a.mass + b.mass),
+    };
+    let closing = (a.clump.linear_velocity - b.clump.linear_velocity).dot(normal);
+    if !b.clump.sleeping && stick(a, b, closing) {
+        return Meeting::Stuck;
+    }
+    if b.clump.sleeping && closing > 0.5 {
+        b.clump.sleeping = false;
+        b.clump.settled_seconds = 0.0;
+    }
+    a.clump.position.0 -= normal * (reach - distance) * share;
+    b.clump.position.0 += normal * (reach - distance) * (1.0 - share);
+    if closing > 0.0 {
+        a.clump.linear_velocity -= normal * closing * share;
+        b.clump.linear_velocity += normal * closing * (1.0 - share);
+    }
+    // A grain lying on another lies on what that one lies on.
+    if normal.y < -GROUND_NORMAL_MIN_Y {
+        a.supported |= b.supported || b.clump.sleeping;
+        if b.carried && !a.carried {
+            a.carried = true;
+            a.rest_velocity = b.rest_velocity;
+        }
+    } else if normal.y > GROUND_NORMAL_MIN_Y {
+        b.supported |= a.supported;
+        if a.carried && !b.carried {
+            b.carried = true;
+            b.rest_velocity = a.rest_velocity;
+        }
+    }
+    Meeting::Pushed
+}
+
+// Folds `b` into `a` when both are soft clods of one material meeting gently
+// and the clod they make is no boulder. `b` is left empty for its owner to drop.
+fn stick(a: &mut Grain<'_>, b: &mut Grain<'_>, closing: f64) -> bool {
+    let quanta = a.clump.quanta + b.clump.quanta;
+    // Spoil in flight stays as it was thrown; it gathers where it lies.
+    let lying = a.grounded || a.supported || a.carried || b.grounded || b.supported || b.carried;
+    if !lying
+        || a.clump.material != b.clump.material
+        || closing.abs() > STICK_SPEED_M_S
+        || quanta > CLOD_CELLS * mechanic_world::CELL_QUANTA
+        || !mechanic_world::BreakageResponse::for_material(a.clump.material).deposits
+    {
+        return false;
+    }
+    let share = f64::from(b.clump.quanta) / f64::from(quanta);
+    a.clump.position.0 = a.clump.position.0.lerp(b.clump.position.0, share);
+    a.clump.linear_velocity = a.clump.linear_velocity.lerp(b.clump.linear_velocity, share);
+    a.clump.quanta = quanta;
+    a.clump.half_extents = DVec3::splat((f64::from(quanta) * MATERIAL_QUANTUM_M3).cbrt() * 0.5);
+    a.clump.settled_seconds = a.clump.settled_seconds.min(b.clump.settled_seconds);
+    a.supported |= b.supported;
+    a.grounded |= b.grounded;
+    a.carried |= b.carried;
+    a.radius = spoil_radius(quanta);
+    a.mass += b.mass;
+    b.clump.quanta = 0;
+    true
 }
 
 fn pair<'s, 'a>(
