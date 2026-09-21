@@ -84,6 +84,37 @@ Since cells break out and settle whole, crumbs of less than a cell no longer
 arise. The 218 such crumbs in the save, left by the earlier build, gather over a
 3.2 m patch into the largest: 241 saved clumps became 46 within ten seconds.
 
+## Follow-up: loose ground, repose and bulking
+
+Spoil built thin vertical walls around the hole, and some clods never settled.
+The search for where to lay spoil looked only 4 cells down and 2 sideways, so a
+clod on a wall found only the wall top. A clod caught between a dirt bank and a
+steel block touched no ground from below, so it never counted as resting, and
+gravity kept adding to a speed it could not use.
+
+Cells now carry a looseness byte (brick format v4; v3 is rejected). Spoil is
+laid loose, runs downhill to its repose as it is laid, and slides when it is
+later undercut; undisturbed ground still stands at any angle. `material-clumps
+--pour 1000` lays 1,000 cells of soil as 1,333 with no step between neighbouring
+columns higher than one cell and no quantum unaccounted for. Settling counts any
+terrain contact, and a clump falls no faster than it actually fell, so a wedged
+clod stops and is laid from the bottom of the gap up.
+
+A conservation bug surfaced on the way. A cell pressed flat stays its column's
+exposed cell while its density runs on down to empty, and each further press
+reported it pressed out again: up to ten cells of spoil from one cell of ground.
+The balance check could not see it because it summed what the edits reported.
+It now counts the ground itself, brick by brick, before and after. On the drill
+replay (fresh ground, 3,600 ticks) the ground lost 1,871,370 quanta, the clumps
+hold 1,871,370 more, no soft clump lay unsettled for 3 s, and no tick degraded;
+solver p50 3.7 ms, spoil 0.2 – 0.65 ms a tick. In the app the transfer costs
+0.09 ms median, 0.93 ms p95.
+
+Spoil pressed out under a stalled head was also being laid straight back under
+it. Pressed-out spoil now has to come to rest like any clod, and
+`SpoilMachine::keeps_clear` keeps ground from being laid inside a machine part,
+within 20 cm beneath one, or within 15 cm of a moving one.
+
 ## After
 
 Same capture, same save:
@@ -138,5 +169,6 @@ all kept awake:
 
 Raw results: [app before](app-before.jsonl.gz), [app after](app-after.jsonl.gz),
 [drill replay](drill-replay-after.jsonl.gz),
-[drill replay with the material balance](drill-replay-conserved.jsonl.gz). Every record keeps
+[drill replay with the material balance](drill-replay-conserved.jsonl.gz),
+[drill replay on loose ground](drill-replay-loose-ground.jsonl.gz). Every record keeps
 `kernel_coverage_complete: false`. No scale gate is claimed.

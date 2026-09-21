@@ -91,9 +91,10 @@ compression causes stale loads to be discarded. Normal edit publication,
 foundation refresh and autosave also apply to soil.
 
 `MECHANIC_SOIL=off` disables app deformation. The GPU route does not produce
-soil loads. Both routes read brick format **v3**, which adds one compaction byte
-per RLE record while retaining an eight-byte in-memory sample. Earlier brick
-versions are rejected; regenerate terrain-bearing pre-production worlds. The
+soil loads. Both routes read brick format **v4**: a compaction byte and a
+looseness byte per RLE record, with an eight-byte in-memory sample. Earlier brick
+versions are rejected; delete `material.bin` in a pre-production world to start
+it again on undisturbed ground (the creations in it are kept). The
 builder-world fixture has no terrain bricks and needs no format replacement.
 
 Material is never made or destroyed. Every solid cell holds 510 quanta however
@@ -147,6 +148,22 @@ conserves material in every measured run. That report's 256-clump cost of
 104 – 114 ms, and its atomic terrain-and-body publication, describe clumps as
 solver bodies, which the spoil solver below replaced.
 
+Every cell knows how loose it is. A solid cell holds 510 quanta less its
+looseness; undisturbed and brushed ground is 0, and spoil is laid at about 102,
+so it takes a quarter to a third more room than the hole it left. A clump is
+laid completely, shared evenly over its cells, so no crumbs arise. Loose ground
+carries and resists about `(quanta / 510)²` of what undisturbed ground does.
+Spoil lies no steeper than its repose: about 34° for soil and cover, 27° for
+sand (`mechanic-world/src/edits/repose.rs`). Each laid cell drops to the floor of
+its column and runs downhill while the ground beside it is lower than the
+repose allows; a steel block holds it up as a bank does, and nothing is laid
+under a machine part, close beneath one, or beside a moving one. Loose ground
+that is later undercut slides: columns beside every change are looked over, and
+a loose top cell that no longer stands is broken out and laid again further
+down. Undisturbed ground stands at any angle. One
+`ClumpCollection::transfer` does laying, sliding and breaking out for the app
+and both replays.
+
 Soft ground pressed past its hardened bearing capacity is failing: it carries
 the body straight up and holds it sideways with no more than its strength, so a
 pressed tool keeps turning and its slip digs. Soft ground driven sideways beyond
@@ -186,10 +203,9 @@ on a deck. A deck or bucket holds spoil; only the ground takes it back. On the s
    installed car still overturns in the scripted sequence.
 4. Soil follow-up: remesh performance, a close-up visual rut demonstration, and
    a compact GPU load readback.
-5. Clump follow-up: bulking (settled spoil looser than the ground it came
-   from, so it takes more room; it needs a looseness value per cell and so a new
-   brick format), spoil that stacks and rolls by its shape, a real angle of
-   repose for settled spoil, an identical-tool resistance
+5. Clump follow-up: spoil that stacks and rolls by its shape, looseness in the
+   grip yield of collision meshes, a tint for loose ground, an identical-tool
+   resistance
    comparison using a fixture with a realistic mass and an external feed force,
    the validation gaps listed in the clump report, and an in-app visual
    demonstration.
