@@ -535,7 +535,7 @@ fn a_knife_edge_compacts_the_cells_along_it_and_not_beside_it() {
 }
 
 #[test]
-fn a_clump_lost_under_the_ground_is_absorbed_and_one_lying_on_it_is_not() {
+fn clumps_lost_under_the_ground_or_flung_away_are_dropped_and_the_rest_kept() {
     let (field, terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
     let clump = |id, position| crate::MaterialClump {
         id,
@@ -558,9 +558,90 @@ fn a_clump_lost_under_the_ground_is_absorbed_and_one_lying_on_it_is_not() {
     clumps
         .bodies
         .insert(3, clump(3, surface - DVec3::Y * 300_000.0));
-    clumps.next_id = 4;
-    assert_eq!(clumps.absorb_buried(&terrain, &field), 2);
-    assert_eq!(clumps.bodies.keys().copied().collect::<Vec<_>>(), [1]);
+    // Shot out from under a powered tool, far faster than anything falls.
+    let mut ejected = clump(4, surface + DVec3::Y * 2.0);
+    ejected.linear_velocity = DVec3::new(300.0, 400.0, 0.0);
+    clumps.bodies.insert(4, ejected);
+    let mut dropped = clump(5, surface + DVec3::Y * 3.0);
+    dropped.linear_velocity = DVec3::Y * -60.0;
+    clumps.bodies.insert(5, dropped);
+    clumps.next_id = 6;
+    assert_eq!(clumps.absorb_lost(&terrain, &field), 3);
+    assert_eq!(clumps.bodies.keys().copied().collect::<Vec<_>>(), [1, 5]);
+}
+
+#[test]
+fn a_fragment_of_compacted_ground_settles_back_as_one_compacted_cell() {
+    let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
+    terrain.compress_patch(&field, patch).unwrap();
+    let source = crate::ExtractionCell {
+        cell,
+        sample: terrain.sample_cell(&field, cell),
+        throw: DVec3::ZERO,
+    };
+    let quanta = source.material_quanta();
+    assert!(quanta < 510, "the fixture compacts its cell");
+    let mut transfer = crate::ClumpCollection::default()
+        .prepare_extraction(&terrain, &field, &[source])
+        .unwrap();
+    transfer
+        .clumps
+        .bodies
+        .get_mut(&1)
+        .unwrap()
+        .update_settling(true, 1.0);
+    let deposited = transfer
+        .clumps
+        .prepare_deposition(&transfer.terrain, &field, 1, &[cell])
+        .expect("less than a whole cell still settles");
+    assert!(deposited.clumps.bodies.is_empty());
+    let back = crate::ExtractionCell {
+        cell,
+        sample: deposited.terrain.sample_cell(&field, cell),
+        throw: DVec3::ZERO,
+    };
+    assert!(back.sample.is_solid());
+    assert_eq!(back.material_quanta(), quanta, "material is conserved");
+}
+
+#[test]
+fn scattered_broken_cells_gather_into_one_clod_holding_all_their_material() {
+    let field = TerrainField::new(WorldSeed(8));
+    let mut terrain = TerrainOctree::default();
+    // Cell coordinates divisible by three share a clod block with their neighbours.
+    let corner = crate::WorldCell::new(30, 4_200, 30);
+    terrain
+        .add_sphere(&field, corner.centre(), 0.3, TerrainMaterial::Soil)
+        .unwrap();
+    // An L of three cells is no cuboid.
+    let sources = [(0, 0, 0), (1, 0, 0), (0, 0, 1)].map(|(x, y, z)| {
+        let cell = crate::WorldCell::new(corner.x + x, corner.y + y, corner.z + z);
+        let sample = terrain.sample_cell(&field, cell);
+        assert!(sample.is_solid());
+        crate::ExtractionCell {
+            cell,
+            sample,
+            throw: DVec3::ZERO,
+        }
+    });
+    let transfer = crate::ClumpCollection::default()
+        .prepare_extraction(&terrain, &field, &sources)
+        .unwrap();
+    assert_eq!(transfer.clumps.bodies.len(), 1);
+    let clod = &transfer.clumps.bodies[&1];
+    assert!(clod.is_valid());
+    assert_eq!(
+        u64::from(clod.quanta),
+        sources
+            .iter()
+            .map(|source| source.material_quanta())
+            .sum::<u64>()
+    );
+    assert!(
+        sources
+            .iter()
+            .all(|source| !transfer.terrain.sample_cell(&field, source.cell).is_solid())
+    );
 }
 
 #[test]

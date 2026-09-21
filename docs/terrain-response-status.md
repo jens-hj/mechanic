@@ -157,6 +157,14 @@ and a degraded tick discarded every body's terrain loads, silencing compaction,
 breakage and settling for the whole world. Loads are now discarded only by a
 tick that rolled back, and a clump buried in solid ground is absorbed into it.
 
+A material transfer waits only for the terrain overlapping the bricks it
+changes, not for the whole cut: distant streaming used to hold the first broken
+cell for a minute or more. Transfers are paced and metered because physics waits
+out each one. A fragment of 255 to 509 quanta settles back as one compacted
+cell, scattered broken cells gather into clods, and clumps buried in solid
+ground or faster than 150 m/s are dropped. Cutting still runs well below 60
+ticks a second: loose-body cost on fine terrain is the open problem.
+
 ## Open work
 
 1. Articulated rotational CCD and crossings that start in overlap.

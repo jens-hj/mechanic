@@ -289,7 +289,7 @@ impl CpuRoute {
             }
         }
         // The next terrain publication drops the absorbed bodies' rows.
-        if world.absorb_buried_clumps() > 0 {
+        if world.absorb_lost_clumps() > 0 {
             world.material_motion();
         }
     }

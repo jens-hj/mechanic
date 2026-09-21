@@ -2259,6 +2259,7 @@ fn saving_an_unpublished_transfer_keeps_the_previous_material_owner() {
         previous: runtime.edits.clone(),
         clumps: transfer.clumps,
         sources: vec![source],
+        region: [centre.0 - DVec3::splat(1.6), centre.0 + DVec3::splat(1.6)],
     });
     super::commit_terrain_edit_result(
         &mut runtime,

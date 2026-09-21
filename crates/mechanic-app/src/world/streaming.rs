@@ -51,6 +51,9 @@ pub(super) struct PendingMaterialPublication {
     pub(super) previous: TerrainOctree,
     pub(super) clumps: mechanic_world::ClumpCollection,
     pub(super) sources: Vec<mechanic_world::ExtractionCell>,
+    /// Lowest and highest corner of the terrain this transfer changes, with the
+    /// neighbouring bricks whose seams and gradients read it.
+    pub(super) region: [bevy::math::DVec3; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -357,16 +360,16 @@ pub(super) fn integrate_terrain_remeshes(
     // remain invisible and physics retains the prior scene until this boundary.
     let material_cutover = runtime.pending_material.is_some();
     if material_cutover {
-        if !tasks.is_empty()
-            || runtime.terrain_streamer.backlog() != 0
-            || runtime.selected_terrain_revision != runtime.terrain_revision
-        {
-            return;
-        }
         let pending = runtime
             .pending_material
             .as_ref()
             .expect("pending material publication");
+        // Only the ground the transfer changes has to be in place. Waiting for
+        // the whole cut would hold digging, and everything staged meanwhile,
+        // for as long as distant terrain keeps streaming.
+        if !runtime.terrain_settled_within(pending.region) {
+            return;
+        }
         // Without a CPU scene there is no second copy to keep consistent; the
         // route reads terrain and clumps from the world when it starts.
         if let Some(cpu) = simulation.cpu.as_mut() {
@@ -456,12 +459,17 @@ pub(super) fn integrate_terrain_remeshes(
     // the frame, the bookkeeping above exhausts it on a large cut, and every
     // frame then defers the same nodes without ever publishing one.
     let publishing = std::time::Instant::now();
-    for (offset, id) in dirty.iter().copied().enumerate() {
-        if !material_cutover
-            && publishing.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS
-        {
-            deferred.extend_from_slice(&dirty[offset..]);
-            break;
+    // A cutover shows its own ground in the frame its clumps appear; the rest of
+    // the cut keeps to the budget.
+    let cutover_region = runtime
+        .pending_material
+        .as_ref()
+        .map(|pending| pending.region);
+    for id in dirty.iter().copied() {
+        let forced = cutover_region.is_some_and(|[low, high]| node_overlaps(id, low, high));
+        if !forced && publishing.elapsed().as_secs_f64() * 1_000.0 >= INTEGRATION_BUDGET_MS {
+            deferred.push(id);
+            continue;
         }
         let Some(chunk) = runtime.active_terrain.get(&id) else {
             continue;
@@ -607,7 +615,13 @@ pub(super) fn integrate_terrain_remeshes(
         .active_terrain
         .iter()
         .map(|(&id, chunk)| {
-            let ready = runtime.active_terrain_ready_faces[&id];
+            // A chunk activated while a material cutover held publication has no
+            // published faces yet.
+            let ready = runtime
+                .active_terrain_ready_faces
+                .get(&id)
+                .copied()
+                .unwrap_or_default();
             u64::try_from(
                 chunk
                     .index_groups

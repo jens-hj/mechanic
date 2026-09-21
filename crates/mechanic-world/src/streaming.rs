@@ -291,6 +291,14 @@ impl TerrainStreamer {
         self.desired.values().copied()
     }
 
+    /// Whether every desired node `within` accepts is active exactly as desired.
+    /// Work elsewhere, such as distant detail still streaming, does not count.
+    pub fn settled_where(&self, mut within: impl FnMut(TerrainNodeId) -> bool) -> bool {
+        self.desired
+            .iter()
+            .all(|(id, node)| !within(*id) || self.active.get(id) == Some(node))
+    }
+
     /// Current startup-region completion. Empty active chunks count as resolved.
     pub fn local_readiness(&self) -> TerrainReadiness {
         let mut readiness = TerrainReadiness::default();

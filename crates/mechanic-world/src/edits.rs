@@ -324,13 +324,17 @@ impl TerrainOctree {
         material: TerrainMaterial,
         mut quanta: u64,
     ) -> (TerrainEditOutcome, u64) {
+        // A cell compacted by `c` steps holds 510 − c quanta, so what is left of a
+        // fragment of compacted ground goes back as one compacted cell. Less than
+        // the most compacted cell holds stays loose.
+        const LEAST_CELL_QUANTA: u64 = 510 - u8::MAX as u64;
         let mut outcome = TerrainEditOutcome::default();
         if !crate::BreakageResponse::for_material(material).deposits {
             return (outcome, quanta);
         }
         let mut staged = BTreeMap::<BrickCoord, TerrainBrick>::new();
         for &cell in cells {
-            if quanta < 510 {
+            if quanta < LEAST_CELL_QUANTA {
                 break;
             }
             if !cell.is_editable() || cell.y == i32::MIN {
@@ -353,8 +357,13 @@ impl TerrainOctree {
                     .cloned()
                     .unwrap_or_else(|| TerrainBrick::promote(field, coordinate))
             });
-            if brick.set_solid(cell.local_in_brick(), material, -EMPTY_DENSITY) {
-                quanta -= 510;
+            let placed = quanta.min(510);
+            let compaction = u8::try_from(510 - placed).unwrap_or(u8::MAX);
+            // Compression lowers a cell's surface as it packs it; keep it solid.
+            let density = (-EMPTY_DENSITY - f32::from(compaction) * COMPACTION_STEP_METRES)
+                .max(COMPACTION_STEP_METRES);
+            if brick.set_solid(cell.local_in_brick(), material, density, compaction) {
+                quanta -= placed;
                 outcome.added_cells[material.code() as usize] += 1;
                 brick.revision = self.next_revision;
             }
@@ -602,7 +611,7 @@ impl TerrainOctree {
                 continue;
             };
             for (cell, density) in cells {
-                if brick.set_solid(cell.local_in_brick(), material, *density) {
+                if brick.set_solid(cell.local_in_brick(), material, *density, 0) {
                     outcome.added_cells[material.code() as usize] += 1;
                     changed.insert(coordinate);
                 }

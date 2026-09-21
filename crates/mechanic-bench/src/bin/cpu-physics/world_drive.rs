@@ -144,7 +144,7 @@ pub(super) fn run(
 
     // The app steps the world's loose material in the same machine, without
     // the clumps it finds lost under the terrain.
-    let absorbed = clumps.absorb_buried(&edits, &field);
+    let absorbed = clumps.absorb_lost(&edits, &field);
     let mut initial = MachineState::at_rest(&creation);
     let creation = if probing && !clumps.bodies.is_empty() {
         let prepared =
@@ -164,7 +164,7 @@ pub(super) fn run(
         .collect::<Vec<_>>();
     println!(
         "{}",
-        json!({"kind":"metadata","soil":soil,"kernel_coverage_complete":false,"world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup,"saved_clumps":clumps.bodies.len(),"clumps_absorbed_underground":absorbed,"saved_clumps_awake":clumps.bodies.values().filter(|body| !body.sleeping).count(),"saved_clumps_depositable":clumps.bodies.values().filter(|body| body.can_deposit()).count()})
+        json!({"kind":"metadata","soil":soil,"kernel_coverage_complete":false,"world":world.name,"generation":world.construction_generation,"parts":bounds.len(),"anchored_parts":anchored.len(),"bodies":creation.compounds.len(),"dynamic_bodies":dynamic.len(),"colliders":creation.colliders.len(),"cylinders":creation.cylinders.len(),"bearings":creation.bearings.len(),"throttle_drives":throttled,"warmup":options.warmup,"saved_clumps":clumps.bodies.len(),"clumps_absorbed_underground":absorbed,"saved_clump_quanta":clumps.bodies.values().map(|body| body.quanta).collect::<Vec<_>>(),"saved_clumps_awake":clumps.bodies.values().filter(|body| !body.sleeping).count(),"saved_clumps_depositable":clumps.bodies.values().filter(|body| body.can_deposit()).count()})
     );
 
     let mut scene = TerrainContactScene::default();

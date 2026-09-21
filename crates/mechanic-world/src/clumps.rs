@@ -10,6 +10,10 @@ use crate::{
     TerrainMaterial, TerrainOctree, WorldCell, WorldPosition,
 };
 
+/// Speed past which a clump is ejecta the world will not see again, in m/s.
+/// A fragment falling from 500 m arrives at about 100 m/s.
+const LOST_CLUMP_SPEED_M_S: f64 = 150.0;
+
 /// Maximum awake loose bodies in the initial CPU implementation.
 pub const MAX_ACTIVE_CLUMPS: usize = 256;
 
@@ -124,19 +128,24 @@ impl ClumpCollection {
             && self.bodies.values().filter(|body| !body.sleeping).count() <= MAX_ACTIVE_CLUMPS
     }
 
-    /// Removes clumps lost inside solid ground and returns how many. Terrain
-    /// collides from outside only, so a clump that gets under the surface falls
-    /// without end. One whose centre and the space above its top are both solid
-    /// is back in the ground it came from.
-    pub fn absorb_buried(&mut self, terrain: &TerrainOctree, field: &TerrainField) -> usize {
+    /// Removes clumps the world has lost and returns how many.
+    ///
+    /// Terrain collides from outside only, so a clump that gets under the
+    /// surface falls without end: one whose centre and the space above its top
+    /// are both solid is back in the ground it came from. A fragment pinched
+    /// between a powered tool and the ground can also leave faster than anything
+    /// thrown or dropped; it is gone before it lands, and terrain must not
+    /// stream after it.
+    pub fn absorb_lost(&mut self, terrain: &TerrainOctree, field: &TerrainField) -> usize {
         let before = self.bodies.len();
         self.bodies.retain(|_, body| {
             let above = body.half_extents.max_element() + crate::TERRAIN_CELL_METERS;
-            ![DVec3::ZERO, DVec3::Y * above].into_iter().all(|offset| {
+            let buried = [DVec3::ZERO, DVec3::Y * above].into_iter().all(|offset| {
                 WorldPosition(body.position.0 + offset)
                     .cell()
                     .is_ok_and(|cell| terrain.sample_cell(field, cell).is_solid())
-            })
+            });
+            !buried && body.linear_velocity.length() <= LOST_CLUMP_SPEED_M_S
         });
         before - self.bodies.len()
     }
@@ -177,12 +186,29 @@ impl ClumpCollection {
                 maximum = maximum.max(source.cell.centre().0);
                 quanta += u32::try_from(source.material_quanta()).ok()?;
             }
-            let mut half_extents =
-                (maximum - minimum + DVec3::splat(crate::TERRAIN_CELL_METERS)) * 0.5;
-            let mut centre = (minimum + maximum) * 0.5;
-            let shrink = half_extents.y * f64::from(first.sample.compaction) / 510.0;
-            half_extents.y -= shrink;
-            centre.y -= shrink;
+            let count = f64::from(u32::try_from(cells.len()).ok()?);
+            let span = (maximum - minimum) / crate::TERRAIN_CELL_METERS + DVec3::ONE;
+            let (half_extents, centre) = if (span.element_product() - count).abs() < 0.5 {
+                // A whole cuboid keeps its shape. Packed cells hold less; the
+                // fragment is that much lower.
+                let mut half_extents =
+                    (maximum - minimum + DVec3::splat(crate::TERRAIN_CELL_METERS)) * 0.5;
+                let mut centre = (minimum + maximum) * 0.5;
+                let shrink = half_extents.y * (1.0 - f64::from(quanta) / (510.0 * count));
+                half_extents.y -= shrink;
+                centre.y -= shrink;
+                (half_extents, centre)
+            } else {
+                // Scattered cells gather into one clod of their volume, where
+                // they lay on average.
+                let volume = f64::from(quanta) * MATERIAL_QUANTUM_M3;
+                let mean = cells
+                    .iter()
+                    .map(|source| source.cell.centre().0)
+                    .sum::<DVec3>()
+                    / count;
+                (DVec3::splat(volume.cbrt() * 0.5), mean)
+            };
             let body = MaterialClump {
                 id,
                 material: first.sample.material,
@@ -255,7 +281,9 @@ pub struct MaterialTransfer {
     pub outcome: TerrainEditOutcome,
 }
 
-// Greedy cuboids contain only ready cells of one material and compaction. They
+// Greedy cuboids contain only ready cells of one material, however each was
+// packed: pressed ground never packs two cells alike, and a fragment per cell
+// is a body per cell. They
 // never bridge air, unbroken rock, or a different material to complete a hull.
 fn fragment_boxes(sources: &[ExtractionCell]) -> Vec<Vec<ExtractionCell>> {
     let mut cells: BTreeMap<_, _> = sources
@@ -276,7 +304,6 @@ fn fragment_boxes(sources: &[ExtractionCell]) -> Vec<Vec<ExtractionCell>> {
                                 .get(&WorldCell::new(start.x + x, start.y + y, start.z + z))
                                 .is_some_and(|source| {
                                     source.sample.material == first.sample.material
-                                        && source.sample.compaction == first.sample.compaction
                                 })
                         })
                     })
@@ -301,5 +328,23 @@ fn fragment_boxes(sources: &[ExtractionCell]) -> Vec<Vec<ExtractionCell>> {
         }
         groups.push(group);
     }
-    groups
+    // Ground broken under a tool comes away in scattered cells that form no
+    // cuboid. A body per cell is a body too many: loose cells of one material
+    // in the same three-cell block make one clod.
+    let mut clods = BTreeMap::<_, Vec<ExtractionCell>>::new();
+    let mut whole = Vec::new();
+    for group in groups {
+        if group.len() >= 8 {
+            whole.push(group);
+            continue;
+        }
+        let first = group[0];
+        let block = [first.cell.x, first.cell.y, first.cell.z].map(|axis| axis.div_euclid(3));
+        clods
+            .entry((block, first.sample.material.code()))
+            .or_default()
+            .extend(group);
+    }
+    whole.extend(clods.into_values());
+    whole
 }

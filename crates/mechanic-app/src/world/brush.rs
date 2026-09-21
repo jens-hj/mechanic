@@ -1,9 +1,8 @@
 //! The terrain brush: strokes batched into background edits and committed in order.
 
 use super::list::{WorldListPhase, WorldListState};
-use super::streaming::TerrainMeshTask;
 use super::{
-    ButtonInput, Component, GlobalTransform, Query, Res, ResMut, Result, Single, String, ToOwned,
+    ButtonInput, Component, GlobalTransform, Res, ResMut, Result, Single, String, ToOwned,
     ToString, Transform, Vec, Vec3, Visibility, With, WorldDiagnostics, WorldRuntime, format, vec,
 };
 use crate::camera::MainCamera;
@@ -297,22 +296,15 @@ pub(super) fn coordinate_terrain_edits(
     mut editor: ResMut<EditorState>,
     mut diagnostics: ResMut<WorldDiagnostics>,
     list: Res<WorldListState>,
-    tasks: Query<(), With<TerrainMeshTask>>,
 ) {
     if runtime.pending_material.is_some() {
         return;
     }
-    // A transfer holds every staged mesh until its replacement cut is complete,
-    // then publishes them all in one frame. Begun while loading, a saved clump
-    // that is already settled would hold the loading screen indefinitely; begun
-    // while terrain streams, that frame would carry the whole streamed cut.
-    // Edit acknowledgements do not cover streaming, so check it here.
-    if list.phase() == WorldListPhase::Playing
-        && tasks.is_empty()
-        && runtime.terrain_selection_task.is_none()
-        && runtime.terrain_streamer.backlog() == 0
-        && !runtime.terrain_streamer.has_dirty_publication()
-    {
+    // A transfer holds every staged mesh until the ground it changes is in
+    // place. Begun while loading, a saved clump that is already settled would
+    // hold the loading screen. Distant terrain still streaming does not delay
+    // it: the transfer checks only the terrain it touches.
+    if list.phase() == WorldListPhase::Playing && runtime.terrain_selection_task.is_none() {
         runtime.begin_material_transfer();
     }
     if runtime.pending_material.is_some() {

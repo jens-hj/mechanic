@@ -75,6 +75,39 @@ With the clumps present and the save's current electric-only bearing
 second, piston 1.00 → 1.35 m in 24 s. The head stalls under the 180 kN feed at
 that torque and digs by crushing; the 6.5 kN·m setup in the table keeps turning.
 
+## What the app pipeline needed
+
+Run on a disposable copy of the save with `scripts/run-background-capture.py`
+and temporary logging, the app showed three more stops between a broken cell
+and a visible hole:
+
+- **A transfer waited for the whole world to finish streaming.** Entering the
+  world leaves about 3,500 nodes to mesh at roughly 30 a second, and moving
+  clumps keep adding more. The first cells left the ground after a minute or
+  more, 70 clumps at once. A transfer now waits only for the terrain overlapping
+  the bricks it changes, and only those nodes skip the publication budget at its
+  cutover. Deposits are batched, up to 64 clumps a transfer; transfers begin at
+  most every 0.5 s and break out at most 48 cells, because physics waits out
+  each one.
+- **Clumps of less than a whole cell never settled.** Ground pressed before it
+  breaks holds fewer than 510 quanta a cell, deposition only placed whole cells,
+  and 65 of the save's 69 resting clumps were such fragments. A remainder of 255
+  to 509 quanta now goes back as one compacted cell holding exactly that much.
+- **A fragment pinched under the tool left at the speed clamp**, and terrain
+  selection followed it. Clumps faster than 150 m/s are dropped with the buried.
+
+Scattered broken cells of one material in the same three-cell block now gather
+into one clod of their volume, instead of a body per cell.
+
+Background window on an M1 Pro, the save's electric-only drill: the 69 resting
+clumps fall to 12 within four seconds of entering; the first cells break out
+about eight seconds in, while 2,800 nodes are still streaming; spoil peaks
+near 120 clumps and settles back to 13 when the piston retracts; no tick
+degrades and none panics over two piston cycles. **The simulation runs at only
+7 – 9 ticks a second while the drill is cutting** and at 60 otherwise: loose
+bodies on 5 cm terrain cost about 0.35 ms each (69 resting clumps, 2,100
+contacts, 25 ms a tick), as the clump report already found.
+
 ## Checks against regressions
 
 `car-drive --ground soil` and `--ground sand` travel 2.390 m and 2.412 m, equal
@@ -84,8 +117,9 @@ permanently overloading fresh ground.
 
 ## Not measured, and known limits
 
-- **The app was not run after the last fix.** The replay applies edits
-  synchronously and counts new spoil instead of simulating it. In the app, extraction waits on the
+- The app was run headless, in an unfocused background window, not played.
+  The replay applies edits synchronously and counts new spoil instead of
+  simulating it. In the app, extraction waits on the
   asynchronous edit queue and the 256-clump budget, so a hole is expected to
   clog with its own spoil. Thrown clumps are covered by a unit test only.
 - Spin stays far below its 37.7 rad/s target while the servo feeds at full
