@@ -108,6 +108,7 @@ pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> Part
                 material: core.material,
                 appearance: core.appearance,
                 layers: layer_docs(cylinder.layers()),
+                spiral: cylinder.spiral().map(spiral_doc),
             }
         }
         PartSpec::PipeBend(bend) => PartDoc::PipeBend {
@@ -180,5 +181,27 @@ pub(super) fn program_doc(program: &DriveProgram) -> DriveProgramDoc {
                 }),
             })
             .collect(),
+    }
+}
+
+fn spiral_doc(spiral: crate::SpiralSpec) -> super::doc::SpiralDoc {
+    let points = |profile: crate::SpiralProfile| {
+        profile
+            .points()
+            .iter()
+            .map(|point| [point.position_ticks, point.depth_ticks])
+            .collect()
+    };
+    super::doc::SpiralDoc {
+        pitch_ticks: spiral.pitch_ticks(),
+        starts: spiral.starts(),
+        hand: spiral.hand(),
+        outer: points(spiral.outer()),
+        inner: points(spiral.inner()),
+        taper: spiral.taper().map(|taper| super::doc::SpiralTaperDoc {
+            end: taper.end,
+            length_ticks: taper.length_ticks,
+            tip_diameter_ticks: taper.tip_diameter_ticks,
+        }),
     }
 }

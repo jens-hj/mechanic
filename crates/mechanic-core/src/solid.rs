@@ -15,6 +15,7 @@ mod cells;
 mod features;
 mod model;
 mod polygon;
+mod spiral;
 mod stitch;
 
 use cells::{
@@ -27,6 +28,7 @@ pub use model::{
     SurfacePatchKey, TopologyKey, TopologySource,
 };
 use polygon::PolyCell;
+pub use spiral::{SpiralCore, spiral_core, spiral_pieces};
 use stitch::build_evaluated;
 
 use crate::{PartSpec, ShapeFeatureId, ShapeRegion, decompose, decompose_part};
@@ -36,14 +38,17 @@ use crate::{PartSpec, ShapeFeatureId, ShapeRegion, decompose, decompose_part};
 ///
 /// # Errors
 ///
-/// Returns an error when the part is authored rather than construction geometry,
-/// its base boundary is invalid, or an ordered feature cannot be replayed.
+/// Returns an error when the part is authored rather than construction geometry
+/// or carries a spiral, its base boundary is invalid, or an ordered feature cannot be replayed.
 pub fn evaluate_part_solid(
     spec: PartSpec,
     features: impl IntoIterator<Item = (ShapeFeatureId, ShapeFeature)>,
 ) -> Result<EvaluatedSolid, SolidError> {
     let cells = match spec {
         PartSpec::Cuboid(cuboid) => pieces_to_cells(decompose_part(cuboid)),
+        PartSpec::Cylinder(cylinder) if cylinder.spiral().is_some() => {
+            return Err(SolidError::SpiralPart);
+        }
         PartSpec::Cylinder(cylinder) => cylinder_cells(cylinder),
         PartSpec::PipeBend(bend) => pipe_bend_cells(bend),
         PartSpec::PipeJunction(junction) => pipe_junction_cells(junction),

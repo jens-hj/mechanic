@@ -98,7 +98,7 @@ pub(crate) struct PreviewMeshRevisions {
 pub(crate) enum ConstructionPreviewMeshKey {
     Block(u64),
     Pipe(Vec<PartSpec>),
-    Branch(mechanic_core::PipeJunctionSpec, mechanic_core::CylinderSpec),
+    Branch(Box<(mechanic_core::PipeJunctionSpec, mechanic_core::CylinderSpec)>),
     Layer(Vec<PartSpec>),
 }
 
@@ -789,7 +789,7 @@ pub(crate) fn update_previews(
                     &mut meshes,
                     &visuals.block_drag_preview_mesh,
                     &mut rendered_revisions.construction,
-                    ConstructionPreviewMeshKey::Branch(branch.junction, candidate.spec),
+                    ConstructionPreviewMeshKey::Branch(Box::new((branch.junction, candidate.spec))),
                     || {
                         combined_parts_mesh_scaled(
                             &[

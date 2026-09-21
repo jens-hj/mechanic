@@ -871,6 +871,42 @@ fn unlimited_torque_round_trips_without_encoding_an_infinity() {
 }
 
 #[test]
+fn a_spiral_cylinder_keeps_its_profiles_winding_and_taper() {
+    let spiral = crate::SpiralSpec::new(
+        100,
+        2,
+        crate::SpiralHand::Left,
+        crate::SpiralProfile::buttress(20, 40).unwrap(),
+        crate::SpiralProfile::vee(20, 5).unwrap(),
+        Some(crate::SpiralTaper {
+            end: crate::SpiralEnd::PositiveY,
+            length_ticks: 100,
+            tip_diameter_ticks: 240,
+        }),
+    )
+    .unwrap();
+    let mut graph = ConstructionGraph::new();
+    graph
+        .apply(BuildCommand::SpawnCylinder(
+            CylinderSpec::new(
+                CylinderDimensions::new(0.75, 0.25, 1.5).unwrap(),
+                crate::BuildPose::default(),
+            )
+            .with_spiral(spiral)
+            .unwrap(),
+        ))
+        .unwrap();
+    let document = round_trip(&CreationDocument::from_graph(&graph, "Auger", &[]));
+    let restored = document.into_graph().expect("the document rebuilds");
+    let cylinder = restored
+        .graph
+        .parts()
+        .find_map(|(_, spec)| spec.as_cylinder())
+        .expect("the rebuilt graph keeps its cylinder");
+    assert_eq!(cylinder.spiral(), Some(spiral));
+}
+
+#[test]
 fn hollow_sliced_cylinder_keeps_its_bore_and_sweep() {
     let (graph, _) = sample();
     let restored = CreationDocument::from_graph(&graph, "Test Rig", &[])

@@ -1898,3 +1898,130 @@ fn featured_layer_colliders_carry_their_band_material() {
         );
     }
 }
+
+fn auger(hand: crate::SpiralHand, taper: Option<crate::SpiralTaper>) -> CylinderSpec {
+    CylinderSpec::new(
+        CylinderDimensions::new(0.5, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    )
+    .with_spiral(
+        crate::SpiralSpec::new(
+            100,
+            1,
+            hand,
+            crate::SpiralProfile::square(10, 60).unwrap(),
+            crate::SpiralProfile::PLAIN,
+            taper,
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn compiled_auger(spec: CylinderSpec) -> crate::CompiledCreation {
+    let mut graph = ConstructionGraph::new();
+    graph.apply(BuildCommand::SpawnCylinder(spec)).unwrap();
+    graph.compile().unwrap()
+}
+
+#[test]
+fn a_spiral_cylinder_weighs_its_core_and_its_ridge() {
+    let compiled = compiled_auger(auger(crate::SpiralHand::Right, None));
+    let properties = compiled.compounds[0].mass_properties;
+    let density = crate::ConstructionMaterial::Steel
+        .properties()
+        .density_kg_m3;
+    // Eight turns of a 2.5 cm ridge from the 10 cm core out to 25 cm.
+    let core = core::f32::consts::PI * 0.1 * 0.1 * 2.0;
+    let ridge = 8.0 * 0.025 * core::f32::consts::PI * (0.25 * 0.25 - 0.1 * 0.1);
+    let expected = density * (core + ridge);
+    assert!(
+        (properties.mass - expected).abs() < expected * 0.02,
+        "{} against {expected}",
+        properties.mass
+    );
+    assert!(properties.center_of_mass.length() < 0.005);
+    let plain = density * core::f32::consts::PI * 0.25 * 0.25 * 2.0;
+    assert!(properties.mass < plain * 0.5);
+}
+
+#[test]
+fn a_spiral_cylinder_collides_as_core_boxes_and_convex_ridge_runs() {
+    let spec = auger(crate::SpiralHand::Right, None);
+    let compiled = compiled_auger(spec);
+    assert!(compiled.cylinders.is_empty());
+    assert!(compiled.colliders.len() > super::CYLINDER_COLLIDER_COUNT + 8 * 12 - 1);
+    assert!(compiled.colliders.len() <= super::cylinder_collider_count(spec));
+    for (row, collider) in compiled.colliders.iter().enumerate() {
+        match &collider.shape {
+            ColliderShape::Cuboid { half_extents, .. } => {
+                assert!(row < super::CYLINDER_COLLIDER_COUNT);
+                assert!((half_extents.x - 0.05).abs() < 1.0e-6);
+            }
+            ColliderShape::Convex(convex) => {
+                assert!(row >= super::CYLINDER_COLLIDER_COUNT);
+                for vertex in &convex.vertices {
+                    assert!(vertex.x.hypot(vertex.z) < 0.25 + 1.0e-4, "{vertex}");
+                    assert!(vertex.y.abs() < 1.0 + 1.0e-4);
+                }
+                // A hull: no vertex lies outside any face.
+                for plane in &convex.face_planes {
+                    for vertex in &convex.vertices {
+                        assert!(plane.truncate().dot(*vertex) - plane.w < 1.0e-4);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_left_hand_spiral_mirrors_a_right_hand_one() {
+    let ridges = |hand| {
+        compiled_auger(auger(hand, None))
+            .colliders
+            .iter()
+            .filter(|collider| matches!(collider.shape, ColliderShape::Convex(_)))
+            .map(|collider| collider.local_center)
+            .collect::<Vec<_>>()
+    };
+    let right = ridges(crate::SpiralHand::Right);
+    let left = ridges(crate::SpiralHand::Left);
+    assert_eq!(right.len(), left.len());
+    for centre in right {
+        let mirrored = Vec3::new(centre.x, centre.y, -centre.z);
+        assert!(
+            left.iter().any(|other| other.distance(mirrored) < 1.0e-3),
+            "no left-hand ridge run at {mirrored}"
+        );
+    }
+}
+
+#[test]
+fn a_tapered_end_narrows_core_and_ridge_to_the_tip() {
+    let taper = crate::SpiralTaper {
+        end: crate::SpiralEnd::NegativeY,
+        length_ticks: 200,
+        tip_diameter_ticks: 20,
+    };
+    let tapered = compiled_auger(auger(crate::SpiralHand::Right, Some(taper)));
+    let straight = compiled_auger(auger(crate::SpiralHand::Right, None));
+    assert!(tapered.compounds[0].mass_properties.mass < straight.compounds[0].mass_properties.mass);
+    let centre = tapered.compounds[0].mass_properties.center_of_mass;
+    assert!(centre.y > 0.02, "{centre}");
+    let mut reached_tip = false;
+    for collider in &tapered.colliders {
+        let ColliderShape::Convex(convex) = &collider.shape else {
+            continue;
+        };
+        for vertex in &convex.vertices {
+            let vertex = *vertex + centre;
+            // Radii shrink linearly from 25 cm at half a metre above the tip
+            // to 2.5 cm at it.
+            let allowed = 0.025 + (0.25 - 0.025) * ((vertex.y + 1.0) / 0.5).clamp(0.0, 1.0);
+            assert!(vertex.x.hypot(vertex.z) < allowed + 2.0e-3, "{vertex}");
+            reached_tip |= vertex.y < -0.999;
+        }
+    }
+    assert!(reached_tip);
+}

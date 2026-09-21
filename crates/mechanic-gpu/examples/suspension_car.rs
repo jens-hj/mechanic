@@ -141,6 +141,7 @@ fn main() -> Result<()> {
                 material: ConstructionMaterial::Rubber,
                 appearance: MaterialAppearance::default(),
                 layers: Vec::new(),
+                spiral: None,
             });
             doc.part_frames.push(0);
             axles.push(bearing(

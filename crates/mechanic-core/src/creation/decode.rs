@@ -99,6 +99,7 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
             material,
             appearance,
             layers,
+            spiral,
         } => {
             let core = CylinderSpec::new(
                 CylinderDimensions::new(
@@ -112,7 +113,10 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
             .with_material(material)
             .with_appearance(appearance);
             match with_layer_docs(PartSpec::Cylinder(core), &layers)? {
-                PartSpec::Cylinder(cylinder) => BuildCommand::SpawnCylinder(cylinder),
+                PartSpec::Cylinder(cylinder) => BuildCommand::SpawnCylinder(match spiral {
+                    Some(spiral) => cylinder.with_spiral(spiral_from_doc(&spiral)?)?,
+                    None => cylinder,
+                }),
                 _ => unreachable!("layers keep the part kind"),
             }
         }
@@ -238,4 +242,27 @@ pub(super) fn resolve_program(program: &DriveProgramDoc) -> Result<DriveProgram,
         })
         .collect::<Result<Vec<_>, CreationError>>()?;
     Ok(DriveProgram::new(&states, program.loops)?)
+}
+
+fn spiral_from_doc(doc: &super::doc::SpiralDoc) -> Result<crate::SpiralSpec, crate::SpiralError> {
+    let profile = |points: &[[u16; 2]]| {
+        crate::SpiralProfile::new(
+            &points
+                .iter()
+                .map(|&[position, depth]| crate::SpiralPoint::new(position, depth))
+                .collect::<Vec<_>>(),
+        )
+    };
+    crate::SpiralSpec::new(
+        doc.pitch_ticks,
+        doc.starts,
+        doc.hand,
+        profile(&doc.outer)?,
+        profile(&doc.inner)?,
+        doc.taper.map(|taper| crate::SpiralTaper {
+            end: taper.end,
+            length_ticks: taper.length_ticks,
+            tip_diameter_ticks: taper.tip_diameter_ticks,
+        }),
+    )
 }

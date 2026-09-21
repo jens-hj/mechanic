@@ -640,6 +640,42 @@ impl ConstructionGraph {
                 self.validate_shape_owner_connections(owner)?;
                 Ok(BuildOutcome::LayersUpdated)
             }
+            BuildCommand::SetSpiral { part, spec } => {
+                let current = self
+                    .parts
+                    .get(part)
+                    .copied()
+                    .ok_or(GraphError::MissingPart(part))?;
+                let same_cylinder = current.as_cylinder().is_some_and(|current| {
+                    current.pose == spec.pose
+                        && current.material == spec.material
+                        && current.appearance == spec.appearance
+                        && current.layers() == spec.layers()
+                        && current.dimensions.axial_length_ticks()
+                            == spec.dimensions.axial_length_ticks()
+                        && current.dimensions.sweep_angle_degrees()
+                            == spec.dimensions.sweep_angle_degrees()
+                });
+                if !same_cylinder {
+                    return Err(GraphError::SpiralTargetChanged(part));
+                }
+                let owner = SolidOwner::Part(part);
+                if self.owner_has_shape_features(owner) {
+                    return Err(GraphError::SpiralOnFeaturedPart(part));
+                }
+                // Replaying the spiral through the cylinder validates one that
+                // was assembled by hand as much as one a tool produced.
+                let spec = match spec.spiral() {
+                    Some(spiral) => spec.without_spiral().with_spiral(spiral)?,
+                    None => spec,
+                };
+                *self
+                    .parts
+                    .get_mut(part)
+                    .expect("the validated part remains live") = PartSpec::Cylinder(spec);
+                self.validate_shape_owner_connections(owner)?;
+                Ok(BuildOutcome::SpiralUpdated)
+            }
             BuildCommand::SetShapeFeatureAmount {
                 feature,
                 amount_ticks,

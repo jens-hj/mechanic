@@ -10,6 +10,7 @@ use super::layers::{
     layer_thickness_ticks, shifted_pose, unwind_layer_regions,
 };
 use super::material::ConstructionMaterial;
+use super::spiral::{SpiralError, SpiralSpec};
 use crate::MaterialAppearance;
 use bevy_math::Vec3;
 use thiserror::Error;
@@ -244,6 +245,7 @@ pub struct CylinderSpec {
     /// Core color and finish treatment.
     pub appearance: MaterialAppearance,
     pub(super) layers: MaterialLayers,
+    pub(super) spiral: Option<SpiralSpec>,
 }
 
 impl CylinderSpec {
@@ -255,12 +257,78 @@ impl CylinderSpec {
             material: ConstructionMaterial::Steel,
             appearance: MaterialAppearance::BAKED,
             layers: MaterialLayers::NONE,
+            spiral: None,
         }
     }
 
     /// Material layers over the core, oldest first.
     pub const fn layers(self) -> MaterialLayers {
         self.layers
+    }
+
+    /// The spiral drawn into this cylinder's walls, if any.
+    pub const fn spiral(self) -> Option<SpiralSpec> {
+        self.spiral
+    }
+
+    /// Draws a spiral into this cylinder's walls, replacing any it had. The
+    /// dimensions stay the envelope: the outer profile cuts in from the outer
+    /// diameter and the bore profile out from the inner one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpiralError`] when the cylinder is a sector, layered, or solid
+    /// under a bore profile, when the cuts leave too little wall, when the
+    /// taper does not fit, or when the ridges need too many colliders.
+    pub fn with_spiral(self, spiral: SpiralSpec) -> Result<Self, SpiralError> {
+        let dimensions = self.dimensions;
+        if dimensions.sweep_angle_degrees != MAX_CYLINDER_SWEEP_DEGREES {
+            return Err(SpiralError::PartialSector);
+        }
+        if !self.layers.is_empty() {
+            return Err(SpiralError::Layered);
+        }
+        if !spiral.inner().is_plain() && dimensions.inner_diameter <= 0.0 {
+            return Err(SpiralError::BoreRequired);
+        }
+        let ticks = |ticks: u16| f32::from(ticks) * POSITION_TICK_METERS;
+        let core_radius = dimensions.outer_diameter * 0.5 - ticks(spiral.outer().max_depth_ticks());
+        let bore_radius = dimensions.inner_diameter * 0.5 + ticks(spiral.inner().max_depth_ticks());
+        let wall = MIN_CYLINDER_DIAMETER_GAP * 0.5 - 1.0e-4;
+        let mut tip_scale = 1.0;
+        if let Some(taper) = spiral.taper() {
+            let tip = ticks(taper.tip_diameter_ticks);
+            if taper.length_ticks == 0
+                || taper.length_ticks > dimensions.axial_length_ticks
+                || taper.tip_diameter_ticks < super::spiral::MIN_SPIRAL_TIP_DIAMETER_TICKS
+                || tip > dimensions.outer_diameter + 1.0e-4
+            {
+                return Err(SpiralError::TaperOutOfRange);
+            }
+            tip_scale = tip / dimensions.outer_diameter;
+        }
+        if core_radius - bore_radius < wall
+            || (dimensions.inner_diameter > 0.0 && core_radius * tip_scale - bore_radius < wall)
+        {
+            return Err(SpiralError::TooDeep);
+        }
+        if spiral
+            .collider_steps_per_turn(dimensions.axial_length())
+            .is_none()
+        {
+            return Err(SpiralError::TooFine);
+        }
+        Ok(Self {
+            spiral: Some(spiral),
+            ..self
+        })
+    }
+
+    /// The plain cylinder this spiral was drawn into.
+    #[must_use]
+    pub const fn without_spiral(mut self) -> Self {
+        self.spiral = None;
+        self
     }
 
     /// Material of the outermost curved wall, which meets the world.
@@ -295,6 +363,9 @@ impl CylinderSpec {
         material: ConstructionMaterial,
         appearance: MaterialAppearance,
     ) -> Result<Self, LayerError> {
+        if self.spiral.is_some() {
+            return Err(LayerError::SpiralPart);
+        }
         let dimensions = self.dimensions;
         let layer = |thickness| MaterialLayer {
             face,

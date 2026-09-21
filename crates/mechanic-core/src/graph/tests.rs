@@ -1819,3 +1819,131 @@ fn painting_one_material_band_leaves_the_others() {
         Err(GraphError::MissingBand(part, 2))
     );
 }
+
+fn auger_spiral() -> crate::SpiralSpec {
+    crate::SpiralSpec::new(
+        100,
+        1,
+        crate::SpiralHand::Right,
+        crate::SpiralProfile::square(10, 60).unwrap(),
+        crate::SpiralProfile::PLAIN,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_spiral_is_cut_into_a_placed_cylinder_and_filled_in_again() {
+    let mut graph = ConstructionGraph::new();
+    let plain = crate::CylinderSpec::new(
+        crate::CylinderDimensions::new(0.5, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    );
+    let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::SpawnCylinder(plain)).unwrap()
+    else {
+        unreachable!()
+    };
+    let plain_mass = graph.compile().unwrap().compounds[0].mass_properties.mass;
+
+    let cut = plain.with_spiral(auger_spiral()).unwrap();
+    assert_eq!(
+        graph.apply(BuildCommand::SetSpiral { part, spec: cut }),
+        Ok(BuildOutcome::SpiralUpdated)
+    );
+    assert_eq!(graph.part(part), Some(&PartSpec::Cylinder(cut)));
+    let compiled = graph.compile().unwrap();
+    assert!(compiled.colliders.len() > crate::CYLINDER_COLLIDER_COUNT);
+    assert!(compiled.compounds[0].mass_properties.mass < plain_mass * 0.5);
+
+    graph
+        .apply(BuildCommand::SetSpiral { part, spec: plain })
+        .unwrap();
+    let compiled = graph.compile().unwrap();
+    assert_eq!(compiled.colliders.len(), crate::CYLINDER_COLLIDER_COUNT);
+    assert!((compiled.compounds[0].mass_properties.mass - plain_mass).abs() < 1.0e-3);
+}
+
+#[test]
+fn a_spiral_edit_changes_nothing_but_the_walls() {
+    let mut graph = ConstructionGraph::new();
+    let plain = crate::CylinderSpec::new(
+        crate::CylinderDimensions::new(0.5, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    );
+    let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::SpawnCylinder(plain)).unwrap()
+    else {
+        unreachable!()
+    };
+    let before = graph.clone();
+    let moved = crate::CylinderSpec::new(
+        plain.dimensions,
+        BuildPose::from_position_ticks(IVec3::Y * 100, crate::GridRotation::default()),
+    )
+    .with_spiral(auger_spiral())
+    .unwrap();
+    assert_eq!(
+        graph.apply(BuildCommand::SetSpiral { part, spec: moved }),
+        Err(GraphError::SpiralTargetChanged(part))
+    );
+    let longer = crate::CylinderSpec::new(
+        crate::CylinderDimensions::new(0.5, 0.0, 2.25).unwrap(),
+        BuildPose::default(),
+    )
+    .with_spiral(auger_spiral())
+    .unwrap();
+    assert_eq!(
+        graph.apply(BuildCommand::SetSpiral { part, spec: longer }),
+        Err(GraphError::SpiralTargetChanged(part))
+    );
+    assert_eq!(graph.part(part), before.part(part));
+
+    // A ridge added onto the cylinder widens it, which is allowed.
+    let wider = crate::CylinderSpec::new(
+        crate::CylinderDimensions::new(0.75, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    )
+    .with_spiral(auger_spiral())
+    .unwrap();
+    assert!(
+        graph
+            .apply(BuildCommand::SetSpiral { part, spec: wider })
+            .is_ok()
+    );
+}
+
+#[test]
+fn a_spiral_cylinder_takes_no_chamfer_and_a_chamfered_one_no_spiral() {
+    let mut graph = ConstructionGraph::new();
+    let plain = crate::CylinderSpec::new(
+        crate::CylinderDimensions::new(0.5, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    );
+    let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::SpawnCylinder(plain)).unwrap()
+    else {
+        unreachable!()
+    };
+    let owner = crate::SolidOwner::Part(part);
+    let edge = graph.evaluated_solid(owner).unwrap().logical_edges[0].key;
+    let chamfer = crate::ShapeFeature::new(
+        [crate::EdgeChainRef { owner, edge }],
+        crate::EdgeTreatment::Chamfer,
+        10,
+    );
+    let cut = plain.with_spiral(auger_spiral()).unwrap();
+
+    let mut spiral_first = graph.clone();
+    spiral_first
+        .apply(BuildCommand::SetSpiral { part, spec: cut })
+        .unwrap();
+    assert!(
+        spiral_first
+            .apply(BuildCommand::AddShapeFeature(chamfer.clone()))
+            .is_err()
+    );
+
+    graph.apply(BuildCommand::AddShapeFeature(chamfer)).unwrap();
+    assert_eq!(
+        graph.apply(BuildCommand::SetSpiral { part, spec: cut }),
+        Err(GraphError::SpiralOnFeaturedPart(part))
+    );
+}

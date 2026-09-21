@@ -210,6 +210,11 @@ pub(super) fn compose_world_mass(
 }
 
 pub(super) fn part_world_mass(spec: PartSpec) -> WorldMassProperties {
+    if let PartSpec::Cylinder(cylinder) = spec
+        && cylinder.spiral().is_some()
+    {
+        return spiral_world_mass(cylinder);
+    }
     let properties = part_mass_properties(spec);
     let rotation = spec.pose().rotation.quaternion();
     let basis = Mat3::from_quat(rotation);
@@ -250,34 +255,15 @@ pub(super) fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
         }
         PartSpec::Cylinder(spec) => {
             // An annular sector about local Y. Layered cylinders take their mass
-            // from the evaluated bands instead.
-            let length = spec.dimensions.axial_length();
-            let sweep = spec.dimensions.sweep_angle_radians();
-            let outer = spec.dimensions.outer_diameter() * 0.5;
-            let inner = spec.dimensions.inner_diameter() * 0.5;
-            let radial_squared = outer * outer + inner * inner;
-            let mass = spec.material.properties().density_kg_m3
-                * sweep
-                * (outer * outer - inner * inner)
-                * length
-                * 0.5;
-            let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
-                / (3.0 * sweep * (outer * outer - inner * inner));
-            let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
-            let radial_perpendicular = radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
-            let axial_variance = length * length / 12.0;
-            let shift = center_x * center_x;
-            PartMassProperties {
-                mass,
-                local_center: Vec3::new(center_x, 0.0, 0.0),
-                local_inertia: Mat3::from_diagonal(
-                    mass * Vec3::new(
-                        axial_variance + radial_perpendicular,
-                        radial_parallel + radial_perpendicular - shift,
-                        radial_parallel + axial_variance - shift,
-                    ),
-                ),
-            }
+            // from the evaluated bands instead, and spiral ones from their core
+            // and ridges.
+            annular_sector_mass_properties(
+                spec.material.properties().density_kg_m3,
+                spec.dimensions.outer_diameter() * 0.5,
+                spec.dimensions.inner_diameter() * 0.5,
+                spec.dimensions.axial_length(),
+                spec.dimensions.sweep_angle_radians(),
+            )
         }
         PartSpec::PipeBend(spec) => pipe_bend_mass_properties(spec),
         PartSpec::PipeJunction(spec) => pipe_junction_mass_properties(spec),
@@ -300,6 +286,91 @@ pub(super) fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
         PartSpec::DimensionLink(link) => {
             cuboid_mass_properties(link.cuboid(), MACHINE_PART_DENSITY_KG_M3)
         }
+    }
+}
+
+fn annular_sector_mass_properties(
+    density_kg_m3: f32,
+    outer: f32,
+    inner: f32,
+    length: f32,
+    sweep: f32,
+) -> PartMassProperties {
+    let radial_squared = outer * outer + inner * inner;
+    let mass = density_kg_m3 * sweep * (outer * outer - inner * inner) * length * 0.5;
+    let center_x = 4.0 * (sweep * 0.5).sin() * (outer.powi(3) - inner.powi(3))
+        / (3.0 * sweep * (outer * outer - inner * inner));
+    let radial_parallel = radial_squared * (sweep + sweep.sin()) / (4.0 * sweep);
+    let radial_perpendicular = radial_squared * (sweep - sweep.sin()) / (4.0 * sweep);
+    let axial_variance = length * length / 12.0;
+    let shift = center_x * center_x;
+    PartMassProperties {
+        mass,
+        local_center: Vec3::new(center_x, 0.0, 0.0),
+        local_inertia: Mat3::from_diagonal(
+            mass * Vec3::new(
+                axial_variance + radial_perpendicular,
+                radial_parallel + radial_perpendicular - shift,
+                radial_parallel + axial_variance - shift,
+            ),
+        ),
+    }
+}
+
+/// A spiral cylinder: its straight core as a plain annulus, and everything
+/// else from the same convex pieces a fine collider run would use.
+fn spiral_world_mass(spec: crate::CylinderSpec) -> WorldMassProperties {
+    /// Angular steps per turn the ridges are weighed at.
+    const MASS_STEPS_PER_TURN: u16 = 24;
+    let density = spec.material.properties().density_kg_m3;
+    let rotation = spec.pose.rotation.quaternion();
+    let basis = Mat3::from_quat(rotation);
+    let mut bodies = Vec::new();
+    if let Some(core) = crate::spiral_core(spec) {
+        let properties = annular_sector_mass_properties(
+            density,
+            core.outer_radius,
+            core.inner_radius,
+            core.length,
+            core::f32::consts::TAU,
+        );
+        bodies.push(WorldMassProperties {
+            mass: properties.mass,
+            center: spec.pose.translation() + rotation * (Vec3::Y * core.center_y),
+            inertia: basis * properties.local_inertia * basis.transpose(),
+        });
+    }
+    let mut volume = 0.0_f32;
+    let mut first_moment = Vec3::ZERO;
+    let mut second_moment = Mat3::ZERO;
+    for piece in crate::spiral_pieces(spec, MASS_STEPS_PER_TURN) {
+        accumulate_convex_moments(&piece, &mut volume, &mut first_moment, &mut second_moment);
+    }
+    if volume > f32::EPSILON {
+        let center = first_moment / volume;
+        let about_center = second_moment - outer_product(center, center) * volume;
+        bodies.push(WorldMassProperties {
+            mass: density * volume,
+            center,
+            inertia: (Mat3::IDENTITY * trace(about_center) - about_center) * density,
+        });
+    }
+    let mass = bodies.iter().map(|body| body.mass).sum::<f32>();
+    let center = bodies
+        .iter()
+        .map(|body| body.center * body.mass)
+        .sum::<Vec3>()
+        / mass;
+    let inertia = bodies.iter().fold(Mat3::ZERO, |total, body| {
+        let offset = body.center - center;
+        total
+            + body.inertia
+            + body.mass * (Mat3::IDENTITY * offset.length_squared() - outer_product(offset, offset))
+    });
+    WorldMassProperties {
+        mass,
+        center,
+        inertia,
     }
 }
 

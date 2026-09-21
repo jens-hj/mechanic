@@ -5,6 +5,7 @@ mod drives;
 mod mass;
 mod model;
 
+pub use colliders::cylinder_collider_count;
 use colliders::{
     append_evaluated_colliders, append_part_colliders, append_region_colliders,
     band_contact_properties, compose_raw_colliders, solid_full_cylinder,
@@ -165,7 +166,7 @@ fn compile_graph(
             | PartSpec::Input(_)
             | PartSpec::DimensionLink(_)
             | PartSpec::Cuboid(_) => 1,
-            PartSpec::Cylinder(_) => CYLINDER_COLLIDER_COUNT,
+            PartSpec::Cylinder(cylinder) => cylinder_collider_count(*cylinder),
             PartSpec::PipeBend(_) => PIPE_BEND_COLLIDER_COUNT,
             PartSpec::PipeJunction(junction) => junction.collider_count(),
             }

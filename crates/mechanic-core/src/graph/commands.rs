@@ -76,6 +76,15 @@ pub enum BuildCommand {
         /// Replacement sharing the part's core.
         spec: PartSpec,
     },
+    /// Replace a cylinder's spiral in place, keeping its part identity and
+    /// connections. The diameters may change with it: a ridge added onto a
+    /// cylinder widens the envelope the spiral is drawn into.
+    SetSpiral {
+        /// Cylinder being cut.
+        part: PartId,
+        /// Replacement with the same pose, length, material, and appearance.
+        spec: crate::CylinderSpec,
+    },
     /// Remove one bearing while leaving its endpoint parts intact.
     RemoveBearing(BearingId),
     /// Merge the groups containing two touching faces.
@@ -251,6 +260,8 @@ pub enum BuildOutcome {
     AppearanceUpdated,
     /// A part's material layers changed.
     LayersUpdated,
+    /// A cylinder's spiral changed.
+    SpiralUpdated,
     /// A pending operation was recorded.
     Pending,
     /// A pending operation was cancelled, or there was nothing to cancel.

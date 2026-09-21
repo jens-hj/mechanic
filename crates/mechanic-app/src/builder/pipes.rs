@@ -294,7 +294,7 @@ pub(crate) fn validate_pipe_run_in_bounds(
         .parts()
         .filter(|(part, _)| graph.region_of(*part).is_none())
         .map(|(_, part)| match part {
-            PartSpec::Cylinder(_) => mechanic_core::CYLINDER_COLLIDER_COUNT,
+            PartSpec::Cylinder(cylinder) => mechanic_core::cylinder_collider_count(*cylinder),
             PartSpec::PipeBend(_) => mechanic_core::PIPE_BEND_COLLIDER_COUNT,
             PartSpec::PipeJunction(junction) => junction.collider_count(),
             _ => 1,

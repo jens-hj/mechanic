@@ -124,6 +124,9 @@ pub enum LayerError {
     /// The part has no such layerable surface.
     #[error("this surface cannot take a material layer")]
     UnsupportedFace,
+    /// The cylinder carries a spiral.
+    #[error("a spiral cylinder does not take material layers")]
+    SpiralPart,
     /// The layered envelope would outgrow the largest part.
     #[error("a layered part must stay within 8 m")]
     TooLarge,

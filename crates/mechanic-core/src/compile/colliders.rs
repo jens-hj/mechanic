@@ -115,6 +115,17 @@ pub(super) fn solid_full_cylinder(
     })
 }
 
+/// Most collider rows a cylinder compiles to: sixteen boxes, and for a spiral
+/// its ridge runs and the narrowing core under a taper.
+pub fn cylinder_collider_count(spec: crate::CylinderSpec) -> usize {
+    CYLINDER_COLLIDER_COUNT
+        + spec.spiral().map_or(0, |spiral| {
+            let length = spec.dimensions.axial_length();
+            let steps = collider_steps_per_turn(spec, spiral);
+            spiral.ridge_segments(length, steps) + usize::from(steps)
+        })
+}
+
 pub(super) fn append_part_colliders(
     colliders: &mut Vec<LocalCollider>,
     part: PartId,
@@ -152,40 +163,14 @@ pub(super) fn append_part_colliders(
                 });
             }
         }
-        PartSpec::Cylinder(spec) => {
-            let outer = spec.dimensions.outer_diameter() * 0.5;
-            let inner = spec.dimensions.inner_diameter() * 0.5;
-            let half_radial = (outer - inner) * 0.5;
-            let center_radius = (outer + inner) * 0.5;
-            let sweep = spec.dimensions.sweep_angle_radians();
-            let segment_angle = sweep / 16.0;
-            let half_tangent = outer * (segment_angle * 0.5).tan();
-            let start_angle = if spec.dimensions.sweep_angle_degrees() == 360 {
-                -segment_angle * 0.5
-            } else {
-                -sweep * 0.5
-            };
-            let part_rotation = spec.pose.rotation.quaternion();
-            for segment in 0_u16..16 {
-                let angle = start_angle + segment_angle * (f32::from(segment) + 0.5);
-                let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
-                colliders.push(LocalCollider {
-                    source_part: part,
-                    compound_index,
-                    local_center: spec.pose.translation() - center_of_mass
-                        + part_rotation * (radial * center_radius),
-                    material_properties,
-                    shape: ColliderShape::Cuboid {
-                        local_rotation: part_rotation * Quat::from_rotation_y(-angle),
-                        half_extents: Vec3::new(
-                            half_radial,
-                            spec.dimensions.axial_length() * 0.5,
-                            half_tangent,
-                        ),
-                    },
-                });
-            }
-        }
+        PartSpec::Cylinder(spec) => append_cylinder_colliders(
+            colliders,
+            part,
+            compound_index,
+            spec,
+            center_of_mass,
+            material_properties,
+        ),
         PartSpec::PipeBend(spec) => append_pipe_bend_colliders(
             colliders,
             part,
@@ -219,6 +204,81 @@ pub(super) fn append_part_colliders(
         | PartSpec::DimensionLink(_) => {
             unreachable!("fixed-size authored parts resolve to cuboids")
         }
+    }
+}
+
+// A validated spiral always fits the ridge budget at some step count.
+fn collider_steps_per_turn(spec: crate::CylinderSpec, spiral: crate::SpiralSpec) -> u16 {
+    spiral
+        .collider_steps_per_turn(spec.dimensions.axial_length())
+        .unwrap_or(crate::MIN_SPIRAL_COLLIDER_STEPS_PER_TURN)
+}
+
+fn append_cylinder_colliders(
+    colliders: &mut Vec<LocalCollider>,
+    part: PartId,
+    compound_index: u32,
+    spec: crate::CylinderSpec,
+    center_of_mass: Vec3,
+    material_properties: MaterialProperties,
+) {
+    // A spiral cylinder collides as its straight core, boxed like any
+    // cylinder, plus one convex piece per ridge run.
+    let core = crate::spiral_core(spec);
+    let (outer, inner, half_length, center_y) = match (spec.spiral(), core) {
+        (Some(_), Some(core)) => (
+            core.outer_radius,
+            core.inner_radius,
+            core.length * 0.5,
+            core.center_y,
+        ),
+        (Some(_), None) => (0.0, 0.0, 0.0, 0.0),
+        (None, _) => (
+            spec.dimensions.outer_diameter() * 0.5,
+            spec.dimensions.inner_diameter() * 0.5,
+            spec.dimensions.axial_length() * 0.5,
+            0.0,
+        ),
+    };
+    let half_radial = (outer - inner) * 0.5;
+    let center_radius = (outer + inner) * 0.5;
+    let sweep = spec.dimensions.sweep_angle_radians();
+    let segment_angle = sweep / 16.0;
+    let half_tangent = outer * (segment_angle * 0.5).tan();
+    let start_angle = if spec.dimensions.sweep_angle_degrees() == 360 {
+        -segment_angle * 0.5
+    } else {
+        -sweep * 0.5
+    };
+    let part_rotation = spec.pose.rotation.quaternion();
+    for segment in 0_u16..if half_length > 0.0 { 16 } else { 0 } {
+        let angle = start_angle + segment_angle * (f32::from(segment) + 0.5);
+        let radial = Vec3::new(angle.cos(), 0.0, angle.sin());
+        colliders.push(LocalCollider {
+            source_part: part,
+            compound_index,
+            local_center: spec.pose.translation() - center_of_mass
+                + part_rotation * (radial * center_radius + Vec3::Y * center_y),
+            material_properties,
+            shape: ColliderShape::Cuboid {
+                local_rotation: part_rotation * Quat::from_rotation_y(-angle),
+                half_extents: Vec3::new(half_radial, half_length, half_tangent),
+            },
+        });
+    }
+    if let Some(spiral) = spec.spiral() {
+        let steps = collider_steps_per_turn(spec, spiral);
+        colliders.extend(
+            crate::spiral_pieces(spec, steps)
+                .iter()
+                .map(|piece| LocalCollider {
+                    source_part: part,
+                    compound_index,
+                    local_center: piece.centroid - center_of_mass,
+                    material_properties,
+                    shape: ColliderShape::Convex(compile_convex(piece, center_of_mass)),
+                }),
+        );
     }
 }
 

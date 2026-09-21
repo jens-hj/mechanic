@@ -36,7 +36,7 @@ pub use compile::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
     CompiledCreation, CompiledCylinder, CoordinateDrive, DriveMode, GearSelection, LocalCollider,
     LoopTopology, MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology,
-    PIPE_BEND_COLLIDER_COUNT, TopologyError,
+    PIPE_BEND_COLLIDER_COUNT, TopologyError, cylinder_collider_count,
 };
 pub use contact_geometry::{
     ContactCylinder, ContactGeometryError, ContactPolytope, ContactVelocity, ConvexFeature,
@@ -48,8 +48,8 @@ pub use creation::{
     CreationDocument, CreationError, DriveDwellDoc, DriveLimitsDoc, DriveLinkDoc, DriveProgramDoc,
     DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc, FaceRefDoc, GearboxConfigDoc,
     InputSeatLinkDoc, LoadedCreation, MaterialLayerDoc, PartDoc, PoseDoc, RegionDoc, RigidLinkDoc,
-    SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc, TopologySourceDoc,
-    WeldDoc,
+    SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, SpiralDoc, SpiralTaperDoc,
+    TopologyKeyDoc, TopologySourceDoc, WeldDoc,
 };
 pub use drive::{
     ActuatorAssignment, ActuatorPercentageError, DriveDwell, DriveKey, DriveLimits,
@@ -70,13 +70,16 @@ pub use geometry::{
     DimensionLinkSpec, EngineKind, EngineSpec, FaceKind, FaceOwner, FaceRef, GRID_UNIT_METERS,
     GridDimension, GridRotation, InputSpec, LayerError, LayerFace, LayerRegion,
     MAX_CYLINDER_OUTER_DIAMETER, MAX_CYLINDER_SWEEP_DEGREES, MAX_GRID_UNITS, MAX_PART_LAYERS,
-    MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES,
-    MIN_LAYER_THICKNESS_METERS, MaterialLayer, MaterialLayers, MaterialProperties,
-    PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, POSITION_TICK_METERS,
+    MAX_SPIRAL_PITCH_TICKS, MAX_SPIRAL_PROFILE_POINTS, MAX_SPIRAL_RIDGE_COLLIDERS,
+    MAX_SPIRAL_STARTS, MIN_CYLINDER_DIAMETER_GAP, MIN_CYLINDER_OUTER_DIAMETER,
+    MIN_CYLINDER_SWEEP_DEGREES, MIN_LAYER_THICKNESS_METERS, MIN_SPIRAL_COLLIDER_STEPS_PER_TURN,
+    MIN_SPIRAL_PITCH_TICKS, MIN_SPIRAL_TIP_DIAMETER_TICKS, MaterialLayer, MaterialLayers,
+    MaterialProperties, PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, POSITION_TICK_METERS,
     POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT, PartSpec, PipeArms,
     PipeBendDimensionError, PipeBendDimensions, PipeBendSpec, PipeJunctionDimensions,
-    PipeJunctionError, PipeJunctionSpec, SeatSpec, ServoSpec, SurfaceResponse, TransmissionSpec,
-    snap_world_to_grid,
+    PipeJunctionError, PipeJunctionSpec, SPIRAL_COLLIDER_STEPS_PER_TURN, SPIRAL_PROFILE_STEP_TICKS,
+    SeatSpec, ServoSpec, SpiralEnd, SpiralError, SpiralHand, SpiralPoint, SpiralProfile,
+    SpiralSpec, SpiralTaper, SurfaceResponse, TransmissionSpec, snap_world_to_grid,
 };
 pub use graph::{
     ActuatorInventory, AppearanceTarget, BearingDimensionError, BearingDimensions, BearingSpec,
@@ -114,8 +117,9 @@ pub use shape::{
 };
 pub use solid::{
     BoundaryHalfEdge, BoundaryVertex, ConvexVolumeCell, EdgeChainRef, EdgeTreatment,
-    EvaluatedSolid, LogicalEdge, ShapeFeature, SolidError, SolidOwner, SurfacePatch,
+    EvaluatedSolid, LogicalEdge, ShapeFeature, SolidError, SolidOwner, SpiralCore, SurfacePatch,
     SurfacePatchKey, TopologyKey, TopologySource, evaluate_part_solid, evaluate_region_solid,
+    spiral_core, spiral_pieces,
 };
 pub use suspension::{
     BumpStopSpec, CompressionLimit, MountPlates, ShockBodyEnd, ShockGeometry, ShockSpec,

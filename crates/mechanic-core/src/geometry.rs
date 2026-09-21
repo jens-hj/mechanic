@@ -5,6 +5,7 @@ mod layers;
 mod machine;
 mod material;
 mod pipe;
+mod spiral;
 
 pub use cylinder::{
     CYLINDER_SWEEP_STEP_DEGREES, CylinderDimensionError, CylinderDimensions, CylinderSpec,
@@ -34,6 +35,12 @@ pub use material::{ConstructionMaterial, MaterialProperties, SurfaceResponse};
 pub use pipe::{
     PIPE_BEND_ARC_SLICES, PIPE_BEND_RADIAL_SIDES, PipeArms, PipeBendDimensionError,
     PipeBendDimensions, PipeBendSpec, PipeJunctionDimensions, PipeJunctionError, PipeJunctionSpec,
+};
+pub use spiral::{
+    MAX_SPIRAL_PITCH_TICKS, MAX_SPIRAL_PROFILE_POINTS, MAX_SPIRAL_RIDGE_COLLIDERS,
+    MAX_SPIRAL_STARTS, MIN_SPIRAL_COLLIDER_STEPS_PER_TURN, MIN_SPIRAL_PITCH_TICKS,
+    MIN_SPIRAL_TIP_DIAMETER_TICKS, SPIRAL_COLLIDER_STEPS_PER_TURN, SPIRAL_PROFILE_STEP_TICKS,
+    SpiralEnd, SpiralError, SpiralHand, SpiralPoint, SpiralProfile, SpiralSpec, SpiralTaper,
 };
 
 use bevy_math::Vec3;

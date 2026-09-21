@@ -21,8 +21,8 @@ pub use doc::{
     BearingDoc, BearingSocketDoc, ConstructionFrameDoc, DriveDwellDoc, DriveLimitsDoc,
     DriveLinkDoc, DriveProgramDoc, DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc,
     FaceRefDoc, GearboxConfigDoc, InputSeatLinkDoc, MaterialLayerDoc, PartDoc, PoseDoc, RegionDoc,
-    RigidLinkDoc, SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, TopologyKeyDoc,
-    TopologySourceDoc, WeldDoc,
+    RigidLinkDoc, SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, SpiralDoc, SpiralTaperDoc,
+    TopologyKeyDoc, TopologySourceDoc, WeldDoc,
 };
 use encode::{edge_chain_doc, face_doc, limits_doc, part_doc, program_doc};
 use transform::{rotate_y_i32, rotate_y_vec3, transform_region_doc};
@@ -115,6 +115,9 @@ pub enum CreationError {
     /// A saved material layer does not fit its part.
     #[error(transparent)]
     Layer(#[from] crate::LayerError),
+    /// A saved spiral does not fit its cylinder.
+    #[error(transparent)]
+    Spiral(#[from] crate::SpiralError),
     /// A pipe-bend dimension was out of range.
     #[error(transparent)]
     PipeBendDimension(#[from] PipeBendDimensionError),

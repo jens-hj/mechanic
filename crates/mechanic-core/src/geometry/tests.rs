@@ -489,3 +489,158 @@ fn later_layers_own_the_corners_they_cover() {
         Err(LayerError::TooManyLayers)
     );
 }
+
+fn auger_spiral() -> super::SpiralSpec {
+    super::SpiralSpec::new(
+        100,
+        1,
+        super::SpiralHand::Right,
+        super::SpiralProfile::square(10, 60).unwrap(),
+        super::SpiralProfile::PLAIN,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_square_profile_reads_as_ridge_then_groove_in_every_pitch() {
+    let profile = super::SpiralProfile::square(10, 60).unwrap();
+    let pitch = 0.25;
+    for turn in [-1.0_f32, 0.0, 3.0] {
+        assert!(profile.depth_at(turn * pitch + 0.0125, pitch).abs() < 1.0e-6);
+        assert!((profile.depth_at(turn * pitch + 0.1, pitch) - 0.15).abs() < 1.0e-6);
+    }
+    let vee = super::SpiralProfile::vee(40, 20).unwrap();
+    assert!((vee.depth_at(0.025, pitch) - 0.025).abs() < 1.0e-6);
+    assert!((vee.depth_at(0.2, pitch) - 0.05).abs() < 1.0e-6);
+}
+
+#[test]
+fn a_spiral_is_refused_where_it_cannot_be_cut() {
+    let solid = CylinderSpec::new(
+        CylinderDimensions::new(0.5, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    );
+    assert!(solid.with_spiral(auger_spiral()).is_ok());
+
+    let sector = CylinderSpec::new(
+        CylinderDimensions::new(0.5, 0.0, 2.0)
+            .unwrap()
+            .with_sweep_angle_degrees(180)
+            .unwrap(),
+        BuildPose::default(),
+    );
+    assert_eq!(
+        sector.with_spiral(auger_spiral()),
+        Err(super::SpiralError::PartialSector)
+    );
+
+    let thin = CylinderSpec::new(
+        CylinderDimensions::new(0.3, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    );
+    assert_eq!(
+        thin.with_spiral(auger_spiral()),
+        Err(super::SpiralError::TooDeep)
+    );
+
+    let bore_thread = super::SpiralSpec::new(
+        100,
+        1,
+        super::SpiralHand::Left,
+        super::SpiralProfile::PLAIN,
+        super::SpiralProfile::vee(20, 10).unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        solid.with_spiral(bore_thread),
+        Err(super::SpiralError::BoreRequired)
+    );
+    let tube = CylinderSpec::new(
+        CylinderDimensions::new(0.5, 0.3, 2.0).unwrap(),
+        BuildPose::default(),
+    );
+    assert!(tube.with_spiral(bore_thread).is_ok());
+
+    let fine_thread = super::SpiralSpec::new(
+        20,
+        1,
+        super::SpiralHand::Right,
+        super::SpiralProfile::vee(20, 5).unwrap(),
+        super::SpiralProfile::PLAIN,
+        None,
+    )
+    .unwrap();
+    let long = CylinderSpec::new(
+        CylinderDimensions::new(0.5, 0.0, 8.0).unwrap(),
+        BuildPose::default(),
+    );
+    assert_eq!(
+        long.with_spiral(fine_thread),
+        Err(super::SpiralError::TooFine)
+    );
+}
+
+#[test]
+fn spirals_and_material_layers_refuse_each_other() {
+    let plain = CylinderSpec::new(
+        CylinderDimensions::new(0.5, 0.0, 2.0).unwrap(),
+        BuildPose::default(),
+    );
+    let layer = |cylinder: CylinderSpec| {
+        cylinder.with_layer(
+            LayerFace::OuterWall,
+            0.05,
+            ConstructionMaterial::Rubber,
+            crate::MaterialAppearance::BAKED,
+        )
+    };
+    assert_eq!(
+        layer(plain).unwrap().with_spiral(auger_spiral()),
+        Err(super::SpiralError::Layered)
+    );
+    assert_eq!(
+        layer(plain.with_spiral(auger_spiral()).unwrap()),
+        Err(LayerError::SpiralPart)
+    );
+}
+
+#[test]
+fn a_profile_must_run_forwards_on_its_grid_within_one_pitch() {
+    use super::{SpiralError, SpiralPoint, SpiralProfile};
+    assert_eq!(
+        SpiralProfile::new(&[SpiralPoint::new(20, 0), SpiralPoint::new(10, 5)]),
+        Err(SpiralError::PointOutOfOrder)
+    );
+    assert_eq!(
+        SpiralProfile::new(&[SpiralPoint::new(0, 3)]),
+        Err(SpiralError::PointOutOfOrder)
+    );
+    assert_eq!(
+        SpiralProfile::new(&[SpiralPoint::new(10, 0); 3]),
+        Err(SpiralError::StackedPoints)
+    );
+    assert_eq!(
+        super::SpiralSpec::new(
+            20,
+            1,
+            super::SpiralHand::Right,
+            SpiralProfile::square(40, 10).unwrap(),
+            SpiralProfile::PLAIN,
+            None,
+        ),
+        Err(SpiralError::PointOutOfOrder)
+    );
+    assert_eq!(
+        super::SpiralSpec::new(
+            100,
+            1,
+            super::SpiralHand::Right,
+            SpiralProfile::PLAIN,
+            SpiralProfile::PLAIN,
+            None,
+        ),
+        Err(SpiralError::Empty)
+    );
+}

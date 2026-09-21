@@ -19,6 +19,16 @@ pub enum GraphError {
     /// Material layers and shaped regions cannot be combined.
     #[error("part {0:?} cannot combine material layers with a shaped region")]
     LayeredPartInRegion(PartId),
+    /// A spiral does not fit its cylinder.
+    #[error(transparent)]
+    Spiral(#[from] crate::SpiralError),
+    /// A spiral edit named something other than a cylinder, or changed more of
+    /// it than its walls.
+    #[error("part {0:?} can only change its spiral and the diameters it is drawn into")]
+    SpiralTargetChanged(PartId),
+    /// Spirals and Shape features cannot be combined.
+    #[error("part {0:?} cannot combine a spiral with Shape features")]
+    SpiralOnFeaturedPart(PartId),
     /// An appearance edit named a material band the part does not have.
     #[error("part {0:?} has no material band {1}")]
     MissingBand(PartId, u8),

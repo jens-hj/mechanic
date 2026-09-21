@@ -185,6 +185,9 @@ pub enum SolidError {
     /// Authored machine geometry is fixed.
     #[error("authored machine parts do not support Shape features")]
     AuthoredPart,
+    /// A spiral cylinder's walls are not plain surfaces.
+    #[error("a spiral cylinder does not support Shape features")]
+    SpiralPart,
     /// Feature amounts are positive integer position ticks.
     #[error("a chamfer or fillet amount must be positive")]
     ZeroAmount,

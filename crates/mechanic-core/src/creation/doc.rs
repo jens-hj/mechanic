@@ -40,6 +40,38 @@ pub struct MaterialLayerDoc {
     pub appearance: MaterialAppearance,
 }
 
+/// One tapered cylinder end in its serialized form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpiralTaperDoc {
+    /// End the cylinder narrows towards.
+    pub end: crate::SpiralEnd,
+    /// Length of the narrowing part, in position ticks.
+    pub length_ticks: u16,
+    /// Envelope diameter at the end plane, in position ticks.
+    pub tip_diameter_ticks: u16,
+}
+
+/// One spiral in its serialized form. Profile points are
+/// `[position, depth]` in position ticks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpiralDoc {
+    /// Distance between neighbouring ridges, in position ticks.
+    pub pitch_ticks: u16,
+    /// Number of identical ridges.
+    pub starts: u8,
+    /// Winding direction.
+    pub hand: crate::SpiralHand,
+    /// Profile of the outer wall.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outer: Vec<[u16; 2]>,
+    /// Profile of the bore wall.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inner: Vec<[u16; 2]>,
+    /// Tapered end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taper: Option<SpiralTaperDoc>,
+}
+
 /// One construction part in its serialized form.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PartDoc {
@@ -76,6 +108,9 @@ pub enum PartDoc {
         /// Material layers replayed over the core, oldest first.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         layers: Vec<MaterialLayerDoc>,
+        /// Spiral drawn into the walls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spiral: Option<SpiralDoc>,
     },
     /// Cardinal 90-degree quarter-torus pipe bend.
     PipeBend {
