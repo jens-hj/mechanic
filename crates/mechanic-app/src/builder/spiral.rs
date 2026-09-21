@@ -194,6 +194,57 @@ impl SpiralSettings {
         self
     }
 
+    /// The settings as they go onto one cylinder. They are the player's
+    /// wishes, set with no cylinder in mind, so they bend to fit instead of
+    /// being refused: a solid cylinder takes the spiral on its outer wall, a cut
+    /// goes no deeper than the wall allows, and a tip is no wider than the part.
+    pub(crate) fn suited_to(self, cylinder: CylinderSpec) -> Self {
+        let mut suited = self;
+        let dimensions = cylinder.dimensions;
+        let (outer, inner) = (dimensions.outer_diameter(), dimensions.inner_diameter());
+        if inner <= 0.0 {
+            suited.wall = SpiralWall::Outer;
+        }
+        let on_grid = |meters: f32| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a length within one part, floored at zero"
+            )]
+            let ticks = (meters / POSITION_TICK_METERS + 1.0e-3).floor().max(0.0) as u16;
+            ticks / SPIRAL_PROFILE_STEP_TICKS * SPIRAL_PROFILE_STEP_TICKS
+        };
+        let least_wall = mechanic_core::MIN_CYLINDER_DIAMETER_GAP * 0.5;
+        let room = match (suited.mode, suited.wall) {
+            (SpiralMode::Cut, wall) => {
+                let across = cylinder.spiral().map_or(0, |spiral| match wall {
+                    SpiralWall::Outer => spiral.inner().max_depth_ticks(),
+                    SpiralWall::Bore => spiral.outer().max_depth_ticks(),
+                });
+                (outer - inner) * 0.5 - f32::from(across) * POSITION_TICK_METERS - least_wall
+            }
+            // A ridge grown into the bore must leave the bore open.
+            (SpiralMode::Add, SpiralWall::Bore) => blank(suited, cylinder).1 * 0.5 - least_wall,
+            (SpiralMode::Add, SpiralWall::Outer) => f32::INFINITY,
+        };
+        if room.is_finite() {
+            suited.depth_ticks = suited
+                .depth_ticks
+                .min(on_grid(room))
+                .max(SPIRAL_PROFILE_STEP_TICKS);
+        }
+        let envelope = if (suited.mode, suited.wall) == (SpiralMode::Add, SpiralWall::Outer) {
+            blank(suited, cylinder).0 + f32::from(suited.depth_ticks) * POSITION_TICK_METERS * 2.0
+        } else {
+            outer
+        };
+        suited.tip_ticks = suited
+            .tip_ticks
+            .min(on_grid(envelope))
+            .max(MIN_SPIRAL_TIP_DIAMETER_TICKS);
+        suited
+    }
+
     /// Reads the settings back off a cylinder that carries a spiral.
     pub(crate) fn picked_from(self, cylinder: CylinderSpec) -> Option<Self> {
         let spiral = cylinder.spiral()?;
@@ -331,6 +382,7 @@ pub(crate) fn spiralled(
     if cylinder.dimensions.sweep_angle_degrees() != mechanic_core::MAX_CYLINDER_SWEEP_DEGREES {
         return Err(spiral_error(mechanic_core::SpiralError::PartialSector));
     }
+    let settings = settings.suited_to(cylinder);
     let (mut outer, mut inner) = blank(settings, cylinder);
     let growth = f32::from(settings.depth_ticks) * POSITION_TICK_METERS * 2.0;
     if settings.mode == SpiralMode::Add {
@@ -566,8 +618,47 @@ mod tests {
         let spiral = spiralled(inside, &target).unwrap().spiral().unwrap();
         assert_eq!(spiral.outer().max_depth_ticks(), 20);
         assert_eq!(spiral.inner().max_depth_ticks(), 10);
+        // A solid cylinder has no bore, so the same settings go on its wall.
         let (_, solid) = shaft(0.5, 0.0);
-        assert!(spiralled(inside, &solid).is_err());
+        let spiral = spiralled(inside, &solid).unwrap().spiral().unwrap();
+        assert_eq!(spiral.outer().max_depth_ticks(), 10);
+        assert!(spiral.inner().is_plain());
+    }
+
+    #[test]
+    fn settings_that_do_not_fit_a_cylinder_bend_to_it_instead_of_being_refused() {
+        // Sized on a thick shaft, with a wide tip and the bore chosen.
+        let wishes = SpiralSettings {
+            wall: SpiralWall::Bore,
+            depth_ticks: 300,
+            taper_ticks: 200,
+            tip_ticks: 400,
+            fitted: true,
+            ..SpiralSettings::default()
+        };
+        let (_, thin) = shaft(0.25, 0.0);
+        let suited = wishes.suited_to(thin.spec);
+        assert_eq!(
+            suited.wall,
+            SpiralWall::Outer,
+            "a solid cylinder has no bore"
+        );
+        assert_eq!(
+            suited.depth_ticks, 40,
+            "10 cm: all but 2.5 cm of the radius"
+        );
+        assert_eq!(suited.tip_ticks, 100, "no wider than the cylinder");
+        let spec = spiralled(wishes, &thin).expect("the wishes bend to fit");
+        assert_eq!(spec.spiral().unwrap().outer().max_depth_ticks(), 40);
+
+        // A ridge grown into a bore leaves the bore open.
+        let (_, tube) = shaft(0.5, 0.25);
+        let inward = SpiralSettings {
+            mode: SpiralMode::Add,
+            ..wishes
+        };
+        let spec = spiralled(inward, &tube).expect("the ridge is kept short of the axis");
+        assert!(spec.dimensions.inner_diameter() >= 0.05 - 1.0e-6);
     }
 
     #[test]

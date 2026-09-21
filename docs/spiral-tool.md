@@ -56,8 +56,13 @@ once, so the part itself is the preview; Interact picks a spiral's settings up.
 The first cylinder the tool meets sizes pitch and depth to itself. The settings
 reuse the cylinder tool's dimension keys: length → pitch, inner → ridge width,
 outer → depth, sweep → starts; the wheel sets the taper length at the end being
-pointed at, up/down the tip diameter, Pipe Turn the ridge shape, Rotate the hand,
-Mirror X cut or add, Mirror Z outer wall or bore.
+pointed at and, with Fine held, the tip diameter; Pipe Turn the ridge shape,
+Rotate the hand, Mirror X cut or add, Mirror Z outer wall or bore, Shape Snap
+resets. Settings are wishes set with no cylinder in mind, so they bend to the
+cylinder they go on instead of being refused: a solid cylinder takes the spiral
+on its outer wall, a cut stops 2.5 cm short of the far side, and a tip is no
+wider than the part. A cut lies inside the cylinder where no ghost shows, so
+pointing at a cylinder says what a click will do.
 
 A drawn profile editor is planned; the tool currently offers square, V and
 buttress ridges.

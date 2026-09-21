@@ -24,6 +24,8 @@ pub(crate) struct SpiralPreview {
 pub(crate) struct SpiralTool {
     pub(crate) settings: SpiralSettings,
     pub(crate) preview: Option<SpiralPreview>,
+    /// What the player was last told a click would do, so it is said once.
+    pub(crate) announced: Option<SpiralPreview>,
 }
 
 /// Works out what the settings make of the cylinder under the cursor. Returns
@@ -41,7 +43,16 @@ pub(crate) fn hover(
     match spiralled(settings, &target) {
         Ok(spec) => {
             let error = validate_spiral(graph, &target, spec, state.placement_bounds).err();
-            state.spiral.preview = Some(SpiralPreview { target, spec });
+            let preview = SpiralPreview { target, spec };
+            state.spiral.preview = Some(preview);
+            // A cut lies inside the cylinder where no ghost shows, so say it.
+            if error.is_none() && spec != target.spec && state.spiral.announced != Some(preview) {
+                state.spiral.announced = Some(preview);
+                state.feedback = Some(format!(
+                    "Click: {}",
+                    settings.suited_to(target.spec).summary()
+                ));
+            }
             error
         }
         Err(error) => Some(error),
@@ -71,15 +82,15 @@ fn adjusted(actions: &ButtonInput<GameAction>, mut settings: SpiralSettings) -> 
             GameAction::CylinderSweepIncrease,
             SpiralDimension::Starts,
         ),
+        // The wheel sets the taper's length, and its tip while Fine is held.
         (
             GameAction::ZoomOut,
             GameAction::ZoomIn,
-            SpiralDimension::Taper,
-        ),
-        (
-            GameAction::NudgeDown,
-            GameAction::NudgeUp,
-            SpiralDimension::Tip,
+            if actions.pressed(GameAction::FinePlacement) {
+                SpiralDimension::Tip
+            } else {
+                SpiralDimension::Taper
+            },
         ),
     ] {
         let direction =
@@ -140,6 +151,12 @@ pub(crate) fn handle_spiral_actions(
         state.feedback = Some(format!("Picked up: {}", picked.summary()));
         return;
     }
+    // Not Clear Pipette, which puts the held tool away.
+    if actions.just_pressed(GameAction::ShapeSnap) {
+        state.spiral.settings = SpiralSettings::default();
+        state.feedback = Some("Spiral settings reset; the next cylinder sizes them".to_owned());
+        return;
+    }
     let before = state.spiral.settings;
     let settings = adjusted(actions, before);
     let changed = settings != before;
@@ -172,7 +189,9 @@ pub(crate) fn handle_spiral_actions(
     let fitted = settings.fitted_to(target.spec);
     state.spiral.settings = fitted;
     let spec = spiralled(fitted, &target);
-    commit(graph, state, history, &target, spec, &fitted.summary());
+    // What went on, which is the wishes bent to this cylinder.
+    let done = fitted.suited_to(target.spec).summary();
+    commit(graph, state, history, &target, spec, &done);
 }
 
 fn commit(
@@ -201,6 +220,7 @@ fn commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::prelude::Vec3;
     use mechanic_core::{
         BuildCommand, BuildOutcome, BuildPose, CylinderDimensions, GridRotation, PartId, SpiralEnd,
     };
@@ -234,6 +254,50 @@ mod tests {
             },
             spec,
         });
+    }
+
+    // Aims a real ray at the part and lets the tool's hover run as in play.
+    fn look(graph: &ConstructionGraph, state: &mut EditorState, origin: Vec3, direction: Vec3) {
+        state.hovered = crate::builder::raycast_construction(graph, origin, direction);
+        state.pointer_ray = Some((origin, direction));
+        crate::editor::hover::refresh_tool_preview(graph, state, crate::hotbar::Tool::Spiral);
+    }
+
+    #[test]
+    fn looking_at_a_cylinders_wall_or_end_readies_the_tool_before_and_after_a_spiral() {
+        let (mut graph, part) = shaft();
+        let mut history = EditorHistory::default();
+        let views = [
+            // At the wall from the side, and at the top end from above.
+            (Vec3::new(3.0, 2.0, 0.0), Vec3::NEG_X),
+            (Vec3::new(0.1, 6.0, 0.05), Vec3::NEG_Y),
+        ];
+        for round in 0..2 {
+            for (origin, direction) in views {
+                let mut state = EditorState::default();
+                look(&graph, &mut state, origin, direction);
+                assert_eq!(state.preview_error, None, "round {round} from {origin}");
+                let preview = state.spiral.preview.expect("the tool found its cylinder");
+                assert_eq!(preview.target.part, part);
+            }
+            let mut state = EditorState::default();
+            look(&graph, &mut state, views[0].0, views[0].1);
+            handle_spiral_actions(
+                &tap(GameAction::Primary),
+                &mut graph,
+                &mut state,
+                &mut history,
+            );
+            let cylinder = graph
+                .part(part)
+                .and_then(|spec| spec.as_cylinder())
+                .unwrap();
+            assert!(
+                cylinder.spiral().is_some(),
+                "round {round}: {:?}",
+                state.feedback
+            );
+        }
     }
 
     fn tap(action: GameAction) -> ButtonInput<GameAction> {

@@ -374,7 +374,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                     .to_owned()
             }
             (false, Tool::Spiral, _, _, _) => format!(
-                "Click a cylinder to spiral it, right-click to take it off; changes reshape the one you point at. {}/{} pitch, {}/{} ridge width, {}/{} depth, {}/{} starts, wheel taper, up/down tip, {} shape, {} hand, {} cut or add, {} wall or bore, {} picks up",
+                "Click a cylinder to spiral it, right-click to take it off; changes reshape the one you point at. {}/{} pitch, {}/{} ridge width, {}/{} depth, {}/{} starts, wheel taper ({} + wheel tip), {} shape, {} hand, {} cut or add, {} wall or bore, {} picks up, {} resets",
                 controls.label(GameAction::CylinderLengthDecrease),
                 controls.label(GameAction::CylinderLengthIncrease),
                 controls.label(GameAction::CylinderInnerDecrease),
@@ -383,11 +383,13 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 controls.label(GameAction::CylinderOuterIncrease),
                 controls.label(GameAction::CylinderSweepDecrease),
                 controls.label(GameAction::CylinderSweepIncrease),
+                controls.label(GameAction::FinePlacement),
                 controls.label(GameAction::PipeTurn),
                 rotate,
                 controls.label(GameAction::ShapeMirrorX),
                 controls.label(GameAction::ShapeMirrorZ),
                 controls.label(GameAction::Interact),
+                controls.label(GameAction::ShapeSnap),
             ),
             (false, Tool::Shape, _, _, _) => {
                 "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows nudge"
