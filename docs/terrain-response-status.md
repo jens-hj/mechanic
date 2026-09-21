@@ -136,12 +136,12 @@ on an i5-12600K; soil remeshing and varied-surface contact counts remain costly.
 
 Contact stress and delivered work now break terrain into world-owned clumps on
 the CPU route. Sand, soil and cover settle back into low-compaction terrain;
-rock, iron and graphite stay physical and sleep. Terrain edits and clump changes
-publish as one generation and save in one snapshot, and the GPU route rejects a
-world that holds clumps. See
+rock, iron and graphite stay physical and sleep. Terrain and clumps save in one
+snapshot. See
 [the clump report](performance-results/2026-09-18-clumps/REPORT.md). Extraction
-conserves material in every measured run, but the 256-clump replay runs at a
-104 – 114 ms physics p95 on an i5-12600K, so no clump scale gate is claimed.
+conserves material in every measured run. That report's 256-clump cost of
+104 – 114 ms, and its atomic terrain-and-body publication, describe clumps as
+solver bodies, which the spoil solver below replaced.
 
 Soft ground pressed past its hardened bearing capacity is failing: it carries
 the body straight up and holds it sideways with no more than its strength, so a
@@ -157,13 +157,20 @@ and a degraded tick discarded every body's terrain loads, silencing compaction,
 breakage and settling for the whole world. Loads are now discarded only by a
 tick that rolled back, and a clump buried in solid ground is absorbed into it.
 
-A material transfer waits only for the terrain overlapping the bricks it
-changes, not for the whole cut: distant streaming used to hold the first broken
-cell for a minute or more. Transfers are paced and metered because physics waits
-out each one. A fragment of 255 to 509 quanta settles back as one compacted
-cell, scattered broken cells gather into clods, and clumps buried in solid
-ground or faster than 150 m/s are dropped. Cutting still runs well below 60
-ticks a second: loose-body cost on fine terrain is the open problem.
+Loose material is no longer part of the machine solve. Each clump moves as a
+sphere of its volume against the voxel field, with its own small solver
+(`mechanic-physics/src/spoil.rs`): it agrees with an edit the moment the edit
+commits and is pushed out of solid ground rather than lost under a one-sided
+mesh. Machine colliders push and carry spoil and feel it one tick later as an
+impulse per body. Breaking ground out and laying spoil down are ordinary
+in-place terrain edits at up to 10 Hz; nothing is prepared, cut over or waited
+for, so physics never pauses. Soft spoil becomes ground after 0.25 s at rest in
+the lowest free cell within two cells, crumbs of less than a cell merge until
+they fill one, and only whole loose cells are laid down. The budget is 4,096
+awake clumps; past it, soft ground is laid straight back down. Scattered broken
+cells still gather into clods. On the saved face drill the CPU tick fell from a
+44 ms median to 0.22 ms and digging runs continuously; see
+[the spoil report](performance-results/2026-09-21-spoil/REPORT.md).
 
 ## Open work
 
@@ -173,7 +180,8 @@ ticks a second: loose-body cost on fine terrain is the open problem.
    installed car still overturns in the scripted sequence.
 4. Soil follow-up: remesh performance, a close-up visual rut demonstration, and
    a compact GPU load readback.
-5. Clump follow-up: the 256-clump tick cost, an identical-tool resistance
+5. Clump follow-up: spoil that stacks and rolls by its shape, a real angle of
+   repose for settled spoil, an identical-tool resistance
    comparison using a fixture with a realistic mass and an external feed force,
    the validation gaps listed in the clump report, and an in-app visual
    demonstration.

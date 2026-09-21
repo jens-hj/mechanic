@@ -364,10 +364,11 @@ sweep and re-query counts.
 one record per simulated second with the fastest body's speed, p50 and maximum
 tick time, and mean query, continuous and solve time, sweeps, re-queries,
 candidate triangles and pairs, and contacts. `--soil` compacts the ground
-under load. `--tool` also breaks it into counted spoil, ignores the world's
-saved clumps, and adds a `tool` object per second: each joint's position, speed
-and mean drive effort, ground load, slip work, footprint sizes, cells broken out
-and the materials under load. `car-drive` and `car-drop` take
+under load. `--tool` also breaks it into spoil, steps the world's clumps with
+the spoil solver as the app does, and adds a `tool` object per second: each
+joint's position, speed and mean drive effort, ground load, slip work, footprint
+sizes, cells broken out and laid down, live clumps, spoil time per tick and the
+materials under load. `car-drive` and `car-drop` take
 `--ground rock|soil|sand|cover`.
 
 `reference-fixtures` prints one record per captured exact-solver solve: rows,

@@ -1,0 +1,110 @@
+# Loose material outside the machine solver — 21 September 2026
+
+Digging with the saved face drill (`wefwefwefwef`, Apple M1 Pro) ran at about
+4 fps and came in bursts: a pile of clumps was dug free, the app nearly froze
+until they were absorbed, then the next pile. This change makes spoil cheap and
+removes every pause, so digging and settling run continuously.
+
+## What was slow
+
+Measured in the real app on a disposable copy of the save
+(`scripts/run-background-capture.py --from-start`, 60 s from world entry,
+unfocused window, 4112 × 2524, MSAA × 4):
+
+| Cost | Before |
+| --- | ---: |
+| CPU physics tick, median (119 clumps, ~2,700 contacts) | 43.8 ms |
+| Ticks run in 60 s | 768 of 3,600 |
+| Rebuilding the whole collision scene and solver per material transfer | 358 ms median, 12.3 s in total |
+| Material transfers in 60 s | 36, every one pausing physics |
+| Cells dug in 60 s | 0: the clump budget was full of clumps waiting to settle |
+| Streaming backlog while digging | stuck near 1,200 nodes |
+
+Clumps were full bodies in the articulated soft-step solver, about 0.3 ms each.
+Every transfer deep-copied every active terrain chunk into a fresh collision
+scene and rebuilt the solver, and physics waited from the start of a transfer to
+its cutover. Settling needed one simulated second, which at 12 ticks a second
+took five real ones, so the budget of 256 clumps stayed full and digging stopped
+until it drained. Each change in clump count also forced a whole-cut terrain
+reselection. One guess was wrong: the search for deposit cells cost 0.6 ms.
+
+## What changed
+
+- **Spoil solver** (`mechanic-physics/src/spoil.rs`). Each clump moves as a
+  sphere of its volume against the voxel field itself: trilinear density with its
+  gradient, read through a per-brick cache that an edit invalidates. It agrees
+  with an edit the moment the edit commits, is two-sided, and pushes a buried
+  clump out, so nothing falls under a one-sided mesh. The machine's colliders
+  push and carry spoil as moving shapes; the summed reaction returns to the
+  machine as one external impulse per body on the next tick, so a loaded bucket
+  weighs what it holds. Clumps separate from each other through a spatial hash.
+  Speed is capped at 15 m/s.
+- **Transfers are ordinary edits.** Breaking ground out and laying spoil down
+  happen in place on the persistent octree, between edit batches, at most every
+  100 ms. There is no prepared copy, no cutover, no scene rebuild, and physics
+  never waits. The mesh follows as after any other edit.
+- **Settling.** Soft spoil becomes ground after 0.25 s at rest, in the lowest
+  free cell within two cells, so it fills the hollow it lies in before it heaps.
+  Cells inside a machine collider are left free. Crumbs of less than a cell
+  that rest in the same three-cell block merge until they fill one; only whole
+  loose cells are laid down. The earlier partial-cell deposit, which marked
+  loose spoil as fully hardened ground, is gone.
+- **Budget.** 4,096 awake clumps instead of 256. Past it, freshly cut soft
+  ground is laid straight back down instead of stopping the dig.
+- **Rendering.** One shared lumpy clod mesh per material, scaled per clump, so
+  clumps batch.
+- Clumps no longer steer terrain streaming or the physics terrain cut, and the
+  GPU route no longer refuses a world that holds them.
+
+The save format is unchanged.
+
+## After
+
+Same capture, same save:
+
+| Measured | Before | After |
+| --- | ---: | ---: |
+| CPU physics tick, median / p95 | 43.8 / 62.9 ms | 0.22 / 2.57 ms |
+| Spoil step per frame, median / p95 | — | 0.12 / 0.43 ms |
+| Ticks run in 60 s | 768 | 3,394 |
+| Dropped or degraded ticks | 181 dropped | 0 |
+| Material transfers in 60 s | 36, each a 358 ms pause | 222, 0.24 ms median, no pause |
+| Cells dug / spoil clumps laid down | 0 / 53 | 970 / 731 |
+| Frame p95 | 379 ms | 50.7 ms |
+| Longest frame after the first 5 s | 663 ms | 167 ms |
+| Streaming backlog at 60 s | ~1,200 | 37 |
+
+The remaining frame time is not digging. `render_acquire` waits a median of
+30 ms for the GPU, which spends 38 ms a frame on 7 million terrain triangles at
+4112 × 2524 with MSAA × 4; the figure is the same with nothing moving. The
+longest frames after world entry are all such waits in an unfocused window.
+Terrain rendering cost is a separate item.
+
+Headless replay of the same save (`cpu-physics --scenario world-drive --soil
+--tool`, 2,400 ticks): solver p95 2.8 ms, spoil 0.1 ms a tick, 22 – 35 cells a
+second dug with the electric-only bearing, settling keeping pace, live clumps
+between 50 and 85, no degraded ticks.
+
+`material-clumps` now pours clumps of every material onto generated ground,
+all kept awake:
+
+| Awake clumps | Tick p95 | Previously, as solver bodies |
+| ---: | ---: | ---: |
+| 256 | 0.31 ms | 104 – 114 ms (i5-12600K) |
+| 2,048 in one dense heap | 2.9 ms | — |
+| 4,096 in one dense heap | 8.2 ms | — |
+
+## Limits
+
+- Spoil collides as spheres. It heaps, but it does not stack like boxes, and a
+  long fragment rolls like a ball.
+- The machine feels spoil one tick late and as one impulse per body.
+- Settled spoil spreads at most two cells, so heaps are steeper than a real
+  angle of repose would leave them.
+- Edit-to-mesh latency is whatever the streaming pipeline gives an edited node;
+  edited nodes already go first. It was not measured separately.
+- The clod look and the focused-window frame rate have not been judged by eye.
+
+Raw results: [app before](app-before.jsonl.gz), [app after](app-after.jsonl.gz),
+[drill replay](drill-replay-after.jsonl.gz). Every record keeps
+`kernel_coverage_complete: false`. No scale gate is claimed.

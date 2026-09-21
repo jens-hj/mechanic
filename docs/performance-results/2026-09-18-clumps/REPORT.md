@@ -1,5 +1,9 @@
 # CPU material breakage and clumps — 18 September 2026
 
+> Superseded in part. Clumps have since left the machine solver; the tick cost,
+> the atomic publication and the `material-clumps` fixture described here are
+> those of 18 September. See [the spoil report](../2026-09-21-spoil/REPORT.md).
+
 Two headless release fixtures ran sequentially on an Intel Core i5-12600K with
 no concurrent compilation. `material-clumps` drops 256 always-active 10 cm
 clumps, cycling through every terrain material, onto a flat triangle floor.
