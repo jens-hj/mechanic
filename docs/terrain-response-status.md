@@ -199,7 +199,12 @@ cells still gather into clods, soft clods that lie touching gather into clods of
 up to 27 cells, and anything lying still for a second sleeps, on the ground or
 on a deck. Friction holds a heap of clods together as it holds one to the
 ground, and a clod held up by others gathers no falling speed. A deck or bucket
-holds spoil; only the ground takes it back. On the saved face drill the CPU tick fell from a
+holds spoil; only the ground takes it back. A machine or a crowd presses spoil
+against the ground, not under it: what would end a tick below the surface stays
+where it was, and a clod whose rim alone is deep in a wall backs out of the wall
+rather than climbing it. Beside an edge of a convex part spoil is pushed away
+from the edge, not along the nearest face, so a turning
+[auger](spiral-tool.md) lifts spoil and its rim does not. On the saved face drill the CPU tick fell from a
 44 ms median to 0.22 ms and digging runs continuously; see
 [the spoil report](performance-results/2026-09-21-spoil/REPORT.md).
 
