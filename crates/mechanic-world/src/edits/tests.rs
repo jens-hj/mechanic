@@ -544,6 +544,57 @@ fn a_knife_edge_compacts_the_cells_along_it_and_not_beside_it() {
 }
 
 #[test]
+fn pressing_ground_packs_it_and_pressing_it_flat_squeezes_it_out_as_spoil() {
+    let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
+    terrain.compress_patch(&field, patch).unwrap();
+    let packed = crate::ExtractionCell {
+        cell,
+        sample: terrain.sample_cell(&field, cell),
+        throw: DVec3::ZERO,
+    };
+    assert!(packed.sample.is_solid() && packed.sample.compaction > 0);
+    // Packed ground is the same material in less room.
+    assert_eq!(packed.material_quanta(), u64::from(crate::CELL_QUANTA));
+
+    let mut clumps = crate::ClumpCollection::default();
+    let mut pressed_out = Vec::new();
+    // A press far beyond what packed soil carries.
+    let press = crate::SoilPatch {
+        pressure_pa: 1e8,
+        ..patch
+    };
+    for _ in 0..64 {
+        let outcome = terrain.compress_patch(&field, press).unwrap();
+        pressed_out.extend(outcome.pressed_out);
+        if !terrain.sample_cell(&field, cell).is_solid() {
+            break;
+        }
+    }
+    assert!(
+        !terrain.sample_cell(&field, cell).is_solid(),
+        "never pressed flat"
+    );
+    assert!(pressed_out.contains(&(cell, TerrainMaterial::Soil)));
+    clumps.heave(&pressed_out);
+    let spoil: u64 = clumps
+        .bodies
+        .values()
+        .map(|body| u64::from(body.quanta))
+        .sum();
+    assert_eq!(
+        spoil,
+        pressed_out.len() as u64 * u64::from(crate::CELL_QUANTA),
+        "every cell pressed flat is owed to the world as spoil"
+    );
+    assert!(
+        clumps
+            .bodies
+            .values()
+            .all(|body| body.is_valid() && body.can_deposit())
+    );
+}
+
+#[test]
 fn crumbs_gather_until_they_fill_a_cell() {
     let (field, mut terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
     let above = WorldCell::new(cell.x, cell.y + 1, cell.z);

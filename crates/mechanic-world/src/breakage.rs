@@ -128,10 +128,15 @@ pub struct ExtractionCell {
     pub throw: DVec3,
 }
 
+/// Material in one solid cell, in quanta. Pressing a cell packs it without
+/// taking anything away, so however compacted, a cell holds this much until it
+/// is pressed flat and leaves as spoil.
+pub const CELL_QUANTA: u32 = 510;
+
 impl ExtractionCell {
-    /// Remaining material after prior plastic compression.
+    /// Material the cell holds.
     pub const fn material_quanta(self) -> u64 {
-        510 - self.sample.compaction as u64
+        CELL_QUANTA as u64
     }
 }
 

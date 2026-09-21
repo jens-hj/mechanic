@@ -2230,6 +2230,53 @@ fn soil_commits_on_sixth_tick_and_survives_world_reload() {
 }
 
 #[test]
+fn ground_pressed_flat_by_an_edit_turns_up_as_spoil() {
+    let temporary = TempDir::new("world-install");
+    let store = WorldStore::new(&temporary.0);
+    let document = store.create_world("Pressed", Some(91)).unwrap();
+    let mut app = App::new();
+    app.init_resource::<WorldRuntime>();
+    let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+    runtime.store = store;
+    install_world(&mut runtime, document).unwrap();
+    let spawn = runtime.capsule.position.0;
+    let field = runtime.field.clone();
+    let surface = field.surface_height(spawn.x, spawn.z);
+    let press = mechanic_world::SoilPatch {
+        centre: WorldPosition(DVec3::new(spawn.x, surface, spawn.z)),
+        normal: DVec3::Y,
+        footprint: mechanic_world::LoadFootprint::square(DVec3::Y, 0.1),
+        pressure_pa: 1e8,
+        seconds: 1.0,
+    };
+    let mut pressed = 0;
+    for _ in 0..64 {
+        let mut terrain = runtime.edits.clone();
+        let outcome = terrain.compress_patch(&field, press).unwrap();
+        pressed += outcome.pressed_out.len();
+        super::brush::commit_terrain_edit_result(
+            &mut runtime,
+            super::TerrainEditTaskResult {
+                terrain,
+                outcomes: vec![outcome],
+                elapsed_ms: 0.0,
+            },
+        );
+    }
+    assert!(pressed > 0, "the press never flattened a cell");
+    let spoil: u64 = runtime
+        .clumps
+        .bodies
+        .values()
+        .map(|body| u64::from(body.quanta))
+        .sum();
+    assert_eq!(
+        spoil,
+        pressed as u64 * u64::from(mechanic_world::CELL_QUANTA)
+    );
+}
+
+#[test]
 fn settled_spoil_becomes_ground_in_one_step_and_saves_with_it() {
     let temporary = TempDir::new("world-install");
     let store = WorldStore::new(&temporary.0);

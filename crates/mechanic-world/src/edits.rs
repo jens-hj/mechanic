@@ -251,6 +251,12 @@ impl TerrainOctree {
                     outcome.compressed_cells[cell.sample.material.code() as usize] += 1;
                     outcome.sunk_metres += f64::from(depth);
                     changed = true;
+                    if brick
+                        .sample(cell.cell.local_in_brick())
+                        .is_some_and(|pressed| !pressed.is_solid())
+                    {
+                        outcome.pressed_out.push((cell.cell, cell.sample.material));
+                    }
                 }
             }
             if changed {
@@ -330,7 +336,7 @@ impl TerrainOctree {
         }
         let mut staged = BTreeMap::<BrickCoord, TerrainBrick>::new();
         for &cell in cells {
-            if quanta < 510 {
+            if quanta < u64::from(crate::CELL_QUANTA) {
                 break;
             }
             if !cell.is_editable() || cell.y == i32::MIN {
@@ -354,7 +360,7 @@ impl TerrainOctree {
                     .unwrap_or_else(|| TerrainBrick::promote(field, coordinate))
             });
             if brick.set_solid(cell.local_in_brick(), material, -EMPTY_DENSITY) {
-                quanta -= 510;
+                quanta -= u64::from(crate::CELL_QUANTA);
                 outcome.added_cells[material.code() as usize] += 1;
                 brick.revision = self.next_revision;
             }

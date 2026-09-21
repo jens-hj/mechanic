@@ -19,7 +19,8 @@ mod streaming;
 mod transvoxel;
 
 pub use breakage::{
-    BreakageAccumulator, BreakagePatch, BreakageResponse, ExtractionCell, MATERIAL_QUANTUM_M3,
+    BreakageAccumulator, BreakagePatch, BreakageResponse, CELL_QUANTA, ExtractionCell,
+    MATERIAL_QUANTUM_M3,
 };
 pub use clumps::{
     ClumpCollection, MAX_ACTIVE_CLUMPS, MaterialClump, SETTLE_SECONDS, spoil_targets,

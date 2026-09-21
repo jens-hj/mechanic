@@ -265,6 +265,8 @@ pub(super) fn commit_terrain_edit_result(
     let mut changed = false;
     let mut changed_brick_coordinates = BTreeSet::new();
     for outcome in result.outcomes {
+        // Ground pressed flat is squeezed out, not destroyed.
+        runtime.clumps.heave(&outcome.pressed_out);
         changed |= outcome.total_changed_cells() != 0;
         changed_brick_coordinates.extend(outcome.changed_brick_coordinates().iter().copied());
         changed_bricks = changed_bricks

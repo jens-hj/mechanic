@@ -24,7 +24,7 @@ pub struct MaterialClump {
     pub id: u64,
     /// Original terrain material.
     pub material: TerrainMaterial,
-    /// Exact material volume in 1/510-cell units.
+    /// Exact amount of material, in 1/510ths of what one solid cell holds.
     pub quanta: u32,
     /// Box-shaped convex fragment half extents, in metres.
     pub half_extents: DVec3,
@@ -68,7 +68,7 @@ impl MaterialClump {
     /// Whether this soft clump has settled long enough to try depositing.
     pub fn can_deposit(&self) -> bool {
         BreakageResponse::for_material(self.material).deposits
-            && self.quanta >= 510
+            && self.quanta >= crate::CELL_QUANTA
             && self.settled_seconds >= SETTLE_SECONDS
     }
 
@@ -167,6 +167,34 @@ impl ClumpCollection {
         Some(outcome)
     }
 
+    /// Takes ownership of ground that was pressed flat: each cell's material
+    /// becomes spoil lying where the cell was, ready to settle beside whatever
+    /// pressed it out. This is the berm along a rut.
+    pub fn heave(&mut self, pressed_out: &[(WorldCell, TerrainMaterial)]) {
+        for &(cell, material) in pressed_out {
+            let id = self.next_id;
+            let Some(next_id) = id.checked_add(1) else {
+                return;
+            };
+            self.next_id = next_id;
+            self.bodies.insert(
+                id,
+                MaterialClump {
+                    id,
+                    material,
+                    quanta: crate::CELL_QUANTA,
+                    half_extents: DVec3::splat(crate::TERRAIN_CELL_METERS * 0.5),
+                    position: cell.centre(),
+                    rotation: DQuat::IDENTITY,
+                    linear_velocity: DVec3::ZERO,
+                    angular_velocity: DVec3::ZERO,
+                    settled_seconds: SETTLE_SECONDS,
+                    sleeping: false,
+                },
+            );
+        }
+    }
+
     /// Turns whole cells of a settled soft clump back into ground at the first
     /// free, supported targets. What is left of it stays loose.
     pub fn settle(
@@ -195,42 +223,46 @@ impl ClumpCollection {
         Some(outcome)
     }
 
-    /// Gathers soft crumbs, each less than a cell, that rest in the same
-    /// three-cell block into one clump, so that together they can become
-    /// ground. Returns how many clumps were folded into another.
+    /// Gathers soft crumbs, each less than a cell, that rest on the same patch
+    /// of ground into the largest of them, so that together they can become
+    /// ground. A crumb is a handful of dirt: it crumbles where it lies and the
+    /// clod nearby is that much larger. Returns how many were folded in.
     pub fn gather_crumbs(&mut self) -> usize {
-        let mut blocks = BTreeMap::<_, Vec<u64>>::new();
+        /// Edge of the patch crumbs gather over, in cells. Whole cells break
+        /// out and settle whole, so crumbs come only from older saves.
+        const PATCH_CELLS: i32 = 64;
+        let mut patches = BTreeMap::<_, Vec<(u32, u64)>>::new();
         for body in self.bodies.values() {
-            if body.quanta < 510
+            if body.quanta < crate::CELL_QUANTA
                 && body.settled_seconds >= SETTLE_SECONDS
                 && BreakageResponse::for_material(body.material).deposits
                 && let Ok(cell) = body.position.cell()
             {
-                let block = [cell.x, cell.y, cell.z].map(|axis| axis.div_euclid(3));
-                blocks
-                    .entry((block, body.material.code()))
+                let patch = [cell.x, cell.y, cell.z].map(|axis| axis.div_euclid(PATCH_CELLS));
+                patches
+                    .entry((patch, body.material.code()))
                     .or_default()
-                    .push(body.id);
+                    .push((body.quanta, body.id));
             }
         }
         let mut folded = 0;
-        for ids in blocks.into_values().filter(|ids| ids.len() > 1) {
+        for mut crumbs in patches.into_values().filter(|crumbs| crumbs.len() > 1) {
+            crumbs.sort_unstable_by(|first, second| second.cmp(first));
             let mut quanta = 0_u32;
-            let mut centre = DVec3::ZERO;
-            for id in &ids[1..] {
-                let Some(crumb) = self.bodies.remove(id) else {
-                    continue;
-                };
-                quanta += crumb.quanta;
-                centre += crumb.position.0 * f64::from(crumb.quanta);
-                folded += 1;
+            for (crumb, id) in &crumbs[1..] {
+                // Enough for a few cells is enough: it settles, and the rest gather next.
+                if crumbs[0].0 + quanta + crumb > 8 * crate::CELL_QUANTA {
+                    break;
+                }
+                if self.bodies.remove(id).is_some() {
+                    quanta += crumb;
+                    folded += 1;
+                }
             }
-            let Some(body) = self.bodies.get_mut(&ids[0]) else {
+            let Some(body) = self.bodies.get_mut(&crumbs[0].1) else {
                 continue;
             };
-            centre += body.position.0 * f64::from(body.quanta);
             body.quanta += quanta;
-            body.position = WorldPosition(centre / f64::from(body.quanta));
             body.half_extents =
                 DVec3::splat((f64::from(body.quanta) * MATERIAL_QUANTUM_M3).cbrt() * 0.5);
             body.sleeping = false;
@@ -297,14 +329,11 @@ fn fragment(id: u64, cells: &[ExtractionCell]) -> Option<MaterialClump> {
     let count = f64::from(u32::try_from(cells.len()).ok()?);
     let span = (maximum - minimum) / crate::TERRAIN_CELL_METERS + DVec3::ONE;
     let (half_extents, centre) = if (span.element_product() - count).abs() < 0.5 {
-        // A whole cuboid keeps its shape. Packed cells hold less; the
-        // fragment is that much lower.
-        let mut half_extents = (maximum - minimum + DVec3::splat(crate::TERRAIN_CELL_METERS)) * 0.5;
-        let mut centre = (minimum + maximum) * 0.5;
-        let shrink = half_extents.y * (1.0 - f64::from(quanta) / (510.0 * count));
-        half_extents.y -= shrink;
-        centre.y -= shrink;
-        (half_extents, centre)
+        // A whole cuboid keeps its shape.
+        (
+            (maximum - minimum + DVec3::splat(crate::TERRAIN_CELL_METERS)) * 0.5,
+            (minimum + maximum) * 0.5,
+        )
     } else {
         // Scattered cells gather into one clod of their volume, where they lay
         // on average.

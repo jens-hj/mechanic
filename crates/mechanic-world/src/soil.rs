@@ -1,5 +1,6 @@
-//! Game-tuned plastic compaction, not measured soil data. Compression removes
-//! volume; displaced material and clumps are separate work.
+//! Game-tuned plastic compaction, not measured soil data. Pressing packs a
+//! cell without taking material from it; a cell pressed flat is squeezed out,
+//! and its material is owed to the world as spoil.
 #![expect(clippy::cast_possible_truncation)]
 
 use std::collections::BTreeMap;

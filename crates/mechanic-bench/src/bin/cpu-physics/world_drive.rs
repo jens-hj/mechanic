@@ -147,6 +147,16 @@ pub(super) fn run(
     let mut spoil = mechanic_physics::SpoilSolver::default();
     let mut reactions = Vec::new();
     let mut spoil_machine = mechanic_physics::SpoilMachine::default();
+    // Material is never made or destroyed: what the ground gives up, clumps hold.
+    let loose = |clumps: &mechanic_world::ClumpCollection| {
+        clumps
+            .bodies
+            .values()
+            .map(|body| i64::from(body.quanta))
+            .sum::<i64>()
+    };
+    let loose_at_start = loose(&clumps);
+    let mut cells_given_up = 0_i64;
     let dynamic = creation
         .compounds
         .iter()
@@ -343,6 +353,11 @@ pub(super) fn run(
                 }
                 let outcome = edits.compress_cells(&field, &ready);
                 sunk_metres += outcome.sunk_metres;
+                if probing {
+                    clumps.heave(&outcome.pressed_out);
+                    tool.cells_pressed_out += outcome.pressed_out.len();
+                    cells_given_up += i64::try_from(outcome.pressed_out.len())?;
+                }
                 let mut changed = outcome.changed_brick_coordinates().to_vec();
                 if probing {
                     // The app's material transfer: settled spoil down, broken ground out.
@@ -362,6 +377,7 @@ pub(super) fn run(
                         if let Some(outcome) = clumps.settle(&mut edits, &field, id, &targets) {
                             tool.cells_deposited +=
                                 usize::try_from(outcome.total_added_cells()).unwrap_or(usize::MAX);
+                            cells_given_up -= i64::try_from(outcome.total_added_cells())?;
                             changed.extend_from_slice(outcome.changed_brick_coordinates());
                         }
                     }
@@ -370,6 +386,7 @@ pub(super) fn run(
                     let laid_down = clumps.available() == 0;
                     if let Some(outcome) = clumps.extract(&mut edits, &field, &sources, laid_down) {
                         tool.cells_extracted += sources.len();
+                        cells_given_up += i64::try_from(sources.len())?;
                         changed.extend_from_slice(outcome.changed_brick_coordinates());
                     }
                     pending_breakage.committed(&sources);
@@ -448,7 +465,14 @@ pub(super) fn run(
     summary["maximum_rut_depth_m"] = json!(maximum_rut);
     summary["remesh_count"] = json!(measured_remeshes);
     summary["kernel_coverage_complete"] = json!(false);
+    let unaccounted =
+        loose(&clumps) - loose_at_start - cells_given_up * i64::from(mechanic_world::CELL_QUANTA);
+    summary["ground_cells_given_up"] = json!(cells_given_up);
+    summary["material_unaccounted_quanta"] = json!(unaccounted);
     println!("{summary}");
+    if unaccounted != 0 {
+        return Err("the replay made or destroyed material".into());
+    }
     Ok(())
 }
 
@@ -542,6 +566,7 @@ struct ToolWindow {
     drive_impulses: Vec<f64>,
     cells_extracted: usize,
     cells_deposited: usize,
+    cells_pressed_out: usize,
     clumps: usize,
     spoil_awake: usize,
     spoil_ms: f64,
@@ -607,6 +632,7 @@ impl ToolWindow {
             "work_j": self.work_j,
             "cells_extracted": self.cells_extracted,
             "cells_deposited": self.cells_deposited,
+            "cells_pressed_out": self.cells_pressed_out,
             "clumps": self.clumps,
             "spoil_awake": self.spoil_awake,
             "spoil_ms_per_tick": self.spoil_ms / self.ticks.max(1.0),

@@ -23,6 +23,9 @@ pub struct TerrainEditOutcome {
     /// Number of 32³ bricks whose density changed.
     pub changed_bricks: usize,
     pub(super) changed_brick_coordinates: Vec<BrickCoord>,
+    /// Cells pressed flat. Their material is squeezed out, not destroyed: the
+    /// caller owes each one to the world as spoil.
+    pub pressed_out: Vec<(WorldCell, TerrainMaterial)>,
 }
 
 /// Ordered terrain edit publication with the union of every changed brick.
