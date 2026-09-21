@@ -563,3 +563,194 @@ fn clods_piled_in_a_shaft_lie_still_once_the_tool_under_them_stops() {
         );
     }
 }
+
+// A round bore 60 cm across and 1.5 m deep with clods lying in its lower
+// metre, and a right-hand auger standing in it from the floor to half a metre
+// above the brim.
+fn bore_with_an_auger() -> (
+    TerrainField,
+    TerrainOctree,
+    ClumpCollection,
+    CompiledCreation,
+    DVec3,
+    f64,
+) {
+    use mechanic_core::{
+        BuildCommand, BuildPose, ConstructionGraph, CylinderDimensions, CylinderSpec, SpiralHand,
+        SpiralProfile, SpiralSpec,
+    };
+    use mechanic_world::{ExtractionCell, WorldCell};
+    let (field, mut terrain, spot) = ground();
+    let corner = WorldPosition(spot).cell().unwrap();
+    let bore = (-32..6)
+        .flat_map(|y| (-7..7).flat_map(move |x| (-7..7).map(move |z| (x, y, z))))
+        .filter(|&(x, _, z)| (f64::from(x) + 0.5).hypot(f64::from(z) + 0.5) < 6.2)
+        .map(|(x, y, z)| WorldCell::new(corner.x + x, corner.y + y, corner.z + z))
+        .filter(|&cell| terrain.sample_cell(&field, cell).is_solid())
+        .map(|cell| ExtractionCell {
+            cell,
+            sample: terrain.sample_cell(&field, cell),
+            throw: DVec3::ZERO,
+        })
+        .collect::<Vec<_>>();
+    terrain.extract_cells(&field, &bore).unwrap();
+    let centre = corner.centre().0 - DVec3::splat(0.025);
+    let floor = f64::from(corner.y - 32) * mechanic_world::TERRAIN_CELL_METERS;
+
+    let mut graph = ConstructionGraph::new();
+    graph
+        .apply(BuildCommand::SpawnCylinder(
+            CylinderSpec::new(
+                CylinderDimensions::new(0.55, 0.0, 2.0).unwrap(),
+                BuildPose::default(),
+            )
+            .with_spiral(
+                SpiralSpec::new(
+                    120,
+                    1,
+                    SpiralHand::Right,
+                    SpiralProfile::square(10, 80).unwrap(),
+                    SpiralProfile::PLAIN,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    let auger = graph.compile().unwrap();
+
+    let clumps = collection((0..40_u32).map(|index| {
+        let angle = f64::from(index) * 2.4;
+        clump(
+            u64::from(index) + 1,
+            TerrainMaterial::Soil,
+            4,
+            DVec3::new(
+                centre.x + 0.19 * angle.cos(),
+                floor + 0.2 + f64::from(index) * 0.025,
+                centre.z + 0.19 * angle.sin(),
+            ),
+        )
+    }));
+    let stands = DVec3::new(centre.x, floor + 1.03, centre.z);
+    (field, terrain, clumps, auger, stands, spot.y)
+}
+
+fn turned(auger: &CompiledCreation, stands: DVec3, angle: f64, speed: f64) -> SpoilMachine {
+    SpoilMachine::new(
+        auger,
+        &[BodyPose {
+            position: stands,
+            rotation: DQuat::from_rotation_y(angle),
+        }],
+        &[SpatialMotion {
+            linear: DVec3::ZERO,
+            angular: DVec3::Y * speed,
+        }],
+        DVec3::ZERO,
+    )
+}
+
+fn quanta_above(clumps: &ClumpCollection, height: f64) -> (u64, u64) {
+    clumps.bodies.values().fold((0, 0), |(above, all), body| {
+        let quanta = u64::from(body.quanta);
+        (
+            above
+                + if body.position.0.y > height {
+                    quanta
+                } else {
+                    0
+                },
+            all + quanta,
+        )
+    })
+}
+
+#[test]
+fn clods_in_a_bore_ride_up_a_turning_auger_and_leave_at_the_top() {
+    let (field, terrain, mut clumps, auger, stands, brim) = bore_with_an_auger();
+    let mut solver = SpoilSolver::default();
+    // A right-hand screw lifts when turned clockwise seen from above.
+    let speed = -12.0;
+    for tick in 0..720 {
+        let machine = turned(
+            &auger,
+            stands,
+            speed * f64::from(tick) * TICK_SECONDS,
+            speed,
+        );
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &machine,
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    let (lifted, all) = quanta_above(&clumps, brim - 0.1);
+    assert!(
+        lifted * 10 > all * 7,
+        "{lifted} of {all} quanta came up out of the bore"
+    );
+}
+
+#[test]
+fn an_auger_turned_the_wrong_way_presses_spoil_down() {
+    let (field, terrain, mut clumps, auger, stands, brim) = bore_with_an_auger();
+    let mut solver = SpoilSolver::default();
+    let speed = 12.0;
+    // Two seconds: long enough for every clod to meet a flight. Left to run,
+    // spoil crushed against the floor squirts up past the flights in the end.
+    for tick in 0..120 {
+        let machine = turned(
+            &auger,
+            stands,
+            speed * f64::from(tick) * TICK_SECONDS,
+            speed,
+        );
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &machine,
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    // The clods began between 1.4 m and 0.4 m below the brim.
+    let (above, _) = quanta_above(&clumps, brim - 0.4);
+    assert_eq!(above, 0, "spoil rose although the screw drives it down");
+    let (upper_half, all) = quanta_above(&clumps, brim - 0.9);
+    assert!(
+        upper_half * 4 < all,
+        "{upper_half} of {all} quanta still lie in the upper half"
+    );
+}
+
+#[test]
+fn a_stopped_auger_holds_its_spoil_on_the_flights() {
+    let (field, terrain, mut clumps, auger, stands, brim) = bore_with_an_auger();
+    let mut solver = SpoilSolver::default();
+    let machine = turned(&auger, stands, 0.0, 0.0);
+    for _ in 0..480 {
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &machine,
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    let (held, all) = quanta_above(&clumps, brim - 1.0);
+    assert!(
+        held * 3 > all,
+        "{held} of {all} quanta stayed up the flights"
+    );
+    for body in clumps.bodies.values() {
+        assert!(body.linear_velocity.length() < 0.05);
+        assert!(body.position.0.y < brim);
+    }
+}

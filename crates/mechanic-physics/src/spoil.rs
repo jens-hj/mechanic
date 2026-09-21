@@ -306,7 +306,9 @@ impl SpoilSolver {
                     grain.rest_velocity = touch.velocity;
                 }
             }
-            for _ in 0..2 {
+            // The ground has the last word: a part may have pushed the clump
+            // well into it, and one cell a push does not undo that.
+            for _ in 0..if touches.is_empty() { 2 } else { 4 } {
                 let Some((push, normal)) = self.ground_push(terrain, field, position, grain.radius)
                 else {
                     break;
@@ -323,6 +325,14 @@ impl SpoilSolver {
             }
         }
         self.touches = touches;
+        // A machine presses spoil against the ground, not into it. What a part
+        // would leave under the surface stays where the tick found it, and the
+        // part passes over it; otherwise it would climb out through the ground
+        // and come up somewhere else.
+        if pushed_by_machine && self.pressed_under(terrain, field, start, position) {
+            position = start;
+            velocity = DVec3::ZERO;
+        }
         // Static friction: on a slope it can hold, a clump that has all but
         // stopped stops, and stays where it was.
         let holds = grain.holds();
@@ -349,6 +359,18 @@ impl SpoilSolver {
         }
         grain.clump.position = WorldPosition(position);
         grain.clump.linear_velocity = velocity;
+    }
+
+    // Whether a push took a clump's centre from open air to under the ground.
+    fn pressed_under(
+        &mut self,
+        terrain: &TerrainOctree,
+        field: &TerrainField,
+        start: DVec3,
+        position: DVec3,
+    ) -> bool {
+        self.ground.sample(terrain, field, position).0 > 0.0
+            && self.ground.sample(terrain, field, start).0 <= 0.0
     }
 
     // How far and which way the ground moves a sphere out of itself.
@@ -381,9 +403,13 @@ impl SpoilSolver {
                     -slope / steepness,
                     (density / steepness).min(mechanic_world::TERRAIN_CELL_METERS),
                 )
-            } else {
+            } else if offset == DVec3::ZERO {
                 // Deep inside, where the field is flat: climb out.
                 (DVec3::Y, mechanic_world::TERRAIN_CELL_METERS)
+            } else {
+                // Only the rim is deep inside: back out the way it went in. A
+                // big clod leaning into a wall would otherwise climb it.
+                (-offset, mechanic_world::TERRAIN_CELL_METERS)
             };
             if deepest.is_none_or(|(most, _)| depth > most) {
                 deepest = Some((depth, normal));
@@ -465,6 +491,11 @@ impl SpoilSolver {
                 let change = contact_response(grain.clump.linear_velocity, normal, grain.friction);
                 grain.clump.linear_velocity += change;
                 grain.touching = true;
+            }
+            // Nor under it: a crowd gives way no more than the ground does.
+            if self.pressed_under(terrain, field, grain.start, grain.clump.position.0) {
+                grain.clump.position.0 = grain.start;
+                grain.clump.linear_velocity = DVec3::ZERO;
             }
             // Held up in a heap, it gathers no speed: else it builds up until
             // it plunges through its neighbours and is thrown back, for ever.

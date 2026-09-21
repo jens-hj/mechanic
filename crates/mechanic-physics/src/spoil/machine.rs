@@ -212,11 +212,28 @@ fn cuboid_distance(local: DVec3, half: DVec3) -> (DVec3, f64) {
     (axis * local.signum(), -gap.dot(axis))
 }
 
-// The face a point is farthest outside of, or least inside. Beside an edge this
-// reads a little near, which for loose dirt is of no account.
+// Direction out of a convex shape and the signed distance to its surface.
+// Inside, that is the nearest face. Outside, a point beside an edge or a corner
+// is outside several faces at once: stepping back behind each in turn finds the
+// offset to the edge, where the farthest face alone would read near and push
+// along that face's normal, so a flight's rim passing a clod would lift it.
 fn convex_distance(local: DVec3, planes: &[(DVec3, f64)]) -> Option<(DVec3, f64)> {
-    planes
+    let (normal, distance) = planes
         .iter()
         .map(|&(normal, offset)| (normal, normal.dot(local) - offset))
-        .max_by(|first, second| first.1.total_cmp(&second.1))
+        .max_by(|first, second| first.1.total_cmp(&second.1))?;
+    if distance <= 0.0 {
+        return Some((normal, distance));
+    }
+    let mut out = normal * distance;
+    for _ in 0..2 {
+        for &(normal, offset) in planes {
+            let short = normal.dot(local) - offset - normal.dot(out);
+            if short > 0.0 {
+                out += normal * short;
+            }
+        }
+    }
+    let length = out.length();
+    Some((out / length, length))
 }
