@@ -896,3 +896,112 @@ fn downward_clearance_preserves_clipped_steps_and_rejects_sub_tolerance_progress
     assert!(already_at_floor >= maximum - 1.0e-4);
     assert!(minimum_clear_lift(maximum, |_| false).is_none());
 }
+
+/// Two held cubes 2 m up, with the link pivot on the first one.
+fn resting(creation: &CompiledCreation) -> (Vec<GpuTransform>, Arrangement) {
+    let poses = vec![pose(Vec3::Y * 2.0, Quat::IDENTITY); 3];
+    let pivot = creation.compounds[0].root_translation;
+    let center = position(poses[0]);
+    (
+        poses,
+        Arrangement {
+            pivot,
+            center,
+            base: mechanic_world::WorldPosition(center.as_dvec3()),
+            heading: 0,
+        },
+    )
+}
+
+#[test]
+fn a_clear_height_levels_the_creation_onto_the_block_grid() {
+    let creation = creation();
+    let held = [true, false, false];
+    let (poses, arrangement) = resting(&creation);
+    let mut clearance = ClearanceCache::new(&creation, &held);
+    let rest = plan_rest(
+        &mut clearance,
+        &creation,
+        &held,
+        &poses,
+        arrangement,
+        &flat_terrain,
+    );
+    assert!(matches!(rest.outcome, FreezeOutcome::Levelling));
+    assert!(!rest.waypoints.is_empty());
+    assert!((rest.target.0.y * 4.0).fract().abs() < 1.0e-9);
+}
+
+#[test]
+fn terrain_that_blocks_every_height_still_freezes_the_creation_where_it_stands() {
+    let creation = creation();
+    let held = [true, false, false];
+    let (poses, arrangement) = resting(&creation);
+    // Solid ground everywhere, and terrain that has not streamed in yet.
+    let solid = |_: Vec3, _: f32| Some(1.0_f32);
+    let missing = |_: Vec3, _: f32| None;
+    for terrain in [&solid as &dyn Fn(Vec3, f32) -> Option<f32>, &missing] {
+        let mut clearance = ClearanceCache::new(&creation, &held);
+        let rest = plan_rest(
+            &mut clearance,
+            &creation,
+            &held,
+            &poses,
+            arrangement,
+            &terrain,
+        );
+        assert!(matches!(rest.outcome, FreezeOutcome::InPlace));
+        assert!(rest.waypoints.is_empty());
+        assert_eq!(rest.target, arrangement.base);
+    }
+}
+
+#[test]
+fn held_parts_that_cannot_reach_their_built_pose_still_freeze_where_they_stand() {
+    let mut creation = creation();
+    // Both cubes level onto one built pose, so neither can reach it.
+    creation.compounds[1].root_translation = creation.compounds[0].root_translation;
+    let held = [true, true, false];
+    let (poses, arrangement) = resting(&creation);
+    let mut clearance = ClearanceCache::new(&creation, &held);
+    let rest = plan_rest(
+        &mut clearance,
+        &creation,
+        &held,
+        &poses,
+        arrangement,
+        &flat_terrain,
+    );
+    assert!(matches!(rest.outcome, FreezeOutcome::InPlace));
+    assert!(rest.waypoints.is_empty());
+    assert_eq!(rest.target, arrangement.base);
+}
+
+#[test]
+fn an_obstructed_freeze_gives_up_without_sweeping_a_path_to_every_height() {
+    let creation = creation();
+    let held = [true, false, false];
+    let (poses, arrangement) = resting(&creation);
+    let probes = std::cell::Cell::new(0_usize);
+    let counted = |center: Vec3, radius: f32| {
+        probes.set(probes.get() + 1);
+        Some(radius - center.y + 1.0e3_f32)
+    };
+    let mut clearance = ClearanceCache::new(&creation, &held);
+    let rest = plan_rest(
+        &mut clearance,
+        &creation,
+        &held,
+        &poses,
+        arrangement,
+        &counted,
+    );
+    assert!(matches!(rest.outcome, FreezeOutcome::InPlace));
+    // Sweeping a path to each of the 81 candidates instead would sample every
+    // 5 cm of up to 20 m of lift, which is hundreds of probes per candidate.
+    assert!(
+        probes.get() < 8 * usize::try_from(REST_HEIGHT_CANDIDATES).unwrap(),
+        "{} probes",
+        probes.get()
+    );
+}

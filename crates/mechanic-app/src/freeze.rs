@@ -280,8 +280,12 @@ impl DimensionFreeze {
             simulation.transforms.clone()
         };
         let mut clearance = ClearanceCache::new(creation, &held);
+        // Restoring only replays a rest the player already chose, so terrain
+        // around it is theirs to deal with; an edit made while held still has
+        // to leave the target reachable.
         if !clearance.endpoint_clear(creation, &target)
-            || !external_endpoint_clear_cached(&clearance, creation, &target, terrain)
+            || (!restoring
+                && !external_endpoint_clear_cached(&clearance, creation, &target, terrain))
         {
             return Err("Frozen target is obstructed in this construction generation".to_owned());
         }
@@ -418,9 +422,10 @@ pub(crate) fn update(
         frozen.repeat.reset();
         return;
     }
+    // A hold that cannot follow a construction edit still reports why, but it
+    // never costs the player the key: freezing has to stay reachable.
     if let Err(error) = frozen.rebind(&mut simulation, &world, &queue) {
         editor.feedback = Some(error);
-        return;
     }
     if frozen
         .record
@@ -469,10 +474,7 @@ pub(crate) fn update(
                     radius: (snapshot.max - snapshot.min).length() * 0.5,
                 });
             }
-            editor.feedback = Some(result.map_or_else(
-                |error| error,
-                |()| "Linked creation frozen — arrows adjust height".to_owned(),
-            ));
+            editor.feedback = Some(result.map_or_else(|error| error, FreezeOutcome::message));
         }
     }
     let steps = if accepts && !frozen.release_requested {
@@ -546,8 +548,15 @@ pub(crate) fn update(
                 }
             }
             Some(false) => {
+                // Repeating this every frame would leave the creation held
+                // mid-animation with no way forward. Rest where it reached
+                // instead; the height arrows replan from there.
                 frozen.repeat.reset();
-                editor.feedback = Some("Freeze movement is obstructed".to_owned());
+                frozen.waypoints.clear();
+                frozen.aligned = false;
+                frozen.translating = false;
+                editor.feedback =
+                    Some("Freeze movement is obstructed — resting here instead".to_owned());
             }
             None => {}
         }
@@ -589,7 +598,7 @@ fn begin(
     graph: &EditorGraph,
     editor: &EditorState,
     queue: &RenderQueue,
-) -> Result<(), String> {
+) -> Result<FreezeOutcome, String> {
     let _timing = crate::performance_capture::FreezeStage::new("planning");
     let link = world
         .active_dimension_link()
@@ -627,56 +636,184 @@ fn begin(
     let center = position(poses[reference])
         + rotation * (pivot - creation.compounds[reference].root_translation);
     let heading = cardinal_heading(rotation);
-    // Held parts move to the same arrangement whatever the target height.
-    let arranged = default_poses(creation, poses, &held, pivot, center, heading);
     let mut clearance = ClearanceCache::new(creation, &held);
-    if !internal_clear_cached(&mut clearance, creation, poses, &arranged) {
-        return Err(
-            "Frozen parts would pass through each other on the way to their built pose".to_owned(),
-        );
-    }
     let base = world.local_to_global(center);
-    for blocks in 0..=80 {
+    let rest = plan_rest(
+        &mut clearance,
+        creation,
+        &held,
+        poses,
+        Arrangement {
+            pivot,
+            center,
+            base,
+            heading,
+        },
+        &*world,
+    );
+    let record = FrozenCreationDoc {
+        link,
+        target: rest.target,
+        heading,
+        construction_generation: 0,
+    };
+    // The hold comes first: once the key is pressed the creation stops, and a
+    // save that fails only costs the record that survives a reload.
+    let poses = poses.clone();
+    apply_holds(simulation, queue, &held, &poses)?;
+    frozen.revision = simulation.world_revision;
+    frozen.held = held;
+    frozen.poses = poses;
+    frozen.waypoints = rest.waypoints;
+    frozen.clearance = Some(clearance);
+    frozen.aligned = false;
+    frozen.translating = false;
+    frozen.record = Some(record);
+    frozen.overlay(simulation);
+    let saved = world.persist_frozen_creation(Some(record), &graph.0, editor);
+    if saved.is_ok() {
+        frozen.record = world.frozen_creation();
+    }
+    saved.map(|()| rest.outcome)
+}
+
+/// Where a freeze levels the held bodies: the link pivot, its current world
+/// position, and the cardinal heading the creation rounds to.
+#[derive(Clone, Copy)]
+struct Arrangement {
+    pivot: Vec3,
+    /// Link pivot in local space, and the same point in global space.
+    center: Vec3,
+    base: mechanic_world::WorldPosition,
+    heading: u8,
+}
+
+/// The rest a freeze settles into. The hold itself is never in question.
+struct RestPlan {
+    target: mechanic_world::WorldPosition,
+    waypoints: VecDeque<Vec<GpuTransform>>,
+    outcome: FreezeOutcome,
+}
+
+/// How far a freeze got. Both variants leave the creation held.
+#[derive(Clone, Copy)]
+pub(crate) enum FreezeOutcome {
+    /// Levelling onto the block grid, with an animation left to run.
+    Levelling,
+    /// Held where it stood: nothing within reach was clear enough to level into.
+    InPlace,
+}
+
+impl FreezeOutcome {
+    fn message(self) -> String {
+        match self {
+            Self::Levelling => "Linked creation frozen — arrows adjust height".to_owned(),
+            Self::InPlace => {
+                "Linked creation frozen where it stood — arrows lift it clear".to_owned()
+            }
+        }
+    }
+}
+
+/// Candidate block heights a freeze may level into, covering 20 m of lift.
+const REST_HEIGHT_CANDIDATES: u32 = 81;
+
+/// Wall clock one keypress may spend choosing a rest. Terrain queries walk the
+/// streamed mesh, so a creation standing in broken ground can make every
+/// candidate expensive; holding it in place beats stalling the frame.
+const REST_SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+
+/// A terrain probe that reports everything blocked once its deadline passes.
+/// Reporting blocked is the conservative answer everywhere it is asked, so a
+/// spent budget costs the creation its levelling, never its hold.
+struct Budgeted<'a, T> {
+    terrain: &'a T,
+    deadline: std::time::Instant,
+}
+
+impl<T: TerrainProbe> Budgeted<'_, T> {
+    fn spent(&self) -> bool {
+        std::time::Instant::now() >= self.deadline
+    }
+}
+
+impl<T: TerrainProbe> TerrainProbe for Budgeted<'_, T> {
+    fn penetration(&self, center: Vec3, radius: f32) -> Option<f32> {
+        if self.spent() {
+            return None;
+        }
+        self.terrain.penetration(center, radius)
+    }
+
+    fn collider_clear(&self, collider: &LocalCollider, pose: GpuTransform, padding: f32) -> bool {
+        !self.spent() && self.terrain.collider_clear(collider, pose, padding)
+    }
+}
+
+/// Picks the rest a freeze animates into. Terrain and the creation's own
+/// geometry decide which height and which path, never whether it freezes: when
+/// nothing within reach is clear the creation is held exactly where it stood
+/// and the height arrows become the way out.
+fn plan_rest(
+    clearance: &mut ClearanceCache,
+    creation: &CompiledCreation,
+    held: &[bool],
+    poses: &[GpuTransform],
+    arrangement: Arrangement,
+    terrain: &impl TerrainProbe,
+) -> RestPlan {
+    let Arrangement {
+        pivot,
+        center,
+        base,
+        heading,
+    } = arrangement;
+    let in_place = || RestPlan {
+        target: base,
+        waypoints: VecDeque::new(),
+        outcome: FreezeOutcome::InPlace,
+    };
+    let levelled = |target: mechanic_world::WorldPosition| {
+        // `base` is `center` in global space, so the offset between them
+        // carries a candidate target back into local space.
+        let local = center + (target.0 - base.0).as_vec3();
+        default_poses(creation, poses, held, pivot, local, heading)
+    };
+    // Held parts move to the same arrangement whatever the target height, so
+    // one self-collision test covers every candidate.
+    if !internal_clear_cached(clearance, creation, poses, &levelled(base)) {
+        return in_place();
+    }
+    let terrain = &Budgeted {
+        terrain,
+        deadline: std::time::Instant::now() + REST_SEARCH_BUDGET,
+    };
+    for blocks in 0..REST_HEIGHT_CANDIDATES {
+        if terrain.spent() {
+            break;
+        }
         let mut target = base;
         target.0.y = grid_ceiling(base.0.y) + f64::from(blocks) * 0.25;
         if target.0.y - base.0.y > 20.0 + 1.0e-6 {
             break;
         }
-        let endpoint = default_poses(
-            creation,
-            poses,
-            &held,
-            pivot,
-            world.global_to_local(target),
-            heading,
-        );
-        let terrain = &*world;
-        let Some(waypoints) =
-            plan_external_cached(&clearance, creation, &held, poses, &endpoint, terrain)
-        else {
+        let endpoint = levelled(target);
+        // Endpoint clearance alone rules a height out, and costs far less than
+        // sweeping the whole path to it.
+        if !external_endpoint_clear_cached(clearance, creation, &endpoint, terrain) {
             continue;
-        };
-        let record = FrozenCreationDoc {
-            link,
-            target,
-            heading,
-            construction_generation: 0,
-        };
-        world.persist_frozen_creation(Some(record), &graph.0, editor)?;
-        let poses = poses.clone();
-        apply_holds(simulation, queue, &held, &poses)?;
-        frozen.record = world.frozen_creation();
-        frozen.revision = simulation.world_revision;
-        frozen.held = held;
-        frozen.poses = poses;
-        frozen.waypoints = waypoints;
-        frozen.clearance = Some(clearance);
-        frozen.aligned = false;
-        frozen.translating = false;
-        frozen.overlay(simulation);
-        return Ok(());
+        }
+        if let Some(waypoints) =
+            plan_external_cached(clearance, creation, held, poses, &endpoint, terrain)
+        {
+            return RestPlan {
+                target,
+                waypoints,
+                outcome: FreezeOutcome::Levelling,
+            };
+        }
     }
-    Err("No safe freeze alignment path within 20 m of upward clearance".to_owned())
+    in_place()
 }
 
 /// Holds bodies on the GPU scene and, when it owns ticks, the CPU route.
