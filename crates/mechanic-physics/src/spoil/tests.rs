@@ -453,3 +453,110 @@ fn a_clod_wedged_between_a_dirt_wall_and_a_block_settles() {
     assert!(body.linear_velocity.length() < 0.05, "still moving");
     assert!(body.can_deposit(), "caught, and never settled");
 }
+
+#[test]
+fn clods_piled_in_a_shaft_lie_still_once_the_tool_under_them_stops() {
+    use mechanic_world::{ExtractionCell, WorldCell};
+    let (field, mut terrain, spot) = ground();
+    // A shaft 30 cm square and over a metre deep, in undisturbed ground.
+    let corner = WorldPosition(spot).cell().unwrap();
+    let shaft = (-26..4)
+        .flat_map(|y| (-3..3).flat_map(move |x| (-3..3).map(move |z| (x, y, z))))
+        .map(|(x, y, z)| WorldCell::new(corner.x + x, corner.y + y, corner.z + z))
+        .filter(|&cell| terrain.sample_cell(&field, cell).is_solid())
+        .map(|cell| ExtractionCell {
+            cell,
+            sample: terrain.sample_cell(&field, cell),
+            throw: DVec3::ZERO,
+        })
+        .collect::<Vec<_>>();
+    terrain.extract_cells(&field, &shaft).unwrap();
+    let centre = corner.centre().0 - DVec3::splat(0.025);
+    let bottom = DVec3::new(centre.x, spot.y - 1.2, centre.z);
+    // A head turning at the bottom, as wide as the shaft.
+    let head = |turning: f64| {
+        let creation = CompiledCreation::default()
+            .with_runtime_boxes(&[RuntimeBox {
+                half_extents: Vec3::new(0.14, 0.05, 0.14),
+                mass: 100.0,
+                material: MaterialProperties {
+                    density_kg_m3: 7_800.0,
+                    static_friction: 0.8,
+                    dynamic_friction: 0.6,
+                    restitution: 0.0,
+                    rolling_resistance: 0.0,
+                    youngs_modulus_pa: 1e8,
+                },
+            }])
+            .unwrap();
+        SpoilMachine::new(
+            &creation,
+            &[BodyPose {
+                position: bottom,
+                rotation: DQuat::IDENTITY,
+            }],
+            &[SpatialMotion {
+                linear: DVec3::ZERO,
+                angular: DVec3::Y * turning,
+            }],
+            DVec3::ZERO,
+        )
+    };
+    // Clods too big to gather into one, poured in a little off the middle.
+    let mut clumps = collection((0..14_u32).map(|index| {
+        clump(
+            u64::from(index) + 1,
+            TerrainMaterial::Soil,
+            20,
+            centre
+                + DVec3::new(
+                    f64::from(index % 3) * 0.03 - 0.03,
+                    0.3 + f64::from(index) * 0.25,
+                    f64::from(index % 2) * 0.04 - 0.02,
+                ),
+        )
+    }));
+    let mut solver = SpoilSolver::default();
+    let turning = head(12.0);
+    for _ in 0..480 {
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &turning,
+            GRAVITY,
+            TICK_SECONDS,
+        );
+    }
+    let stopped = head(0.0);
+    let mut lowest = std::collections::BTreeMap::new();
+    let mut highest = std::collections::BTreeMap::new();
+    for tick in 0..360 {
+        solver.step(
+            &mut clumps,
+            &terrain,
+            &field,
+            &stopped,
+            GRAVITY,
+            TICK_SECONDS,
+        );
+        if tick >= 180 {
+            for (&id, body) in &clumps.bodies {
+                let height = body.position.0.y;
+                let low = lowest.entry(id).or_insert(height);
+                *low = height.min(*low);
+                let high = highest.entry(id).or_insert(height);
+                *high = height.max(*high);
+            }
+        }
+    }
+    assert!(clumps.bodies.len() > 8, "the clods gathered into a few");
+    for (id, body) in &clumps.bodies {
+        let hop = highest[id] - lowest[id];
+        assert!(hop < 0.004, "clod {id} hops {hop} m up and down");
+        assert!(
+            body.linear_velocity.length() < 0.05,
+            "clod {id} still moves"
+        );
+    }
+}

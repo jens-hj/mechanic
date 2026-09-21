@@ -76,6 +76,8 @@ pub struct SpoilSolver {
 )]
 struct Grain<'a> {
     clump: &'a mut MaterialClump,
+    /// Where the tick found it.
+    start: DVec3,
     radius: f64,
     mass: f64,
     friction: f64,
@@ -91,6 +93,16 @@ struct Grain<'a> {
     /// Out of what the clump lies on, and how that moves.
     rest_normal: DVec3,
     rest_velocity: DVec3,
+}
+
+impl Grain<'_> {
+    // Whether friction can hold the grain on what it lies on.
+    fn holds(&self) -> bool {
+        self.rest_normal.y * self.friction
+            > (1.0 - self.rest_normal.y * self.rest_normal.y)
+                .max(0.0)
+                .sqrt()
+    }
 }
 
 /// Radius of the sphere holding a clump's material, in metres.
@@ -140,6 +152,7 @@ impl SpoilSolver {
             .map(|clump| {
                 let radius = spoil_radius(clump.quanta);
                 Grain {
+                    start: clump.position.0,
                     radius,
                     mass: clump.mass_kg(),
                     friction: f64::from(clump.material.surface_response().static_friction),
@@ -181,7 +194,13 @@ impl SpoilSolver {
                 &mut reactions,
             );
         }
-        let absorbed = self.separate(&mut grains, terrain, field);
+        let absorbed = self.separate(
+            &mut grains,
+            terrain,
+            field,
+            gravity.normalize_or_zero(),
+            seconds,
+        );
         for grain in grains
             .iter_mut()
             .filter(|grain| !grain.clump.sleeping && grain.clump.quanta > 0)
@@ -306,20 +325,17 @@ impl SpoilSolver {
         self.touches = touches;
         // Static friction: on a slope it can hold, a clump that has all but
         // stopped stops, and stays where it was.
-        let holds = grain.rest_normal.y * grain.friction
-            > (1.0 - grain.rest_normal.y * grain.rest_normal.y)
-                .max(0.0)
-                .sqrt();
+        let holds = grain.holds();
         // What it touched may have stopped it where no single contact did: caught
         // in a closing gap it goes nowhere, however gravity pulls. It falls no
         // faster than it fell.
         if grain.touching || pushed_by_machine {
-            let down = gravity.normalize_or_zero();
-            let fell = (position - start).dot(down) / seconds;
-            let falling = velocity.dot(down);
-            if fell.abs() < falling.abs() {
-                velocity += down * (fell - falling);
-            }
+            velocity = no_faster_than_it_fell(
+                velocity,
+                position - start,
+                gravity.normalize_or_zero(),
+                seconds,
+            );
         }
         // Caught between a bank and a block, friction on both sides holds it.
         grain.wedged = grain.touching && pushed_by_machine && !grain.grounded && !grain.carried;
@@ -383,6 +399,8 @@ impl SpoilSolver {
         grains: &mut [Grain<'_>],
         terrain: &TerrainOctree,
         field: &TerrainField,
+        down: DVec3,
+        seconds: f64,
     ) -> Vec<u64> {
         let mut absorbed = Vec::new();
         for bucket in self.buckets.values_mut() {
@@ -448,6 +466,25 @@ impl SpoilSolver {
                 grain.clump.linear_velocity += change;
                 grain.touching = true;
             }
+            // Held up in a heap, it gathers no speed: else it builds up until
+            // it plunges through its neighbours and is thrown back, for ever.
+            grain.clump.linear_velocity = no_faster_than_it_fell(
+                grain.clump.linear_velocity,
+                grain.clump.position.0 - grain.start,
+                down,
+                seconds,
+            );
+            // Friction holds a heap together as it holds a clod to the ground:
+            // what stirs the bottom of a heap does not shiver up through it.
+            if grain.supported
+                && !grain.carried
+                && grain.holds()
+                && grain.clump.linear_velocity.length() < HOLD_SPEED_M_S
+                && grain.clump.position.0.distance(grain.start) < HOLD_REACH_M
+            {
+                grain.clump.linear_velocity = DVec3::ZERO;
+                grain.clump.position.0 = grain.start;
+            }
         }
         absorbed
     }
@@ -501,12 +538,18 @@ fn meet(a: &mut Grain<'_>, b: &mut Grain<'_>) -> Meeting {
     }
     // A grain lying on another lies on what that one lies on.
     if normal.y < -GROUND_NORMAL_MIN_Y {
+        if !a.grounded && (b.supported || b.clump.sleeping) {
+            a.rest_normal = -normal;
+        }
         a.supported |= b.supported || b.clump.sleeping;
         if b.carried && !a.carried {
             a.carried = true;
             a.rest_velocity = b.rest_velocity;
         }
     } else if normal.y > GROUND_NORMAL_MIN_Y {
+        if !b.grounded && a.supported {
+            b.rest_normal = normal;
+        }
         b.supported |= a.supported;
         if a.carried && !b.carried {
             b.carried = true;
@@ -557,6 +600,19 @@ fn pair<'s, 'a>(
         let (low, high) = grains.split_at_mut(first);
         (&mut high[0], &mut low[second])
     }
+}
+
+// A velocity whose part along gravity is no more than the tick really moved
+// the body that way, and never turned about: what held it took the rest.
+fn no_faster_than_it_fell(velocity: DVec3, moved: DVec3, down: DVec3, seconds: f64) -> DVec3 {
+    let falling = velocity.dot(down);
+    let fell = moved.dot(down) / seconds;
+    let kept = if falling > 0.0 {
+        fell.clamp(0.0, falling)
+    } else {
+        fell.clamp(falling, 0.0)
+    };
+    velocity + down * (kept - falling)
 }
 
 // Change of velocity that stops a body closing on a surface and drags it
