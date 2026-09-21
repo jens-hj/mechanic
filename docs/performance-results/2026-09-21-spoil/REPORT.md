@@ -144,6 +144,18 @@ digging, the pile in the bore still shifts as it is fed from below. 3,600 ticks:
 no quantum unaccounted for, no clump unsettled for 3 s, no degraded tick, spoil
 0.65 ms a tick with 303 clods, car traction unchanged.
 
+## Follow-up: broken rock
+
+Rock pieces never settled by design, so soil settled around them, buried ones
+were pushed back out, and a drilled rock layer left hundreds of stones lying on
+the spoil heap. They were also drawn as sand: clod meshes were built in
+`TerrainMaterial::ALL` order and looked up by material code, which differ for
+rock and sand. Rock now settles like soil, as loose rubble at the same repose;
+ore stays in pieces. A lone cell of any spoil was being laid as one full cell,
+indistinguishable from undisturbed ground, which for rock meant bedrock again;
+no cell is now laid fuller than 459 quanta. A copy of the save with 961 rock
+pieces settles to 37 clumps within two seconds with no quantum unaccounted for.
+
 ## After
 
 Same capture, same save:

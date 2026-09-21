@@ -140,8 +140,8 @@ intersection. A 2 m rigid-terrain cube improves from 36.8 to 9.6 ms physics p95
 on an i5-12600K; soil remeshing and varied-surface contact counts remain costly.
 
 Contact stress and delivered work now break terrain into world-owned clumps on
-the CPU route. Sand, soil and cover settle back into low-compaction terrain;
-rock, iron and graphite stay physical and sleep. Terrain and clumps save in one
+the CPU route. Sand, soil, cover and rock settle back into loose terrain, rock
+as rubble; iron and graphite stay in pieces and sleep. Terrain and clumps save in one
 snapshot. See
 [the clump report](performance-results/2026-09-18-clumps/REPORT.md). Extraction
 conserves material in every measured run. That report's 256-clump cost of
@@ -151,7 +151,11 @@ solver bodies, which the spoil solver below replaced.
 Every cell knows how loose it is. A solid cell holds 510 quanta less its
 looseness; undisturbed and brushed ground is 0, and spoil is laid at about 102,
 so it takes a quarter to a third more room than the hole it left. A clump is
-laid completely, shared evenly over its cells, so no crumbs arise. Loose ground
+laid completely, shared evenly over its cells, so no crumbs arise, and no cell is
+laid fuller than 459 quanta, so laid ground is always told from undisturbed
+ground: a lone cell lies as two. Broken rock is laid the same way and is then
+rubble, which breaks out at 60 kPa rather than bedrock's 2 MPa; rocks never
+gather into bigger rocks. Loose ground
 carries and resists about `(quanta / 510)²` of what undisturbed ground does.
 Spoil lies no steeper than its repose: about 34° for soil and cover, 27° for
 sand (`mechanic-world/src/edits/repose.rs`). Each laid cell drops to the floor of
