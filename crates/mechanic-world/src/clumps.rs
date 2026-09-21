@@ -68,7 +68,7 @@ impl MaterialClump {
     /// Whether this soft clump has settled long enough to try depositing.
     pub fn can_deposit(&self) -> bool {
         BreakageResponse::for_material(self.material).deposits
-            && self.quanta >= crate::CELL_QUANTA
+            && self.quanta >= crate::CELL_QUANTA - u32::from(u8::MAX)
             && self.settled_seconds >= SETTLE_SECONDS
     }
 
@@ -168,10 +168,10 @@ impl ClumpCollection {
     }
 
     /// Takes ownership of ground that was pressed flat: each cell's material
-    /// becomes spoil lying where the cell was, ready to settle beside whatever
-    /// pressed it out. This is the berm along a rut.
-    pub fn heave(&mut self, pressed_out: &[(WorldCell, TerrainMaterial)]) {
-        for &(cell, material) in pressed_out {
+    /// becomes spoil lying where the cell was. Whatever pressed it out pushes it
+    /// aside, and it settles where it comes to rest: the berm along a rut.
+    pub fn heave(&mut self, pressed_out: &[(WorldCell, TerrainMaterial, u32)]) {
+        for &(cell, material, quanta) in pressed_out {
             let id = self.next_id;
             let Some(next_id) = id.checked_add(1) else {
                 return;
@@ -182,135 +182,128 @@ impl ClumpCollection {
                 MaterialClump {
                     id,
                     material,
-                    quanta: crate::CELL_QUANTA,
-                    half_extents: DVec3::splat(crate::TERRAIN_CELL_METERS * 0.5),
+                    quanta,
+                    half_extents: DVec3::splat(
+                        (f64::from(quanta) * MATERIAL_QUANTUM_M3).cbrt() * 0.5,
+                    ),
                     position: cell.centre(),
                     rotation: DQuat::IDENTITY,
                     linear_velocity: DVec3::ZERO,
                     angular_velocity: DVec3::ZERO,
-                    settled_seconds: SETTLE_SECONDS,
+                    settled_seconds: 0.0,
                     sleeping: false,
                 },
             );
         }
     }
 
-    /// Turns whole cells of a settled soft clump back into ground at the first
-    /// free, supported targets. What is left of it stays loose.
+    /// Lays a settled soft clump back down as loose ground, running downhill
+    /// from where it lies to its repose. What cannot be laid stays loose.
     pub fn settle(
         &mut self,
         terrain: &mut TerrainOctree,
         field: &TerrainField,
         id: u64,
-        targets: &[WorldCell],
+        occupied: &mut dyn FnMut(WorldCell) -> bool,
+        steps: &mut usize,
     ) -> Option<TerrainEditOutcome> {
         let body = self.bodies.get_mut(&id)?;
         if !body.can_deposit() {
             return None;
         }
-        let (outcome, remaining) =
-            terrain.deposit_material(field, targets, body.material, u64::from(body.quanta));
-        let remaining = u32::try_from(remaining).ok()?;
-        if remaining == body.quanta {
+        let start = body.position.cell().ok()?;
+        let (outcome, left) =
+            terrain.lay_spoil(field, start, body.material, body.quanta, occupied, steps);
+        if left == body.quanta {
             return None;
         }
-        if remaining == 0 {
+        if left == 0 {
             self.bodies.remove(&id);
         } else {
-            body.half_extents *= (f64::from(remaining) / f64::from(body.quanta)).cbrt();
-            body.quanta = remaining;
+            body.half_extents *= (f64::from(left) / f64::from(body.quanta)).cbrt();
+            body.quanta = left;
         }
         Some(outcome)
     }
 
-    /// Gathers soft crumbs, each less than a cell, that rest on the same patch
-    /// of ground into the largest of them, so that together they can become
-    /// ground. A crumb is a handful of dirt: it crumbles where it lies and the
-    /// clod nearby is that much larger. Returns how many were folded in.
-    pub fn gather_crumbs(&mut self) -> usize {
-        /// Edge of the patch crumbs gather over, in cells. Whole cells break
-        /// out and settle whole, so crumbs come only from older saves.
-        const PATCH_CELLS: i32 = 64;
-        let mut patches = BTreeMap::<_, Vec<(u32, u64)>>::new();
-        for body in self.bodies.values() {
-            if body.quanta < crate::CELL_QUANTA
-                && body.settled_seconds >= SETTLE_SECONDS
-                && BreakageResponse::for_material(body.material).deposits
-                && let Ok(cell) = body.position.cell()
-            {
-                let patch = [cell.x, cell.y, cell.z].map(|axis| axis.div_euclid(PATCH_CELLS));
-                patches
-                    .entry((patch, body.material.code()))
-                    .or_default()
-                    .push((body.quanta, body.id));
+    /// One exchange of material between the ground and the clumps: settled
+    /// spoil is laid down, loose ground left too steep slides, and ground a tool
+    /// has broken comes out. Returns the edits for the caller to publish.
+    pub fn transfer(
+        &mut self,
+        terrain: &mut TerrainOctree,
+        field: &TerrainField,
+        breakage: &mut crate::BreakageAccumulator,
+        slump: &mut crate::SpoilSlump,
+        occupied: &mut dyn FnMut(WorldCell) -> bool,
+        limits: TransferLimits,
+    ) -> Vec<TerrainEditOutcome> {
+        let mut outcomes = Vec::new();
+        let mut steps = limits.steps;
+        let settled = self
+            .bodies
+            .values()
+            .filter(|body| body.can_deposit())
+            .map(|body| body.id)
+            .take(limits.clumps)
+            .collect::<Vec<_>>();
+        for id in settled {
+            if steps == 0 {
+                break;
+            }
+            if let Some(outcome) = self.settle(terrain, field, id, occupied, &mut steps) {
+                for &cell in &outcome.laid_cells {
+                    slump.disturb(cell);
+                }
+                outcomes.push(outcome);
             }
         }
-        let mut folded = 0;
-        for mut crumbs in patches.into_values().filter(|crumbs| crumbs.len() > 1) {
-            crumbs.sort_unstable_by(|first, second| second.cmp(first));
-            let mut quanta = 0_u32;
-            for (crumb, id) in &crumbs[1..] {
-                // Enough for a few cells is enough: it settles, and the rest gather next.
-                if crumbs[0].0 + quanta + crumb > 8 * crate::CELL_QUANTA {
-                    break;
-                }
-                if self.bodies.remove(id).is_some() {
-                    quanta += crumb;
-                    folded += 1;
-                }
+        let sliding = slump.take_unstable(terrain, field, occupied, limits.columns);
+        if let Some(outcome) = self.extract(terrain, field, &sliding, true) {
+            for source in &sliding {
+                slump.disturb(source.cell);
             }
-            let Some(body) = self.bodies.get_mut(&crumbs[0].1) else {
-                continue;
-            };
-            body.quanta += quanta;
-            body.half_extents =
-                DVec3::splat((f64::from(body.quanta) * MATERIAL_QUANTUM_M3).cbrt() * 0.5);
-            body.sleeping = false;
+            outcomes.push(outcome);
         }
-        folded
+        breakage.discard_stale(terrain, field);
+        let broken = breakage.ready(terrain, field, limits.cells);
+        if !broken.is_empty() {
+            let laid_down = self.available() == 0;
+            if let Some(outcome) = self.extract(terrain, field, &broken, laid_down) {
+                for source in &broken {
+                    slump.disturb(source.cell);
+                }
+                outcomes.push(outcome);
+            }
+            // Refused sources were stale; either way they are done with.
+            breakage.committed(&broken);
+        }
+        outcomes
     }
 }
 
-/// Free, supported cells around resting spoil, lowest first and then nearest,
-/// so spoil fills the hollow it lies in before it builds a heap. `blocked`
-/// names cells something else occupies.
-pub fn spoil_targets(
-    terrain: &TerrainOctree,
-    field: &TerrainField,
-    position: WorldPosition,
-    mut blocked: impl FnMut(WorldCell) -> bool,
-) -> Vec<WorldCell> {
-    const REACH_CELLS: i32 = 2;
-    const LEVELS: i32 = 3;
-    let Ok(centre) = position.cell() else {
-        return Vec::new();
-    };
-    let mut targets = Vec::new();
-    for z in -REACH_CELLS..=REACH_CELLS {
-        for x in -REACH_CELLS..=REACH_CELLS {
-            // The column's surface near the spoil: the lowest free cell on ground.
-            let floor = (centre.y - 4..=centre.y + 2).rev().find(|&y| {
-                !terrain
-                    .sample_cell(field, WorldCell::new(centre.x + x, y, centre.z + z))
-                    .is_solid()
-                    && terrain
-                        .sample_cell(field, WorldCell::new(centre.x + x, y - 1, centre.z + z))
-                        .is_solid()
-            });
-            let Some(floor) = floor else {
-                continue;
-            };
-            for level in 0..LEVELS {
-                let cell = WorldCell::new(centre.x + x, floor + level, centre.z + z);
-                if blocked(cell) {
-                    break;
-                }
-                targets.push((cell.y, x * x + z * z, cell));
-            }
+/// How much one [`ClumpCollection::transfer`] may do.
+#[derive(Clone, Copy, Debug)]
+pub struct TransferLimits {
+    /// Settled clumps laid down.
+    pub clumps: usize,
+    /// Columns of loose ground looked over for sliding.
+    pub columns: usize,
+    /// Cells of broken ground taken out.
+    pub cells: usize,
+    /// Columns spoil may run across in all, laying down.
+    pub steps: usize,
+}
+
+impl Default for TransferLimits {
+    fn default() -> Self {
+        Self {
+            clumps: 64,
+            columns: 256,
+            cells: 512,
+            steps: 2_000,
         }
     }
-    targets.sort_unstable_by_key(|&(height, distance, _)| (height, distance));
-    targets.into_iter().map(|(_, _, cell)| cell).collect()
 }
 
 // The clump a group of broken cells makes.
@@ -328,7 +321,8 @@ fn fragment(id: u64, cells: &[ExtractionCell]) -> Option<MaterialClump> {
     }
     let count = f64::from(u32::try_from(cells.len()).ok()?);
     let span = (maximum - minimum) / crate::TERRAIN_CELL_METERS + DVec3::ONE;
-    let (half_extents, centre) = if (span.element_product() - count).abs() < 0.5 {
+    let whole = quanta == crate::CELL_QUANTA * u32::try_from(cells.len()).ok()?;
+    let (half_extents, centre) = if whole && (span.element_product() - count).abs() < 0.5 {
         // A whole cuboid keeps its shape.
         (
             (maximum - minimum + DVec3::splat(crate::TERRAIN_CELL_METERS)) * 0.5,

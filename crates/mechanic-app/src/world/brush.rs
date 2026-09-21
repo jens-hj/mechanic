@@ -50,6 +50,8 @@ pub(super) struct TerrainStrokeSample {
 pub(super) struct TerrainEditTaskResult {
     pub(super) terrain: TerrainOctree,
     pub(super) outcomes: Vec<TerrainEditOutcome>,
+    /// Centre and radius of each brush stroke, beside which loose ground may slide.
+    pub(super) strokes: Vec<(WorldPosition, f64)>,
     pub(super) elapsed_ms: f64,
 }
 
@@ -216,8 +218,12 @@ pub(super) fn execute_terrain_edit_batch(
 ) -> Result<TerrainEditTaskResult, String> {
     let started = std::time::Instant::now();
     let mut outcomes = Vec::with_capacity(batch.len());
+    let mut strokes = Vec::new();
     let mut commands = batch.into_iter().peekable();
     while let Some(command) = commands.next() {
+        if !matches!(command.operation, TerrainEditOperation::Compress(_)) {
+            strokes.push((command.centre, command.radius_metres));
+        }
         outcomes.push(match command.operation {
             TerrainEditOperation::Compress(first) => {
                 let mut cells = vec![first];
@@ -253,6 +259,7 @@ pub(super) fn execute_terrain_edit_batch(
     Ok(TerrainEditTaskResult {
         terrain,
         outcomes,
+        strokes,
         elapsed_ms: started.elapsed().as_secs_f64() * 1_000.0,
     })
 }
@@ -264,9 +271,21 @@ pub(super) fn commit_terrain_edit_result(
     let mut changed_bricks = 0_u64;
     let mut changed = false;
     let mut changed_brick_coordinates = BTreeSet::new();
+    for (centre, radius_metres) in result.strokes {
+        runtime.slump.disturb_sphere(centre, radius_metres);
+    }
     for outcome in result.outcomes {
         // Ground pressed flat is squeezed out, not destroyed.
         runtime.clumps.heave(&outcome.pressed_out);
+        if !outcome.pressed_out.is_empty() {
+            crate::performance_capture::record(
+                "ground_pressed_out",
+                || serde_json::json!({"cells": outcome.pressed_out.len(), "quanta": outcome.quanta_given_up}),
+            );
+        }
+        for &(cell, ..) in &outcome.pressed_out {
+            runtime.slump.disturb(cell);
+        }
         changed |= outcome.total_changed_cells() != 0;
         changed_brick_coordinates.extend(outcome.changed_brick_coordinates().iter().copied());
         changed_bricks = changed_bricks

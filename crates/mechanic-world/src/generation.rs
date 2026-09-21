@@ -86,6 +86,9 @@ pub struct TerrainSample {
     pub material: TerrainMaterial,
     /// Accumulated plastic compaction over half a cell.
     pub compaction: u8,
+    /// How much less than a cell of undisturbed ground this cell holds, in
+    /// quanta. Undisturbed ground is 0; spoil laid back down is loose.
+    pub looseness: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -410,6 +413,7 @@ impl TerrainField {
         if !position.is_inside_world() {
             return TerrainSample {
                 compaction: 0,
+                looseness: 0,
                 density: -1.0,
                 material: TerrainMaterial::Rock,
             };
@@ -447,6 +451,7 @@ impl TerrainField {
         };
         TerrainSample {
             compaction: 0,
+            looseness: 0,
             density: density as f32,
             material,
         }

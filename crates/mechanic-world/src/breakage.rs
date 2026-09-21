@@ -134,9 +134,9 @@ pub struct ExtractionCell {
 pub const CELL_QUANTA: u32 = 510;
 
 impl ExtractionCell {
-    /// Material the cell holds.
+    /// Material the cell holds: less the looser it is.
     pub const fn material_quanta(self) -> u64 {
-        CELL_QUANTA as u64
+        CELL_QUANTA as u64 - self.sample.looseness as u64
     }
 }
 
@@ -255,7 +255,8 @@ impl BreakageAccumulator {
             } else {
                 1.0
             };
-            let strength = response.stress_pa * hardening;
+            let strength =
+                response.stress_pa * hardening * f64::from(crate::loose_strength(sample.looseness));
             if patch.stress_pa < strength {
                 continue;
             }
@@ -314,6 +315,7 @@ impl BreakageAccumulator {
 fn extraction_work(sample: TerrainSample) -> f64 {
     // A cell has at most 510 quanta, exactly representable as f64.
     f64::from(510 - u32::from(sample.compaction))
+        * f64::from(crate::loose_strength(sample.looseness))
         * MATERIAL_QUANTUM_M3
         * BreakageResponse::for_material(sample.material).work_j_m3
 }

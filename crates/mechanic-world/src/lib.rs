@@ -23,7 +23,7 @@ pub use breakage::{
     MATERIAL_QUANTUM_M3,
 };
 pub use clumps::{
-    ClumpCollection, MAX_ACTIVE_CLUMPS, MaterialClump, SETTLE_SECONDS, spoil_targets,
+    ClumpCollection, MAX_ACTIVE_CLUMPS, MaterialClump, SETTLE_SECONDS, TransferLimits,
 };
 pub use construction_collision::{
     ConstructionBodyState, ConstructionCollisionIndex, ConstructionCollisionMetrics,
@@ -35,10 +35,10 @@ pub use coordinates::{
     WorldGeneratorVersion, WorldPosition, WorldSeed,
 };
 pub use edits::{
-    BrickDecodeError, REMOVED_CELL_CUBIC_METERS, REMOVED_CELL_LITRES, TerrainBrick,
-    TerrainDensityClass, TerrainEditBatch, TerrainEditError, TerrainEditOutcome, TerrainNodeId,
-    TerrainNodeSummary, TerrainOctree, TerrainOctreeSnapshot, TerrainSource, decode_brick,
-    encode_brick,
+    BrickDecodeError, REMOVED_CELL_CUBIC_METERS, REMOVED_CELL_LITRES, Repose, SPOIL_LOOSENESS,
+    SpoilSlump, TerrainBrick, TerrainDensityClass, TerrainEditBatch, TerrainEditError,
+    TerrainEditOutcome, TerrainNodeId, TerrainNodeSummary, TerrainOctree, TerrainOctreeSnapshot,
+    TerrainSource, decode_brick, encode_brick,
 };
 pub use footprint::LoadFootprint;
 pub use generation::{CaveEdge, CaveGraph, CaveNode, TerrainField, TerrainMaterial, TerrainSample};
@@ -60,7 +60,9 @@ pub use query::{
     KinematicInput, KinematicSupport, KinematicTickOutcome, TerrainDensity, TerrainScene,
     TerrainSpatialIndex, raycast_density,
 };
-pub use soil::{GROUND_NORMAL_MIN_Y, SoilAccumulator, SoilCompression, SoilPatch, SoilResponse};
+pub use soil::{
+    GROUND_NORMAL_MIN_Y, SoilAccumulator, SoilCompression, SoilPatch, SoilResponse, loose_strength,
+};
 pub use streaming::{
     ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainPublicationDelta,
     TerrainPublicationUpsert, TerrainReadiness, TerrainSelection, TerrainSelectionStats,

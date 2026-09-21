@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let geometry = mechanic_physics::MachineCollisionGeometry::new(&base, 1)?;
     let mut machine = CpuMachine::new(base.clone(), 1, state)?;
     let mut spoil = mechanic_physics::SpoilSolver::default();
+    let mut slump = mechanic_world::SpoilSlump::default();
     let mut scene = TerrainContactScene::default();
     scene.publish(1, &[Arc::new(chunk.collision_chunk())], &[])?;
     let mut damage = BreakageAccumulator::default();
@@ -164,25 +165,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut remesh_ms = 0.0;
         let mut publication_ms = 0.0;
         if tick % 6 == 0 {
-            let mut outcomes = Vec::new();
-            clumps.gather_crumbs();
-            let settled = clumps
-                .bodies
-                .values()
-                .filter(|body| body.can_deposit())
-                .map(|body| (body.id, body.position))
-                .collect::<Vec<_>>();
-            for (id, position) in settled {
-                let targets = mechanic_world::spoil_targets(&terrain, &field, position, |cell| {
-                    tool.overlaps(cell.centre().0, mechanic_world::TERRAIN_CELL_METERS * 0.5)
-                });
-                outcomes.extend(clumps.settle(&mut terrain, &field, id, &targets));
+            if settle && tick > 90 {
+                // Nothing more is dug while the spoil settles.
+                damage = BreakageAccumulator::default();
             }
-            if !settle || tick <= 90 {
-                let sources = damage.ready(&terrain, &field, clumps.available());
-                outcomes.extend(clumps.extract(&mut terrain, &field, &sources, false));
-                damage.committed(&sources);
-            }
+            let outcomes = clumps.transfer(
+                &mut terrain,
+                &field,
+                &mut damage,
+                &mut slump,
+                &mut |cell| tool.keeps_clear(cell.centre().0),
+                mechanic_world::TransferLimits::default(),
+            );
             if !outcomes.is_empty() {
                 let bricks = outcomes
                     .iter()

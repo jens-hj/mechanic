@@ -25,7 +25,13 @@ pub struct TerrainEditOutcome {
     pub(super) changed_brick_coordinates: Vec<BrickCoord>,
     /// Cells pressed flat. Their material is squeezed out, not destroyed: the
     /// caller owes each one to the world as spoil.
-    pub pressed_out: Vec<(WorldCell, TerrainMaterial)>,
+    pub pressed_out: Vec<(WorldCell, TerrainMaterial, u32)>,
+    /// Cells of spoil laid down, in the order they were laid.
+    pub laid_cells: Vec<WorldCell>,
+    /// Material the ground gave up to clumps, in quanta.
+    pub quanta_given_up: u64,
+    /// Material the ground took back from clumps, in quanta.
+    pub quanta_taken_back: u64,
 }
 
 /// Ordered terrain edit publication with the union of every changed brick.

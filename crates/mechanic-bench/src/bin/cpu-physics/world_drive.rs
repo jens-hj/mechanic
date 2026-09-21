@@ -156,7 +156,9 @@ pub(super) fn run(
             .sum::<i64>()
     };
     let loose_at_start = loose(&clumps);
-    let mut cells_given_up = 0_i64;
+    let mut quanta_given_up = 0_i64;
+    let untouched = edits.clone();
+    let mut slump = mechanic_world::SpoilSlump::default();
     let dynamic = creation
         .compounds
         .iter()
@@ -356,41 +358,38 @@ pub(super) fn run(
                 if probing {
                     clumps.heave(&outcome.pressed_out);
                     tool.cells_pressed_out += outcome.pressed_out.len();
-                    cells_given_up += i64::try_from(outcome.pressed_out.len())?;
+                    quanta_given_up += i64::try_from(outcome.quanta_given_up)?;
                 }
                 let mut changed = outcome.changed_brick_coordinates().to_vec();
                 if probing {
-                    // The app's material transfer: settled spoil down, broken ground out.
-                    clumps.gather_crumbs();
-                    let settled = clumps
-                        .bodies
-                        .values()
-                        .filter(|body| body.can_deposit())
-                        .map(|body| (body.id, body.position))
-                        .take(64)
-                        .collect::<Vec<_>>();
-                    for (id, position) in settled {
-                        let targets =
-                            mechanic_world::spoil_targets(&edits, &field, position, |cell| {
-                                spoil_machine.overlaps(cell.centre().0, 0.025)
-                            });
-                        if let Some(outcome) = clumps.settle(&mut edits, &field, id, &targets) {
-                            tool.cells_deposited +=
-                                usize::try_from(outcome.total_added_cells()).unwrap_or(usize::MAX);
-                            cells_given_up -= i64::try_from(outcome.total_added_cells())?;
-                            changed.extend_from_slice(outcome.changed_brick_coordinates());
-                        }
+                    // The app's material transfer.
+                    for &(cell, ..) in &outcome.pressed_out {
+                        slump.disturb(cell);
                     }
-                    pending_breakage.discard_stale(&edits, &field);
-                    let sources = pending_breakage.ready(&edits, &field, 512);
-                    let laid_down = clumps.available() == 0;
-                    if let Some(outcome) = clumps.extract(&mut edits, &field, &sources, laid_down) {
-                        tool.cells_extracted += sources.len();
-                        cells_given_up += i64::try_from(sources.len())?;
+                    for outcome in clumps.transfer(
+                        &mut edits,
+                        &field,
+                        &mut pending_breakage,
+                        &mut slump,
+                        &mut |cell| spoil_machine.keeps_clear(cell.centre().0),
+                        mechanic_world::TransferLimits::default(),
+                    ) {
+                        tool.cells_deposited += outcome.laid_cells.len();
+                        tool.cells_extracted +=
+                            usize::try_from(outcome.total_removed_cells()).unwrap_or(usize::MAX);
+                        quanta_given_up += i64::try_from(outcome.quanta_given_up)?
+                            - i64::try_from(outcome.quanta_taken_back)?;
                         changed.extend_from_slice(outcome.changed_brick_coordinates());
                     }
-                    pending_breakage.committed(&sources);
                     tool.clumps = clumps.bodies.len();
+                    // Soft spoil that has lain on the ground for seconds and is still a clump.
+                    tool.spoil_stuck = tool.spoil_stuck.max(
+                        clumps
+                            .bodies
+                            .values()
+                            .filter(|body| body.can_deposit() && body.settled_seconds >= 3.0)
+                            .count(),
+                    );
                 }
                 spoil.ground_changed(changed.iter().copied());
                 // Match streaming: leaf sampling/gradient halos include adjacent bricks.
@@ -465,9 +464,40 @@ pub(super) fn run(
     summary["maximum_rut_depth_m"] = json!(maximum_rut);
     summary["remesh_count"] = json!(measured_remeshes);
     summary["kernel_coverage_complete"] = json!(false);
-    let unaccounted =
-        loose(&clumps) - loose_at_start - cells_given_up * i64::from(mechanic_world::CELL_QUANTA);
-    summary["ground_cells_given_up"] = json!(cells_given_up);
+    // Counted in the ground itself, not from what the edits reported: every
+    // brick that was touched, as it was and as it is.
+    let ground = |terrain: &mechanic_world::TerrainOctree| {
+        edits
+            .brick_coordinates()
+            .map(|brick| {
+                let corner = brick.minimum_cell();
+                let mut quanta = 0_i64;
+                for z in 0..mechanic_world::BRICK_EDGE_CELLS {
+                    for y in 0..mechanic_world::BRICK_EDGE_CELLS {
+                        for x in 0..mechanic_world::BRICK_EDGE_CELLS {
+                            let sample = terrain.sample_cell(
+                                &field,
+                                mechanic_world::WorldCell::new(
+                                    corner.x + x,
+                                    corner.y + y,
+                                    corner.z + z,
+                                ),
+                            );
+                            if sample.is_solid() {
+                                quanta += i64::from(mechanic_world::CELL_QUANTA)
+                                    - i64::from(sample.looseness);
+                            }
+                        }
+                    }
+                }
+                quanta
+            })
+            .sum::<i64>()
+    };
+    let ground_lost = ground(&untouched) - ground(&edits);
+    let unaccounted = loose(&clumps) - loose_at_start - ground_lost;
+    summary["ground_quanta_given_up"] = json!(ground_lost);
+    summary["ground_quanta_reported"] = json!(quanta_given_up);
     summary["material_unaccounted_quanta"] = json!(unaccounted);
     println!("{summary}");
     if unaccounted != 0 {
@@ -567,6 +597,7 @@ struct ToolWindow {
     cells_extracted: usize,
     cells_deposited: usize,
     cells_pressed_out: usize,
+    spoil_stuck: usize,
     clumps: usize,
     spoil_awake: usize,
     spoil_ms: f64,
@@ -633,6 +664,7 @@ impl ToolWindow {
             "cells_extracted": self.cells_extracted,
             "cells_deposited": self.cells_deposited,
             "cells_pressed_out": self.cells_pressed_out,
+            "spoil_stuck": self.spoil_stuck,
             "clumps": self.clumps,
             "spoil_awake": self.spoil_awake,
             "spoil_ms_per_tick": self.spoil_ms / self.ticks.max(1.0),

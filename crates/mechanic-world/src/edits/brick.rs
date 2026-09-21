@@ -14,7 +14,7 @@ pub(super) const EMPTY_DENSITY: f32 = -0.5 * TERRAIN_CELL_METERS as f32;
 
 pub(super) const BRICK_MAGIC: [u8; 4] = *b"MECB";
 
-pub(super) const BRICK_FORMAT_VERSION: u16 = 3;
+pub(super) const BRICK_FORMAT_VERSION: u16 = 4;
 
 /// Fully promoted 32³-cell brick and its density acceleration bounds.
 #[derive(Clone, Debug, PartialEq)]
@@ -126,6 +126,7 @@ impl TerrainBrick {
         let removed_density = sample.density;
         sample.density = EMPTY_DENSITY;
         sample.compaction = 0;
+        sample.looseness = 0;
         self.minimum_density = self.minimum_density.min(EMPTY_DENSITY);
         if removed_density >= self.maximum_density {
             self.maximum_density = self
@@ -142,6 +143,7 @@ impl TerrainBrick {
         local: IVec3,
         material: TerrainMaterial,
         density: f32,
+        looseness: u8,
     ) -> bool {
         let Some(index) = local_index(local) else {
             return false;
@@ -155,6 +157,7 @@ impl TerrainBrick {
             density,
             material,
             compaction: 0,
+            looseness,
         };
         self.maximum_density = self.maximum_density.max(density);
         if previous_density <= self.minimum_density {
@@ -208,6 +211,7 @@ pub fn encode_brick(brick: &TerrainBrick) -> Vec<u8> {
         bytes.extend_from_slice(&sample.density.to_bits().to_le_bytes());
         bytes.push(sample.material.code());
         bytes.push(sample.compaction);
+        bytes.push(sample.looseness);
         index += run;
     }
     bytes
@@ -234,6 +238,7 @@ pub fn decode_brick(bytes: &[u8]) -> Result<TerrainBrick, BrickDecodeError> {
         let run = usize::from(read_u16(bytes, cursor)?);
         let density = f32::from_bits(read_u32(bytes, cursor + 2)?);
         let compaction = *bytes.get(cursor + 7).ok_or(BrickDecodeError::Truncated)?;
+        let looseness = *bytes.get(cursor + 8).ok_or(BrickDecodeError::Truncated)?;
         let code = *bytes.get(cursor + 6).ok_or(BrickDecodeError::Truncated)?;
         let material =
             TerrainMaterial::from_code(code).ok_or(BrickDecodeError::UnknownMaterial(code))?;
@@ -245,10 +250,11 @@ pub fn decode_brick(bytes: &[u8]) -> Result<TerrainBrick, BrickDecodeError> {
                 density,
                 material,
                 compaction,
+                looseness,
             },
             run,
         ));
-        cursor += 8;
+        cursor += 9;
     }
     if cells.len() != BRICK_CELL_COUNT {
         return Err(BrickDecodeError::InvalidCellCount(cells.len()));

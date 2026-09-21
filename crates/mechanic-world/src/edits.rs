@@ -5,6 +5,7 @@
 mod batch;
 mod brick;
 mod node;
+mod repose;
 mod walk;
 
 pub use batch::{
@@ -16,6 +17,7 @@ use brick::EMPTY_DENSITY;
 pub use brick::{BrickDecodeError, TerrainBrick, decode_brick, encode_brick};
 use node::TerrainNode;
 pub use node::{TerrainDensityClass, TerrainNodeId, TerrainNodeSummary};
+pub use repose::{Repose, SPOIL_LOOSENESS, SpoilSlump};
 use walk::{
     classify_node, collect_bricks, collect_bricks_between, collect_nodes_between, find_brick,
     find_node, insert_brick_node, latest_revision_between, minimum_promoted_density_between,
@@ -197,7 +199,7 @@ impl TerrainOctree {
                     let offset = cell.centre().0 - patch.centre.0;
                     if patch.footprint.contains(patch.normal, offset) {
                         let depth = SoilResponse::for_material(sample.material).depth(
-                            sample.compaction,
+                            sample,
                             patch.pressure_pa,
                             patch.seconds,
                         );
@@ -251,11 +253,18 @@ impl TerrainOctree {
                     outcome.compressed_cells[cell.sample.material.code() as usize] += 1;
                     outcome.sunk_metres += f64::from(depth);
                     changed = true;
-                    if brick
-                        .sample(cell.cell.local_in_brick())
-                        .is_some_and(|pressed| !pressed.is_solid())
+                    // Flat the moment it stops being ground. It goes on sinking
+                    // after that, but its material left once.
+                    if cell.sample.is_solid()
+                        && brick
+                            .sample(cell.cell.local_in_brick())
+                            .is_some_and(|pressed| !pressed.is_solid())
                     {
-                        outcome.pressed_out.push((cell.cell, cell.sample.material));
+                        let quanta = crate::CELL_QUANTA - u32::from(cell.sample.looseness);
+                        outcome.quanta_given_up += u64::from(quanta);
+                        outcome
+                            .pressed_out
+                            .push((cell.cell, cell.sample.material, quanta));
                     }
                 }
             }
@@ -297,7 +306,10 @@ impl TerrainOctree {
                 .or_default()
                 .push(source.cell);
         }
-        let mut outcome = TerrainEditOutcome::default();
+        let mut outcome = TerrainEditOutcome {
+            quanta_given_up: cells.iter().map(|source| source.material_quanta()).sum(),
+            ..Default::default()
+        };
         for (coordinate, cells) in grouped {
             let mut brick = self
                 .brick(coordinate)
@@ -318,63 +330,6 @@ impl TerrainOctree {
             self.next_revision = self.next_revision.wrapping_add(1).max(1);
         }
         Some(outcome)
-    }
-
-    /// Deposits whole cells of loose material into empty terrain supported from
-    /// below. Returns the applied edit and the unplaced quantity. Fractional
-    /// cells remain owned by the clump; they are never rounded away.
-    pub fn deposit_material(
-        &mut self,
-        field: &TerrainField,
-        cells: &[WorldCell],
-        material: TerrainMaterial,
-        mut quanta: u64,
-    ) -> (TerrainEditOutcome, u64) {
-        let mut outcome = TerrainEditOutcome::default();
-        if !crate::BreakageResponse::for_material(material).deposits {
-            return (outcome, quanta);
-        }
-        let mut staged = BTreeMap::<BrickCoord, TerrainBrick>::new();
-        for &cell in cells {
-            if quanta < u64::from(crate::CELL_QUANTA) {
-                break;
-            }
-            if !cell.is_editable() || cell.y == i32::MIN {
-                continue;
-            }
-            let sample_at = |cell: WorldCell| {
-                staged
-                    .get(&cell.brick())
-                    .and_then(|brick| brick.sample(cell.local_in_brick()))
-                    .unwrap_or_else(|| self.sample_cell(field, cell))
-            };
-            if sample_at(cell).is_solid()
-                || !sample_at(WorldCell::new(cell.x, cell.y - 1, cell.z)).is_solid()
-            {
-                continue;
-            }
-            let coordinate = cell.brick();
-            let brick = staged.entry(coordinate).or_insert_with(|| {
-                self.brick(coordinate)
-                    .cloned()
-                    .unwrap_or_else(|| TerrainBrick::promote(field, coordinate))
-            });
-            if brick.set_solid(cell.local_in_brick(), material, -EMPTY_DENSITY) {
-                quanta -= u64::from(crate::CELL_QUANTA);
-                outcome.added_cells[material.code() as usize] += 1;
-                brick.revision = self.next_revision;
-            }
-        }
-        for (coordinate, brick) in staged {
-            self.insert_brick(brick);
-            self.dirty.insert(TerrainNodeId::leaf(coordinate));
-            outcome.changed_brick_coordinates.push(coordinate);
-        }
-        outcome.changed_bricks = outcome.changed_brick_coordinates.len();
-        if outcome.changed_bricks > 0 {
-            self.next_revision = self.next_revision.wrapping_add(1).max(1);
-        }
-        (outcome, quanta)
     }
 
     /// Subtracts a spherical brush and reports only cells that became empty.
@@ -608,7 +563,7 @@ impl TerrainOctree {
                 continue;
             };
             for (cell, density) in cells {
-                if brick.set_solid(cell.local_in_brick(), material, *density) {
+                if brick.set_solid(cell.local_in_brick(), material, *density, 0) {
                     outcome.added_cells[material.code() as usize] += 1;
                     changed.insert(coordinate);
                 }

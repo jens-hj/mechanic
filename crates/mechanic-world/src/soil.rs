@@ -57,16 +57,24 @@ impl SoilResponse {
         self.bearing_capacity_pa * (1.0 + self.hardening * f32::from(compaction) / 255.0)
     }
 
-    /// Plastic displacement under a constant pressure, bounded per delivery.
-    pub fn depth(self, compaction: u8, pressure_pa: f32, seconds: f32) -> f32 {
+    /// Plastic displacement of a cell under a constant pressure, bounded per
+    /// delivery. Loose ground carries less.
+    pub fn depth(self, sample: TerrainSample, pressure_pa: f32, seconds: f32) -> f32 {
         if !pressure_pa.is_finite() || !seconds.is_finite() || pressure_pa <= 0.0 || seconds <= 0.0
         {
             return 0.0;
         }
-        let capacity = self.capacity_pa(compaction);
+        let capacity = self.capacity_pa(sample.compaction) * loose_strength(sample.looseness);
         (self.yield_rate_m_s * (pressure_pa / capacity - 1.0).max(0.0) * seconds)
             .min(MAX_SOIL_DEPTH_METRES)
     }
+}
+
+/// How much of undisturbed ground's strength ground this loose keeps.
+pub fn loose_strength(looseness: u8) -> f32 {
+    // A cell holds 510 quanta, exactly representable.
+    let held = 1.0 - f32::from(looseness) / 510.0;
+    held * held
 }
 
 /// Pressure on an upward-facing terrain footprint in global coordinates.

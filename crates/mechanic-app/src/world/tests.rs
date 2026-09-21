@@ -2259,6 +2259,7 @@ fn ground_pressed_flat_by_an_edit_turns_up_as_spoil() {
             super::TerrainEditTaskResult {
                 terrain,
                 outcomes: vec![outcome],
+                strokes: Vec::new(),
                 elapsed_ms: 0.0,
             },
         );
@@ -2310,23 +2311,30 @@ fn settled_spoil_becomes_ground_in_one_step_and_saves_with_it() {
     // Nothing is held back for a later frame: the ground and the spoil have
     // changed hands, and physics was never asked to wait.
     assert_ne!(runtime.terrain_revision, revision);
-    assert_eq!(
-        runtime.clumps.bodies[&1].quanta, 40,
-        "the crumb stays loose"
+    assert!(
+        runtime.clumps.bodies.is_empty(),
+        "all of it is laid, to the last quantum"
     );
     super::saving::save_all(&mut runtime).unwrap();
     let (saved, clumps) = runtime.store.load_material_state("Material").unwrap();
     assert_eq!(clumps, runtime.clumps);
+    // What was laid is loose ground that holds exactly what the clump held, and
+    // it is saved with the world.
     let field = runtime.field.clone();
-    let laid = mechanic_world::spoil_targets(&runtime.edits, &field, resting, |_| false);
-    let before = mechanic_world::spoil_targets(
-        &mechanic_world::TerrainOctree::default(),
-        &field,
-        resting,
-        |_| false,
-    );
-    assert_ne!(laid, before, "the hollow the spoil lay in has filled");
-    assert!(saved.sample_cell(&field, before[0]).is_solid());
+    let centre = resting.cell().unwrap();
+    let mut held = 0_u32;
+    for y in -6..6 {
+        for z in -8..8 {
+            for x in -8..8 {
+                let cell = mechanic_world::WorldCell::new(centre.x + x, centre.y + y, centre.z + z);
+                let sample = saved.sample_cell(&field, cell);
+                if sample.is_solid() && sample.looseness > 0 {
+                    held += mechanic_world::CELL_QUANTA - u32::from(sample.looseness);
+                }
+            }
+        }
+    }
+    assert_eq!(held, 510 * 2 + 40);
 }
 
 /// Updates until `done`, failing instead of waiting forever on a stalled pipeline.

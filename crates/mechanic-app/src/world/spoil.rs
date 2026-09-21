@@ -16,10 +16,6 @@ use crate::simulation::state::AppSimulation;
 const MAX_TICKS_PER_FRAME: u32 = 3;
 /// Least time between material transfers: the cadence soil compaction commits at.
 const TRANSFER_INTERVAL: Duration = Duration::from_millis(100);
-/// Cells one transfer breaks out.
-const CELLS_PER_TRANSFER: usize = 512;
-/// Settled clumps one transfer lays down.
-const DEPOSITS_PER_TRANSFER: usize = 64;
 
 /// Steps loose material against the ground and the machine's last published
 /// state, and hands the machine what the spoil did to it.
@@ -121,53 +117,29 @@ impl WorldRuntime {
         }
         let started = std::time::Instant::now();
         let mut terrain = self.edits.clone();
-        let mut outcomes = Vec::new();
-        self.clumps.gather_crumbs();
-        let settled = self
-            .clumps
-            .bodies
-            .values()
-            .filter(|body| body.can_deposit())
-            .map(|body| (body.id, body.position))
-            .take(DEPOSITS_PER_TRANSFER)
-            .collect::<Vec<_>>();
-        let half_cell = mechanic_world::TERRAIN_CELL_METERS * 0.5;
-        for (id, position) in settled {
-            let machine = &self.spoil_machine;
-            let targets = mechanic_world::spoil_targets(&terrain, &self.field, position, |cell| {
-                machine.overlaps(cell.centre().0, half_cell)
-            });
-            outcomes.extend(self.clumps.settle(&mut terrain, &self.field, id, &targets));
-        }
-        let deposits = outcomes.len();
-        self.pending_breakage.discard_stale(&terrain, &self.field);
-        let sources = self
-            .pending_breakage
-            .ready(&terrain, &self.field, CELLS_PER_TRANSFER);
-        if !sources.is_empty() {
-            let laid_down = self.clumps.available() == 0;
-            if let Some(outcome) =
-                self.clumps
-                    .extract(&mut terrain, &self.field, &sources, laid_down)
-            {
-                outcomes.push(outcome);
-            }
-            // Refused sources were stale; either way they are done with.
-            self.pending_breakage.committed(&sources);
-        }
+        let machine = &self.spoil_machine;
+        let outcomes = self.clumps.transfer(
+            &mut terrain,
+            &self.field,
+            &mut self.pending_breakage,
+            &mut self.slump,
+            &mut |cell| machine.keeps_clear(cell.centre().0),
+            mechanic_world::TransferLimits::default(),
+        );
         if outcomes.is_empty() {
             return;
         }
         self.last_material_transfer = Some(self.clock);
         crate::performance_capture::record(
             "material_transfer",
-            || serde_json::json!({"duration_ms": started.elapsed().as_secs_f64() * 1000.0, "deposits": deposits, "cells": sources.len(), "clumps": self.clumps.bodies.len()}),
+            || serde_json::json!({"duration_ms": started.elapsed().as_secs_f64() * 1000.0, "laid_cells": outcomes.iter().map(|outcome| outcome.laid_cells.len()).sum::<usize>(), "removed_cells": outcomes.iter().map(mechanic_world::TerrainEditOutcome::total_removed_cells).sum::<u64>(), "quanta_given_up": outcomes.iter().map(|outcome| outcome.quanta_given_up).sum::<u64>(), "quanta_taken_back": outcomes.iter().map(|outcome| outcome.quanta_taken_back).sum::<u64>(), "loose_quanta": self.clumps.bodies.values().map(|body| u64::from(body.quanta)).sum::<u64>(), "clumps": self.clumps.bodies.len()}),
         );
         commit_terrain_edit_result(
             self,
             TerrainEditTaskResult {
                 terrain,
                 outcomes,
+                strokes: Vec::new(),
                 elapsed_ms: 0.0,
             },
         );

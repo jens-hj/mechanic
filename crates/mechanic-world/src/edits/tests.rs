@@ -363,6 +363,7 @@ fn soil_fixture(
                         },
                         material,
                         compaction: 0,
+                        looseness: 0,
                     };
             }
         }
@@ -574,7 +575,22 @@ fn pressing_ground_packs_it_and_pressing_it_flat_squeezes_it_out_as_spoil() {
         !terrain.sample_cell(&field, cell).is_solid(),
         "never pressed flat"
     );
-    assert!(pressed_out.contains(&(cell, TerrainMaterial::Soil)));
+    assert!(pressed_out.contains(&(cell, TerrainMaterial::Soil, crate::CELL_QUANTA)));
+    // Pressed on, it sinks further, but it has nothing more to give.
+    for _ in 0..16 {
+        pressed_out.extend(terrain.compress_patch(&field, press).unwrap().pressed_out);
+    }
+    let mut cells = pressed_out
+        .iter()
+        .map(|pressed| pressed.0)
+        .collect::<Vec<_>>();
+    cells.sort_unstable();
+    cells.dedup();
+    assert_eq!(
+        cells.len(),
+        pressed_out.len(),
+        "a cell gave up its material twice"
+    );
     clumps.heave(&pressed_out);
     let spoil: u64 = clumps
         .bodies
@@ -590,67 +606,8 @@ fn pressing_ground_packs_it_and_pressing_it_flat_squeezes_it_out_as_spoil() {
         clumps
             .bodies
             .values()
-            .all(|body| body.is_valid() && body.can_deposit())
+            .all(|body| body.is_valid() && body.settled_seconds == 0.0)
     );
-}
-
-#[test]
-fn crumbs_gather_until_they_fill_a_cell() {
-    let (field, mut terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
-    let above = WorldCell::new(cell.x, cell.y + 1, cell.z);
-    let crumb = |id, quanta: u32, offset: f64| crate::MaterialClump {
-        id,
-        material: TerrainMaterial::Soil,
-        quanta,
-        half_extents: DVec3::splat((f64::from(quanta) * crate::MATERIAL_QUANTUM_M3).cbrt() * 0.5),
-        position: WorldPosition(above.centre().0 + DVec3::X * offset),
-        rotation: bevy_math::DQuat::IDENTITY,
-        linear_velocity: DVec3::ZERO,
-        angular_velocity: DVec3::ZERO,
-        settled_seconds: crate::SETTLE_SECONDS,
-        sleeping: true,
-    };
-    let mut clumps = crate::ClumpCollection {
-        next_id: 4,
-        bodies: [
-            (1, crumb(1, 300, -0.01)),
-            (2, crumb(2, 200, 0.0)),
-            (3, crumb(3, 100, 0.01)),
-        ]
-        .into(),
-    };
-    // Alone, none of them is enough ground to lay down.
-    assert!(clumps.settle(&mut terrain, &field, 1, &[above]).is_none());
-    assert_eq!(clumps.gather_crumbs(), 2);
-    assert_eq!(clumps.bodies.len(), 1);
-    assert!(clumps.bodies[&1].is_valid());
-    assert_eq!(clumps.bodies[&1].quanta, 600);
-    clumps.settle(&mut terrain, &field, 1, &[above]).unwrap();
-    assert!(terrain.sample_cell(&field, above).is_solid());
-    assert_eq!(clumps.bodies[&1].quanta, 90, "the rest stays loose");
-    assert!(clumps.bodies[&1].is_valid());
-}
-
-#[test]
-fn settling_spoil_fills_the_hollow_beside_it_before_it_heaps() {
-    let (field, mut terrain, _, cell) = soil_fixture(TerrainMaterial::Soil);
-    // A one-cell pit next to where the spoil comes to rest.
-    let pit = WorldCell::new(cell.x + 1, cell.y, cell.z);
-    let source = crate::ExtractionCell {
-        cell: pit,
-        sample: terrain.sample_cell(&field, pit),
-        throw: DVec3::ZERO,
-    };
-    let mut clumps = crate::ClumpCollection::default();
-    clumps
-        .extract(&mut terrain, &field, &[source], false)
-        .unwrap();
-    let resting = WorldPosition(cell.centre().0 + DVec3::Y * crate::TERRAIN_CELL_METERS);
-    let targets = crate::spoil_targets(&terrain, &field, resting, |_| false);
-    assert_eq!(targets[0], pit);
-    assert!(targets.iter().all(|target| target.y >= pit.y));
-    let kept_clear = crate::spoil_targets(&terrain, &field, resting, |target| target == pit);
-    assert!(!kept_clear.contains(&pit));
 }
 
 #[test]
@@ -712,13 +669,18 @@ fn settled_soft_material_deposits_once_while_rock_stays_physical() {
         clumps
             .extract(&mut terrain, &field, &[source], false)
             .unwrap();
-        assert!(clumps.settle(&mut terrain, &field, 1, &[cell]).is_none());
+        let mut steps = 100;
+        assert!(
+            clumps
+                .settle(&mut terrain, &field, 1, &mut |_| false, &mut steps)
+                .is_none()
+        );
         clumps
             .bodies
             .get_mut(&1)
             .unwrap()
             .update_settling(true, 1.0);
-        let deposited = clumps.settle(&mut terrain, &field, 1, &[cell, cell]);
+        let deposited = clumps.settle(&mut terrain, &field, 1, &mut |_| false, &mut steps);
         if crate::BreakageResponse::for_material(material).deposits {
             deposited.unwrap();
             assert!(clumps.bodies.is_empty());
@@ -827,14 +789,31 @@ fn a_fully_collapsed_cell_passes_further_sinking_to_the_cell_below() {
 }
 
 #[test]
-fn compacted_brick_rle_round_trips_exactly() {
+fn compacted_and_loose_brick_rle_round_trips_exactly() {
     let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
     terrain.compress_patch(&field, patch).unwrap();
+    let above = WorldCell::new(cell.x + 4, cell.y + 3, cell.z);
+    let mut steps = 100;
+    let (laid, left) = terrain.lay_spoil(
+        &field,
+        above,
+        TerrainMaterial::Soil,
+        crate::CELL_QUANTA * 4,
+        &mut |_| false,
+        &mut steps,
+    );
+    assert_eq!(left, 0);
+    assert!(
+        laid.laid_cells
+            .iter()
+            .all(|&laid| terrain.sample_cell(&field, laid).looseness > 0)
+    );
     let brick = terrain.brick(cell.brick()).unwrap();
     assert_eq!(decode_brick(&encode_brick(brick)).unwrap(), *brick);
     assert_eq!(std::mem::size_of::<crate::TerrainSample>(), 8);
+    // Bricks written before cells knew how loose they are do not load.
     let mut old = encode_brick(brick);
-    old[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    old[4..6].copy_from_slice(&3_u16.to_le_bytes());
     assert_eq!(
         decode_brick(&old),
         Err(super::BrickDecodeError::UnsupportedHeader)

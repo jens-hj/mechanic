@@ -24,11 +24,13 @@ fn final_indices(chunk: &super::TerrainMeshChunk) -> Vec<u32> {
 fn authored_addition_uses_solid_material_without_changing_procedural_cover() {
     let dirt = TerrainSample {
         compaction: 0,
+        looseness: 0,
         density: 0.05,
         material: TerrainMaterial::Soil,
     };
     let procedural_air = TerrainSample {
         compaction: 0,
+        looseness: 0,
         density: -0.05,
         material: TerrainMaterial::SurfaceCover,
     };

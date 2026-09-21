@@ -411,6 +411,7 @@ pub(super) fn coarse_sample_in_columns(
         LatticeSample {
             sample: TerrainSample {
                 compaction: 0,
+                looseness: 0,
                 density: minimum_promoted,
                 material: direct.sample.material,
             },
@@ -433,6 +434,7 @@ pub(super) fn lattice_sample_in_columns(
     // edit are reconstructed as bounded cell occupancies.
     let mut samples = [TerrainSample {
         compaction: 0,
+        looseness: 0,
         density: 0.0,
         material: TerrainMaterial::Rock,
     }; 8];
@@ -468,6 +470,7 @@ pub(super) fn lattice_sample_from_cells(
 ) -> LatticeSample {
     let mut samples = [TerrainSample {
         compaction: 0,
+        looseness: 0,
         density: 0.0,
         material: TerrainMaterial::Rock,
     }; 8];
@@ -521,6 +524,7 @@ pub(super) fn blend_lattice_samples(
     LatticeSample {
         sample: TerrainSample {
             compaction: 0,
+            looseness: 0,
             density: density / 8.0,
             material,
         },
