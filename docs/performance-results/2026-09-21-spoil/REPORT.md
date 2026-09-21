@@ -115,6 +115,35 @@ it. Pressed-out spoil now has to come to rest like any clod, and
 `SpoilMachine::keeps_clear` keeps ground from being laid inside a machine part,
 within 20 cm beneath one, or within 15 cm of a moving one.
 
+## Follow-up: clods hopping beside the hole
+
+Clods at the brim of the bore hopped a few centimetres up and down and never
+settled. A 150 s drill replay with a tracker found 166 such clods away from the
+machine, some hopping for over a minute. Three causes:
+
+- Spoil that wanted to run into the bore, where the working head refuses it, was
+  laid where it stood instead, and built one-cell towers up the bore. A clod on
+  that comb sinks between the towers, is thrown up 5 cm and falls back. Spoil
+  that would run on but for a machine is now not laid at all: it stays a clod
+  until it can. Loose ground already lying like that, or held up only by a
+  machine, is remembered and looked at again, a few columns per transfer, so the
+  brim slides into the hole once the machine is gone.
+- A clod held up only by other clods kept gathering falling speed, to 1 m/s,
+  until it plunged through them and was thrown back. After clods are pushed
+  apart their speed along gravity is bounded by how far they really moved, and
+  is never turned about.
+- What the head stirred at the bottom of the bore shivered up through the whole
+  pile. A clod lying on other spoil within its friction cone, that moved less
+  than a centimetre, now stays where it was, as one on the ground already did.
+
+A clod buried by spoil laid over it comes up on top when it is laid, instead of
+being refused. Sliding now takes a cell only where laying it again ends lower,
+so the two agree, and an empty slide no longer reports an edit every transfer.
+In the same replay hopping now ends within seconds of the drill stalling; while
+digging, the pile in the bore still shifts as it is fed from below. 3,600 ticks:
+no quantum unaccounted for, no clump unsettled for 3 s, no degraded tick, spoil
+0.65 ms a tick with 303 clods, car traction unchanged.
+
 ## After
 
 Same capture, same save:

@@ -160,7 +160,9 @@ repose allows; a steel block holds it up as a bank does, and nothing is laid
 under a machine part, close beneath one, or beside a moving one. Loose ground
 that is later undercut slides: columns beside every change are looked over, and
 a loose top cell that no longer stands is broken out and laid again further
-down. Undisturbed ground stands at any angle. One
+down. Spoil that would run on into a hole a machine works in is not laid at
+all, and loose ground left like that waits and is looked at again until the
+machine has gone. Undisturbed ground stands at any angle. One
 `ClumpCollection::transfer` does laying, sliding and breaking out for the app
 and both replays.
 
@@ -191,7 +193,9 @@ they fill one, and only whole loose cells are laid down. The budget is 4,096
 awake clumps; past it, soft ground is laid straight back down. Scattered broken
 cells still gather into clods, soft clods that lie touching gather into clods of
 up to 27 cells, and anything lying still for a second sleeps, on the ground or
-on a deck. A deck or bucket holds spoil; only the ground takes it back. On the saved face drill the CPU tick fell from a
+on a deck. Friction holds a heap of clods together as it holds one to the
+ground, and a clod held up by others gathers no falling speed. A deck or bucket
+holds spoil; only the ground takes it back. On the saved face drill the CPU tick fell from a
 44 ms median to 0.22 ms and digging runs continuously; see
 [the spoil report](performance-results/2026-09-21-spoil/REPORT.md).
 
