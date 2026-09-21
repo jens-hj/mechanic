@@ -569,7 +569,7 @@ fn stick(a: &mut Grain<'_>, b: &mut Grain<'_>, closing: f64) -> bool {
         || a.clump.material != b.clump.material
         || closing.abs() > STICK_SPEED_M_S
         || quanta > CLOD_CELLS * mechanic_world::CELL_QUANTA
-        || !mechanic_world::BreakageResponse::for_material(a.clump.material).deposits
+        || !mechanic_world::BreakageResponse::for_material(a.clump.material).soft
     {
         return false;
     }

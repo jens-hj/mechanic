@@ -17,6 +17,7 @@ use brick::EMPTY_DENSITY;
 pub use brick::{BrickDecodeError, TerrainBrick, decode_brick, encode_brick};
 use node::TerrainNode;
 pub use node::{TerrainDensityClass, TerrainNodeId, TerrainNodeSummary};
+pub(crate) use repose::SLIDING_LOOSENESS;
 pub use repose::{Repose, SPOIL_LOOSENESS, SpoilSlump};
 use walk::{
     classify_node, collect_bricks, collect_bricks_between, collect_nodes_between, find_brick,

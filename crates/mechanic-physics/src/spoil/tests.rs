@@ -343,12 +343,14 @@ fn soft_clods_lying_together_gather_into_one_and_keep_their_material() {
                     spot + DVec3::new(f64::from(index) * 0.03, 0.1, 0.0),
                 )
             })
-            .chain([clump(
-                7,
-                TerrainMaterial::Rock,
-                1,
-                spot + DVec3::new(0.09, 0.2, 0.0),
-            )]),
+            .chain([0.09, 0.12].into_iter().zip(7..).map(|(along, id)| {
+                clump(
+                    id,
+                    TerrainMaterial::Rock,
+                    1,
+                    spot + DVec3::new(along, 0.2, 0.0),
+                )
+            })),
     );
     let quanta = |clumps: &ClumpCollection| {
         clumps
@@ -381,8 +383,9 @@ fn soft_clods_lying_together_gather_into_one_and_keep_their_material() {
         .count();
     assert!(soil < 6, "{soil} clods never gathered");
     assert!(clumps.bodies.values().all(MaterialClump::is_valid));
-    // Hard fragments stay what they broke into.
+    // Rocks stay what they broke into, lying together or not.
     assert_eq!(clumps.bodies[&7].quanta, 510);
+    assert_eq!(clumps.bodies[&8].quanta, 510);
 }
 
 #[test]

@@ -36,26 +36,45 @@ pub struct BreakageResponse {
     pub work_j_m3: f64,
     /// Mass per material volume, in kg/m³.
     pub density_kg_m3: f64,
-    /// Whether resting fragments can return to low-compaction terrain.
+    /// Whether resting fragments return to the ground as loose terrain.
     pub deposits: bool,
+    /// Whether the ground yields, is crushed aside and gathers into clods.
+    /// Rock settles as rubble but is none of these.
+    pub soft: bool,
 }
 
 impl BreakageResponse {
     /// Initial ordering for sand, soil, weaker minerals, rock and iron ore.
     pub const fn for_material(material: TerrainMaterial) -> Self {
-        let (stress_pa, work_j_m3, density_kg_m3, deposits) = match material {
-            TerrainMaterial::Sand => (12_000.0, 8_000.0, 1_600.0, true),
-            TerrainMaterial::SurfaceCover => (20_000.0, 16_000.0, 1_200.0, true),
-            TerrainMaterial::Soil => (35_000.0, 32_000.0, 1_700.0, true),
-            TerrainMaterial::Graphite => (600_000.0, 800_000.0, 2_200.0, false),
-            TerrainMaterial::Rock => (2_000_000.0, 4_000_000.0, 2_600.0, false),
-            TerrainMaterial::Iron => (6_000_000.0, 12_000_000.0, 4_000.0, false),
+        let (stress_pa, work_j_m3, density_kg_m3, deposits, soft) = match material {
+            TerrainMaterial::Sand => (12_000.0, 8_000.0, 1_600.0, true, true),
+            TerrainMaterial::SurfaceCover => (20_000.0, 16_000.0, 1_200.0, true, true),
+            TerrainMaterial::Soil => (35_000.0, 32_000.0, 1_700.0, true, true),
+            // Ore stays in pieces to be carried off.
+            TerrainMaterial::Graphite => (600_000.0, 800_000.0, 2_200.0, false, false),
+            TerrainMaterial::Rock => (2_000_000.0, 4_000_000.0, 2_600.0, true, false),
+            TerrainMaterial::Iron => (6_000_000.0, 12_000_000.0, 4_000.0, false, false),
         };
         Self {
             stress_pa,
             work_j_m3,
             density_kg_m3,
             deposits,
+            soft,
+        }
+    }
+
+    /// Resistance of the ground as it lies. Rock laid back down as rubble is
+    /// loose stones, a little harder to shift than soil, not bedrock again.
+    pub const fn for_ground(sample: TerrainSample) -> Self {
+        let response = Self::for_material(sample.material);
+        if response.soft || sample.looseness < crate::edits::SLIDING_LOOSENESS {
+            return response;
+        }
+        Self {
+            stress_pa: 60_000.0,
+            work_j_m3: 50_000.0,
+            ..response
         }
     }
 }
@@ -107,7 +126,7 @@ impl BreakagePatch {
     fn crush_work_j(self, material: TerrainMaterial, strength_pa: f64) -> f64 {
         let response = BreakageResponse::for_material(material);
         let limit = CRUSH_OVERLOAD * strength_pa;
-        if !response.deposits || self.crush_pa <= limit {
+        if !response.soft || self.crush_pa <= limit {
             return 0.0;
         }
         let rate = f64::from(crate::SoilResponse::for_material(material).yield_rate_m_s);
@@ -249,8 +268,8 @@ impl BreakageAccumulator {
         let share =
             patch.work_j / f64::from(u32::try_from(loaded.len()).unwrap_or(u32::MAX).max(1));
         for (cell, sample) in loaded {
-            let response = BreakageResponse::for_material(sample.material);
-            let hardening = if response.deposits {
+            let response = BreakageResponse::for_ground(sample);
+            let hardening = if response.soft {
                 1.0 + f64::from(sample.compaction) / 255.0
             } else {
                 1.0
@@ -317,7 +336,7 @@ fn extraction_work(sample: TerrainSample) -> f64 {
     f64::from(510 - u32::from(sample.compaction))
         * f64::from(crate::loose_strength(sample.looseness))
         * MATERIAL_QUANTUM_M3
-        * BreakageResponse::for_material(sample.material).work_j_m3
+        * BreakageResponse::for_ground(sample).work_j_m3
 }
 
 fn exposed(terrain: &TerrainOctree, field: &TerrainField, cell: WorldCell, normal: DVec3) -> bool {

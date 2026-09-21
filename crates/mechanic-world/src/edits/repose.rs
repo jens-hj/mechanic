@@ -14,8 +14,9 @@ use crate::{
 /// Looseness of spoil as it is laid: a quarter more room than the ground it
 /// was dug from, as excavated soil takes.
 pub const SPOIL_LOOSENESS: u8 = 102;
-/// Ground at least this loose slides when it is left too steep.
-const SLIDING_LOOSENESS: u8 = 51;
+/// Ground at least this loose is loose ground: it slides when it is left too
+/// steep, and rock this loose is rubble.
+pub(crate) const SLIDING_LOOSENESS: u8 = 51;
 /// How far down a column is searched for its floor, in cells.
 const FLOOR_SEARCH_CELLS: i32 = 40;
 /// Columns a laid cell may run across before it stays where it is.
@@ -45,12 +46,14 @@ pub struct Repose(&'static [(i32, i32)]);
 
 impl Repose {
     /// The slope of a material that settles back into ground, about 34° for
-    /// soil and cover and 27° for sand. Minerals do not settle.
+    /// soil, cover and rock rubble and 27° for sand. Ore does not settle.
     pub const fn for_material(material: TerrainMaterial) -> Option<Self> {
         match material {
-            TerrainMaterial::Soil | TerrainMaterial::SurfaceCover => Some(Self(&[(1, 1), (3, 2)])),
+            TerrainMaterial::Soil | TerrainMaterial::SurfaceCover | TerrainMaterial::Rock => {
+                Some(Self(&[(1, 1), (3, 2)]))
+            }
             TerrainMaterial::Sand => Some(Self(&[(1, 1), (2, 1)])),
-            TerrainMaterial::Rock | TerrainMaterial::Iron | TerrainMaterial::Graphite => None,
+            TerrainMaterial::Iron | TerrainMaterial::Graphite => None,
         }
     }
 }
@@ -152,12 +155,20 @@ impl TerrainOctree {
             return (outcome, quanta);
         }
         // Spoil takes more room than the ground it came from. Shared evenly,
-        // every cell holds between half a cell and a whole one, and the last
-        // quantum is laid: nothing is left over as a crumb.
+        // every cell holds at least half a cell, and the last quantum is laid:
+        // nothing is left over as a crumb. No cell is laid so full that it
+        // passes for undisturbed ground, which would stand as a wall, and as
+        // bedrock where it is rock; a lone cell of ground becomes two of spoil.
         let loose = CELL_QUANTA - u32::from(SPOIL_LOOSENESS);
-        let cells = ((quanta + loose / 2) / loose)
-            .max(quanta.div_ceil(CELL_QUANTA))
+        let fullest = CELL_QUANTA - u32::from(SLIDING_LOOSENESS);
+        let least = CELL_QUANTA - u32::from(u8::MAX);
+        let mut cells = ((quanta + loose / 2) / loose)
+            .max(quanta.div_ceil(fullest))
             .max(1);
+        if cells * least > quanta {
+            // A little less than two halves: one cell, as full as it was.
+            cells -= 1;
+        }
         let mut laying = Laying {
             terrain: self,
             field,
@@ -558,6 +569,39 @@ mod tests {
             height(&terrain, &field, origin, 16, 16)
         };
         assert!(heap(TerrainMaterial::Sand) < heap(TerrainMaterial::Soil));
+    }
+
+    #[test]
+    fn broken_rock_heaps_as_rubble_and_ore_stays_in_pieces() {
+        let (field, mut terrain, origin) = slab(TerrainMaterial::Soil, &[]);
+        let from = at(origin, 16, 20, 16);
+        pour(
+            &mut terrain,
+            &field,
+            from,
+            TerrainMaterial::Rock,
+            60,
+            &mut |_| false,
+        );
+        assert!(height(&terrain, &field, origin, 16, 16) >= 3, "no heap");
+        assert!(steepest(&terrain, &field, origin, 1) <= 1);
+        let top = at(
+            origin,
+            16,
+            FLOOR + height(&terrain, &field, origin, 16, 16),
+            16,
+        );
+        assert_eq!(
+            terrain.sample_cell(&field, top).material,
+            TerrainMaterial::Rock
+        );
+        for ore in [TerrainMaterial::Iron, TerrainMaterial::Graphite] {
+            let mut steps = 100;
+            let (outcome, left) =
+                terrain.lay_spoil(&field, from, ore, CELL_QUANTA, &mut |_| false, &mut steps);
+            assert_eq!(left, CELL_QUANTA);
+            assert!(outcome.laid_cells.is_empty());
+        }
     }
 
     #[test]

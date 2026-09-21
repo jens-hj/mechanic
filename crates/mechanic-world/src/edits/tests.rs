@@ -726,6 +726,59 @@ fn breakage_requires_stress_and_work_at_the_exposed_contact() {
 }
 
 #[test]
+fn rock_laid_back_as_rubble_breaks_out_far_more_easily_than_bedrock() {
+    let (field, mut terrain, soil, cell) = soil_fixture(TerrainMaterial::Rock);
+    let mut patch = crate::BreakagePatch {
+        centre: soil.centre,
+        normal: DVec3::Y,
+        footprint: crate::LoadFootprint::square(DVec3::Y, 0.025),
+        stress_pa: 200_000.0,
+        work_j: 40.0,
+        crush_pa: 0.0,
+        seconds: 1.0 / 60.0,
+        throw: DVec3::ZERO,
+    };
+    let mut damage = crate::BreakageAccumulator::default();
+    damage.accumulate(&terrain, &field, patch);
+    assert!(
+        damage.ready(&terrain, &field, 256).is_empty(),
+        "a spade broke bedrock"
+    );
+    let above = crate::WorldCell::new(cell.x, cell.y + 1, cell.z);
+    let mut steps = 100;
+    let (outcome, left) = terrain.lay_spoil(
+        &field,
+        above,
+        TerrainMaterial::Rock,
+        crate::CELL_QUANTA,
+        &mut |_| false,
+        &mut steps,
+    );
+    assert_eq!(left, 0, "broken rock was not laid");
+    // Loose stones take more room than the rock they were.
+    assert_eq!(outcome.laid_cells.len(), 2);
+    assert_eq!(outcome.laid_cells[0], above);
+    patch.centre.0.y += crate::TERRAIN_CELL_METERS;
+    damage.accumulate(&terrain, &field, patch);
+    let ready = damage.ready(&terrain, &field, 256);
+    assert_eq!(ready.len(), 1, "rubble is as hard as bedrock");
+    assert_eq!(ready[0].cell, above);
+    let held = outcome
+        .laid_cells
+        .iter()
+        .map(|&cell| {
+            crate::ExtractionCell {
+                cell,
+                sample: terrain.sample_cell(&field, cell),
+                throw: DVec3::ZERO,
+            }
+            .material_quanta()
+        })
+        .sum::<u64>();
+    assert_eq!(held, u64::from(crate::CELL_QUANTA), "nothing made or lost");
+}
+
+#[test]
 fn sustained_overload_sinks_soil_and_then_stops_when_it_compacts() {
     let (field, mut terrain, patch, cell) = soil_fixture(TerrainMaterial::Soil);
     let before = terrain.sample_cell(&field, cell);
