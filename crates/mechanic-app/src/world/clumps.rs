@@ -13,8 +13,9 @@ pub(super) struct ClumpRender {
     id: u64,
 }
 
-/// One unit clod per terrain material. Every clump of a material shares its
-/// mesh and differs only by transform, so the renderer batches them.
+/// One unit clod per terrain material, by material code. Every clump of a
+/// material shares its mesh and differs only by transform, so the renderer
+/// batches them.
 #[derive(Default)]
 pub(super) struct ClodMeshes(Vec<Handle<Mesh>>);
 
@@ -30,10 +31,10 @@ pub(super) fn sync_clump_rendering(
     };
     let started = std::time::Instant::now();
     if clods.0.is_empty() {
-        clods.0 = TerrainMaterial::ALL
-            .into_iter()
-            .map(|material| meshes.add(clod_mesh(material)))
-            .collect();
+        clods.0 = vec![Handle::default(); TerrainMaterial::COUNT];
+        for material in TerrainMaterial::ALL {
+            clods.0[material.code() as usize] = meshes.add(clod_mesh(material));
+        }
     }
     let mut present = BTreeSet::new();
     for (entity, marker, mut transform) in &mut rendered {
