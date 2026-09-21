@@ -137,6 +137,20 @@ impl SpoilMachine {
         point.cmpge(self.low - margin).all() && point.cmple(self.high + margin).all()
     }
 
+    /// Whether the machine keeps spoil from being laid in the terrain cell
+    /// centred here: it fills the cell, sits close above it, or works beside it.
+    /// Ground laid under a press or in a tool's way is only pressed or dug out
+    /// again; the spoil stays loose until the machine has moved on.
+    pub fn keeps_clear(&self, cell_centre: DVec3) -> bool {
+        /// Room a clod needs above the ground it is laid on, in metres.
+        const HEADROOM_M: f64 = 0.2;
+        /// How near a moving part ground is left alone, in metres.
+        const WORKING_MARGIN_M: f64 = 0.15;
+        self.overlaps(cell_centre, mechanic_world::TERRAIN_CELL_METERS * 0.5)
+            || self.overlaps(cell_centre + DVec3::Y * HEADROOM_M * 0.5, HEADROOM_M * 0.5)
+            || self.stirs(cell_centre, WORKING_MARGIN_M)
+    }
+
     /// Whether a sphere overlaps any collider.
     pub fn overlaps(&self, centre: DVec3, radius: f64) -> bool {
         let mut found = Vec::new();

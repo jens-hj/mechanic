@@ -384,3 +384,72 @@ fn soft_clods_lying_together_gather_into_one_and_keep_their_material() {
     // Hard fragments stay what they broke into.
     assert_eq!(clumps.bodies[&7].quanta, 510);
 }
+
+#[test]
+fn a_clod_wedged_between_a_dirt_wall_and_a_block_settles() {
+    use mechanic_world::{ExtractionCell, WorldCell};
+    let (field, mut terrain, spot) = ground();
+    // A trench with upright walls of undisturbed ground.
+    let corner = WorldPosition(spot).cell().unwrap();
+    let trench = (-12..4)
+        .flat_map(|y| (0..8).flat_map(move |x| (-10..10).map(move |z| (x, y, z))))
+        .map(|(x, y, z)| WorldCell::new(corner.x + x, corner.y + y, corner.z + z))
+        .filter(|&cell| terrain.sample_cell(&field, cell).is_solid())
+        .map(|cell| ExtractionCell {
+            cell,
+            sample: terrain.sample_cell(&field, cell),
+            throw: DVec3::ZERO,
+        })
+        .collect::<Vec<_>>();
+    terrain.extract_cells(&field, &trench).unwrap();
+    // A steel slab leaning towards the trench wall, the gap closing downwards:
+    // 16 cm at the top, nothing 80 cm down. Neither face is under the clod.
+    let wall = f64::from(corner.x) * mechanic_world::TERRAIN_CELL_METERS;
+    let lean = (0.16_f64 / 0.8).atan();
+    let normal = DVec3::new(-lean.cos(), lean.sin(), 0.0);
+    let face = DVec3::new(wall + 0.08, spot.y - 0.4, spot.z);
+    let creation = CompiledCreation::default()
+        .with_runtime_boxes(&[RuntimeBox {
+            half_extents: Vec3::new(0.5, 0.05, 0.5),
+            mass: 100.0,
+            material: MaterialProperties {
+                density_kg_m3: 7_800.0,
+                static_friction: 0.8,
+                dynamic_friction: 0.6,
+                restitution: 0.0,
+                rolling_resistance: 0.0,
+                youngs_modulus_pa: 1e8,
+            },
+        }])
+        .unwrap();
+    let slab = SpoilMachine::new(
+        &creation,
+        &[BodyPose {
+            position: face - normal * 0.05,
+            rotation: DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2 - lean),
+        }],
+        &[SpatialMotion {
+            linear: DVec3::ZERO,
+            angular: DVec3::ZERO,
+        }],
+        DVec3::ZERO,
+    );
+    let mut clumps = collection([clump(
+        1,
+        TerrainMaterial::Soil,
+        8,
+        DVec3::new(wall + 0.08, spot.y + 0.1, spot.z),
+    )]);
+    let mut solver = SpoilSolver::default();
+    for _ in 0..240 {
+        solver.step(&mut clumps, &terrain, &field, &slab, GRAVITY, TICK_SECONDS);
+    }
+    let body = &clumps.bodies[&1];
+    let depth = spot.y - body.position.0.y;
+    assert!(
+        (0.0..0.5).contains(&depth),
+        "not caught in the gap: {depth} m down"
+    );
+    assert!(body.linear_velocity.length() < 0.05, "still moving");
+    assert!(body.can_deposit(), "caught, and never settled");
+}

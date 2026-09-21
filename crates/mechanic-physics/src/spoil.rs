@@ -70,6 +70,10 @@ pub struct SpoilSolver {
     resting: BTreeMap<u64, f64>,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about what a grain touches"
+)]
 struct Grain<'a> {
     clump: &'a mut MaterialClump,
     radius: f64,
@@ -80,6 +84,10 @@ struct Grain<'a> {
     grounded: bool,
     /// Lying on the machine, or on spoil that does.
     carried: bool,
+    /// Touching the ground at any angle: a bank it leans on counts.
+    touching: bool,
+    /// Caught between the ground and the machine, neither of them under it.
+    wedged: bool,
     /// Out of what the clump lies on, and how that moves.
     rest_normal: DVec3,
     rest_velocity: DVec3,
@@ -138,6 +146,8 @@ impl SpoilSolver {
                     supported: false,
                     grounded: false,
                     carried: false,
+                    touching: false,
+                    wedged: false,
                     rest_normal: DVec3::Y,
                     rest_velocity: DVec3::ZERO,
                     clump,
@@ -206,7 +216,7 @@ impl SpoilSolver {
         // Clods tumble as they travel; the turning is for the eye only. On
         // anything, they roll with how they move over it, and lie still on it.
         let over = clump.linear_velocity - grain.rest_velocity;
-        let lying = grain.supported || grain.carried;
+        let lying = grain.supported || grain.carried || grain.wedged;
         if lying {
             clump.angular_velocity = if over.length() < 0.05 {
                 DVec3::ZERO
@@ -218,7 +228,8 @@ impl SpoilSolver {
             * clump.rotation)
             .normalize();
         // Only the ground takes spoil back; a deck or a bucket just holds it.
-        clump.update_settling(grain.supported, seconds);
+        // Any ground will do: spoil leaning on a bank runs down it when laid.
+        clump.update_settling(grain.supported || grain.touching, seconds);
         if lying && over.length() < 0.05 {
             let rested = self.resting.entry(clump.id).or_default();
             *rested += seconds;
@@ -255,10 +266,12 @@ impl SpoilSolver {
         )]
         let strides = ((velocity.length() * seconds / stride).ceil() as u32).clamp(1, MAX_STRIDES);
         let mut touches = std::mem::take(&mut self.touches);
+        let mut pushed_by_machine = false;
         for _ in 0..strides {
             position += velocity * seconds / f64::from(strides);
             machine.touches(position, grain.radius, &mut touches);
             for touch in &touches {
+                pushed_by_machine = true;
                 position += touch.normal * touch.depth;
                 let change =
                     contact_response(velocity - touch.velocity, touch.normal, touch.friction);
@@ -281,6 +294,7 @@ impl SpoilSolver {
                 };
                 position += push;
                 velocity += contact_response(velocity, normal, grain.friction);
+                grain.touching = true;
                 if normal.y > GROUND_NORMAL_MIN_Y {
                     grain.supported = true;
                     grain.grounded = true;
@@ -296,8 +310,20 @@ impl SpoilSolver {
             > (1.0 - grain.rest_normal.y * grain.rest_normal.y)
                 .max(0.0)
                 .sqrt();
-        if (grain.grounded || grain.carried)
-            && holds
+        // What it touched may have stopped it where no single contact did: caught
+        // in a closing gap it goes nowhere, however gravity pulls. It falls no
+        // faster than it fell.
+        if grain.touching || pushed_by_machine {
+            let down = gravity.normalize_or_zero();
+            let fell = (position - start).dot(down) / seconds;
+            let falling = velocity.dot(down);
+            if fell.abs() < falling.abs() {
+                velocity += down * (fell - falling);
+            }
+        }
+        // Caught between a bank and a block, friction on both sides holds it.
+        grain.wedged = grain.touching && pushed_by_machine && !grain.grounded && !grain.carried;
+        if (((grain.grounded || grain.carried) && holds) || grain.wedged)
             && (velocity - grain.rest_velocity).length() < HOLD_SPEED_M_S
         {
             velocity = grain.rest_velocity;
@@ -420,6 +446,7 @@ impl SpoilSolver {
                 grain.clump.position.0 += push;
                 let change = contact_response(grain.clump.linear_velocity, normal, grain.friction);
                 grain.clump.linear_velocity += change;
+                grain.touching = true;
             }
         }
         absorbed
