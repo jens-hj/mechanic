@@ -366,6 +366,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Q cycles all 24 orientations; place a cushion, then wire it with Connector"
                     .to_owned()
             }
+            (false, Tool::Dial(_) | Tool::Button(_), _, _, _) => format!("{} cycles 5 / 10 / 25 cm; place on a surface; use Connector to link to one Controller", controls.label(GameAction::PipeTurn)),
             (false, Tool::Input, _, _, _) => {
                 "Q cycles all 24 orientations; place Input, then wire it to a Seat".to_owned()
             }
@@ -391,6 +392,18 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 controls.label(GameAction::Interact),
                 controls.label(GameAction::ShapeSnap),
             ),
+            (false, Tool::Gear, _, _, _) => format!(
+                "Click a cylinder for teeth, a block face for a rack (drag across blocks for a longer one), a bare bearing for a new gear; drag gear to gear to mesh; right-click takes teeth off or unmeshes. {}/{} teeth ({} for one at a time), {}/{} module, {} spur/ring/bevel, {} rack direction or next partner in reach, {} picks up, {} resets",
+                controls.label(GameAction::CylinderLengthDecrease),
+                controls.label(GameAction::CylinderLengthIncrease),
+                controls.label(GameAction::FinePlacement),
+                controls.label(GameAction::CylinderOuterDecrease),
+                controls.label(GameAction::CylinderOuterIncrease),
+                controls.label(GameAction::PipeTurn),
+                rotate,
+                controls.label(GameAction::Interact),
+                controls.label(GameAction::ShapeSnap),
+            ),
             (false, Tool::Shape, _, _, _) => {
                 "Drag an area (Q changes plane); Shift+left paints corners; left drag moves on one axis (Q changes axis); arrows nudge"
                     .to_owned()
@@ -402,6 +415,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 )
             }
             (false, Tool::Connector, _, _, _) => match state.wire_drag.map(|drag| drag.from) {
+                Some(WireEnd::PhysicalInput(_)) => "Drag to a Controller; repeat the connection to unlink".to_owned(),
                 None => "Wire Controller↔Bearing, Input↔Seat, or Seat↔Controller".to_owned(),
                 Some(WireEnd::Controller(_)) => {
                     "Release on a bearing to wire it — drop it on the same block to reverse"
@@ -572,6 +586,8 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                         | Tool::Transmission
                         | Tool::Servo
                         | Tool::Seat
+                        | Tool::Dial(_)
+                        | Tool::Button(_)
                         | Tool::Input
                         | Tool::DimensionLink
                 )
@@ -632,7 +648,13 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
             | Tool::Servo,
         ) => Tone::Angle,
         Some(
-            Tool::Weld | Tool::Controller | Tool::Connector | Tool::Input | Tool::DimensionLink,
+            Tool::Weld
+            | Tool::Controller
+            | Tool::Connector
+            | Tool::Dial(_)
+            | Tool::Button(_)
+            | Tool::Input
+            | Tool::DimensionLink,
         ) => Tone::Key,
         Some(
             Tool::Block
@@ -643,6 +665,7 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
             | Tool::Seat
             | Tool::Shape
             | Tool::Spiral
+            | Tool::Gear
             | Tool::Chroma,
         ) => Tone::Speed,
         None => Tone::Muted,

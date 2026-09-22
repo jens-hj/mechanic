@@ -41,7 +41,7 @@ pub(crate) fn capture(
     sequencer: &DriveSequencer,
     gearboxes: &GearboxRuntime,
 ) -> Model {
-    let graph = &simulation.published_graph;
+    let graph = simulation.effective_graph();
     let Some(seat) = seat.filter(|seat| graph.is_seat(*seat)) else {
         return Model::default();
     };
@@ -345,7 +345,7 @@ mod tests {
         simulation.creation = Some(graph.compile().unwrap());
         let sequencer = DriveSequencer::default();
         let mut gearboxes = GearboxRuntime::default();
-        gearboxes.start(&simulation.published_graph, &sequencer);
+        gearboxes.start(simulation.effective_graph(), &sequencer);
         let occupied = capture(Some(seat), &simulation, &sequencer, &gearboxes);
         assert_eq!(occupied.engines.len(), 1);
         assert_eq!(occupied.engines[0].title, "GAS ×2 · AUTO");

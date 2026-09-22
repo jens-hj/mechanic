@@ -1,0 +1,5 @@
+error[E0425]: cannot find value `conditional` in this scope
+  --> tests/bindings-ui/dynamic_binding_does_not_escape.rs:16:19
+   |
+16 |             text (conditional.layout_rect().size.width.to_string())
+   |                   ^^^^^^^^^^^ not found in this scope

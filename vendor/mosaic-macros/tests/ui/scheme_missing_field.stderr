@@ -1,0 +1,5 @@
+error[E0063]: missing field `bg` in initializer of `Tokens`
+  --> tests/ui/scheme_missing_field.rs:17:23
+   |
+17 |     let _incomplete = Tokens {
+   |                       ^^^^^^ missing `bg`

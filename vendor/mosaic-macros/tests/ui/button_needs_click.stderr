@@ -1,0 +1,5 @@
+error: button needs an @click:{ … } handler
+  --> tests/ui/button_needs_click.rs:12:13
+   |
+12 |             button "Save"
+   |             ^^^^^^

@@ -1,0 +1,5 @@
+error: handler `@layout` does not bubble and cannot use `.stop`
+ --> tests/ui/handler_unsupported_modifier.rs:9:21
+  |
+9 |         col @layout.stop:{ |_| {} } {}
+  |                     ^^^^

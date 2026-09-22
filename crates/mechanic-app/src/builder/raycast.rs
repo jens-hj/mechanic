@@ -222,6 +222,8 @@ pub(crate) fn raycast_construction_for_annulus_filtered_with_ground(
                     | PartSpec::Transmission(_)
                     | PartSpec::Servo(_)
                     | PartSpec::Seat(_)
+                    | PartSpec::Dial(_)
+                    | PartSpec::Button(_)
                     | PartSpec::Input(_)
                     | PartSpec::DimensionLink(_) => None,
                 }),
@@ -337,12 +339,22 @@ pub(super) fn raycast_cuboid(
     part: PartId,
     spec: CuboidSpec,
 ) -> Option<SurfaceHit> {
+    raycast_envelope(origin, direction, part, spec.pose, spec.size_meters())
+}
+
+pub(super) fn raycast_envelope(
+    origin: Vec3,
+    direction: Vec3,
+    part: PartId,
+    pose: mechanic_core::BuildPose,
+    size: Vec3,
+) -> Option<SurfaceHit> {
     let hit = raycast_oriented_cuboid(
         origin,
         direction,
-        spec.pose.translation(),
-        spec.pose.rotation.quaternion(),
-        spec.size_meters() * 0.5,
+        pose.translation(),
+        pose.rotation.quaternion(),
+        size * 0.5,
     )?;
     Some(SurfaceHit {
         distance: hit.distance,
@@ -541,6 +553,9 @@ pub(super) fn raycast_part(
         PartSpec::Transmission(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Servo(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Seat(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => {
+            raycast_envelope(origin, direction, part, spec.pose(), spec.size_meters())
+        }
         PartSpec::Input(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::DimensionLink(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Cylinder(spec) => raycast_cylinder(origin, direction, part, spec),

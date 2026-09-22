@@ -1,0 +1,5 @@
+error: arbitrary function calls are not allowed in field programs
+ --> tests/ui/field_arbitrary_call.rs:6:31
+  |
+6 |     let _ = displacement!(|p| sample(p.uv.x));
+  |                               ^^^^^^

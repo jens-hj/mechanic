@@ -1,0 +1,5 @@
+error: unknown state block `hovered` — did you mean `hover`?
+  --> tests/ui/state_near_miss.rs:11:12
+   |
+11 |         el hovered { fill:(Color::WHITE) } {}
+   |            ^^^^^^^

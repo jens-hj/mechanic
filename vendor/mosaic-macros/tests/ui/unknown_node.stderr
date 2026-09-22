@@ -1,0 +1,5 @@
+error: unknown node `widget` — expected a container (row/col/stack/grid/canvas/el/scroll), a widget (text/button/input/icon/img/toggle/checkbox/radio/slider/progress/stepper/select/find), a shape (circle/rect/line/polygon), an inner `tooltip`, a PascalCase component, `children`, if/for, or a `{ … }` escape block
+  --> tests/ui/unknown_node.rs:12:13
+   |
+12 |             widget foo:1 {}
+   |             ^^^^^^

@@ -4,7 +4,7 @@
 //! is, which key picks it, and what it may do in which mode.
 
 use bevy::prelude::*;
-use mechanic_core::ConstructionMaterial;
+use mechanic_core::{ConstructionMaterial, InputSize};
 use mechanic_world::TerrainMaterial;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -27,11 +27,14 @@ pub(crate) enum Tool {
     Servo,
     Seat,
     Input,
+    Dial(InputSize),
+    Button(InputSize),
     DimensionLink,
     Shape,
     Chroma,
     Layer,
     Spiral,
+    Gear,
 }
 
 /// The four tools exposed by the primary hotbar.
@@ -74,10 +77,11 @@ pub(crate) enum MatterMode {
     Manipulate,
     Chroma,
     Spiral,
+    Gear,
 }
 
 impl MatterMode {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Block,
         Self::Cylinder,
         Self::Layer,
@@ -86,6 +90,7 @@ impl MatterMode {
         Self::Manipulate,
         Self::Chroma,
         Self::Spiral,
+        Self::Gear,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -98,6 +103,7 @@ impl MatterMode {
             Self::Manipulate => "Manipulate",
             Self::Chroma => "Chroma",
             Self::Spiral => "Spiral",
+            Self::Gear => "Gear",
         }
     }
 
@@ -111,6 +117,7 @@ impl MatterMode {
             Self::Manipulate => "SHAPE",
             Self::Chroma => "CHROMA",
             Self::Spiral => "SPIRAL",
+            Self::Gear => "GEAR",
         }
     }
 }
@@ -152,6 +159,8 @@ pub(crate) enum PlaceableItem {
     Servo,
     Seat,
     Input,
+    Dial(InputSize),
+    Button(InputSize),
     DimensionLink,
 }
 
@@ -251,7 +260,7 @@ impl WheelContext {
 }
 
 impl PlaceableItem {
-    pub(crate) const ALL: [Self; 13] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::Bearing,
         Self::LinearBearing,
         Self::Piston,
@@ -264,11 +273,25 @@ impl PlaceableItem {
         Self::Servo,
         Self::Seat,
         Self::Input,
+        Self::Dial(InputSize::Panel),
+        Self::Button(InputSize::Panel),
         Self::DimensionLink,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
-        self.editor_tool().label()
+        match self {
+            Self::Dial(_) => "Dial",
+            Self::Button(_) => "Button",
+            _ => self.editor_tool().label(),
+        }
+    }
+
+    pub(crate) const fn picker_item(self) -> Self {
+        match self {
+            Self::Dial(_) => Self::Dial(InputSize::Panel),
+            Self::Button(_) => Self::Button(InputSize::Panel),
+            _ => self,
+        }
     }
 
     pub(crate) const fn editor_tool(self) -> Tool {
@@ -285,6 +308,8 @@ impl PlaceableItem {
             Self::Servo => Tool::Servo,
             Self::Seat => Tool::Seat,
             Self::Input => Tool::Input,
+            Self::Dial(size) => Tool::Dial(size),
+            Self::Button(size) => Tool::Button(size),
             Self::DimensionLink => Tool::DimensionLink,
         }
     }
@@ -303,6 +328,8 @@ impl PlaceableItem {
             Tool::Servo => Some(Self::Servo),
             Tool::Seat => Some(Self::Seat),
             Tool::Input => Some(Self::Input),
+            Tool::Dial(size) => Some(Self::Dial(size)),
+            Tool::Button(size) => Some(Self::Button(size)),
             Tool::DimensionLink => Some(Self::DimensionLink),
             _ => None,
         }
@@ -329,11 +356,18 @@ impl Tool {
             Self::Transmission => "Transmission",
             Self::Servo => "Servo",
             Self::Seat => "Seat",
-            Self::Input => "Input",
+            Self::Input => "Keyboard Input",
+            Self::Dial(InputSize::Panel) => "Dial · 5 cm",
+            Self::Dial(InputSize::Utility) => "Dial · 10 cm",
+            Self::Dial(InputSize::Industrial) => "Dial · 25 cm",
+            Self::Button(InputSize::Panel) => "Button · 5 cm",
+            Self::Button(InputSize::Utility) => "Button · 10 cm",
+            Self::Button(InputSize::Industrial) => "Button · 25 cm",
             Self::DimensionLink => "Dimension Link",
             Self::Shape => "Shape",
             Self::Chroma => "Chroma",
             Self::Spiral => "Spiral",
+            Self::Gear => "Gear",
         }
     }
 
@@ -384,11 +418,28 @@ impl SelectedTool {
                 MatterMode::Manipulate => Some(Tool::Shape),
                 MatterMode::Chroma => Some(Tool::Chroma),
                 MatterMode::Spiral => Some(Tool::Spiral),
+                MatterMode::Gear => Some(Tool::Gear),
             },
             MainTool::Welder => Some(Tool::Weld),
             MainTool::Connector => Some(Tool::Connector),
             MainTool::Hammer => Some(Tool::Hammer),
         }
+    }
+
+    pub(crate) fn cycle_input_size(&mut self) -> bool {
+        let Some(tool @ (Tool::Dial(size) | Tool::Button(size))) = self.active_editor_tool() else {
+            return false;
+        };
+        let next = match size {
+            InputSize::Panel => InputSize::Utility,
+            InputSize::Utility => InputSize::Industrial,
+            InputSize::Industrial => InputSize::Panel,
+        };
+        self.item = match tool {
+            Tool::Dial(_) => PlaceableItem::Dial(next),
+            _ => PlaceableItem::Button(next),
+        };
+        true
     }
 
     pub(crate) fn select_tool(&mut self, tool: MainTool) {
@@ -413,6 +464,7 @@ impl SelectedTool {
             Tool::Shape => self.select_mode(MatterMode::Manipulate),
             Tool::Chroma => self.select_mode(MatterMode::Chroma),
             Tool::Spiral => self.select_mode(MatterMode::Spiral),
+            Tool::Gear => self.select_mode(MatterMode::Gear),
             Tool::Weld => self.select_tool(MainTool::Welder),
             Tool::Connector => self.select_tool(MainTool::Connector),
             Tool::Hammer => self.select_tool(MainTool::Hammer),
@@ -445,6 +497,7 @@ impl Default for SelectedTerrainMaterial {
 #[cfg(test)]
 mod tests {
     use super::{MainTool, MatterMode, PlaceableItem, SelectedTool, Tool};
+    use mechanic_core::InputSize;
 
     #[test]
     fn defaults_to_matter_block_and_remembers_context() {
@@ -476,6 +529,8 @@ mod tests {
                 PlaceableItem::Servo,
                 PlaceableItem::Seat,
                 PlaceableItem::Input,
+                PlaceableItem::Dial(InputSize::Panel),
+                PlaceableItem::Button(InputSize::Panel),
                 PlaceableItem::DimensionLink,
             ]
         );
@@ -483,6 +538,35 @@ mod tests {
             PlaceableItem::DimensionLink.editor_tool(),
             Tool::DimensionLink
         );
+    }
+
+    #[test]
+    fn physical_input_sizes_cycle_with_one_picker_entry_per_family() {
+        for item in [
+            PlaceableItem::Dial(InputSize::Panel),
+            PlaceableItem::Button(InputSize::Panel),
+        ] {
+            let mut selected = SelectedTool::default();
+            selected.select_item(item);
+            assert_eq!(
+                PlaceableItem::ALL
+                    .iter()
+                    .filter(|candidate| candidate.picker_item() == item)
+                    .count(),
+                1
+            );
+            for size in [InputSize::Utility, InputSize::Industrial, InputSize::Panel] {
+                assert!(selected.cycle_input_size());
+                let expected = match item {
+                    PlaceableItem::Dial(_) => Tool::Dial(size),
+                    _ => Tool::Button(size),
+                };
+                assert_eq!(selected.active_editor_tool(), Some(expected));
+                assert_eq!(selected.item.picker_item(), item);
+            }
+            selected.select_tool(MainTool::Hammer);
+            assert!(!selected.cycle_input_size());
+        }
     }
 
     #[test]

@@ -1,0 +1,5 @@
+error: unknown resize edge `middle`; expected left, right, top, bottom, all, or none
+  --> tests/ui/unknown_resize_edge.rs:11:23
+   |
+11 |         col resizable:middle {}
+   |                       ^^^^^^

@@ -186,6 +186,11 @@ pub(crate) fn handle_shortcuts(
     {
         state.feedback = Some(cycle_orientation(&mut state, tool));
     }
+    if actions.just_pressed(GameAction::PipeTurn) && selection.cycle_input_size() {
+        state.feedback = selection
+            .active_editor_tool()
+            .map(|tool| tool.label().to_owned());
+    }
     if selection.active_editor_tool() == Some(Tool::Cylinder)
         && actions.just_pressed(GameAction::PipeTurn)
     {
@@ -339,6 +344,10 @@ pub(crate) fn pipette_at_ray(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive translation of picked parts into tool settings"
+)]
 pub(crate) fn apply_pipette_setup(
     setup: PipetteSetup,
     graph: &ConstructionGraph,
@@ -438,6 +447,8 @@ pub(crate) fn apply_pipette_setup(
                     PartSpec::Transmission(_) => Tool::Transmission,
                     PartSpec::Servo(_) => Tool::Servo,
                     PartSpec::Seat(_) => Tool::Seat,
+                    PartSpec::Dial(spec) => Tool::Dial(spec.size),
+                    PartSpec::Button(spec) => Tool::Button(spec.size),
                     PartSpec::Input(_) => Tool::Input,
                     PartSpec::DimensionLink(_) => Tool::DimensionLink,
                 }
@@ -521,6 +532,8 @@ pub(crate) fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
             | Tool::ElectricEngine
             | Tool::Servo
             | Tool::Seat
+            | Tool::Dial(_)
+            | Tool::Button(_)
             | Tool::Input
     ) {
         state.authored_orientation = (state.authored_orientation + 1) % AUTHORED_ORIENTATION_COUNT;

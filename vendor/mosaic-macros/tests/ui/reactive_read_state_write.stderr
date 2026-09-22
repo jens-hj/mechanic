@@ -1,0 +1,5 @@
+error[E0599]: no method named `update` found for struct `ReadState` in the current scope
+  --> tests/ui/reactive_read_state_write.rs:12:15
+   |
+12 |             { $read += 1; }
+   |               ^ method not found in `ReadState<i32>`

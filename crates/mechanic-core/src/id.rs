@@ -50,6 +50,7 @@ define_id!(WeldId);
 define_id!(RegionId);
 define_id!(ShapeFeatureId);
 define_id!(RigidLinkId);
+define_id!(GearLinkId);
 define_id!(BearingId);
 define_id!(DriveLinkId);
 define_id!(InputSeatLinkId);

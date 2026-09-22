@@ -1,0 +1,5 @@
+error: unknown semantic role; expected group, button, text-input, label, image, list, list-item, scroll-view, switch, checkbox, radio, slider, progress-bar, spin-button, or combo-box
+  --> tests/ui/unknown_semantic_role.rs:10:18
+   |
+10 |         row role:dialogue {}
+   |                  ^^^^^^^^

@@ -1,0 +1,5 @@
+error: unknown `Edges` field `foo` — expected one of: left, right, top, bottom, horizontal, vertical, all
+  --> tests/ui/edges_unknown_field.rs:11:18
+   |
+11 |         row pad:(foo: 1px) {}
+   |                  ^^^

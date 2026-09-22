@@ -113,6 +113,7 @@ pub(crate) fn combined_construction_mesh_filtered(
     let pipe_texture_offsets = pipe_texture_offsets(graph);
     let welded_pipe_ends = welded_pipe_ends(graph);
     let rigid_groups = rigid_render_groups(graph);
+    let tooth_phases = mechanic_core::gear_phases(graph);
     let mut mergeable_blocks = Vec::new();
     // A part inside a region hands its surface to that region, so drawing both
     // would render the same material twice.
@@ -145,6 +146,7 @@ pub(crate) fn combined_construction_mesh_filtered(
                 .iter()
                 .all(|dimension| dimension.units() == 1)
             && cuboid.pose.rotation == GridRotation::default()
+            && cuboid.rack().is_none()
             && graph.part_frame(part) == Some(mechanic_core::ConstructionFrame::IDENTITY)
             && !graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part))
         {
@@ -170,7 +172,8 @@ pub(crate) fn combined_construction_mesh_filtered(
             append_textured_part(
                 *spec,
                 graph.part_position(part).expect("part exists"),
-                graph.part_rotation(part).expect("part exists"),
+                graph.part_rotation(part).expect("part exists")
+                    * super::gear::tooth_phase(&tooth_phases, part),
                 BuildTransform::IDENTITY.with_frame(graph.part_frame(part).expect("part exists")),
                 texture_offset,
                 pipe_end_faces(part, &welded_pipe_ends),
@@ -480,6 +483,8 @@ pub(crate) const fn ordinary_material(spec: PartSpec) -> Option<ConstructionMate
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
+        | PartSpec::Dial(_)
+        | PartSpec::Button(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => None,
     }
@@ -555,6 +560,7 @@ pub(crate) fn combined_parts_mesh_scaled(specs: &[PartSpec], scale_factor: f32) 
     .with_inserted_indices(Indices::U32(indices))
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per part kind")]
 pub(crate) fn append_part(
     spec: PartSpec,
     scale_factor: f32,
@@ -563,6 +569,15 @@ pub(crate) fn append_part(
     indices: &mut Vec<u32>,
 ) {
     match spec {
+        PartSpec::Cuboid(spec) if spec.rack().is_some() => super::gear::append_rack_cuboid(
+            spec.pose.translation(),
+            spec.pose.rotation.quaternion(),
+            spec,
+            scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
         PartSpec::Cuboid(spec) => append_transformed_cuboid(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
@@ -611,6 +626,14 @@ pub(crate) fn append_part(
             normals,
             indices,
         ),
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => append_transformed_cuboid(
+            spec.pose().translation(),
+            spec.pose().rotation.quaternion(),
+            spec.size_meters() * scale_factor,
+            positions,
+            normals,
+            indices,
+        ),
         PartSpec::Input(spec) => append_transformed_cuboid(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
@@ -651,7 +674,7 @@ pub(crate) fn append_part(
     }
 }
 
-// A cylinder as drawn: plain, or with the spiral cut into its walls.
+// A cylinder as drawn: plain, or with the spiral or teeth cut into its walls.
 fn append_cylinder_part(
     spec: mechanic_core::CylinderSpec,
     scale_factor: f32,
@@ -660,7 +683,17 @@ fn append_cylinder_part(
     indices: &mut Vec<u32>,
 ) {
     let (translation, rotation) = (spec.pose.translation(), spec.pose.rotation.quaternion());
-    if spec.spiral().is_some() {
+    if spec.gear().is_some() {
+        super::gear::append_gear_cylinder(
+            translation,
+            rotation,
+            spec,
+            scale_factor,
+            positions,
+            normals,
+            indices,
+        );
+    } else if spec.spiral().is_some() {
         super::spiral::append_spiral_cylinder(
             translation,
             rotation,
@@ -1069,6 +1102,15 @@ pub(crate) fn append_textured_part(
     let _ = placement;
     let first = positions.len();
     match spec {
+        PartSpec::Cuboid(cuboid) if cuboid.rack().is_some() => super::gear::append_rack_cuboid(
+            translation,
+            rotation,
+            cuboid,
+            1.0,
+            positions,
+            normals,
+            indices,
+        ),
         PartSpec::Cuboid(cuboid) => append_transformed_cuboid(
             translation,
             rotation,
@@ -1077,6 +1119,17 @@ pub(crate) fn append_textured_part(
             normals,
             indices,
         ),
+        PartSpec::Cylinder(cylinder) if cylinder.gear().is_some() => {
+            super::gear::append_gear_cylinder(
+                translation,
+                rotation,
+                cylinder,
+                1.0,
+                positions,
+                normals,
+                indices,
+            );
+        }
         PartSpec::Cylinder(cylinder) if cylinder.spiral().is_some() => {
             super::spiral::append_spiral_cylinder(
                 translation,
@@ -1124,6 +1177,8 @@ pub(crate) fn append_textured_part(
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
+        | PartSpec::Dial(_)
+        | PartSpec::Button(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => {
             unreachable!("authored parts render in their own texture batches")
@@ -1183,6 +1238,8 @@ pub(crate) fn append_textured_part(
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
+        | PartSpec::Dial(_)
+        | PartSpec::Button(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => unreachable!(),
     }

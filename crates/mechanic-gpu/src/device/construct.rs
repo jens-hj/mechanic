@@ -101,6 +101,9 @@ impl GpuPhysics {
                 capacity: MAX_COLLIDERS,
             });
         }
+        // Meshes upload with the scene, so it can hold a geared creation's
+        // state for the CPU route, and refuse only when asked to tick them.
+        let gear_link_count = creation.gear_links.len();
 
         let body_count = u32::try_from(creation.compounds.len()).unwrap_or(u32::MAX);
         let collider_count = u32::try_from(creation.colliders.len()).unwrap_or(u32::MAX);
@@ -598,6 +601,7 @@ impl GpuPhysics {
             collider_count,
             bearing_count,
             suppression_count,
+            gear_link_count,
             pair_capacity,
             pipeline_config,
             config,

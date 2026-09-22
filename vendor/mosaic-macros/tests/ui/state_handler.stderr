@@ -1,0 +1,5 @@
+error: handlers cannot be state-scoped — attach `@pointer` to the element itself
+  --> tests/ui/state_handler.rs:11:21
+   |
+11 |         el hover { @pointer:{ move |_, _| {} } } {}
+   |                     ^^^^^^^

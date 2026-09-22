@@ -31,6 +31,8 @@ pub(crate) const PERF_TERRAIN_PASSES: &str = "MECHANIC_PERF_TERRAIN_PASSES";
 pub(crate) const FX_CAPTURE_DIR: &str = "MECHANIC_FX_CAPTURE_DIR";
 /// Directory receiving the suspension capture sequence.
 pub(crate) const SUSPENSION_CAPTURE_DIR: &str = "MECHANIC_SUSPENSION_CAPTURE_DIR";
+/// Directory for native physical-input geometry and key-label screenshots.
+pub(crate) const INPUT_CAPTURE_DIR: &str = "MECHANIC_INPUT_CAPTURE_DIR";
 
 /// Test-world copy to enter without input; turns automation on.
 pub(crate) const AUTO_WORLD: &str = "MECHANIC_AUTO_WORLD";

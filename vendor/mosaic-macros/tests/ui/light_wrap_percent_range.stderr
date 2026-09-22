@@ -1,0 +1,5 @@
+error: wrap must be between 0 and 1
+  --> tests/ui/light_wrap_percent_range.rs:11:37
+   |
+11 |         row light:(at: center wrap: 150%) {}
+   |                                     ^^^

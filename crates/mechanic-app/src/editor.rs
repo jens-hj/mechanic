@@ -3,6 +3,7 @@
 pub(crate) mod build_actions;
 pub(crate) mod creation;
 pub(crate) mod dimensions;
+pub(crate) mod gears;
 pub(crate) mod hammer;
 pub(crate) mod history;
 pub(crate) mod hover;

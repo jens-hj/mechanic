@@ -22,6 +22,7 @@ Everything below is an environment variable read at startup. Unset means off.
 | `MECHANIC_PERF_LABEL` | Label recorded in the capture's identity. |
 | `MECHANIC_PERF_TERRAIN_PASSES` | Adds per-pass terrain GPU timings to the capture. |
 | `MECHANIC_FX_CAPTURE_DIR` | Renders the tool-effect capture sequence into this directory and keeps the window unfocused. |
+| `MECHANIC_INPUT_CAPTURE_DIR` | Captures native physical-input meshes and extruded keys at all three sizes, then exits. |
 | `MECHANIC_SUSPENSION_CAPTURE_DIR` | Renders the suspension capture sequence into this directory. See [suspension](suspension.md). |
 
 ### Automation

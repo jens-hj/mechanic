@@ -11,8 +11,9 @@ use crate::{EngineKind, FaceKind, FaceOwner, FaceRef, PartId, PartSpec, SolidErr
 use std::collections::BTreeSet;
 
 impl ConstructionGraph {
-    /// Every part welded, directly or transitively, to `seed`.
-    pub(super) fn rigid_group(&self, seed: PartId) -> BTreeSet<PartId> {
+    /// Every part welded, directly or transitively, to `seed`: the parts that
+    /// move as one rigid body with it.
+    pub fn rigid_group(&self, seed: PartId) -> BTreeSet<PartId> {
         let mut reached = BTreeSet::from([seed]);
         let mut frontier = vec![seed];
         while let Some(part) = frontier.pop() {
@@ -72,6 +73,20 @@ impl ConstructionGraph {
         reached
     }
 
+    /// Drops every mesh of `part` that its teeth no longer admit, after the
+    /// teeth, thread, or diameter changed under it.
+    pub(super) fn retain_meshes_of(&mut self, part: PartId) {
+        let stale = self
+            .gear_links
+            .iter()
+            .filter(|(_, link)| link.references(part))
+            .filter_map(|(id, link)| self.gear_mesh(*link).is_err().then_some(id))
+            .collect::<Vec<_>>();
+        for id in stale {
+            self.gear_links.remove(id);
+        }
+    }
+
     pub(super) fn insert_edit_part(&mut self, spec: PartSpec) -> PartId {
         let id = self.parts.insert(spec);
         let frame = self.edit_frame_id();
@@ -79,14 +94,19 @@ impl ConstructionGraph {
         id
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive command dispatch reads better whole"
-    )]
     pub(super) fn apply_validated(
         &mut self,
         command: BuildCommand,
     ) -> Result<BuildOutcome, GraphError> {
+        let outcome = self.apply_input_checked(command)?;
+        if !self.physical_inputs.is_empty() {
+            self.prune_input_bindings();
+        }
+        Ok(outcome)
+    }
+
+    #[expect(clippy::too_many_lines, reason = "exhaustive graph command dispatch")]
+    fn apply_input_checked(&mut self, command: BuildCommand) -> Result<BuildOutcome, GraphError> {
         match command {
             BuildCommand::Spawn(spec) => {
                 let id = self.insert_edit_part(spec.into());
@@ -142,6 +162,61 @@ impl ConstructionGraph {
             BuildCommand::SpawnSeat(spec) => {
                 let id = self.insert_edit_part(spec.into());
                 Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnDial(spec) => {
+                let id = self.insert_edit_part(spec.into());
+                let number = (1..=self.physical_inputs.len() + 1)
+                    .find(|number| {
+                        !self
+                            .physical_inputs
+                            .values()
+                            .any(|config| config.name == format!("Dial {number}"))
+                    })
+                    .expect("finite input count");
+                self.physical_inputs.insert(
+                    id,
+                    crate::InputConfiguration {
+                        name: format!("Dial {number}"),
+                        ..Default::default()
+                    },
+                );
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SpawnButton(spec) => {
+                let id = self.insert_edit_part(spec.into());
+                self.physical_inputs
+                    .insert(id, crate::InputConfiguration::default());
+                Ok(BuildOutcome::Spawned(id))
+            }
+            BuildCommand::SetInputConfiguration {
+                input,
+                configuration,
+            } => {
+                self.set_input_configuration(input, configuration)?;
+                Ok(BuildOutcome::DriveUpdated)
+            }
+            BuildCommand::SetDriveReversed { link, reversed } => {
+                let spec = self
+                    .drive_links
+                    .get_mut(link)
+                    .ok_or(GraphError::MissingDriveLink(link))?;
+                spec.reversed = reversed;
+                Ok(BuildOutcome::DriveUpdated)
+            }
+            BuildCommand::RemoveDriveState { link, state } => {
+                let current = self
+                    .drive_link(link)
+                    .ok_or(GraphError::MissingDriveLink(link))?;
+                let program = current
+                    .program
+                    .with_removed_state(state)
+                    .map_err(|_| crate::InputBindingError::InvalidTarget)?;
+                self.remap_removed_input_state(link, state);
+                self.drive_links
+                    .get_mut(link)
+                    .expect("validated drive")
+                    .program = program;
+                Ok(BuildOutcome::DriveUpdated)
             }
             BuildCommand::SpawnInput(spec) => {
                 let id = self.insert_edit_part(spec.into());
@@ -265,6 +340,16 @@ impl ConstructionGraph {
                             .then_some(link_id)
                     })
                     .collect::<Vec<_>>();
+                let gear_links = self
+                    .gear_links
+                    .iter()
+                    .filter_map(|(link_id, link)| {
+                        removed_parts
+                            .iter()
+                            .any(|part| link.references(*part))
+                            .then_some(link_id)
+                    })
+                    .collect::<Vec<_>>();
                 let removed_bearings = bearings.iter().copied().collect::<BTreeSet<_>>();
                 let drive_links = self
                     .drive_links
@@ -297,6 +382,9 @@ impl ConstructionGraph {
                 }
                 for link in rigid_links {
                     self.rigid_links.remove(link);
+                }
+                for link in gear_links {
+                    self.gear_links.remove(link);
                 }
                 for link in drive_links {
                     self.drive_links.remove(link);
@@ -350,6 +438,87 @@ impl ConstructionGraph {
                     .ok_or(GraphError::MissingRigidLink(id))?;
                 self.pending = None;
                 Ok(BuildOutcome::Removed)
+            }
+            BuildCommand::AddGearLink(spec) => {
+                self.validate_gear_link(spec)?;
+                let id = self.gear_links.insert(spec);
+                self.pending = None;
+                Ok(BuildOutcome::GearLinked(id))
+            }
+            BuildCommand::RemoveGearLink(id) => {
+                self.gear_links
+                    .remove(id)
+                    .ok_or(GraphError::MissingGearLink(id))?;
+                self.pending = None;
+                Ok(BuildOutcome::Removed)
+            }
+            BuildCommand::SetGear { part, spec } => {
+                let current = self
+                    .parts
+                    .get(part)
+                    .copied()
+                    .ok_or(GraphError::MissingPart(part))?;
+                let same_cylinder = current.as_cylinder().is_some_and(|current| {
+                    current.pose == spec.pose
+                        && current.material == spec.material
+                        && current.appearance == spec.appearance
+                        && current.layers() == spec.layers()
+                        && current.spiral() == spec.spiral()
+                        && current.dimensions.axial_length_ticks()
+                            == spec.dimensions.axial_length_ticks()
+                        && current.dimensions.sweep_angle_degrees()
+                            == spec.dimensions.sweep_angle_degrees()
+                });
+                if !same_cylinder {
+                    return Err(GraphError::GearTargetChanged(part));
+                }
+                let owner = SolidOwner::Part(part);
+                if self.owner_has_shape_features(owner) {
+                    return Err(GraphError::GearOnFeaturedPart(part));
+                }
+                // Replaying the teeth through the cylinder validates one that
+                // was assembled by hand as much as one a tool produced.
+                let spec = match spec.gear() {
+                    Some(gear) => spec.without_gear().with_gear(gear)?,
+                    None => spec,
+                };
+                *self
+                    .parts
+                    .get_mut(part)
+                    .expect("the validated part remains live") = PartSpec::Cylinder(spec);
+                self.validate_shape_owner_connections(owner)?;
+                self.retain_meshes_of(part);
+                Ok(BuildOutcome::GearUpdated)
+            }
+            BuildCommand::SetRack { part, spec } => {
+                let current = self
+                    .parts
+                    .get(part)
+                    .copied()
+                    .ok_or(GraphError::MissingPart(part))?;
+                let same_cuboid = current.as_cuboid().is_some_and(|current| {
+                    matches!(self.parts.get(part), Some(PartSpec::Cuboid(_)))
+                        && current.layers() == spec.layers()
+                        && PartSpec::Cuboid(current.without_rack())
+                            .shares_core_with(PartSpec::Cuboid(spec.without_rack()))
+                });
+                if !same_cuboid {
+                    return Err(GraphError::GearTargetChanged(part));
+                }
+                let owner = SolidOwner::Part(part);
+                if self.owner_has_shape_features(owner) {
+                    return Err(GraphError::GearOnFeaturedPart(part));
+                }
+                let spec = match spec.rack() {
+                    Some(rack) => spec.without_rack().with_rack(rack)?,
+                    None => spec,
+                };
+                *self
+                    .parts
+                    .get_mut(part)
+                    .expect("the validated part remains live") = PartSpec::Cuboid(spec);
+                self.retain_meshes_of(part);
+                Ok(BuildOutcome::GearUpdated)
             }
             BuildCommand::RemoveBearing(id) => {
                 self.bearings
@@ -674,6 +843,7 @@ impl ConstructionGraph {
                     .get_mut(part)
                     .expect("the validated part remains live") = PartSpec::Cylinder(spec);
                 self.validate_shape_owner_connections(owner)?;
+                self.retain_meshes_of(part);
                 Ok(BuildOutcome::SpiralUpdated)
             }
             BuildCommand::SetShapeFeatureAmount {

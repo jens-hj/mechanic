@@ -19,6 +19,8 @@ use mechanic_core::{
     GearKeyChord, PartId, ServoSpec,
 };
 
+use mechanic_core::{DriveParameter, GearParameter, NumericParameter};
+
 use crate::control_panel::{ControlPanelState, panel_rows, set_row_commands};
 use crate::editor::history::{EditorHistory, EditorSnapshot};
 use crate::editor::state::{EditorGraph, EditorState};
@@ -43,7 +45,7 @@ pub(crate) struct EditTarget<'w> {
     pub(super) graph: ResMut<'w, EditorGraph>,
     pub(super) editor: ResMut<'w, EditorState>,
     pub(super) history: ResMut<'w, EditorHistory>,
-    simulation: Res<'w, AppSimulation>,
+    simulation: ResMut<'w, AppSimulation>,
 }
 
 /// Writes one intent to every wire behind the joint it names.
@@ -77,11 +79,21 @@ pub(crate) fn write_gearbox(
             kind: intent.kind,
             mode: *mode,
         },
-        GearboxEdit::Ratios(ratios) => BuildCommand::SetGearboxRatios {
-            controller,
-            kind: intent.kind,
-            ratios: ratios.clone(),
-        },
+        GearboxEdit::Ratio { index, value } => {
+            let Ok(configuration) = target.graph.0.gearbox_config(controller, intent.kind) else {
+                return;
+            };
+            let mut ratios = configuration.ratios().to_vec();
+            let Some(ratio) = ratios.get_mut(*index) else {
+                return;
+            };
+            *ratio = *value;
+            BuildCommand::SetGearboxRatios {
+                controller,
+                kind: intent.kind,
+                ratios,
+            }
+        }
         GearboxEdit::Bindings { up, down } => BuildCommand::SetGearboxBindings {
             controller,
             kind: intent.kind,
@@ -98,14 +110,47 @@ pub(crate) fn write_gearbox(
             }
         }
     };
+    let edited_targets = match &intent.edit {
+        GearboxEdit::Ratio { index, .. } => u8::try_from(*index)
+            .ok()
+            .map(|index| NumericParameter::Gear {
+                controller,
+                kind: intent.kind,
+                parameter: GearParameter::Ratio(index),
+            })
+            .into_iter()
+            .collect::<Vec<_>>(),
+        GearboxEdit::ReverseGears(_) => vec![NumericParameter::Gear {
+            controller,
+            kind: intent.kind,
+            parameter: GearParameter::ReverseCount,
+        }],
+        GearboxEdit::Mode(_) | GearboxEdit::Bindings { .. } => Vec::new(),
+    };
+    let revision = target.history.current_revision;
     let previous = EditorSnapshot::capture(&target.graph.0, &target.editor);
-    match target.graph.0.apply(command) {
+    let mut staged = target.graph.0.clone();
+    match staged.apply(command) {
         Ok(_) => {
             if target.simulation.is_running() {
+                if let Err(error) = target.simulation.reconcile_controller_edit(
+                    &target.graph.0,
+                    &staged,
+                    &edited_targets,
+                ) {
+                    target.editor.feedback = Some(error.to_string());
+                    return;
+                }
                 target.editor.drive_rows_dirty = true;
             }
+            target.graph.0 = staged;
             if !intent.transient {
                 target.history.commit(previous);
+                target.simulation.accept_controller_edit(
+                    revision,
+                    target.history.current_revision,
+                    &target.graph.0,
+                );
             }
         }
         Err(error) => target.editor.feedback = Some(error.to_string()),
@@ -139,6 +184,11 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
         .kind
         .bounds();
     let mut actuator = spec.actuator;
+    let effective_actuator = target
+        .simulation
+        .effective_graph()
+        .drive_link(row.primary)
+        .map_or(actuator, |spec| spec.actuator);
     let edited = match intent.edit {
         PanelEdit::CycleActuator => {
             actuator = match actuator {
@@ -159,13 +209,13 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
             Some((spec.limits, spec.program, spec.name))
         }
         PanelEdit::CycleElectric => {
-            let next = stepped_percent(actuator.electric_percent());
+            let next = stepped_percent(effective_actuator.electric_percent());
             actuator = ActuatorAssignment::motor(next, actuator.gas_percent())
                 .expect("stepped percentages are valid");
             Some((spec.limits, spec.program, spec.name))
         }
         PanelEdit::CycleGas => {
-            let next = stepped_percent(actuator.gas_percent());
+            let next = stepped_percent(effective_actuator.gas_percent());
             actuator = ActuatorAssignment::motor(actuator.electric_percent(), next)
                 .expect("stepped percentages are valid");
             Some((spec.limits, spec.program, spec.name))
@@ -237,7 +287,44 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
             linear_limits.map(|limits| BuildCommand::SetLinearDriveLimits { link, limits })
         })
         .collect();
+    if let PanelEdit::RemoveState { state } = intent.edit {
+        commands.extend(
+            row.links
+                .iter()
+                .map(|&link| BuildCommand::RemoveDriveState { link, state }),
+        );
+    }
+    let parameters = match intent.edit {
+        PanelEdit::SetValue { state, .. } => spec
+            .program
+            .state(state)
+            .map(|state_value| match state_value.target() {
+                DriveTarget::Angle(_) => DriveParameter::AngularPosition(state),
+                DriveTarget::Speed(_) => DriveParameter::AngularSpeed(state),
+                DriveTarget::LinearPosition(_) => DriveParameter::LinearPosition(state),
+                DriveTarget::LinearSpeed(_) => DriveParameter::LinearSpeed(state),
+            })
+            .into_iter()
+            .collect::<Vec<_>>(),
+        PanelEdit::SetTravel { .. } => {
+            vec![DriveParameter::TravelMinimum, DriveParameter::TravelMaximum]
+        }
+        PanelEdit::SetDwell { state, .. } => vec![DriveParameter::Dwell(state)],
+        PanelEdit::CycleElectric => vec![DriveParameter::ElectricContribution],
+        PanelEdit::CycleGas => vec![DriveParameter::GasContribution],
+        _ => Vec::new(),
+    };
+    let edited_targets = row
+        .links
+        .iter()
+        .flat_map(|&link| {
+            parameters
+                .iter()
+                .map(move |&parameter| NumericParameter::Drive { link, parameter })
+        })
+        .collect::<Vec<_>>();
     commands.extend(set_row_commands(row, limits, program, name, actuator));
+    let revision = target.history.current_revision;
     let previous = EditorSnapshot::capture(&target.graph.0, &target.editor);
     let mut staged = target.graph.0.clone();
     match staged.apply_batch(commands) {
@@ -246,12 +333,34 @@ fn write_to(controller: PartId, target: &mut EditTarget, intent: &Intent) {
                 target.editor.feedback = Some(error);
                 return;
             }
-            target.graph.0 = staged;
             if target.simulation.is_running() {
+                if let Err(error) = target.simulation.reconcile_controller_edit(
+                    &target.graph.0,
+                    &staged,
+                    &edited_targets,
+                ) {
+                    target.editor.feedback = Some(error.to_string());
+                    return;
+                }
                 target.editor.drive_rows_dirty = true;
             }
+            target.graph.0 = staged;
             if !intent.transient {
                 target.history.commit(previous);
+                if matches!(
+                    intent.edit,
+                    PanelEdit::SetValue { .. }
+                        | PanelEdit::SetTravel { .. }
+                        | PanelEdit::SetDwell { .. }
+                        | PanelEdit::CycleElectric
+                        | PanelEdit::CycleGas
+                ) {
+                    target.simulation.accept_controller_edit(
+                        revision,
+                        target.history.current_revision,
+                        &target.graph.0,
+                    );
+                }
             }
             target.editor.construction_mesh_dirty = true;
         }
@@ -356,19 +465,19 @@ fn capacity_error(graph: &mechanic_core::ConstructionGraph, controller: PartId) 
 )]
 pub(crate) fn capture(
     panel: &ControlPanelState,
-    graph: &EditorGraph,
+    graph: &mechanic_core::ConstructionGraph,
     gearboxes: &GearboxRuntime,
     gameplay_binding_conflict: bool,
 ) -> PanelModel {
     let Some(controller) = panel.controller() else {
         return PanelModel::default();
     };
-    let inventory = graph.0.actuator_inventory(controller).unwrap_or_default();
-    let lanes: Vec<LaneModel> = panel_rows(&graph.0, controller)
+    let inventory = graph.actuator_inventory(controller).unwrap_or_default();
+    let lanes: Vec<LaneModel> = panel_rows(graph, controller)
         .iter()
         .enumerate()
         .filter_map(|(index, row)| {
-            let spec = graph.0.drive_link(row.primary)?;
+            let spec = graph.drive_link(row.primary)?;
             let (max_speed, torque) = actuator_capability(spec.actuator, inventory);
             let lane = LaneModel::capture(
                 row.primary,
@@ -382,7 +491,7 @@ pub(crate) fn capture(
                 torque,
             );
             Some(if let Some(limits) = spec.linear_limits {
-                lane.with_linear_limits(limits, graph.0.bearing(spec.bearing)?.kind.bounds())
+                lane.with_linear_limits(limits, graph.bearing(spec.bearing)?.kind.bounds())
             } else {
                 lane
             })
@@ -416,11 +525,10 @@ pub(crate) fn capture(
                 slots,
                 transmission_depth,
                 physical_depths: graph
-                    .0
                     .transmission_depths(controller, kind)
                     .unwrap_or_default(),
                 mismatch,
-                config: graph.0.gearbox_config(controller, kind).ok(),
+                config: graph.gearbox_config(controller, kind).ok(),
                 active_gear: gearboxes.active_gear(controller, kind),
                 binding_conflict: false,
             })

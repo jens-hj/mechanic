@@ -1,0 +1,5 @@
+error: a target-less `view! { … }` returns one top-level element; wrap these siblings in one `col`/`row`/`stack`/`el`
+ --> tests/ui/headerless_multiple_nodes.rs:8:9
+  |
+8 |         col {}
+  |         ^^^

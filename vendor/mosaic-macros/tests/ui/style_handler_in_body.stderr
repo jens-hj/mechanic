@@ -1,0 +1,5 @@
+error: a style holds appearance, not behavior — attach `@click` to the node itself
+  --> tests/ui/style_handler_in_body.rs:11:30
+   |
+11 |     pub #card fill:(blue()) @click:{ go() }
+   |                              ^^^^^

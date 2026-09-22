@@ -1,0 +1,5 @@
+error: viewport units are not supported in filter arguments
+  --> tests/ui/vw_in_filter.rs:10:24
+   |
+10 |         el filter:blur(1vw) {}
+   |                        ^^^

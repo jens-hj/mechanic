@@ -1,0 +1,5 @@
+error: an exposed prop must be a `State<T>` or `Derived<T>` with its type written out
+ --> tests/ui/component_exposed_prop_not_state.rs:8:32
+  |
+8 | fn Foo(#[prop(exposed)] count: i32) -> Element {
+  |                                ^^^

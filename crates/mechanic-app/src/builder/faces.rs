@@ -180,8 +180,15 @@ pub(super) fn evaluated_surface_geometry(
 }
 
 pub(crate) fn face_geometry(spec: CuboidSpec, face: FaceKind) -> FaceGeometry {
-    let rotation = spec.pose.rotation.quaternion();
-    let size = spec.size_meters();
+    envelope_face_geometry(spec.pose, spec.size_meters(), face)
+}
+
+pub(crate) fn envelope_face_geometry(
+    pose: mechanic_core::BuildPose,
+    size: Vec3,
+    face: FaceKind,
+) -> FaceGeometry {
+    let rotation = pose.rotation.quaternion();
     let (normal, tangent_u, tangent_v, normal_extent, half_u, half_v) = match face {
         FaceKind::PositiveX => (Vec3::X, Vec3::Y, Vec3::Z, size.x, size.y, size.z),
         FaceKind::NegativeX => (-Vec3::X, Vec3::Y, Vec3::Z, size.x, size.y, size.z),
@@ -192,7 +199,7 @@ pub(crate) fn face_geometry(spec: CuboidSpec, face: FaceKind) -> FaceGeometry {
     };
     let normal = snap_cardinal(rotation * normal);
     FaceGeometry {
-        center: spec.pose.translation() + normal * normal_extent * 0.5,
+        center: pose.translation() + normal * normal_extent * 0.5,
         normal,
         tangent_u: snap_cardinal(rotation * tangent_u),
         tangent_v: snap_cardinal(rotation * tangent_v),
@@ -263,6 +270,11 @@ pub(super) fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceG
         PartSpec::Transmission(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Servo(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Seat(spec) => Some(face_geometry(spec.cuboid(), face)),
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => Some(envelope_face_geometry(
+            spec.pose(),
+            spec.size_meters(),
+            face,
+        )),
         PartSpec::Input(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::DimensionLink(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Cylinder(spec) => cylinder_face_geometry(spec, face),
@@ -341,6 +353,8 @@ pub(crate) fn face_is_flat(graph: &ConstructionGraph, face: FaceRef) -> bool {
             | PartSpec::Transmission(_)
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
+            | PartSpec::Dial(_)
+            | PartSpec::Button(_)
             | PartSpec::Input(_)
             | PartSpec::DimensionLink(_) => false,
         };

@@ -58,6 +58,7 @@ pub(crate) enum GameAction {
     MatterManipulate,
     MatterChroma,
     MatterSpiral,
+    MatterGear,
     ClearPipette,
     Rotate,
     PipeTurn,
@@ -92,7 +93,7 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 73] = [
+    pub(crate) const ALL: [Self; 74] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -132,6 +133,7 @@ impl GameAction {
         Self::MatterManipulate,
         Self::MatterChroma,
         Self::MatterSpiral,
+        Self::MatterGear,
         Self::ClearPipette,
         Self::Rotate,
         Self::PipeTurn,
@@ -178,7 +180,7 @@ impl GameAction {
         (Self::ToolHammer, crate::hotbar::MainTool::Hammer),
     ];
 
-    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 8] = [
+    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 9] = [
         (Self::MatterBlock, crate::hotbar::MatterMode::Block),
         (Self::MatterCylinder, crate::hotbar::MatterMode::Cylinder),
         (Self::MatterLayer, crate::hotbar::MatterMode::Layer),
@@ -190,6 +192,7 @@ impl GameAction {
         ),
         (Self::MatterChroma, crate::hotbar::MatterMode::Chroma),
         (Self::MatterSpiral, crate::hotbar::MatterMode::Spiral),
+        (Self::MatterGear, crate::hotbar::MatterMode::Gear),
     ];
 
     pub(crate) const fn for_tool(tool: crate::hotbar::MainTool) -> Self {
@@ -211,6 +214,7 @@ impl GameAction {
             crate::hotbar::MatterMode::Manipulate => Self::MatterManipulate,
             crate::hotbar::MatterMode::Chroma => Self::MatterChroma,
             crate::hotbar::MatterMode::Spiral => Self::MatterSpiral,
+            crate::hotbar::MatterMode::Gear => Self::MatterGear,
         }
     }
 
@@ -260,6 +264,7 @@ impl GameAction {
             Self::MatterManipulate => "Matter: Manipulate",
             Self::MatterChroma => "Matter: Chroma",
             Self::MatterSpiral => "Matter: Spiral",
+            Self::MatterGear => "Matter: Gear",
             Self::ClearPipette => "Clear / Pipette",
             Self::Rotate => "Rotate / Cycle",
             Self::PipeTurn => "Add Pipe Bend",
@@ -340,7 +345,8 @@ impl GameAction {
             | Self::MatterTerrain
             | Self::MatterManipulate
             | Self::MatterChroma
-            | Self::MatterSpiral => "Tools",
+            | Self::MatterSpiral
+            | Self::MatterGear => "Tools",
             Self::FreezeCreation | Self::RaiseFrozenCreation | Self::LowerFrozenCreation => {
                 "Hammer"
             }
@@ -797,6 +803,7 @@ impl Default for Controls {
             K::Digit6,
             K::Digit7,
             K::Digit8,
+            K::Digit9,
         ];
         for ((action, _), key) in A::MODE_ACTIONS.into_iter().zip(mode_keys) {
             set(action, Some(InputChord::key(key).with_shift()), None);

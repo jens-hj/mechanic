@@ -1,0 +1,43 @@
+error: attribute `min_width` must use kebab-case — write `min-width`
+  --> tests/ui/snake_case_attrs.rs:18:13
+   |
+18 |         row min_width:10px translate_children:(mosaic_core::Vector2::ZERO)
+   |             ^^^^^^^^^
+
+error: attribute `translate_children` must use kebab-case — write `translate-children`
+  --> tests/ui/snake_case_attrs.rs:18:28
+   |
+18 |         row min_width:10px translate_children:(mosaic_core::Vector2::ZERO)
+   |                            ^^^^^^^^^^^^^^^^^^
+
+error: attribute `enter_exit` must use kebab-case — write `enter-exit`
+  --> tests/ui/snake_case_attrs.rs:19:13
+   |
+19 |             enter_exit:(Fx::default()) hover { max_width:20px } {
+   |             ^^^^^^^^^^
+
+error: attribute `max_width` must use kebab-case — write `max-width`
+  --> tests/ui/snake_case_attrs.rs:19:48
+   |
+19 |             enter_exit:(Fx::default()) hover { max_width:20px } {
+   |                                                ^^^^^^^^^
+
+error: `font-size` needs a unit — write `14px`
+  --> tests/ui/snake_case_attrs.rs:20:28
+   |
+20 |             text font_size:14 "legacy"
+   |                            ^^
+
+error: attribute `item_count` must use kebab-case — write `item-count`
+  --> tests/ui/snake_case_attrs.rs:21:19
+   |
+21 |             Badge item_count:2
+   |                   ^^^^^^^^^^
+
+warning: unused import: `text`
+ --> tests/ui/snake_case_attrs.rs:5:82
+  |
+5 | use mosaic_widgets::{ComponentHandle, Element, ElementPatch, Fx, Transition, Ui, text};
+  |                                                                                  ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

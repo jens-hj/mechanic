@@ -250,7 +250,7 @@ impl ConstructionGraph {
             let mut electric_coordinates = Vec::<(Vec3, Vec3)>::new();
             let mut gas_coordinates = Vec::<(Vec3, Vec3)>::new();
             let mut servo_coordinates = Vec::<(Vec3, Vec3)>::new();
-            for (_, link) in self
+            for (link_id, link) in self
                 .drive_links
                 .iter()
                 .filter(|(_, link)| members.contains(&link.controller))
@@ -265,10 +265,13 @@ impl ConstructionGraph {
                             && axis.abs_diff_eq(coordinate.1, 1.0e-5)
                     })
                 };
-                if link.actuator.uses_electric() && !contains(&electric_coordinates) {
+                if self.reserves_motor_port(link_id, EngineKind::Electric)
+                    && !contains(&electric_coordinates)
+                {
                     electric_coordinates.push(coordinate);
                 }
-                if link.actuator.uses_gas() && !contains(&gas_coordinates) {
+                if self.reserves_motor_port(link_id, EngineKind::Gas) && !contains(&gas_coordinates)
+                {
                     gas_coordinates.push(coordinate);
                 }
                 if link.actuator.uses_servo() && !contains(&servo_coordinates) {

@@ -68,6 +68,9 @@ pub enum SpiralError {
     /// The cylinder carries material layers.
     #[error("a layered cylinder does not take a spiral")]
     Layered,
+    /// The cylinder carries gear teeth.
+    #[error("a gear does not take a spiral")]
+    Toothed,
     /// A bore profile was drawn on a solid cylinder.
     #[error("a bore spiral needs a hollow cylinder")]
     BoreRequired,

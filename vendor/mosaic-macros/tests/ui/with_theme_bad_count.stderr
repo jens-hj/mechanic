@@ -1,0 +1,24 @@
+error: expected `ancestors` or `children` after the count
+  --> tests/ui/with_theme_bad_count.rs:24:37
+   |
+24 |         col {} with theme fixed() 2 parents
+   |                                     ^^^^^^^
+
+error: a target-less `view! { … }` needs one top-level element-producing node
+  --> tests/ui/with_theme_bad_count.rs:23:17
+   |
+23 |       root.adopt(&view! {
+   |  _________________^
+24 | |         col {} with theme fixed() 2 parents
+25 | |     });
+   | |_____^
+   |
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `Element`
+ --> tests/ui/with_theme_bad_count.rs:5:22
+  |
+5 | use mosaic_widgets::{Element, Ui};
+  |                      ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

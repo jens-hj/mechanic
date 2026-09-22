@@ -451,7 +451,7 @@ pub(crate) fn update_material_wheel(
             MatterMode::Block | MatterMode::Cylinder | MatterMode::Layer,
         ) => Some(Some(WheelChoice::ConstructionMaterial(material.0))),
         (Some(MainTool::MatterManipulator), MatterMode::Item) => {
-            Some(Some(WheelChoice::Item(selection.item)))
+            Some(Some(WheelChoice::Item(selection.item.picker_item())))
         }
         (Some(MainTool::MatterManipulator), MatterMode::Terrain) => {
             Some(Some(WheelChoice::TerrainMaterial(terrain_material.0)))
@@ -481,7 +481,7 @@ pub(crate) fn update_material_wheel(
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn update_player_camera(
-    time: Res<Time>,
+    input_time: (Res<Time>, Res<crate::physical_controls::PhysicalControls>),
     actions: Res<ButtonInput<GameAction>>,
     motion: Res<AccumulatedMouseMotion>,
     menu: Res<CreationMenuState>,
@@ -496,6 +496,7 @@ pub(crate) fn update_player_camera(
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut camera: Single<(&mut PlayerCamera, &mut Transform, &mut GlobalTransform), With<MainCamera>>,
 ) {
+    let (time, physical) = input_time;
     let panel_open = crate::automation::enabled()
         || wheel.chroma_config
         || player_controls_blocked([
@@ -510,6 +511,7 @@ pub(crate) fn update_player_camera(
     let (view, transform, global) = &mut *camera;
     let world_active = player.input_captured && !wheel.open;
     if world_active
+        && !physical.captures_pointer()
         && editor.suspension.controls.gesture.is_none()
         && !(editor.suspension.controls.aim.is_some() && actions.just_pressed(GameAction::Primary))
     {

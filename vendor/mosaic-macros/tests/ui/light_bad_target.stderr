@@ -1,0 +1,11 @@
+error: unknown light target `shadows` — expected one of: fill, stroke, surface
+  --> tests/ui/light_bad_target.rs:12:32
+   |
+12 |             row light:(target: shadows) {}
+   |                                ^^^^^^^
+
+error: unknown light target `strokes` — did you mean `stroke`?
+  --> tests/ui/light_bad_target.rs:13:38
+   |
+13 |             row light:(target: (fill strokes)) {}
+   |                                      ^^^^^^^

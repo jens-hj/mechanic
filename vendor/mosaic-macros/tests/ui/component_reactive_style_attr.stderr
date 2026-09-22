@@ -1,0 +1,27 @@
+error[E0277]: the trait bound `LayerSpec: From<Derived<PaintSpec>>` is not satisfied
+  --> tests/ui/component_reactive_style_attr.rs:18:17
+   |
+18 |       root.adopt(&view! {
+   |  _________________^
+19 | |         Card fill:{ PaintSpec::default() }
+   | |              ---- required by a bound introduced by this call
+20 | |     });
+   | |_____^ the trait `From<Derived<PaintSpec>>` is not implemented for `LayerSpec`
+   |
+   = help: the following other types implement trait `From<T>`:
+             `LayerSpec` implements `From<GradientSpec>`
+             `LayerSpec` implements `From<MeshSpec>`
+             `LayerSpec` implements `From<ThemedColor>`
+             `LayerSpec` implements `From<mosaic_core::Color>`
+             `LayerSpec` implements `From<mosaic_core::ColorToken>`
+             `LayerSpec` implements `From<mosaic_core::PaintToken>`
+   = note: required for `Derived<PaintSpec>` to implement `Into<LayerSpec>`
+   = note: required for `PaintSpec` to implement `From<Derived<PaintSpec>>`
+   = note: 1 redundant requirement hidden
+   = note: required for `Derived<PaintSpec>` to implement `Into<PaintSpec>`
+note: required by a bound in `CardPropsBuilder::<S>::fill`
+  --> tests/ui/component_reactive_style_attr.rs:9:1
+   |
+9  | #[component]
+   | ^^^^^^^^^^^^ required by this bound in `CardPropsBuilder::<S>::fill`
+   = note: this error originates in the attribute macro `component` (in Nightly builds, run with -Z macro-backtrace for more info)

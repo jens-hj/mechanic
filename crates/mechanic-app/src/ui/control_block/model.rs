@@ -15,18 +15,17 @@ use mechanic_core::{
     ActuatorAssignment, ActuatorInventory, DriveDwell, DriveKey, DriveLimits, DriveLinkId,
     DriveName, DriveProgram, DriveRelease, DriveState, DriveTarget, DriveTrigger, EngineKind,
     GearKeyChord, GearboxConfig, LinearDriveLimits, MAX_DRIVE_DWELL_SECONDS,
-    MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES, ShiftMode,
+    MAX_DRIVE_LIMIT_RADIANS, MAX_DRIVE_SPEED_RAD_S, MAX_DRIVE_STATES,
+    MAX_PROGRAMMED_TRAVEL_RADIANS, MIN_DWELL_SECONDS, MIN_PROGRAMMED_TRAVEL_METERS,
+    MIN_PROGRAMMED_TRAVEL_RADIANS, ShiftMode,
 };
 
 /// Smallest travel range the grips may close to, in degrees. Two limits that
 /// meet would leave the joint with nowhere to go.
-const MIN_TRAVEL_SPAN_DEGREES: f32 = 5.0;
+const MIN_TRAVEL_SPAN_DEGREES: f32 = MIN_PROGRAMMED_TRAVEL_RADIANS.to_degrees();
 
 /// Furthest a travel limit may sit from centre, in degrees.
-const MAX_TRAVEL_DEGREES: f32 = 180.0;
-
-/// Shortest dwell that still reads as a wait, in seconds.
-const MIN_DWELL_SECONDS: f32 = 0.1;
+const MAX_TRAVEL_DEGREES: f32 = MAX_PROGRAMMED_TRAVEL_RADIANS.to_degrees();
 
 /// What a state asks of its joint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,7 +120,10 @@ pub(crate) struct GearboxIntent {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum GearboxEdit {
     Mode(ShiftMode),
-    Ratios(Vec<f32>),
+    Ratio {
+        index: usize,
+        value: f32,
+    },
     Bindings {
         up: GearKeyChord,
         down: GearKeyChord,
@@ -156,8 +158,8 @@ pub(crate) fn apply_linear_edit(
             if !min.is_finite() || !max.is_finite() {
                 return None;
             }
-            let min = min.clamp(physical[0], physical[1] - 0.0025);
-            let max = max.clamp(min + 0.0025, physical[1]);
+            let min = min.clamp(physical[0], physical[1] - MIN_PROGRAMMED_TRAVEL_METERS);
+            let max = max.clamp(min + MIN_PROGRAMMED_TRAVEL_METERS, physical[1]);
             linear =
                 LinearDriveLimits::new(linear.max_speed(), linear.max_force(), min, max).ok()?;
         }

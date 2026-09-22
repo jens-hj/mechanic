@@ -1,0 +1,8 @@
+error[E0425]: cannot find value `bgg` in this scope
+  --> tests/ui/scheme_token_typo.rs:23:17
+   |
+11 | scheme! {
+   | ------- similarly named constant `bg` defined here
+...
+23 |         el fill:bgg {}
+   |                 ^^^ help: a constant with a similar name exists: `bg`

@@ -104,6 +104,10 @@ impl Plugin for FramePlugin {
         reason = "the frame is kept in one visible execution order"
     )]
     fn build(&self, app: &mut App) {
+        app.init_resource::<crate::dial_assignment::DialAssignments>();
+        app.init_resource::<crate::button_config::ButtonConfiguration>();
+        app.init_resource::<crate::input_parts::InputParts>();
+        app.init_resource::<crate::physical_controls::PhysicalControls>();
         app.configure_sets(
             Update,
             (
@@ -157,7 +161,13 @@ impl Plugin for FramePlugin {
             (
                 update_debug_frame_freeze.in_set(FrameSet::DebugFreeze),
                 prepare_bearing_texture_mips.in_set(FrameSet::Assets),
-                performance::toggle.in_set(FrameSet::PerformanceToggle),
+                (
+                    crate::button_config::capture,
+                    crate::physical_controls::capture,
+                    performance::toggle,
+                )
+                    .chain()
+                    .in_set(FrameSet::PerformanceToggle),
                 (begin_pause_frame, controls::update_action_state)
                     .chain()
                     .in_set(FrameSet::Input),
@@ -175,6 +185,7 @@ impl Plugin for FramePlugin {
                     .chain()
                     .in_set(FrameSet::Commands),
                 (
+                    ui::dials::push,
                     ui::push,
                     ui::push_help,
                     ui::push_markers,
@@ -200,6 +211,8 @@ impl Plugin for FramePlugin {
                     .in_set(FrameSet::Readback),
                 (
                     live_edit::refresh_context,
+                    crate::physical_controls::interact,
+                    crate::dial_assignment::highlight,
                     handle_seat_interaction,
                     handle_shortcuts,
                 )
@@ -223,7 +236,9 @@ impl Plugin for FramePlugin {
                 (
                     tool_fx::capture_gesture,
                     ui::push_suspension,
+                    ui::button_config::push,
                     handle_build_actions,
+                    crate::input_parts::update_input_placement,
                 )
                     .chain()
                     .in_set(FrameSet::Build),
@@ -262,6 +277,7 @@ impl Plugin for FramePlugin {
                     run_drive_sequencer,
                     advance_simulation.run_if(world_playing),
                     avatar::sync_player_avatar,
+                    crate::input_render::sync_input_visuals,
                 )
                     .chain()
                     .in_set(FrameSet::Simulation),

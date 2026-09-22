@@ -45,6 +45,48 @@ pub(super) fn off_centre_external_impulse_changes_linear_and_angular_motion() {
 }
 
 #[test]
+pub(super) fn a_geared_creation_uploads_but_refuses_to_tick_with_impulses() {
+    let Some((device, queue)) = test_device() else {
+        return;
+    };
+    let mut graph = ConstructionGraph::new();
+    // A 24-tooth pinion and a 36-tooth wheel with tangent pitch circles.
+    let gear = |graph: &mut ConstructionGraph, outer: f32, teeth: u16, x: i32| {
+        let spec = mechanic_core::CylinderSpec::new(
+            mechanic_core::CylinderDimensions::new(outer, 0.0, 0.25).unwrap(),
+            BuildPose::from_position_ticks(IVec3::new(x, 800, 0), GridRotation::default()),
+        )
+        .with_gear(mechanic_core::GearSpec::new(4, teeth, mechanic_core::GearKind::Spur).unwrap())
+        .unwrap();
+        let BuildOutcome::Spawned(part) = graph.apply(BuildCommand::SpawnCylinder(spec)).unwrap()
+        else {
+            unreachable!()
+        };
+        part
+    };
+    let pinion = gear(&mut graph, 0.26, 24, 0);
+    let wheel = gear(&mut graph, 0.38, 36, 120);
+    graph
+        .apply(BuildCommand::AddGearLink(mechanic_core::GearLinkSpec {
+            first: pinion,
+            second: wheel,
+        }))
+        .unwrap();
+    let creation = graph.compile().unwrap();
+    assert_eq!(creation.gear_links.len(), 1);
+
+    // The world keeps a GPU scene resident for every creation, so a mesh must
+    // upload; only ticking it on the GPU is refused.
+    let gpu = GpuPhysics::new(&device, &queue, &creation).unwrap();
+    assert_eq!(gpu.gear_link_count(), 1);
+    assert_eq!(
+        gpu.dispatch_tick_with_impulses(&device, &queue, 1, &[])
+            .err(),
+        Some(crate::GpuDispatchError::UnsupportedGearLinks { count: 1 })
+    );
+}
+
+#[test]
 pub(super) fn external_impulse_batches_chunk_repeated_rows_and_validate_atomically() {
     let Some((device, queue)) = test_device() else {
         return;
@@ -69,10 +111,10 @@ pub(super) fn external_impulse_batches_chunk_repeated_rows_and_validate_atomical
     assert_eq!(
         gpu.dispatch_tick_with_impulses(&device, &queue, 1, &invalid)
             .unwrap_err(),
-        GpuImpulseError::BodyIndexOutOfRange {
+        crate::GpuDispatchError::Impulse(GpuImpulseError::BodyIndexOutOfRange {
             body_index: 1,
             body_count: 1,
-        }
+        })
     );
     gpu.dispatch_tick(&device, &queue, 1);
     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
@@ -93,7 +135,7 @@ pub(super) fn external_impulse_batches_chunk_repeated_rows_and_validate_atomical
     assert_eq!(
         gpu.dispatch_tick_with_impulses(&device, &queue, 3, &non_finite)
             .unwrap_err(),
-        GpuImpulseError::NonFinite
+        crate::GpuDispatchError::Impulse(GpuImpulseError::NonFinite)
     );
     assert_eq!(
         gpu.apply_impulses(&device, &queue, &rows[..=EXTERNAL_IMPULSE_BATCH_CAPACITY],)

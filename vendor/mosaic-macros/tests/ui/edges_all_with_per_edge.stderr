@@ -1,0 +1,5 @@
+error: `all` cannot be combined with other edge fields
+  --> tests/ui/edges_all_with_per_edge.rs:11:17
+   |
+11 |         row pad:(all: 8px left: 4px) {}
+   |                 ^^^^^^^^^^^^^^^^^^^^

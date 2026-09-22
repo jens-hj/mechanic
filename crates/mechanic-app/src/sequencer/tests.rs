@@ -1,3 +1,4 @@
+mod controller_keys;
 mod transmission_speed;
 
 use super::{
@@ -15,6 +16,7 @@ fn key(symbol: char) -> DriveKey {
 
 fn keys(held: &[char], pressed: &[char]) -> DriveKeyState {
     DriveKeyState {
+        routed: None,
         held: held.iter().copied().map(key).collect(),
         pressed: pressed.iter().copied().map(key).collect(),
     }

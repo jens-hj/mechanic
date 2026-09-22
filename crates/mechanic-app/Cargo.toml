@@ -36,6 +36,8 @@ mechanic-physics.workspace = true
 mechanic-world.workspace = true
 # The control block's UI is written in Mosaic's `view!`, and the macro resolves
 # its paths through this crate's manifest rather than `bevy_mosaic`'s.
+lyon_tessellation.workspace = true
+mosaic-text.workspace = true
 mosaic-core.workspace = true
 mosaic-macros.workspace = true
 mosaic-widgets.workspace = true

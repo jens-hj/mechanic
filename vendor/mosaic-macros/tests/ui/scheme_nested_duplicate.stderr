@@ -1,0 +1,5 @@
+error: duplicate name `size` in this group
+ --> tests/ui/scheme_nested_duplicate.rs:9:13
+  |
+9 |             size: Length,
+  |             ^^^^

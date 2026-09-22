@@ -1,0 +1,5 @@
+error: the styles in group `button` must agree on visibility — the group is one item
+  --> tests/ui/style_group_visibility_mismatch.rs:12:5
+   |
+12 |     #button.primary fill:(blue())
+   |     ^

@@ -1,0 +1,5 @@
+error: controlled reorderable needs an @reorder:{ … } handler
+  --> tests/ui/controlled_reorder_needs_handler.rs:11:13
+   |
+11 |         row reorderable:(controlled) {}
+   |             ^^^^^^^^^^^

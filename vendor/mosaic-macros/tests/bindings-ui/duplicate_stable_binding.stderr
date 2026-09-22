@@ -1,0 +1,11 @@
+error: duplicate stable view binding `item`
+  --> tests/bindings-ui/duplicate_stable_binding.rs:12:36
+   |
+12 |             row { text "second" as item }
+   |                                    ^^^^
+
+error: first binding declared here
+  --> tests/bindings-ui/duplicate_stable_binding.rs:11:29
+   |
+11 |             text "first" as item
+   |                             ^^^^

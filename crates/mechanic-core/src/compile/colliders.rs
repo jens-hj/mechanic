@@ -42,6 +42,8 @@ pub(super) fn contact_properties(spec: PartSpec) -> MaterialProperties {
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
+        | PartSpec::Dial(_)
+        | PartSpec::Button(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => AUTHORED_CONTACT_PROPERTIES,
     }
@@ -194,6 +196,18 @@ pub(super) fn append_part_colliders(
                     },
                 });
             }
+        }
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => {
+            colliders.push(LocalCollider {
+                source_part: part,
+                compound_index,
+                local_center: spec.pose().translation() - center_of_mass,
+                material_properties,
+                shape: ColliderShape::Cuboid {
+                    local_rotation: spec.pose().rotation.quaternion(),
+                    half_extents: spec.size_meters() * 0.5,
+                },
+            });
         }
         PartSpec::Controller(_)
         | PartSpec::Engine(_)

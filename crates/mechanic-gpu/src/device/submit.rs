@@ -9,13 +9,15 @@ use mechanic_core::{STANDARD_GRAVITY_M_S2_F32, TICK_SECONDS_F32};
 use super::readback::{begin_async_mapping, create_async_readback_slot};
 use super::wgpu_util::{direct_compute_pass, timestamp_writes, wrapping_u32};
 use super::{
-    ASYNC_READBACK_RING_SIZE, EXTERNAL_IMPULSE_BATCH_CAPACITY, GpuExternalImpulse, GpuImpulseError,
-    GpuPhysics, GpuSolverRoute, GpuSubmissionTimings, GpuTickSubmission,
+    ASYNC_READBACK_RING_SIZE, EXTERNAL_IMPULSE_BATCH_CAPACITY, GpuDispatchError,
+    GpuExternalImpulse, GpuPhysics, GpuSolverRoute, GpuSubmissionTimings, GpuTickSubmission,
 };
 use crate::{BROADPHASE_HASH_CAPACITY, GpuDiagnostics, GpuTickConfig};
 
 impl GpuPhysics {
-    /// Encodes and submits one 60 Hz integration/publication pass.
+    /// Encodes and submits one 60 Hz integration/publication pass. A scene
+    /// with gear meshes ticks without them; [`Self::dispatch_tick_with_impulses`]
+    /// refuses instead.
     pub fn dispatch_tick(
         &self,
         device: &wgpu::Device,
@@ -25,6 +27,11 @@ impl GpuPhysics {
         self.encode_and_submit_tick(device, queue, tick_index)
     }
 
+    /// Meshes in the uploaded creation, which the GPU solver cannot hold yet.
+    pub const fn gear_link_count(&self) -> usize {
+        self.gear_link_count
+    }
+
     /// Applies all pending impulses in ordered serial batches, then dispatches a tick.
     ///
     /// Every row is validated before the first queue write. Sets larger than the fixed
@@ -32,7 +39,8 @@ impl GpuPhysics {
     ///
     /// # Errors
     ///
-    /// Returns [`GpuImpulseError`] when any pending row has an invalid body index or
+    /// Returns [`GpuDispatchError`] when the creation has gear meshes, which no
+    /// kernel holds yet, or when any pending row has an invalid body index or
     /// non-finite point/vector.
     pub fn dispatch_tick_with_impulses(
         &self,
@@ -40,7 +48,12 @@ impl GpuPhysics {
         queue: &wgpu::Queue,
         tick_index: u64,
         impulses: &[GpuExternalImpulse],
-    ) -> Result<GpuTickSubmission, GpuImpulseError> {
+    ) -> Result<GpuTickSubmission, GpuDispatchError> {
+        if self.gear_link_count > 0 {
+            return Err(GpuDispatchError::UnsupportedGearLinks {
+                count: self.gear_link_count,
+            });
+        }
         self.validate_impulses(impulses)?;
         for batch in impulses.chunks(EXTERNAL_IMPULSE_BATCH_CAPACITY) {
             self.apply_impulses(device, queue, batch)?;

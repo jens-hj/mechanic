@@ -2025,3 +2025,93 @@ fn a_tapered_end_narrows_core_and_ridge_to_the_tip() {
     }
     assert!(reached_tip);
 }
+
+fn mesh(graph: &mut ConstructionGraph, first: PartId, second: PartId) {
+    graph
+        .apply(BuildCommand::AddGearLink(crate::GearLinkSpec {
+            first,
+            second,
+        }))
+        .unwrap();
+}
+
+#[test]
+fn meshed_gears_compile_to_one_link_and_suppress_their_contact() {
+    let mut graph = ConstructionGraph::new();
+    let (pinion, wheel) = crate::testing::gear_pair(&mut graph);
+    mesh(&mut graph, pinion, wheel);
+    let compiled = graph.compile().unwrap();
+    assert_eq!(compiled.gear_links.len(), 1);
+    let link = compiled.gear_links[0];
+    assert_eq!(link.kind, crate::GearLinkKind::Gears);
+    assert!(link.advance.abs() < f32::EPSILON);
+    let [a, b] = link.sides;
+    assert_ne!(a.compound, b.compound);
+    assert!((a.pitch_radius - 0.12).abs() < 1.0e-6);
+    assert!((b.pitch_radius - 0.18).abs() < 1.0e-6);
+    assert!(a.local_axis.abs_diff_eq(Vec3::Y, 1.0e-6));
+    let world = |side: crate::CompiledGearSide| {
+        compiled.compounds[side.compound as usize].root_translation + side.local_center
+    };
+    assert!(world(a).abs_diff_eq(Vec3::ZERO, 1.0e-5));
+    assert!(world(b).abs_diff_eq(Vec3::new(0.3, 0.0, 0.0), 1.0e-5));
+    let pair = [a.compound.min(b.compound), a.compound.max(b.compound)];
+    assert_eq!(compiled.collision_suppression, vec![pair]);
+    assert_eq!(link.parts, [pinion, wheel]);
+    assert_eq!(compiled.meshing_parts, vec![pinion, wheel]);
+}
+
+#[test]
+fn worm_and_nut_links_compile_with_the_thread_second() {
+    let mut graph = ConstructionGraph::new();
+    let (wheel, worm, nut) = crate::testing::worm_drive(&mut graph);
+    mesh(&mut graph, worm, wheel);
+    mesh(&mut graph, nut, worm);
+    let compiled = graph.compile().unwrap();
+    assert_eq!(compiled.gear_links.len(), 2);
+    let compound_of = |part: PartId| {
+        compiled
+            .part_to_compound
+            .iter()
+            .find(|(candidate, _)| *candidate == part)
+            .unwrap()
+            .1
+    };
+    let drive = compiled
+        .gear_links
+        .iter()
+        .find(|link| link.kind == crate::GearLinkKind::Worm)
+        .unwrap();
+    assert_eq!(drive.sides[0].compound, compound_of(wheel));
+    assert_eq!(drive.sides[1].compound, compound_of(worm));
+    assert!((drive.sides[0].pitch_radius - 0.18).abs() < 1.0e-6);
+    assert!((drive.sides[1].pitch_radius - 0.04375).abs() < 1.0e-6);
+    assert!((drive.advance - 0.05 / core::f32::consts::TAU).abs() < 1.0e-6);
+    assert!(drive.sides[1].local_axis.abs_diff_eq(Vec3::Z, 1.0e-5));
+    let travel = compiled
+        .gear_links
+        .iter()
+        .find(|link| link.kind == crate::GearLinkKind::Screw)
+        .unwrap();
+    assert_eq!(travel.sides[0].compound, compound_of(nut));
+    assert!(travel.sides[0].pitch_radius.abs() < f32::EPSILON);
+    assert!((travel.advance - drive.advance).abs() < f32::EPSILON);
+    assert_eq!(compiled.collision_suppression.len(), 2);
+}
+
+#[test]
+fn a_mesh_whose_parts_share_a_body_compiles_to_nothing() {
+    let mut graph = ConstructionGraph::new();
+    let (pinion, wheel) = crate::testing::gear_pair(&mut graph);
+    mesh(&mut graph, pinion, wheel);
+    graph
+        .apply(BuildCommand::RigidLink(RigidLinkSpec {
+            first: pinion,
+            second: wheel,
+        }))
+        .unwrap();
+    let compiled = graph.compile().unwrap();
+    assert_eq!(compiled.compounds.len(), 1);
+    assert!(compiled.gear_links.is_empty());
+    assert!(compiled.collision_suppression.is_empty());
+}

@@ -1,0 +1,5 @@
+error: duplicate name `bg` in this group
+ --> tests/ui/scheme_duplicate_token.rs:6:9
+  |
+6 |         bg: Paint,
+  |         ^^

@@ -368,6 +368,20 @@ pub(crate) fn drive_xray_mesh(
         );
     }
 
+    for (input, config) in graph.physical_inputs() {
+        if let Some(controller) = config.controller
+            && let (Some(input), Some(controller)) =
+                (part_position(input), part_position(controller))
+        {
+            append_drive_wire(
+                input,
+                controller,
+                &mut positions,
+                &mut normals,
+                &mut indices,
+            );
+        }
+    }
     for (_, link) in graph.input_seat_links() {
         if let (Some(input), Some(seat)) = (part_position(link.input), part_position(link.seat)) {
             append_drive_wire(input, seat, &mut positions, &mut normals, &mut indices);

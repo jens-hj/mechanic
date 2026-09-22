@@ -1,5 +1,7 @@
+use crate::{ButtonSpec, DialSpec};
 mod cylinder;
 mod face;
+mod gear;
 mod grid;
 mod layers;
 mod machine;
@@ -13,10 +15,15 @@ pub use cylinder::{
     MIN_CYLINDER_OUTER_DIAMETER, MIN_CYLINDER_SWEEP_DEGREES,
 };
 pub(crate) use face::{
-    FaceGeometry, FaceProfile, cuboid_face, cylinder_face, ground_face, pipe_bend_face,
-    pipe_junction_face,
+    FaceGeometry, FaceProfile, cuboid_face, cylinder_face, envelope_face, ground_face,
+    pipe_bend_face, pipe_junction_face,
 };
 pub use face::{FaceKind, FaceOwner, FaceRef};
+pub use gear::{
+    GEAR_ADDENDUM_MODULES, GEAR_DEDENDUM_MODULES, GEAR_TOOTH_CENTER_FRACTION, GearError, GearKind,
+    GearSpec, MAX_GEAR_MODULE_TICKS, MAX_GEAR_TEETH, MIN_GEAR_MODULE_TICKS, MIN_GEAR_TEETH,
+    RackSpec,
+};
 pub use grid::{
     Axis, BuildPose, DimensionError, GRID_UNIT_METERS, GridDimension, GridRotation, MAX_GRID_UNITS,
     POSITION_TICK_METERS, POSITION_TICKS_PER_GRID_UNIT, POSITION_TICKS_PER_HALF_GRID_UNIT,
@@ -63,6 +70,7 @@ pub struct CuboidSpec {
     /// Core color and finish treatment.
     pub appearance: MaterialAppearance,
     layers: MaterialLayers,
+    rack: Option<RackSpec>,
 }
 
 /// A construction part with shape-specific dimensions and a shared build pose.
@@ -88,6 +96,10 @@ pub enum PartSpec {
     Seat(SeatSpec),
     /// Fixed-size keyboard input router.
     Input(InputSpec),
+    /// Physical rotary dial.
+    Dial(DialSpec),
+    /// Physical pushbutton.
+    Button(ButtonSpec),
     /// Fixed-size Dimension Link portal anchor.
     DimensionLink(DimensionLinkSpec),
 }
@@ -105,6 +117,8 @@ impl PartSpec {
             Self::Transmission(spec) => spec.pose,
             Self::Servo(spec) => spec.pose,
             Self::Seat(spec) => spec.pose,
+            Self::Dial(spec) => spec.pose,
+            Self::Button(spec) => spec.pose,
             Self::Input(spec) => spec.pose,
             Self::DimensionLink(spec) => spec.pose,
         }
@@ -122,6 +136,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -139,6 +155,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => MaterialLayers::NONE,
         }
@@ -161,6 +179,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => return None,
         };
@@ -196,6 +216,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -228,6 +250,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => Err(LayerError::UnsupportedFace),
         }
@@ -293,6 +317,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -338,6 +364,14 @@ impl PartSpec {
                 spec.pose = pose;
                 Self::Seat(spec)
             }
+            Self::Dial(mut spec) => {
+                spec.pose = pose;
+                Self::Dial(spec)
+            }
+            Self::Button(mut spec) => {
+                spec.pose = pose;
+                Self::Button(spec)
+            }
             Self::Input(mut spec) => {
                 spec.pose = pose;
                 Self::Input(spec)
@@ -361,7 +395,11 @@ impl PartSpec {
             Self::Seat(spec) => Some(spec.cuboid()),
             Self::Input(spec) => Some(spec.cuboid()),
             Self::DimensionLink(spec) => Some(spec.cuboid()),
-            Self::Cylinder(_) | Self::PipeBend(_) | Self::PipeJunction(_) => None,
+            Self::Dial(_)
+            | Self::Button(_)
+            | Self::Cylinder(_)
+            | Self::PipeBend(_)
+            | Self::PipeJunction(_) => None,
         }
     }
 
@@ -377,6 +415,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -394,6 +434,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -411,6 +453,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -428,6 +472,8 @@ impl PartSpec {
             | Self::Transmission(_)
             | Self::Servo(_)
             | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -442,6 +488,8 @@ impl PartSpec {
             Self::Transmission(spec) => spec.cuboid().size_meters(),
             Self::Servo(spec) => spec.cuboid().size_meters(),
             Self::Seat(spec) => spec.cuboid().size_meters(),
+            Self::Dial(spec) => spec.size_meters(),
+            Self::Button(spec) => spec.size_meters(),
             Self::Input(spec) => spec.cuboid().size_meters(),
             Self::DimensionLink(spec) => spec.cuboid().size_meters(),
             Self::Cylinder(spec) => Vec3::new(
@@ -549,6 +597,7 @@ impl CuboidSpec {
             material: ConstructionMaterial::Steel,
             appearance: MaterialAppearance::BAKED,
             layers: MaterialLayers::NONE,
+            rack: None,
         })
     }
 
@@ -563,6 +612,34 @@ impl CuboidSpec {
     #[must_use]
     pub const fn with_appearance(mut self, appearance: MaterialAppearance) -> Self {
         self.appearance = appearance;
+        self
+    }
+
+    /// The rack teeth cut into one of this cuboid's faces, if any.
+    pub const fn rack(self) -> Option<RackSpec> {
+        self.rack
+    }
+
+    /// Cuts rack teeth into one face, replacing any the cuboid had. The
+    /// dimensions stay the envelope: the tooth tips are the face.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GearError::Layered`] when the cuboid carries material layers.
+    pub fn with_rack(self, rack: RackSpec) -> Result<Self, GearError> {
+        if !self.layers.is_empty() {
+            return Err(GearError::Layered);
+        }
+        Ok(Self {
+            rack: Some(rack),
+            ..self
+        })
+    }
+
+    /// The plain cuboid these teeth were cut into.
+    #[must_use]
+    pub const fn without_rack(mut self) -> Self {
+        self.rack = None;
         self
     }
 
@@ -605,6 +682,9 @@ impl CuboidSpec {
         let LayerFace::Face(kind) = face else {
             return Err(LayerError::UnsupportedFace);
         };
+        if self.rack.is_some() {
+            return Err(LayerError::ToothedPart);
+        }
         let ticks = layer_thickness_ticks(thickness, true)?;
         let thickness = ticks as f32 * POSITION_TICK_METERS;
         let layers = self.layers.pushed(MaterialLayer {
@@ -667,6 +747,17 @@ impl CuboidSpec {
             },
             self.layers,
         )
+    }
+}
+
+impl From<DialSpec> for PartSpec {
+    fn from(value: DialSpec) -> Self {
+        Self::Dial(value)
+    }
+}
+impl From<ButtonSpec> for PartSpec {
+    fn from(value: ButtonSpec) -> Self {
+        Self::Button(value)
     }
 }
 

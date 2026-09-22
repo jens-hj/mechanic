@@ -39,7 +39,8 @@ impl FaceKind {
         }
     }
 
-    pub(crate) const fn axis(self) -> Axis {
+    /// The local axis this face is perpendicular to.
+    pub const fn axis(self) -> Axis {
         match self {
             Self::PositiveX | Self::NegativeX => Axis::X,
             Self::PositiveY | Self::NegativeY => Axis::Y,
@@ -47,7 +48,8 @@ impl FaceKind {
         }
     }
 
-    pub(crate) const fn sign(self) -> f32 {
+    /// Which way along its axis the face looks: `1.0` or `-1.0`.
+    pub const fn sign(self) -> f32 {
         match self {
             Self::PositiveX | Self::PositiveY | Self::PositiveZ => 1.0,
             Self::NegativeX | Self::NegativeY | Self::NegativeZ => -1.0,
@@ -144,15 +146,18 @@ pub(crate) enum FaceProfile {
 }
 
 pub(crate) fn cuboid_face(spec: CuboidSpec, face: FaceKind) -> FaceGeometry {
-    let rotation = spec.pose.rotation.quaternion();
-    let size = spec.size_meters();
+    envelope_face(spec.pose, spec.size_meters(), face)
+}
+
+pub(crate) fn envelope_face(pose: super::BuildPose, size: Vec3, face: FaceKind) -> FaceGeometry {
+    let rotation = pose.rotation.quaternion();
     let axis = face.axis();
     let (u_axis, v_axis) = face.tangent_axes();
     let normal = snap_cardinal(rotation * axis.unit()) * face.sign();
     let tangent_u = snap_cardinal(rotation * u_axis.unit());
     let tangent_v = snap_cardinal(rotation * v_axis.unit());
     FaceGeometry {
-        center: spec.pose.translation() + normal * size[axis.index()] * 0.5,
+        center: pose.translation() + normal * size[axis.index()] * 0.5,
         normal,
         tangent_u,
         tangent_v,

@@ -1,0 +1,5 @@
+error: unknown handler modifier `.prevent` (expected `.stop`)
+ --> tests/ui/handler_unknown_modifier.rs:9:23
+  |
+9 |         button @click.prevent:{} "Action"
+  |                       ^^^^^^^

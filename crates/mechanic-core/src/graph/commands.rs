@@ -1,14 +1,16 @@
 //! The build commands a graph accepts, their outcomes, and what is pending.
 
 use super::specs::{
-    BearingSpec, DriveLinkSpec, InputSeatLinkSpec, RigidLinkSpec, SeatControllerLinkSpec, WeldSpec,
+    BearingSpec, DriveLinkSpec, GearLinkSpec, InputSeatLinkSpec, RigidLinkSpec,
+    SeatControllerLinkSpec, WeldSpec,
 };
 use crate::{
     ActuatorAssignment, BearingId, CageIndex, ControllerSpec, CuboidSpec, CylinderSpec,
     DimensionLinkSpec, DriveLimits, DriveLinkId, DriveName, DriveProgram, EngineKind, EngineSpec,
-    FaceRef, GearKeyChord, InputSeatLinkId, InputSpec, MaterialAppearance, PartId, PartSpec,
-    PipeBendSpec, PipeJunctionSpec, RegionId, RigidLinkId, SeatControllerLinkId, SeatSpec,
-    ServoSpec, ShapeFeature, ShapeFeatureId, ShapeRegion, ShiftMode, TransmissionSpec, WeldId,
+    FaceRef, GearKeyChord, GearLinkId, InputSeatLinkId, InputSpec, MaterialAppearance, PartId,
+    PartSpec, PipeBendSpec, PipeJunctionSpec, RegionId, RigidLinkId, SeatControllerLinkId,
+    SeatSpec, ServoSpec, ShapeFeature, ShapeFeatureId, ShapeRegion, ShiftMode, TransmissionSpec,
+    WeldId,
 };
 use bevy_math::Vec3;
 
@@ -85,6 +87,28 @@ pub enum BuildCommand {
         /// Replacement with the same pose, length, material, and appearance.
         spec: crate::CylinderSpec,
     },
+    /// Replace a cylinder's teeth in place, keeping its part identity and
+    /// connections. The diameter the teeth reach changes with the tooth
+    /// count. Taking the teeth off also drops every mesh the part was in.
+    SetGear {
+        /// Cylinder being toothed.
+        part: PartId,
+        /// Replacement with the same pose, length, material, and appearance.
+        spec: crate::CylinderSpec,
+    },
+    /// Replace a cuboid's rack teeth in place, keeping its part identity,
+    /// dimensions, and connections. Taking the teeth off also drops every mesh
+    /// the part was in.
+    SetRack {
+        /// Cuboid being toothed.
+        part: PartId,
+        /// Replacement sharing the cuboid's core.
+        spec: CuboidSpec,
+    },
+    /// Mesh two toothed parts, or put a nut on a thread.
+    AddGearLink(GearLinkSpec),
+    /// Break one mesh, leaving both parts intact.
+    RemoveGearLink(GearLinkId),
     /// Remove one bearing while leaving its endpoint parts intact.
     RemoveBearing(BearingId),
     /// Merge the groups containing two touching faces.
@@ -106,8 +130,33 @@ pub enum BuildCommand {
     SpawnServo(ServoSpec),
     /// Spawn a seat cushion.
     SpawnSeat(SeatSpec),
+    /// Set wire direction without replacing its stable handle.
+    SetDriveReversed {
+        /// Existing drive wire.
+        link: crate::DriveLinkId,
+        /// Whether requested motion is reversed.
+        reversed: bool,
+    },
+    /// Remove a controller state and remap every physical input reference to it.
+    RemoveDriveState {
+        /// Program owning the removed state.
+        link: crate::DriveLinkId,
+        /// State index before removal.
+        state: u8,
+    },
     /// Spawn an Input block.
     SpawnInput(InputSpec),
+    /// Spawn a rotary dial at its actual dimensions.
+    SpawnDial(crate::DialSpec),
+    /// Spawn a pushbutton at its actual dimensions.
+    SpawnButton(crate::ButtonSpec),
+    /// Replace authored configuration; changing controllers clears bindings.
+    SetInputConfiguration {
+        /// Physical input part.
+        input: PartId,
+        /// Authored names, labels, controller link, and bindings.
+        configuration: crate::InputConfiguration,
+    },
     /// Spawn a Dimension Link with a stable per-world identity.
     SpawnDimensionLink(DimensionLinkSpec),
     /// Add a passive bearing.
@@ -262,6 +311,10 @@ pub enum BuildOutcome {
     LayersUpdated,
     /// A cylinder's spiral changed.
     SpiralUpdated,
+    /// A part's gear or rack teeth changed.
+    GearUpdated,
+    /// Two parts were meshed.
+    GearLinked(GearLinkId),
     /// A pending operation was recorded.
     Pending,
     /// A pending operation was cancelled, or there was nothing to cancel.

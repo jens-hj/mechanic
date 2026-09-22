@@ -1,0 +1,5 @@
+error: token kind `Drawing` is reserved for a future drawing pipeline and is not yet supported
+ --> tests/ui/scheme_reserved_drawing.rs:5:16
+  |
+5 |         snake: Drawing,
+  |                ^^^^^^^

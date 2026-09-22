@@ -29,7 +29,7 @@ The default is three repetitions at 1×, 2×, 5× and 10×, each separated and c
 
 ## Runtime changes
 
-* Body bounds are traversed before immutable collider trees. Same-body, static/static and suppressed pairs never descend into collider pairs. Exact transformed vertex bounds precede convex transformation. Terrain candidates descend through body/collider bounds, and individual triangle bounds reject false positives from batched BVH leaves before clipping.
+* Body bounds are traversed before immutable collider trees. Same-body, static/static and wholly exempt pairs never descend into collider pairs; jointed bodies descend and drop the collider pairs they were built touching. Exact transformed vertex bounds precede convex transformation. Terrain candidates descend through body/collider bounds, and individual triangle bounds reject false positives from batched BVH leaves before clipping.
 * A topology-owned cache keys construction geometry by exact body poses. Pose changes invalidate affected shapes and separation results. Geometry is in simulation coordinates; terrain publication and floating-origin offsets are evaluated afresh, so terrain-dependent results are not cached. Proximity/recovery share shapes and margin-aware pair separation results.
 * Continuous broadphase intersects the original origin/radius bound with the initial convex bounds expanded by the integrated point-speed bound. Both enclose the entire motion, including full turns. Narrowphase, activation distances, contact ordering and authored pipe openings remain unchanged.
 * Face separation can reject a pair before edge-axis work when it proves separation beyond the query margin. Retained results use the reference feature-selection algorithm.

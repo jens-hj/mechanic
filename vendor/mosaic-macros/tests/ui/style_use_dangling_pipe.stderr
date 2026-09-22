@@ -1,0 +1,5 @@
+error: `|` separates two style references — write `#a | #b`
+  --> tests/ui/style_use_dangling_pipe.rs:12:39
+   |
+12 |     ui.root().adopt(&view! { el #card | {} });
+   |                                       ^

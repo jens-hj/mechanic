@@ -1,3 +1,6 @@
+mod gears;
+mod inputs;
+
 use bevy_math::{IVec3, Vec3};
 
 use super::{

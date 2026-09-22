@@ -73,6 +73,41 @@ pub(super) fn with_layer_docs(
     })
 }
 
+/// Replays saved rack teeth into a cuboid's face.
+fn with_rack_doc(
+    cuboid: CuboidSpec,
+    rack: Option<super::doc::RackDoc>,
+) -> Result<CuboidSpec, CreationError> {
+    Ok(match rack {
+        Some(rack) => cuboid.with_rack(crate::RackSpec::new(
+            rack.module_ticks,
+            rack.face,
+            rack.along,
+        )?)?,
+        None => cuboid,
+    })
+}
+
+/// Replays a saved spiral and saved teeth into a cylinder's walls.
+fn with_wall_docs(
+    cylinder: CylinderSpec,
+    spiral: Option<super::doc::SpiralDoc>,
+    gear: Option<super::doc::GearDoc>,
+) -> Result<CylinderSpec, CreationError> {
+    let cylinder = match spiral {
+        Some(spiral) => cylinder.with_spiral(spiral_from_doc(&spiral)?)?,
+        None => cylinder,
+    };
+    Ok(match gear {
+        Some(gear) => cylinder.with_gear(crate::GearSpec::new(
+            gear.module_ticks,
+            gear.teeth,
+            gear.kind,
+        )?)?,
+        None => cylinder,
+    })
+}
+
 pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
     Ok(match part {
         PartDoc::Cuboid {
@@ -81,12 +116,13 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
             material,
             appearance,
             layers,
+            rack,
         } => {
             let core = CuboidSpec::new(dimensions, pose.into())?
                 .with_material(material)
                 .with_appearance(appearance);
             match with_layer_docs(PartSpec::Cuboid(core), &layers)? {
-                PartSpec::Cuboid(cuboid) => BuildCommand::Spawn(cuboid),
+                PartSpec::Cuboid(cuboid) => BuildCommand::Spawn(with_rack_doc(cuboid, rack)?),
                 _ => unreachable!("layers keep the part kind"),
             }
         }
@@ -100,6 +136,7 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
             appearance,
             layers,
             spiral,
+            gear,
         } => {
             let core = CylinderSpec::new(
                 CylinderDimensions::new(
@@ -113,10 +150,9 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
             .with_material(material)
             .with_appearance(appearance);
             match with_layer_docs(PartSpec::Cylinder(core), &layers)? {
-                PartSpec::Cylinder(cylinder) => BuildCommand::SpawnCylinder(match spiral {
-                    Some(spiral) => cylinder.with_spiral(spiral_from_doc(&spiral)?)?,
-                    None => cylinder,
-                }),
+                PartSpec::Cylinder(cylinder) => {
+                    BuildCommand::SpawnCylinder(with_wall_docs(cylinder, spiral, gear)?)
+                }
                 _ => unreachable!("layers keep the part kind"),
             }
         }
@@ -162,6 +198,12 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
         }
         PartDoc::Servo { pose } => BuildCommand::SpawnServo(ServoSpec::new(pose.into())),
         PartDoc::Seat { pose } => BuildCommand::SpawnSeat(SeatSpec::new(pose.into())),
+        PartDoc::Dial { size, pose } => {
+            BuildCommand::SpawnDial(crate::DialSpec::new(size, pose.into()))
+        }
+        PartDoc::Button { size, pose } => {
+            BuildCommand::SpawnButton(crate::ButtonSpec::new(size, pose.into()))
+        }
         PartDoc::Input { pose } => BuildCommand::SpawnInput(InputSpec::new(pose.into())),
         PartDoc::DimensionLink { id, pose } => {
             BuildCommand::SpawnDimensionLink(DimensionLinkSpec::new(id, pose.into()))

@@ -1,0 +1,20 @@
+error[E0080]: evaluation panicked: conditional styles may contain only reversible value channels
+  --> tests/ui/conditional_unsafe_style.rs:15:26
+   |
+15 |         el if $enabled { #interactive } {}
+   |                          ^^^^^^^^^^^^ evaluation of `main::{constant#0}` failed inside this call
+   |
+note: inside `StyleSet::assert_conditional_safe`
+  --> $WORKSPACE/crates/mosaic-widgets/src/style_set.rs
+   |
+   | /         assert!(
+   | |             self.conditional_safe,
+   | |             "conditional styles may contain only reversible value channels"
+   | |         );
+   | |_________^ the failure occurred here
+
+note: erroneous constant encountered
+  --> tests/ui/conditional_unsafe_style.rs:15:26
+   |
+15 |         el if $enabled { #interactive } {}
+   |                          ^

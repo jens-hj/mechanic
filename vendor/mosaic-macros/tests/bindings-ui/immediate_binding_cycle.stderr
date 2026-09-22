@@ -1,0 +1,5 @@
+error: immediate view binding cycle: first -> second -> first
+  --> tests/bindings-ui/immediate_binding_cycle.rs:11:67
+   |
+11 |             text (second.layout_rect().size.width.to_string()) as first
+   |                                                                   ^^^^^

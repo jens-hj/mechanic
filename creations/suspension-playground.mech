@@ -1,5 +1,5 @@
 (
-    version: 17,
+    version: 18,
     name: "Suspension - Motion Playground",
     parts: [
         Cuboid(
@@ -578,4 +578,5 @@
     regions: [],
     shape_features: [],
     sockets: [],
+    physical_inputs: [],
 )

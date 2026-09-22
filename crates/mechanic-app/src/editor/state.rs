@@ -85,6 +85,7 @@ pub(crate) struct EditorState {
     /// Last committed layer thickness in metres; zero until the first layer.
     pub(crate) layer_thickness: f32,
     pub(crate) spiral: crate::editor::spiral::SpiralTool,
+    pub(crate) gears: crate::editor::gears::GearTool,
     pub(crate) delete_drag: Option<DeleteDrag>,
     pub(crate) delete_preview_revision: u64,
     pub(crate) placed_bearings: Vec<PlacedBearing>,
@@ -140,6 +141,7 @@ impl EditorState {
     /// across mode changes and therefore does not block the selector.
     pub(crate) fn contextual_selector_blocked(&self) -> bool {
         self.suspension.drag.is_some()
+            || self.gears.rack_drag.is_some()
             || self.block_drag.is_some()
             || self.pipe_drag.is_some()
             || self.layer_drag.is_some()

@@ -1,0 +1,5 @@
+error: unknown `Translate` field `z` — expected `x` or `y`
+  --> tests/ui/unknown_translate_field.rs:11:23
+   |
+11 |         el translate:(z: 1.0) {}
+   |                       ^

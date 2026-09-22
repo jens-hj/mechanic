@@ -1,0 +1,5 @@
+error: an `#[exposed]` let needs its type written out: `let name: State<T> = …` or `Derived<T>`
+  --> tests/ui/component_exposed_let_untyped.rs:12:9
+   |
+12 |     let level = State::new(0);
+   |         ^^^^^

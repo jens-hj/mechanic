@@ -26,12 +26,14 @@ use mechanic_gpu::{DRIVE_MODE_ANGLE, DRIVE_MODE_SPEED, GpuMechanismDrive};
 pub(crate) struct DriveKeyState {
     held: Vec<DriveKey>,
     pressed: Vec<DriveKey>,
+    routed: Option<mechanic_core::ControllerKeys>,
 }
 
 impl DriveKeyState {
     /// Constructs application-level scripted input without synthesizing OS events.
     pub(crate) fn scripted(held: &[char], previous: &[char]) -> Self {
         Self {
+            routed: None,
             held: held
                 .iter()
                 .filter_map(|symbol| DriveKey::new(*symbol))
@@ -205,6 +207,7 @@ pub(crate) struct DriveSequencer {
     last_step_tick: u64,
     publication: Option<(u64, u64)>,
     programs: BTreeMap<DriveLinkId, mechanic_core::DriveLinkSpec>,
+    routed_keys: Option<mechanic_core::ControllerKeys>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -425,11 +428,28 @@ impl GearboxRuntime {
                 }
                 continue;
             }
-            if keyboard_controller != Some(row.controller) {
-                continue;
-            }
-            let delta = i8::from(chord_just_pressed(keyboard, config.gear_up()))
-                - i8::from(chord_just_pressed(keyboard, config.gear_down()));
+            let pressed = |chord: GearKeyChord| {
+                if !chord.shift
+                    && !chord.control
+                    && !chord.alt
+                    && !chord.super_key
+                    && let Some(keys) = &sequencer.routed_keys
+                    && let Some(key) = match chord.key {
+                        GearKey::Letter(letter) => DriveKey::new(letter),
+                        GearKey::Digit(digit) => {
+                            char::from_digit(u32::from(digit), 10).and_then(DriveKey::new)
+                        }
+                        _ => None,
+                    }
+                {
+                    return keys.pressed(row.controller, key)
+                        && (keys.button_held(row.controller, key)
+                            || (keyboard_controller == Some(row.controller)
+                                && chord_just_pressed(keyboard, chord)));
+                }
+                keyboard_controller == Some(row.controller) && chord_just_pressed(keyboard, chord)
+            };
+            let delta = i8::from(pressed(config.gear_up())) - i8::from(pressed(config.gear_down()));
             if delta == 0 {
                 continue;
             }
@@ -792,6 +812,7 @@ impl DriveSequencer {
         let elapsed = tick.saturating_sub(self.last_step_tick);
         self.last_step_tick = tick;
         let mut changed = false;
+        self.routed_keys.clone_from(&keys.routed);
         let no_keys = DriveKeyState::default();
         for row in &mut self.rows {
             let Some(spec) = graph.drive_link(row.link) else {
@@ -811,7 +832,29 @@ impl DriveSequencer {
             } else {
                 &no_keys
             };
-            let stepped = stepped_cursor(row.cursor, &spec.program, routed_keys, tick);
+            let combined = keys.routed.as_ref().map(|combined| {
+                let held: Vec<_> = combined
+                    .held_keys()
+                    .filter(|(controller, _)| *controller == spec.controller)
+                    .map(|(_, key)| key)
+                    .collect();
+                let pressed = held
+                    .iter()
+                    .copied()
+                    .filter(|key| combined.pressed(spec.controller, *key))
+                    .collect();
+                DriveKeyState {
+                    held,
+                    pressed,
+                    routed: None,
+                }
+            });
+            let stepped = stepped_cursor(
+                row.cursor,
+                &spec.program,
+                combined.as_ref().unwrap_or(routed_keys),
+                tick,
+            );
             if stepped != row.cursor {
                 row.cursor = stepped;
                 changed = true;
@@ -1026,6 +1069,8 @@ fn target_speed(target: DriveTarget) -> Option<f32> {
 )]
 pub(crate) fn run_drive_sequencer(
     keyboard: Res<ButtonInput<KeyCode>>,
+    controls: Res<crate::physical_controls::PhysicalControls>,
+    pause: Res<crate::pause_menu::PauseMenuState>,
     overlay: Res<ui::UiInput>,
     simulation: Res<AppSimulation>,
     frozen: Res<freeze::DimensionFreeze>,
@@ -1048,18 +1093,18 @@ pub(crate) fn run_drive_sequencer(
         if sequencer.is_started() && simulation.world_revision.is_some() {
             sequencer.sync_publication(
                 creation,
-                &simulation.published_graph,
+                simulation.effective_graph(),
                 simulation.world_revision,
                 simulation.next_tick,
             );
-            gearboxes.sync_publication(&simulation.published_graph, &sequencer);
+            gearboxes.sync_publication(simulation.effective_graph(), &sequencer);
         } else {
             sequencer.start(
                 creation,
-                &simulation.published_graph,
+                simulation.effective_graph(),
                 simulation.world_revision,
             );
-            gearboxes.start(&simulation.published_graph, &sequencer);
+            gearboxes.start(simulation.effective_graph(), &sequencer);
         }
         state.drive_rows_dirty = true;
     }
@@ -1067,7 +1112,11 @@ pub(crate) fn run_drive_sequencer(
         player.seat = automation::driving_seat(&simulation);
         return; // Scripted programs advance at each dispatched tick below.
     }
-    let keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
+    if pause.blocks_world_input() {
+        return;
+    }
+    let mut keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
+    keys.routed = Some(controls.keys.clone());
     let keyboard_controller = player
         .seat
         .filter(|seat| simulation.published_graph.seat_input(*seat).is_some())
@@ -1103,7 +1152,7 @@ pub(crate) fn step_drive_programs(
 ) {
     let suspended = frozen.suspended_controllers(simulation);
     let sequencer_changed = sequencer.step_with_held_bearings(
-        &simulation.published_graph,
+        simulation.effective_graph(),
         keys,
         keyboard_controller,
         tick,
@@ -1111,9 +1160,9 @@ pub(crate) fn step_drive_programs(
         &frozen.suspended_bearings(simulation),
     );
     let measured_speeds =
-        measured_engine_speeds(&simulation.published_graph, simulation, sequencer);
+        measured_engine_speeds(simulation.effective_graph(), simulation, sequencer);
     let gearbox_changed = gearboxes.step_with_suspension(
-        &simulation.published_graph,
+        simulation.effective_graph(),
         sequencer,
         keyboard,
         gearbox_keyboard_controller,

@@ -127,6 +127,9 @@ pub enum LayerError {
     /// The cylinder carries a spiral.
     #[error("a spiral cylinder does not take material layers")]
     SpiralPart,
+    /// The part carries gear teeth or a rack.
+    #[error("a toothed part does not take material layers")]
+    ToothedPart,
     /// The layered envelope would outgrow the largest part.
     #[error("a layered part must stay within 8 m")]
     TooLarge,

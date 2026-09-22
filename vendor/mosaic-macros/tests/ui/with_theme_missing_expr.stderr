@@ -1,0 +1,24 @@
+error: expected a theme source after `with theme`: a call like `make_theme(…)` or a parenthesized `(expr)`
+  --> tests/ui/with_theme_missing_expr.rs:11:21
+   |
+11 |         col {} with theme
+   |                     ^^^^^
+
+error: a target-less `view! { … }` needs one top-level element-producing node
+  --> tests/ui/with_theme_missing_expr.rs:10:17
+   |
+10 |       root.adopt(&view! {
+   |  _________________^
+11 | |         col {} with theme
+12 | |     });
+   | |_____^
+   |
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `Element`
+ --> tests/ui/with_theme_missing_expr.rs:4:22
+  |
+4 | use mosaic_widgets::{Element, Ui};
+  |                      ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

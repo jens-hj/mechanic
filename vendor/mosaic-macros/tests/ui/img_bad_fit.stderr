@@ -1,0 +1,5 @@
+error: unknown attribute `fitt` — did you mean `fit`?
+  --> tests/ui/img_bad_fit.rs:12:17
+   |
+12 |             img fitt:cover ("logo.png")
+   |                 ^^^^

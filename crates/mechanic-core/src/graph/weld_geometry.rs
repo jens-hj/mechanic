@@ -298,6 +298,16 @@ impl ConstructionGraph {
                     PartSpec::Transmission(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
                     PartSpec::Servo(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
                     PartSpec::Seat(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
+                    PartSpec::Dial(spec) => Ok(crate::geometry::envelope_face(
+                        spec.pose,
+                        spec.size_meters(),
+                        face.face,
+                    )),
+                    PartSpec::Button(spec) => Ok(crate::geometry::envelope_face(
+                        spec.pose,
+                        spec.size_meters(),
+                        face.face,
+                    )),
                     PartSpec::Input(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
                     PartSpec::DimensionLink(spec) => Ok(cuboid_face(spec.cuboid(), face.face)),
                     PartSpec::Cylinder(spec) => {

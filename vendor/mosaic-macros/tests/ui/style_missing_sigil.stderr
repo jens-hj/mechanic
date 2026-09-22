@@ -1,0 +1,5 @@
+error: a style declaration starts with `#`, the way its use site names it: `pub #card …`
+ --> tests/ui/style_missing_sigil.rs:4:9
+  |
+4 |     pub card fill:(blue())
+  |         ^^^^

@@ -1,0 +1,5 @@
+error: unknown attribute `fll` — did you mean `fill`?
+  --> tests/ui/misspelled_attr.rs:11:13
+   |
+11 |         row fll:(mosaic_core::Color::WHITE) {}
+   |             ^^^

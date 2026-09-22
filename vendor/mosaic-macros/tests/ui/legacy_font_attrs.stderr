@@ -1,0 +1,37 @@
+error: unknown attribute `size` — did you mean `font-size`?
+  --> tests/ui/legacy_font_attrs.rs:13:18
+   |
+13 |             text size:14 color:(mosaic_core::Color::WHITE) family:monospace weight:500
+   |                  ^^^^
+
+error: unknown attribute `color` — did you mean `font-color`?
+  --> tests/ui/legacy_font_attrs.rs:13:26
+   |
+13 |             text size:14 color:(mosaic_core::Color::WHITE) family:monospace weight:500
+   |                          ^^^^^
+
+error: unknown attribute `family` — did you mean `font-family`?
+  --> tests/ui/legacy_font_attrs.rs:13:60
+   |
+13 |             text size:14 color:(mosaic_core::Color::WHITE) family:monospace weight:500
+   |                                                            ^^^^^^
+
+error: unknown attribute `weight` — did you mean `font-weight`?
+  --> tests/ui/legacy_font_attrs.rs:13:77
+   |
+13 |             text size:14 color:(mosaic_core::Color::WHITE) family:monospace weight:500
+   |                                                                             ^^^^^^
+
+error: unknown attribute `font-line-height` — did you mean `line-height`?
+  --> tests/ui/legacy_font_attrs.rs:14:17
+   |
+14 |                 font-line-height:20 "legacy"
+   |                 ^^^^
+
+warning: unused import: `text`
+ --> tests/ui/legacy_font_attrs.rs:5:26
+  |
+5 | use mosaic_widgets::{Ui, text};
+  |                          ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

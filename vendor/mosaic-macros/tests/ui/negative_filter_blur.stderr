@@ -1,0 +1,5 @@
+error: blur sigma must be non-negative
+  --> tests/ui/negative_filter_blur.rs:10:41
+   |
+10 |     root.adopt(&view! { el filter:blur(-1px) {} });
+   |                                         ^^^

@@ -4,7 +4,8 @@ use super::drives::{
     CoordinateActuation, coordinate_drive, resolve_coordinate_actuation, resolve_coordinate_drives,
 };
 use crate::{
-    BearingId, ConstructionGraph, DriveLimits, DriveTarget, EngineKind, MaterialProperties, PartId,
+    BearingId, ConstructionGraph, DriveLimits, DriveTarget, EngineKind, GearLinkId,
+    MaterialProperties, PartId,
 };
 use bevy_math::{Mat3, Quat, Vec3, Vec4};
 use std::collections::BTreeMap;
@@ -130,6 +131,10 @@ pub struct CompiledBearing {
     pub local_axis_b: Vec3,
     /// Independent mechanism coordinate for a tree edge; `None` for closure edges.
     pub coordinate_index: Option<u32>,
+    /// The parts whose faces the bearing joins, source then target: the
+    /// hardware sits between them, so they never collide. A ground face owns
+    /// no part, and a bare head has no target.
+    pub parts: [Option<PartId>; 2],
 }
 
 /// Canonical parent metadata for one body in the reduced-coordinate forest.
@@ -178,6 +183,43 @@ pub struct LoopTopology {
     pub bearing_coordinates: BTreeMap<BearingId, u32>,
 }
 
+/// One side of a compiled mesh, in compound-local coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompiledGearSide {
+    /// Owning compound row.
+    pub compound: u32,
+    /// Point the solver measures surface speed from, relative to the compound
+    /// root: on the axis in the pitch plane for a gear or thread, on the
+    /// pitch plane for a rack, on the thread's axis for a nut.
+    pub local_center: Vec3,
+    /// Unit axis for a gear or thread; the outward pitch-plane normal for a
+    /// rack. In compound-root coordinates.
+    pub local_axis: Vec3,
+    /// Pitch radius of a gear or thread, negative for internal teeth; zero for
+    /// a rack or nut.
+    pub pitch_radius: f32,
+}
+
+/// A mesh between two compiled compounds: one no-slip row at the pitch point.
+///
+/// The row holds `S(a) = S(b)`, where a side's surface speed `S` is the
+/// velocity of its pitch point along the common tangent, plus `advance` times
+/// its spin about the thread axis for a worm or screw. The magnetic coupling
+/// never pushes the parts apart, so the row is bilateral and unbounded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompiledGearLink {
+    /// Source editable mesh.
+    pub source: GearLinkId,
+    /// How the sides couple; the special side is always the second.
+    pub kind: crate::GearLinkKind,
+    /// The gear side first, then the rack, worm, or thread.
+    pub sides: [CompiledGearSide; 2],
+    /// The parts behind `sides`, in the same order.
+    pub parts: [PartId; 2],
+    /// Signed axial advance per radian about the thread axis; zero for gears.
+    pub advance: f32,
+}
+
 /// Complete, immutable upload image for the GPU runtime. The default is an
 /// empty runtime scene, suitable for appending world-owned free bodies.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -198,6 +240,11 @@ pub struct CompiledCreation {
     pub part_to_compound: Vec<(PartId, u32)>,
     /// Resolved drive rows, one per tree bearing, in coordinate-index order.
     pub coordinate_drives: Vec<CoordinateDrive>,
+    /// Meshes between compounds, each one no-slip row.
+    pub gear_links: Vec<CompiledGearLink>,
+    /// Sorted parts carrying teeth, a rack or a thread. Meshing parts never
+    /// touch, so across a mesh their colliders are exempt from contact.
+    pub meshing_parts: Vec<PartId>,
     /// Analytic description of every solid full cylinder, alongside the tangent
     /// boxes that represent it in `colliders`. A solver that can take a cylinder's
     /// contact exactly uses this instead of pattern-matching the box run.

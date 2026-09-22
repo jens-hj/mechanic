@@ -10,7 +10,7 @@ members = [
     "crates/xtask",
 ]
 resolver = "2"
-exclude = ["vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal"]
+exclude = ["vendor/mosaic-macros", "vendor/mosaic-text", "vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
@@ -28,6 +28,7 @@ rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+lyon_tessellation = "1.0"
 bevy_mosaic = { path = "crates/bevy_mosaic" }
 mechanic-core = { path = "crates/mechanic-core" }
 mechanic-gpu = { path = "crates/mechanic-gpu" }
@@ -83,3 +84,7 @@ codegen-units = 1
 [profile.profiling]
 inherits = "release"
 debug = 1
+
+[patch."ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git"]
+mosaic-text = { path = "vendor/mosaic-text" }
+mosaic-macros = { path = "vendor/mosaic-macros" }

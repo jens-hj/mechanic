@@ -1,8 +1,8 @@
 //! Why the graph refused a command.
 
 use crate::{
-    BearingId, DimensionLinkId, DriveLinkId, EngineKind, GearboxError, InputSeatLinkId, PartId,
-    RegionError, RegionId, RigidLinkId, SeatControllerLinkId, ShapeFeatureId, SolidError,
+    BearingId, DimensionLinkId, DriveLinkId, EngineKind, GearLinkId, GearboxError, InputSeatLinkId,
+    PartId, RegionError, RegionId, RigidLinkId, SeatControllerLinkId, ShapeFeatureId, SolidError,
     SolidOwner, WeldId,
 };
 use thiserror::Error;
@@ -10,6 +10,9 @@ use thiserror::Error;
 /// Validation failure. Failed commands leave the graph byte-for-byte equivalent.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum GraphError {
+    /// A physical input binding violates controller ownership or target rules.
+    #[error(transparent)]
+    InputBinding(#[from] crate::InputBindingError),
     /// A material layer does not fit its part.
     #[error(transparent)]
     Layer(#[from] crate::LayerError),
@@ -29,6 +32,31 @@ pub enum GraphError {
     /// Spirals and Shape features cannot be combined.
     #[error("part {0:?} cannot combine a spiral with Shape features")]
     SpiralOnFeaturedPart(PartId),
+    /// Teeth do not fit their part.
+    #[error(transparent)]
+    Gear(#[from] crate::GearError),
+    /// A teeth edit named the wrong kind of part, or changed more of it than
+    /// its teeth and the diameter they reach.
+    #[error("part {0:?} can only change its teeth and the diameter they reach")]
+    GearTargetChanged(PartId),
+    /// Teeth and Shape features cannot be combined.
+    #[error("part {0:?} cannot combine teeth with Shape features")]
+    GearOnFeaturedPart(PartId),
+    /// Two parts do not mesh.
+    #[error(transparent)]
+    GearLink(#[from] crate::GearLinkError),
+    /// A mesh selected the same part twice.
+    #[error("a mesh requires two distinct parts")]
+    SameGearLinkPart,
+    /// The two parts are already one rigid body.
+    #[error("parts welded together cannot mesh")]
+    GearLinkWithinBody,
+    /// The two parts already mesh.
+    #[error("those parts already mesh")]
+    AlreadyMeshed,
+    /// A gear-link handle is stale or unknown.
+    #[error("unknown or stale mesh handle {0:?}")]
+    MissingGearLink(GearLinkId),
     /// An appearance edit named a material band the part does not have.
     #[error("part {0:?} has no material band {1}")]
     MissingBand(PartId, u8),

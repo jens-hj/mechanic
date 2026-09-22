@@ -1,0 +1,5 @@
+error: expected at least one resize edge
+  --> tests/ui/empty_resize_edges.rs:11:23
+   |
+11 |         col resizable:() {}
+   |                       ^^

@@ -156,7 +156,7 @@ pub(super) fn resolve_coordinate_actuation(
     let mut modules = BTreeMap::<PartId, ModuleBudget>::new();
     let mut assignment_by_coordinate = BTreeMap::<u32, (PartId, PartId, ActuatorAssignment)>::new();
 
-    for (_, link) in graph.drive_links() {
+    for (link_id, link) in graph.drive_links() {
         let Some(&coordinate) = topology.bearing_coordinates.get(&link.bearing) else {
             continue;
         };
@@ -179,10 +179,10 @@ pub(super) fn resolve_coordinate_actuation(
             }
             budget
         });
-        if link.actuator.uses_electric() {
+        if graph.reserves_motor_port(link_id, EngineKind::Electric) {
             module.electric_coordinates.insert(coordinate);
         }
-        if link.actuator.uses_gas() {
+        if graph.reserves_motor_port(link_id, EngineKind::Gas) {
             module.gas_coordinates.insert(coordinate);
         }
         if link.actuator.uses_servo() {

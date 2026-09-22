@@ -7,7 +7,8 @@ use super::predicates::{
     profiles_overlap, simple_grid_face_on_ground, simple_grid_faces_touch,
 };
 use super::specs::{
-    BearingSpec, DriveLinkSpec, InputSeatLinkSpec, RigidLinkSpec, SeatControllerLinkSpec, WeldSpec,
+    BearingSpec, DriveLinkSpec, GearLinkSpec, InputSeatLinkSpec, RigidLinkSpec,
+    SeatControllerLinkSpec, WeldSpec,
 };
 use crate::geometry::{FaceGeometry, FaceProfile};
 use crate::{
@@ -205,6 +206,47 @@ impl ConstructionGraph {
             return Err(GraphError::SameRigidLinkPart);
         }
         Ok(())
+    }
+
+    /// Checks that two parts may mesh, returning the mesh they admit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError`] when a part is missing, the parts are one
+    /// rigid body, already mesh, or their teeth do not meet.
+    pub fn validate_gear_link(&self, spec: GearLinkSpec) -> Result<crate::GearMesh, GraphError> {
+        if spec.first == spec.second {
+            return Err(GraphError::SameGearLinkPart);
+        }
+        if self.gear_links.iter().any(|(_, existing)| {
+            existing.references(spec.first) && existing.references(spec.second)
+        }) {
+            return Err(GraphError::AlreadyMeshed);
+        }
+        self.gear_mesh(spec)
+    }
+
+    /// The mesh an existing or proposed link resolves to at the rest pose.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GraphError`] when a part is missing, the parts are one
+    /// rigid body, or their teeth do not meet.
+    pub fn gear_mesh(&self, spec: GearLinkSpec) -> Result<crate::GearMesh, GraphError> {
+        let end = |part| -> Result<crate::GearEnd, GraphError> {
+            let spec = self
+                .parts
+                .get(part)
+                .copied()
+                .ok_or(GraphError::MissingPart(part))?;
+            let frame = self.part_frame(part).ok_or(GraphError::MissingPart(part))?;
+            Ok(crate::GearEnd::of_part(spec, frame))
+        };
+        let (first, second) = (end(spec.first)?, end(spec.second)?);
+        if self.rigid_group(spec.first).contains(&spec.second) {
+            return Err(GraphError::GearLinkWithinBody);
+        }
+        Ok(crate::mesh(first, second)?)
     }
 
     pub(super) fn validate_drive_units(

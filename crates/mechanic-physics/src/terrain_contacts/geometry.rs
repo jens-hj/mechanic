@@ -5,11 +5,14 @@ use super::pose_cache::{CandidatePairs, PairScratch, PoseCache, overlaps};
 use super::{broadphase, sweep};
 use crate::PhysicsError;
 use bevy_math::DVec3;
-use mechanic_core::{CompiledCreation, ContactCylinder, ContactPolytope, MaterialProperties};
+use mechanic_core::{
+    CompiledCreation, ContactCylinder, ContactPolytope, MaterialProperties, PartId,
+};
 use std::sync::Mutex;
 
 pub(super) struct Collider {
     pub(super) body: usize,
+    pub(super) part: PartId,
     pub(super) center: DVec3,
     pub(super) material: MaterialProperties,
     // Circumscribing prism for a cylinder: every bound, sweep and body pair uses
@@ -68,8 +71,12 @@ pub struct MachineCollisionGeometry {
     pub(super) colliders: Vec<Collider>,
     pub(super) reach: Vec<(usize, f64)>,
     pub(super) motion_colliders: Vec<MotionCollider>,
-    // Sorted body pairs joined by a bearing, which never collide with each other.
+    // Sorted body pairs none of whose colliders may collide: joined by a
+    // bearing or a mesh, or built touching, and fitted throughout.
     pub(super) suppressed: Vec<[usize; 2]>,
+    // Sorted collider pairs of one mechanism that never collide: built
+    // touching, resting on a face shared as built, or meshing.
+    pub(super) fits: Vec<[usize; 2]>,
     pub(super) body_colliders: Vec<Vec<usize>>,
     pub(super) body_bounds: Vec<[DVec3; 2]>,
     pub(super) body_radii: Vec<f64>,
@@ -131,6 +138,7 @@ impl MachineCollisionGeometry {
                 .map_err(|_| PhysicsError::InvalidCollision)?;
             colliders.push(Collider {
                 body,
+                part: source.source_part,
                 center: cylinder
                     .map_or(source.local_center, |cylinder| cylinder.local_center)
                     .as_dvec3(),
@@ -238,6 +246,7 @@ impl MachineCollisionGeometry {
             reach,
             motion_colliders,
             suppressed,
+            fits: Vec::new(),
             body_colliders,
             body_bounds,
             body_radii,
@@ -253,10 +262,10 @@ impl MachineCollisionGeometry {
             sweep_scratch: Mutex::new(sweep::SweepScratch::default()),
             cache: Mutex::new(PoseCache::default()),
         };
-        let flush = geometry.built_flush(creation)?;
-        geometry.suppressed.extend(flush);
-        geometry.suppressed.sort_unstable();
-        geometry.suppressed.dedup();
+        // The fits are found over every pair, joined or not.
+        let joined = std::mem::take(&mut geometry.suppressed);
+        geometry.fits = geometry.built_fits(creation)?;
+        geometry.suppressed = geometry.fitted_throughout(&joined);
         let mut roots = vec![0_usize; assembly_count];
         for (body, parents) in creation.loop_topology.body_parents.iter().enumerate() {
             if parents.is_root && !creation.compounds[body].is_static {
@@ -292,14 +301,19 @@ impl MachineCollisionGeometry {
         Ok(geometry)
     }
 
-    // Bodies of one mechanism built touching each other, such as a wheel face
-    // flush against the mount two joints away. They slide on that shared face
-    // as one assembly: it carries no load, and a spinning face never clears a
-    // conservative sweep bounded by its full point speed. Compilation already
-    // suppresses each bearing's own pair; this adds every other pair of one
-    // mechanism that touches as built. Separate mechanisms always collide, and
-    // bodies of one mechanism built apart still collide when they meet.
-    pub(super) fn built_flush(
+    // Collider pairs of one mechanism that never collide. Two colliders built
+    // touching are a fit, and so is everything of their two bodies resting on
+    // the face they share: a wheel face flush against the mount two joints
+    // away slides on it as one assembly, carrying no load, and a spinning
+    // face never clears a conservative sweep bounded by its full point speed.
+    // The two parts a bearing joins are fits, its hardware sitting between
+    // them, and so are the meshing parts across a mesh, since magnetic gears
+    // never touch. Compilation joins each bearing's and mesh's body pair;
+    // this decides, collider by collider, what in those bodies may still meet.
+    // Separate mechanisms always collide, and colliders of one mechanism
+    // built apart still collide when they meet: a block standing beside a
+    // rack's travel stops it.
+    pub(super) fn built_fits(
         &self,
         creation: &CompiledCreation,
     ) -> Result<Vec<[usize; 2]>, PhysicsError> {
@@ -340,24 +354,109 @@ impl MachineCollisionGeometry {
                 ]
             })
             .collect::<Vec<_>>();
-        let mut flush = Vec::new();
+        let mut fits = Vec::new();
         for &[first, second] in self.candidate_pairs(&bounds).iter() {
-            let bodies = [self.colliders[first].body, self.colliders[second].body];
-            let pair = [bodies[0].min(bodies[1]), bodies[0].max(bodies[1])];
-            if mechanism[pair[0]] != mechanism[pair[1]]
-                || mechanism[pair[0]] == usize::MAX
-                || flush.contains(&pair)
-            {
+            let (a, b) = (self.colliders[first].body, self.colliders[second].body);
+            if mechanism[a] != mechanism[b] || mechanism[a] == usize::MAX {
                 continue;
             }
             let separation = shapes[first]
                 .convex_separation(&shapes[second])
                 .map_err(|_| PhysicsError::InvalidCollision)?;
-            if separation.separation <= BUILT_TOUCHING {
-                flush.push(pair);
+            if separation.separation > BUILT_TOUCHING {
+                continue;
+            }
+            fits.push([first.min(second), first.max(second)]);
+            if separation.separation < -BUILT_TOUCHING {
+                // Built overlapping, as meshing teeth are: no face is shared.
+                continue;
+            }
+            // The axis points from `second` towards `first`; the shared face
+            // is the top of `second`'s body along it and the bottom of
+            // `first`'s.
+            let axis = separation.axis;
+            let plane = shapes[second].extent(axis)[1];
+            let on_plane = |row: usize, side: usize| {
+                (shapes[row].extent(axis)[side] - plane).abs() <= BUILT_TOUCHING
+            };
+            for &above in self.body_colliders[a]
+                .iter()
+                .filter(|&&row| on_plane(row, 0))
+            {
+                for &below in self.body_colliders[b]
+                    .iter()
+                    .filter(|&&row| on_plane(row, 1))
+                {
+                    fits.push([above.min(below), above.max(below)]);
+                }
             }
         }
-        Ok(flush)
+        self.hardware_fits(creation, &mut fits)?;
+        fits.sort_unstable();
+        fits.dedup();
+        Ok(fits)
+    }
+
+    // The parts a bearing joins and the meshing parts across a mesh.
+    fn hardware_fits(
+        &self,
+        creation: &CompiledCreation,
+        fits: &mut Vec<[usize; 2]>,
+    ) -> Result<(), PhysicsError> {
+        for bearing in &creation.bearings {
+            let [Some(part_a), Some(part_b)] = bearing.parts else {
+                continue;
+            };
+            let [a, b] = [bearing.compound_a, bearing.compound_b].map(|body| body as usize);
+            if a.max(b) >= self.bodies {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            let of = |part: PartId| move |row: &&usize| self.colliders[**row].part == part;
+            for &i in self.body_colliders[a].iter().filter(of(part_a)) {
+                for &j in self.body_colliders[b].iter().filter(of(part_b)) {
+                    fits.push([i.min(j), i.max(j)]);
+                }
+            }
+        }
+        for link in &creation.gear_links {
+            let meshing = |row: &usize| {
+                let part = self.colliders[*row].part;
+                link.parts.contains(&part) || creation.meshing_parts.binary_search(&part).is_ok()
+            };
+            let [a, b] = link.sides.map(|side| side.compound as usize);
+            if a.max(b) >= self.bodies {
+                return Err(PhysicsError::InvalidCollision);
+            }
+            for &i in self.body_colliders[a].iter().filter(|row| meshing(row)) {
+                for &j in self.body_colliders[b].iter().filter(|row| meshing(row)) {
+                    fits.push([i.min(j), i.max(j)]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // The body pairs, among `joined` and those with any fit, every collider
+    // pair of which is a fit: nothing in them ever meets, so body traversal
+    // can drop them at once.
+    fn fitted_throughout(&self, joined: &[[usize; 2]]) -> Vec<[usize; 2]> {
+        let bodies_of = |[i, j]: [usize; 2]| {
+            let (a, b) = (self.colliders[i].body, self.colliders[j].body);
+            [a.min(b), a.max(b)]
+        };
+        let mut pairs = joined.to_vec();
+        pairs.extend(self.fits.iter().copied().map(bodies_of));
+        pairs.sort_unstable();
+        pairs.dedup();
+        pairs.retain(|&pair| {
+            let fitted = self
+                .fits
+                .iter()
+                .filter(|&&fit| bodies_of(fit) == pair)
+                .count();
+            fitted == self.body_colliders[pair[0]].len() * self.body_colliders[pair[1]].len()
+        });
+        pairs
     }
 
     // Transform only eight aggregate corners per body. The speed envelope is
@@ -433,8 +532,8 @@ impl MachineCollisionGeometry {
     }
 
     // Collider pairs that may touch within `bounds`, in sorted order: on
-    // different bodies, at least one moving, and not joined by a bearing.
-    // Body traversal rejects suppressed pairs before immutable collider trees.
+    // different bodies, at least one moving, and not a fit. Body traversal
+    // rejects fully fitted pairs before immutable collider trees.
     pub(super) fn candidate_pairs(&self, bounds: &[[DVec3; 2]]) -> CandidatePairs<'_> {
         self.candidate_pairs_groups(bounds, None)
     }
@@ -498,6 +597,7 @@ impl MachineCollisionGeometry {
                         refitted[body] = true;
                     }
                 }
+                let start = pairs.len();
                 *node_pair_tests += self.collider_trees[a].pairs(
                     &trees[a],
                     &self.collider_trees[b],
@@ -505,6 +605,19 @@ impl MachineCollisionGeometry {
                     pair_stack,
                     pairs,
                 );
+                // Joined bodies still descend, since the rest of them may
+                // meet; only their fits are dropped.
+                if !self.fits.is_empty() {
+                    let mut kept = start;
+                    for index in start..pairs.len() {
+                        let [i, j] = pairs[index];
+                        if self.fits.binary_search(&[i.min(j), i.max(j)]).is_err() {
+                            pairs.swap(kept, index);
+                            kept += 1;
+                        }
+                    }
+                    pairs.truncate(kept);
+                }
             }
         }
         pairs.sort_unstable();

@@ -1,0 +1,7 @@
+error: a `#[component]` function must return `Element`
+ --> tests/ui/component_returns_element.rs:5:1
+  |
+5 | #[component]
+  | ^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `component` (in Nightly builds, run with -Z macro-backtrace for more info)

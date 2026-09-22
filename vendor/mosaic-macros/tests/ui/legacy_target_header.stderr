@@ -1,0 +1,5 @@
+error: view! takes no target header — it builds and returns its single top-level node. Drop the `…;`: return the node from a `fn(..) -> Element`, embed it as a node (`foo(x)`), or mount it with `ui.root().adopt(&view! { … })`.
+  --> tests/ui/legacy_target_header.rs:10:9
+   |
+10 |         root;
+   |         ^^^^

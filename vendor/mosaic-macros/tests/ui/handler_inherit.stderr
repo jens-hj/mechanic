@@ -1,0 +1,5 @@
+error: handler `@click` is not inheritable
+  --> tests/ui/handler_inherit.rs:12:13
+   |
+12 |             button @click:inherit "Save"
+   |             ^^^^^^

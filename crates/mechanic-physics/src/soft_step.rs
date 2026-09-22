@@ -243,6 +243,11 @@ pub struct SoftStepDiagnostics {
     pub closure_position_error: f64,
     /// Largest misalignment of a loop-closing bearing after the tick, in radians.
     pub closure_angle_error: f64,
+    /// Meshes between bodies, each one no-slip row.
+    pub meshes: usize,
+    /// Largest pitch-surface travel any mesh's first side has run ahead of its
+    /// second, in metres. A phased mesh keeps this near zero.
+    pub mesh_slip: f64,
 }
 
 impl SoftStepDiagnostics {
@@ -335,6 +340,11 @@ pub struct CpuMachine {
     closure_passive: Vec<PassiveForce>,
     /// Loop-closure impulses carried into the next tick.
     closure_warm: Vec<[f64; 8]>,
+    /// Mesh impulses carried into the next tick, in `gear_links` order.
+    mesh_warm: Vec<f64>,
+    /// How far each mesh's first side has run ahead of its second, in metres
+    /// of pitch-surface travel. The rows bias it back so teeth stay phased.
+    mesh_slip: Vec<f64>,
     /// Bodies held at their published pose, by body.
     held: Vec<bool>,
     /// Generalized velocity rows owned by held bodies.
@@ -385,6 +395,8 @@ impl CpuMachine {
             held_rows: vec![false; state.velocities.len()],
             closure_warm: vec![[0.0; 8]; closure_passive.len()],
             closure_passive,
+            mesh_warm: vec![0.0; creation.gear_links.len()],
+            mesh_slip: vec![0.0; creation.gear_links.len()],
             creation,
             passive,
             drives,
@@ -483,6 +495,7 @@ impl CpuMachine {
         }
         if held != self.held.as_slice() {
             self.closure_warm.fill([0.0; 8]);
+            self.mesh_warm.fill(0.0);
         }
         self.held = held.to_vec();
         self.held_rows = rows;
@@ -625,8 +638,14 @@ impl CpuMachine {
             drives: &self.drives,
             closure_passive: &self.closure_passive,
             held: &self.held_rows,
+            mesh_slip: &self.mesh_slip,
         };
-        let mut joints = JointImpulses::new(self.drives.len(), self.closure_warm.clone());
+        let mut joints = JointImpulses::new(
+            self.drives.len(),
+            self.closure_warm.clone(),
+            self.mesh_warm.clone(),
+        );
+        let mut mesh_slip = self.mesh_slip.clone();
         let dt = TICK_SECONDS / f64::from(settings.substeps);
         let mut last = None;
         let group_count = terrain.map_or(0, |t| t.geometry.assembly_count);
@@ -838,6 +857,9 @@ impl CpuMachine {
                             &mut self.load_order,
                         );
                     }
+                    for (slip, moved) in mesh_slip.iter_mut().zip(outcome.mesh_moved) {
+                        *slip += moved;
+                    }
                     last = Some(outcome.point_count);
                 }
                 Ok(_) | Err(_) => {
@@ -889,6 +911,17 @@ impl CpuMachine {
         } else {
             joints.closures
         };
+        if diagnostics.degraded {
+            self.mesh_warm.fill(0.0);
+        } else {
+            self.mesh_warm = joints.meshes;
+            self.mesh_slip = mesh_slip;
+        }
+        diagnostics.meshes = self.mesh_slip.len();
+        diagnostics.mesh_slip = self
+            .mesh_slip
+            .iter()
+            .fold(0.0_f64, |worst, slip| worst.max(slip.abs()));
 
         if diagnostics.rolled_back {
             self.terrain_loads.clear();

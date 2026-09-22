@@ -1,0 +1,5 @@
+error: duplicate `hover` state block
+  --> tests/ui/state_duplicate.rs:14:13
+   |
+14 |             hover { fill:(Color::WHITE) } {}
+   |             ^^^^^

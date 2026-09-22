@@ -484,6 +484,8 @@ pub(crate) fn replacement_simulation_with_transfer(
         cpu,
         creation: Some(creation),
         published_graph: graph,
+        controller_values: None,
+        controller_overrides: std::collections::BTreeMap::default(),
         scheduler: FixedStepScheduler::new(),
         next_tick,
         tick_backlog: 0,

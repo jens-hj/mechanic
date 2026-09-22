@@ -139,6 +139,19 @@ More iterations didn't change the car. 8 substeps made the landing deeper. The
 captured ledge blocks rock slightly (≤0.2 rad/s) whatever the settings, so the
 defaults stay at 4 substeps × 1 iteration.
 
+### Mesh rows
+
+A mesh between two toothed parts ([gears](gears.md)) is one soft bilateral row,
+`S(a) − S(b) = 0`, where a side's surface speed is the velocity of its pitch
+point along the common tangent plus, for a worm or screw, the thread advance
+times its spin about the thread axis (`gear_mesh.rs`). It is built from the same
+point and angular Jacobians as a closure, at every substep's pose, solved after
+the closures with the joint softness, warm-started across ticks, and dropped
+when it cancels to noise inside one body. Each mesh integrates the slip its row
+leaves and feeds it back as the row's position error, so teeth stay phased;
+`mesh_slip` reports the worst. The `gear-train` bench holds eight meshes at
+0.08 ms per tick with at most 5 mm of slip over ten seconds.
+
 ### Rolling cylinders
 
 A solid full cylinder compiles to sixteen tangent boxes. Collided as that
@@ -287,7 +300,8 @@ Known limits:
 - closures are soft, so a loaded loop stretches by a few millimetres; a dropped
   four-bar opened up to about 5 mm on landing
 - drive budgets use the tree's axis inertia, so a driven bearing inside a loop
-  may be stronger or weaker than on the GPU
+  may be stronger or weaker than on the GPU, and a motor on a gear feels only
+  that gear rather than the train it drives
 - contact normals stay fixed between queries
 - two colliders that pass completely through each other within one substep are
   not caught; terrain is, because a collider below a surface stays buried in it

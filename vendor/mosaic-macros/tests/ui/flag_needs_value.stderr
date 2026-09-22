@@ -1,0 +1,5 @@
+error: attribute `fill` needs a value — write `fill:(…)`
+  --> tests/ui/flag_needs_value.rs:11:13
+   |
+11 |         row fill {}
+   |             ^^^^

@@ -11,6 +11,7 @@
 mod decode;
 mod doc;
 mod encode;
+mod inputs;
 mod transform;
 
 use decode::{
@@ -20,11 +21,12 @@ use decode::{
 pub use doc::{
     BearingDoc, BearingSocketDoc, ConstructionFrameDoc, DriveDwellDoc, DriveLimitsDoc,
     DriveLinkDoc, DriveProgramDoc, DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc,
-    FaceRefDoc, GearboxConfigDoc, InputSeatLinkDoc, MaterialLayerDoc, PartDoc, PoseDoc, RegionDoc,
-    RigidLinkDoc, SeatControllerLinkDoc, ShapeFeatureDoc, SolidOwnerDoc, SpiralDoc, SpiralTaperDoc,
-    TopologyKeyDoc, TopologySourceDoc, WeldDoc,
+    FaceRefDoc, GearDoc, GearLinkDoc, GearboxConfigDoc, InputSeatLinkDoc, MaterialLayerDoc,
+    PartDoc, PoseDoc, RackDoc, RegionDoc, RigidLinkDoc, SeatControllerLinkDoc, ShapeFeatureDoc,
+    SolidOwnerDoc, SpiralDoc, SpiralTaperDoc, TopologyKeyDoc, TopologySourceDoc, WeldDoc,
 };
 use encode::{edge_chain_doc, face_doc, limits_doc, part_doc, program_doc};
+pub use inputs::{AnalogMappingDoc, InputConfigurationDoc, NumericParameterDoc};
 use transform::{rotate_y_i32, rotate_y_vec3, transform_region_doc};
 
 use bevy_math::{IVec3, Quat, Vec3};
@@ -34,14 +36,15 @@ use thiserror::Error;
 use crate::{
     BearingDimensionError, BearingDimensions, BearingSpec, BuildCommand, BuildOutcome, BuildPose,
     ConstructionGraph, CylinderDimensionError, DimensionError, DimensionLinkId, DriveLimitsError,
-    DriveLinkSpec, DriveName, DriveProgramError, EngineKind, FaceRef, GraphError, GridRotation,
-    InputSeatLinkSpec, PartId, PipeBendDimensionError, PipeJunctionError, RigidLinkSpec,
-    SeatControllerLinkSpec, ShapeFeature, ShapeFeatureId, ShapeRegion, TransmissionSpec, WeldSpec,
+    DriveLinkSpec, DriveName, DriveProgramError, EngineKind, FaceRef, GearLinkSpec, GraphError,
+    GridRotation, InputSeatLinkSpec, PartId, PipeBendDimensionError, PipeJunctionError,
+    RigidLinkSpec, SeatControllerLinkSpec, ShapeFeature, ShapeFeatureId, ShapeRegion,
+    TransmissionSpec, WeldSpec,
 };
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 17;
+pub const CREATION_FORMAT_VERSION: u32 = 18;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
 ///
@@ -94,6 +97,9 @@ pub enum CreationError {
     /// A drive wire referenced a bearing the file does not define.
     #[error("creation references bearing {0}, which the file does not define")]
     MissingBearing(u32),
+    /// An input referenced an absent drive row.
+    #[error("creation references missing drive link {0}")]
+    MissingDriveLink(u32),
     /// A feature target referenced a Shape region the file does not define.
     #[error("creation references region {0}, which the file does not define")]
     MissingRegion(u32),
@@ -118,6 +124,9 @@ pub enum CreationError {
     /// A saved spiral does not fit its cylinder.
     #[error(transparent)]
     Spiral(#[from] crate::SpiralError),
+    /// Saved teeth do not fit their part.
+    #[error(transparent)]
+    Gear(#[from] crate::GearError),
     /// A pipe-bend dimension was out of range.
     #[error(transparent)]
     PipeBendDimension(#[from] PipeBendDimensionError),
@@ -167,6 +176,9 @@ pub struct CreationDocument {
     /// Non-geometric rigid memberships.
     #[serde(default)]
     pub rigid_links: Vec<RigidLinkDoc>,
+    /// Meshes between toothed parts.
+    #[serde(default)]
+    pub gear_links: Vec<GearLinkDoc>,
     /// Bearings, in the order drive wires index them by.
     #[serde(default)]
     pub bearings: Vec<BearingDoc>,
@@ -176,6 +188,8 @@ pub struct CreationDocument {
     /// Logical Input-to-Seat links.
     #[serde(default)]
     pub input_seat_links: Vec<InputSeatLinkDoc>,
+    /// Physical input links, keys, names, and dial mappings.
+    pub physical_inputs: Vec<InputConfigurationDoc>,
     /// Logical Seat-to-Controller links.
     #[serde(default)]
     pub seat_controller_links: Vec<SeatControllerLinkDoc>,
@@ -276,6 +290,10 @@ impl CreationDocument {
             add_part(&mut link.first)?;
             add_part(&mut link.second)?;
         }
+        for link in &mut other.gear_links {
+            add_part(&mut link.first)?;
+            add_part(&mut link.second)?;
+        }
         for bearing in &mut other.bearings {
             add_face(&mut bearing.source)?;
             if let Some(target) = &mut bearing.target {
@@ -289,6 +307,11 @@ impl CreationDocument {
                 .checked_add(bearing_offset)
                 .ok_or(CreationError::TooManyRows)?;
         }
+        inputs::offset_input_docs(
+            &mut other.physical_inputs,
+            part_offset,
+            u32::try_from(self.drive_links.len()).map_err(|_| CreationError::TooManyRows)?,
+        )?;
         for link in &mut other.input_seat_links {
             add_part(&mut link.input)?;
             add_part(&mut link.seat)?;
@@ -326,9 +349,11 @@ impl CreationDocument {
         self.parts.append(&mut other.parts);
         self.welds.append(&mut other.welds);
         self.rigid_links.append(&mut other.rigid_links);
+        self.gear_links.append(&mut other.gear_links);
         self.bearings.append(&mut other.bearings);
         self.drive_links.append(&mut other.drive_links);
         self.input_seat_links.append(&mut other.input_seat_links);
+        self.physical_inputs.append(&mut other.physical_inputs);
         self.seat_controller_links
             .append(&mut other.seat_controller_links);
         self.gearbox_configs.append(&mut other.gearbox_configs);
@@ -354,6 +379,8 @@ impl CreationDocument {
                 | PartDoc::Transmission { pose, .. }
                 | PartDoc::Servo { pose }
                 | PartDoc::Seat { pose }
+                | PartDoc::Dial { pose, .. }
+                | PartDoc::Button { pose, .. }
                 | PartDoc::Input { pose }
                 | PartDoc::DimensionLink { pose, .. } => pose,
             };
@@ -505,6 +532,13 @@ impl CreationDocument {
                     second: part(link.second),
                 })
                 .collect(),
+            gear_links: graph
+                .gear_links()
+                .map(|(_, link)| GearLinkDoc {
+                    first: part(link.first),
+                    second: part(link.second),
+                })
+                .collect(),
             bearings: graph
                 .bearings()
                 .map(|(_, bearing)| BearingDoc {
@@ -532,6 +566,7 @@ impl CreationDocument {
                     name: link.name.to_string(),
                 })
                 .collect(),
+            physical_inputs: inputs::input_docs(&graph, &part),
             input_seat_links: graph
                 .input_seat_links()
                 .map(|(_, link)| InputSeatLinkDoc {
@@ -749,6 +784,12 @@ impl CreationDocument {
                 second: resolve_part(link.second, &part_ids)?,
             }));
         }
+        for link in &self.gear_links {
+            initial_connections.push(BuildCommand::AddGearLink(GearLinkSpec {
+                first: resolve_part(link.first, &part_ids)?,
+                second: resolve_part(link.second, &part_ids)?,
+            }));
+        }
         graph.apply_batch(initial_connections)?;
         for (index, document) in self.regions.iter().enumerate() {
             graph.set_edit_frame(frame_ids[self.region_frames[index] as usize])?;
@@ -934,6 +975,7 @@ impl CreationDocument {
             .collect::<Result<Vec<_>, CreationError>>()?;
 
         graph.set_edit_frame(crate::ConstructionFrameId::default())?;
+        inputs::apply_input_docs(&mut graph, &self.physical_inputs, &part_ids)?;
         Ok(LoadedCreation {
             name: self.name,
             graph,

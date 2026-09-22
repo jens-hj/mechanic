@@ -164,12 +164,16 @@ pub(super) fn calculate_mass_properties<'a>(
     }
 
     let determinant = inertia.determinant();
+    // The determinant scales with the cube of inertia; an absolute epsilon
+    // rejects small, well-conditioned physical controls. Validate the inverse.
+    let inverse_inertia = inertia.inverse();
     if !total_mass.is_finite()
         || total_mass <= 0.0
         || !center_of_mass.is_finite()
         || !inertia.is_finite()
         || !determinant.is_finite()
-        || determinant <= f32::EPSILON
+        || determinant <= 0.0
+        || !inverse_inertia.is_finite()
     {
         return Err(TopologyError::InvalidMassProperties {
             part: identifying_part,
@@ -184,7 +188,7 @@ pub(super) fn calculate_mass_properties<'a>(
         inverse_inertia: if is_static {
             Mat3::ZERO
         } else {
-            inertia.inverse()
+            inverse_inertia
         },
     })
 }
@@ -280,6 +284,12 @@ pub(super) fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
             cuboid_mass_properties(servo.cuboid(), MACHINE_PART_DENSITY_KG_M3)
         }
         PartSpec::Seat(seat) => cuboid_mass_properties(seat.cuboid(), MACHINE_PART_DENSITY_KG_M3),
+        PartSpec::Dial(spec) => {
+            envelope_mass_properties(spec.size_meters(), MACHINE_PART_DENSITY_KG_M3)
+        }
+        PartSpec::Button(spec) => {
+            envelope_mass_properties(spec.size_meters(), MACHINE_PART_DENSITY_KG_M3)
+        }
         PartSpec::Input(input) => {
             cuboid_mass_properties(input.cuboid(), MACHINE_PART_DENSITY_KG_M3)
         }
@@ -452,7 +462,10 @@ pub(super) fn shifted_inertia(offset: Vec3, mass: f32) -> Mat3 {
 }
 
 pub(super) fn cuboid_mass_properties(spec: CuboidSpec, density_kg_m3: f32) -> PartMassProperties {
-    let size = spec.size_meters();
+    envelope_mass_properties(spec.size_meters(), density_kg_m3)
+}
+
+fn envelope_mass_properties(size: Vec3, density_kg_m3: f32) -> PartMassProperties {
     let mass = density_kg_m3 * size.x * size.y * size.z;
     PartMassProperties {
         mass,

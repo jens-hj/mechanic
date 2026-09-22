@@ -261,6 +261,16 @@ impl ContactPolytope {
         ))
     }
 
+    /// The lowest and highest projection of the vertices onto `axis`.
+    pub fn extent(&self, axis: DVec3) -> [f64; 2] {
+        self.vertices
+            .iter()
+            .fold([f64::INFINITY, f64::NEG_INFINITY], |[lo, hi], &v| {
+                let d = v.dot(axis);
+                [lo.min(d), hi.max(d)]
+            })
+    }
+
     /// Inclusive minimum/maximum of the exact transformed vertices.
     pub fn bounds(&self) -> [DVec3; 2] {
         self.vertices.iter().fold(

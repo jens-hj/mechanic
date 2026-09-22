@@ -1,0 +1,5 @@
+error: animatable icon tokens are not yet supported — declare `Svg` for now
+ --> tests/ui/scheme_reserved_animatable.rs:5:16
+  |
+5 |         arrow: Animatable<Svg>,
+  |                ^^^^^^^^^^

@@ -467,11 +467,14 @@ pub(crate) fn update_hover(
             | Tool::Transmission
             | Tool::Servo
             | Tool::Seat
+            | Tool::Dial(_)
+            | Tool::Button(_)
             | Tool::Input
             | Tool::DimensionLink
             | Tool::Shape
             | Tool::Layer
             | Tool::Spiral
+            | Tool::Gear
             | Tool::Chroma => raycast_surface(None),
         }
     };
@@ -932,6 +935,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
     state.pipe_branch_preview = None;
     state.layer_preview = None;
     state.spiral.preview = None;
+    state.gears.preview = None;
     state.bearing_preview_anchor = None;
     state.attachment_bearing = None;
     state.linear_attachment = None;
@@ -1399,6 +1403,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
         (Tool::Spiral, _) => state
             .hovered
             .and_then(|hit| crate::editor::spiral::hover(graph, state, hit)),
+        (Tool::Gear, _) => crate::editor::gears::hover(graph, state, material, appearance),
         (Tool::Transmission, _) => state.hovered.and_then(|hit| {
             match transmission_candidate_from_hit_in_bounds(graph, hit, state.placement_bounds) {
                 Ok((_, candidate)) => {
@@ -1530,7 +1535,9 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
         // Shaping edits the grid rather than placing anything, so like these
         // it has no placement ghost of its own.
         (
-            Tool::Weld
+            Tool::Dial(_)
+            | Tool::Button(_)
+            | Tool::Weld
             | Tool::Hammer
             | Tool::Connector
             | Tool::Shape

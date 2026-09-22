@@ -1,0 +1,5 @@
+error: tokens `text.size_title` and `text_size.title` flatten to the same `theme!` field name `text_size_title`; rename one
+  --> tests/ui/scheme_flat_name_collision.rs:12:13
+   |
+12 |             title: Scalar,
+   |             ^^^^^

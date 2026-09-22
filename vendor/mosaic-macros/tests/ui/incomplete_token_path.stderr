@@ -1,0 +1,11 @@
+error: incomplete scheme token path `font.` — a `.` must be followed by the token it names, as in `text.fg`
+  --> tests/ui/incomplete_token_path.rs:17:28
+   |
+17 |             text font-size:font. font-weight:700 "hi"
+   |                            ^^^^^
+
+error: incomplete scheme token path `font.` — a `.` must be followed by the token it names, as in `text.fg`
+  --> tests/ui/incomplete_token_path.rs:18:28
+   |
+18 |             text font-size:font. "trailing"
+   |                            ^^^^^

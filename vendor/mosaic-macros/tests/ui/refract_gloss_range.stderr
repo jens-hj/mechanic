@@ -1,0 +1,5 @@
+error: gloss must be between 0 and 1
+  --> tests/ui/refract_gloss_range.rs:11:47
+   |
+11 |         row filter:refract(bezel: 12px gloss: 1.5) {}
+   |                                               ^^^

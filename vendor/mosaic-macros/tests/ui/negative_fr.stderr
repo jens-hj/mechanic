@@ -1,0 +1,5 @@
+error: `fr` must be non-negative
+  --> tests/ui/negative_fr.rs:10:20
+   |
+10 |         row width:-1fr {}
+   |                    ^^^

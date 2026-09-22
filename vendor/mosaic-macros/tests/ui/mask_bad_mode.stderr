@@ -1,0 +1,5 @@
+error: mask mode must be `alpha` or `luminance`
+  --> tests/ui/mask_bad_mode.rs:14:44
+   |
+14 |         row mask:(source:Color::WHITE mode:wat) {}
+   |                                            ^^^

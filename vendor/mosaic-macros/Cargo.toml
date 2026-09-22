@@ -1,0 +1,29 @@
+[package]
+name = "mosaic-macros"
+description = "Optional `view!{}` proc-macro sugar over Mosaic's builder API."
+version = "0.28.1"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+authors = ["Jens <jens4173@gmail.com>"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+mosaic-syntax = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+proc-macro2 = "1.0.106"
+quote = "1.0.46"
+syn = { version = "2.0.118", features = ["full", "visit", "visit-mut"] }
+proc-macro-crate = "3.5.0"
+
+[dev-dependencies]
+trybuild = "1.0.117"
+# The trybuild fixtures are realistic view! call sites — the diagnostics
+# contract includes what the *partial* expansion does around an error, so the
+# fixtures build against the real widget stack.
+mosaic-core = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-layout = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-render = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-text = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-widgets = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }

@@ -1,0 +1,5 @@
+error: unknown node `tex` — did you mean `text`?
+  --> tests/ui/misspelled_node.rs:12:13
+   |
+12 |             tex "hello"
+   |             ^^^

@@ -1,0 +1,43 @@
+error: `font-size` is inherited text styling and cannot be state-scoped
+  --> tests/ui/state_text_attr.rs:14:67
+   |
+14 |             text font-size:14px font-color:(Color::WHITE) hover { font-size:20px } "hi"
+   |                                                                   ^^^^
+
+error[E0433]: failed to resolve: use of undeclared type `IntoFontLength`
+  --> tests/ui/state_text_attr.rs:12:17
+   |
+12 |       root.adopt(&view! {
+   |  _________________^
+13 | |         el {
+14 | |             text font-size:14px font-color:(Color::WHITE) hover { font-size:20px } "hi"
+15 | |         }
+16 | |     });
+   | |_____^ use of undeclared type `IntoFontLength`
+   |
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider importing this trait
+   |
+1  + use mosaic_core::IntoFontLength;
+   |
+
+error[E0433]: failed to resolve: use of undeclared type `Length`
+  --> tests/ui/state_text_attr.rs:14:28
+   |
+14 |             text font-size:14px font-color:(Color::WHITE) hover { font-size:20px } "hi"
+   |                            ^^^^ use of undeclared type `Length`
+   |
+help: consider importing one of these structs
+   |
+1  + use mosaic_core::Length;
+   |
+1  + use mosaic_layout::Length;
+   |
+
+warning: unused import: `text`
+ --> tests/ui/state_text_attr.rs:6:26
+  |
+6 | use mosaic_widgets::{Ui, text};
+  |                          ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

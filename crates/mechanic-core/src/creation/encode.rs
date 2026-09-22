@@ -95,6 +95,11 @@ pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> Part
                 material: core.material,
                 appearance: core.appearance,
                 layers: layer_docs(cuboid.layers()),
+                rack: cuboid.rack().map(|rack| super::doc::RackDoc {
+                    module_ticks: rack.module_ticks(),
+                    face: rack.face(),
+                    along: rack.along(),
+                }),
             }
         }
         PartSpec::Cylinder(cylinder) => {
@@ -109,6 +114,11 @@ pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> Part
                 appearance: core.appearance,
                 layers: layer_docs(cylinder.layers()),
                 spiral: cylinder.spiral().map(spiral_doc),
+                gear: cylinder.gear().map(|gear| super::doc::GearDoc {
+                    module_ticks: gear.module_ticks(),
+                    teeth: gear.teeth(),
+                    kind: gear.kind(),
+                }),
             }
         }
         PartSpec::PipeBend(bend) => PartDoc::PipeBend {
@@ -143,6 +153,14 @@ pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> Part
         },
         PartSpec::Seat(seat) => PartDoc::Seat {
             pose: seat.pose.into(),
+        },
+        PartSpec::Dial(spec) => PartDoc::Dial {
+            size: spec.size,
+            pose: spec.pose.into(),
+        },
+        PartSpec::Button(spec) => PartDoc::Button {
+            size: spec.size,
+            pose: spec.pose.into(),
         },
         PartSpec::Input(input) => PartDoc::Input {
             pose: input.pose.into(),

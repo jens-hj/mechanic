@@ -1,0 +1,5 @@
+error: unknown token kind `Colour` — expected one of `Paint`, `Color`, `Gradient`, `Mesh`, `Length`, `Scalar`, `Svg`, `Element`, `Dimension`, `SizeBound`, `Edges`, `Align`, `Justify`, `Stroke`, `Shadow`, `Light`, `PointLight`, `DirectionalLight`, `SpotLight`, `Filter`, `Refraction`, `Mask`, `Translate`, `FocusStyle`, `BackdropSample`, `FontFamily`, `FontStyle`, `FontStretch`, `TextWrap`, `TextTransform`, `Bool`, `Transition`, `Drag`, `Resize`, `Reorder`, `Effect`, `Fit`, `IconStroke`
+ --> tests/ui/scheme_bad_kind.rs:5:13
+  |
+5 |         bg: Colour,
+  |             ^^^^^^

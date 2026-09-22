@@ -1,0 +1,5 @@
+error: `#[exposed]` only works on a top-level `let` of the component body — the handle is built from the body's tail, where nested bindings are out of scope
+  --> tests/ui/component_exposed_let_nested.rs:10:9
+   |
+10 |         #[exposed]
+   |         ^

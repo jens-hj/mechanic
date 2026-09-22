@@ -106,6 +106,7 @@ pub(crate) fn combined_simulation_mesh_filtered(
 ) -> Mesh {
     let pipe_texture_offsets = pipe_texture_offsets(graph);
     let welded_pipe_ends = welded_pipe_ends(graph);
+    let tooth_phases = mechanic_core::gear_phases(graph);
     let parts = creation
         .part_to_compound
         .iter()
@@ -218,7 +219,9 @@ pub(crate) fn combined_simulation_mesh_filtered(
             append_textured_part(
                 spec,
                 placement.point(graph.part_position(part).expect("part exists")),
-                placement.rotation * graph.part_rotation(part).expect("part exists"),
+                placement.rotation
+                    * graph.part_rotation(part).expect("part exists")
+                    * super::gear::tooth_phase(&tooth_phases, part),
                 placement.with_frame(frame),
                 texture_offset,
                 pipe_end_faces(part, &welded_pipe_ends),

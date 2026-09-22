@@ -1,5 +1,5 @@
 (
-    version: 17,
+    version: 18,
     name: "double wishbone 2",
     parts: [
         Cuboid(
@@ -4118,4 +4118,5 @@
             inner_diameter: 0.0,
         ),
     ],
+    physical_inputs: [],
 )

@@ -63,6 +63,10 @@ pub(crate) struct Draft {
 pub(crate) struct Handles {
     /// What the graph says, refreshed whenever it changes.
     pub(crate) model: State<PanelModel>,
+    pub(crate) dials: State<crate::ui::dials::Model>,
+    pub(crate) dial_minimum: State<String>,
+    pub(crate) dial_maximum: State<String>,
+    pub(crate) dial_intents: crate::ui::dials::Queue,
     /// The lane the pointer last landed in.
     pub(crate) selected: State<Option<DriveLinkId>>,
     /// The lane whose joint is being pointed out in the world.
@@ -144,7 +148,13 @@ impl Handles {
             })
         });
         if let Some(ratios) = ratios {
-            self.gearbox(kind, GearboxEdit::Ratios(ratios));
+            self.gearbox(
+                kind,
+                GearboxEdit::Ratio {
+                    index,
+                    value: ratios[index],
+                },
+            );
         }
     }
 
@@ -228,6 +238,7 @@ fn gearbox_bindings_enabled(engine: &EngineLaneModel) -> bool {
 /// overlay's root is the one element allowed to do that.
 #[component]
 pub(crate) fn ControlPanel(handles: Handles) -> Element {
+    let dial_assignments = crate::ui::dials::panel(&handles);
     let header = header(&handles);
     let engines = engine_lanes(&handles);
     let lanes = lanes(&handles);
@@ -243,6 +254,7 @@ pub(crate) fn ControlPanel(handles: Handles) -> Element {
                 text #mechanic.caption font-color:accent.danger pad:(left:14px right:14px top:8px bottom:0px)
                     "KEY CONFLICT · Vehicle and gameplay actions may fire together"
             }
+            (dial_assignments)
             (engines)
             (lanes)
         }
@@ -579,6 +591,7 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
     let left = handles.clone();
     let right = handles.clone();
     let dragging = handles.clone();
+    let assignment = gear_assignment(handles, kind, mechanic_core::GearParameter::ReverseCount);
     let model = handles.model;
     let bounds = State::new(Rect::default());
     let divider = move || {
@@ -602,13 +615,16 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
         move || Dimension::Px(track_width() * f32::from(divider()) / count() as f32);
     let marker = move || track_width() * f32::from(divider()) / count() as f32 - 1.5;
     view! {
-        row height:42px align:center gap:10px pad:(horizontal:10px vertical:0px) radius:9px exponent:1
-            fill:chip.fill stroke:(width:1px color:chip.edge) {
-            col width:126px shrink:0 height:min-content gap:2px {
+        col width:fill height:min-content gap:4px {
+            row width:fill height:min-content align:center gap:8px {
                 text font-family:typeface.display font-size:9px font-weight:700 letter-spacing:0.8px
                     font-color:ink.muted "DIRECTION SPLIT"
                 text font-size:9px font-color:ink.faint "drag to assign gears"
+                text font-size:9px font-color:ink.muted "Reverse"
+                (assignment)
             }
+            row width:fill height:42px align:center gap:10px pad:(horizontal:10px vertical:0px) radius:9px exponent:1
+                fill:chip.fill stroke:(width:1px color:chip.edge) {
             col width:32px height:30px align:center justify:center radius:7px exponent:1
                 stroke:(width:1px color:chip.edge) font-color:accent.angle
                 @click:{ left.move_divider(kind, -1); }
@@ -647,6 +663,7 @@ fn gas_divider_controls(handles: &Handles, kind: EngineKind) -> Element {
                 @click:{ right.move_divider(kind, 1); }
                 hover { fill:wash.angle stroke:(width:1px color:accent.angle) } {
                 text font-size:11px font-weight:700 "R+"
+            }
             }
         }
     }
@@ -759,6 +776,11 @@ fn ratio_controls(handles: &Handles, kind: EngineKind, index: usize) -> Element 
     }
     let decrease = handles.clone();
     let increase = handles.clone();
+    let assignment = gear_assignment(
+        handles,
+        kind,
+        mechanic_core::GearParameter::Ratio(u8::try_from(index).unwrap_or(u8::MAX)),
+    );
     view! {
         row height:20px gap:4px {
             col width:1fr align:center justify:center radius:5px exponent:1 fill:chip.fill
@@ -773,8 +795,25 @@ fn ratio_controls(handles: &Handles, kind: EngineKind, index: usize) -> Element 
                 hover { fill:reticle.fill_over stroke:(width:1px color:chip.edge-over) } {
                 text font-size:12px "+"
             }
+            (assignment)
         }
     }
+}
+
+/// Resolves the controller from the plain numeric snapshot, including after a switch.
+fn gear_assignment(
+    handles: &Handles,
+    kind: EngineKind,
+    parameter: mechanic_core::GearParameter,
+) -> Element {
+    let model = handles.dials;
+    crate::ui::dials::badge(handles, move || {
+        model.with(|model| {
+            model.fields.iter().flat_map(|field| &field.draft.targets).copied().find(|target| {
+                matches!(target, mechanic_core::NumericParameter::Gear { kind: found_kind, parameter: found_parameter, .. } if *found_kind == kind && *found_parameter == parameter)
+            })
+        })
+    })
 }
 
 /// The title bar: what this is, how much of it there is, and what its colours
@@ -1335,6 +1374,7 @@ fn wire_label(handles: &Handles, id: DriveLinkId, rank: usize, release: bool) ->
     let handles = handles.clone();
     let scrubbing = handles.clone();
     let model = handles.model;
+    let assignment_handles = handles.clone();
     let typing: State<bool> = State::new(false);
     let buffer: State<String> = State::new(String::new());
     // What the dwell read when the drag started. The world answers a scrub
@@ -1426,8 +1466,19 @@ fn wire_label(handles: &Handles, id: DriveLinkId, rank: usize, release: bool) ->
                     wire_text(model, id, rank, release)
                 }
             }
+            if !release { (dwell_assignment(&assignment_handles, id, rank)) }
         }
     }
+}
+
+fn dwell_assignment(handles: &Handles, id: DriveLinkId, rank: usize) -> Element {
+    let model = handles.model;
+    crate::ui::dials::badge(handles, move || {
+        Some(mechanic_core::NumericParameter::Drive {
+            link: id,
+            parameter: mechanic_core::DriveParameter::Dwell(wire_source(model, id, rank, false)),
+        })
+    })
 }
 
 /// One state: what the joint does, what starts it, and what ends it.
@@ -1895,13 +1946,28 @@ fn dial_readout(handles: &Handles, id: DriveLinkId, index: usize) -> Element {
     let value = move || state_of(model, id, index).value;
     let linear = move || lane_read(model, id, false, |joint| joint.is_linear);
     let unit = move || lane_read(model, id, "RPM", LaneModel::speed_unit_text);
+    let slot = u8::try_from(index).unwrap_or(u8::MAX);
+    let assignment = crate::ui::dials::badge(handles, move || {
+        use mechanic_core::{DriveParameter as P, NumericParameter};
+        let parameter = match (linear(), angled()) {
+            (true, true) => P::LinearPosition(slot),
+            (true, false) => P::LinearSpeed(slot),
+            (false, true) => P::AngularPosition(slot),
+            (false, false) => P::AngularSpeed(slot),
+        };
+        Some(NumericParameter::Drive {
+            link: id,
+            parameter,
+        })
+    });
     view! {
-        col align:center justify:center nohit {
+        col align:center justify:center {
             text font-size:21px font-weight:700
                 font-color:{ if angled() { color(accent.angle) } else { color(accent.speed) } }
                 {
                 if linear() { format!("{:+.3}", value()) } else if angled() { format!("{:.0}°", value()) } else { format!("{:.0}", value()) }
             }
+            (assignment)
             text font-size:11px font-color:ink.faint margin:(top:2px)
                 {
                 if angled() { if linear() { "metres" } else { "degrees" } } else { unit() }
@@ -2214,6 +2280,7 @@ impl Chip {
 fn capability_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
     let handles = handles.clone();
     let model = handles.model;
+    let assignment_handles = handles.clone();
     let label = move || {
         if which == Chip::Actuator {
             lane_read(model, id, "ACTUATOR", LaneModel::torque_label)
@@ -2258,8 +2325,25 @@ fn capability_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
                     }
                 }
             }
+            if matches!(which, Chip::Electric | Chip::Gas) && lane_read(model, id, false, |joint| !joint.actuator.uses_servo()) {
+                (contribution_assignment(&assignment_handles, id, which))
+            }
         }
     }
+}
+
+fn contribution_assignment(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
+    crate::ui::dials::badge(handles, move || {
+        let parameter = match which {
+            Chip::Electric => mechanic_core::DriveParameter::ElectricContribution,
+            Chip::Gas => mechanic_core::DriveParameter::GasContribution,
+            _ => return None,
+        };
+        Some(mechanic_core::NumericParameter::Drive {
+            link: id,
+            parameter,
+        })
+    })
 }
 
 /// A chip that flips between two settled states.
@@ -2267,6 +2351,7 @@ fn switch_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
     let handles = handles.clone();
     let model = handles.model;
     let travel = which == Chip::Travel;
+    let assignment_handles = handles.clone();
     let on = move || {
         if travel {
             lane_read(model, id, false, |joint| joint.travel.is_some())
@@ -2330,6 +2415,30 @@ fn switch_chip(handles: &Handles, id: DriveLinkId, which: Chip) -> Element {
                     }
                 }
             }
+            if travel && on() {
+                (travel_assignments(&assignment_handles, id))
+            }
+        }
+    }
+}
+
+fn travel_assignments(handles: &Handles, id: DriveLinkId) -> Element {
+    let minimum = crate::ui::dials::badge(handles, move || {
+        Some(mechanic_core::NumericParameter::Drive {
+            link: id,
+            parameter: mechanic_core::DriveParameter::TravelMinimum,
+        })
+    });
+    let maximum = crate::ui::dials::badge(handles, move || {
+        Some(mechanic_core::NumericParameter::Drive {
+            link: id,
+            parameter: mechanic_core::DriveParameter::TravelMaximum,
+        })
+    });
+    view! {
+        col gap:2px {
+            row align:center { text font-size:8px "MIN" (minimum) }
+            row align:center { text font-size:8px "MAX" (maximum) }
         }
     }
 }

@@ -1,0 +1,17 @@
+error[E0308]: mismatched types
+  --> tests/ui/calc_scalar_mismatch.rs:9:22
+   |
+9  |       ui.root().adopt(&view! {
+   |  ______________________^
+10 | |         row gap:2px + 3 {}
+11 | |     });
+   | |     ^
+   | |     |
+   | |_____expected `Length`, found `f32`
+   |       expected because this is `Length`
+   |
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: call `Into::into` on this expression to convert `f32` into `Length`
+   |
+11 |     }.into());
+   |      +++++++

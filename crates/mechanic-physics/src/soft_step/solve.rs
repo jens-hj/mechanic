@@ -26,6 +26,9 @@ pub(super) struct Machine<'a> {
     pub closure_passive: &'a [PassiveForce],
     /// Generalized velocity rows of held bodies.
     pub held: &'a [bool],
+    /// How far each mesh's first side has run ahead of its second, in metres
+    /// of pitch-surface travel, in `gear_links` order.
+    pub mesh_slip: &'a [f64],
 }
 
 /// Generalized inertia added to a held body's rows, so rows touching it see an
@@ -323,16 +326,75 @@ pub(super) struct JointImpulses {
     /// Per closure: three position rows, three orientation rows, then the lower
     /// and upper rail stops.
     pub closures: Vec<[f64; 8]>,
+    /// One no-slip impulse per mesh, carried across ticks like closures.
+    pub meshes: Vec<f64>,
 }
 
 impl JointImpulses {
-    pub fn new(coordinates: usize, closures: Vec<[f64; 8]>) -> Self {
+    pub fn new(coordinates: usize, closures: Vec<[f64; 8]>, meshes: Vec<f64>) -> Self {
         Self {
             lower: vec![0.0; coordinates],
             upper: vec![0.0; coordinates],
             drive: vec![0.0; coordinates],
             closures,
+            meshes,
         }
+    }
+}
+
+/// A mesh between two bodies as one soft no-slip row at one substep's starting
+/// pose, biased by the slip the mesh has accumulated so the teeth stay phased.
+pub(super) struct Mesh {
+    block: Block,
+    moved: f64,
+}
+
+impl Mesh {
+    fn new(
+        model: &MachineKinematics,
+        factor: &DynamicsFactor,
+        link: &mechanic_core::CompiledGearLink,
+        slip: f64,
+    ) -> Result<Self, PhysicsError> {
+        let block = match crate::gear_mesh::mesh_jacobian(model, link)? {
+            Some(jacobian) => Block::new(vec![Row::new(factor, &jacobian)?], vec![slip]),
+            None => Block::new(Vec::new(), Vec::new()),
+        };
+        Ok(Self { block, moved: 0.0 })
+    }
+
+    fn len(&self) -> usize {
+        self.block.rows.len()
+    }
+
+    fn speed(&self, velocities: &[f64]) -> f64 {
+        self.block
+            .rows
+            .first()
+            .map_or(0.0, |row| row.speed(velocities))
+    }
+
+    fn warm_start(&self, velocities: &mut [f64], impulse: f64) {
+        if let Some(row) = self.block.rows.first() {
+            row.apply(velocities, impulse);
+        }
+    }
+
+    fn solve(
+        &self,
+        velocities: &mut [f64],
+        impulse: &mut f64,
+        soft: Soft,
+        relax: bool,
+        push_out: f64,
+    ) {
+        self.block.solve(
+            velocities,
+            std::slice::from_mut(impulse),
+            soft,
+            relax,
+            push_out,
+        );
     }
 }
 
@@ -963,6 +1025,12 @@ pub(super) fn substep(
             }
         }
     }
+    let mut meshes = creation
+        .gear_links
+        .iter()
+        .zip(machine.mesh_slip)
+        .map(|(link, &slip)| Mesh::new(&model, factor, link, slip))
+        .collect::<Result<Vec<_>, _>>()?;
     // Approach and slip before forces act decide restitution and the friction
     // mode, once per contact: at the tick's first substep or after a re-query.
     for (contact, point) in contacts.iter_mut().zip(points.iter()) {
@@ -1017,7 +1085,8 @@ pub(super) fn substep(
     diagnostics.rows = points.iter().map(|point| point.rows.len()).sum::<usize>()
         + limits.len()
         + drives.len()
-        + closures.iter().map(Closure::len).sum::<usize>();
+        + closures.iter().map(Closure::len).sum::<usize>()
+        + meshes.iter().map(Mesh::len).sum::<usize>();
 
     diagnostics.rows_ms += rows_started.elapsed().as_secs_f64() * 1000.0;
     let constraints_started = std::time::Instant::now();
@@ -1039,6 +1108,9 @@ pub(super) fn substep(
     }
     for (closure, impulses) in closures.iter().zip(&joints.closures) {
         closure.warm_start(&mut state.velocities, impulses);
+    }
+    for (mesh, &impulse) in meshes.iter().zip(&joints.meshes) {
+        mesh.warm_start(&mut state.velocities, impulse);
     }
 
     let soft = Soft::new(
@@ -1073,6 +1145,7 @@ pub(super) fn substep(
             &limits,
             &drives,
             &closures,
+            &meshes,
             joints,
             &mut state.velocities,
             [soft, joint_soft],
@@ -1118,6 +1191,9 @@ pub(super) fn substep(
     {
         rail.moved = advanced * dot(&rail.jacobian, &state.velocities);
     }
+    for mesh in &mut meshes {
+        mesh.moved = advanced * mesh.speed(&state.velocities);
+    }
     for _ in 0..relax_iterations {
         pass(
             contacts,
@@ -1125,6 +1201,7 @@ pub(super) fn substep(
             &limits,
             &drives,
             &closures,
+            &meshes,
             joints,
             &mut state.velocities,
             [soft, joint_soft],
@@ -1166,16 +1243,19 @@ pub(super) fn substep(
         point_count: points.len(),
         motion,
         rewound: fraction < 1.0,
+        mesh_moved: meshes.iter().map(|mesh| mesh.moved).collect(),
     })
 }
 
 /// One substep's contact rows for the restitution pass, each collider's travel
-/// bound and the largest body rotation over the advanced part, and whether a
-/// continuous hit cut it short.
+/// bound and the largest body rotation over the advanced part, whether a
+/// continuous hit cut it short, and how far each mesh slipped.
 pub(super) struct Substep {
     pub point_count: usize,
     pub motion: crate::terrain_contacts::Measured,
     pub rewound: bool,
+    /// Pitch-surface travel of each mesh's first side past its second.
+    pub mesh_moved: Vec<f64>,
 }
 
 // The fraction of the substep positions may advance, stopping short of a
@@ -1437,6 +1517,7 @@ fn pass(
     limits: &[Limit],
     drives: &[Drive],
     closures: &[Closure],
+    meshes: &[Mesh],
     joints: &mut JointImpulses,
     velocities: &mut [f64],
     [soft, joint_soft]: [Soft; 2],
@@ -1462,6 +1543,9 @@ fn pass(
     // that gives a little.
     for (closure, impulses) in closures.iter().zip(&mut joints.closures) {
         closure.solve(velocities, impulses, joint_soft, relax, dt, settings);
+    }
+    for (mesh, impulse) in meshes.iter().zip(&mut joints.meshes) {
+        mesh.solve(velocities, impulse, joint_soft, relax, settings.push_out);
     }
     for (contact, point) in contacts.iter_mut().zip(points) {
         let separation = point.separation + if relax { point.moved } else { 0.0 };

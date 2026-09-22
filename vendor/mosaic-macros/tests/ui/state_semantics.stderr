@@ -1,0 +1,5 @@
+error: semantic attribute `label` cannot be state-scoped — bind its value directly with `{ ... }`
+  --> tests/ui/state_semantics.rs:10:21
+   |
+10 |         row hover { label:"Hovered" } {}
+   |                     ^^^^^

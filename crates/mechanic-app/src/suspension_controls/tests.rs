@@ -323,7 +323,8 @@ fn captured_drag_keeps_cursor_locked_and_restores_camera_look() {
     let input = begin(&mut graph, &mut state, &mut history, Parameter::Compression);
     let worlds = crate::world::WorldListState::empty_capture_garage();
     let mut app = App::new();
-    app.insert_resource(Time::<()>::default())
+    app.init_resource::<crate::physical_controls::PhysicalControls>()
+        .insert_resource(Time::<()>::default())
         .insert_resource(input)
         .insert_resource(AccumulatedMouseMotion {
             delta: Vec2::X * 10.0,

@@ -103,6 +103,8 @@ pub(crate) fn sync_placement_overlays(
                 | Tool::Transmission
                 | Tool::Servo
                 | Tool::Seat
+                | Tool::Dial(_)
+                | Tool::Button(_)
                 | Tool::Input
                 | Tool::DimensionLink
         )

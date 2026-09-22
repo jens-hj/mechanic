@@ -1,0 +1,5 @@
+error: unknown attribute `padding` — expected one of: cols, rows, auto-cols, auto-rows, backfill, gap, row-gap, col-gap, grid-column, grid-col, grid-row, column-span, col-span, row-span, content-align, items-align, self-align, grow, shrink, basis, width, height, min-width, max-width, min-height, max-height, pad, margin, align, place, justify, fill, radius, stroke, exponent, rotate, shadow, light, opacity, disabled, filter, mask, focus-style, role, label, description, translate, translate-children, font-color, font-family, font-size, font-stretch, font-style, font-weight, letter-spacing, line-height, overline, strikethrough, tab-size, text-transform, text-wrap, underline, transition, selectable, searchable, sample, draggable, resizable, reorderable, enter, exit, enter-exit
+  --> tests/ui/removed_padding_attr.rs:10:13
+   |
+10 |         row padding:1px {}
+   |             ^^^^^^^

@@ -1,0 +1,24 @@
+error: the `as` binding goes before the theme clause: `… as name with theme …`
+  --> tests/ui/with_theme_before_as.rs:25:35
+   |
+25 |         col {} with theme fixed() as pane
+   |                                   ^^
+
+error: a target-less `view! { … }` needs one top-level element-producing node
+  --> tests/ui/with_theme_before_as.rs:24:17
+   |
+24 |       root.adopt(&view! {
+   |  _________________^
+25 | |         col {} with theme fixed() as pane
+26 | |     });
+   | |_____^
+   |
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused import: `Element`
+ --> tests/ui/with_theme_before_as.rs:6:22
+  |
+6 | use mosaic_widgets::{Element, Ui};
+  |                      ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

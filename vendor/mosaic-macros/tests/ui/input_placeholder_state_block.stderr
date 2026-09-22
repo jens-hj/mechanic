@@ -1,0 +1,5 @@
+error: `placeholder` takes no interaction states — it is hint text, not a target for the pointer. Put the state block on the `input` itself; the placeholder follows the field's text color.
+  --> tests/ui/input_placeholder_state_block.rs:17:29
+   |
+17 |                 placeholder hover { font-color:(Color::WHITE) }
+   |                             ^^^^^

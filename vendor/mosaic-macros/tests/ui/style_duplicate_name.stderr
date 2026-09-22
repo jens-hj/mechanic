@@ -1,0 +1,5 @@
+error: style `card` is declared twice in this block
+  --> tests/ui/style_duplicate_name.rs:12:5
+   |
+12 |     #card fill:(blue())
+   |     ^

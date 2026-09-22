@@ -1,0 +1,5 @@
+error: `fr` is only valid on `width`/`height`/`basis`
+  --> tests/ui/fr_in_min_width.rs:10:23
+   |
+10 |         row min-width:1fr {}
+   |                       ^^^

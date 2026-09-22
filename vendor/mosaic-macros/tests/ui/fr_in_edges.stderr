@@ -1,0 +1,5 @@
+error: `fr` is only valid on `width`/`height`/`basis`
+  --> tests/ui/fr_in_edges.rs:10:17
+   |
+10 |         row pad:1fr {}
+   |                 ^^^

@@ -1,6 +1,7 @@
 //! Cylinders and retained cylinder sectors.
 
 use super::face::FaceKind;
+use super::gear::{GearError, GearSpec};
 use super::grid::{
     BuildPose, GRID_UNIT_METERS, GRID_UNIT_TICKS, MAX_GRID_UNITS, POSITION_TICK_METERS,
     POSITION_TICKS_PER_GRID_UNIT,
@@ -246,6 +247,7 @@ pub struct CylinderSpec {
     pub appearance: MaterialAppearance,
     pub(super) layers: MaterialLayers,
     pub(super) spiral: Option<SpiralSpec>,
+    pub(super) gear: Option<GearSpec>,
 }
 
 impl CylinderSpec {
@@ -258,6 +260,7 @@ impl CylinderSpec {
             appearance: MaterialAppearance::BAKED,
             layers: MaterialLayers::NONE,
             spiral: None,
+            gear: None,
         }
     }
 
@@ -269,6 +272,56 @@ impl CylinderSpec {
     /// The spiral drawn into this cylinder's walls, if any.
     pub const fn spiral(self) -> Option<SpiralSpec> {
         self.spiral
+    }
+
+    /// The teeth cut into this cylinder, if any.
+    pub const fn gear(self) -> Option<GearSpec> {
+        self.gear
+    }
+
+    /// Cuts teeth into this cylinder, replacing any it had. The dimensions
+    /// stay the envelope: external teeth reach the outer diameter and internal
+    /// teeth the bore, so the matching diameter must already be the teeth's
+    /// tip diameter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GearError`] when the cylinder is a sector, layered, or
+    /// spiralled, when internal teeth have no bore, or when the envelope is
+    /// not the diameter the teeth reach.
+    pub fn with_gear(self, gear: GearSpec) -> Result<Self, GearError> {
+        let dimensions = self.dimensions;
+        if dimensions.sweep_angle_degrees != MAX_CYLINDER_SWEEP_DEGREES {
+            return Err(GearError::PartialSector);
+        }
+        if !self.layers.is_empty() {
+            return Err(GearError::Layered);
+        }
+        if self.spiral.is_some() {
+            return Err(GearError::Spiralled);
+        }
+        let envelope = if gear.is_internal() {
+            if dimensions.inner_diameter <= 0.0 {
+                return Err(GearError::BoreRequired);
+            }
+            dimensions.inner_diameter
+        } else {
+            dimensions.outer_diameter
+        };
+        if (envelope - gear.tip_diameter()).abs() > 1.0e-4 {
+            return Err(GearError::EnvelopeMismatch);
+        }
+        Ok(Self {
+            gear: Some(gear),
+            ..self
+        })
+    }
+
+    /// The plain cylinder these teeth were cut into.
+    #[must_use]
+    pub const fn without_gear(mut self) -> Self {
+        self.gear = None;
+        self
     }
 
     /// Draws a spiral into this cylinder's walls, replacing any it had. The
@@ -287,6 +340,9 @@ impl CylinderSpec {
         }
         if !self.layers.is_empty() {
             return Err(SpiralError::Layered);
+        }
+        if self.gear.is_some() {
+            return Err(SpiralError::Toothed);
         }
         if !spiral.inner().is_plain() && dimensions.inner_diameter <= 0.0 {
             return Err(SpiralError::BoreRequired);
@@ -365,6 +421,9 @@ impl CylinderSpec {
     ) -> Result<Self, LayerError> {
         if self.spiral.is_some() {
             return Err(LayerError::SpiralPart);
+        }
+        if self.gear.is_some() {
+            return Err(LayerError::ToothedPart);
         }
         let dimensions = self.dimensions;
         let layer = |thickness| MaterialLayer {

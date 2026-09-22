@@ -1,0 +1,5 @@
+error: expected a length literal (`12px`, `10%`, `10vw`, `10vh`), a `(…)` expression, or a `{ … }` reactive block
+  --> tests/ui/invalid_edge_field_keyword.rs:11:23
+   |
+11 |         row pad:(all: fill) {}
+   |                       ^^^^

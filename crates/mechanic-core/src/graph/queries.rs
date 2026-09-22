@@ -3,13 +3,14 @@
 use super::commands::PendingOperation;
 use super::error::GraphError;
 use super::specs::{
-    BearingSpec, DriveLinkSpec, InputSeatLinkSpec, RigidLinkSpec, SeatControllerLinkSpec, WeldSpec,
+    BearingSpec, DriveLinkSpec, GearLinkSpec, InputSeatLinkSpec, RigidLinkSpec,
+    SeatControllerLinkSpec, WeldSpec,
 };
 use super::{ConstructionGraph, solid_cache};
 use crate::{
-    BearingId, DimensionLinkId, DriveLinkId, InputSeatLinkId, PartId, PartSpec, RegionId,
-    RigidLinkId, SeatControllerLinkId, ShapeFeature, ShapeFeatureId, ShapeRegion, SolidOwner,
-    WeldId,
+    BearingId, DimensionLinkId, DriveLinkId, GearLinkId, InputSeatLinkId, PartId, PartSpec,
+    RegionId, RigidLinkId, SeatControllerLinkId, ShapeFeature, ShapeFeatureId, ShapeRegion,
+    SolidOwner, WeldId,
 };
 use bevy_math::IVec3;
 use std::sync::Arc;
@@ -156,6 +157,21 @@ impl ConstructionGraph {
         self.rigid_links.get(id)
     }
 
+    /// Retrieves a live mesh.
+    pub fn gear_link(&self, id: GearLinkId) -> Option<&GearLinkSpec> {
+        self.gear_links.get(id)
+    }
+
+    /// Every mesh one part takes part in, in canonical slot order.
+    pub fn part_gear_links(
+        &self,
+        part: PartId,
+    ) -> impl Iterator<Item = (GearLinkId, &GearLinkSpec)> {
+        self.gear_links
+            .iter()
+            .filter(move |(_, link)| link.references(part))
+    }
+
     /// Retrieves a live bearing.
     pub fn bearing(&self, id: BearingId) -> Option<&BearingSpec> {
         self.bearings.get(id)
@@ -255,6 +271,11 @@ impl ConstructionGraph {
     /// Iterates live non-geometric rigid links in canonical slot order.
     pub fn rigid_links(&self) -> impl Iterator<Item = (RigidLinkId, &RigidLinkSpec)> {
         self.rigid_links.iter()
+    }
+
+    /// Iterates live meshes in canonical slot order.
+    pub fn gear_links(&self) -> impl Iterator<Item = (GearLinkId, &GearLinkSpec)> {
+        self.gear_links.iter()
     }
 
     /// Iterates live bearings in canonical slot order.

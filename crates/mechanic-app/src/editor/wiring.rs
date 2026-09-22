@@ -53,6 +53,7 @@ pub(crate) fn drive_summary(spec: &DriveLinkSpec) -> String {
 pub(crate) enum WireEnd {
     Controller(PartId),
     Input(PartId),
+    PhysicalInput(PartId),
     Seat(PartId),
     /// Index into [`EditorState::placed_bearings`].
     Bearing(usize),
@@ -68,6 +69,10 @@ impl WireEnd {
                     controller,
                     bearing,
                 })
+            }
+            (Self::PhysicalInput(input), Self::Controller(controller))
+            | (Self::Controller(controller), Self::PhysicalInput(input)) => {
+                Some(WireConnection::PhysicalInput { input, controller })
             }
             (Self::Input(input), Self::Seat(seat)) | (Self::Seat(seat), Self::Input(input)) => {
                 Some(WireConnection::InputSeat { input, seat })
@@ -85,6 +90,7 @@ impl WireEnd {
 pub(crate) enum WireConnection {
     Drive { controller: PartId, bearing: usize },
     InputSeat { input: PartId, seat: PartId },
+    PhysicalInput { input: PartId, controller: PartId },
     SeatController { seat: PartId, controller: PartId },
 }
 
@@ -154,6 +160,7 @@ pub(crate) fn wire_end_under_cursor(
         hovered_part(state.hovered).or_else(|| state.hovered_simulation.map(|hit| hit.part))?;
     match graph.part(part) {
         Some(PartSpec::Controller(_)) => Some(WireEnd::Controller(part)),
+        Some(PartSpec::Dial(_) | PartSpec::Button(_)) => Some(WireEnd::PhysicalInput(part)),
         Some(PartSpec::Input(_)) => Some(WireEnd::Input(part)),
         Some(PartSpec::Seat(_)) => Some(WireEnd::Seat(part)),
         _ => None,
@@ -167,9 +174,10 @@ pub(crate) fn wire_end_position(
     end: WireEnd,
 ) -> Option<Vec3> {
     match end {
-        WireEnd::Controller(part) | WireEnd::Input(part) | WireEnd::Seat(part) => {
-            simulation.live_part_pose(graph, part).map(|pose| pose.0)
-        }
+        WireEnd::PhysicalInput(part)
+        | WireEnd::Controller(part)
+        | WireEnd::Input(part)
+        | WireEnd::Seat(part) => simulation.live_part_pose(graph, part).map(|pose| pose.0),
         WireEnd::Bearing(index) => {
             live_placed_bearing_pose(graph, simulation, *state.placed_bearings.get(index)?)
                 .map(|pose| pose.0)
@@ -225,16 +233,17 @@ pub(crate) fn handle_connector_actions(
         WireDragStep::Idle => {}
         WireDragStep::Miss => {
             state.feedback =
-                Some("Drag Controller↔Bearing, Input↔Seat, or Seat↔Controller".to_owned());
+                Some("Drag Controller↔Bearing, Physical input↔Controller, Keyboard Input↔Seat, or Seat↔Controller".to_owned());
         }
         WireDragStep::Begin(from) => {
             state.wire_drag = Some(WireDrag { from, armed: false });
             state.feedback = Some(match from {
                 WireEnd::Controller(controller) => {
                     state.selected_controller = Some(controller);
-                    "Drag to a bearing or Seat".to_owned()
+                    "Drag to a bearing, physical input, or Seat".to_owned()
                 }
                 WireEnd::Bearing(_) => "Drag to a control block to wire it".to_owned(),
+                WireEnd::PhysicalInput(_) => "Drag to a Controller".to_owned(),
                 WireEnd::Input(_) => "Drag to a Seat".to_owned(),
                 WireEnd::Seat(_) => "Drag to an Input or Controller".to_owned(),
             });
@@ -246,6 +255,23 @@ pub(crate) fn handle_connector_actions(
                     controller,
                     bearing,
                 } => connect_drive_wire(graph, state, history, controller, bearing),
+                WireConnection::PhysicalInput { input, controller } => {
+                    let mut configuration = graph
+                        .input_configuration(input)
+                        .cloned()
+                        .unwrap_or_default();
+                    configuration.controller = Some(controller);
+                    connect_control_link(
+                        graph,
+                        state,
+                        history,
+                        BuildCommand::SetInputConfiguration {
+                            input,
+                            configuration,
+                        },
+                        "Linked physical input to Controller",
+                    )
+                }
                 WireConnection::InputSeat { input, seat } => connect_control_link(
                     graph,
                     state,
@@ -286,6 +312,23 @@ pub(crate) fn connect_control_link(
     success: &str,
 ) -> String {
     let removal = match &command {
+        BuildCommand::SetInputConfiguration {
+            input,
+            configuration,
+        } => graph
+            .input_configuration(*input)
+            .filter(|current| current.controller == configuration.controller)
+            .map(|current| {
+                let mut configuration = current.clone();
+                configuration.controller = None;
+                (
+                    BuildCommand::SetInputConfiguration {
+                        input: *input,
+                        configuration,
+                    },
+                    "Removed input-to-Controller link",
+                )
+            }),
         BuildCommand::AddInputSeatLink(spec) => graph.input_seat_links().find_map(|(id, link)| {
             (*link == *spec).then_some((
                 BuildCommand::RemoveInputSeatLink(id),
@@ -413,16 +456,32 @@ pub(crate) fn disconnect_connector_links(
             (link.seat == part || link.controller == part)
                 .then_some(BuildCommand::RemoveSeatControllerLink(id))
         }))
+        .chain(
+            graph
+                .physical_inputs()
+                .filter(|(input, current)| {
+                    current.controller.is_some()
+                        && (*input == part || current.controller == Some(part))
+                })
+                .map(|(input, current)| {
+                    let mut configuration = current.clone();
+                    configuration.controller = None;
+                    BuildCommand::SetInputConfiguration {
+                        input,
+                        configuration,
+                    }
+                }),
+        )
         .collect::<Vec<_>>();
     if commands.is_empty() {
-        return "That part has no Input-chain links".to_owned();
+        return "That part has no control links".to_owned();
     }
     let previous = EditorSnapshot::capture(graph, state);
     match graph.apply_batch(commands) {
         Ok(_) => {
             history.commit(previous);
             state.construction_mesh_dirty = true;
-            "Removed Input-chain link(s)".to_owned()
+            "Removed control link(s)".to_owned()
         }
         Err(error) => error.to_string(),
     }
@@ -454,13 +513,10 @@ pub(crate) fn reverse_drive_wires(
     let mut staged = graph.begin_edit();
     let commands = links
         .iter()
-        .map(|&(id, _)| BuildCommand::RemoveDriveLink(id))
-        .chain(links.iter().map(|&(_, link)| {
-            BuildCommand::AddDriveLink(DriveLinkSpec {
-                reversed: !link.reversed,
-                ..link
-            })
-        }));
+        .map(|&(link, spec)| BuildCommand::SetDriveReversed {
+            link,
+            reversed: !spec.reversed,
+        });
     Some(match staged.apply_batch(commands) {
         Ok(_) => {
             *graph = staged.finish();
@@ -532,18 +588,19 @@ pub(crate) fn update_wire_hover_preview(
                     .with_scale(Vec3::splat(WIRE_HOVER_BEARING_SCALE)),
             )
         }),
-        Some(WireEnd::Controller(part) | WireEnd::Input(part) | WireEnd::Seat(part)) => graph
-            .0
-            .part(part)
-            .and_then(|spec| spec.as_cuboid())
-            .and_then(|block| {
-                let (translation, rotation) = simulation.live_part_pose(&graph.0, part)?;
-                Some(
-                    Transform::from_translation(translation)
-                        .with_rotation(rotation)
-                        .with_scale(block.size_meters() * WIRE_HOVER_BLOCK_SCALE),
-                )
-            }),
+        Some(
+            WireEnd::PhysicalInput(part)
+            | WireEnd::Controller(part)
+            | WireEnd::Input(part)
+            | WireEnd::Seat(part),
+        ) => graph.0.part(part).and_then(|spec| {
+            let (translation, rotation) = simulation.live_part_pose(&graph.0, part)?;
+            Some(
+                Transform::from_translation(translation)
+                    .with_rotation(rotation)
+                    .with_scale(spec.size_meters() * WIRE_HOVER_BLOCK_SCALE),
+            )
+        }),
         None => None,
     };
     let hovered = placement.is_some().then_some(hovered).flatten();
@@ -563,9 +620,12 @@ pub(crate) fn update_wire_hover_preview(
                         | mechanic_core::JointKind::Piston(_) => Cuboid::default().into(),
                     },
                 ),
-                Some(WireEnd::Controller(_) | WireEnd::Input(_) | WireEnd::Seat(_)) => {
-                    Cuboid::default().into()
-                }
+                Some(
+                    WireEnd::PhysicalInput(_)
+                    | WireEnd::Controller(_)
+                    | WireEnd::Input(_)
+                    | WireEnd::Seat(_),
+                ) => Cuboid::default().into(),
                 None => degenerate_overlay_mesh(),
             };
     }

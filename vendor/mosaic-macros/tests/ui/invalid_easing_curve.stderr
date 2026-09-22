@@ -1,0 +1,5 @@
+error: unknown easing curve `liner` — did you mean `linear`?
+  --> tests/ui/invalid_easing_curve.rs:10:36
+   |
+10 |         row transition:(width:ease(liner 200ms)) {}
+   |                                    ^^^^^

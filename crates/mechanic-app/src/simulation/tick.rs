@@ -143,7 +143,11 @@ pub(crate) fn poll_simulation_readbacks(
 
 #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn advance_simulation(
-    time: (Res<Time>, Res<Time<Real>>),
+    time: (
+        Res<Time>,
+        Res<Time<Real>>,
+        Res<crate::pause_menu::PauseMenuState>,
+    ),
     mut world_runtime: ResMut<world::WorldRuntime>,
     publication: Res<WorldPhysicsPublication>,
     mut sequencer: ResMut<DriveSequencer>,
@@ -163,7 +167,7 @@ pub(crate) fn advance_simulation(
     if !simulation.is_running() {
         return;
     }
-    let published_graph = simulation.published_graph.clone();
+    let published_graph = simulation.effective_graph().clone();
     simulation.ticks_submitted_per_frame = 0;
 
     if state.drive_rows_dirty {
@@ -251,7 +255,8 @@ pub(crate) fn advance_simulation(
             ..
         } = &mut *simulation;
         if let Some(end) = replay_end {
-            let paused = publication.ready.is_some()
+            let paused = time.2.blocks_world_input()
+                || publication.ready.is_some()
                 || publication
                     .placement
                     .as_ref()
@@ -273,7 +278,8 @@ pub(crate) fn advance_simulation(
                 tick_backlog,
                 dropped_ticks,
                 time.0.delta(),
-                publication.ready.is_some()
+                time.2.blocks_world_input()
+                    || publication.ready.is_some()
                     || publication
                         .placement
                         .as_ref()

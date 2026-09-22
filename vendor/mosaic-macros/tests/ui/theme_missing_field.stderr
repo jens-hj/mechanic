@@ -1,0 +1,20 @@
+error: theme for `Tokens` omits required token `bg`, which has no default
+  --> tests/ui/theme_missing_field.rs:9:1
+   |
+9  | / scheme! {
+10 | |     pub Tokens {
+11 | |         bg: Paint,
+12 | |         fg: Color,
+13 | |     }
+14 | | }
+   | |_^
+...
+17 |       let _incomplete = theme! {
+   |  _______________________-
+18 | |         Tokens {
+19 | |             fg: Color::WHITE,
+20 | |         }
+21 | |     };
+   | |_____- in this macro invocation
+   |
+   = note: this error originates in the macro `__mosaic_theme_Tokens` which comes from the expansion of the macro `theme` (in Nightly builds, run with -Z macro-backtrace for more info)

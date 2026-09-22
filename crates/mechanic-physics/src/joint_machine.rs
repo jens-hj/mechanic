@@ -804,6 +804,21 @@ fn integrate_substep(
             }
         }
     }
+    // A mesh holds its two sides' pitch surfaces together without bound.
+    for link in &creation.gear_links {
+        if let Some(jacobian) = crate::gear_mesh::mesh_jacobian(model, link)? {
+            blocks.push(ConstraintBlock {
+                jacobian: vec![jacobian],
+                target: vec![0.0],
+                bounds: vec![ImpulseBounds {
+                    minimum: f64::NEG_INFINITY,
+                    maximum: f64::INFINITY,
+                }],
+                contacts: Vec::new(),
+            });
+            desired.push(0.0);
+        }
+    }
     if let Some((contacts, impact)) = sustaining.as_ref().zip(surface) {
         diagnostics.surface_points += contacts.query.contacts.len();
         diagnostics.surface_manifolds += impact.blocks.len();

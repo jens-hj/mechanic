@@ -1,0 +1,5 @@
+error: `transition` is a one-time declaration and cannot be state-scoped
+  --> tests/ui/state_lifecycle.rs:11:20
+   |
+11 |         el hover { transition:(all:ease(100.0)) } {}
+   |                    ^^^^^^^^^^

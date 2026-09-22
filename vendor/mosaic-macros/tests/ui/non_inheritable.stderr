@@ -1,0 +1,5 @@
+error: attribute `transition` is not inheritable
+  --> tests/ui/non_inheritable.rs:11:13
+   |
+11 |         row transition:inherit {}
+   |             ^^^^^^^^^^

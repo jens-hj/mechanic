@@ -123,6 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "block-pile" => block_pile(),
         "fast-impacts" => fast_impacts(),
         "four-bar" => four_bar(),
+        "gear-train" => gear_train(),
         "wheel-roll" => rolling::run(),
         "large-surface" => world_drive::large_surface(&scale, soil, block_width),
         "world-drive" => world_drive::run(
@@ -134,7 +135,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
-             block-pile, fast-impacts, four-bar, wheel-roll, large-surface or world-drive"
+             block-pile, fast-impacts, four-bar, gear-train, wheel-roll, large-surface or \
+             world-drive"
         )
         .into()),
     }
@@ -185,6 +187,145 @@ fn four_bar() -> Result<(), Box<dyn Error>> {
         600,
         TerrainMaterial::Rock,
         |_| Vec::new(),
+    )
+}
+
+// A two-stage spur reduction and a three-planet set on one static plate, the
+// input gears driven at 6 rad/s for ten seconds: how much eight meshes cost
+// and how far their teeth drift out of phase.
+#[expect(clippy::too_many_lines, reason = "one scene built in place")]
+fn gear_train() -> Result<(), Box<dyn Error>> {
+    use mechanic_core::{
+        BearingDimensions, BearingSpec, BuildOutcome, CoordinateDrive, CylinderDimensions,
+        CylinderSpec, FaceKind, FaceRef, GearKind, GearLinkSpec, GearSpec, PartId, RigidLinkSpec,
+    };
+    let mut graph = ConstructionGraph::new();
+    let spawned = |outcome: BuildOutcome| -> Result<PartId, Box<dyn Error>> {
+        match outcome {
+            BuildOutcome::Spawned(part) => Ok(part),
+            other => Err(format!("spawn expected, got {other:?}").into()),
+        }
+    };
+    let block = |graph: &mut ConstructionGraph, ticks: IVec3, dimensions: [u8; 3]| {
+        spawned(graph.apply(BuildCommand::Spawn(CuboidSpec::new(
+            dimensions,
+            BuildPose::from_position_ticks(ticks, GridRotation::default()),
+        )?))?)
+    };
+    let gear = |graph: &mut ConstructionGraph, teeth: u16, kind: GearKind, ticks: IVec3| {
+        let spec = GearSpec::new(4, teeth, kind)?;
+        let (outer, inner) = if spec.is_internal() {
+            (spec.tip_diameter() + 0.1, spec.tip_diameter())
+        } else {
+            (spec.tip_diameter(), 0.0)
+        };
+        spawned(
+            graph.apply(BuildCommand::SpawnCylinder(
+                CylinderSpec::new(
+                    CylinderDimensions::new(outer, inner, 0.25)?,
+                    BuildPose::from_position_ticks(ticks, GridRotation::default()),
+                )
+                .with_gear(spec)?,
+            ))?,
+        )
+    };
+    let hinge =
+        |graph: &mut ConstructionGraph, base: PartId, part: PartId, anchor: [f32; 3]| match graph
+            .apply(BuildCommand::AddBearing(
+                BearingSpec::new(
+                    FaceRef::part(base, FaceKind::PositiveY),
+                    FaceRef::part(part, FaceKind::NegativeY),
+                    bevy_math::Vec3::from_array(anchor),
+                    bevy_math::Vec3::Y,
+                )
+                .with_dimensions(BearingDimensions::new(0.08, 0.0)?),
+            ))? {
+            BuildOutcome::BearingAdded(id) => Ok::<_, Box<dyn Error>>(id),
+            other => Err(format!("bearing expected, got {other:?}").into()),
+        };
+    let mesh = |graph: &mut ConstructionGraph, first: PartId, second: PartId| {
+        graph.apply(BuildCommand::AddGearLink(GearLinkSpec { first, second }))
+    };
+    let plate = block(&mut graph, IVec3::new(0, 400, 0), [16, 1, 8])?;
+    // Stage one: 24 into 36; stage two on the wheel's shaft: 12 into 36.
+    let pinion = gear(&mut graph, 24, GearKind::Spur, IVec3::new(-400, 500, 0))?;
+    let wheel = gear(&mut graph, 36, GearKind::Spur, IVec3::new(-280, 500, 0))?;
+    let second_pinion = gear(&mut graph, 12, GearKind::Spur, IVec3::new(-280, 700, 0))?;
+    let second_wheel = gear(&mut graph, 36, GearKind::Spur, IVec3::new(-184, 700, 0))?;
+    let post = block(&mut graph, IVec3::new(-184, 550, 0), [1, 2, 1])?;
+    for (first, second) in [(wheel, second_pinion), (post, plate)] {
+        graph.apply(BuildCommand::RigidLink(RigidLinkSpec { first, second }))?;
+    }
+    let input = hinge(&mut graph, plate, pinion, [-1.0, 1.125, 0.0])?;
+    hinge(&mut graph, plate, wheel, [-0.7, 1.125, 0.0])?;
+    hinge(&mut graph, post, second_wheel, [-0.46, 1.625, 0.0])?;
+    mesh(&mut graph, pinion, wheel)?;
+    mesh(&mut graph, second_pinion, second_wheel)?;
+    // A planetary set: sun on the carrier, three planets, ring on the plate.
+    let carrier = block(&mut graph, IVec3::new(400, 500, 0), [4, 1, 4])?;
+    let sun = gear(&mut graph, 24, GearKind::Spur, IVec3::new(400, 600, 0))?;
+    let ring = gear(&mut graph, 72, GearKind::Internal, IVec3::new(400, 600, 0))?;
+    graph.apply(BuildCommand::RigidLink(RigidLinkSpec {
+        first: ring,
+        second: plate,
+    }))?;
+    hinge(&mut graph, plate, carrier, [1.0, 1.125, 0.0])?;
+    let sun_hinge = hinge(&mut graph, carrier, sun, [1.0, 1.375, 0.0])?;
+    for [x, z] in [[96_i16, 0], [-48, 83], [-48, -83]] {
+        let planet = gear(
+            &mut graph,
+            24,
+            GearKind::Spur,
+            IVec3::new(400 + i32::from(x), 600, z.into()),
+        )?;
+        hinge(
+            &mut graph,
+            carrier,
+            planet,
+            [1.0 + f32::from(x) * 0.0025, 1.375, f32::from(z) * 0.0025],
+        )?;
+        mesh(&mut graph, sun, planet)?;
+        mesh(&mut graph, ring, planet)?;
+    }
+    let creation = graph.compile_with_static_parts(vec![plate])?;
+    let inputs = [input, sun_hinge].map(|id| creation.loop_topology.bearing_coordinates[&id]);
+    let drives = inputs.map(|coordinate| {
+        let acceleration =
+            300.0 / creation.loop_topology.coordinate_axis_inertia[coordinate as usize];
+        (
+            coordinate as usize,
+            CoordinateDrive {
+                mode: DriveMode::Speed,
+                target_speed: 6.0,
+                max_speed: 100.0,
+                max_acceleration: acceleration,
+                source_a_max_acceleration: acceleration,
+                source_a_no_load_speed: 100.0,
+                ..CoordinateDrive::PASSIVE
+            },
+        )
+    });
+    let state = MachineState::at_rest(&creation);
+    run(
+        "gear-train",
+        &creation,
+        state,
+        600,
+        TerrainMaterial::Rock,
+        move |tick| {
+            if tick != 1 {
+                return Vec::new();
+            }
+            drives
+                .iter()
+                .map(|&(coordinate, drive)| DriveCommand {
+                    tick,
+                    topology_generation: 1,
+                    coordinate,
+                    drive,
+                })
+                .collect()
+        },
     )
 }
 
@@ -276,6 +417,7 @@ fn run(
     let mut samples = Vec::new();
     let (mut deepest, mut settled, mut degraded) = (0.0_f64, 0.0_f64, 0_u64);
     let (mut closure_gap, mut closure_angle) = (0.0_f64, 0.0_f64);
+    let mut mesh_slip = 0.0_f64;
     let (mut continuous, mut sweeps) = (0.0, 0);
     let mut reasons = std::collections::BTreeMap::<&str, u64>::new();
     for tick in 1..=ticks {
@@ -294,6 +436,7 @@ fn run(
         sweeps += diagnostics.continuous_sweeps;
         closure_gap = closure_gap.max(diagnostics.closure_position_error);
         closure_angle = closure_angle.max(diagnostics.closure_angle_error);
+        mesh_slip = mesh_slip.max(diagnostics.mesh_slip);
         if let Some(reason) = diagnostics.degraded_reason {
             *reasons.entry(reason).or_default() += 1;
         }
@@ -321,6 +464,8 @@ fn run(
         "closures": creation.dynamics.loops.len(),
         "closure_gap_m": closure_gap,
         "closure_angle_rad": closure_angle,
+        "meshes": creation.gear_links.len(),
+        "mesh_slip_m": mesh_slip,
         "travelled_m": (state.poses[0].position - start).with_y(0.0).length(),
         "fastest_final": state.velocities.iter().fold(0.0_f64, |m, v| m.max(v.abs())),
     });

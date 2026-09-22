@@ -17,10 +17,12 @@
     reason = "Mosaic's authoring vocabulary is meant to be globbed"
 )]
 
+pub(crate) mod button_config;
 mod chroma;
 mod components;
 mod control_block;
 mod creations;
+pub(crate) mod dials;
 mod dimensions;
 mod driving;
 mod help;
@@ -29,6 +31,7 @@ pub(crate) mod markers;
 mod material_wheel;
 mod pause;
 mod performance;
+mod physical_controls;
 mod reticle;
 mod styles;
 mod suspension;
@@ -79,8 +82,10 @@ use markers::{MarkerOverlay, MarkerOverlayProps};
 use material_wheel::{RadialSelector, RadialSelectorProps};
 use pause::{PauseMenu, PauseMenuProps};
 use performance::{PerformanceOverlay, PerformanceOverlayProps};
+use physical_controls::{PhysicalControlOverlay, PhysicalControlOverlayProps};
 use reticle::{WorldReticle, WorldReticleProps};
 // Style constants are consumed by `view!` expansion.
+use button_config::{ButtonOverlay, ButtonOverlayProps};
 use styles::*;
 use suspension::{SuspensionOverlay, SuspensionOverlayProps};
 use worlds::{WorldList, WorldListProps};
@@ -205,12 +210,16 @@ pub(crate) struct Handles {
     pause_fov: MosaicState<f32>,
     /// The control block's own state.
     block: control_block::Handles,
+    button_config: MosaicState<button_config::Model>,
+    button_layout: button_config::Layout,
     suspension: MosaicState<suspension::Model>,
     suspension_layout: suspension::Layout,
     /// Opt-in frame, renderer, and physics diagnostics.
     performance: MosaicState<performance::Model>,
     /// Speed and transmission instruments for the occupied vehicle.
     driving: MosaicState<driving::Model>,
+    /// Physical dial interaction guidance and constrained-value feedback.
+    physical_controls: MosaicState<Vec<String>>,
     /// What the overlay is asking for.
     intents: Rc<RefCell<Vec<UiIntent>>>,
 }
@@ -241,14 +250,21 @@ impl Handles {
             pause_fov: MosaicState::new(crate::settings::DEFAULT_CAMERA_FOV_DEGREES),
             performance: MosaicState::new(performance::Model::default()),
             driving: MosaicState::new(driving::Model::default()),
+            physical_controls: MosaicState::new(Vec::new()),
             block: control_block::Handles {
                 model: MosaicState::new(control_block::PanelModel::default()),
+                dials: MosaicState::new(dials::Model::default()),
+                dial_minimum: MosaicState::new(String::new()),
+                dial_maximum: MosaicState::new(String::new()),
+                dial_intents: Rc::default(),
                 selected: MosaicState::new(None),
                 located: MosaicState::new(None),
                 capturing: MosaicState::new(None),
                 gearbox_capturing: MosaicState::new(None),
                 intents: Rc::clone(&intents),
             },
+            button_config: MosaicState::new(button_config::Model::default()),
+            button_layout: Rc::default(),
             suspension: MosaicState::new(suspension::Model::default()),
             suspension_layout: Rc::default(),
             intents,
@@ -373,6 +389,7 @@ pub(crate) fn mount(world: &mut World) {
 #[component]
 pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let block_open = handles.block.model;
+    let button_overlay = handles.clone();
     let suspension_overlay = handles.clone();
     let creations_open = handles.creations;
     let material_wheel_model = handles.material_wheel;
@@ -393,6 +410,8 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let performance_viewport = handles.viewport;
     let driving_model = handles.driving;
     let driving_viewport = handles.viewport;
+    let physical_feedback = handles.physical_controls;
+    let physical_viewport = handles.viewport;
     view! {
         stack #mechanic.overlay width:fill height:fill align:start justify:start exponent:1 {
             if !worlds_model.with(|model| model.open) {
@@ -432,7 +451,13 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
                 && !worlds_model.with(|model| model.open) {
                 ControlPanel handles:(block_panel.block.clone())
             }
+            ButtonOverlay handles:(button_overlay.clone())
             SuspensionOverlay handles:(suspension_overlay.clone())
+            if physical_feedback.with(|lines| !lines.is_empty())
+                && !worlds_model.with(|model| model.open)
+                && !pause_model.with(|model| model.open) {
+                PhysicalControlOverlay model:(physical_feedback) viewport:(physical_viewport)
+            }
             if driving_model.with(|model| model.open)
                 && !worlds_model.with(|model| model.open)
                 && !pause_model.with(|model| model.open)
@@ -574,17 +599,26 @@ pub(crate) fn push(
     material: Res<SelectedMaterial>,
     chroma: Res<ChromaBrush>,
     terrain_material: Res<SelectedTerrainMaterial>,
-    graph: Res<EditorGraph>,
+    graphs: (Res<EditorGraph>, Res<AppSimulation>),
     pause: Res<PauseMenuState>,
     worlds_state: Res<crate::world::WorldListState>,
     settings: Res<AppSettings>,
-    gearboxes: Res<crate::sequencer::GearboxRuntime>,
+    inputs: (
+        Res<crate::sequencer::GearboxRuntime>,
+        Res<crate::physical_controls::PhysicalControls>,
+    ),
     mut located: ResMut<LocatedJoint>,
 ) {
+    let (graph, simulation) = graphs;
+    let (gearboxes, physical_controls) = inputs;
     let Some(mut ui) = ui else {
         return;
     };
     ui.handles.hotbar.set(*selection);
+    let feedback = physical_controls::capture(&physical_controls, panel.speed_unit());
+    if ui.handles.physical_controls.get_untracked() != feedback {
+        ui.handles.physical_controls.set(feedback);
+    }
     let live_feature = editor
         .feature_drag
         .as_ref()
@@ -620,7 +654,13 @@ pub(crate) fn push(
     } else {
         Vec::new()
     };
-    let block = control_block::capture(&panel, &graph, &gearboxes, !vehicle_conflicts.is_empty());
+    let effective = if simulation.is_running() {
+        simulation.effective_graph()
+    } else {
+        &graph.0
+    };
+    let block =
+        control_block::capture(&panel, effective, &gearboxes, !vehicle_conflicts.is_empty());
     if block != ui.pushed.block {
         ui.handles.block.model.set(block.clone());
         ui.pushed.block = block;

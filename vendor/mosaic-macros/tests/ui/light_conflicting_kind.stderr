@@ -1,0 +1,17 @@
+error: `at:` places a point or spot light — a directional light (`angle:`) comes from infinity and takes only `angle:` and `elevation:`
+  --> tests/ui/light_conflicting_kind.rs:14:37
+   |
+14 |             row light:(angle: 45deg at: (x:30% y:20%)) {}
+   |                                     ^^
+
+error: `elevation:` alone does not make a light — add `angle:` to give the directional light its heading
+  --> tests/ui/light_conflicting_kind.rs:16:24
+   |
+16 |             row light:(elevation: 30deg) {}
+   |                        ^^^^^^^^^
+
+error: `reach:` has no meaning for a directional light — parallel rays have no distance to fall off over
+  --> tests/ui/light_conflicting_kind.rs:18:37
+   |
+18 |             row light:(angle: 45deg reach: (x:40px y:40px)) {}
+   |                                     ^^^^^

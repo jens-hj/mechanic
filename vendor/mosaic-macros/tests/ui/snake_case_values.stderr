@@ -1,0 +1,17 @@
+error: value `min_content` must use kebab-case — write `min-content`
+  --> tests/ui/snake_case_values.rs:12:23
+   |
+12 |             row width:min_content {}
+   |                       ^^^^^^^^^^^
+
+error: font-family value `sans_serif` must use kebab-case — write `sans-serif`
+  --> tests/ui/snake_case_values.rs:13:30
+   |
+13 |             text font-family:sans_serif "legacy"
+   |                              ^^^^^^^^^^
+
+error: record field `drag_axis` must use kebab-case — write `drag-axis`
+  --> tests/ui/snake_case_values.rs:14:30
+   |
+14 |             row reorderable:(drag_axis: main) {}
+   |                              ^^^^^^^^^

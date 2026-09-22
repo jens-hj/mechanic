@@ -1,0 +1,5 @@
+error: unknown `light` field `intesity` — did you mean `intensity`?
+  --> tests/ui/light_unknown_field.rs:11:20
+   |
+11 |         row light:(intesity: 0.5) {}
+   |                    ^^^^^^^^

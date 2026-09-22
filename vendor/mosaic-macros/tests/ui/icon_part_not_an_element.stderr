@@ -1,0 +1,5 @@
+error: `opacity` is not an icon part attribute — a part is a shape in the SVG, not an element, so it takes `fill:` and `stroke:`
+  --> tests/ui/icon_part_not_an_element.rs:17:25
+   |
+17 |                 blade-a opacity:0.5
+   |                         ^^^^^^^

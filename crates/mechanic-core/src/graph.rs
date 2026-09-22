@@ -1,7 +1,10 @@
 mod apply;
 mod commands;
 mod error;
+mod inputs;
 mod machine;
+mod numeric;
+mod numeric_metadata;
 mod predicates;
 mod queries;
 mod region_checks;
@@ -14,7 +17,7 @@ pub use commands::{AppearanceTarget, BuildCommand, BuildOutcome, PendingOperatio
 pub use error::GraphError;
 pub use specs::{
     ActuatorInventory, BearingDimensionError, BearingDimensions, BearingSpec, DriveLinkSpec,
-    InputSeatLinkSpec, MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP,
+    GearLinkSpec, InputSeatLinkSpec, MAX_BEARING_OUTER_DIAMETER, MIN_BEARING_DIAMETER_GAP,
     MIN_BEARING_OUTER_DIAMETER, RigidLinkSpec, SeatControllerLinkSpec, WeldSpec,
 };
 
@@ -24,9 +27,9 @@ use std::{
 };
 
 use crate::{
-    BearingId, CuboidSpec, DriveLinkId, EngineKind, FaceOwner, GearboxConfig, InputSeatLinkId,
-    PartId, PartSpec, RegionId, RigidLinkId, SeatControllerLinkId, ShapeFeature, ShapeFeatureId,
-    ShapeRegion, WeldId, id::Arena,
+    BearingId, CuboidSpec, DriveLinkId, EngineKind, FaceOwner, GearLinkId, GearboxConfig,
+    InputSeatLinkId, PartId, PartSpec, RegionId, RigidLinkId, SeatControllerLinkId, ShapeFeature,
+    ShapeFeatureId, ShapeRegion, WeldId, id::Arena,
 };
 
 /// Editable, CPU-owned construction topology.
@@ -38,6 +41,7 @@ pub struct ConstructionGraphData {
     pub(crate) parts: Arena<PartSpec, PartId>,
     pub(crate) welds: Arena<WeldSpec, WeldId>,
     pub(crate) rigid_links: Arena<RigidLinkSpec, RigidLinkId>,
+    pub(crate) gear_links: Arena<GearLinkSpec, GearLinkId>,
     pub(crate) bearings: Arena<BearingSpec, BearingId>,
     pub(crate) drive_links: Arena<DriveLinkSpec, DriveLinkId>,
     pub(crate) input_seat_links: Arena<InputSeatLinkSpec, InputSeatLinkId>,
@@ -46,6 +50,7 @@ pub struct ConstructionGraphData {
     pub(crate) transmission_parents: BTreeMap<PartId, PartId>,
     /// Transmission part to the weld created atomically with it.
     pub(crate) transmission_welds: BTreeMap<PartId, WeldId>,
+    pub(crate) physical_inputs: BTreeMap<PartId, crate::InputConfiguration>,
     /// Persistent per-controller, per-engine-family gearbox overrides.
     pub(crate) gearbox_configs: BTreeMap<(PartId, EngineKind), GearboxConfig>,
     /// Editable shape regions. A region owns the geometry of the blocks it
@@ -276,6 +281,11 @@ impl ConstructionGraph {
                     visit(link.second);
                 } else if link.second == part {
                     visit(link.first);
+                }
+            }
+            for (_, link) in self.gear_links.iter() {
+                if let Some(other) = link.other(part) {
+                    visit(other);
                 }
             }
             for (_, bearing) in self.bearings.iter() {

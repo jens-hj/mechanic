@@ -1,0 +1,43 @@
+error: button needs an @click:{ … } handler
+  --> tests/ui/recovered_errors.rs:17:13
+   |
+17 |             button "no click"
+   |             ^^^^^^
+
+error: unknown attribute `wat` — expected one of: cols, rows, auto-cols, auto-rows, backfill, gap, row-gap, col-gap, grid-column, grid-col, grid-row, column-span, col-span, row-span, content-align, items-align, self-align, grow, shrink, basis, width, height, min-width, max-width, min-height, max-height, pad, margin, align, place, justify, fill, radius, stroke, exponent, rotate, shadow, light, opacity, disabled, filter, mask, focus-style, role, label, description, translate, translate-children, font-color, font-family, font-size, font-stretch, font-style, font-weight, letter-spacing, line-height, overline, strikethrough, tab-size, text-transform, text-wrap, underline, transition, selectable, searchable, sample, draggable, resizable, reorderable, enter, exit, enter-exit
+  --> tests/ui/recovered_errors.rs:14:17
+   |
+14 |             row wat:1 {
+   |                 ^^^
+
+error: unknown attribute `siize` — expected one of: cols, rows, auto-cols, auto-rows, backfill, gap, row-gap, col-gap, grid-column, grid-col, grid-row, column-span, col-span, row-span, content-align, items-align, self-align, grow, shrink, basis, width, height, min-width, max-width, min-height, max-height, pad, margin, align, place, justify, fill, radius, stroke, exponent, rotate, shadow, light, opacity, disabled, filter, mask, focus-style, role, label, description, translate, translate-children, font-color, font-family, font-size, font-stretch, font-style, font-weight, letter-spacing, line-height, overline, strikethrough, tab-size, text-transform, text-wrap, underline, transition, selectable, searchable, sample, draggable, resizable, reorderable, enter, exit, enter-exit
+  --> tests/ui/recovered_errors.rs:15:22
+   |
+15 |                 text siize:2 "child of a broken row still expands"
+   |                      ^^^^^
+
+error[E0433]: failed to resolve: use of undeclared type `IntoFontLength`
+  --> tests/ui/recovered_errors.rs:11:17
+   |
+11 |       root.adopt(&view! {
+   |  _________________^
+12 | |         col gap:8px {
+13 | |             text font-size:14px "before a broken sibling"
+14 | |             row wat:1 {
+...  |
+19 | |     });
+   | |_____^ use of undeclared type `IntoFontLength`
+   |
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: consider importing this trait
+   |
+1  + use mosaic_core::IntoFontLength;
+   |
+
+warning: unused import: `text`
+ --> tests/ui/recovered_errors.rs:5:26
+  |
+5 | use mosaic_widgets::{Ui, text};
+  |                          ^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

@@ -1081,6 +1081,7 @@ fn out_of_range_cuboid_dimension_is_refused() {
         material: crate::ConstructionMaterial::Steel,
         appearance: crate::MaterialAppearance::BAKED,
         layers: Vec::new(),
+        rack: None,
     };
 
     assert!(matches!(
@@ -1610,5 +1611,54 @@ fn material_layers_survive_a_serialized_round_trip() {
             .map(|(_, spec)| *spec)
             .find(|spec| spec.as_cylinder().is_none()),
         Some(block)
+    );
+}
+
+#[test]
+fn teeth_racks_and_meshes_survive_a_serialized_round_trip() {
+    let mut graph = ConstructionGraph::new();
+    let (pinion, wheel) = crate::testing::gear_pair(&mut graph);
+    let (_, worm, nut) = crate::testing::worm_drive(&mut graph);
+    graph
+        .apply(BuildCommand::Spawn(crate::testing::rack(
+            4,
+            [8, 1, 1],
+            IVec3::new(0, -200, 0),
+        )))
+        .unwrap();
+    for (first, second) in [(pinion, wheel), (worm, nut)] {
+        graph
+            .apply(BuildCommand::AddGearLink(crate::GearLinkSpec {
+                first,
+                second,
+            }))
+            .unwrap();
+    }
+    let document = CreationDocument::from_graph(&graph, "Gears", &[]);
+    let restored = round_trip(&document)
+        .into_graph()
+        .expect("the document rebuilds");
+    assert_eq!(restored.graph.gear_links().count(), 2);
+    let parts = restored
+        .graph
+        .parts()
+        .map(|(_, spec)| *spec)
+        .collect::<Vec<_>>();
+    let count = |keep: fn(&PartSpec) -> bool| parts.iter().filter(|spec| keep(spec)).count();
+    assert_eq!(
+        count(|spec| spec.as_cylinder().is_some_and(|c| c.gear().is_some())),
+        3
+    );
+    assert_eq!(
+        count(|spec| spec.as_cuboid().is_some_and(|c| c.rack().is_some())),
+        1
+    );
+    assert_eq!(
+        count(|spec| spec.as_cylinder().is_some_and(|c| c.spiral().is_some())),
+        1
+    );
+    assert_eq!(
+        CreationDocument::from_graph(&restored.graph, "Gears", &[]),
+        document
     );
 }

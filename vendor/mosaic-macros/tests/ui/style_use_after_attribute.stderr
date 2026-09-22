@@ -1,0 +1,5 @@
+error: style references come first in the attribute run — write `#style` before the attributes that override it
+  --> tests/ui/style_use_after_attribute.rs:12:41
+   |
+12 |     ui.root().adopt(&view! { el pad:8px #card {} });
+   |                                         ^

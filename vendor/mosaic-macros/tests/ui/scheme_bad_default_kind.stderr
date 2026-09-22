@@ -1,0 +1,5 @@
+error: a `Scalar` token requires a unitless number or percentage
+ --> tests/ui/scheme_bad_default_kind.rs:8:24
+  |
+8 |         size: Scalar = 10px,
+  |                        ^^^^

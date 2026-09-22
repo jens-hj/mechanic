@@ -1,0 +1,5 @@
+error: `inherit` cannot be used inside an interaction state block
+  --> tests/ui/state_inherit.rs:11:21
+   |
+11 |         row hover { fill:inherit } {}
+   |                     ^^^^

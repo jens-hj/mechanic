@@ -72,6 +72,37 @@ pub struct SpiralDoc {
     pub taper: Option<SpiralTaperDoc>,
 }
 
+/// Gear teeth in their serialized form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GearDoc {
+    /// Tooth size, in position ticks.
+    pub module_ticks: u8,
+    /// Number of teeth.
+    pub teeth: u16,
+    /// Where and how the teeth are cut.
+    pub kind: crate::GearKind,
+}
+
+/// Rack teeth in their serialized form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RackDoc {
+    /// Tooth size, in position ticks.
+    pub module_ticks: u8,
+    /// Face the teeth are cut into.
+    pub face: FaceKind,
+    /// Local axis the teeth are spaced along.
+    pub along: crate::Axis,
+}
+
+/// A mesh between two part indices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GearLinkDoc {
+    /// First part index.
+    pub first: u32,
+    /// Second part index.
+    pub second: u32,
+}
+
 /// One construction part in its serialized form.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PartDoc {
@@ -88,6 +119,9 @@ pub enum PartDoc {
         /// Material layers replayed over the core, oldest first.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         layers: Vec<MaterialLayerDoc>,
+        /// Rack teeth cut into one face.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rack: Option<RackDoc>,
     },
     /// Solid or hollow cylinder whose axis is local Y.
     Cylinder {
@@ -111,6 +145,9 @@ pub enum PartDoc {
         /// Spiral drawn into the walls.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spiral: Option<SpiralDoc>,
+        /// Gear teeth cut into the walls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gear: Option<GearDoc>,
     },
     /// Cardinal 90-degree quarter-torus pipe bend.
     PipeBend {
@@ -171,7 +208,21 @@ pub enum PartDoc {
         /// Centre and orientation.
         pose: PoseDoc,
     },
-    /// Fixed-size keyboard Input block.
+    /// Physical rotary dial.
+    Dial {
+        /// Authored model size.
+        size: crate::InputSize,
+        /// Envelope centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Physical pushbutton.
+    Button {
+        /// Authored model size.
+        size: crate::InputSize,
+        /// Envelope centre and orientation.
+        pose: PoseDoc,
+    },
+    /// Fixed-size Keyboard Input block.
     Input {
         /// Centre and orientation.
         pose: PoseDoc,

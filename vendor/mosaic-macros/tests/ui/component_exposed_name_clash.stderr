@@ -1,0 +1,5 @@
+error: `spot` is exposed twice — parts, exposed props, and exposed states share the handle's accessor namespace
+ --> tests/ui/component_exposed_name_clash.rs:8:25
+  |
+8 | fn Foo(#[prop(exposed)] spot: State<bool>) -> Element {
+  |                         ^^^^

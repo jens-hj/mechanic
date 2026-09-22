@@ -1,0 +1,20 @@
+error: theme for `Tokens` omits required token `text.col`, which has no default
+  --> tests/ui/theme_missing_required_nested.rs:8:1
+   |
+8  | / scheme! {
+9  | |     pub Tokens {
+10 | |         text {
+11 | |             col: Color,
+...  |
+15 | | }
+   | |_^
+...
+18 |       let _incomplete = theme! {
+   |  _______________________-
+19 | |         Tokens {
+20 | |             text { size: 20 },
+21 | |         }
+22 | |     };
+   | |_____- in this macro invocation
+   |
+   = note: this error originates in the macro `__mosaic_theme_Tokens` which comes from the expansion of the macro `theme` (in Nightly builds, run with -Z macro-backtrace for more info)

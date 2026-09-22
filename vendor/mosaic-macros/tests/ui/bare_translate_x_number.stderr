@@ -1,0 +1,5 @@
+error: expected `px`, `%`, `vw`, or `vh` after number; use `12px`, `10%`, `10vw`, or `10vh`
+  --> tests/ui/bare_translate_x_number.rs:11:26
+   |
+11 |         el translate:(x: 6.0) {}
+   |                          ^^^

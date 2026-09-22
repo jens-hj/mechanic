@@ -1,7 +1,8 @@
 (
     id: 1,
     creation: (
-        version: 17,
+        version: 18,
+        physical_inputs: [],
         name: "World construction",
         parts: [
             Cuboid(

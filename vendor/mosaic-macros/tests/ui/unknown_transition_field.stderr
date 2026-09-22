@@ -1,0 +1,5 @@
+error: unknown `Transition` field `glow` — did you mean `grow`?
+  --> tests/ui/unknown_transition_field.rs:11:44
+   |
+11 |         row transition:(width: ease(240.0) glow: 1.0) {}
+   |                                            ^^^^

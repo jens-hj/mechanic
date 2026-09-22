@@ -14,7 +14,7 @@ pub use abi::{
     PAIR_OVERFLOW_FLAG, pack_convex_counts,
 };
 pub use device::{
-    EXTERNAL_IMPULSE_BATCH_CAPACITY, GpuBodyStateError, GpuCompletedTickReadback,
+    EXTERNAL_IMPULSE_BATCH_CAPACITY, GpuBodyStateError, GpuCompletedTickReadback, GpuDispatchError,
     GpuExecutionEvidence, GpuExternalImpulse, GpuGroundPlane, GpuGroundPlaneError, GpuHoldError,
     GpuImpulseError, GpuKernelTimings, GpuPhysics, GpuPhysicsConfig, GpuPhysicsError,
     GpuPhysicsPipelines, GpuReadbackError, GpuSolverRoute, GpuSubmissionTimings, GpuTerrainError,

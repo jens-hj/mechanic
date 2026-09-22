@@ -1,0 +1,18 @@
+error[E0599]: no method named `knbo` found for struct `LampHandle` in the current scope
+  --> tests/ui/component_unknown_part.rs:25:17
+   |
+9  |   #[component]
+   |   ------------ method `knbo` not found for this struct
+...
+22 |       parent.adopt(&view! {
+   |  ___________________-
+23 | |         col {
+24 | |             Lamp {
+25 | |                 knbo fill:(Color::WHITE)
+   | |________________-^^^^
+   |
+help: there is a method `knob` with a similar name
+   |
+25 -                 knbo fill:(Color::WHITE)
+25 +                 knob fill:(Color::WHITE)
+   |

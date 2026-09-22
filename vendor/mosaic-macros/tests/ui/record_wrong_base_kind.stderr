@@ -1,0 +1,43 @@
+error[E0277]: the trait bound `ThemeToken<BackdropFilter>: ResolveThemeValue<Refraction>` is not satisfied
+  --> tests/ui/record_wrong_base_kind.rs:28:22
+   |
+28 |       ui.root().adopt(&view! {
+   |  ______________________^
+29 | |         col {
+30 | |             row filter:refract(general-filter bezel:12px) {}
+31 | |             row light:(point angle:45deg) {}
+32 | |         }
+33 | |     });
+   | |_____^ the trait `ResolveThemeValue<Refraction>` is not implemented for `ThemeToken<BackdropFilter>`
+   |
+   = help: the trait `ResolveThemeValue<Refraction>` is not implemented for `ThemeToken<BackdropFilter>`
+           but trait `ResolveThemeValue<BackdropFilter>` is implemented for it
+   = help: for that trait implementation, expected `BackdropFilter`, found `Refraction`
+note: required by a bound in `resolve`
+  --> $WORKSPACE/crates/mosaic-core/src/theme.rs
+   |
+   | pub fn resolve<T, V: ResolveThemeValue<T>>(value: V, fallback: impl FnOnce() -> T) -> T {
+   |                      ^^^^^^^^^^^^^^^^^^^^ required by this bound in `resolve`
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `ThemeToken<PointLight>: ResolveThemeValue<DirectionalLight>` is not satisfied
+  --> tests/ui/record_wrong_base_kind.rs:28:22
+   |
+28 |       ui.root().adopt(&view! {
+   |  ______________________^
+29 | |         col {
+30 | |             row filter:refract(general-filter bezel:12px) {}
+31 | |             row light:(point angle:45deg) {}
+32 | |         }
+33 | |     });
+   | |_____^ the trait `ResolveThemeValue<DirectionalLight>` is not implemented for `ThemeToken<PointLight>`
+   |
+   = help: the trait `ResolveThemeValue<DirectionalLight>` is not implemented for `ThemeToken<PointLight>`
+           but trait `ResolveThemeValue<PointLight>` is implemented for it
+   = help: for that trait implementation, expected `PointLight`, found `DirectionalLight`
+note: required by a bound in `resolve`
+  --> $WORKSPACE/crates/mosaic-core/src/theme.rs
+   |
+   | pub fn resolve<T, V: ResolveThemeValue<T>>(value: V, fallback: impl FnOnce() -> T) -> T {
+   |                      ^^^^^^^^^^^^^^^^^^^^ required by this bound in `resolve`
+   = note: this error originates in the macro `view` (in Nightly builds, run with -Z macro-backtrace for more info)

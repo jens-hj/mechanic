@@ -1,0 +1,5 @@
+error: a scheme needs at least one token
+ --> tests/ui/scheme_empty.rs:4:9
+  |
+4 |     pub Tokens {}
+  |         ^^^^^^

@@ -1,0 +1,5 @@
+error: expected `px`, `%`, `fr`, `vw`, or `vh` after number; use `100px`, `50%`, `1fr`, `50vw`, or `50vh`
+  --> tests/ui/bare_size_number.rs:11:19
+   |
+11 |         row width:70 {}
+   |                   ^^

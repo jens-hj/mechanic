@@ -1,0 +1,5 @@
+error: filter scale percentage must be greater than -100%
+  --> tests/ui/invalid_filter_scale.rs:10:42
+   |
+10 |     root.adopt(&view! { el filter:scale(-100%) {} });
+   |                                          ^^^

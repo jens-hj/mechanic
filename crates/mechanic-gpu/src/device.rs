@@ -370,6 +370,21 @@ pub enum GpuImpulseError {
     },
 }
 
+/// A tick cannot be dispatched.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum GpuDispatchError {
+    /// An external impulse row is invalid.
+    #[error(transparent)]
+    Impulse(#[from] GpuImpulseError),
+    /// The GPU runtime has no kernel for meshes between gears yet, and
+    /// silently dropping them would run a different machine.
+    #[error("the GPU runtime does not simulate gear meshes yet; this scene has {count}")]
+    UnsupportedGearLinks {
+        /// Meshes in the uploaded creation.
+        count: usize,
+    },
+}
+
 /// A replacement scene state cannot be uploaded safely.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum GpuBodyStateError {
@@ -487,6 +502,8 @@ pub struct GpuPhysics {
     collider_count: u32,
     bearing_count: u32,
     suppression_count: u32,
+    /// Meshes in the uploaded creation, which no kernel simulates yet.
+    gear_link_count: usize,
     pair_capacity: u32,
     pipeline_config: GpuPhysicsConfig,
     config: wgpu::Buffer,

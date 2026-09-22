@@ -1,0 +1,5 @@
+error: `optional` and `default` cannot be combined on one prop
+ --> tests/ui/component_optional_and_default.rs:6:25
+  |
+6 | fn Foo(#[prop(optional, default = 3)] value: i32) -> Element {
+  |                         ^^^^^^^

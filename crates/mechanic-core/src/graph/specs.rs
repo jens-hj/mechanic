@@ -116,6 +116,37 @@ pub struct RigidLinkSpec {
     pub second: PartId,
 }
 
+/// A mesh between two toothed parts, or a nut on a thread.
+///
+/// The parts never touch: the solver couples them magnetically at their pitch
+/// point, so the link carries no geometry of its own. Everything about the
+/// mesh comes from the two parts' teeth and rest poses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GearLinkSpec {
+    /// First meshing part.
+    pub first: PartId,
+    /// Second meshing part.
+    pub second: PartId,
+}
+
+impl GearLinkSpec {
+    /// Whether this link joins `part` to anything.
+    pub fn references(self, part: PartId) -> bool {
+        self.first == part || self.second == part
+    }
+
+    /// The part on the other side of `part`, if `part` is one of the two.
+    pub fn other(self, part: PartId) -> Option<PartId> {
+        if self.first == part {
+            Some(self.second)
+        } else if self.second == part {
+            Some(self.first)
+        } else {
+            None
+        }
+    }
+}
+
 /// Wire from a control block to one bearing it drives.
 ///
 /// The wire carries everything about how that one bearing behaves: its speed

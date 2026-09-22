@@ -1,5 +1,7 @@
 //! The running simulation: its physics backends, tick budget, and failure handling.
 
+mod controller_values;
+
 use crate::editor::preview::FeaturePreviewKey;
 use crate::editor::state::EditorState;
 use crate::pose::simulation_part_pose;
@@ -29,6 +31,11 @@ pub(crate) struct AppSimulation {
     pub(crate) creation: Option<CompiledCreation>,
     /// Exact graph snapshot represented by `creation` and the live GPU scene.
     pub(crate) published_graph: ConstructionGraph,
+    /// Transient controller numbers layered over authored configuration.
+    pub(crate) controller_values: Option<ConstructionGraph>,
+    /// Explicit runtime targets survive unlinking until edited or reset.
+    pub(crate) controller_overrides:
+        std::collections::BTreeMap<mechanic_core::NumericParameter, f32>,
     pub(crate) scheduler: FixedStepScheduler,
     pub(crate) next_tick: u64,
     pub(crate) tick_backlog: u64,

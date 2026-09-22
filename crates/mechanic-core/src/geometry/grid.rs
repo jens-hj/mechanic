@@ -1,6 +1,7 @@
 //! The construction grid: units, position ticks, dimensions, rotations, and poses.
 
 use bevy_math::{EulerRot, IVec3, Quat, Vec3};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Length of one exact authored position tick: 2.5 mm.
@@ -66,7 +67,7 @@ impl TryFrom<u8> for GridDimension {
 }
 
 /// Axis used by grid-aligned faces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Axis {
     /// Local x axis.
     X,
@@ -77,7 +78,8 @@ pub enum Axis {
 }
 
 impl Axis {
-    pub(crate) const fn index(self) -> usize {
+    /// The axis's component index: 0, 1 or 2.
+    pub const fn index(self) -> usize {
         match self {
             Self::X => 0,
             Self::Y => 1,
@@ -85,7 +87,8 @@ impl Axis {
         }
     }
 
-    pub(crate) const fn unit(self) -> Vec3 {
+    /// The axis's unit vector.
+    pub const fn unit(self) -> Vec3 {
         match self {
             Self::X => Vec3::X,
             Self::Y => Vec3::Y,

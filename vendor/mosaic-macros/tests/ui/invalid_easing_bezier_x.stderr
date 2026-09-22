@@ -1,0 +1,5 @@
+error: in `bezier`: Bézier x1 must be between 0% and 100%
+  --> tests/ui/invalid_easing_bezier_x.rs:10:46
+   |
+10 |         row transition:(width:ease(bezier(x1:120% y1:0% x2:58% y2:100%) 300ms)) {}
+   |                                              ^^^

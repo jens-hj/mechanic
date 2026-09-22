@@ -1,0 +1,5 @@
+error: unknown `prop` option (expected `optional`, `default = ...`, or `exposed`)
+ --> tests/ui/component_bad_prop_attr.rs:6:15
+  |
+6 | fn Foo(#[prop(nope)] x: i32) -> Element {
+  |               ^^^^

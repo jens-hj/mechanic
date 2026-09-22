@@ -1,0 +1,5 @@
+error: `fill` is not valid on a min/max size attribute; use `min-content`, `max-content`, `100px`, `50%`, `50vw`, or `50vh`
+  --> tests/ui/invalid_bound_keyword.rs:11:22
+   |
+11 |         el min-width:fill {}
+   |                      ^^^^

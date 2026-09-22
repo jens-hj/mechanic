@@ -200,7 +200,7 @@ fn open() -> (Overlay, DriveLinkId) {
     state.open(controller);
     overlay.handles.block.model.set(super::capture(
         &state,
-        &crate::editor::state::EditorGraph(graph),
+        &graph,
         &crate::sequencer::GearboxRuntime::default(),
         false,
     ));

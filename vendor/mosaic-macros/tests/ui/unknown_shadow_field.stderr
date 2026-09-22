@@ -1,0 +1,5 @@
+error: unknown `Shadow` field `glow` — expected one of: offset, blur, spread, color
+  --> tests/ui/unknown_shadow_field.rs:11:43
+   |
+11 |         row shadow:(offset: (x:0.0 y:6.0) glow: 1.0) {}
+   |                                           ^^^^

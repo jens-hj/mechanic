@@ -57,6 +57,8 @@ pub fn evaluate_part_solid(
         | PartSpec::Transmission(_)
         | PartSpec::Servo(_)
         | PartSpec::Seat(_)
+        | PartSpec::Dial(_)
+        | PartSpec::Button(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => return Err(SolidError::AuthoredPart),
     };

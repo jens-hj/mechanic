@@ -153,6 +153,8 @@ pub(super) fn owner_faces(graph: &ConstructionGraph, owner: FaceOwner) -> Vec<Fa
                 | PartSpec::Transmission(_)
                 | PartSpec::Servo(_)
                 | PartSpec::Seat(_)
+                | PartSpec::Dial(_)
+                | PartSpec::Button(_)
                 | PartSpec::Input(_)
                 | PartSpec::DimensionLink(_),
             ) => ALL_FACES

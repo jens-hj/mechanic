@@ -1,0 +1,10 @@
+error: couldn't read `$WORKSPACE/target/tests/trybuild/mosaic-macros/tests/assets/definitely-missing.png`: No such file or directory (os error 2)
+  --> tests/ui/img_missing_literal.rs:8:22
+   |
+8  |       ui.root().adopt(&view! {
+   |  ______________________^
+9  | |         el {
+10 | |             img "tests/assets/definitely-missing.png"
+11 | |         }
+12 | |     });
+   | |_____^

@@ -6,6 +6,18 @@ use std::f32::consts::TAU;
 
 use bevy_math::DVec3;
 
+/// Largest editable angular travel endpoint magnitude, in radians.
+pub const MAX_PROGRAMMED_TRAVEL_RADIANS: f32 = std::f32::consts::PI;
+
+/// Minimum separation of editable angular travel endpoints, in radians.
+pub const MIN_PROGRAMMED_TRAVEL_RADIANS: f32 = std::f32::consts::PI / 36.0;
+
+/// Minimum separation of editable linear travel endpoints, in metres.
+pub const MIN_PROGRAMMED_TRAVEL_METERS: f32 = 0.0025;
+
+/// Shortest editable controller dwell, in seconds.
+pub const MIN_DWELL_SECONDS: f32 = 0.1;
+
 /// Fixed physics frequency, in ticks per second.
 pub const TICK_RATE_HZ: u32 = 60;
 

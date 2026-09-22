@@ -1,0 +1,5 @@
+error: duplicate `mode` field
+  --> tests/ui/mask_duplicate_field.rs:13:46
+   |
+13 |         row mask:image("mask.png" mode:alpha mode:luminance) {}
+   |                                              ^^^^

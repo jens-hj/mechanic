@@ -7,7 +7,8 @@ use super::{
     vec,
 };
 use mechanic_core::{
-    ConstructionGraph, CuboidSpec, CylinderDimensions, PartId, PartSpec, PipeBendSpec,
+    ConstructionGraph, CuboidSpec, CylinderDimensions, CylinderSpec, MIN_CYLINDER_DIAMETER_GAP,
+    PartId, PartSpec, PipeBendSpec,
 };
 use mechanic_world::WORLD_HALF_EXTENT_METERS;
 
@@ -217,8 +218,12 @@ pub(crate) fn validate_world_bounds(
 }
 
 pub(super) fn cuboid_world_bounds(spec: CuboidSpec) -> (Vec3, Vec3) {
-    let rotation = Mat3::from_quat(spec.pose.rotation.quaternion());
-    let half = spec.size_meters() * 0.5;
+    envelope_world_bounds(spec.pose, spec.size_meters())
+}
+
+pub(super) fn envelope_world_bounds(pose: mechanic_core::BuildPose, size: Vec3) -> (Vec3, Vec3) {
+    let rotation = Mat3::from_quat(pose.rotation.quaternion());
+    let half = size * 0.5;
     let world_half = Vec3::new(
         rotation.x_axis.x.abs() * half.x
             + rotation.y_axis.x.abs() * half.y
@@ -230,7 +235,7 @@ pub(super) fn cuboid_world_bounds(spec: CuboidSpec) -> (Vec3, Vec3) {
             + rotation.y_axis.z.abs() * half.y
             + rotation.z_axis.z.abs() * half.z,
     );
-    let center = spec.pose.translation();
+    let center = pose.translation();
     (center - world_half, center + world_half)
 }
 
@@ -257,6 +262,9 @@ pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
         PartSpec::Transmission(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Servo(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Seat(spec) => cuboid_world_bounds(spec.cuboid()),
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => {
+            envelope_world_bounds(spec.pose(), spec.size_meters())
+        }
         PartSpec::Input(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::DimensionLink(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Cylinder(spec) => {
@@ -367,6 +375,10 @@ pub(super) fn parts_overlap_with_frame(
     target: PartSpec,
     frame: mechanic_core::ConstructionFrame,
 ) -> bool {
+    let (candidate, target) = (
+        meshing_envelope(candidate, target),
+        meshing_envelope(target, candidate),
+    );
     let candidate_boxes = part_collision_boxes(candidate);
     let mut target_boxes = part_collision_boxes(target);
     if frame != mechanic_core::ConstructionFrame::IDENTITY {
@@ -394,6 +406,39 @@ pub(super) fn parts_overlap_with_frame(
     })
 }
 
+/// Meshing parts never touch: teeth interleave with the partner's, so against a
+/// part it could mesh with a toothed cylinder claims only the space inside its
+/// root circle. Against anything else its tooth tips are its envelope.
+fn meshing_envelope(spec: PartSpec, other: PartSpec) -> PartSpec {
+    let PartSpec::Cylinder(cylinder) = spec else {
+        return spec;
+    };
+    let Some(gear) = cylinder.gear() else {
+        return spec;
+    };
+    if !super::gears::is_meshable(other) {
+        return spec;
+    }
+    let dimensions = cylinder.dimensions;
+    let root = gear.root_diameter();
+    let (outer, inner) = if gear.is_internal() {
+        (
+            dimensions.outer_diameter(),
+            root.min(dimensions.outer_diameter() - MIN_CYLINDER_DIAMETER_GAP),
+        )
+    } else {
+        (
+            root,
+            dimensions
+                .inner_diameter()
+                .min(root - MIN_CYLINDER_DIAMETER_GAP),
+        )
+    };
+    CylinderDimensions::new(outer, inner.max(0.0), dimensions.axial_length()).map_or(spec, |root| {
+        PartSpec::Cylinder(CylinderSpec::new(root, cylinder.pose))
+    })
+}
+
 /// Bounds the actual collision boxes, including the conservative wall boxes
 /// outside a round pipe's ideal radius. Authored bounds alone can miss those.
 pub(super) fn collision_boxes_bounds(boxes: &[CollisionBox]) -> (Vec3, Vec3) {
@@ -418,6 +463,11 @@ pub(super) fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
         PartSpec::Transmission(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Servo(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Seat(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => vec![CollisionBox {
+            center: spec.pose().translation(),
+            rotation: spec.pose().rotation.quaternion(),
+            half: spec.size_meters() * 0.5,
+        }],
         PartSpec::Input(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::DimensionLink(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Cuboid(spec) => vec![CollisionBox {

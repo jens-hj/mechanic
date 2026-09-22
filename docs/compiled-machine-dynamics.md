@@ -16,6 +16,11 @@ allocate a dense matrix for 100,000-body constructions.
 Floating roots own six velocity rows; every other row is a joint rate. Rows are
 assigned in preorder, not body order.
 
+Meshes between toothed parts are not joints: `CompiledCreation::gear_links`
+carries each as two compound-local sides, and a solver adds one no-slip row per
+mesh beside the closures ([gears](gears.md)). The two compounds of a mesh never
+collide.
+
 ## Machine model (`mechanic-physics`)
 
 `MachineDynamics` reconstructs tree poses and point Jacobians, assembles coupled
@@ -64,8 +69,13 @@ missed. Queries return `TerrainContact` points with:
 
 Manifold reduction keeps four outer corners plus a curved crown, keeps material
 boundaries separate, and falls back to unreduced points beyond 16 surface groups.
-Bodies joined by a bearing never collide; bodies of one mechanism collide only
-when they were built apart.
+Within one mechanism, colliders meet only where they were built apart
+(`MachineCollisionGeometry::built_fits`): two colliders built touching, all of
+their two bodies resting on the face they share, the two parts a bearing joins
+and the meshing parts across a mesh are exempt, and a body pair exempt
+throughout is dropped before its collider trees. A block a jointed body was
+built clear of stops it. Separate mechanisms always collide. The GPU runtime
+still exempts joined bodies whole (`collision_suppression`).
 
 `TerrainContact::{point_row, angular_row}` turn a contact into generalized rows.
 Both CPU solvers build their contact, friction and rolling rows from these.

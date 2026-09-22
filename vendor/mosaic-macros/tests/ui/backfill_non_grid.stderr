@@ -1,0 +1,5 @@
+error: `backfill` is only valid on a `grid` container
+ --> tests/ui/backfill_non_grid.rs:9:13
+  |
+9 |         row backfill {}
+  |             ^^^^^^^^

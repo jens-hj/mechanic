@@ -1,0 +1,5 @@
+error: more than one operand infers the `width` field of `Stroke`; use `stroke:(field:value …)` to name fields explicitly
+ --> tests/ui/record_plus_duplicate.rs:9:26
+  |
+9 |         row stroke:2px + 3px {}
+  |                          ^^^

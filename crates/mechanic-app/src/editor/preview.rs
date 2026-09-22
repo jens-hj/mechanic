@@ -217,8 +217,20 @@ pub(crate) fn sync_visual_meshes(
     let edit_delta = ConstructionEditDelta::between(&state.rendered_graph, &graph.0);
     let rebuild_all = publication_changed || edit_delta.is_empty();
     let affected_parts = edit_delta.affected_parts();
+    // A changed part's mesh partners turn their teeth to it, so they redraw too.
+    let mesh_partners = affected_parts
+        .iter()
+        .flat_map(|&part| {
+            graph
+                .0
+                .part_gear_links(part)
+                .chain(state.rendered_graph.part_gear_links(part))
+                .filter_map(move |(_, link)| link.other(part))
+        })
+        .collect::<Vec<_>>();
     let mut dirty_materials = affected_parts
         .iter()
+        .chain(&mesh_partners)
         .flat_map(|&part| {
             graph
                 .0
@@ -448,6 +460,10 @@ pub(crate) fn driven_bearing_count(graph: &ConstructionGraph) -> usize {
 
 pub(crate) fn control_link_count(graph: &ConstructionGraph) -> usize {
     driven_bearing_count(graph)
+        + graph
+            .physical_inputs()
+            .filter(|(_, config)| config.controller.is_some())
+            .count()
         + graph.input_seat_links().count()
         + graph.seat_controller_links().count()
 }
@@ -881,6 +897,71 @@ pub(crate) fn update_previews(
                 *action.2 = Visibility::Hidden;
             }
         }
+        (Some(Tool::Gear), _) => {
+            // A new gear on a bearing shows as the cylinder it will be; teeth
+            // that grow a cylinder show as a ghost around it. Teeth cut into
+            // a cylinder or a block face lie inside it, and once they are on,
+            // the part itself is the preview.
+            use crate::editor::gears::GearPreview;
+            if let Some(drag) = state.gears.rack_drag.as_ref() {
+                // A rack drag tints the blocks it covers; the teeth lie
+                // inside them and show once they are cut.
+                let parts = drag
+                    .run
+                    .iter()
+                    .map(|target| target.part)
+                    .collect::<Vec<_>>();
+                if let Some(mut mesh) = meshes.get_mut(&visuals.block_drag_preview_mesh) {
+                    *mesh = frame_visuals::parts_preview_mesh(
+                        &graph.0,
+                        &simulation,
+                        &parts,
+                        state.edit_context,
+                        DELETE_PREVIEW_SCALE,
+                    );
+                }
+                rendered_revisions.construction = None;
+                action.0.0 = visuals.block_drag_preview_mesh.clone();
+                *action.1 = Transform::default();
+                action.3.0 = action_material.clone();
+                *action.2 = Visibility::Visible;
+                return;
+            }
+            match state.gears.preview {
+                Some(GearPreview::Socket { candidate, .. }) => {
+                    sync_preview_mesh(
+                        &mut meshes,
+                        &visuals.block_drag_preview_mesh,
+                        &mut rendered_revisions.construction,
+                        ConstructionPreviewMeshKey::Layer(vec![PartSpec::Cylinder(candidate.spec)]),
+                        || combined_parts_mesh_scaled(&[PartSpec::Cylinder(candidate.spec)], 1.0),
+                    );
+                    action.0.0 = visuals.block_drag_preview_mesh.clone();
+                    *action.1 = Transform::default();
+                    action.3.0 = action_material.clone();
+                    *action.2 = Visibility::Visible;
+                }
+                Some(GearPreview::Teeth { target, spec })
+                    if spec.dimensions.outer_diameter()
+                        > target.spec.dimensions.outer_diameter() + 1.0e-4 =>
+                {
+                    let specs = vec![PartSpec::Cylinder(spec)];
+                    sync_preview_mesh(
+                        &mut meshes,
+                        &visuals.block_drag_preview_mesh,
+                        &mut rendered_revisions.construction,
+                        ConstructionPreviewMeshKey::Layer(specs.clone()),
+                        || layer_preview_mesh(&specs),
+                    );
+                    action.0.0 = visuals.block_drag_preview_mesh.clone();
+                    *action.1 = Transform::from_translation(target.frame.translation())
+                        .with_rotation(target.frame.rotation());
+                    action.3.0 = action_material.clone();
+                    *action.2 = Visibility::Visible;
+                }
+                _ => *action.2 = Visibility::Hidden,
+            }
+        }
         (Some(Tool::Weld), pending) => {
             if let Some(part) = state
                 .world_hovered_part
@@ -998,7 +1079,9 @@ pub(crate) fn update_previews(
         }
         (
             Some(
-                Tool::Hammer
+                Tool::Dial(_)
+                | Tool::Button(_)
+                | Tool::Hammer
                 | Tool::Connector
                 | Tool::LinearBearing
                 | Tool::Piston

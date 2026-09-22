@@ -1,0 +1,5 @@
+error: exposed state `hovered` reads as a typo of the `hover` interaction state at call sites — pick a more distinct name
+  --> tests/ui/component_exposed_near_miss.rs:11:9
+   |
+11 |     let hovered: State<bool> = State(false);
+   |         ^^^^^^^

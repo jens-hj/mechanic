@@ -1,0 +1,5 @@
+error: expected `px`, `%`, `vw`, or `vh` after number; use `12px`, `10%`, `10vw`, or `10vh`
+  --> tests/ui/bare_radius_number.rs:11:52
+   |
+11 |         el fill:(mosaic_core::Color::WHITE) radius:8 {}
+   |                                                    ^

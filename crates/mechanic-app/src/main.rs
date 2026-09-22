@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 mod automation;
 mod avatar;
 mod builder;
+mod button_config;
 mod camera;
 mod chroma;
 mod control_panel;
@@ -18,6 +19,7 @@ mod cpu_physics;
 mod creation_menu;
 mod creation_store;
 mod debug_freeze;
+mod dial_assignment;
 mod editor;
 mod env;
 mod frame_visuals;
@@ -25,6 +27,10 @@ mod freeze;
 mod freeze_motion;
 mod garage;
 mod hotbar;
+mod input_capture;
+mod input_label;
+mod input_parts;
+mod input_render;
 mod linear_editor;
 mod linear_render;
 mod live_edit;
@@ -33,6 +39,7 @@ mod multitool;
 mod pause_menu;
 mod performance;
 mod performance_capture;
+mod physical_controls;
 mod piston_editor;
 mod piston_render;
 mod pose;
@@ -192,6 +199,7 @@ fn main() {
         .init_resource::<performance_capture::Recorder>()
         .add_plugins(automation::AutomationPlugin)
         .add_plugins(suspension_capture::SuspensionCapturePlugin)
+        .add_plugins(input_capture::InputCapturePlugin)
         .init_resource::<AppSettings>()
         .init_resource::<AppSimulation>()
         .init_resource::<SimulationVisualCache>()

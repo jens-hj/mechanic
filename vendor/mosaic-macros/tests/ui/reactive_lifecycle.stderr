@@ -1,0 +1,5 @@
+error: `enter-exit` fires once at mount/unmount, so it cannot bind to state — use `enter-exit:(…)`
+  --> tests/ui/reactive_lifecycle.rs:11:13
+   |
+11 |         row enter-exit:{ fade() } {}
+   |             ^^^^^

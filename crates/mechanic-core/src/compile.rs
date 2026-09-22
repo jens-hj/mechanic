@@ -19,9 +19,9 @@ use drives::{
 use mass::{calculate_mass_properties, region_pieces};
 pub use model::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
-    CompiledCreation, CompiledCylinder, CoordinateDrive, DriveMode, GearSelection, LocalCollider,
-    LoopTopology, MAX_COMPILED_COLLIDERS, MassProperties, MechanismBodyTopology,
-    PIPE_BEND_COLLIDER_COUNT, TopologyError,
+    CompiledCreation, CompiledCylinder, CompiledGearLink, CompiledGearSide, CoordinateDrive,
+    DriveMode, GearSelection, LocalCollider, LoopTopology, MAX_COMPILED_COLLIDERS, MassProperties,
+    MechanismBodyTopology, PIPE_BEND_COLLIDER_COUNT, TopologyError,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -163,7 +163,9 @@ fn compile_graph(
             | PartSpec::Transmission(_)
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
-            | PartSpec::Input(_)
+            | PartSpec::Dial(_)
+        | PartSpec::Button(_)
+        | PartSpec::Input(_)
             | PartSpec::DimensionLink(_)
             | PartSpec::Cuboid(_) => 1,
             PartSpec::Cylinder(cylinder) => cylinder_collider_count(*cylinder),
@@ -497,6 +499,10 @@ fn compile_graph(
             local_axis_a: bearing.axis,
             local_axis_b: bearing.axis,
             coordinate_index,
+            parts: [Some(bearing.source), bearing.target].map(|face| match face?.owner {
+                FaceOwner::Part(part) => Some(part),
+                FaceOwner::Ground => None,
+            }),
         });
     }
 
@@ -528,6 +534,52 @@ fn compile_graph(
     let actuation = resolve_coordinate_actuation(&topology, graph, &[])?;
     let coordinate_drives = resolve_coordinate_drives(&topology, graph, &actuation);
 
+    // A mesh couples two bodies without touching them, so the pair never
+    // collides. A link whose parts no longer meet, or that ended up inside one
+    // rigid body, constrains nothing and is left out rather than refused.
+    let mut gear_links = Vec::with_capacity(graph.gear_links.len());
+    for (id, link) in graph.gear_links.iter() {
+        let Ok(mesh) = graph.gear_mesh(*link) else {
+            continue;
+        };
+        let parts = if mesh.swapped {
+            [link.second, link.first]
+        } else {
+            [link.first, link.second]
+        };
+        let rows = parts.map(|part| compound_lookup[&part]);
+        if rows[0] == rows[1] {
+            continue;
+        }
+        suppressed.insert(ordered_pair(rows[0], rows[1]));
+        let sides = core::array::from_fn(|index| CompiledGearSide {
+            compound: rows[index],
+            local_center: mesh.sides[index].center
+                - compounds[rows[index] as usize].root_translation,
+            local_axis: mesh.sides[index].axis,
+            pitch_radius: mesh.sides[index].pitch_radius,
+        });
+        gear_links.push(CompiledGearLink {
+            source: id,
+            kind: mesh.kind,
+            sides,
+            parts,
+            advance: mesh.advance,
+        });
+    }
+    let mut meshing_parts = graph
+        .parts()
+        .filter(|(_, spec)| match spec {
+            PartSpec::Cylinder(cylinder) => {
+                cylinder.gear().is_some() || cylinder.spiral().is_some()
+            }
+            PartSpec::Cuboid(cuboid) => cuboid.rack().is_some(),
+            _ => false,
+        })
+        .map(|(part, _)| part)
+        .collect::<Vec<_>>();
+    meshing_parts.sort_unstable();
+
     let dynamics = crate::CompiledDynamics::compile(&compounds, &bearings, &topology);
     Ok(CompiledCreation {
         dynamics,
@@ -538,6 +590,8 @@ fn compile_graph(
         collision_suppression: suppressed.into_iter().collect(),
         part_to_compound,
         coordinate_drives,
+        gear_links,
+        meshing_parts,
         cylinders,
     })
 }

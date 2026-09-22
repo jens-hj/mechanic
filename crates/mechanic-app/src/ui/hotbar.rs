@@ -297,6 +297,7 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
         MatterMode::Manipulate => icon(Tool::Shape),
         MatterMode::Chroma => icon(Tool::Chroma),
         MatterMode::Spiral => icon(Tool::Spiral),
+        MatterMode::Gear => icon(Tool::Gear),
     };
     view! {
         stack width:{ Length::px(SLOT) } height:{ Length::px(SLOT) } align:center justify:center
@@ -402,6 +403,7 @@ fn contextual_choice(
     match matter_mode {
         MatterMode::Block | MatterMode::Cylinder | MatterMode::Layer => construction_material,
         MatterMode::Spiral => "Cut or add a helix",
+        MatterMode::Gear => "Teeth, racks and meshes",
         MatterMode::Item => item,
         MatterMode::Terrain => terrain_material,
         MatterMode::Manipulate => shape_status,
@@ -694,6 +696,29 @@ pub(super) fn icon(tool: Tool) -> Element {
                 circle at:(x:28px y:20px) radius:2.5px exponent:1 fill:accent.key
             }
         },
+        Tool::Dial(_) => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                circle at:(x:20px y:22px) radius:11px exponent:1 fill:bar.slot
+                    stroke:(width:3px color:accent.angle)
+                line from:(x:20px y:22px) to:(x:26px y:15px)
+                    stroke:(width:3px cap:round color:ink.fg)
+                line from:(x:5px y:22px) to:(x:2px y:22px) stroke:(width:2px color:accent.angle)
+                line from:(x:9px y:11px) to:(x:7px y:8px) stroke:(width:2px color:accent.angle)
+                line from:(x:20px y:7px) to:(x:20px y:3px) stroke:(width:2px color:accent.angle)
+                line from:(x:31px y:11px) to:(x:33px y:8px) stroke:(width:2px color:accent.angle)
+                line from:(x:35px y:22px) to:(x:38px y:22px) stroke:(width:2px color:accent.angle)
+            }
+        },
+        Tool::Button(_) => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:27px) size:(w:30px h:12px) radius:3px exponent:1
+                    fill:bar.slot stroke:(width:2px color:ink.fg)
+                rect at:(x:20px y:18px) size:(w:22px h:16px) radius:5px exponent:1
+                    fill:accent.key stroke:(width:2px color:ink.fg)
+                line from:(x:14px y:14px) to:(x:26px y:14px)
+                    stroke:(width:2px cap:round color:bar.slot)
+            }
+        },
         Tool::DimensionLink => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
                 rect at:(x:20px y:20px) size:(w:31px h:18px) radius:4px exponent:1 fill:bar.slot
@@ -712,6 +737,17 @@ pub(super) fn icon(tool: Tool) -> Element {
                 circle at:(x:10px y:14px) radius:3.5px exponent:1 fill:accent.key
                 circle at:(x:30px y:30px) radius:3px exponent:1 fill:ink.fg
                 circle at:(x:10px y:30px) radius:3px exponent:1 fill:ink.fg
+            }
+        },
+        // A wheel with eight teeth around it and a hub.
+        Tool::Gear => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                circle at:(x:20px y:20px) radius:11px exponent:1 fill:accent.speed
+                line from:(x:20px y:5px) to:(x:20px y:35px) stroke:(width:5px color:accent.speed)
+                line from:(x:5px y:20px) to:(x:35px y:20px) stroke:(width:5px color:accent.speed)
+                line from:(x:9px y:9px) to:(x:31px y:31px) stroke:(width:5px color:accent.speed)
+                line from:(x:31px y:9px) to:(x:9px y:31px) stroke:(width:5px color:accent.speed)
+                circle at:(x:20px y:20px) radius:4px exponent:1 fill:ink.fg
             }
         },
         // A shaft with three turns of flight across it.

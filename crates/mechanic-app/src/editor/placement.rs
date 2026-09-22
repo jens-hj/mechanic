@@ -140,6 +140,8 @@ pub(crate) const fn tool_supports_free_placement(tool: Tool) -> bool {
             | Tool::ElectricEngine
             | Tool::Servo
             | Tool::Seat
+            | Tool::Dial(_)
+            | Tool::Button(_)
             | Tool::Input
             | Tool::DimensionLink
     )

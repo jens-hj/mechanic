@@ -1,0 +1,5 @@
+error: unknown `input` part `placehodler` — did you mean `placeholder`?
+  --> tests/ui/input_unknown_part.rs:15:17
+   |
+15 |                 placehodler font-color:(Color::WHITE)
+   |                 ^^^^^^^^^^^

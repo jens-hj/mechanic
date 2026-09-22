@@ -1,5 +1,8 @@
 //! Behaviour of the soft-step solver, with tolerances suited to a game.
 
+mod fits;
+mod gears;
+
 use super::*;
 use crate::{
     DriveCommand,

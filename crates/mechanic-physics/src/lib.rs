@@ -10,6 +10,7 @@
 
 mod error;
 mod free_motion;
+mod gear_mesh;
 mod joint_forces;
 mod joint_machine;
 mod kinematics;
