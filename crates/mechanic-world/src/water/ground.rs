@@ -112,7 +112,7 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
 #[derive(Clone, Debug, Default)]
 pub(super) struct OpeningsCache {
     bricks: HashMap<BrickCoord, Box<[Openings; BRICK_WATER_CELLS]>>,
-    /// Seed-derived water found at each cell's lowest opening.
+    /// Seed-derived water found in each cell.
     implicit: HashMap<WaterCell, Option<WaterSurface>>,
 }
 
@@ -154,11 +154,13 @@ impl OpeningsCache {
             self.implicit.insert(cell, None);
             return None;
         }
+        // Any open layer will do, highest first: on a sloping bed the lowest
+        // layer's opening may lie off the column's centre, in the ground.
         let openings = self.openings(ground, cell);
-        let found = openings
-            .iter()
-            .position(|&open| open > 0)
-            .and_then(|layer| ground.implicit(cell.layer_centre(layer)));
+        let found = (0..openings.len())
+            .rev()
+            .filter(|&layer| openings[layer] > 0)
+            .find_map(|layer| ground.implicit(cell.layer_centre(layer)));
         self.implicit.insert(cell, found);
         found
     }

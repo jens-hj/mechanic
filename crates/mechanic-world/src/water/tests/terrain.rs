@@ -75,8 +75,8 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
     let dug = DVec3::new(beyond.x, level - 0.5, beyond.z);
     let surface = water.surface(&ground, dug).expect("the trench holds water");
     assert!(
-        matches!(surface.body, WaterBody::Pool(_)),
-        "the dug trench is not stored water"
+        matches!(surface.body, WaterBody::Lake(_)),
+        "the dug trench did not join the lake"
     );
     assert!(
         (surface.level - level).abs() < 0.05,

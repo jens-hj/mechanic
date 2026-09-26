@@ -86,8 +86,12 @@ impl WaterGround for Ground {
     }
 
     fn implicit(&self, point: DVec3) -> Option<WaterSurface> {
+        // Seed-derived water knows only the untouched lake, never a room dug
+        // beside or under it.
+        let (room, _) = self.lake?;
+        let untouched = point.cmpge(room.minimum).all() && point.cmplt(room.maximum).all();
         self.lake_at(point.x, point.z)
-            .filter(|surface| point.y < surface.level && self.open(point))
+            .filter(|surface| point.y < surface.level && untouched)
     }
 
     fn lake_area(&self, _lake: u32) -> f64 {
@@ -193,20 +197,31 @@ fn lake_and_trench(cave: bool) -> Ground {
 }
 
 #[test]
-fn a_trench_dug_from_a_lake_fills_to_the_lake_level() {
+fn a_trench_dug_from_a_lake_fills_to_the_lake_level_and_joins_it() {
     let ground = lake_and_trench(false);
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, ground.bricks());
     run(&mut water, &ground, 30);
-    let trench = level_at(&water, &ground, DVec3::new(3.0, 0.0, 0.3));
-    assert!(
-        (trench - 0.8).abs() < 0.02,
-        "the trench stands at {trench:.3} m"
+    let trench = water
+        .surface(&ground, DVec3::new(3.0, 0.0, 0.3))
+        .expect("the trench holds water");
+    assert_eq!(
+        trench.body,
+        WaterBody::Lake(0),
+        "the trench did not join the lake"
     );
     assert!(
-        (water.drawdown_m3(0) - water.stored_m3()).abs() < 1.0e-9,
-        "the trench holds {:.3} m³ but the lake gave {:.3} m³",
-        water.stored_m3(),
+        (trench.level - 0.8).abs() < 0.01,
+        "the trench stands at {:.3} m",
+        trench.level
+    );
+    let held = water.stored_m3() + water.joined_m3(&ground);
+    assert!(held > 2.5, "the trench holds only {held:.3} m³");
+    // Joined cells follow the lake as it drops, which its hollow's area does
+    // not count: the books close to the drop over their area.
+    assert!(
+        (water.drawdown_m3(0) - held).abs() < 0.01,
+        "the trench holds {held:.3} m³ but the lake gave {:.3} m³",
         water.drawdown_m3(0)
     );
 }
@@ -217,19 +232,48 @@ fn a_breached_lake_drains_into_a_cave_until_the_levels_meet() {
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, ground.bricks());
     run(&mut water, &ground, 120);
+    let held = water.stored_m3() + water.joined_m3(&ground);
+    assert!(held > 36.0, "the cave holds {held:.1} m³");
     let cave = level_at(&water, &ground, DVec3::new(6.0, -2.0, 0.5));
     let lake = level_at(&water, &ground, DVec3::new(-5.0, 0.0, 0.5));
     assert!(
-        water.stored_m3() > 36.0,
-        "the cave holds {:.1} m³",
-        water.stored_m3()
-    );
-    assert!(
-        (cave - lake).abs() < 0.02,
+        (cave - lake).abs() < 0.01,
         "cave at {cave:.3} m, lake at {lake:.3} m"
     );
     assert!(lake < 0.8, "the lake did not go down");
-    assert!((water.drawdown_m3(0) - water.stored_m3()).abs() < 1.0e-9);
+    assert!((water.drawdown_m3(0) - held).abs() < 0.05);
+}
+
+/// A lake over a bed 2 m down, with a 1 m hole dug into the bed.
+fn lake_with_hole() -> Ground {
+    Ground {
+        rooms: vec![room([0.0, -3.0, 0.0], [1.0, -2.0, 1.0])],
+        lake: Some((room([-10.0, -2.0, -10.0], [10.0, 3.0, 10.0]), 0.8)),
+    }
+}
+
+#[test]
+fn a_hole_dug_under_a_lake_fills_and_becomes_lake() {
+    let ground = lake_with_hole();
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    run(&mut water, &ground, 30);
+    assert_eq!(
+        water.pools().count(),
+        0,
+        "the hole is still a pool of its own"
+    );
+    let hole = water
+        .surface(&ground, DVec3::new(0.5, -2.5, 0.5))
+        .expect("the hole holds water");
+    assert_eq!(hole.body, WaterBody::Lake(0));
+    // The lake gave the hole its 1 m³ and dropped by that over its area.
+    assert!(
+        (water.drawdown_m3(0) - 1.0).abs() < 0.02,
+        "drawn {:.3} m³",
+        water.drawdown_m3(0)
+    );
+    assert!((hole.level - (0.8 - water.drawdown_m3(0) / 10_000.0)).abs() < 1.0e-9);
 }
 
 /// A closed 1 m box open at the top, and the same with a block in one half

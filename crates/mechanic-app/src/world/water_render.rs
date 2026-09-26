@@ -15,7 +15,10 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, PrimitiveTopology, VertexFormat};
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
-use mechanic_world::{PoolView, WATER_CELL_METRES, WaterFall, WaterSheet, WaterTile, water_sheet};
+use mechanic_world::{
+    PoolView, TerrainField, WATER_CELL_METRES, WaterCell, WaterFall, WaterSheet, WaterSurface,
+    WaterTile, water_sheet,
+};
 
 use super::{WorldOwned, WorldRuntime};
 use crate::camera::MainCamera;
@@ -157,6 +160,9 @@ pub(crate) struct WaterTiles {
     pools: HashMap<u32, (Entity, f64, usize)>,
     /// The falling streams' entity.
     falls: Option<Entity>,
+    /// Cells joined to seed-derived water: their entity, and a fingerprint of
+    /// what it shows.
+    joined: Option<(Entity, (usize, u64))>,
     /// Water revision the pools were drawn at.
     drawn_revision: Option<u64>,
 }
@@ -332,19 +338,88 @@ pub(crate) fn stream_water(
     }
 }
 
-/// A flat quad per surface cell of a stored pool, placed against `origin`.
-fn pool_mesh(pool: &PoolView, origin: DVec3) -> Mesh {
+/// One column of stored water to draw: its top cell, surface and depth.
+struct SurfaceColumn {
+    cell: WaterCell,
+    level: f64,
+    depth: f64,
+}
+
+/// The columns of a pool whose surface lies open to the air: a pool filling
+/// under a lake has no surface of its own.
+fn open_columns(pool: &PoolView, field: &TerrainField) -> Vec<SurfaceColumn> {
+    pool.surface_cells
+        .iter()
+        .zip(&pool.depths)
+        .filter(|(cell, _)| {
+            let centre = cell.centre();
+            !field.is_water(DVec3::new(centre.x, pool.level + 0.05, centre.z))
+        })
+        .map(|(&cell, &depth)| SurfaceColumn {
+            cell,
+            level: pool.level,
+            depth,
+        })
+        .collect()
+}
+
+/// The columns of cells that joined seed-derived water where that water's
+/// own sheet does not show: ground dug beside a lake, not under it.
+fn joined_columns(
+    joined: &[(WaterCell, WaterSurface)],
+    field: &TerrainField,
+) -> Vec<SurfaceColumn> {
+    let mut tops = std::collections::BTreeMap::<(i32, i32), (WaterCell, f64)>::new();
+    for &(cell, surface) in joined {
+        if cell.bottom() >= surface.level {
+            continue;
+        }
+        let top = tops
+            .entry((cell.x, cell.z))
+            .or_insert((cell, surface.level));
+        if cell.y > top.0.y {
+            *top = (cell, surface.level);
+        }
+    }
+    tops.into_values()
+        .filter(|&(cell, level)| {
+            let centre = cell.centre();
+            !field.is_water(DVec3::new(centre.x, level - 0.02, centre.z))
+        })
+        .map(|(cell, level)| SurfaceColumn {
+            cell,
+            level,
+            depth: 1.0,
+        })
+        .collect()
+}
+
+/// What a set of columns shows, to the millimetre: drawn again only when
+/// this changes.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a millimetre fingerprint of the drawn levels"
+)]
+fn fingerprint(columns: &[SurfaceColumn]) -> (usize, u64) {
+    (
+        columns.len(),
+        columns
+            .iter()
+            .map(|column| (column.level * 1000.0).round() as i64 as u64)
+            .fold(0_u64, u64::wrapping_add),
+    )
+}
+
+/// A flat quad per column of stored water, placed against `origin`.
+fn columns_mesh(columns: &[SurfaceColumn], origin: DVec3) -> Mesh {
     let edge = WATER_CELL_METRES;
-    let mut positions = Vec::with_capacity(pool.surface_cells.len() * 4);
-    let mut attributes = Vec::with_capacity(pool.surface_cells.len() * 4);
-    let mut indices = Vec::with_capacity(pool.surface_cells.len() * 6);
-    for (cell, &depth) in pool.surface_cells.iter().zip(&pool.depths) {
+    let mut positions = Vec::with_capacity(columns.len() * 4);
+    let mut attributes = Vec::with_capacity(columns.len() * 4);
+    let mut indices = Vec::with_capacity(columns.len() * 6);
+    for &SurfaceColumn { cell, level, depth } in columns {
         let base = u32::try_from(positions.len()).expect("a pool mesh fits u32 indices");
-        let corner = DVec3::new(
-            f64::from(cell.x) * edge,
-            pool.level,
-            f64::from(cell.z) * edge,
-        );
+        let corner = DVec3::new(f64::from(cell.x) * edge, level, f64::from(cell.z) * edge);
         for offset in [
             DVec3::ZERO,
             DVec3::new(0.0, 0.0, edge),
@@ -417,14 +492,31 @@ pub(crate) fn draw_stored_water(
     }
     tiles.drawn_revision = Some(runtime.water_revision);
     let origin = runtime.floating_origin.0;
+    let field = &runtime.field;
     let material = tiles
         .material
         .get_or_insert_with(|| materials.add(WaterRenderMaterial::default()))
         .clone();
+    let spawn = |commands: &mut Commands, meshes: &mut Assets<Mesh>, name: String, mesh: Mesh| {
+        commands
+            .spawn((
+                Name::new(name),
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(material.clone()),
+                Transform::IDENTITY,
+                // Shadow cascades cost more than the rest of the water's
+                // shading together.
+                bevy::light::NotShadowReceiver,
+                bevy::light::NotShadowCaster,
+                WorldOwned,
+            ))
+            .id()
+    };
     let mut seen = std::collections::HashSet::new();
     for pool in runtime.water.pools() {
         seen.insert(pool.id);
-        let cells = pool.surface_cells.len();
+        let columns = open_columns(&pool, field);
+        let cells = columns.len();
         if let Some(&(entity, level, drawn)) = tiles.pools.get(&pool.id) {
             if (level - pool.level).abs() < 0.005 && drawn == cells {
                 continue;
@@ -435,17 +527,12 @@ pub(crate) fn draw_stored_water(
         if cells == 0 {
             continue;
         }
-        let entity = commands
-            .spawn((
-                Name::new(format!("Water pool {}", pool.id)),
-                Mesh3d(meshes.add(pool_mesh(&pool, origin))),
-                MeshMaterial3d(material.clone()),
-                Transform::IDENTITY,
-                bevy::light::NotShadowReceiver,
-                bevy::light::NotShadowCaster,
-                WorldOwned,
-            ))
-            .id();
+        let entity = spawn(
+            &mut commands,
+            &mut meshes,
+            format!("Water pool {}", pool.id),
+            columns_mesh(&columns, origin),
+        );
         tiles.pools.insert(pool.id, (entity, pool.level, cells));
     }
     tiles.pools.retain(|id, (entity, ..)| {
@@ -455,23 +542,43 @@ pub(crate) fn draw_stored_water(
         }
         keep
     });
+    let ground = mechanic_world::TerrainWater {
+        field,
+        edits: &runtime.edits,
+    };
+    let joined = joined_columns(&runtime.water.joined_cells(&ground), field);
+    let key = fingerprint(&joined);
+    if tiles.joined.is_none_or(|(_, drawn)| drawn != key) {
+        if let Some((entity, _)) = tiles.joined.take() {
+            commands.entity(entity).despawn();
+        }
+        if !joined.is_empty() {
+            let entity = spawn(
+                &mut commands,
+                &mut meshes,
+                "Water joined to a lake".to_owned(),
+                columns_mesh(&joined, origin),
+            );
+            tiles.joined = Some((entity, key));
+        }
+    }
     if let Some(entity) = tiles.falls.take() {
         commands.entity(entity).despawn();
     }
-    if !runtime.water_falls.is_empty() {
-        tiles.falls = Some(
-            commands
-                .spawn((
-                    Name::new("Falling water"),
-                    Mesh3d(meshes.add(falls_mesh(&runtime.water_falls, origin))),
-                    MeshMaterial3d(material),
-                    Transform::IDENTITY,
-                    bevy::light::NotShadowReceiver,
-                    bevy::light::NotShadowCaster,
-                    WorldOwned,
-                ))
-                .id(),
-        );
+    // A stream falling under a lake falls through lake water: nothing shows.
+    let falls = runtime
+        .water_falls
+        .iter()
+        .filter(|fall| !field.is_water(fall.from + DVec3::Y * 0.05))
+        .copied()
+        .collect::<Vec<_>>();
+    if !falls.is_empty() {
+        tiles.falls = Some(spawn(
+            &mut commands,
+            &mut meshes,
+            "Falling water".to_owned(),
+            falls_mesh(&falls, origin),
+        ));
     }
 }
 

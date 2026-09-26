@@ -234,6 +234,20 @@ pub struct StoredWaterDoc {
     pub pools: Vec<PoolDoc>,
     /// Every lake water has been drawn from or added to.
     pub drawdowns: Vec<LakeDrawdownDoc>,
+    /// Cells that filled from seed-derived water and joined it.
+    pub joined: Vec<JoinedCellDoc>,
+}
+
+/// A cell that filled from seed-derived water and joined it, in a saved
+/// world.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JoinedCellDoc {
+    /// The cell.
+    pub cell: WaterCell,
+    /// The water it joined.
+    pub body: WaterBody,
+    /// That water's level as the seed made it, in metres.
+    pub level: f64,
 }
 
 /// An immutable view of the water for queries off the water's own thread:
@@ -244,6 +258,8 @@ pub struct WaterSurfaces {
     field: Arc<TerrainField>,
     wet: HashMap<WaterCell, (u32, f64)>,
     drops: BTreeMap<u32, f64>,
+    /// Cells that joined seed-derived water, with its undrawn surface.
+    joined: HashMap<WaterCell, WaterSurface>,
 }
 
 impl WaterSurfaces {
@@ -253,6 +269,7 @@ impl WaterSurfaces {
             field,
             wet: HashMap::new(),
             drops: BTreeMap::new(),
+            joined: HashMap::new(),
         }
     }
 
@@ -274,12 +291,21 @@ impl WaterSurfaces {
                     flow: DVec2::ZERO,
                 });
             }
+            if let Some(&joined) = self.joined.get(&near) {
+                return Some(self.lowered(joined));
+            }
         }
-        let mut surface = self.field.water_surface(point.x, point.z)?;
+        self.field
+            .water_surface(point.x, point.z)
+            .map(|surface| self.lowered(surface))
+    }
+
+    /// Seed-derived water at its drawn level.
+    fn lowered(&self, mut surface: WaterSurface) -> WaterSurface {
         if let Some(lake) = lake_of(surface.body) {
             surface.level -= self.drops.get(&lake).copied().unwrap_or(0.0);
         }
-        Some(surface)
+        surface
     }
 }
 
@@ -292,6 +318,17 @@ enum End {
     Body(WaterBody),
     /// A cell with no pool yet, which one starts in.
     Seed(WaterCell),
+}
+
+/// What one step's contacts do.
+#[derive(Debug, Default)]
+struct Exchanges {
+    transfers: Vec<Transfer>,
+    falls: Vec<WaterFall>,
+    /// Pools whose levels met where they touch.
+    merges: Vec<(u32, u32)>,
+    /// Pools that reached the seed-derived water they touch, at a contact.
+    joins: Vec<(u32, WaterCell)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -312,6 +349,9 @@ pub struct WaterWorld {
     drawdowns: BTreeMap<u32, f64>,
     /// Free cells seed-derived water pours into.
     inlets: std::collections::BTreeSet<WaterCell>,
+    /// Cells a pool filled up to the seed-derived water beside it, which then
+    /// became part of that water: undrawn surface of the water they joined.
+    joined: HashMap<WaterCell, WaterSurface>,
 }
 
 impl WaterWorld {
@@ -325,6 +365,16 @@ impl WaterWorld {
         let mut water = Self::new();
         for drawdown in &doc.drawdowns {
             water.drawdowns.insert(drawdown.lake, drawdown.volume_m3);
+        }
+        for joined in &doc.joined {
+            water.joined.insert(
+                joined.cell,
+                WaterSurface {
+                    level: joined.level,
+                    body: joined.body,
+                    flow: DVec2::ZERO,
+                },
+            );
         }
         for pool in &doc.pools {
             water.deposit_at(ground, pool.seed, pool.volume_m3);
@@ -352,12 +402,58 @@ impl WaterWorld {
                 .iter()
                 .map(|(&lake, &volume_m3)| LakeDrawdownDoc { lake, volume_m3 })
                 .collect(),
+            joined: {
+                let mut joined = self
+                    .joined
+                    .iter()
+                    .map(|(&cell, surface)| JoinedCellDoc {
+                        cell,
+                        body: surface.body,
+                        level: surface.level,
+                    })
+                    .collect::<Vec<_>>();
+                joined.sort_by_key(|joined| joined.cell);
+                joined
+            },
         }
     }
 
     /// Water held in pools, in m³.
     pub fn stored_m3(&self) -> f64 {
         self.pools.values().map(|pool| pool.volume).sum()
+    }
+
+    /// Cells that filled from seed-derived water and joined it, with the
+    /// water's surface at its drawn level.
+    pub fn joined_cells(&self, ground: &impl WaterGround) -> Vec<(WaterCell, WaterSurface)> {
+        let mut joined = self
+            .joined
+            .iter()
+            .map(|(&cell, &surface)| (cell, self.drawn(ground, surface)))
+            .collect::<Vec<_>>();
+        joined.sort_by_key(|(cell, _)| *cell);
+        joined
+    }
+
+    /// Water held in cells that joined seed-derived water, in m³.
+    pub fn joined_m3(&mut self, ground: &impl WaterGround) -> f64 {
+        let cells = self.joined_cells(ground);
+        cells
+            .into_iter()
+            .map(|(cell, surface)| {
+                let openings = self.openings(ground, cell);
+                openings
+                    .iter()
+                    .enumerate()
+                    .map(|(layer, &open)| {
+                        #[expect(clippy::cast_precision_loss, reason = "four layers")]
+                        let bottom = (layer as f64).mul_add(FINE_LAYER_METRES, cell.bottom());
+                        let fill = ((surface.level - bottom) / FINE_LAYER_METRES).clamp(0.0, 1.0);
+                        f64::from(open) * FINE_VOLUME_M3 * fill
+                    })
+                    .sum::<f64>()
+            })
+            .sum()
     }
 
     /// Water drawn from a lake so far, in m³.
@@ -382,8 +478,18 @@ impl WaterWorld {
                 let area = field.lake_area(lake).unwrap_or(f64::INFINITY);
                 (lake, volume / area)
             })
+            .collect::<BTreeMap<_, _>>();
+        let joined = self
+            .joined
+            .iter()
+            .map(|(&cell, surface)| (cell, *surface))
             .collect();
-        WaterSurfaces { field, wet, drops }
+        WaterSurfaces {
+            field,
+            wet,
+            drops,
+            joined,
+        }
     }
 
     /// Every pool, to draw.
@@ -430,6 +536,9 @@ impl WaterWorld {
                     });
                 }
             }
+            if let Some(&joined) = self.joined.get(&near) {
+                return Some(self.drawn(ground, joined));
+            }
         }
         ground
             .surface(point.x, point.z)
@@ -449,7 +558,10 @@ impl WaterWorld {
     }
 
     fn implicit(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<WaterSurface> {
-        let surface = self.ground.implicit(ground, cell)?;
+        let surface = match self.joined.get(&cell) {
+            Some(&surface) => surface,
+            None => self.ground.implicit(ground, cell)?,
+        };
         let surface = self.drawn(ground, surface);
         (floor_of(cell, self.openings(ground, cell))? < surface.level).then_some(surface)
     }
@@ -574,16 +686,22 @@ impl WaterWorld {
         for &id in &ids {
             self.flood(ground, id, SPREAD_CELLS_PER_STEP);
         }
-        let mut transfers = Vec::new();
-        let mut falls = Vec::new();
-        let mut merges = Vec::new();
+        let mut out = Exchanges::default();
         for &id in &ids {
-            self.exchange(ground, id, dt, &mut transfers, &mut falls, &mut merges);
+            self.exchange(ground, id, dt, &mut out);
         }
-        self.pour_inlets(ground, dt, &mut transfers);
-        let (moved_m3, fed) = self.apply(ground, &transfers);
-        for (keep, other) in merges {
+        self.pour_inlets(ground, dt, &mut out.transfers);
+        let (moved_m3, fed) = self.apply(ground, &out.transfers);
+        // Water that arrived floods at once, so no pool stands higher than
+        // its water can reach.
+        for &id in &fed {
+            self.flood(ground, id, SPREAD_CELLS_PER_STEP);
+        }
+        for (keep, other) in out.merges {
             self.merge(keep, other);
+        }
+        for (id, contact) in out.joins {
+            self.join(ground, id, contact);
         }
         self.dry_up(ground, &fed);
         for pool in self.pools.values_mut() {
@@ -593,20 +711,12 @@ impl WaterWorld {
             moved_m3,
             pools: self.pools.len(),
             cells: self.owner.len(),
-            falls,
+            falls: out.falls,
         }
     }
 
     /// Works out what runs across one pool's contacts over `dt`.
-    fn exchange(
-        &mut self,
-        ground: &impl WaterGround,
-        id: u32,
-        dt: f64,
-        transfers: &mut Vec<Transfer>,
-        falls: &mut Vec<WaterFall>,
-        merges: &mut Vec<(u32, u32)>,
-    ) {
+    fn exchange(&mut self, ground: &impl WaterGround, id: u32, dt: f64, out: &mut Exchanges) {
         let Some(pool) = self.pools.get(&id) else {
             return;
         };
@@ -635,16 +745,21 @@ impl WaterWorld {
                     .surface_area()
                     .max(WATER_CELL_METRES.powi(2));
                 if (level - other_level).abs() < MERGE_METRES && level > floor {
-                    merges.push((id.min(other), id.max(other)));
+                    out.merges.push((id.min(other), id.max(other)));
                 } else if level > other_level {
                     let head = level - other_level.max(floor);
                     let even = 0.5 * (level - other_level) * area.min(other_area);
-                    transfers.push(Transfer {
+                    out.transfers.push(Transfer {
                         from: End::Pool(id),
                         to: End::Pool(other),
                         volume: weir(head).min(even),
                     });
                 }
+            } else if let Some(surface) = self.implicit(ground, cell)
+                && (level - surface.level).abs() < MERGE_METRES
+                && level > floor
+            {
+                out.joins.push((id, cell));
             } else if let Some(surface) = self.implicit(ground, cell) {
                 let even = 0.5 * (surface.level - level).abs() * area;
                 let (from, to, head) = if surface.level > level {
@@ -660,7 +775,7 @@ impl WaterWorld {
                         level - surface.level.max(floor),
                     )
                 };
-                transfers.push(Transfer {
+                out.transfers.push(Transfer {
                     from,
                     to,
                     volume: weir(head).min(even),
@@ -671,17 +786,20 @@ impl WaterWorld {
                     let to = self.landing(ground, cell.below());
                     let volume = weir(head).min(head * area);
                     let landing = match to {
-                        End::Pool(other) => self.pools[&other].level.max(cell.bottom() - 1.0),
+                        End::Pool(other) => self.pools[&other].level.min(cell.bottom()),
                         End::Seed(seed) => seed.bottom(),
-                        End::Body(_) => cell.bottom() - 1.0,
+                        End::Body(_) => cell.bottom() - WATER_CELL_METRES,
                     };
                     let from = cell.centre();
-                    falls.push(WaterFall {
-                        from: DVec3::new(from.x, level, from.z),
+                    // A stream leaves over the lip, never from higher than
+                    // the cell above it.
+                    let top = level.min(cell.bottom() + 2.0 * WATER_CELL_METRES);
+                    out.falls.push(WaterFall {
+                        from: DVec3::new(from.x, top, from.z),
                         to: DVec3::new(from.x, landing, from.z),
                         rate_m3_s: volume / dt,
                     });
-                    transfers.push(Transfer {
+                    out.transfers.push(Transfer {
                         from: End::Pool(id),
                         to,
                         volume,
@@ -746,6 +864,40 @@ impl WaterWorld {
             }
             if pool.volume > 0.0 {
                 self.deposit_end(ground, heir, pool.volume);
+            }
+        }
+    }
+
+    /// A pool that filled up to the seed-derived water it touches becomes
+    /// part of it: its cells join that water, which already counts the pool's
+    /// volume as drawn from it.
+    fn join(&mut self, ground: &impl WaterGround, id: u32, contact: WaterCell) {
+        let surface = match self.joined.get(&contact) {
+            Some(&surface) => surface,
+            None => match self.ground.implicit(ground, contact) {
+                Some(surface) => surface,
+                None => return,
+            },
+        };
+        let Some(pool) = self.pools.remove(&id) else {
+            return;
+        };
+        // Water the pool counted above its cells, pressed up to the level of
+        // the water it joins, was really that water's.
+        let level = self.drawn(ground, surface).level;
+        let spare = pool.volume - pool.held_below(level);
+        self.draw(surface.body, -spare);
+        for &cell in pool.members.keys() {
+            self.owner.remove(&cell);
+            self.inlets.remove(&cell);
+            self.joined.insert(cell, surface);
+        }
+        // Free cells around it now border the seed-derived water.
+        for cell in pool.members.keys().copied().collect::<Vec<_>>() {
+            for neighbour in cell.neighbours() {
+                if !self.owner.contains_key(&neighbour) && !self.joined.contains_key(&neighbour) {
+                    self.remeasure(ground, neighbour);
+                }
             }
         }
     }
@@ -906,6 +1058,12 @@ impl WaterWorld {
     fn remeasure(&mut self, ground: &impl WaterGround, cell: WaterCell) {
         let openings = self.openings(ground, cell);
         let floor = floor_of(cell, openings);
+        if self.joined.contains_key(&cell) {
+            if floor.is_none() {
+                self.joined.remove(&cell);
+            }
+            return;
+        }
         if let Some(&id) = self.owner.get(&cell) {
             if floor.is_none() {
                 self.owner.remove(&cell);

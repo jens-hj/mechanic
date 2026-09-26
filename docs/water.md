@@ -26,12 +26,17 @@ endless sources and sinks.
   lands and joins the pool there or starts one.
 - **Seed-derived water pours in.** A free cell beside the sea, a lake or a
   river is an inlet: the water pours in and lands wherever it falls. A pool
-  touching seed-derived water trades with it both ways. Water taken from a
-  lake is its drawdown, which lowers the whole lake by the drawdown over the
-  lake's area; water returned to it raises it again.
+  touching seed-derived water trades with it both ways, and once it stands
+  at that water's level it joins it: its cells become part of the lake, sea
+  or river, and whatever it counted above its own cells returns to it. A hole
+  dug under a lake or a trench cut from it therefore ends up lake. Water taken
+  from a lake is its drawdown, which lowers the whole lake by the drawdown
+  over its area; water returned to it raises it again. A lake covers at
+  least a 32 m drainage cell, so a hole of a few cubic metres lowers it by
+  millimetres.
 - **Only what changed is kept.** A save holds each pool's seed cell and
-  volume, and each lake's drawdown. Loading floods every pool out from its
-  seed again.
+  volume, each lake's drawdown, and the cells that joined seed-derived water.
+  Loading floods every pool out from its seed again.
 
 Status: implicit water, its preview and rendering, buoyancy and drag on the
 CPU route, and stored water in the app are done. Pumps have their API
@@ -113,7 +118,10 @@ one has no stored water.
 
 `world/water_render.rs` draws each stored pool as a flat quad per surface
 column, drawn again when its level moves 5 mm or its surface changes shape,
-and falling water as crossed ribbons. A lake drawn down by more than 2 cm
+and falling water as crossed ribbons. Water under seed-derived water has no
+surface of its own: a pool filling under a lake and a stream falling under it
+are not drawn. Cells that joined a lake are drawn only where the lake's own
+sheet does not reach, such as a trench cut into its bank. A lake drawn down by more than 2 cm
 since its tiles were meshed has them meshed again at its new level.
 
 ## Floating

@@ -130,6 +130,18 @@ impl Pool {
         });
     }
 
+    /// Water its members hold below a height, in m³.
+    pub(super) fn held_below(&self, height: f64) -> f64 {
+        self.layers
+            .iter()
+            .map(|(&layer, &count)| {
+                let bottom = f64::from(layer) * FINE_LAYER_METRES;
+                let fill = ((height - bottom) / FINE_LAYER_METRES).clamp(0.0, 1.0);
+                f64::from(count) * FINE_VOLUME_M3 * fill
+            })
+            .sum()
+    }
+
     /// Open area at the pool's surface, in square metres.
     pub(super) fn surface_area(&self) -> f64 {
         let layer = (self.level / FINE_LAYER_METRES).floor();
