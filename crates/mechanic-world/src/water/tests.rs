@@ -287,3 +287,5 @@ fn stored_water_survives_a_save() {
     assert!((level_at(&loaded, &ground, point) - level_at(&water, &ground, point)).abs() < 1.0e-9);
     assert!((loaded.stored_m3() - 0.5).abs() < 1.0e-9);
 }
+
+mod terrain;

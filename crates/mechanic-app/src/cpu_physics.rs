@@ -78,7 +78,7 @@ pub(crate) struct CpuRoute {
     publication: u64,
     origin: DVec3,
     /// Water the bodies float in, if the world has any.
-    water: Option<std::sync::Arc<mechanic_world::TerrainField>>,
+    water: Option<std::sync::Arc<mechanic_world::WaterSurfaces>>,
     /// Whether terrain has been published at least once.
     published: bool,
     /// App tick at publication; earlier commands belong to a retired scene.
@@ -195,7 +195,7 @@ impl CpuRoute {
     /// Sets the water the bodies float in and are dragged by.
     pub(crate) fn set_water(
         &mut self,
-        water: Option<std::sync::Arc<mechanic_world::TerrainField>>,
+        water: Option<std::sync::Arc<mechanic_world::WaterSurfaces>>,
     ) {
         self.water = water;
     }
@@ -329,7 +329,7 @@ impl CpuRoute {
             water: self
                 .water
                 .as_deref()
-                .map(|field| field as &dyn mechanic_physics::WaterSource),
+                .map(|water| water as &dyn mechanic_physics::WaterSource),
         };
         let outcome =
             self.machine

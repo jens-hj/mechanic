@@ -60,6 +60,10 @@ pub(super) fn save_all(runtime: &mut WorldRuntime) -> Result<(), String> {
         .store
         .save_material_state(&runtime.document.name, &runtime.edits, &runtime.clumps)
         .map_err(|error| error.to_string())?;
+    runtime
+        .store
+        .save_water(&runtime.document.name, &runtime.water.to_doc())
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

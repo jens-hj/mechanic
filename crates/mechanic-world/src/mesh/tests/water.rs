@@ -34,7 +34,8 @@ fn a_lake_tile_is_a_flat_sheet_at_the_lake_level() {
         edge: 16.0,
         cells: 16,
     };
-    let sheet = water_sheet(&field, &edits, tile).expect("the tile holds water");
+    let sheet = water_sheet(&field, &edits, tile, &std::collections::BTreeMap::new())
+        .expect("the tile holds water");
     assert!(sheet.indices.len() >= 3 * 2 * 16 * 16 / 2);
     for vertex in &sheet.vertices {
         assert!((f64::from(vertex[1]) - level).abs() < 1.0e-3);
@@ -52,7 +53,7 @@ fn a_dry_tile_has_no_sheet() {
         edge: 8.0,
         cells: 8,
     };
-    let sheet = water_sheet(&field, &edits, tile);
+    let sheet = water_sheet(&field, &edits, tile, &std::collections::BTreeMap::new());
     assert!(sheet.is_none_or(|sheet| {
         sheet
             .vertices

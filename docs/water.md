@@ -33,9 +33,10 @@ endless sources and sinks.
   volume, and each lake's drawdown. Loading floods every pool out from its
   seed again.
 
-Status: the implicit water, its preview, its rendering, buoyancy and drag on
-the CPU route, and stored water in `mechanic-world` (`WaterWorld`) are done.
-Stored water in the app, pumps and pore water are open.
+Status: implicit water, its preview and rendering, buoyancy and drag on the
+CPU route, and stored water in the app are done. Pumps have their API
+(`WaterWorld::deposit` and `withdraw`) but no part uses it yet. Pore water and
+mud are open.
 
 ## Implicit water
 
@@ -97,13 +98,32 @@ PBR path, so the sky reflects in it. Water neither casts nor receives shadows.
 `MECHANIC_WATER=off` hides it. Looking over a lake at 4112 × 2524 on an M1 Pro,
 the frame rose from 41 ms without water to 45–47 ms with it.
 
+## In the app
+
+`world/water.rs` steps the world's `WaterWorld` at 20 Hz, at most three
+steps a frame, and publishes a `WaterSurfaces` view after each step. Every
+committed terrain edit (brush, spoil and soil alike) goes through
+`commit_terrain_edit_result`, which tells the water which bricks changed:
+pools there are measured again, and free cells beside seed-derived water
+become inlets. Loading a world floods its pools out again and finds the
+inlets in every edited brick.
+
+Stored water is saved in `water.ron` beside `material.bin`. A world without
+one has no stored water.
+
+`world/water_render.rs` draws each stored pool as a flat quad per surface
+column, drawn again when its level moves 5 mm or its surface changes shape,
+and falling water as crossed ribbons. A lake drawn down by more than 2 cm
+since its tiles were meshed has them meshed again at its new level.
+
 ## Floating
 
 The CPU route floats bodies (`mechanic-physics/src/buoyancy.rs`). Each
 dynamic collider is cut once into probes of at most 12.5 cm, each a volume at
 a point in its body; a cylinder is probed from its exact hull, not its sixteen
 overlapping tangent boxes. Each tick looks the water up once per collider,
-through `WaterSource` (the terrain field answers it). Every substep then adds,
+through `WaterSource`: the app answers it with the world's `WaterSurfaces`, so
+bodies float in stored pools and drawn-down lakes alike. Every substep then adds,
 beside gravity:
 
 - **Buoyancy:** the weight of the water a probe displaces, applied at the

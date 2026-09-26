@@ -16,6 +16,7 @@ mod ground;
 mod pool;
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use bevy_math::{DVec2, DVec3, IVec3};
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache, lake_of};
 pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
 
-use crate::{BrickCoord, TERRAIN_CELL_METERS, WaterBody, WaterSurface};
+use crate::{BrickCoord, TERRAIN_CELL_METERS, TerrainField, WaterBody, WaterSurface};
 
 /// Edge of one water cell, in metres.
 pub const WATER_CELL_METRES: f64 = TERRAIN_CELL_METERS * WATER_CELL_EDGE_CELLS as f64;
@@ -204,6 +205,8 @@ pub struct PoolView {
     pub volume_m3: f64,
     /// Member cells the surface crosses: each column's top wet cell.
     pub surface_cells: Vec<WaterCell>,
+    /// Depth of water in each of those columns, in metres.
+    pub depths: Vec<f64>,
 }
 
 /// One stored pool in a saved world.
@@ -231,6 +234,53 @@ pub struct StoredWaterDoc {
     pub pools: Vec<PoolDoc>,
     /// Every lake water has been drawn from or added to.
     pub drawdowns: Vec<LakeDrawdownDoc>,
+}
+
+/// An immutable view of the water for queries off the water's own thread:
+/// every wet stored cell with its pool's level, and how far each drawn lake
+/// has dropped.
+#[derive(Clone, Debug)]
+pub struct WaterSurfaces {
+    field: Arc<TerrainField>,
+    wet: HashMap<WaterCell, (u32, f64)>,
+    drops: BTreeMap<u32, f64>,
+}
+
+impl WaterSurfaces {
+    /// Seed-derived water only, with nothing stored and no lake drawn.
+    pub fn untouched(field: Arc<TerrainField>) -> Self {
+        Self {
+            field,
+            wet: HashMap::new(),
+            drops: BTreeMap::new(),
+        }
+    }
+
+    /// How far each drawn lake has dropped, in metres.
+    pub const fn lake_drops(&self) -> &BTreeMap<u32, f64> {
+        &self.drops
+    }
+
+    /// The water at a point: the stored pool whose water reaches it, or the
+    /// seed-derived water over its column at its drawn level.
+    pub fn surface(&self, point: DVec3) -> Option<WaterSurface> {
+        let cell = WaterCell::containing(point);
+        for dy in (-8..=2).rev() {
+            let near = WaterCell::new(cell.x, cell.y + dy, cell.z);
+            if let Some(&(id, level)) = self.wet.get(&near) {
+                return Some(WaterSurface {
+                    level,
+                    body: WaterBody::Pool(id),
+                    flow: DVec2::ZERO,
+                });
+            }
+        }
+        let mut surface = self.field.water_surface(point.x, point.z)?;
+        if let Some(lake) = lake_of(surface.body) {
+            surface.level -= self.drops.get(&lake).copied().unwrap_or(0.0);
+        }
+        Some(surface)
+    }
 }
 
 /// Where water moving in a step goes to or comes from.
@@ -315,23 +365,51 @@ impl WaterWorld {
         self.drawdowns.get(&lake).copied().unwrap_or(0.0)
     }
 
+    /// A view of the water to query elsewhere.
+    pub fn surfaces(&self, field: Arc<TerrainField>) -> WaterSurfaces {
+        let wet = self
+            .owner
+            .iter()
+            .filter_map(|(&cell, &id)| {
+                let level = self.pools.get(&id)?.level;
+                (level > cell.bottom()).then_some((cell, (id, level)))
+            })
+            .collect();
+        let drops = self
+            .drawdowns
+            .iter()
+            .map(|(&lake, &volume)| {
+                let area = field.lake_area(lake).unwrap_or(f64::INFINITY);
+                (lake, volume / area)
+            })
+            .collect();
+        WaterSurfaces { field, wet, drops }
+    }
+
     /// Every pool, to draw.
     pub fn pools(&self) -> impl Iterator<Item = PoolView> + '_ {
         self.pools.iter().map(|(&id, pool)| {
-            let mut tops = BTreeMap::<(i32, i32), WaterCell>::new();
-            for &cell in pool.members.keys() {
+            let mut columns = BTreeMap::<(i32, i32), (WaterCell, f64)>::new();
+            for (&cell, &openings) in &pool.members {
                 if cell.bottom() < pool.level {
-                    let top = tops.entry((cell.x, cell.z)).or_insert(cell);
-                    if cell.y > top.y {
-                        *top = cell;
+                    let floor = floor_of(cell, openings).unwrap_or_else(|| cell.bottom());
+                    let column = columns.entry((cell.x, cell.z)).or_insert((cell, floor));
+                    if cell.y > column.0.y {
+                        column.0 = cell;
                     }
+                    column.1 = column.1.min(floor);
                 }
             }
+            let (surface_cells, depths) = columns
+                .into_values()
+                .map(|(cell, floor)| (cell, (pool.level - floor).max(0.0)))
+                .unzip();
             PoolView {
                 id,
                 level: pool.level,
                 volume_m3: pool.volume,
-                surface_cells: tops.into_values().collect(),
+                surface_cells,
+                depths,
             }
         })
     }

@@ -186,6 +186,41 @@ impl WorldStore {
         Ok((terrain, clumps))
     }
 
+    /// Saves a world's stored water beside its material.
+    ///
+    /// # Errors
+    /// Reports encoding failures or the exact I/O path.
+    pub fn save_water(
+        &self,
+        world_name: &str,
+        water: &crate::StoredWaterDoc,
+    ) -> Result<(), WorldSaveError> {
+        let path = self.directory_for(world_name).join("water.ron");
+        let text = ron::to_string(water).map_err(|_| WorldSaveError::CorruptCurrent {
+            path: path.clone(),
+            message: "cannot encode stored water".to_owned(),
+        })?;
+        atomic_write(&path, text.as_bytes())
+    }
+
+    /// Loads a world's stored water. A world with none saved has none.
+    ///
+    /// # Errors
+    /// Rejects unreadable or malformed water.
+    pub fn load_water(&self, world_name: &str) -> Result<crate::StoredWaterDoc, WorldSaveError> {
+        let path = self.directory_for(world_name).join("water.ron");
+        match fs::read(&path) {
+            Ok(bytes) => ron::de::from_bytes(&bytes).map_err(|_| WorldSaveError::CorruptCurrent {
+                path,
+                message: "invalid stored water".to_owned(),
+            }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(crate::StoredWaterDoc::default())
+            }
+            Err(source) => Err(WorldSaveError::Io { path, source }),
+        }
+    }
+
     /// Creates a store rooted at an explicit directory.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }

@@ -17,7 +17,7 @@ struct Pond {
 }
 
 impl WaterSource for Pond {
-    fn surface(&self, _x: f64, _z: f64) -> Option<WaterSurface> {
+    fn surface(&self, _point: DVec3) -> Option<WaterSurface> {
         Some(WaterSurface {
             level: self.level,
             body: WaterBody::Lake(0),

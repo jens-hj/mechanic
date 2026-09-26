@@ -271,7 +271,7 @@ pub(crate) fn publish(
     if settled || current {
         cpu.publish_terrain(world.physics_terrain_near(&interest), origin)?;
     }
-    cpu.set_water(world.water_field());
+    cpu.set_water(world.water_surfaces());
     Ok(settled && cpu.is_ready())
 }
 

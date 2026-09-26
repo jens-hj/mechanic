@@ -10,7 +10,7 @@
 
 use bevy_math::{DVec3, Vec3, Vec4};
 use mechanic_core::{ColliderShape, CompiledConvex, CompiledCreation, WATER_DENSITY_KG_M3};
-use mechanic_world::{TerrainField, WaterSurface};
+use mechanic_world::{TerrainField, WaterSurface, WaterSurfaces};
 
 use crate::{BodyPose, MachineKinematics, PhysicsError, SpatialMotion};
 
@@ -34,15 +34,22 @@ const DRAG_COEFFICIENT: f64 = 1.0;
 /// water, so a floating body settles instead of bobbing for ever.
 const LINEAR_DAMPING_PER_S: f64 = 1.5;
 
-/// Water around a machine: its surface over any global column.
+/// Water around a machine.
 pub trait WaterSource: Sync {
-    /// The water over a global column, if it lies in water.
-    fn surface(&self, x: f64, z: f64) -> Option<WaterSurface>;
+    /// The water at a global point: the surface of the water it lies in or
+    /// under, if any.
+    fn surface(&self, point: DVec3) -> Option<WaterSurface>;
 }
 
 impl WaterSource for TerrainField {
-    fn surface(&self, x: f64, z: f64) -> Option<WaterSurface> {
-        self.water_surface(x, z)
+    fn surface(&self, point: DVec3) -> Option<WaterSurface> {
+        self.water_surface(point.x, point.z)
+    }
+}
+
+impl WaterSource for WaterSurfaces {
+    fn surface(&self, point: DVec3) -> Option<WaterSurface> {
+        Self::surface(self, point)
     }
 }
 
@@ -267,7 +274,7 @@ impl BuoyancyProbes {
             .map(|collider| {
                 let pose = poses.get(collider.body)?;
                 let centre = pose.position + pose.rotation * collider.local;
-                let surface = water.surface(centre.x + origin.x, centre.z + origin.z)?;
+                let surface = water.surface(centre + origin)?;
                 (centre.y + origin.y - collider.reach < surface.level).then_some(surface)
             })
             .collect();

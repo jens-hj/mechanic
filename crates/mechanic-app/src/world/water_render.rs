@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, PrimitiveTopology, VertexFormat};
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
-use mechanic_world::{WaterSheet, WaterTile, water_sheet};
+use mechanic_world::{PoolView, WATER_CELL_METRES, WaterFall, WaterSheet, WaterTile, water_sheet};
 
 use super::{WorldOwned, WorldRuntime};
 use crate::camera::MainCamera;
@@ -151,7 +151,19 @@ pub(crate) struct WaterTiles {
     tiles: HashMap<TileKey, TileState>,
     /// Floating origin the shown tiles are placed against.
     origin: Option<DVec3>,
+    /// How far each lake stood lowered when the tiles were meshed.
+    drops: std::collections::BTreeMap<u32, f64>,
+    /// Each stored pool's entity, and the level and cells it was drawn at.
+    pools: HashMap<u32, (Entity, f64, usize)>,
+    /// The falling streams' entity.
+    falls: Option<Entity>,
+    /// Water revision the pools were drawn at.
+    drawn_revision: Option<u64>,
 }
+
+/// A lake that has dropped this much further than its tiles show is meshed
+/// again, in metres.
+const REMESH_DROP_METRES: f64 = 0.02;
 
 /// Forgets every tile; the entities go with the world.
 pub(crate) fn clear_water_tiles(mut tiles: ResMut<WaterTiles>) {
@@ -224,13 +236,23 @@ pub(crate) fn stream_water(
     let Some(mut materials) = materials else {
         return;
     };
-    if crate::env::text(crate::env::WATER).as_deref() == Some("off") {
+    if !super::water::water_enabled() {
         return;
     }
     let Ok(camera) = camera.single() else {
         return;
     };
     let origin = runtime.floating_origin.0;
+    let drops = runtime.water_surfaces.lake_drops();
+    let dropped = drops.keys().chain(tiles.drops.keys()).any(|lake| {
+        let now = drops.get(lake).copied().unwrap_or(0.0);
+        let drawn = tiles.drops.get(lake).copied().unwrap_or(0.0);
+        (now - drawn).abs() > REMESH_DROP_METRES
+    });
+    if dropped {
+        tiles.drops = drops.clone();
+        tiles.origin = None;
+    }
     if tiles.origin != Some(origin) {
         for state in tiles.tiles.values() {
             if let TileState::Shown(Some(entity)) = state {
@@ -262,8 +284,9 @@ pub(crate) fn stream_water(
         let field = runtime.field.clone();
         let edits = runtime.edits.snapshot();
         let tile = key.tile();
-        let task =
-            AsyncComputeTaskPool::get().spawn(async move { water_sheet(&field, &edits, tile) });
+        let drops = tiles.drops.clone();
+        let task = AsyncComputeTaskPool::get()
+            .spawn(async move { water_sheet(&field, &edits, tile, &drops) });
         tiles.tiles.insert(*key, TileState::Meshing(task));
         in_flight += 1;
     }
@@ -306,6 +329,149 @@ pub(crate) fn stream_water(
             }
             keep
         });
+    }
+}
+
+/// A flat quad per surface cell of a stored pool, placed against `origin`.
+fn pool_mesh(pool: &PoolView, origin: DVec3) -> Mesh {
+    let edge = WATER_CELL_METRES;
+    let mut positions = Vec::with_capacity(pool.surface_cells.len() * 4);
+    let mut attributes = Vec::with_capacity(pool.surface_cells.len() * 4);
+    let mut indices = Vec::with_capacity(pool.surface_cells.len() * 6);
+    for (cell, &depth) in pool.surface_cells.iter().zip(&pool.depths) {
+        let base = u32::try_from(positions.len()).expect("a pool mesh fits u32 indices");
+        let corner = DVec3::new(
+            f64::from(cell.x) * edge,
+            pool.level,
+            f64::from(cell.z) * edge,
+        );
+        for offset in [
+            DVec3::ZERO,
+            DVec3::new(0.0, 0.0, edge),
+            DVec3::new(edge, 0.0, 0.0),
+            DVec3::new(edge, 0.0, edge),
+        ] {
+            positions.push((corner + offset - origin).as_vec3().to_array());
+            attributes.push([depth as f32, 0.0, 0.0]);
+        }
+        indices.extend([base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    }
+    surface_mesh(positions, attributes, indices)
+}
+
+/// Two crossed ribbons down each falling stream, placed against `origin`.
+fn falls_mesh(falls: &[WaterFall], origin: DVec3) -> Mesh {
+    let half = 0.5 * WATER_CELL_METRES;
+    let mut positions = Vec::new();
+    let mut attributes = Vec::new();
+    let mut indices = Vec::new();
+    for fall in falls {
+        for across in [DVec3::X * half, DVec3::Z * half] {
+            let base = u32::try_from(positions.len()).expect("a falls mesh fits u32 indices");
+            for point in [
+                fall.from - across,
+                fall.from + across,
+                fall.to - across,
+                fall.to + across,
+            ] {
+                positions.push((point - origin).as_vec3().to_array());
+                attributes.push([0.6, 0.0, 0.0]);
+            }
+            indices.extend([base, base + 2, base + 1, base + 1, base + 2, base + 3]);
+        }
+    }
+    surface_mesh(positions, attributes, indices)
+}
+
+fn surface_mesh(positions: Vec<[f32; 3]>, attributes: Vec<[f32; 3]>, indices: Vec<u32>) -> Mesh {
+    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(
+        ATTRIBUTE_WATER,
+        VertexAttributeValues::Float32x3(attributes),
+    );
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+/// Draws the stored pools and falling streams after each water step. A pool
+/// is drawn again when its level moves by more than 5 mm or its surface
+/// changes shape.
+pub(crate) fn draw_stored_water(
+    mut commands: Commands,
+    mut tiles: ResMut<WaterTiles>,
+    runtime: Res<WorldRuntime>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    materials: Option<ResMut<Assets<WaterRenderMaterial>>>,
+) {
+    let Some(mut materials) = materials else {
+        return;
+    };
+    if !super::water::water_enabled() || tiles.drawn_revision == Some(runtime.water_revision) {
+        return;
+    }
+    tiles.drawn_revision = Some(runtime.water_revision);
+    let origin = runtime.floating_origin.0;
+    let material = tiles
+        .material
+        .get_or_insert_with(|| materials.add(WaterRenderMaterial::default()))
+        .clone();
+    let mut seen = std::collections::HashSet::new();
+    for pool in runtime.water.pools() {
+        seen.insert(pool.id);
+        let cells = pool.surface_cells.len();
+        if let Some(&(entity, level, drawn)) = tiles.pools.get(&pool.id) {
+            if (level - pool.level).abs() < 0.005 && drawn == cells {
+                continue;
+            }
+            commands.entity(entity).despawn();
+            tiles.pools.remove(&pool.id);
+        }
+        if cells == 0 {
+            continue;
+        }
+        let entity = commands
+            .spawn((
+                Name::new(format!("Water pool {}", pool.id)),
+                Mesh3d(meshes.add(pool_mesh(&pool, origin))),
+                MeshMaterial3d(material.clone()),
+                Transform::IDENTITY,
+                bevy::light::NotShadowReceiver,
+                bevy::light::NotShadowCaster,
+                WorldOwned,
+            ))
+            .id();
+        tiles.pools.insert(pool.id, (entity, pool.level, cells));
+    }
+    tiles.pools.retain(|id, (entity, ..)| {
+        let keep = seen.contains(id);
+        if !keep {
+            commands.entity(*entity).despawn();
+        }
+        keep
+    });
+    if let Some(entity) = tiles.falls.take() {
+        commands.entity(entity).despawn();
+    }
+    if !runtime.water_falls.is_empty() {
+        tiles.falls = Some(
+            commands
+                .spawn((
+                    Name::new("Falling water"),
+                    Mesh3d(meshes.add(falls_mesh(&runtime.water_falls, origin))),
+                    MeshMaterial3d(material),
+                    Transform::IDENTITY,
+                    bevy::light::NotShadowReceiver,
+                    bevy::light::NotShadowCaster,
+                    WorldOwned,
+                ))
+                .id(),
+        );
     }
 }
 

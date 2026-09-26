@@ -300,6 +300,7 @@ pub(super) fn commit_terrain_edit_result(
     runtime
         .spoil
         .ground_changed(changed_brick_coordinates.iter().copied());
+    super::water::ground_changed(runtime, changed_brick_coordinates.iter().copied());
     if changed {
         runtime.terrain_revision = runtime.terrain_revision.wrapping_add(1);
         runtime.terrain_acknowledgements.edit = runtime.terrain_revision;

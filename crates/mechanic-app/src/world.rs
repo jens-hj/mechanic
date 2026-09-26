@@ -17,6 +17,7 @@ pub(crate) mod streaming;
 mod terrain_render;
 mod transfer;
 mod walking;
+mod water;
 pub(crate) mod water_render;
 #[cfg(debug_assertions)]
 mod worldgen_watch;
@@ -44,7 +45,7 @@ pub(crate) use transfer::place_loaded_creation_in_garage;
 use transfer::static_parts_for_physics;
 use walking::{PlayerCollisionBuild, walk_world};
 pub(crate) use water_render::WaterRenderMaterial;
-use water_render::{WaterTiles, clear_water_tiles, stream_water};
+use water_render::{WaterTiles, clear_water_tiles, draw_stored_water, stream_water};
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -215,13 +216,22 @@ pub(crate) struct WorldRuntime {
     step_visual_offset: f32,
     pending_player_reactions: Vec<GpuExternalImpulse>,
     walking_suspended: bool,
+    /// Stored water: pools, falls, and what was drawn from lakes.
+    water: mechanic_world::WaterWorld,
+    /// Water time not yet stepped, in seconds.
+    water_seconds: f64,
+    /// View of the water after its last step, for physics and drawing.
+    water_surfaces: Arc<mechanic_world::WaterSurfaces>,
+    /// Streams falling in the last water step.
+    water_falls: Vec<mechanic_world::WaterFall>,
+    /// Advances every water step.
+    water_revision: u64,
 }
 
 impl WorldRuntime {
-    /// The field whose sea, lakes and rivers bodies float in, unless water is
-    /// switched off.
-    pub(crate) fn water_field(&self) -> Option<Arc<TerrainField>> {
-        (crate::env::text(crate::env::WATER).as_deref() != Some("off")).then(|| self.field.clone())
+    /// The water bodies float in, unless water is switched off.
+    pub(crate) fn water_surfaces(&self) -> Option<Arc<mechanic_world::WaterSurfaces>> {
+        water::water_enabled().then(|| self.water_surfaces.clone())
     }
 
     pub(crate) fn material_motion(&mut self) {
@@ -629,7 +639,11 @@ impl FromWorld for WorldRuntime {
                     Some(error),
                 ),
             };
-        let load_error = load_error.or(instance_error);
+        let (water, water_error) = match water::load_water(&store, &document.name, &field, &edits) {
+            Ok(water) => (water, None),
+            Err(error) => (mechanic_world::WaterWorld::new(), Some(error)),
+        };
+        let load_error = load_error.or(instance_error).or(water_error);
         let capsule = KinematicCapsule::new(document.player_pose.translation);
         let floating_origin = world_editor.origin;
         let frozen_editor = document.frozen_creation.map(|_| {
@@ -638,10 +652,17 @@ impl FromWorld for WorldRuntime {
                 world_editor.placed_bearings.clone(),
             )
         });
+        let field = Arc::new(field);
+        let water_surfaces = Arc::new(water.surfaces(field.clone()));
         Self {
             store,
             document,
-            field: Arc::new(field),
+            field,
+            water,
+            water_seconds: 0.0,
+            water_surfaces,
+            water_falls: Vec::new(),
+            water_revision: 0,
             edits,
             capsule,
             floating_origin,
@@ -751,7 +772,11 @@ impl Plugin for WorldPrototypePlugin {
                         .after(FrameSet::Readback)
                         .before(coordinate_terrain_edits),
                     clumps::sync_clump_rendering.after(integrate_terrain_remeshes),
-                    stream_water.after(integrate_terrain_remeshes),
+                    water::step_water.after(coordinate_terrain_edits),
+                    stream_water
+                        .after(integrate_terrain_remeshes)
+                        .after(water::step_water),
+                    draw_stored_water.after(water::step_water),
                     sync_world_foundations
                         .after(integrate_terrain_remeshes)
                         .after(FrameSet::Build)
