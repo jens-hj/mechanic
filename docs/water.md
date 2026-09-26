@@ -3,9 +3,10 @@
 Water follows the terrain's rules. Untouched water is a pure function of the
 seed and the world definition: a level per column and a rule, with nothing
 stored. Stored water records only where water differs from that, the way
-edited bricks override untouched ground. Stored water is conserved: pools,
-falls and lakes exchange it exactly. The sea and rivers are the declared
-endless sources and sinks.
+edited bricks override untouched ground. Every cubic metre is conserved:
+water comes from somewhere and goes somewhere (see [The cycle](#the-cycle)).
+Only `WaterWorld::deposit` and `withdraw`, the brush and pumps, add or remove
+it.
 
 ## The model
 
@@ -30,14 +31,53 @@ endless sources and sinks.
   where their levels meet, and once it stands at that water's level, or fills
   its own cells under it, it joins it: its cells become part of the lake, sea
   or river, and whatever it counted above its own cells returns to it. A hole
-  dug under a lake or a trench cut from it therefore ends up lake. Water taken
-  from a lake is its drawdown, which lowers the whole lake by the drawdown
+  dug under a lake or a trench cut from it therefore ends up lake. The water
+  a joined cell holds is booked to the cell; filling the cell with ground
+  hands it back. Water taken from a lake lowers the whole lake by the volume
   over its area; water returned to it raises it again. A lake covers at
   least a 32 m drainage cell, so a hole of a few cubic metres lowers it by
   millimetres.
 - **Only what changed is kept.** A save holds each pool's seed cell and
-  volume, each lake's drawdown, and the cells that joined seed-derived water.
-  Loading floods every pool out from its seed again.
+  volume, each lake's and river reach's surplus, the sea's and the air's,
+  and the cells that joined seed-derived water with what they hold. Loading
+  floods every pool out from its seed again.
+
+## The cycle
+
+The seed world is a steady state of a water cycle. Rain falls on land, runs
+down the rivers, through the lakes and into the sea, and the sea gives the
+same back to the air. None of that steady state is stored or stepped. What
+is stored is how far each body has been moved from it: the water a river
+reach, a lake, the sea or the air holds beyond its untouched share, negative
+where water was drawn out (`water/cycle.rs`). `WaterWorld::ledger` sums every
+entry, and its total changes only through `deposit` and `withdraw`.
+
+- **Rain.** Each drainage cell gets 4,000 mm a year at neutral humidity,
+  scaled by `1 + humidity` from the climate. That is game-wet: a stream at
+  its source carries about 0.15 m³/s. A reach's discharge is the rain on its
+  whole catchment. It is a constant in code, `RAIN_MM_PER_YEAR`, for now,
+  since changing `world.ron` outdates every saved world.
+- **Rivers carry a budget.** A reach holds its discharge times its travel
+  time in its channel. That, and then its discharge as it refills, is all a
+  trench, inlet or pump can draw from it. A reach passes its surplus
+  downstream over its travel time, so water drawn at one point reaches the
+  river below after the time the water takes to get there. The reach's
+  surface drops with its flow, depth following discharge to the 0.6 and its
+  current to the 0.4, down to its bed when it runs dry.
+- **Lakes balance inflow against spill.** A lake spills over its rim as a
+  weir, and in the seed world the spill equals its inflow. A lake drawn
+  below its seed level spills less and fills again from its inflow, while
+  the river below it runs short. A lake raised above it spills the surplus
+  on. Nothing can draw a lake below its bed: it gives at most the water its
+  hollow holds.
+- **The sea receives.** Rivers deliver to it, and the sea gives endlessly
+  to anything a world can hold, booking what it gives.
+- **Evaporation.** Stored water loses 5 mm an hour from its surface to the
+  air, so a forgotten puddle dries in a day. The air rains it back out within
+  an hour; the ledger books it to the sea, where it would end up.
+
+Reaches that run through a lake are that lake's water. A lake with no river
+leaving it spills straight to the sea.
 
 Status: implicit water, its preview and rendering, buoyancy and drag on the
 CPU route, and stored water in the app are done. Pumps have their API
@@ -80,8 +120,9 @@ No water may stand against air. Three rules keep it held:
 `TerrainField::water_surface`, `is_water` and `water_level_range` answer the
 queries. Tests sample a few hundred thousand water points around lakes,
 rivers and the sea and require fewer than one in a thousand to touch dry open
-ground; seed 42 measures 0 for lakes and the sea and 23 in 100,000 for
-rivers.
+ground. Where channels run close, the river surface blends their levels so it
+has no step, and a river crossing the reach of a lake far below it keeps its
+banks.
 
 ## Rendering
 
@@ -152,6 +193,12 @@ route has no buoyancy.
 Spawns keep a metre above any water within ten metres.
 
 ## Known limits
+
+- A lake's level falls by the water drawn over its seed area. As a real lake
+  shrinks, its shores would move in; here its surface just drops.
+- A cell dug into a river keeps its water when the reach runs dry.
+- Water poured into a lake shows only up to 15 cm above its seed level; the
+  rest spills on within the hour.
 
 - A pool cut in two by new ground stays one pool, at one level.
 - Water crosses between any two water cells that both have open terrain

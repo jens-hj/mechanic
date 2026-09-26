@@ -34,7 +34,7 @@ use self::scatter::mix;
 use self::spec::{BiomeDoc, CarveDoc, Dims, Expr, Fractal, NoiseDoc, NoiseKind};
 use self::surfaces::{SurfaceProbe, SurfaceRules};
 use self::tape::{PlanarCache, Tape, smoothstep};
-use self::water::{ColumnWater, SEALED_ROOF_METRES, WaterBodies, sea_points};
+use self::water::{ColumnWater, SEALED_ROOF_METRES, WaterBodies, cell_rain, sea_points};
 use crate::{
     TERRAIN_CELL_METERS, TerrainDensityClass, WORLD_HALF_EXTENT_METERS, WorldCell,
     WorldGeneratorVersion, WorldPosition, WorldSeed,
@@ -43,7 +43,7 @@ use crate::{
 pub use self::load::{WorldgenError, WorldgenSpec};
 pub use self::spec::TextureSet;
 pub use self::surfaces::{SurfaceId, SurfaceLook, SurfacePalette};
-pub use self::water::{WaterBody, WaterSurface};
+pub use self::water::{LakeBasin, Outflow, RiverReach, WaterBody, WaterSurface};
 
 /// Material assigned to an occupied terrain cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -558,7 +558,24 @@ impl TerrainField {
     /// Surface area of a lake, in square metres: what a volume drawn from it
     /// spreads over.
     pub fn lake_area(&self, lake: u32) -> Option<f64> {
-        self.world.water.lake_area(lake)
+        self.world.water.lake(lake).map(|lake| lake.area_m2)
+    }
+
+    /// A lake as the water cycle sees it: its size, the water spilling from
+    /// it and where that goes.
+    pub fn lake_basin(&self, lake: u32) -> Option<LakeBasin> {
+        self.world.water.lake(lake)
+    }
+
+    /// A river reach as the water cycle sees it: the water it carries and
+    /// where that goes.
+    pub fn river_reach(&self, reach: u32) -> Option<RiverReach> {
+        self.world.water.reach(reach)
+    }
+
+    /// Surface area of the sea, in square metres.
+    pub fn sea_area(&self) -> f64 {
+        self.world.water.sea_area()
     }
 
     /// The water over a column, where the column lies in the sea, a lake or a
@@ -1062,49 +1079,61 @@ impl CompiledWorld {
             sea_level: world.sea_level,
             dither,
         };
-        let (heights, weights) = compiled.drainage_heights();
+        let (heights, weights, rain) = compiled.drainage_heights();
         compiled.fields.fill(&heights);
         (compiled.weight_low, compiled.weight_high) =
             weight_grid_bounds(&weights, compiled.biomes.len());
-        compiled.trace_drainage(world, &heights, base);
+        compiled.trace_drainage(world, &heights, &rain, base);
         Ok(compiled)
     }
 
     /// Traces the sea, the rivers draining to it, and the lakes their fill
-    /// finds, over blended heights on the drainage grid.
-    fn trace_drainage(&mut self, world: &spec::WorldDoc, heights: &[f64], base: u64) {
+    /// finds, over blended heights on the drainage grid, with the rain that
+    /// falls on each point feeding them.
+    fn trace_drainage(&mut self, world: &spec::WorldDoc, heights: &[f64], rain: &[f64], base: u64) {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "noise seeds are folded hashes"
         )]
         let seed = mix(base ^ 7) as i32;
         let sea = sea_points(heights, world.sea_level, world.water.sea_area);
-        let (rivers, filled) =
-            RiverNetwork::trace(&world.rivers, &sea, world.sea_level, heights, seed);
+        let (rivers, filled, discharge) =
+            RiverNetwork::trace(&world.rivers, &sea, world.sea_level, heights, rain, seed);
+        let reaches = rivers.reaches().collect::<Vec<_>>();
         self.rivers = rivers;
-        self.water = WaterBodies::trace(&world.water, world.sea_level, heights, &filled, &sea);
+        self.water = WaterBodies::trace(
+            &world.water,
+            world.sea_level,
+            [heights, &filled, &discharge],
+            &sea,
+            &reaches,
+        );
     }
 
-    /// Blended biome heights on the drainage grid, and which biomes weigh on
-    /// each grid point, computed in parallel.
+    /// Blended biome heights on the drainage grid, which biomes weigh on
+    /// each grid point, and the rain falling on each point's cell in m³/s,
+    /// computed in parallel.
     #[expect(clippy::cast_precision_loss, reason = "grid indices are a few hundred")]
-    fn drainage_heights(&self) -> (Vec<f64>, Vec<f64>) {
+    fn drainage_heights(&self) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let side = drainage_side();
         let biomes = self.biomes.len();
         let mut heights = vec![0.0; side * side];
         let mut present = vec![0.0; side * side * biomes];
+        let mut rain = vec![0.0; side * side];
         let threads = std::thread::available_parallelism().map_or(4, usize::from);
         let rows_per_thread = side.div_ceil(threads);
         std::thread::scope(|scope| {
-            for (chunk_index, (heights, present)) in heights
+            for (chunk_index, ((heights, present), rain)) in heights
                 .chunks_mut(rows_per_thread * side)
                 .zip(present.chunks_mut(rows_per_thread * side * biomes))
+                .zip(rain.chunks_mut(rows_per_thread * side))
                 .enumerate()
             {
                 scope.spawn(move || {
-                    for (offset, (height, present)) in heights
+                    for (offset, ((height, present), rain)) in heights
                         .iter_mut()
                         .zip(present.chunks_mut(biomes))
+                        .zip(rain.iter_mut())
                         .enumerate()
                     {
                         let index = chunk_index * rows_per_thread * side + offset;
@@ -1112,7 +1141,9 @@ impl CompiledWorld {
                             (index % side) as f64 * DRAINAGE_CELL_METRES - WORLD_HALF_EXTENT_METERS;
                         let z =
                             (index / side) as f64 * DRAINAGE_CELL_METRES - WORLD_HALF_EXTENT_METERS;
-                        let weights = self.weights(x, z);
+                        let climate = self.climate_at(x, z);
+                        *rain = cell_rain(climate[1]);
+                        let weights = self.weights_in(climate, x, z);
                         *height = weights
                             .iter()
                             .map(|(biome, weight)| {
@@ -1126,7 +1157,7 @@ impl CompiledWorld {
                 });
             }
         });
-        (heights, present)
+        (heights, present, rain)
     }
 
     /// Bounds on every biome's blend weight over the columns of a box: the
@@ -1238,10 +1269,6 @@ impl CompiledWorld {
         self.climate
             .each_ref()
             .map(|tape| tape.eval([x, 0.0, z], &[]))
-    }
-
-    fn weights(&self, x: f64, z: f64) -> Weights {
-        self.weights_in(self.climate_at(x, z), x, z)
     }
 
     fn weights_in(&self, climate: [f64; 4], x: f64, z: f64) -> Weights {

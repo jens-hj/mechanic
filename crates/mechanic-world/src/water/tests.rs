@@ -3,8 +3,11 @@
 
 use bevy_math::{DVec2, DVec3};
 
-use super::{WaterGround, WaterWorld};
-use crate::{BRICK_EDGE_CELLS, BrickCoord, TERRAIN_CELL_METERS, WaterBody, WaterSurface};
+use super::{WaterGround, WaterNetwork, WaterWorld};
+use crate::{
+    BRICK_EDGE_CELLS, BrickCoord, LakeBasin, Outflow, RiverReach, TERRAIN_CELL_METERS, WaterBody,
+    WaterSurface,
+};
 
 /// An axis-aligned box of open space.
 #[derive(Clone, Copy)]
@@ -25,6 +28,8 @@ const fn room(minimum: [f64; 3], maximum: [f64; 3]) -> Room {
 struct Ground {
     rooms: Vec<Room>,
     lake: Option<(Room, f64)>,
+    /// Makes the lake a river reach carrying this.
+    river: Option<RiverReach>,
 }
 
 impl Ground {
@@ -41,7 +46,11 @@ impl Ground {
             x >= room.minimum.x && x < room.maximum.x && z >= room.minimum.z && z < room.maximum.z;
         inside.then_some(WaterSurface {
             level,
-            body: WaterBody::Lake(0),
+            body: if self.river.is_some() {
+                WaterBody::River(0)
+            } else {
+                WaterBody::Lake(0)
+            },
             flow: DVec2::ZERO,
         })
     }
@@ -64,6 +73,26 @@ impl Ground {
         bricks.sort_by_key(|brick| (brick.x, brick.y, brick.z));
         bricks.dedup();
         bricks
+    }
+}
+
+/// The test lake: 100 m square, 2 m deep on average, spilling to the sea
+/// only what stands over its rim.
+const LAKE: LakeBasin = LakeBasin {
+    area_m2: 10_000.0,
+    volume_m3: 20_000.0,
+    discharge_m3_s: 0.0,
+    spill_width: 4.0,
+    outflow: Outflow::Sea,
+};
+
+impl WaterNetwork for Ground {
+    fn lake(&self, _lake: u32) -> Option<LakeBasin> {
+        Some(LAKE)
+    }
+
+    fn reach(&self, _reach: u32) -> Option<RiverReach> {
+        self.river
     }
 }
 
@@ -94,10 +123,6 @@ impl WaterGround for Ground {
             .filter(|surface| point.y < surface.level && untouched)
     }
 
-    fn lake_area(&self, _lake: u32) -> f64 {
-        10_000.0
-    }
-
     fn surface(&self, x: f64, z: f64) -> Option<WaterSurface> {
         self.lake_at(x, z)
     }
@@ -112,6 +137,11 @@ fn run(water: &mut WaterWorld, ground: &Ground, seconds: u32) {
     for _ in 0..seconds * 20 {
         water.step(ground, 0.05);
     }
+}
+
+/// Water drawn from the test lake, in m³.
+fn drawn(water: &WaterWorld) -> f64 {
+    -water.surplus_m3(WaterBody::Lake(0))
 }
 
 fn level_at(water: &WaterWorld, ground: &Ground, point: DVec3) -> f64 {
@@ -129,6 +159,7 @@ fn u_tube() -> Ground {
             room([0.0, 0.0, 0.0], [2.4, 0.4, 0.4]),
         ],
         lake: None,
+        river: None,
     }
 }
 
@@ -146,7 +177,7 @@ fn water_poured_into_a_u_tube_settles_level_in_both_arms() {
         (left - right).abs() < 1.0e-9,
         "arms at {left:.3} and {right:.3} m"
     );
-    assert!((water.stored_m3() - 0.5).abs() < 1.0e-9);
+    assert!((water.ledger().total() - 0.5).abs() < 1.0e-9);
 }
 
 /// A 1 m pit in a floor with walls round it, and a lower basin to the east
@@ -160,6 +191,7 @@ fn pit_and_basin() -> Ground {
             room([1.0, 0.0, -0.4], [1.2, 2.0, 1.4]),
         ],
         lake: None,
+        river: None,
     }
 }
 
@@ -178,12 +210,13 @@ fn a_pit_fills_then_spills_over_its_rim_into_lower_ground() {
         "the basin filled to {basin:.3} m, over the rim"
     );
     assert!(
-        (water.stored_m3() - 1.5).abs() < 1.0e-9,
+        (water.ledger().total() - 1.5).abs() < 1.0e-9,
         "water was made or lost"
     );
 }
 
-/// A lake to the west, and a trench dug east from it into a bank.
+/// A lake to the west, and a trench dug east from it into a bank, with a
+/// cave under the bank's far end.
 fn lake_and_trench(cave: bool) -> Ground {
     let mut rooms = vec![room([0.0, -0.5, 0.0], [4.0, 3.0, 0.6])];
     if cave {
@@ -193,6 +226,7 @@ fn lake_and_trench(cave: bool) -> Ground {
     Ground {
         rooms,
         lake: Some((room([-20.0, -2.0, -20.0], [0.0, 3.0, 20.0]), 0.8)),
+        river: None,
     }
 }
 
@@ -215,14 +249,14 @@ fn a_trench_dug_from_a_lake_fills_to_the_lake_level_and_joins_it() {
         "the trench stands at {:.3} m",
         trench.level
     );
-    let held = water.stored_m3() + water.joined_m3(&ground);
+    let held = water.stored_m3() + water.joined_m3();
     assert!(held > 2.5, "the trench holds only {held:.3} m³");
     // Joined cells follow the lake as it drops, which its hollow's area does
     // not count: the books close to the drop over their area.
     assert!(
-        (water.drawdown_m3(0) - held).abs() < 0.01,
+        (drawn(&water) - held).abs() < 0.01,
         "the trench holds {held:.3} m³ but the lake gave {:.3} m³",
-        water.drawdown_m3(0)
+        drawn(&water)
     );
 }
 
@@ -232,7 +266,7 @@ fn a_breached_lake_drains_into_a_cave_until_the_levels_meet() {
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, ground.bricks());
     run(&mut water, &ground, 120);
-    let held = water.stored_m3() + water.joined_m3(&ground);
+    let held = water.stored_m3() + water.joined_m3();
     assert!(held > 36.0, "the cave holds {held:.1} m³");
     let cave = level_at(&water, &ground, DVec3::new(6.0, -2.0, 0.5));
     let lake = level_at(&water, &ground, DVec3::new(-5.0, 0.0, 0.5));
@@ -241,7 +275,7 @@ fn a_breached_lake_drains_into_a_cave_until_the_levels_meet() {
         "cave at {cave:.3} m, lake at {lake:.3} m"
     );
     assert!(lake < 0.8, "the lake did not go down");
-    assert!((water.drawdown_m3(0) - held).abs() < 0.05);
+    assert!((drawn(&water) - held).abs() < 0.05);
 }
 
 /// A lake over a bed 2 m down, with a 1 m hole dug into the bed.
@@ -249,6 +283,7 @@ fn lake_with_hole() -> Ground {
     Ground {
         rooms: vec![room([0.0, -3.0, 0.0], [1.0, -2.0, 1.0])],
         lake: Some((room([-10.0, -2.0, -10.0], [10.0, 3.0, 10.0]), 0.8)),
+        river: None,
     }
 }
 
@@ -269,11 +304,11 @@ fn a_hole_dug_under_a_lake_fills_and_becomes_lake() {
     assert_eq!(hole.body, WaterBody::Lake(0));
     // The lake gave the hole its 1 m³ and dropped by that over its area.
     assert!(
-        (water.drawdown_m3(0) - 1.0).abs() < 0.02,
+        (drawn(&water) - 1.0).abs() < 0.02,
         "drawn {:.3} m³",
-        water.drawdown_m3(0)
+        drawn(&water)
     );
-    assert!((hole.level - (0.8 - water.drawdown_m3(0) / 10_000.0)).abs() < 1.0e-9);
+    assert!((hole.level - (0.8 - drawn(&water) / 10_000.0)).abs() < 1.0e-9);
 }
 
 #[test]
@@ -304,7 +339,11 @@ fn pit(filled: bool) -> Ground {
             room([0.0, -0.6, 0.0], [0.5, 1.0, 1.0]),
         ];
     }
-    Ground { rooms, lake: None }
+    Ground {
+        rooms,
+        lake: None,
+        river: None,
+    }
 }
 
 #[test]
@@ -323,7 +362,7 @@ fn ground_filled_into_a_pool_raises_its_level() {
     // 0.2 m³ fills the lower 0.4 m of the open half; 0.3 m³ stands on the full floor.
     let after = level_at(&water, &filled, DVec3::new(0.7, -0.8, 0.5));
     assert!((after + 0.3).abs() < 0.01, "the pit stands at {after:.3} m");
-    assert!((water.stored_m3() - 0.5).abs() < 1.0e-9);
+    assert!((water.ledger().total() - 0.5).abs() < 1.0e-9);
 }
 
 #[test]
@@ -347,7 +386,61 @@ fn stored_water_survives_a_save() {
     let loaded = WaterWorld::from_doc(&ground, &water.to_doc());
     let point = DVec3::new(2.2, 0.6, 0.2);
     assert!((level_at(&loaded, &ground, point) - level_at(&water, &ground, point)).abs() < 1.0e-9);
-    assert!((loaded.stored_m3() - 0.5).abs() < 1.0e-9);
+    assert!((loaded.ledger().total() - water.ledger().total()).abs() < 1.0e-9);
+    assert!((loaded.ledger().total() - 0.5).abs() < 1.0e-9);
+}
+
+#[test]
+fn a_trench_dug_from_a_river_draws_no_more_than_the_river_carries() {
+    // A stream carrying 10 litres a second, a minute's run long: 0.6 m³ in
+    // its channel, and 0.6 m³ more over the minute.
+    let mut ground = lake_and_trench(true);
+    ground.river = Some(RiverReach {
+        discharge_m3_s: 0.01,
+        travel_seconds: 60.0,
+        depth: 1.5,
+        outflow: Outflow::Sea,
+    });
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    run(&mut water, &ground, 60);
+    let held = water.stored_m3() + water.joined_m3();
+    assert!(held > 0.5, "only {held:.2} m³ ran in");
+    assert!(held < 1.2 + 1.0e-6, "the stream gave {held:.2} m³");
+    let ledger = water.ledger();
+    assert!(ledger.total().abs() < 1.0e-9, "water was made or lost");
+    let stream = level_at(&water, &ground, DVec3::new(-5.0, 0.0, 0.5));
+    assert!(stream < 0.8 - 0.2, "the stream stands at {stream:.2} m");
+}
+
+#[test]
+fn a_lake_gives_no_more_than_it_holds() {
+    let ground = lake_with_hole();
+    let mut water = WaterWorld::new();
+    let taken = water.withdraw(&ground, DVec3::new(-5.0, 0.0, -5.0), 50_000.0);
+    assert!(
+        (taken - LAKE.volume_m3).abs() < 1.0e-6,
+        "took {taken:.1} m³"
+    );
+    assert!(water.withdraw(&ground, DVec3::new(-5.0, 0.0, -5.0), 1.0) < 1.0e-9);
+}
+
+#[test]
+fn a_puddle_evaporates_into_the_air() {
+    let ground = pit(false);
+    let mut water = WaterWorld::new();
+    // A 1 cm puddle on a 1 m² floor dries in two hours.
+    water.deposit(&ground, DVec3::new(0.5, 0.5, 0.5), 0.01);
+    for _ in 0..3 * 60 {
+        water.step(&ground, 60.0);
+    }
+    assert_eq!(water.pools().count(), 0, "the puddle is still there");
+    let ledger = water.ledger();
+    assert!(
+        (ledger.total() - 0.01).abs() < 1.0e-9,
+        "water was made or lost"
+    );
+    assert!(ledger.air_m3 + ledger.sea_m3 > 0.01 - 1.0e-9);
 }
 
 mod terrain;

@@ -16,8 +16,8 @@ use bevy::render::render_resource::{AsBindGroup, PrimitiveTopology, VertexFormat
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    PoolView, TerrainField, WATER_CELL_METRES, WaterCell, WaterFall, WaterSheet, WaterSurface,
-    WaterTile, water_sheet,
+    PoolView, TerrainField, WATER_CELL_METRES, WaterBody, WaterCell, WaterFall, WaterSheet,
+    WaterShift, WaterSurface, WaterTile, water_sheet,
 };
 
 use super::{WorldOwned, WorldRuntime};
@@ -154,8 +154,8 @@ pub(crate) struct WaterTiles {
     tiles: HashMap<TileKey, TileState>,
     /// Floating origin the shown tiles are placed against.
     origin: Option<DVec3>,
-    /// How far each lake stood lowered when the tiles were meshed.
-    drops: std::collections::BTreeMap<u32, f64>,
+    /// Where each moved lake and river stood when the tiles were meshed.
+    shifts: std::collections::BTreeMap<WaterBody, WaterShift>,
     /// Each stored pool's entity, and the level and cells it was drawn at.
     pools: HashMap<u32, (Entity, f64, usize)>,
     /// The falling streams' entity.
@@ -249,14 +249,18 @@ pub(crate) fn stream_water(
         return;
     };
     let origin = runtime.floating_origin.0;
-    let drops = runtime.water_surfaces.lake_drops();
-    let dropped = drops.keys().chain(tiles.drops.keys()).any(|lake| {
-        let now = drops.get(lake).copied().unwrap_or(0.0);
-        let drawn = tiles.drops.get(lake).copied().unwrap_or(0.0);
-        (now - drawn).abs() > REMESH_DROP_METRES
-    });
-    if dropped {
-        tiles.drops = drops.clone();
+    let shifts = runtime.water_surfaces.shifts();
+    let drop = |shifts: &std::collections::BTreeMap<WaterBody, WaterShift>, body| {
+        shifts
+            .get(body)
+            .map_or(0.0, |shift: &WaterShift| shift.drop)
+    };
+    let moved = shifts
+        .keys()
+        .chain(tiles.shifts.keys())
+        .any(|body| (drop(shifts, body) - drop(&tiles.shifts, body)).abs() > REMESH_DROP_METRES);
+    if moved {
+        tiles.shifts = shifts.clone();
         tiles.origin = None;
     }
     if tiles.origin != Some(origin) {
@@ -290,9 +294,9 @@ pub(crate) fn stream_water(
         let field = runtime.field.clone();
         let edits = runtime.edits.snapshot();
         let tile = key.tile();
-        let drops = tiles.drops.clone();
+        let shifts = tiles.shifts.clone();
         let task = AsyncComputeTaskPool::get()
-            .spawn(async move { water_sheet(&field, &edits, tile, &drops) });
+            .spawn(async move { water_sheet(&field, &edits, tile, &shifts) });
         tiles.tiles.insert(*key, TileState::Meshing(task));
         in_flight += 1;
     }

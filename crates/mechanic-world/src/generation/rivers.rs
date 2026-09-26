@@ -23,6 +23,10 @@ const VALLEY_REACH_METRES: f64 = 140.0;
 /// Width over which a valley's far edge fades back to untouched ground.
 const VALLEY_FADE_METRES: f64 = 40.0;
 
+/// How far past its channel a river's water may reach, in metres: channels
+/// this close share one surface.
+const WET_REACH_METRES: f64 = 8.0;
+
 /// Surface current at a source and at the largest catchment, in m/s.
 const RIVER_SPEED_M_S: (f64, f64) = (0.4, 1.6);
 
@@ -41,6 +45,28 @@ struct Segment {
     depth: [f64; 2],
     /// Surface current in m/s.
     speed: f64,
+    /// Drainage points it runs from and to.
+    points: [usize; 2],
+    /// Water it carries in the untouched world, in m³/s: all the rain on its
+    /// catchment.
+    discharge: f64,
+}
+
+/// One river segment as the water cycle sees it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Reach {
+    /// Drainage points it runs from and to.
+    pub(crate) points: [usize; 2],
+    /// Water it carries in the untouched world, in m³/s.
+    pub(crate) discharge: f64,
+    /// Length along its centre line, in metres.
+    pub(crate) length: f64,
+    /// Surface current, in m/s.
+    pub(crate) speed: f64,
+    /// Channel depth halfway along it, in metres.
+    pub(crate) depth: f64,
+    /// Channel half width at its start, in metres.
+    pub(crate) half_width: f64,
 }
 
 /// Carved valley under one column.
@@ -58,6 +84,8 @@ pub(crate) struct Valley {
     pub(crate) channel_distance: f64,
     /// Surface current along that segment, in m/s.
     pub(crate) flow: [f64; 2],
+    /// That segment's number.
+    pub(crate) segment: u32,
 }
 
 #[derive(Debug)]
@@ -129,8 +157,10 @@ impl RiverNetwork {
 
     /// Traces rivers over `heights`, sampled on the drainage grid with
     /// `side` points per row starting at the world's lower corner, draining
-    /// to the world's edge and to the `sea` points. Also returns the filled
-    /// heights: every hollow raised to where it spills.
+    /// to the world's edge and to the `sea` points. `rain` is the water
+    /// falling on each point's cell, in m³/s. Also returns the filled
+    /// heights, every hollow raised to where it spills, and the water
+    /// draining through each point.
     #[expect(clippy::cast_precision_loss, reason = "grid indices are a few hundred")]
     #[expect(
         clippy::too_many_lines,
@@ -141,8 +171,9 @@ impl RiverNetwork {
         sea: &[bool],
         sea_level: f64,
         heights: &[f64],
+        rain: &[f64],
         seed: i32,
-    ) -> (Self, Vec<f64>) {
+    ) -> (Self, Vec<f64>, Vec<f64>) {
         let side = drainage_side();
         debug_assert_eq!(heights.len(), side * side);
         let position =
@@ -202,9 +233,11 @@ impl RiverNetwork {
             }
         }
         let mut area = vec![1.0_f64; heights.len()];
+        let mut discharge = rain.to_vec();
         for &index in order.iter().rev() {
             if downstream[index] != usize::MAX {
                 area[downstream[index]] += area[index];
+                discharge[downstream[index]] += discharge[index];
             }
         }
 
@@ -231,6 +264,8 @@ impl RiverNetwork {
                 half_width: [lerp(doc.half_width, t0), lerp(doc.half_width, t1)],
                 depth: [lerp(doc.depth, t0), lerp(doc.depth, t1)],
                 speed: lerp(RIVER_SPEED_M_S, t0),
+                points: [index, next],
+                discharge: discharge[index],
             });
         }
 
@@ -291,11 +326,24 @@ impl RiverNetwork {
                 reach,
             },
             filled,
+            discharge,
         )
     }
 
     pub(crate) fn segment_count(&self) -> usize {
         self.segments.len()
+    }
+
+    /// Every segment as the water cycle sees it, by number.
+    pub(crate) fn reaches(&self) -> impl Iterator<Item = Reach> + '_ {
+        self.segments.iter().map(|segment| Reach {
+            points: segment.points,
+            discharge: segment.discharge,
+            length: (segment.to[0] - segment.from[0]).hypot(segment.to[1] - segment.from[1]),
+            speed: segment.speed,
+            depth: 0.5 * (segment.depth[0] + segment.depth[1]),
+            half_width: segment.half_width[0],
+        })
     }
 
     /// Valley height at a column, if a river is close enough to shape it.
@@ -310,6 +358,9 @@ impl RiverNetwork {
             self.meander.mul_add(self.meander_z.sample(x, 0.0, z), z),
         ];
         let mut result: Option<Valley> = None;
+        // Water level blended over every channel whose water reaches here,
+        // so the surface runs on without a step where channels meet.
+        let (mut blended, mut weights) = (0.0, 0.0);
         for &index in bucket {
             let segment = &self.segments[index as usize];
             let (distance, along) = distance_to_segment(point, segment.from, segment.to);
@@ -325,6 +376,9 @@ impl RiverNetwork {
             } else {
                 (distance - half_width).mul_add(self.bank_slope, level)
             };
+            let wet = (half_width + WET_REACH_METRES - distance).max(0.0);
+            blended += wet * wet * level;
+            weights += wet * wet;
             let outer = half_width + VALLEY_REACH_METRES;
             height += smoothstep(outer - VALLEY_FADE_METRES, outer, distance) * RIVER_LIFT_METRES;
             if result.is_none_or(|best| height < best.height) {
@@ -343,10 +397,16 @@ impl RiverNetwork {
                         run[0] / length * segment.speed,
                         run[1] / length * segment.speed,
                     ],
+                    segment: index,
                 });
             } else if let Some(best) = &mut result {
                 best.distance = best.distance.min(distance);
             }
+        }
+        if let Some(best) = &mut result
+            && weights > 0.0
+        {
+            best.level = blended / weights;
         }
         result
     }
@@ -505,11 +565,18 @@ mod tests {
             .iter()
             .map(|height| *height < 0.0)
             .collect::<Vec<_>>();
-        let (network, _) = RiverNetwork::trace(&doc(), &sea, 0.0, &heights, 5);
+        let rain = vec![1.0; heights.len()];
+        let (network, _, _) = RiverNetwork::trace(&doc(), &sea, 0.0, &heights, &rain, 5);
         assert!(network.segment_count() > 0);
         for segment in &network.segments {
             assert!(segment.level[1] <= segment.level[0] + 1.0e-9);
             assert!(segment.to[0] <= segment.from[0]);
+            // Each segment carries the rain on every point upstream of it.
+            let next = network
+                .segments
+                .iter()
+                .find(|next| next.points[0] == segment.points[1]);
+            assert!(next.is_none_or(|next| next.discharge > segment.discharge));
         }
     }
 }

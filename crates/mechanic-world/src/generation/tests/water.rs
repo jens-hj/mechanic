@@ -119,7 +119,7 @@ fn lakes_and_rivers_are_held_by_ground_all_round() {
             "lakes",
             (|body| matches!(body, WaterBody::Lake(_))) as fn(WaterBody) -> bool,
         ),
-        ("rivers", |body| body == WaterBody::River),
+        ("rivers", |body| matches!(body, WaterBody::River(_))),
         ("sea", |body| body == WaterBody::Sea),
     ] {
         let centres = water_columns(&field, 7, keep);

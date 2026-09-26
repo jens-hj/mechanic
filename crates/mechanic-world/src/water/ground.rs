@@ -13,8 +13,11 @@ use std::collections::HashMap;
 use bevy_math::{DVec3, IVec3};
 
 use super::WaterCell;
+use super::cycle::WaterNetwork;
 use crate::generation::Lattice;
-use crate::{BRICK_EDGE_CELLS, BrickCoord, TerrainField, TerrainSource, WaterBody, WaterSurface};
+use crate::{
+    BRICK_EDGE_CELLS, BrickCoord, LakeBasin, RiverReach, TerrainField, TerrainSource, WaterSurface,
+};
 
 /// Terrain cells along one edge of a water cell.
 pub const WATER_CELL_EDGE_CELLS: i32 = 4;
@@ -29,16 +32,13 @@ const BRICK_WATER_CELLS: usize = 512;
 pub(super) type Openings = [u8; 4];
 
 /// The ground water sits in.
-pub trait WaterGround {
+pub trait WaterGround: WaterNetwork {
     /// Whether each terrain cell of a brick is open, x fastest, then y, then
     /// z, over the brick's 32³ cells.
     fn open_cells(&self, brick: BrickCoord) -> Vec<bool>;
 
     /// Seed-derived water at a point, if the point holds any.
     fn implicit(&self, point: DVec3) -> Option<WaterSurface>;
-
-    /// Surface area of a lake, in square metres.
-    fn lake_area(&self, lake: u32) -> f64;
 
     /// Seed-derived water over a column, whatever the ground below.
     fn surface(&self, x: f64, z: f64) -> Option<WaterSurface>;
@@ -54,6 +54,16 @@ pub struct TerrainWater<'a, S> {
     pub field: &'a TerrainField,
     /// Edited bricks.
     pub edits: &'a S,
+}
+
+impl<S> WaterNetwork for TerrainWater<'_, S> {
+    fn lake(&self, lake: u32) -> Option<LakeBasin> {
+        self.field.lake_basin(lake)
+    }
+
+    fn reach(&self, reach: u32) -> Option<RiverReach> {
+        self.field.river_reach(reach)
+    }
 }
 
 impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
@@ -88,10 +98,6 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
     fn implicit(&self, point: DVec3) -> Option<WaterSurface> {
         let surface = self.field.water_surface(point.x, point.z)?;
         (point.y < surface.level && self.field.is_water(point)).then_some(surface)
-    }
-
-    fn lake_area(&self, lake: u32) -> f64 {
-        self.field.lake_area(lake).unwrap_or(f64::INFINITY)
     }
 
     fn surface(&self, x: f64, z: f64) -> Option<WaterSurface> {
@@ -169,13 +175,5 @@ impl OpeningsCache {
     pub(super) fn forget(&mut self, brick: BrickCoord) {
         self.bricks.remove(&brick);
         self.implicit.retain(|cell, _| cell.brick() != brick);
-    }
-}
-
-/// Whether a body of seed-derived water is a lake, and which.
-pub(super) const fn lake_of(body: WaterBody) -> Option<u32> {
-    match body {
-        WaterBody::Lake(lake) => Some(lake),
-        WaterBody::Sea | WaterBody::River | WaterBody::Pool(_) => None,
     }
 }

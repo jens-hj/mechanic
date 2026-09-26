@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use bevy_math::DVec2;
 
 use super::interval::Interval;
-use super::rivers::{DRAINAGE_CELL_METRES, Valley, drainage_side};
+use super::rivers::{DRAINAGE_CELL_METRES, Reach, Valley, drainage_side};
 use super::spec::WaterDoc;
 use crate::WORLD_HALF_EXTENT_METERS;
 
@@ -60,15 +60,75 @@ const CHANNEL_SLOPE: f64 = 4.0;
 /// Body number of the sea on the drainage grid; lakes follow it.
 const SEA: u32 = 1;
 
+/// Rain on land at neutral humidity, in millimetres a year. Game-wet, so a
+/// small stream still carries enough to fill a trench in minutes. Every
+/// river and lake is fed by it; the sea gives it back by evaporation.
+const RAIN_MM_PER_YEAR: f64 = 4_000.0;
+
+/// Width a lake spills over where no river leaves it, in metres.
+const SPILL_WIDTH_METRES: f64 = 4.0;
+
+/// Rain falling on one drainage cell at a humidity in `[-1, 1]`, in m³/s.
+pub(crate) fn cell_rain(humidity: f64) -> f64 {
+    const SECONDS_PER_YEAR: f64 = 365.25 * 86_400.0;
+    let rate = RAIN_MM_PER_YEAR / 1_000.0 / SECONDS_PER_YEAR * (1.0 + humidity).clamp(0.1, 2.0);
+    rate * DRAINAGE_CELL_METRES * DRAINAGE_CELL_METRES
+}
+
+/// Where the water leaving a river reach or a lake goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outflow {
+    /// Into the next river reach, by number.
+    River(u32),
+    /// Into a lake, by number.
+    Lake(u32),
+    /// Into the sea, or off the world's edge into the ocean beyond it.
+    Sea,
+}
+
+/// One river reach as the water cycle sees it: what it carries in the
+/// untouched world and where that goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RiverReach {
+    /// Water it carries in the untouched world, in m³/s: the rain on its
+    /// catchment.
+    pub discharge_m3_s: f64,
+    /// Time its water takes to run its length, in seconds.
+    pub travel_seconds: f64,
+    /// Depth of its channel, in metres: how far its surface falls when it
+    /// runs dry.
+    pub depth: f64,
+    /// Where its water goes.
+    pub outflow: Outflow,
+}
+
+/// One lake as the water cycle sees it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LakeBasin {
+    /// Surface area of its hollow, in square metres.
+    pub area_m2: f64,
+    /// Water it holds at its seed level, in m³.
+    pub volume_m3: f64,
+    /// Water spilling from it in the untouched world, in m³/s: as much as
+    /// its rivers and rain bring in.
+    pub discharge_m3_s: f64,
+    /// Width of the rim it spills over, in metres.
+    pub spill_width: f64,
+    /// Where the water it spills goes.
+    pub outflow: Outflow,
+}
+
 /// Which water a column holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum WaterBody {
     /// The sea, at the world's sea level.
     Sea,
     /// A lake, numbered in the order the world traced it.
     Lake(u32),
-    /// A river channel.
-    River,
+    /// A river channel, by the number of its reach.
+    River(u32),
     /// Water stored in the world rather than derived from the seed: a pool,
     /// by its number in the world's water.
     Pool(u32),
@@ -113,8 +173,14 @@ pub(crate) struct WaterBodies {
     body: Vec<u32>,
     /// Level of each body, by the same numbering.
     levels: Vec<f64>,
-    /// Surface area of each lake's hollow, in square metres, by lake number.
-    lake_areas: Vec<f64>,
+    /// Each lake as the water cycle sees it, by lake number.
+    lakes: Vec<LakeBasin>,
+    /// Each river reach as the water cycle sees it, by number.
+    reaches: Vec<RiverReach>,
+    /// The lake a reach runs inside of, whose water it is.
+    reach_lakes: Vec<Option<u32>>,
+    /// Surface area of the sea, in square metres.
+    sea_area: f64,
     margin: f64,
     slope: f64,
 }
@@ -125,27 +191,33 @@ impl WaterBodies {
         Self {
             body: Vec::new(),
             levels: Vec::new(),
-            lake_areas: Vec::new(),
+            lakes: Vec::new(),
+            reaches: Vec::new(),
+            reach_lakes: Vec::new(),
+            sea_area: 0.0,
             margin: 0.0,
             slope: 1.0,
         }
     }
 
     /// Finds the sea and lakes from blended heights on the drainage grid,
-    /// the heights after priority-flood filling, and the sea points.
+    /// the heights after priority-flood filling, and the sea points, and
+    /// joins them to the river `reaches` into one drainage network carrying
+    /// the water that drains through each point.
     pub(crate) fn trace(
         doc: &WaterDoc,
         sea_level: f64,
-        heights: &[f64],
-        filled: &[f64],
+        [heights, filled, discharge]: [&[f64]; 3],
         sea: &[bool],
+        reaches: &[Reach],
     ) -> Self {
         let mut body = sea
             .iter()
             .map(|&sea| if sea { SEA } else { 0 })
             .collect::<Vec<_>>();
         let mut levels = vec![f64::NAN, sea_level];
-        let mut lake_areas = Vec::new();
+        let mut lakes = Vec::new();
+        let cell_area = DRAINAGE_CELL_METRES * DRAINAGE_CELL_METRES;
         let hollow = |index: usize| !sea[index] && filled[index] - heights[index] > HOLLOW_METRES;
         let mut seen = vec![false; heights.len()];
         let mut members = Vec::new();
@@ -172,16 +244,35 @@ impl WaterBodies {
                 clippy::cast_precision_loss,
                 reason = "a lake spans few drainage cells"
             )]
-            lake_areas.push(members.len() as f64 * DRAINAGE_CELL_METRES * DRAINAGE_CELL_METRES);
+            let area_m2 = members.len() as f64 * cell_area;
+            lakes.push(LakeBasin {
+                area_m2,
+                volume_m3: members
+                    .iter()
+                    .map(|&index| (level - heights[index]).max(0.0) * cell_area)
+                    .sum(),
+                discharge_m3_s: members
+                    .iter()
+                    .map(|&index| discharge[index])
+                    .fold(0.0, f64::max),
+                spill_width: SPILL_WIDTH_METRES,
+                outflow: Outflow::Sea,
+            });
             for &index in &members {
                 body[index] = id;
             }
         }
         spread(&mut body, &levels, heights);
+        let (reaches, reach_lakes) = link_reaches(&body, sea, &mut lakes, reaches);
+        #[expect(clippy::cast_precision_loss, reason = "a few hundred thousand points")]
+        let sea_area = sea.iter().filter(|&&sea| sea).count() as f64 * cell_area;
         Self {
             body,
             levels,
-            lake_areas,
+            lakes,
+            reaches,
+            reach_lakes,
+            sea_area,
             margin: doc.shore_margin,
             slope: doc.shore_slope,
         }
@@ -192,9 +283,19 @@ impl WaterBodies {
         self.levels.len().saturating_sub(2)
     }
 
-    /// Surface area of a lake's hollow, in square metres.
-    pub(crate) fn lake_area(&self, lake: u32) -> Option<f64> {
-        self.lake_areas.get(lake as usize).copied()
+    /// A lake as the water cycle sees it.
+    pub(crate) fn lake(&self, lake: u32) -> Option<LakeBasin> {
+        self.lakes.get(lake as usize).copied()
+    }
+
+    /// A river reach as the water cycle sees it.
+    pub(crate) fn reach(&self, reach: u32) -> Option<RiverReach> {
+        self.reaches.get(reach as usize).copied()
+    }
+
+    /// Surface area of the sea, in square metres.
+    pub(crate) const fn sea_area(&self) -> f64 {
+        self.sea_area
     }
 
     /// Each body's bilinear weight at a column, over the four drainage
@@ -264,9 +365,15 @@ impl WaterBodies {
             }
         }
         if let Some(valley) = river_wet {
+            // A reach running through a lake is that lake's water.
+            let lake = self
+                .reach_lakes
+                .get(valley.segment as usize)
+                .copied()
+                .flatten();
             offer(WaterSurface {
                 level: valley.level,
-                body: WaterBody::River,
+                body: lake.map_or(WaterBody::River(valley.segment), WaterBody::Lake),
                 flow: DVec2::from_array(valley.flow),
             });
         }
@@ -296,8 +403,12 @@ impl WaterBodies {
             }
             floor = floor.max(crest - distance * self.slope);
         }
+        // A river's banks stand wherever no lake or sea at its level holds
+        // its water: a lake far below a river crossing its shore does not.
         if let Some(valley) = river
-            && !grid.iter().any(|&(_, weight)| weight >= 0.5)
+            && !grid.iter().any(|&(id, weight)| {
+                weight >= 0.5 && self.levels[id as usize] >= valley.level - self.margin
+            })
         {
             let beyond = valley.channel_distance - valley.half_width - BANK_SPREAD_METRES;
             let drop = if beyond < 0.0 {
@@ -364,6 +475,58 @@ impl WaterBodies {
     pub(crate) const fn margin(&self) -> f64 {
         self.margin
     }
+}
+
+/// Joins river reaches to the sea and lakes on the drainage grid: where each
+/// reach's water goes, which lake each reach runs inside of, and which
+/// reach each lake spills into.
+fn link_reaches(
+    body: &[u32],
+    sea: &[bool],
+    lakes: &mut [LakeBasin],
+    reaches: &[Reach],
+) -> (Vec<RiverReach>, Vec<Option<u32>>) {
+    let lake_at = |index: usize| body[index].checked_sub(SEA + 1);
+    let starting = reaches
+        .iter()
+        .enumerate()
+        .map(|(number, reach)| (reach.points[0], number))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut reach_lakes = Vec::with_capacity(reaches.len());
+    let reaches = reaches
+        .iter()
+        .enumerate()
+        .map(|(number, reach)| {
+            let [from, to] = reach.points;
+            let (from_lake, to_lake) = (lake_at(from), lake_at(to));
+            reach_lakes.push(from_lake.filter(|&lake| to_lake == Some(lake)));
+            let outflow = if sea[to] || body[to] == SEA {
+                Outflow::Sea
+            } else if let Some(lake) = to_lake.filter(|&lake| from_lake != Some(lake)) {
+                Outflow::Lake(lake)
+            } else if let Some(&next) = starting.get(&to) {
+                Outflow::River(u32::try_from(next).expect("reach count fits u32"))
+            } else {
+                Outflow::Sea
+            };
+            // A river leaving a lake is where the lake spills.
+            if let Some(lake) = from_lake.filter(|&lake| to_lake != Some(lake))
+                && let Some(basin) = lakes.get_mut(lake as usize)
+                && basin.outflow == Outflow::Sea
+            {
+                basin.outflow = Outflow::River(u32::try_from(number).expect("fits u32"));
+                basin.spill_width = 2.0 * reach.half_width;
+                basin.discharge_m3_s = basin.discharge_m3_s.max(reach.discharge);
+            }
+            RiverReach {
+                discharge_m3_s: reach.discharge,
+                travel_seconds: reach.length / reach.speed.max(0.1),
+                depth: reach.depth,
+                outflow,
+            }
+        })
+        .collect::<Vec<_>>();
+    (reaches, reach_lakes)
 }
 
 /// Spreads every body over the dry drainage points around it whose ground
@@ -458,6 +621,10 @@ mod tests {
         }
     }
 
+    fn flow(heights: &[f64]) -> Vec<f64> {
+        vec![0.0; heights.len()]
+    }
+
     #[expect(clippy::cast_precision_loss, reason = "small grid")]
     fn position(index: usize) -> f64 {
         index as f64 * DRAINAGE_CELL_METRES - WORLD_HALF_EXTENT_METERS
@@ -499,7 +666,8 @@ mod tests {
     fn a_filled_hollow_is_a_lake_at_its_spill_level() {
         let (heights, filled, centre) = hollow_world();
         let sea = vec![false; heights.len()];
-        let bodies = WaterBodies::trace(&doc(), 0.0, &heights, &filled, &sea);
+        let bodies =
+            WaterBodies::trace(&doc(), 0.0, [&heights, &filled, &flow(&heights)], &sea, &[]);
         assert_eq!(bodies.lake_count(), 1);
         let water = bodies.column(position(centre.0), position(centre.1), None);
         let surface = water.surface.expect("the hollow's centre is wet");
@@ -512,7 +680,8 @@ mod tests {
     fn a_lake_reaches_over_higher_ground_and_raises_a_shore_only_past_that() {
         let (heights, filled, centre) = hollow_world();
         let sea = vec![false; heights.len()];
-        let bodies = WaterBodies::trace(&doc(), 0.0, &heights, &filled, &sea);
+        let bodies =
+            WaterBodies::trace(&doc(), 0.0, [&heights, &filled, &flow(&heights)], &sea, &[]);
         let (x, z) = (position(centre.0), position(centre.1));
         // Along a row out of the lake: the hollow and the two rings of
         // higher ground around it are wet, with nothing raised; past them a
@@ -544,7 +713,8 @@ mod tests {
             }
         }
         let sea = vec![false; heights.len()];
-        let bodies = WaterBodies::trace(&doc(), 0.0, &heights, &filled, &sea);
+        let bodies =
+            WaterBodies::trace(&doc(), 0.0, [&heights, &filled, &flow(&heights)], &sea, &[]);
         let (x, z) = (position(centre.0), position(centre.1));
         let outside = bodies.column(x + 3.5 * DRAINAGE_CELL_METRES, z, None);
         assert!(outside.surface.is_none());

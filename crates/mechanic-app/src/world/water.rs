@@ -87,6 +87,7 @@ pub(super) fn step_water(
                 "pools": step.pools,
                 "cells": step.cells,
                 "falls": step.falls.len(),
+                "ledger_m3": runtime.water.ledger().total(),
             })
         });
         if step.moved_m3 > 0.0 {

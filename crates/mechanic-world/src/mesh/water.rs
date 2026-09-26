@@ -58,8 +58,8 @@ struct Vertex {
 }
 
 /// Meshes one tile of water surface over untouched and edited ground, or
-/// `None` where the tile holds no water. Each lake stands `lake_drops` lower
-/// than the seed made it, by what was drawn from it.
+/// `None` where the tile holds no water. Each lake and river stands where
+/// `shifts` moved it from its seed surface.
 ///
 /// # Panics
 ///
@@ -68,7 +68,7 @@ pub fn water_sheet(
     field: &TerrainField,
     edits: &impl TerrainSource,
     tile: WaterTile,
-    lake_drops: &std::collections::BTreeMap<u32, f64>,
+    shifts: &std::collections::BTreeMap<crate::WaterBody, crate::WaterShift>,
 ) -> Option<WaterSheet> {
     let [x0, z0] = tile.minimum;
     field.water_level_range(
@@ -92,10 +92,10 @@ pub fn water_sheet(
                 (index % side) as f64 * spacing + x0,
                 (index / side) as f64 * spacing + z0,
             );
-            let mut surface = field.water_surface(x, z)?;
-            if let crate::WaterBody::Lake(lake) = surface.body {
-                surface.level -= lake_drops.get(&lake).copied().unwrap_or(0.0);
-            }
+            let seed = field.water_surface(x, z)?;
+            let surface = shifts
+                .get(&seed.body)
+                .map_or(seed, |shift| shift.apply(seed));
             let probe = DVec3::new(x, surface.level - SURFACE_PROBE_METRES, z);
             let buried = density(probe) > 0.0;
             let open = !buried && field.is_water(probe);

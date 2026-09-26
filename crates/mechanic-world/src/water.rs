@@ -10,8 +10,10 @@
 //! rate, and pools whose levels meet merge. Water that falls lands in the pool
 //! below it or starts one. So a U-tube is one pool and settles level, a pit
 //! fills and then spills at its lowest rim, and a trench dug from a lake fills
-//! from it. Water taken from a lake lowers the whole lake.
+//! from it. Water taken from a lake lowers the whole lake, and every cubic
+//! metre is booked: see [`cycle`] for where it comes from and goes.
 
+mod cycle;
 mod ground;
 mod pool;
 
@@ -21,7 +23,9 @@ use std::sync::Arc;
 use bevy_math::{DVec2, DVec3, IVec3};
 use serde::{Deserialize, Serialize};
 
-use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache, lake_of};
+use cycle::Cycle;
+pub use cycle::{SurplusDoc, WaterLedger, WaterNetwork, WaterShift};
+use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache};
 pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
 
@@ -55,6 +59,10 @@ const FALL_CELLS: i32 = 2_000;
 
 /// Least water a pool keeps before it dries up and is forgotten, in m³.
 const DRY_M3: f64 = 1.0e-6;
+
+/// Water evaporating from a stored surface, in metres a second: 5 mm an
+/// hour, so a forgotten puddle dries in a day.
+const EVAPORATION_M_S: f64 = 0.005 / 3_600.0;
 
 /// One 20 cm cube of water storage, four terrain cells to an edge.
 #[derive(
@@ -161,6 +169,20 @@ impl WaterCell {
     }
 }
 
+/// Water a cell's open layers hold below a height, in m³.
+fn held_in(cell: WaterCell, openings: Openings, level: f64) -> f64 {
+    openings
+        .iter()
+        .enumerate()
+        .map(|(layer, &open)| {
+            #[expect(clippy::cast_precision_loss, reason = "four layers")]
+            let bottom = (layer as f64).mul_add(FINE_LAYER_METRES, cell.bottom());
+            let fill = ((level - bottom) / FINE_LAYER_METRES).clamp(0.0, 1.0);
+            f64::from(open) * FINE_VOLUME_M3 * fill
+        })
+        .sum()
+}
+
 /// Height of a cell's lowest open layer, where it has one.
 fn floor_of(cell: WaterCell, openings: Openings) -> Option<f64> {
     openings.iter().position(|&open| open > 0).map(|layer| {
@@ -218,22 +240,18 @@ pub struct PoolDoc {
     pub volume_m3: f64,
 }
 
-/// Water drawn out of one lake, in a saved world.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct LakeDrawdownDoc {
-    /// Lake number.
-    pub lake: u32,
-    /// Water drawn, in m³; negative where water was added.
-    pub volume_m3: f64,
-}
-
 /// Stored water of a saved world.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct StoredWaterDoc {
     /// Every pool.
     pub pools: Vec<PoolDoc>,
-    /// Every lake water has been drawn from or added to.
-    pub drawdowns: Vec<LakeDrawdownDoc>,
+    /// Every lake and river reach water has been drawn from or added to.
+    pub bodies: Vec<SurplusDoc>,
+    /// Water the sea holds beyond its seed level, in m³.
+    pub sea_m3: f64,
+    /// Water evaporated from stored water, not yet fallen back, in m³.
+    pub air_m3: f64,
     /// Cells that filled from seed-derived water and joined it.
     pub joined: Vec<JoinedCellDoc>,
 }
@@ -248,16 +266,27 @@ pub struct JoinedCellDoc {
     pub body: WaterBody,
     /// That water's level as the seed made it, in metres.
     pub level: f64,
+    /// Water the cell holds, in m³.
+    #[serde(default)]
+    pub held_m3: f64,
+}
+
+/// A cell that joined seed-derived water: that water's seed surface, and
+/// the water the cell holds, booked apart from the body's surplus.
+#[derive(Clone, Copy, Debug)]
+struct Joined {
+    surface: WaterSurface,
+    held: f64,
 }
 
 /// An immutable view of the water for queries off the water's own thread:
-/// every wet stored cell with its pool's level, and how far each drawn lake
-/// has dropped.
+/// every wet stored cell with its pool's level, and how far each moved lake
+/// and river stands from its seed surface.
 #[derive(Clone, Debug)]
 pub struct WaterSurfaces {
     field: Arc<TerrainField>,
     wet: HashMap<WaterCell, (u32, f64)>,
-    drops: BTreeMap<u32, f64>,
+    shifts: BTreeMap<WaterBody, WaterShift>,
     /// Cells that joined seed-derived water, with its undrawn surface.
     joined: HashMap<WaterCell, WaterSurface>,
 }
@@ -268,14 +297,14 @@ impl WaterSurfaces {
         Self {
             field,
             wet: HashMap::new(),
-            drops: BTreeMap::new(),
+            shifts: BTreeMap::new(),
             joined: HashMap::new(),
         }
     }
 
-    /// How far each drawn lake has dropped, in metres.
-    pub const fn lake_drops(&self) -> &BTreeMap<u32, f64> {
-        &self.drops
+    /// How far each moved lake and river stands from its seed surface.
+    pub const fn shifts(&self) -> &BTreeMap<WaterBody, WaterShift> {
+        &self.shifts
     }
 
     /// The water at a point: the stored pool whose water reaches it, or the
@@ -292,20 +321,12 @@ impl WaterSurfaces {
                 });
             }
             if let Some(&joined) = self.joined.get(&near) {
-                return Some(self.lowered(joined));
+                return Some(cycle::shifted(&self.shifts, joined));
             }
         }
         self.field
             .water_surface(point.x, point.z)
-            .map(|surface| self.lowered(surface))
-    }
-
-    /// Seed-derived water at its drawn level.
-    fn lowered(&self, mut surface: WaterSurface) -> WaterSurface {
-        if let Some(lake) = lake_of(surface.body) {
-            surface.level -= self.drops.get(&lake).copied().unwrap_or(0.0);
-        }
-        surface
+            .map(|surface| cycle::shifted(&self.shifts, surface))
     }
 }
 
@@ -313,21 +334,20 @@ impl WaterSurfaces {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum End {
     Pool(u32),
-    /// Seed-derived water: a lake gains or loses, the sea and rivers are
-    /// endless.
+    /// Seed-derived water, which books what it gains or loses.
     Body(WaterBody),
     /// A cell with no pool yet, which one starts in.
     Seed(WaterCell),
 }
 
 /// A stable key for one end of a transfer, for grouping.
-const fn end_key(end: End) -> u32 {
+const fn end_key(end: End) -> (u8, u32) {
     match end {
-        End::Pool(id) | End::Body(WaterBody::Pool(id)) => id,
-        End::Body(WaterBody::Sea) => u32::MAX,
-        End::Body(WaterBody::River) => u32::MAX - 1,
-        End::Body(WaterBody::Lake(lake)) => u32::MAX / 2 + lake,
-        End::Seed(_) => u32::MAX - 2,
+        End::Pool(id) | End::Body(WaterBody::Pool(id)) => (0, id),
+        End::Seed(_) => (1, 0),
+        End::Body(WaterBody::Sea) => (2, 0),
+        End::Body(WaterBody::Lake(lake)) => (3, lake),
+        End::Body(WaterBody::River(reach)) => (4, reach),
     }
 }
 
@@ -356,13 +376,13 @@ pub struct WaterWorld {
     next_pool: u32,
     owner: HashMap<WaterCell, u32>,
     ground: OpeningsCache,
-    /// Water drawn from each lake, in m³.
-    drawdowns: BTreeMap<u32, f64>,
+    /// The rivers, lakes, sea and air around stored water.
+    cycle: Cycle,
     /// Free cells seed-derived water pours into.
     inlets: std::collections::BTreeSet<WaterCell>,
     /// Cells a pool filled up to the seed-derived water beside it, which then
-    /// became part of that water: undrawn surface of the water they joined.
-    joined: HashMap<WaterCell, WaterSurface>,
+    /// became part of that water.
+    joined: HashMap<WaterCell, Joined>,
 }
 
 impl WaterWorld {
@@ -374,16 +394,17 @@ impl WaterWorld {
     /// Rebuilds a saved world's water, flooding each pool out from its seed.
     pub fn from_doc(ground: &impl WaterGround, doc: &StoredWaterDoc) -> Self {
         let mut water = Self::new();
-        for drawdown in &doc.drawdowns {
-            water.drawdowns.insert(drawdown.lake, drawdown.volume_m3);
-        }
+        water.cycle = Cycle::from_doc(&doc.bodies, doc.sea_m3, doc.air_m3);
         for joined in &doc.joined {
             water.joined.insert(
                 joined.cell,
-                WaterSurface {
-                    level: joined.level,
-                    body: joined.body,
-                    flow: DVec2::ZERO,
+                Joined {
+                    surface: WaterSurface {
+                        level: joined.level,
+                        body: joined.body,
+                        flow: DVec2::ZERO,
+                    },
+                    held: joined.held_m3,
                 },
             );
         }
@@ -408,19 +429,18 @@ impl WaterWorld {
                     volume_m3: pool.volume,
                 })
                 .collect(),
-            drawdowns: self
-                .drawdowns
-                .iter()
-                .map(|(&lake, &volume_m3)| LakeDrawdownDoc { lake, volume_m3 })
-                .collect(),
+            bodies: self.cycle.to_doc(),
+            sea_m3: self.cycle.sea(),
+            air_m3: self.cycle.air(),
             joined: {
                 let mut joined = self
                     .joined
                     .iter()
-                    .map(|(&cell, surface)| JoinedCellDoc {
+                    .map(|(&cell, joined)| JoinedCellDoc {
                         cell,
-                        body: surface.body,
-                        level: surface.level,
+                        body: joined.surface.body,
+                        level: joined.surface.level,
+                        held_m3: joined.held,
                     })
                     .collect::<Vec<_>>();
                 joined.sort_by_key(|joined| joined.cell);
@@ -435,41 +455,39 @@ impl WaterWorld {
     }
 
     /// Cells that filled from seed-derived water and joined it, with the
-    /// water's surface at its drawn level.
+    /// water's surface at its current level.
     pub fn joined_cells(&self, ground: &impl WaterGround) -> Vec<(WaterCell, WaterSurface)> {
         let mut joined = self
             .joined
             .iter()
-            .map(|(&cell, &surface)| (cell, self.drawn(ground, surface)))
+            .map(|(&cell, joined)| (cell, self.drawn(ground, joined.surface)))
             .collect::<Vec<_>>();
         joined.sort_by_key(|(cell, _)| *cell);
         joined
     }
 
     /// Water held in cells that joined seed-derived water, in m³.
-    pub fn joined_m3(&mut self, ground: &impl WaterGround) -> f64 {
-        let cells = self.joined_cells(ground);
-        cells
-            .into_iter()
-            .map(|(cell, surface)| {
-                let openings = self.openings(ground, cell);
-                openings
-                    .iter()
-                    .enumerate()
-                    .map(|(layer, &open)| {
-                        #[expect(clippy::cast_precision_loss, reason = "four layers")]
-                        let bottom = (layer as f64).mul_add(FINE_LAYER_METRES, cell.bottom());
-                        let fill = ((surface.level - bottom) / FINE_LAYER_METRES).clamp(0.0, 1.0);
-                        f64::from(open) * FINE_VOLUME_M3 * fill
-                    })
-                    .sum::<f64>()
-            })
-            .sum()
+    pub fn joined_m3(&self) -> f64 {
+        self.joined.values().map(|joined| joined.held).sum()
     }
 
-    /// Water drawn from a lake so far, in m³.
-    pub fn drawdown_m3(&self, lake: u32) -> f64 {
-        self.drawdowns.get(&lake).copied().unwrap_or(0.0)
+    /// Water a lake or river reach holds beyond its seed share, in m³:
+    /// negative where water was drawn from it.
+    pub fn surplus_m3(&self, body: WaterBody) -> f64 {
+        self.cycle.surplus(body)
+    }
+
+    /// Every cubic metre of water in the world's books.
+    pub fn ledger(&self) -> WaterLedger {
+        let (lakes_m3, rivers_m3) = self.cycle.totals();
+        WaterLedger {
+            pools_m3: self.stored_m3(),
+            joined_m3: self.joined_m3(),
+            lakes_m3,
+            rivers_m3,
+            sea_m3: self.cycle.sea(),
+            air_m3: self.cycle.air(),
+        }
     }
 
     /// A view of the water to query elsewhere.
@@ -482,23 +500,16 @@ impl WaterWorld {
                 (level > cell.bottom()).then_some((cell, (id, level)))
             })
             .collect();
-        let drops = self
-            .drawdowns
-            .iter()
-            .map(|(&lake, &volume)| {
-                let area = field.lake_area(lake).unwrap_or(f64::INFINITY);
-                (lake, volume / area)
-            })
-            .collect::<BTreeMap<_, _>>();
+        let shifts = self.cycle.shifts(field.as_ref());
         let joined = self
             .joined
             .iter()
-            .map(|(&cell, surface)| (cell, *surface))
+            .map(|(&cell, joined)| (cell, joined.surface))
             .collect();
         WaterSurfaces {
             field,
             wet,
-            drops,
+            shifts,
             joined,
         }
     }
@@ -547,8 +558,8 @@ impl WaterWorld {
                     });
                 }
             }
-            if let Some(&joined) = self.joined.get(&near) {
-                return Some(self.drawn(ground, joined));
+            if let Some(joined) = self.joined.get(&near) {
+                return Some(self.drawn(ground, joined.surface));
             }
         }
         ground
@@ -556,12 +567,9 @@ impl WaterWorld {
             .map(|surface| self.drawn(ground, surface))
     }
 
-    /// Seed-derived water with its lake's drawdown applied.
-    fn drawn(&self, ground: &impl WaterGround, mut surface: WaterSurface) -> WaterSurface {
-        if let Some(lake) = lake_of(surface.body) {
-            surface.level -= self.drawdown_m3(lake) / ground.lake_area(lake);
-        }
-        surface
+    /// Seed-derived water at its current level and current.
+    fn drawn(&self, ground: &impl WaterGround, surface: WaterSurface) -> WaterSurface {
+        self.cycle.shift(ground, surface.body).apply(surface)
     }
 
     fn openings(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Openings {
@@ -570,7 +578,7 @@ impl WaterWorld {
 
     fn implicit(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<WaterSurface> {
         let surface = match self.joined.get(&cell) {
-            Some(&surface) => surface,
+            Some(joined) => joined.surface,
             None => self.ground.implicit(ground, cell)?,
         };
         let surface = self.drawn(ground, surface);
@@ -717,6 +725,8 @@ impl WaterWorld {
         for (keep, other) in out.merges {
             self.merge(keep, other);
         }
+        self.evaporate(dt);
+        self.cycle.step(ground, dt);
         self.dry_up(ground, &fed);
         for pool in self.pools.values_mut() {
             pool.settle();
@@ -746,7 +756,7 @@ impl WaterWorld {
         // Water between two bodies over all the cells they touch at: summed
         // over the cells, but never more than brings their levels halfway
         // together.
-        let mut levelling = BTreeMap::<(u32, u32), (Transfer, f64)>::new();
+        let mut levelling = BTreeMap::<((u8, u32), (u8, u32)), (Transfer, f64)>::new();
         let mut level_between = |from: End, to: End, volume: f64, even: f64| {
             let key = (end_key(from), end_key(to));
             let entry = levelling.entry(key).or_insert((
@@ -875,9 +885,19 @@ impl WaterWorld {
             .reduce(f64::min)
     }
 
+    /// Water evaporating from every pool's surface into the air.
+    fn evaporate(&mut self, dt: f64) {
+        let mut risen = 0.0;
+        for pool in self.pools.values_mut() {
+            let lost = (pool.surface_area() * EVAPORATION_M_S * dt).min(pool.volume);
+            pool.volume -= lost;
+            risen += lost;
+        }
+        self.cycle.evaporate(risen);
+    }
+
     /// Hands the last trace of water in dried-up pools to a neighbour, a pool
-    /// or seed-derived water, and forgets the pool. A pool with nowhere to
-    /// hand it stays.
+    /// or seed-derived water, or else to the air, and forgets the pool.
     fn dry_up(&mut self, ground: &impl WaterGround, fed: &std::collections::BTreeSet<u32>) {
         let dry = self
             .pools
@@ -898,27 +918,26 @@ impl WaterWorld {
                         .implicit(ground, cell)
                         .map(|surface| End::Body(surface.body)),
                 });
-            let Some(heir) = heir else {
-                continue;
-            };
             let Some(pool) = self.pools.remove(&id) else {
                 continue;
             };
             for cell in pool.members.keys() {
                 self.owner.remove(cell);
             }
-            if pool.volume > 0.0 {
-                self.deposit_end(ground, heir, pool.volume);
+            match heir {
+                Some(heir) => self.deposit_end(ground, heir, pool.volume),
+                None => self.cycle.evaporate(pool.volume),
             }
         }
     }
 
     /// A pool that filled up to the seed-derived water it touches becomes
-    /// part of it: its cells join that water, which already counts the pool's
-    /// volume as drawn from it.
+    /// part of it: its cells join that water and keep what they hold below
+    /// its level. The rest of the pool's water, pressed up to that level,
+    /// was really that water's and goes back to it.
     fn join(&mut self, ground: &impl WaterGround, id: u32, contact: WaterCell) {
         let surface = match self.joined.get(&contact) {
-            Some(&surface) => surface,
+            Some(joined) => joined.surface,
             None => match self.ground.implicit(ground, contact) {
                 Some(surface) => surface,
                 None => return,
@@ -927,16 +946,16 @@ impl WaterWorld {
         let Some(pool) = self.pools.remove(&id) else {
             return;
         };
-        // Water the pool counted above its cells, pressed up to the level of
-        // the water it joins, was really that water's.
         let level = self.drawn(ground, surface).level;
-        let spare = pool.volume - pool.held_below(level);
-        self.draw(surface.body, -spare);
-        for &cell in pool.members.keys() {
+        let mut spare = pool.volume;
+        for (&cell, &openings) in &pool.members {
+            let held = held_in(cell, openings, level);
+            spare -= held;
             self.owner.remove(&cell);
             self.inlets.remove(&cell);
-            self.joined.insert(cell, surface);
+            self.joined.insert(cell, Joined { surface, held });
         }
+        self.cycle.add(surface.body, spare);
         // Free cells around it now border the seed-derived water.
         for cell in pool.members.keys().copied().collect::<Vec<_>>() {
             for neighbour in cell.neighbours() {
@@ -961,25 +980,30 @@ impl WaterWorld {
         transfers: &[Transfer],
     ) -> (f64, std::collections::BTreeSet<u32>) {
         let mut fed = std::collections::BTreeSet::new();
-        let mut outgoing = BTreeMap::<u32, f64>::new();
+        let mut outgoing = BTreeMap::<(u8, u32), (End, f64)>::new();
         for transfer in transfers {
-            if let End::Pool(id) = transfer.from {
-                *outgoing.entry(id).or_default() += transfer.volume;
-            }
+            outgoing
+                .entry(end_key(transfer.from))
+                .or_insert((transfer.from, 0.0))
+                .1 += transfer.volume;
         }
+        // No source gives more than it holds: a pool its volume, a lake or
+        // river what it has to give.
         let scale = outgoing
-            .iter()
-            .map(|(&id, &out)| {
-                let held = self.pools.get(&id).map_or(0.0, |pool| pool.volume);
-                (id, if out > held { held / out } else { 1.0 })
+            .into_iter()
+            .map(|(key, (from, out))| {
+                let held = match from {
+                    End::Pool(id) => self.pools.get(&id).map_or(0.0, |pool| pool.volume),
+                    End::Body(body) => self.cycle.available(ground, body),
+                    End::Seed(_) => 0.0,
+                };
+                (key, if out > held { held / out } else { 1.0 })
             })
             .collect::<BTreeMap<_, _>>();
         let mut moved = 0.0;
         for transfer in transfers {
-            let volume = match transfer.from {
-                End::Pool(id) => transfer.volume * scale.get(&id).copied().unwrap_or(1.0),
-                End::Body(_) | End::Seed(_) => transfer.volume,
-            };
+            let volume =
+                transfer.volume * scale.get(&end_key(transfer.from)).copied().unwrap_or(1.0);
             if volume <= 0.0 {
                 continue;
             }
@@ -989,7 +1013,7 @@ impl WaterWorld {
                         pool.volume -= volume;
                     }
                 }
-                End::Body(body) => self.draw(body, volume),
+                End::Body(body) => self.cycle.add(body, -volume),
                 End::Seed(_) => {}
             }
             if let End::Pool(id) = transfer.to {
@@ -1001,12 +1025,6 @@ impl WaterWorld {
         (moved, fed)
     }
 
-    fn draw(&mut self, body: WaterBody, volume: f64) {
-        if let Some(lake) = lake_of(body) {
-            *self.drawdowns.entry(lake).or_default() += volume;
-        }
-    }
-
     fn deposit_end(&mut self, ground: &impl WaterGround, to: End, volume: f64) {
         match to {
             End::Pool(id) => {
@@ -1014,7 +1032,7 @@ impl WaterWorld {
                     pool.volume += volume;
                 }
             }
-            End::Body(body) => self.draw(body, -volume),
+            End::Body(body) => self.cycle.add(body, volume),
             End::Seed(cell) => {
                 if let Some(&id) = self.owner.get(&cell) {
                     self.deposit_end(ground, End::Pool(id), volume);
@@ -1059,7 +1077,7 @@ impl WaterWorld {
     }
 
     /// Draws water out at a point: from the pool there, or from seed-derived
-    /// water. Returns the volume taken.
+    /// water, never more than it has. Returns the volume taken.
     pub fn withdraw(&mut self, ground: &impl WaterGround, point: DVec3, volume_m3: f64) -> f64 {
         let cell = WaterCell::containing(point);
         if volume_m3 <= 0.0 {
@@ -1075,8 +1093,9 @@ impl WaterWorld {
             return taken;
         }
         if let Some(surface) = self.implicit(ground, cell) {
-            self.draw(surface.body, volume_m3);
-            return volume_m3;
+            let taken = volume_m3.min(self.cycle.available(ground, surface.body));
+            self.cycle.add(surface.body, -taken);
+            return taken;
         }
         0.0
     }
@@ -1103,10 +1122,18 @@ impl WaterWorld {
     fn remeasure(&mut self, ground: &impl WaterGround, cell: WaterCell) {
         let openings = self.openings(ground, cell);
         let floor = floor_of(cell, openings);
-        if self.joined.contains_key(&cell) {
+        if let Some(joined) = self.joined.get_mut(&cell) {
+            // A joined cell holds what its ground now leaves open below its
+            // water's level; the difference comes from or goes to that water.
+            let surface = joined.surface;
+            let level = self.cycle.shift(ground, surface.body).apply(surface).level;
+            let held = held_in(cell, openings, level);
+            let change = held - joined.held;
+            joined.held = held;
             if floor.is_none() {
                 self.joined.remove(&cell);
             }
+            self.cycle.add(surface.body, -change);
             return;
         }
         if let Some(&id) = self.owner.get(&cell) {
