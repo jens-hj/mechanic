@@ -17,6 +17,9 @@ pub(crate) const SOIL: &str = "MECHANIC_SOIL";
 pub(crate) const CREATIONS_DIR: &str = "MECHANIC_CREATIONS_DIR";
 /// Launch-only rendering diagnostic.
 pub(crate) const RENDER_EXPERIMENT: &str = "MECHANIC_RENDER_EXPERIMENT";
+/// World-generation definition directory to generate from and hot-reload.
+#[cfg(debug_assertions)]
+pub(crate) const WORLDGEN_DIR: &str = "MECHANIC_WORLDGEN_DIR";
 
 /// Directory receiving per-frame performance JSONL.
 pub(crate) const PERF_CAPTURE_DIR: &str = "MECHANIC_PERF_CAPTURE_DIR";

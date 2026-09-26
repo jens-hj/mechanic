@@ -3,14 +3,26 @@ use bevy_math::{DVec3, Vec3};
 
 use super::{PreparedTerrainRegion, TerrainIndexGroups, TerrainMeshRequest, mesh_chunk};
 use crate::{
-    BRICK_EDGE_CELLS, BrickCoord, TERRAIN_CELL_METERS, TerrainFace, TerrainField, TerrainMaterial,
-    TerrainNodeId, TerrainOctree, TerrainSample, TerrainTransitionMask, WorldCell, WorldPosition,
-    WorldSeed,
+    BRICK_EDGE_CELLS, BrickCoord, SurfaceId, TERRAIN_CELL_METERS, TerrainFace, TerrainField,
+    TerrainMaterial, TerrainNodeId, TerrainOctree, TerrainSample, TerrainTransitionMask, WorldCell,
+    WorldPosition, WorldSeed,
 };
 
-fn surface_request(brick_x: i32) -> TerrainMeshRequest {
+/// A leaf node holding the ground near spawn, `brick_x` bricks east of it.
+fn surface_request(field: &TerrainField, brick_x: i32) -> TerrainMeshRequest {
+    let spawn_brick = field
+        .safe_spawn()
+        .cell()
+        .expect("spawn lies in cell space")
+        .brick();
+    let centre = |brick: i32| (f64::from(brick) + 0.5) * crate::BRICK_EDGE_METERS;
+    let height = field.surface_height(centre(spawn_brick.x), centre(spawn_brick.z));
     TerrainMeshRequest {
-        node: TerrainNodeId::leaf(BrickCoord::new(brick_x, 2, -1)),
+        node: TerrainNodeId::leaf(BrickCoord::new(
+            spawn_brick.x + brick_x,
+            (height / crate::BRICK_EDGE_METERS).floor() as i32,
+            spawn_brick.z,
+        )),
         generation: 4,
         transition_mask: TerrainTransitionMask::NONE,
     }
@@ -27,35 +39,41 @@ fn authored_addition_uses_solid_material_without_changing_procedural_cover() {
         looseness: 0,
         density: 0.05,
         material: TerrainMaterial::Soil,
+        surface: SurfaceId::plain(TerrainMaterial::Soil),
     };
     let procedural_air = TerrainSample {
         compaction: 0,
         looseness: 0,
         density: -0.05,
         material: TerrainMaterial::SurfaceCover,
+        surface: SurfaceId(40),
     };
-    let lattice = |sample, authored_material| super::lattice::LatticePoint {
+    let lattice = |sample, authored| super::lattice::LatticePoint {
         sample,
         normal: Vec3::Y,
-        authored_material,
+        authored,
     };
+    let soil = Some((
+        TerrainMaterial::Soil,
+        SurfaceId::plain(TerrainMaterial::Soil),
+    ));
     assert_eq!(
         super::polygonise::crossing_material(lattice(dirt, None), lattice(procedural_air, None)),
-        TerrainMaterial::SurfaceCover
+        (TerrainMaterial::SurfaceCover, SurfaceId(40))
     );
     assert_eq!(
-        super::polygonise::crossing_material(
-            lattice(dirt, Some(TerrainMaterial::Soil)),
-            lattice(procedural_air, None),
-        ),
-        TerrainMaterial::Soil
+        super::polygonise::crossing_material(lattice(dirt, soil), lattice(procedural_air, None)),
+        (
+            TerrainMaterial::Soil,
+            SurfaceId::plain(TerrainMaterial::Soil)
+        )
     );
     assert_eq!(
-        super::polygonise::crossing_material(
-            lattice(procedural_air, None),
-            lattice(dirt, Some(TerrainMaterial::Soil)),
-        ),
-        TerrainMaterial::Soil
+        super::polygonise::crossing_material(lattice(procedural_air, None), lattice(dirt, soil)),
+        (
+            TerrainMaterial::Soil,
+            SurfaceId::plain(TerrainMaterial::Soil)
+        )
     );
 }
 
@@ -151,7 +169,7 @@ fn index_counts_match_combined_vectors() {
 fn generated_vertices_stay_in_owning_bounds_and_normals_are_finite() {
     let field = TerrainField::new(WorldSeed(2));
     let terrain = TerrainOctree::default().snapshot();
-    let chunk = mesh_chunk(&field, &terrain, surface_request(-1));
+    let chunk = mesh_chunk(&field, &terrain, surface_request(&field, -1));
     let indices = final_indices(&chunk);
     assert!(!indices.is_empty());
     assert_eq!(chunk.vertex_cache.vertices.capacity(), 0);
@@ -186,7 +204,7 @@ fn generated_vertices_stay_in_owning_bounds_and_normals_are_finite() {
 fn promoted_meshing_keeps_the_analytic_surface_height_and_outward_winding() {
     let field = TerrainField::new(WorldSeed(2));
     let terrain = TerrainOctree::default().snapshot();
-    let chunk = mesh_chunk(&field, &terrain, surface_request(-1));
+    let chunk = mesh_chunk(&field, &terrain, surface_request(&field, -1));
     let indices = final_indices(&chunk);
     assert!(!indices.is_empty());
     let regular_vertices = chunk
@@ -196,8 +214,13 @@ fn promoted_meshing_keeps_the_analytic_surface_height_and_outward_winding() {
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
     for index in regular_vertices {
-        let vertex = chunk.vertices[index as usize];
-        assert!((vertex[1] + chunk.origin.0.y as f32 - 4.0).abs() < 1.0e-5);
+        let global =
+            chunk.origin.0 + DVec3::from_array(chunk.vertices[index as usize].map(f64::from));
+        let expected = field.surface_height(global.x, global.z);
+        assert!(
+            (global.y - expected).abs() < 0.01,
+            "{global:?} vs {expected}"
+        );
     }
     for triangle in indices.chunks_exact(3) {
         let first = Vec3::from_array(chunk.vertices[triangle[0] as usize]);
@@ -219,9 +242,9 @@ fn promoted_meshing_keeps_the_analytic_surface_height_and_outward_winding() {
 fn adjacent_equal_lod_boundaries_are_byte_identical() {
     let field = TerrainField::new(WorldSeed(77));
     let edits = TerrainOctree::default().snapshot();
-    let left = mesh_chunk(&field, &edits, surface_request(-1));
-    let right = mesh_chunk(&field, &edits, surface_request(0));
-    let seam_x = 0.0_f32;
+    let left = mesh_chunk(&field, &edits, surface_request(&field, -1));
+    let right = mesh_chunk(&field, &edits, surface_request(&field, 0));
+    let seam_x = right.origin.0.x as f32;
     let mut left_seam = left
         .vertices
         .iter()
@@ -257,7 +280,12 @@ fn adjacent_equal_lod_boundaries_are_byte_identical() {
 fn untouched_surface_remains_smooth_and_covered_at_every_lod() {
     let field = TerrainField::new(WorldSeed(77));
     let edits = TerrainOctree::default().snapshot();
-    let probe = WorldPosition(DVec3::new(500.0, field.surface_height(500.0, 500.0), 500.0));
+    let spawn = field.safe_spawn().0;
+    let probe = WorldPosition(DVec3::new(
+        spawn.x,
+        field.surface_height(spawn.x, spawn.z),
+        spawn.z,
+    ));
     let brick = probe.cell().expect("probe is inside cell space").brick();
     for level in 0..=5 {
         let node = TerrainNodeId::containing(brick, level).expect("streamed LOD exists");
@@ -277,20 +305,32 @@ fn untouched_surface_remains_smooth_and_covered_at_every_lod() {
             .map(|&index| index as usize)
             .collect::<std::collections::BTreeSet<_>>();
         assert!(!regular_vertices.is_empty(), "LOD {level} has no surface");
+        let mut covered = 0;
+        let mut total = 0;
         for index in regular_vertices {
             let local = DVec3::from_array(chunk.vertices[index].map(f64::from));
             let global = chunk.origin.0 + local;
             let expected_height = field.surface_height(global.x, global.z);
+            // Cave walls and roofs lie well below the ground they open under.
+            if global.y < expected_height - 2.0 {
+                continue;
+            }
+            let tolerance = 0.1 * f64::from(1_u32 << level).max(1.0);
             assert!(
-                (global.y - expected_height).abs() < 0.1,
+                (global.y - expected_height).abs() < tolerance,
                 "LOD {level} surface error at {global:?}: expected {expected_height}"
             );
-            assert_eq!(
-                chunk.material_weights[index],
-                [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                "LOD {level} exposed a subsurface material"
-            );
+            total += 1;
+            if chunk.material_weights[index] == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0] {
+                covered += 1;
+            }
         }
+        // Gentle spawn ground shows its cover; only the odd boulder or bank
+        // shows what lies beneath.
+        assert!(
+            covered * 10 >= total * 8,
+            "LOD {level}: {covered} of {total} covered"
+        );
     }
 }
 
@@ -419,15 +459,18 @@ fn transition_surface_has_no_open_interior_edges() {
     }
     let minimum_z = i64::from(coarse_node.coordinates.z) * 1_600;
     let maximum_z = minimum_z + 51_200;
+    let minimum_y = i64::from(coarse_node.coordinates.y) * 1_600;
+    let maximum_y = minimum_y + 51_200;
+    // Edges on the slab's own outer faces are open by construction.
+    let outer = |point: &Point| {
+        point[2] == minimum_z
+            || point[2] == maximum_z
+            || point[1] == minimum_y
+            || point[1] == maximum_y
+    };
     let unmatched = counts
         .iter()
-        .filter(|((first, second), count)| {
-            **count % 2 != 0
-                && first[2] != minimum_z
-                && second[2] != minimum_z
-                && first[2] != maximum_z
-                && second[2] != maximum_z
-        })
+        .filter(|((first, second), count)| **count % 2 != 0 && !(outer(first) && outer(second)))
         .collect::<Vec<_>>();
     assert!(!counts.is_empty());
     assert!(unmatched.is_empty(), "unmatched seam edges: {unmatched:?}");
@@ -672,13 +715,10 @@ fn official_transition_vertices_only_use_crossing_edges() {
 fn terrain_mesh_raycast_hits_the_surface() {
     let field = TerrainField::new(WorldSeed(9));
     let terrain = TerrainOctree::default().snapshot();
-    let chunk = mesh_chunk(&field, &terrain, surface_request(-1));
+    let chunk = mesh_chunk(&field, &terrain, surface_request(&field, 0));
+    let above = chunk.origin.0 + DVec3::new(0.8, 10.0, 0.8);
     let hit = chunk
-        .raycast(
-            WorldPosition(DVec3::new(0.0, 10.0, 0.0)),
-            DVec3::NEG_Y,
-            20.0,
-        )
+        .raycast(WorldPosition(above), DVec3::NEG_Y, 20.0)
         .expect("downward ray meets terrain");
     assert!(hit.normal.is_finite());
     assert_eq!(hit.chunk_generation, 4);
@@ -806,7 +846,7 @@ fn cavity_generates_transitions_and_caps_on_all_six_faces() {
 fn generated_triangle_bvh_has_real_branches_and_leaf_ranges() {
     let field = TerrainField::new(WorldSeed(91));
     let terrain = TerrainOctree::default().snapshot();
-    let chunk = mesh_chunk(&field, &terrain, surface_request(-1));
+    let chunk = mesh_chunk(&field, &terrain, surface_request(&field, -1));
     assert!(chunk.triangle_bvh.nodes.len() > 1);
     let all_group_triangles = chunk.index_groups.regular.len()
         + chunk

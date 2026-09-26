@@ -5,6 +5,7 @@ use super::polygon::EPSILON;
 use crate::FaceKind;
 use crate::PartPiece;
 use crate::RegionId;
+use crate::decompose;
 use bevy_math::DVec3;
 use bevy_math::IVec3;
 use bevy_math::Quat;
@@ -948,4 +949,37 @@ fn fillet_deeper_than_a_face_layer_cuts_through_both_bands() {
         "a 30 cm fillet reaches the core under a 25 cm layer"
     );
     assert!(rounded(1), "the fillet also rounds the layer");
+}
+
+#[test]
+fn moving_either_end_corner_of_a_divided_region_stays_watertight() {
+    for corner in [[0, 0, 0], [0, 2, 0], [1, 2, 1], [0, 2, 1]] {
+        let mut region = ShapeRegion::new(
+            IVec3::ZERO,
+            IVec3::new(1, 2, 2),
+            ConstructionMaterial::Steel,
+        )
+        .unwrap();
+        region.subdivide(1, 1).unwrap();
+        let inward = if corner[0] == 0 { 25 } else { -25 };
+        region.set_offset(corner, [inward, 0, 0]).unwrap();
+        let solid = evaluate_region_solid(&region, []);
+        assert!(solid.is_ok(), "corner {corner:?}: {solid:?}");
+    }
+}
+
+#[test]
+fn shaped_cell_above_a_row_of_plain_cells_stays_watertight() {
+    let mut region = ShapeRegion::new(
+        IVec3::ZERO,
+        IVec3::new(3, 2, 1),
+        ConstructionMaterial::Steel,
+    )
+    .unwrap();
+    region.subdivide(0, 1).unwrap();
+    region.subdivide(0, 2).unwrap();
+    region.subdivide(1, 1).unwrap();
+    region.set_offset([1, 2, 0], [0, -25, 0]).unwrap();
+    let solid = evaluate_region_solid(&region, []);
+    assert!(solid.is_ok(), "{solid:?}");
 }

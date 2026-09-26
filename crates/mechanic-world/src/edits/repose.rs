@@ -468,6 +468,7 @@ mod tests {
                     brick.cells[super::super::brick::local_index(local).unwrap()] = TerrainSample {
                         density: if solid { -EMPTY_DENSITY } else { EMPTY_DENSITY },
                         material,
+                        surface: crate::SurfaceId::plain(material),
                         compaction: 0,
                         looseness: 0,
                     };

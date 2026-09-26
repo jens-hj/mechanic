@@ -14,8 +14,8 @@ use crate::ui::WorldAction;
 use mechanic_core::ConstructionGraph;
 use mechanic_world::{
     AutosaveState, FoundationSpatialIndex, KinematicCapsule, OpenWorldOutcome, SavedWorld,
-    TerrainBoundsCache, TerrainEditBatch, TerrainField, TerrainMaterial, TerrainReadiness,
-    TerrainSpatialIndex, TerrainStreamer, WorldDocument, WorldStore,
+    TerrainBoundsCache, TerrainEditBatch, TerrainMaterial, TerrainReadiness, TerrainSpatialIndex,
+    TerrainStreamer, WorldDocument, WorldStore,
 };
 use std::sync::Arc;
 
@@ -250,10 +250,7 @@ pub(super) fn install_world(
             world_editor.placed_bearings.clone(),
         )
     });
-    runtime.field = Arc::new(TerrainField::with_version(
-        document.seed,
-        document.generator_version,
-    ));
+    runtime.field = Arc::new(super::authored_field(document.seed));
     runtime.capsule = KinematicCapsule::new(document.player_pose.translation);
     runtime.floating_origin = world_editor.origin;
     runtime.document = document;
@@ -295,8 +292,9 @@ pub(super) fn install_world(
     runtime.active_terrain_index = TerrainSpatialIndex::default();
     runtime.terrain_entities.clear();
     runtime.terrain_mesh_handles.clear();
+    runtime.terrain_cutovers = super::streaming::TerrainCutovers::default();
     runtime.player_terrain_ready = false;
-    runtime.terrain_texture_mips_pending.clear();
+    runtime.terrain_textures = None;
     runtime.load_error = None;
     Ok(())
 }

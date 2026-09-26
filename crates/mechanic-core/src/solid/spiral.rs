@@ -283,6 +283,7 @@ fn hull(points: &[DVec3]) -> Option<PolyCell> {
                     smoothing_group: 0,
                     smooth_with: Vec::new(),
                     uv_provenance: NO_PATCH,
+                    interior: false,
                 });
             }
         }

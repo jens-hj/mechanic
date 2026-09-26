@@ -3,9 +3,9 @@
 use crate::{Options, Scenario};
 use mechanic_bench::stats::percentile_95_or_zero;
 use mechanic_world::{
-    ActiveTerrainNode, TerrainBoundsCache, TerrainField, TerrainMeshChunk, TerrainMeshMetrics,
-    TerrainMeshRequest, TerrainNodeId, TerrainOctree, TerrainOctreeSnapshot, TerrainStreamer,
-    WorldPosition, WorldSeed, mesh_chunk_profiled, select_active_nodes_cached,
+    ActiveTerrainNode, STREAMED_LEVELS, TerrainBoundsCache, TerrainField, TerrainMeshChunk,
+    TerrainMeshMetrics, TerrainMeshRequest, TerrainNodeId, TerrainOctree, TerrainOctreeSnapshot,
+    TerrainStreamer, WorldPosition, WorldSeed, mesh_chunk_profiled, select_active_nodes_cached,
     terrain_loading_worker_count, terrain_worker_count,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -132,7 +132,7 @@ pub(crate) fn run_terrain_benchmark(options: Options) -> Result<bool, String> {
     let mut transitions_caps_ms = Vec::new();
     let mut bvh_construction_ms = Vec::new();
     let mut extraction_ms = Vec::new();
-    let mut extraction_by_lod: [Vec<f64>; 6] = std::array::from_fn(|_| Vec::new());
+    let mut extraction_by_lod: [Vec<f64>; STREAMED_LEVELS] = std::array::from_fn(|_| Vec::new());
     let mut queue_wait_ms = Vec::new();
     let mut publication_ms = Vec::new();
     let mut vertex_count = 0_usize;
@@ -143,8 +143,8 @@ pub(crate) fn run_terrain_benchmark(options: Options) -> Result<bool, String> {
     let mut oldest_queue_age_ms = 0.0_f64;
     let mut empty_completed_jobs = 0_u64;
     let mut completed_jobs = 0_u64;
-    let mut active_by_lod = [0_usize; 6];
-    let mut selected_by_lod = [0_usize; 6];
+    let mut active_by_lod = [0_usize; STREAMED_LEVELS];
+    let mut selected_by_lod = [0_usize; STREAMED_LEVELS];
     let mut rejected_empty = 0_usize;
     let mut rejected_solid = 0_usize;
     let mut cache_memory_bytes = 0_usize;
@@ -425,7 +425,7 @@ pub(crate) fn run_terrain_benchmark(options: Options) -> Result<bool, String> {
     let local_ready_passed = local_ready_ms.is_some_and(|elapsed| elapsed <= 250.0);
     let horizon_passed = horizon_completion_ms.is_some_and(|elapsed| elapsed <= 2_000.0);
     let extraction_passed = match options.scenario {
-        Scenario::TerrainStream => extraction_p95_by_lod[2..=5]
+        Scenario::TerrainStream => extraction_p95_by_lod[2..]
             .iter()
             .all(|&elapsed| elapsed <= 4.0),
         Scenario::TerrainDig => extraction_p95_by_lod[0] <= 8.0,

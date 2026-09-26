@@ -1,0 +1,193 @@
+// Definitions every biome and the world file can use through Ref("name").
+// Noise seeds decorrelate otherwise identical lookups; the world seed and the
+// biome name are mixed in on top.
+Library(
+    definitions: {
+        // Gentle, familiar rolling ground.
+        "rolling": Noise(kind: SimplexSmooth, freq: 0.0022, octaves: 5, amp: 16, dims: Two, seed: 1),
+
+        // Fine ground texture visible up close.
+        "grain": Noise(freq: 0.045, octaves: 2, amp: 0.45, dims: Two, seed: 2),
+
+        // Sharp mountain crests in [0, 1].
+        "crests": Remap(
+            Noise(fractal: Ridged, freq: 0.0011, octaves: 5, dims: Two, seed: 3),
+            (-1, 1), (0, 1),
+        ),
+
+        // Carve-layer building blocks. They read the world fields `ground`,
+        // `base`, and `rock`, so only carve layers in world.ron can use them.
+
+        // Where caves exist at all: a sparse 2D cave country, in metres.
+        "cave_country": Mul([Noise(freq: 0.0014, octaves: 2, offset: -0.2, dims: Two, seed: 90), C(60)]),
+
+        // Patches, 0 to 1, where tunnel roofs open to the surface.
+        "entrance_country": Clamp(Remap(Noise(freq: 0.004, dims: Two, seed: 91), (0.3, 0.7), (0, 1)), 0, 1),
+
+        // Walkable tunnels: a flat-floored tube, about 5 m wide and 3.5 m
+        // high, around the line where a vertical sheet (a Fissure line on the
+        // map) meets a gently rolling level. The level's slope stays under
+        // about 9 degrees.
+        "tunnel_radius": Add([C(2.6), Noise(freq: 0.03, amp: 0.7, dims: Two, seed: 74)]),
+        "level_low": Add([Ref("base"), C(-8), Noise(kind: SimplexSmooth, freq: 0.004, amp: 7, dims: Two, seed: 75)]),
+        "level_mid": Add([Ref("base"), C(20), Noise(kind: SimplexSmooth, freq: 0.004, amp: 7, dims: Two, seed: 76)]),
+        // Halfway between the low ground and the surface, so mountains hold
+        // tunnels high inside them.
+        "level_high": Add([
+            Mul([Add([Ref("base"), Ref("ground")]), C(0.5)]),
+            C(6),
+            Noise(kind: SimplexSmooth, freq: 0.004, amp: 5, dims: Two, seed: 77),
+        ]),
+        // Wanders between the lowest and highest levels, joining them.
+        "level_ramp": Lerp(Ref("level_low"), Ref("level_high"), Remap(Noise(kind: SimplexSmooth, freq: 0.003, dims: Two, seed: 78), (-0.8, 0.8), (0, 1))),
+        // Vertical distance from a level, scaled so the tube is flatter than
+        // wide; in entrance country the upper half rises into a tall slot so
+        // shallow tunnels open broadly instead of grazing the surface.
+        "tunnel_rise": Sub(C(1.25), Mul([Ref("entrance_country"), C(1.06)])),
+        "rise_low": Add([
+            Mul([Min([Sub(Y, Ref("level_low")), C(0)]), C(1.25)]),
+            Mul([Max([Sub(Y, Ref("level_low")), C(0)]), Ref("tunnel_rise")]),
+        ]),
+        "rise_mid": Add([
+            Mul([Min([Sub(Y, Ref("level_mid")), C(0)]), C(1.25)]),
+            Mul([Max([Sub(Y, Ref("level_mid")), C(0)]), Ref("tunnel_rise")]),
+        ]),
+        "rise_high": Add([
+            Mul([Min([Sub(Y, Ref("level_high")), C(0)]), C(1.25)]),
+            Mul([Max([Sub(Y, Ref("level_high")), C(0)]), Ref("tunnel_rise")]),
+        ]),
+        "rise_ramp": Add([
+            Mul([Min([Sub(Y, Ref("level_ramp")), C(0)]), C(1.25)]),
+            Mul([Max([Sub(Y, Ref("level_ramp")), C(0)]), Ref("tunnel_rise")]),
+        ]),
+        "tunnel_low": SmoothIntersect(1.5, [
+            Sub(Ref("tunnel_radius"), Length([
+                Fissure(freq: 0.0055, octaves: 2, dims: Two, seed: 70),
+                Ref("rise_low"),
+            ])),
+            Add([Sub(Y, Ref("level_low")), C(1.6)]),
+        ]),
+        "tunnel_mid": SmoothIntersect(1.5, [
+            Sub(Ref("tunnel_radius"), Length([
+                Fissure(freq: 0.0055, octaves: 2, dims: Two, seed: 71),
+                Ref("rise_mid"),
+            ])),
+            Add([Sub(Y, Ref("level_mid")), C(1.6)]),
+        ]),
+        "tunnel_high": SmoothIntersect(1.5, [
+            Sub(Ref("tunnel_radius"), Length([
+                Fissure(freq: 0.0045, octaves: 2, dims: Two, seed: 72),
+                Ref("rise_high"),
+            ])),
+            Add([Sub(Y, Ref("level_high")), C(1.6)]),
+        ]),
+        "tunnel_ramp": SmoothIntersect(1.5, [
+            Sub(Ref("tunnel_radius"), Length([
+                Fissure(freq: 0.004, octaves: 2, dims: Two, seed: 73),
+                Ref("rise_ramp"),
+            ])),
+            Add([Sub(Y, Ref("level_ramp")), C(1.6)]),
+        ]),
+
+        // Rare large chambers, squashed so their floors are walkable.
+        "caverns": Mul([
+            Sub(Stretch((1, 0.6, 1), Noise(kind: SimplexSmooth, freq: 0.011, seed: 72)), C(0.6)),
+            C(22),
+        ]),
+
+        // A walk-in ramp measured from the real surface through `rock`: an
+        // open cutting whose floor sinks about 18 degrees, closing over into
+        // a tunnel once 4.5 m of rock lie above it, and ending 28 m down in a
+        // chamber among the tunnel levels.
+        "entrance_ramp": Max([
+            Warp(
+                by: (freq: 0.03, amp: 2.5, seed: 92),
+                vertical: 0,
+                of: SmoothIntersect(1.2, [
+                    Sub(Ref("w"), Abs(Z)),
+                    Sub(Add([C(2), Mul([X, C(0.32)])]), Ref("rock")),
+                    Sub(Ref("rock"), Add([C(-2.5), Mul([X, C(0.32)])])),
+                    Add([X, C(4)]),
+                    Sub(C(80), X),
+                ]),
+            ),
+            Sub(Ref("hall"), Length([Sub(X, C(84)), Mul([Sub(Ref("rock"), C(28)), C(1.4)]), Z])),
+        ]),
+        "entrance_ramps": Scatter(
+            cell: 240, reach: 115, chance: 0.6,
+            mask: Ref("cave_country"),
+            ground: Ref("ground"), lift: (0, 0),
+            vars: {"w": (2.6, 3.6), "hall": (7, 11)},
+            shape: Ref("entrance_ramp"),
+        ),
+
+        // Round sinkhole funnels, flaring over the top 7 m of rock, over
+        // shafts 44 m deep.
+        "shafts": Scatter(
+            cell: 70, reach: 64, chance: 0.4,
+            ground: Ref("ground"), lift: (0, 0),
+            vars: {"r": (3, 6)},
+            shape: Min([
+                Sub(Add([Ref("r"), Mul([Clamp(Sub(C(7), Ref("rock")), 0, 7), C(1.1)])]), Length([X, Z])),
+                Sub(C(44), Ref("rock")),
+            ]),
+        ),
+
+        // Ravines at every scale share one shape: a cut `width` wide at the
+        // surface around a Fissure line, narrowing to nothing `depth` metres
+        // into the rock; a power below 1 gives slot walls, above 1 a V. Where
+        // a scale is absent, or below a cut's depth, its void falls well below
+        // zero, so voids that biomes widen never open a hairline along lines.
+        // Small trenches in patches anywhere.
+        "trench_presence": Clamp(Remap(Noise(freq: 0.0025, dims: Two, seed: 81), (0.25, 0.65), (0, 1)), 0, 1),
+        "trenches": Min([
+            Sub(
+                Add([
+                    Mul([Ref("trench_presence"), C(1.8), Clamp(Sub(C(1), Mul([Ref("rock"), C(0.3)])), 0, 1)]),
+                    Min([Sub(C(3.3), Ref("rock")), C(0)]),
+                ]),
+                Fissure(freq: 0.011, octaves: 2, dims: Two, seed: 80),
+            ),
+            Sub(Mul([Ref("trench_presence"), C(20)]), C(4)),
+        ]),
+        // Ravines in dry or high country, 10 to 40 m wide and 40 to 110 m deep.
+        "ravine_presence": Clamp(Max([
+            Remap(Ref("humidity"), (-0.05, -0.3), (0, 1)),
+            Remap(Ref("continentalness"), (0.45, 0.6), (0, 1)),
+        ]), 0, 1),
+        "ravine_depth": Add([C(40), Mul([Clamp(Remap(Noise(freq: 0.0009, dims: Two, seed: 86), (-0.6, 0.6), (0, 1)), 0, 1), C(70)])]),
+        "ravines": Min([
+            Sub(
+                Add([
+                    Mul([
+                        Ref("ravine_presence"),
+                        Add([C(5), Mul([Clamp(Remap(Noise(freq: 0.0012, dims: Two, seed: 83), (-0.6, 0.6), (0, 1)), 0, 1), C(15)])]),
+                        Pow(Clamp(Sub(C(1), Div(Ref("rock"), Ref("ravine_depth"))), 0, 1), 0.4),
+                    ]),
+                    Min([Sub(Ref("ravine_depth"), Ref("rock")), C(0)]),
+                ]),
+                Fissure(freq: 0.0011, octaves: 2, dims: Two, seed: 82),
+            ),
+            Sub(Mul([Ref("ravine_presence"), C(40)]), C(8)),
+        ]),
+        // Where ravines run buried: a sealed rift cave under a roof of rock.
+        "ravine_roof": Mul([Ref("ravine_presence"), Remap(Noise(freq: 0.0016, dims: Two, seed: 84), (-1, 1), (-14, 12))]),
+        // Trenches in the deep ocean, 160 to 440 m wide and over 500 m deep,
+        // along gently curving lines kilometres long.
+        "ocean_presence": Clamp(Remap(Ref("continentalness"), (-0.25, -0.4), (0, 1)), 0, 1),
+        "ocean_trenches": Min([
+            Sub(
+                Add([
+                    Mul([
+                        Ref("ocean_presence"),
+                        Add([C(80), Mul([Clamp(Remap(Noise(freq: 0.0003, dims: Two, seed: 87), (-0.6, 0.6), (0, 1)), 0, 1), C(140)])]),
+                        Pow(Clamp(Sub(C(1), Mul([Ref("rock"), C(0.00185)])), 0, 1), 0.7),
+                    ]),
+                    Min([Sub(C(540), Ref("rock")), C(0)]),
+                ]),
+                Fissure(kind: SimplexSmooth, freq: 0.00012, dims: Two, seed: 85),
+            ),
+            Sub(Mul([Ref("ocean_presence"), C(400)]), C(8)),
+        ]),
+    },
+)

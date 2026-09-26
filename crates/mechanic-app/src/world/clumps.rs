@@ -1,8 +1,12 @@
 //! Rendering for world-owned material fragments, using terrain materials.
 
+use super::terrain_render::{
+    ATTRIBUTE_TERRAIN_SLOTS, ATTRIBUTE_TERRAIN_WEIGHTS_HIGH, ATTRIBUTE_TERRAIN_WEIGHTS_LOW,
+};
 use super::{WorldOwned, WorldRuntime};
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use mechanic_world::{FloatingOrigin, TerrainMaterial};
+use mechanic_world::{FloatingOrigin, SurfaceId, TerrainMaterial};
 use std::collections::BTreeSet;
 
 /// Semi-axis of the ellipsoid holding a box's volume, per unit of its half extent.
@@ -78,7 +82,7 @@ fn clod_mesh(material: TerrainMaterial) -> Mesh {
         .mesh()
         .ico(1)
         .unwrap_or_else(|_| Mesh::from(Sphere::new(1.0)));
-    if let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+    if let Some(VertexAttributeValues::Float32x3(positions)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         for (index, position) in positions.iter_mut().enumerate() {
@@ -91,14 +95,23 @@ fn clod_mesh(material: TerrainMaterial) -> Mesh {
     mesh.duplicate_vertices();
     mesh.compute_flat_normals();
     let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) => positions.clone(),
+        Some(VertexAttributeValues::Float32x3(positions)) => positions.clone(),
         _ => Vec::new(),
     };
-    let mut weights = [0.0; TerrainMaterial::COUNT];
-    weights[material.code() as usize] = 1.0;
+    // Slot 0 holds the material's plain surface; the shader skips the rest.
+    let mut slots = [u32::MAX; 4];
+    slots[0] = u32::from(SurfaceId::plain(material).0) | 0xffff_0000;
     mesh.insert_attribute(
-        Mesh::ATTRIBUTE_COLOR,
-        vec![[weights[0], weights[1], weights[2], weights[3]]; positions.len()],
+        ATTRIBUTE_TERRAIN_WEIGHTS_LOW,
+        VertexAttributeValues::Unorm8x4(vec![[u8::MAX, 0, 0, 0]; positions.len()]),
+    );
+    mesh.insert_attribute(
+        ATTRIBUTE_TERRAIN_WEIGHTS_HIGH,
+        VertexAttributeValues::Unorm8x4(vec![[0; 4]; positions.len()]),
+    );
+    mesh.insert_attribute(
+        ATTRIBUTE_TERRAIN_SLOTS,
+        VertexAttributeValues::Uint32x4(vec![slots; positions.len()]),
     );
     // A clod is a small window on the ground's 1.5 m texture repeat.
     mesh.insert_attribute(
@@ -112,8 +125,27 @@ fn clod_mesh(material: TerrainMaterial) -> Mesh {
         Mesh::ATTRIBUTE_UV_1,
         positions
             .iter()
-            .map(|p| [p[1] / 15.0, weights[4]])
+            .map(|p| [p[1] / 15.0, 0.0])
             .collect::<Vec<_>>(),
     );
     mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::terrain_render::terrain_vertex_attributes;
+    use bevy::mesh::MeshVertexBufferLayouts;
+
+    #[test]
+    fn every_clod_carries_the_terrain_vertex_layout() {
+        let mut layouts = MeshVertexBufferLayouts::default();
+        for material in TerrainMaterial::ALL {
+            let layout = clod_mesh(material).get_mesh_vertex_buffer_layout(&mut layouts);
+            assert!(
+                layout.0.get_layout(&terrain_vertex_attributes()).is_ok(),
+                "{material:?} clod cannot be drawn with the terrain material"
+            );
+        }
+    }
 }

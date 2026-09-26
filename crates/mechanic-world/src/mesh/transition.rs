@@ -2,16 +2,15 @@
 
 use super::TerrainMeshChunk;
 use super::groups::IndexGroup;
-use super::lattice::{
-    LatticePoint, LatticeSample, PreparedTerrainRegion, coarse_sample_in_columns,
-};
+use super::lattice::{LatticePoint, LatticeSample, PreparedTerrainRegion, coarse_lattice_sample};
 use super::polygonise::{
     MeshVertex, apply_transition_inset, crossing_material, emit_oriented_triangle,
 };
+use crate::generation::corner_position;
 use crate::transvoxel::tables::{
     TRANSITION_CELL_CLASS, TRANSITION_CELL_DATA, TRANSITION_CORNER_DATA, TRANSITION_VERTEX_DATA,
 };
-use crate::{TerrainFace, TerrainField, WorldCell};
+use crate::{TERRAIN_CELL_METERS, TerrainFace, TerrainField, WorldCell};
 use bevy_math::{DVec3, Vec3};
 use std::array;
 use std::collections::HashMap;
@@ -98,7 +97,7 @@ pub(super) fn cap_vertex(point: (LatticePoint, DVec3), outward: Vec3) -> MeshVer
     MeshVertex {
         position: point.1,
         normal: outward,
-        material: point.0.sample.material,
+        material: (point.0.sample.material, point.0.sample.surface),
         compaction: point.0.sample.compaction,
     }
 }
@@ -208,37 +207,42 @@ pub(super) fn transition_coarse_lattice_point(
     cell: WorldCell,
     stride: i32,
     samples: &mut HashMap<WorldCell, LatticeSample>,
-    columns: &mut HashMap<(i32, i32), crate::generation::TerrainColumnSample>,
 ) -> LatticePoint {
-    let sample = transition_coarse_sample(field, edits, cell, stride, samples, columns);
-    let density =
-        |offset: [i32; 3],
-         samples: &mut HashMap<WorldCell, LatticeSample>,
-         columns: &mut HashMap<(i32, i32), crate::generation::TerrainColumnSample>| {
-            transition_coarse_sample(
-                field,
-                edits,
-                WorldCell::new(
-                    cell.x + offset[0] * stride,
-                    cell.y + offset[1] * stride,
-                    cell.z + offset[2] * stride,
-                ),
-                stride,
-                samples,
-                columns,
-            )
-            .sample
-            .density
-        };
+    let mut sample = transition_coarse_sample(field, edits, cell, stride, samples);
+    let mut density = |offset: [i32; 3]| {
+        transition_coarse_sample(
+            field,
+            edits,
+            WorldCell::new(
+                cell.x + offset[0] * stride,
+                cell.y + offset[1] * stride,
+                cell.z + offset[2] * stride,
+            ),
+            stride,
+            samples,
+        )
+        .sample
+        .density
+    };
     let gradient = Vec3::new(
-        density([1, 0, 0], samples, columns) - density([-1, 0, 0], samples, columns),
-        density([0, 1, 0], samples, columns) - density([0, -1, 0], samples, columns),
-        density([0, 0, 1], samples, columns) - density([0, 0, -1], samples, columns),
+        density([1, 0, 0]) - density([-1, 0, 0]),
+        density([0, 1, 0]) - density([0, -1, 0]),
+        density([0, 0, 1]) - density([0, 0, -1]),
     );
+    if sample.procedural {
+        let spacing = f64::from(stride) * TERRAIN_CELL_METERS;
+        let (material, surface) = field.paint(
+            corner_position(cell),
+            f64::from(sample.sample.density),
+            (gradient.as_dvec3() / (2.0 * spacing)).to_array(),
+        );
+        sample.sample.material = material;
+        sample.sample.surface = surface;
+    }
     LatticePoint {
         sample: sample.sample,
         normal: (-gradient).normalize_or(Vec3::Y),
-        authored_material: sample.authored_material,
+        authored: sample.authored,
     }
 }
 
@@ -248,21 +252,12 @@ pub(super) fn transition_coarse_sample(
     cell: WorldCell,
     stride: i32,
     samples: &mut HashMap<WorldCell, LatticeSample>,
-    columns: &mut HashMap<(i32, i32), crate::generation::TerrainColumnSample>,
 ) -> LatticeSample {
     if let Some(&sample) = samples.get(&cell) {
         return sample;
     }
-    let prepared = [(-1, -1), (0, -1), (-1, 0), (0, 0)].map(|(x, z)| {
-        let column_cell = WorldCell::new(cell.x + x, cell.y, cell.z + z);
-        *columns
-            .entry((column_cell.x, column_cell.z))
-            .or_insert_with(|| {
-                let position = column_cell.centre();
-                field.sample_column(position.0.x, position.0.z)
-            })
-    });
-    let sample = coarse_sample_in_columns(field, edits, cell, stride, prepared);
+    let procedural = LatticeSample::procedural(field.density(corner_position(cell)));
+    let sample = coarse_lattice_sample(field, edits, cell, stride, procedural);
     samples.insert(cell, sample);
     sample
 }

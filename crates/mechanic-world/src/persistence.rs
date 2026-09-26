@@ -369,6 +369,7 @@ impl WorldStore {
             })?;
         if world.version != WORLD_FORMAT_VERSION
             || world.generator_version != WorldGeneratorVersion::CURRENT
+            || world.worldgen != crate::WorldgenSpec::embedded().hash()
         {
             return Err(WorldSaveError::UnsupportedVersion { path });
         }
@@ -493,7 +494,8 @@ impl WorldStore {
                 match inspect_manifest(&manifest) {
                     Ok(header)
                         if header.version != WORLD_FORMAT_VERSION
-                            || header.generator_version != WorldGeneratorVersion::CURRENT =>
+                            || header.generator_version != WorldGeneratorVersion::CURRENT
+                            || header.worldgen != crate::WorldgenSpec::embedded().hash() =>
                     {
                         SavedWorld {
                             name: Some(header.name),

@@ -2968,6 +2968,7 @@ dependencies = [
  "mechanic-gpu",
  "mechanic-physics",
  "mechanic-world",
+ "png",
  "pollster",
  "ron",
  "serde_json",

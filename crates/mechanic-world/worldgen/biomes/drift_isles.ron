@@ -1,0 +1,44 @@
+// Alien floating islands. One noisy blob per Voronoi cell, squeezed into a
+// band around 80 m that is pinched hard above and gently below, leaves
+// flat-topped isles with long inverted-cone undersides hanging over a dark
+// glassy basin.
+Biome(
+    name: "drift_isles",
+    climate: (temperature: -0.35, humidity: 0.0, continentalness: 0.3, weirdness: 0.55),
+
+    let: {
+        // Distance from the island band: steep above 82 m, shallow below.
+        "band": Max([
+            Mul([Sub(Y, C(82)), C(2.4)]),
+            Mul([Sub(C(82), Y), C(0.5)]),
+        ]),
+        // One island per Voronoi cell: positive near a cell's centre, far
+        // negative towards its border, so neighbours never fuse.
+        "cells": Remap(Noise(kind: Cells, freq: 0.0075, dims: Two, seed: 4), (-1, -0.35), (14, -40)),
+        "isles": Sub(
+            Add([
+                Noise(kind: SimplexSmooth, freq: 0.012, octaves: 3, amp: 16, seed: 2),
+                Ref("cells"),
+                Remap(Noise(kind: SimplexSmooth, freq: 0.003, dims: Two, seed: 3), (-1, 1), (-10, 12)),
+            ]),
+            Add([Ref("band"), C(4)]),
+        ),
+    },
+
+    height: Add([
+        C(-4),
+        Noise(kind: SimplexSmooth, freq: 0.002, octaves: 2, amp: 5, dims: Two, seed: 1),
+    ]),
+
+    density: Union([Height(Ref("height")), Ref("isles")]),
+
+    rivers: 0.3,
+    carves: {"tunnels": 0, "entrances": 0, "ravines": 0, "trenches": 0},
+
+    surface: [
+        (when: All([Altitude(-100, 3), Depth(0, 1.5)]), use: "obsidian_glass"),
+        (when: Ceiling, use: "isle_underside"),
+        (when: All([Up(0.65, 1), Depth(0, 0.3)]), use: "magenta_turf"),
+        (when: Always, use: "black_rock"),
+    ],
+)

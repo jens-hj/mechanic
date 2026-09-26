@@ -2,8 +2,8 @@
 
 use crate::soil::{COMPACTION_STEP_METRES, MAX_SOIL_DEPTH_METRES};
 use crate::{
-    BRICK_EDGE_CELLS, BrickCoord, TERRAIN_CELL_METERS, TerrainField, TerrainMaterial,
-    TerrainSample, WorldCell,
+    BRICK_EDGE_CELLS, BrickCoord, SurfaceId, TERRAIN_CELL_METERS, TerrainField, TerrainMaterial,
+    TerrainSample,
 };
 use bevy_math::IVec3;
 use thiserror::Error;
@@ -14,7 +14,7 @@ pub(super) const EMPTY_DENSITY: f32 = -0.5 * TERRAIN_CELL_METERS as f32;
 
 pub(super) const BRICK_MAGIC: [u8; 4] = *b"MECB";
 
-pub(super) const BRICK_FORMAT_VERSION: u16 = 4;
+pub(super) const BRICK_FORMAT_VERSION: u16 = 5;
 
 /// Fully promoted 32³-cell brick and its density acceleration bounds.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,30 +53,12 @@ impl TerrainBrick {
     }
 
     pub(super) fn promote(field: &TerrainField, coordinate: BrickCoord) -> Self {
-        let minimum = coordinate.minimum_cell();
-        let mut columns = Vec::with_capacity(usize::try_from(BRICK_EDGE_CELLS.pow(2)).unwrap());
-        for z in 0..BRICK_EDGE_CELLS {
-            for x in 0..BRICK_EDGE_CELLS {
-                let position = WorldCell::new(minimum.x + x, minimum.y, minimum.z + z).centre();
-                columns.push(field.sample_column(position.0.x, position.0.z));
-            }
-        }
-        let mut cells = Vec::with_capacity(BRICK_CELL_COUNT);
-        let mut minimum_density = f32::INFINITY;
-        let mut maximum_density = f32::NEG_INFINITY;
-        for z in 0..BRICK_EDGE_CELLS {
-            for y in 0..BRICK_EDGE_CELLS {
-                for x in 0..BRICK_EDGE_CELLS {
-                    let cell = WorldCell::new(minimum.x + x, minimum.y + y, minimum.z + z);
-                    let column = columns[usize::try_from(x + z * BRICK_EDGE_CELLS)
-                        .expect("local index is positive")];
-                    let sample = field.sample_cell_in_column(cell, column);
-                    minimum_density = minimum_density.min(sample.density);
-                    maximum_density = maximum_density.max(sample.density);
-                    cells.push(sample);
-                }
-            }
-        }
+        let edge = usize::try_from(BRICK_EDGE_CELLS).expect("brick edge is positive");
+        let cells = field.sample_cells(coordinate.minimum_cell(), [edge; 3]);
+        let (minimum_density, maximum_density) = cells.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(minimum, maximum), sample| (minimum.min(sample.density), maximum.max(sample.density)),
+        );
         Self {
             coordinate,
             cells,
@@ -156,6 +138,7 @@ impl TerrainBrick {
         *sample = TerrainSample {
             density,
             material,
+            surface: SurfaceId::plain(material),
             compaction: 0,
             looseness,
         };
@@ -212,6 +195,7 @@ pub fn encode_brick(brick: &TerrainBrick) -> Vec<u8> {
         bytes.push(sample.material.code());
         bytes.push(sample.compaction);
         bytes.push(sample.looseness);
+        bytes.extend_from_slice(&sample.surface.0.to_le_bytes());
         index += run;
     }
     bytes
@@ -242,6 +226,7 @@ pub fn decode_brick(bytes: &[u8]) -> Result<TerrainBrick, BrickDecodeError> {
         let code = *bytes.get(cursor + 6).ok_or(BrickDecodeError::Truncated)?;
         let material =
             TerrainMaterial::from_code(code).ok_or(BrickDecodeError::UnknownMaterial(code))?;
+        let surface = SurfaceId(read_u16(bytes, cursor + 9)?);
         if run == 0 || cells.len() + run > BRICK_CELL_COUNT {
             return Err(BrickDecodeError::InvalidCellCount(cells.len() + run));
         }
@@ -249,12 +234,13 @@ pub fn decode_brick(bytes: &[u8]) -> Result<TerrainBrick, BrickDecodeError> {
             TerrainSample {
                 density,
                 material,
+                surface,
                 compaction,
                 looseness,
             },
             run,
         ));
-        cursor += 9;
+        cursor += 11;
     }
     if cells.len() != BRICK_CELL_COUNT {
         return Err(BrickDecodeError::InvalidCellCount(cells.len()));

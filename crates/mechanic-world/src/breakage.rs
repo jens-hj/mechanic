@@ -4,12 +4,13 @@
 //! resting on the ground never mines: a loaded contact must deliver mechanical
 //! work, or be driven sideways into soft ground hard enough to crush it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bevy_math::DVec3;
 
 use crate::{
-    TerrainField, TerrainMaterial, TerrainOctree, TerrainSample, WorldCell, WorldPosition,
+    BrickCoord, TerrainField, TerrainMaterial, TerrainOctree, TerrainSample, WorldCell,
+    WorldPosition,
 };
 
 /// Material volume quantum: one 510th of a terrain cell. A compaction step
@@ -164,17 +165,21 @@ struct Damage {
     sample: TerrainSample,
     work_j: f64,
     normal: DVec3,
+    /// Recorded on untouched ground, where only an edit can change the
+    /// sample or the exposure it was accepted with.
+    procedural: bool,
     // Tool velocity summed by the work it delivered, and that work uncapped.
     throw: DVec3,
     thrown_j: f64,
 }
 
 impl Damage {
-    fn new(sample: TerrainSample, normal: DVec3) -> Self {
+    fn new(sample: TerrainSample, normal: DVec3, procedural: bool) -> Self {
         Self {
             sample,
             work_j: 0.0,
             normal,
+            procedural,
             throw: DVec3::ZERO,
             thrown_j: 0.0,
         }
@@ -202,10 +207,9 @@ pub struct BreakageAccumulator {
 impl BreakageAccumulator {
     /// Drops damage on sources changed by another edit.
     pub fn discard_stale(&mut self, terrain: &TerrainOctree, field: &TerrainField) {
-        self.pending.retain(|cell, damage| {
-            terrain.sample_cell(field, *cell) == damage.sample
-                && exposed(terrain, field, *cell, damage.normal)
-        });
+        let mut edited = EditedBricks::new(terrain);
+        self.pending
+            .retain(|cell, damage| still_valid(terrain, field, &mut edited, *cell, damage));
     }
 
     /// Distributes a contact's work across exposed cells in its footprint.
@@ -258,16 +262,18 @@ impl BreakageAccumulator {
                     else {
                         continue;
                     };
-                    if terrain.sample_cell(field, outside).is_solid() {
+                    if terrain.is_solid_cell(field, outside) {
                         continue;
                     }
-                    loaded.push((cell, sample));
+                    let procedural = terrain.brick(cell.brick()).is_none()
+                        && terrain.brick(outside.brick()).is_none();
+                    loaded.push((cell, sample, procedural));
                 }
             }
         }
         let share =
             patch.work_j / f64::from(u32::try_from(loaded.len()).unwrap_or(u32::MAX).max(1));
-        for (cell, sample) in loaded {
+        for (cell, sample, procedural) in loaded {
             let response = BreakageResponse::for_ground(sample);
             let hardening = if response.soft {
                 1.0 + f64::from(sample.compaction) / 255.0
@@ -286,12 +292,12 @@ impl BreakageAccumulator {
             if self.pending.len() >= MAX_PENDING_CELLS && !self.pending.contains_key(&cell) {
                 continue;
             }
-            let damage = self
-                .pending
-                .entry(cell)
-                .or_insert(Damage::new(sample, patch.normal));
+            let damage =
+                self.pending
+                    .entry(cell)
+                    .or_insert(Damage::new(sample, patch.normal, procedural));
             if damage.sample != sample {
-                *damage = Damage::new(sample, patch.normal);
+                *damage = Damage::new(sample, patch.normal, procedural);
             }
             let required = extraction_work(sample);
             damage.work_j = (damage.work_j + share).min(required);
@@ -307,12 +313,12 @@ impl BreakageAccumulator {
         field: &TerrainField,
         capacity: usize,
     ) -> Vec<ExtractionCell> {
+        let mut edited = EditedBricks::new(terrain);
         self.pending
             .iter()
             .filter(|&(&cell, damage)| {
-                terrain.sample_cell(field, cell) == damage.sample
-                    && exposed(terrain, field, cell, damage.normal)
-                    && damage.work_j >= extraction_work(damage.sample)
+                damage.work_j >= extraction_work(damage.sample)
+                    && still_valid(terrain, field, &mut edited, cell, damage)
             })
             .map(|(&cell, damage)| ExtractionCell {
                 cell,
@@ -339,10 +345,59 @@ fn extraction_work(sample: TerrainSample) -> f64 {
         * BreakageResponse::for_ground(sample).work_j_m3
 }
 
-fn exposed(terrain: &TerrainOctree, field: &TerrainField, cell: WorldCell, normal: DVec3) -> bool {
+fn outside_of(cell: WorldCell, normal: DVec3) -> Option<WorldCell> {
     WorldPosition(cell.centre().0 + normal * crate::TERRAIN_CELL_METERS)
         .cell()
-        .is_ok_and(|outside| !terrain.sample_cell(field, outside).is_solid())
+        .ok()
+}
+
+fn exposed(terrain: &TerrainOctree, field: &TerrainField, cell: WorldCell, normal: DVec3) -> bool {
+    outside_of(cell, normal).is_some_and(|outside| !terrain.is_solid_cell(field, outside))
+}
+
+/// Which bricks hold edits, remembered for one pass over pending damage:
+/// damaged cells cluster in a few bricks, and each lookup walks the octree.
+struct EditedBricks<'a> {
+    terrain: &'a TerrainOctree,
+    known: HashMap<BrickCoord, bool>,
+}
+
+impl<'a> EditedBricks<'a> {
+    fn new(terrain: &'a TerrainOctree) -> Self {
+        Self {
+            terrain,
+            known: HashMap::new(),
+        }
+    }
+
+    fn contains(&mut self, brick: BrickCoord) -> bool {
+        if self.terrain.promoted_brick_count() == 0 {
+            return false;
+        }
+        let terrain = self.terrain;
+        *self
+            .known
+            .entry(brick)
+            .or_insert_with(|| terrain.brick(brick).is_some())
+    }
+}
+
+/// Whether damage still applies: its cell holds the sample it was recorded
+/// with and still faces open ground. Untouched ground cannot change, so
+/// damage recorded there is only re-sampled once an edit reaches its bricks.
+fn still_valid(
+    terrain: &TerrainOctree,
+    field: &TerrainField,
+    edited: &mut EditedBricks<'_>,
+    cell: WorldCell,
+    damage: &Damage,
+) -> bool {
+    let untouched = damage.procedural
+        && !edited.contains(cell.brick())
+        && outside_of(cell, damage.normal).is_some_and(|outside| !edited.contains(outside.brick()));
+    untouched
+        || (terrain.sample_cell(field, cell) == damage.sample
+            && exposed(terrain, field, cell, damage.normal))
 }
 
 /// Rejects duplicate source cells before an all-or-nothing extraction.

@@ -5,10 +5,12 @@ use super::brush::terrain_edit_commands;
 use super::foundations::foundation_edit_is_ready;
 use super::list::install_world;
 use super::streaming::nodes_touch_on_face;
-use super::streaming::ready_obsolete_nodes;
+use super::streaming::{TerrainCutovers, TerrainDetail};
 use super::terrain_render::full_rgba8_mip_byte_count;
-use super::terrain_render::terrain_chunk_mesh;
 use super::terrain_render::terrain_mesh_is_renderable;
+use super::terrain_render::{
+    ATTRIBUTE_TERRAIN_SLOTS, ATTRIBUTE_TERRAIN_WEIGHTS_LOW, surface_slots, terrain_chunk_mesh,
+};
 use super::transfer::place_in_world;
 use super::transfer::remove_cached_foundations;
 use super::transfer::returned_component_parts;
@@ -1983,15 +1985,18 @@ fn freeze_triangle_query_prunes_distant_geometry_and_converts_global_coordinates
 }
 
 #[test]
-fn terrain_texture_coordinates_and_weights_are_chunk_seam_stable() {
+fn terrain_texture_coordinates_and_surface_slots_are_chunk_seam_stable() {
+    let palette = TerrainField::new(WorldSeed(1)).palette().clone();
+    let grass = mechanic_world::SurfaceId::plain(TerrainMaterial::SurfaceCover);
+    let rock = mechanic_world::SurfaceId::plain(TerrainMaterial::Rock);
     let chunk = TerrainMeshChunk {
         origin: WorldPosition(DVec3::new(15.0, 30.0, 45.0)),
-        vertices: vec![[1.5, 3.0, 4.5]],
-        normals: vec![[0.0, 1.0, 0.0]],
-        material_weights: vec![[0.1, 0.2, 0.3, 0.15, 0.1, 0.15]],
+        vertices: vec![[1.5, 3.0, 4.5], [1.5, 3.0, 4.6], [1.6, 3.0, 4.5]],
+        normals: vec![[0.0, 1.0, 0.0]; 3],
+        surfaces: vec![rock, grass, grass],
         ..TerrainMeshChunk::default()
     };
-    let mesh = terrain_chunk_mesh(&chunk, Vec::new());
+    let mesh = terrain_chunk_mesh(&chunk, Vec::new(), &palette);
     let Some(VertexAttributeValues::Float32x2(horizontal)) =
         mesh.attribute(bevy::mesh::Mesh::ATTRIBUTE_UV_0)
     else {
@@ -2002,14 +2007,48 @@ fn terrain_texture_coordinates_and_weights_are_chunk_seam_stable() {
     else {
         panic!("terrain mesh must have vertical texture coordinates")
     };
-    let Some(VertexAttributeValues::Float32x4(weights)) =
-        mesh.attribute(bevy::mesh::Mesh::ATTRIBUTE_COLOR)
+    let Some(VertexAttributeValues::Unorm8x4(weights)) =
+        mesh.attribute(ATTRIBUTE_TERRAIN_WEIGHTS_LOW)
     else {
-        panic!("terrain mesh must carry material weights as vertex colors")
+        panic!("terrain mesh must carry slot weights")
     };
-    assert_eq!(horizontal, &[[11.0, 33.0]]);
-    assert_eq!(vertical, &[[22.0, 0.1]]);
-    assert_eq!(weights, &[[0.1, 0.2, 0.3, 0.15]]);
+    let Some(VertexAttributeValues::Uint32x4(slots)) = mesh.attribute(ATTRIBUTE_TERRAIN_SLOTS)
+    else {
+        panic!("terrain mesh must carry its slot table")
+    };
+    // World-space coordinates, so neighbouring chunks line up exactly.
+    assert_eq!(
+        horizontal[0].map(f32::to_bits),
+        [11.0_f32, 33.0].map(f32::to_bits)
+    );
+    assert_eq!(
+        vertical[0].map(f32::to_bits),
+        [22.0_f32, 0.0].map(f32::to_bits)
+    );
+    // The commoner surface takes slot 0; every vertex is one-hot.
+    assert_eq!(slots[0][0] & 0xffff, u32::from(grass.0));
+    assert_eq!(slots[0][0] >> 16, u32::from(rock.0));
+    assert_eq!(weights, &[[0, 255, 0, 0], [255, 0, 0, 0], [255, 0, 0, 0]]);
+    assert!(slots.iter().all(|table| *table == slots[0]));
+}
+
+#[test]
+fn chunks_with_more_than_eight_surfaces_merge_the_rarest_by_texture() {
+    let palette = TerrainField::new(WorldSeed(1)).palette().clone();
+    // Ten distinct surfaces, the last two the rarest.
+    let mut surfaces = Vec::new();
+    for (index, id) in (0..10_u16).map(mechanic_world::SurfaceId).enumerate() {
+        surfaces.extend(std::iter::repeat_n(id, 20 - index));
+    }
+    let (kept, slots) = surface_slots(&surfaces, &palette);
+    assert_eq!(kept.len(), 8);
+    for dropped in [mechanic_world::SurfaceId(8), mechanic_world::SurfaceId(9)] {
+        let slot = slots[&dropped];
+        let texture = palette.look(dropped).texture;
+        let kept_texture = palette.look(kept[slot]).texture;
+        assert!(slot == 0 || kept_texture == texture);
+    }
+    assert_eq!(surface_slots(&surfaces, &palette).0, kept);
 }
 
 #[test]
@@ -2162,21 +2201,51 @@ fn equal_and_two_to_one_nodes_share_the_expected_face() {
 }
 
 #[test]
+fn terrain_detail_coarsens_over_budget_and_refines_below_it() {
+    let mut detail = TerrainDetail::default();
+    detail.steer(20_000_000, false, 0.1);
+    assert_eq!(
+        detail.steps, 1,
+        "far over budget coarsens even while streaming"
+    );
+    detail.selected = detail.steps;
+    detail.steer(20_000_000, false, 0.1);
+    assert_eq!(
+        detail.steps, 1,
+        "a change settles before it is judged again"
+    );
+    detail.steer(20_000_000, false, 4.0);
+    assert_eq!(detail.steps, 2);
+    detail.selected = detail.steps;
+    detail.steer(100_000, false, 4.0);
+    assert_eq!(detail.steps, 2, "an unsettled cut never refines");
+    detail.steer(100_000, true, 4.0);
+    assert_eq!(detail.steps, 1);
+    assert!(TerrainDetail::scale_of(1) < 1.0 && TerrainDetail::scale_of(0) >= 1.0);
+}
+
+#[test]
 fn old_lod_waits_until_every_visible_replacement_is_published() {
     let parent = TerrainNodeId::containing(BrickCoord::new(0, 0, 0), 1).unwrap();
-    let children = BTreeSet::from(parent.children().unwrap());
-    let obsolete = BTreeSet::from([parent]);
-    let mut published = children.clone();
-    let missing = *published.first().unwrap();
-    published.remove(&missing);
+    let children = parent.children().unwrap();
+    let mut cutovers = TerrainCutovers::default();
+    cutovers.published(parent, 12);
+    cutovers.begin(children.to_vec(), vec![parent]);
+    assert!(cutovers.is_retiring(parent));
+    assert!(children.iter().all(|&child| cutovers.is_hidden(child)));
 
-    assert!(ready_obsolete_nodes(&obsolete, &children, &published).is_empty());
-    published.insert(missing);
-    assert_eq!(
-        ready_obsolete_nodes(&obsolete, &children, &published),
-        obsolete
-    );
+    for &child in &children[..7] {
+        cutovers.published(child, 3);
+        assert!(cutovers.take_completed(|_| true).is_empty());
+    }
+    cutovers.published(children[7], 3);
+    let completed = cutovers.take_completed(|_| true);
+    assert_eq!(completed.len(), 1);
+    assert_eq!(completed[0].old, vec![parent]);
+    assert!(!cutovers.is_hidden(children[0]));
+    assert_eq!(cutovers.triangles(), 12 + 8 * 3);
 }
+
 #[test]
 fn soil_commits_on_sixth_tick_and_survives_world_reload() {
     let temporary = TempDir::new("world-install");

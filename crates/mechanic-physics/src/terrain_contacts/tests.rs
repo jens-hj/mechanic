@@ -592,11 +592,19 @@ fn generated_chunk_bvh_queries_match_direct_finite_triangle_queries() {
         WorldSeed, mesh_chunk,
     };
     let (creation, geometry, mut poses) = cube();
+    let field = TerrainField::new(WorldSeed(9));
+    let spawn = field.safe_spawn();
+    let ground = mechanic_world::WorldPosition(bevy_math::DVec3::new(
+        spawn.0.x,
+        field.surface_height(spawn.0.x, spawn.0.z),
+        spawn.0.z,
+    ));
+    let brick = ground.cell().unwrap().brick();
     let chunk = mesh_chunk(
-        &TerrainField::new(WorldSeed(9)),
+        &field,
         &TerrainOctree::default().snapshot(),
         TerrainMeshRequest {
-            node: TerrainNodeId::leaf(BrickCoord::new(0, 2, -1)),
+            node: TerrainNodeId::leaf(BrickCoord::new(brick.x, brick.y, brick.z)),
             generation: 5,
             transition_mask: TerrainTransitionMask::NONE,
         },

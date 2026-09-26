@@ -20,11 +20,26 @@ pub struct ActiveTerrainNode {
     pub transition_mask: TerrainTransitionMask,
 }
 
+/// Coarsest level a streamed node is meshed at: 3.2 m samples, 102.4 m nodes.
+pub const MAX_STREAMED_LEVEL: u8 = 6;
+
+/// Finest-first LOD levels that stream, one slot per level.
+pub const STREAMED_LEVELS: usize = MAX_STREAMED_LEVEL as usize + 1;
+
+/// Coarsest level whose meshes carry enclosed caves. Coarser, farther nodes
+/// treat caves as closed rock, so they neither sample nor draw them.
+pub const CAVE_STREAMED_LEVEL: u8 = 2;
+
+/// Horizontal band limits: a node within `LOD_BANDS[i].0` metres of a point
+/// of interest refines to level `LOD_BANDS[i].1`. Farther than the last band
+/// nothing streams.
+const LOD_BANDS: [(f64, u8); 5] = [(64.0, 2), (160.0, 3), (400.0, 4), (640.0, 5), (1_000.0, 6)];
+
 /// Observable selection counters used by streaming diagnostics and benchmarks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TerrainSelectionStats {
     /// Selected mixed nodes by LOD level.
-    pub selected_by_lod: [usize; 6],
+    pub selected_by_lod: [usize; STREAMED_LEVELS],
     /// Procedurally proven empty nodes omitted from the cut.
     pub rejected_empty: usize,
     /// Procedurally proven solid nodes omitted from the cut.
@@ -48,7 +63,7 @@ pub struct TerrainSelection {
 
 #[derive(Debug, Default)]
 pub(super) struct TerrainEditFootprints {
-    pub(super) nodes_by_level: [HashSet<TerrainNodeId>; 6],
+    pub(super) nodes_by_level: [HashSet<TerrainNodeId>; STREAMED_LEVELS],
 }
 
 #[derive(Debug, Default)]
@@ -62,7 +77,7 @@ impl TerrainEditFootprints {
         let mut footprints = Self::default();
         for brick in terrain.bricks() {
             let coordinate = brick.coordinate();
-            for level in 1..=5 {
+            for level in 1..=MAX_STREAMED_LEVEL {
                 let containing = TerrainNodeId::containing(coordinate, level)
                     .expect("promoted brick belongs to every streamed level");
                 let edge =
@@ -108,7 +123,8 @@ pub(super) fn affected_node_origins(
 /// Selects the 1 km balanced terrain cut around `focus`.
 ///
 /// The requested bands are 20 cm through 64 m, 40 cm through 160 m,
-/// 80 cm through 400 m, and 160 cm through the horizon. Promoted edits and
+/// 80 cm through 400 m, 160 cm through 640 m, and 320 cm through the horizon.
+/// Promoted edits and
 /// adjacent sampling footprints within 32 m select 5 cm leaves. Level one is
 /// otherwise introduced only by 2:1 balancing.
 pub fn select_active_nodes(
@@ -126,17 +142,27 @@ pub fn select_active_nodes_cached(
     focus: WorldPosition,
     cache: &mut TerrainBoundsCache,
 ) -> TerrainSelection {
-    select_active_nodes_with_interests(field, terrain, focus, &[], cache)
+    select_active_nodes_with_interests(field, terrain, focus, &[], 1.0, cache)
 }
 
+/// Smallest detail scale selection accepts: the finest band then still
+/// reaches about 22 m.
+pub const MIN_TERRAIN_DETAIL_SCALE: f64 = 0.35;
+
 /// Selects one balanced cut covering the player and additional moving bodies.
+///
+/// `detail_scale` multiplies every band's reach except the horizon, from
+/// [`MIN_TERRAIN_DETAIL_SCALE`] to 1, so a renderer over its triangle
+/// budget can coarsen the cut without shortening the view.
 pub fn select_active_nodes_with_interests(
     field: &TerrainField,
     terrain: &TerrainOctreeSnapshot,
     focus: WorldPosition,
     interests: &[WorldPosition],
+    detail_scale: f64,
     cache: &mut TerrainBoundsCache,
 ) -> TerrainSelection {
+    let detail_scale = detail_scale.clamp(MIN_TERRAIN_DETAIL_SCALE, 1.0);
     let mut focuses = vec![focus.0];
     for interest in interests {
         if interest.is_inside_world()
@@ -150,13 +176,23 @@ pub fn select_active_nodes_with_interests(
     let before = cache.access_counts();
     let mut state = TerrainSelectionState::default();
     let edit_footprints = TerrainEditFootprints::new(terrain);
+    let bands = LOD_BANDS.map(|(reach, level)| {
+        if level == MAX_STREAMED_LEVEL {
+            (reach, level)
+        } else {
+            (reach * detail_scale, level)
+        }
+    });
     select_recursive(
         field,
         terrain,
         TerrainNodeId::ROOT,
-        &focuses,
+        &SelectionContext {
+            focus: &focuses,
+            bands: &bands,
+            edit_footprints: &edit_footprints,
+        },
         cache,
-        &edit_footprints,
         &mut state,
     );
     balance_cut(field, terrain, cache, &mut state.stats, &mut state.selected);
@@ -222,32 +258,54 @@ pub(super) fn mesh_dependency_generation(
     )
 }
 
+/// What stays fixed through one selection's recursion.
+pub(super) struct SelectionContext<'a> {
+    pub(super) focus: &'a [DVec3],
+    pub(super) bands: &'a [(f64, u8)],
+    pub(super) edit_footprints: &'a TerrainEditFootprints,
+}
+
 pub(super) fn select_recursive(
     field: &TerrainField,
     terrain: &TerrainOctreeSnapshot,
     id: TerrainNodeId,
-    focus: &[DVec3],
+    context: &SelectionContext<'_>,
     cache: &mut TerrainBoundsCache,
-    edit_footprints: &TerrainEditFootprints,
     state: &mut TerrainSelectionState,
 ) {
     let (minimum, maximum) = node_bounds(id);
-    let distance_squared = focus
+    let distance_squared = context
+        .focus
         .iter()
         .map(|&point| horizontal_distance_squared_to_bounds(point, minimum, maximum))
         .fold(f64::INFINITY, f64::min);
-    if distance_squared > 1_000_000.0 || maximum.y < -128.0 || minimum.y > 256.0 {
+    let (bottom, top) = field.vertical_range();
+    let horizon = context.bands[context.bands.len() - 1].0;
+    if distance_squared > horizon * horizon || maximum.y < bottom - 32.0 || minimum.y > top {
         return;
     }
 
-    if id.level > 5 {
+    if id.level > MAX_STREAMED_LEVEL {
         for child in id.children().expect("root descendants have children") {
-            select_recursive(field, terrain, child, focus, cache, edit_footprints, state);
+            select_recursive(field, terrain, child, context, cache, state);
         }
         return;
     }
 
-    match classify_node(field, terrain, id, cache) {
+    let has_edits = context.edit_footprints.contains(id);
+    let target_level = if has_edits && distance_squared <= 1_024.0 {
+        0
+    } else {
+        context
+            .bands
+            .iter()
+            .find(|(reach, _)| distance_squared <= reach * reach)
+            .map_or(MAX_STREAMED_LEVEL, |&(_, level)| level)
+    };
+    // Caves stream only where the cut is fine enough to carry them; farther
+    // away they are hidden inside rock that is treated as solid.
+    let distant = target_level > CAVE_STREAMED_LEVEL;
+    match classify_node(field, terrain, id, distant, cache) {
         TerrainDensityClass::Empty => {
             state.stats.rejected_empty += 1;
             return;
@@ -258,21 +316,9 @@ pub(super) fn select_recursive(
         }
         TerrainDensityClass::Mixed => {}
     }
-    let has_edits = edit_footprints.contains(id);
-    let target_level = if has_edits && distance_squared <= 1_024.0 {
-        0
-    } else if distance_squared <= 4_096.0 {
-        2
-    } else if distance_squared <= 25_600.0 {
-        3
-    } else if distance_squared <= 160_000.0 {
-        4
-    } else {
-        5
-    };
     if id.level > target_level {
         for child in id.children().expect("a refined node has children") {
-            select_recursive(field, terrain, child, focus, cache, edit_footprints, state);
+            select_recursive(field, terrain, child, context, cache, state);
         }
     } else {
         state.selected.insert(id);
@@ -283,6 +329,7 @@ pub(super) fn classify_node(
     field: &TerrainField,
     terrain: &TerrainOctreeSnapshot,
     id: TerrainNodeId,
+    distant: bool,
     cache: &mut TerrainBoundsCache,
 ) -> TerrainDensityClass {
     let edit_summary = terrain.node(id);
@@ -302,25 +349,12 @@ pub(super) fn classify_node(
             TerrainDensityClass::Mixed
         };
     }
-    let bounds = cache.bounds(field, id);
-    let minimum_cell = id.minimum_cell_i64();
-    let maximum_cell = id.maximum_cell_exclusive_i64();
-    let minimum =
-        DVec3::from_array(minimum_cell.map(|cell| cell as f64 * crate::TERRAIN_CELL_METERS));
-    let maximum =
-        DVec3::from_array(maximum_cell.map(|cell| cell as f64 * crate::TERRAIN_CELL_METERS));
-    let sample_minimum_y = minimum.y + crate::TERRAIN_CELL_METERS * 0.5;
-    let sample_maximum_y = maximum.y - crate::TERRAIN_CELL_METERS * 0.5;
-    let margin = bounds.margin;
-    if bounds.maximum_surface - sample_minimum_y < -margin {
-        TerrainDensityClass::Empty
-    } else if bounds.minimum_surface - sample_maximum_y > margin
-        && !edited
-        && !field.cave_intersects_bounds(minimum, maximum)
-    {
-        TerrainDensityClass::Solid
-    } else {
+    // Promoted bricks can hold additions above or cavities below untouched
+    // ground, so only nodes without edits are culled procedurally.
+    if edited {
         TerrainDensityClass::Mixed
+    } else {
+        cache.classify(field, id, distant)
     }
 }
 
@@ -384,7 +418,8 @@ pub(super) fn balance_cut(
         for coarse in split {
             selected.remove(&coarse);
             for child in coarse.children().expect("a coarse neighbour can split") {
-                match classify_node(field, terrain, child, cache) {
+                let distant = child.level > CAVE_STREAMED_LEVEL;
+                match classify_node(field, terrain, child, distant, cache) {
                     TerrainDensityClass::Mixed => {
                         selected.insert(child);
                     }

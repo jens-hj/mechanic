@@ -1,0 +1,35 @@
+// Low continentalness: a basin below sea level rimmed by beaches, with
+// wave-cut stacks standing offshore. Rivers from every biome drain here.
+Biome(
+    name: "sunken_coast",
+    climate: (continentalness: -0.55),
+
+    height: Add([
+        C(-16),
+        Noise(kind: SimplexSmooth, freq: 0.0014, octaves: 4, amp: 14, dims: Two, seed: 1),
+        Ref("grain"),
+    ]),
+
+    density: SmoothUnion(1.5, [
+        Height(Ref("height")),
+        Scatter(
+            cell: 150, reach: 48, chance: 0.28,
+            ground: Ref("height"), lift: (-2, 0),
+            vars: {"r": (4, 9), "tall": (20, 44)},
+            shape: Warp(
+                by: (freq: 0.06, octaves: 2, amp: 1.6, seed: 2),
+                of: Cylinder(radius: Ref("r"), half_height: Ref("tall")),
+            ),
+        ),
+    ]),
+
+    rivers: 1.0,
+    carves: {"tunnels": 0.3, "entrances": 0},
+
+    surface: [
+        (when: All([Altitude(-3, 3), Up(0.6, 1), Depth(0, 1.2)]), use: "beach_sand"),
+        (when: All([Altitude(-500, -3), Depth(0, 1.2)]), use: "seabed_silt"),
+        (when: All([Up(0.72, 1), Depth(0, 0.2)]), use: "coastal_grass"),
+        (when: Always, use: "sea_cliff"),
+    ],
+)

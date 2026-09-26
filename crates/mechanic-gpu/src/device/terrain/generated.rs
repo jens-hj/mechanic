@@ -19,6 +19,41 @@ fn generated_caves_stop_wall_and_ceiling_impacts() {
     check_generated_impacts(true);
 }
 
+/// A point in a roomy underground void near the spawn, open for a metre
+/// in every direction.
+fn underground_void(field: &TerrainField) -> DVec3 {
+    let spawn = field.safe_spawn().0;
+    for ring in 0..200 {
+        for (dx, dz) in [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
+            let (x, z) = (
+                spawn.x + dx * f64::from(ring) * 6.0,
+                spawn.z + dz * f64::from(ring) * 6.0,
+            );
+            let surface = field.surface_height(x, z);
+            let mut depth = 4.0;
+            while depth < 70.0 {
+                let point = DVec3::new(x, surface - depth, z);
+                let roomy = [
+                    DVec3::ZERO,
+                    DVec3::X,
+                    DVec3::NEG_X,
+                    DVec3::Y,
+                    DVec3::NEG_Y,
+                    DVec3::Z,
+                    DVec3::NEG_Z,
+                ]
+                .into_iter()
+                .all(|offset| field.density(point + offset) < -1.0);
+                if roomy && field.density(point) < -1.5 {
+                    return point;
+                }
+                depth += 0.5;
+            }
+        }
+    }
+    panic!("no cave near spawn");
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "keep real-mesher setup and impact acceptance together"
@@ -34,24 +69,22 @@ fn check_generated_impacts(caves: bool) {
     let field = TerrainField::new(WorldSeed(91));
     let terrain = TerrainOctree::default();
     let edits = terrain.snapshot();
-    let mut fixtures: Vec<_> = [0.0, 180.0, 300.0]
+    // The spawn is the world's guaranteed near-level ground.
+    let spawn = field.safe_spawn().0;
+    let mut fixtures: Vec<_> = [0.0, 1.6, -3.2]
         .into_iter()
         .filter(|_| !caves)
-        .map(|x| {
+        .map(|offset| {
+            let (x, z) = (spawn.x + offset, spawn.z + offset * 0.5);
             (
-                format!("surface_{x}"),
-                DVec3::new(x, field.surface_height(x, 0.0), 0.0),
+                format!("surface_{offset}"),
+                DVec3::new(x, field.surface_height(x, z), z),
                 Vec3::Y,
                 120,
             )
         })
         .collect();
-    let chamber = field
-        .cave()
-        .nodes
-        .iter()
-        .find(|node| node.id == field.cave().chamber)
-        .unwrap();
+    let chamber = WorldPosition(underground_void(&field));
     for (name, direction) in [("cave_ceiling", DVec3::Y), ("cave_wall", DVec3::X)]
         .into_iter()
         .filter(|_| caves)
@@ -61,7 +94,7 @@ fn check_generated_impacts(caves: bool) {
                 field: &field,
                 edits: &terrain,
             },
-            chamber.position,
+            chamber,
             direction,
             64.0,
         )

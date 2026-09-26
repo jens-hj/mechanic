@@ -46,6 +46,9 @@ pub(super) fn stitch(cells: &[PolyCell]) -> Result<(Stitched, Vec<EdgeSegment>),
     let mut occurrences = BTreeMap::<FaceSignature, Vec<(usize, usize)>>::new();
     for (cell_index, cell) in cells.iter().enumerate() {
         for (face_index, face) in cell.faces.iter().enumerate() {
+            if face.interior {
+                continue;
+            }
             occurrences
                 .entry(face_signature(&face.vertices))
                 .or_default()

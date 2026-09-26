@@ -97,36 +97,47 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
     assert_eq!(background.len(), 64 * 64 * 4);
     let background = background[center..center + 4].to_vec();
     eprintln!("Empty target pixel: {background:?}");
-    let image = app
-        .world_mut()
-        .resource_mut::<Assets<Image>>()
-        .add(Image::new_fill(
+    let mut layer = |pixel: [u8; 4]| {
+        let mut image = Image::new_fill(
             Extent3d {
                 width: 1,
                 height: 1,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: 7,
             },
             TextureDimension::D2,
-            &[128, 128, 255, 255],
+            &pixel,
             TextureFormat::Rgba8Unorm,
             RenderAssetUsages::default(),
+        );
+        image.texture_view_descriptor =
+            Some(bevy::render::render_resource::TextureViewDescriptor {
+                dimension: Some(bevy::render::render_resource::TextureViewDimension::D2Array),
+                ..default()
+            });
+        app.world_mut().resource_mut::<Assets<Image>>().add(image)
+    };
+    let (base_color, normal, orm, tint_mask) = (
+        layer([128, 128, 128, 255]),
+        layer([128, 128, 255, 255]),
+        layer([255, 200, 0, 255]),
+        layer([255, 255, 255, 255]),
+    );
+    let palette = mechanic_world::TerrainField::new(mechanic_world::WorldSeed(1))
+        .palette()
+        .clone();
+    let surfaces = app
+        .world_mut()
+        .resource_mut::<Assets<bevy::render::storage::ShaderBuffer>>()
+        .add(crate::world::terrain_render::terrain_surface_buffer(
+            &palette,
+            &[0.5; mechanic_world::TextureSet::ALL.len()],
         ));
     let material = TerrainRenderMaterial {
-        grass_base_color: image.clone(),
-        dirt_base_color: image.clone(),
-        stone_base_color: image.clone(),
-        sand_base_color: image.clone(),
-        iron_base_color: image.clone(),
-        graphite_base_color: image.clone(),
-        grass_normal: image.clone(),
-        dirt_normal: image.clone(),
-        stone_normal: image.clone(),
-        grass_orm: image.clone(),
-        dirt_orm: image.clone(),
-        stone_orm: image.clone(),
-        sand_orm: image.clone(),
-        iron_orm: image.clone(),
-        graphite_orm: image,
+        base_color,
+        normal,
+        orm,
+        tint_mask,
+        surfaces,
     };
     let material = app
         .world_mut()
@@ -137,9 +148,18 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
         Mesh::ATTRIBUTE_UV_1,
         vec![[0.0, 0.0]; mesh.count_vertices()],
     );
+    let count = mesh.count_vertices();
     mesh.insert_attribute(
-        Mesh::ATTRIBUTE_COLOR,
-        vec![[1.0, 0.0, 0.0, 0.0]; mesh.count_vertices()],
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_WEIGHTS_LOW,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(vec![[255, 0, 0, 0]; count]),
+    );
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_WEIGHTS_HIGH,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(vec![[0; 4]; count]),
+    );
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_SLOTS,
+        bevy::mesh::VertexAttributeValues::Uint32x4(vec![[0, u32::MAX, u32::MAX, u32::MAX]; count]),
     );
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
     app.world_mut()

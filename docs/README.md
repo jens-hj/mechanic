@@ -10,6 +10,7 @@ follows.
 - [Compiled machine dynamics](compiled-machine-dynamics.md): how a construction graph becomes a reduced-coordinate machine.
 - [CPU physics](physics-cpu.md): the soft-step solver the app runs and the exact reference solver.
 - [Gameplay design](gameplay-design.md): what the game is for and what that rules in and out.
+- [World generation](world-generation.md): declarative 3D biomes, rivers, caves, and how to author them.
 
 ## Features
 

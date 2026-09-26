@@ -164,8 +164,9 @@ fn excavating_untouched_air_does_not_promote_empty_bricks() {
 #[test]
 fn excavation_is_idempotent_and_accounts_by_material() {
     let field = TerrainField::new(WorldSeed(123));
-    let surface = field.surface_height(300.0, 300.0);
-    let centre = WorldPosition(DVec3::new(300.0, surface - 1.4, 300.0));
+    let spawn = field.safe_spawn().0;
+    let surface = field.surface_height(spawn.x, spawn.z);
+    let centre = WorldPosition(DVec3::new(spawn.x, surface - 1.4, spawn.z));
     let mut edits = TerrainOctree::default();
     let first = edits
         .excavate_sphere(&field, centre, 1.5)
@@ -362,6 +363,7 @@ fn soil_fixture(
                             super::EMPTY_DENSITY
                         },
                         material,
+                        surface: crate::SurfaceId::plain(material),
                         compaction: 0,
                         looseness: 0,
                     };
@@ -863,7 +865,7 @@ fn compacted_and_loose_brick_rle_round_trips_exactly() {
     );
     let brick = terrain.brick(cell.brick()).unwrap();
     assert_eq!(decode_brick(&encode_brick(brick)).unwrap(), *brick);
-    assert_eq!(std::mem::size_of::<crate::TerrainSample>(), 8);
+    assert_eq!(std::mem::size_of::<crate::TerrainSample>(), 12);
     // Bricks written before cells knew how loose they are do not load.
     let mut old = encode_brick(brick);
     old[4..6].copy_from_slice(&3_u16.to_le_bytes());
@@ -945,9 +947,11 @@ fn compression_lowers_the_meshed_surface_and_survives_reload() {
 #[test]
 fn a_small_soil_load_moves_procedural_surface_continuously_downward() {
     let field = TerrainField::new(WorldSeed(91));
-    for x in [0.0, 0.13, 0.27, 0.41] {
+    let spawn = field.safe_spawn().0;
+    for offset in [0.0, 0.13, 0.27, 0.41] {
+        let (x, z) = (spawn.x + offset, spawn.z);
         let mut terrain = TerrainOctree::default();
-        let centre = WorldPosition(DVec3::new(x, field.surface_height(x, 0.0), 0.0));
+        let centre = WorldPosition(DVec3::new(x, field.surface_height(x, z), z));
         let node = super::TerrainNodeId::leaf(centre.cell().unwrap().brick());
         let height = |terrain: &TerrainOctree| {
             crate::mesh_chunk(
@@ -982,7 +986,7 @@ fn a_small_soil_load_moves_procedural_surface_continuously_downward() {
         let displacement = before - height(&terrain);
         assert!(
             (0.00001..0.0005).contains(&displacement),
-            "x={x}: moved {displacement} m"
+            "offset {offset}: moved {displacement} m"
         );
     }
 }

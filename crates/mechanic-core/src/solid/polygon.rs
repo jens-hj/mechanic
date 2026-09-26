@@ -23,6 +23,11 @@ pub(super) struct PolyFace {
     // Families joined tangentially to this facet are not sharp edges.
     pub(super) smooth_with: Vec<SurfacePatchKey>,
     pub(super) uv_provenance: SurfacePatchKey,
+    // Lies inside a completely filled cell grid, either on a plane between two
+    // cells or between two pieces of one cell. The other side covers the same
+    // area however it happened to be split, so the face is interior without
+    // having to match a twin polygon.
+    pub(super) interior: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +94,7 @@ pub(super) fn clip_cell(cell: &PolyCell, plane: ClipPlane) -> Option<PolyCell> {
                 smoothing_group: face.smoothing_group,
                 smooth_with: face.smooth_with.clone(),
                 uv_provenance: face.uv_provenance,
+                interior: face.interior,
             });
         }
     }
@@ -113,6 +119,7 @@ pub(super) fn clip_cell(cell: &PolyCell, plane: ClipPlane) -> Option<PolyCell> {
             smoothing_group: plane.smoothing_group,
             smooth_with: plane.smooth_with,
             uv_provenance: plane.uv_provenance,
+            interior: false,
         });
     }
     let result = PolyCell {

@@ -11,6 +11,7 @@ Everything below is an environment variable read at startup. Unset means off.
 | `MECHANIC_SOIL` | `off` disables soil accumulation on the CPU route; it is on otherwise. See [terrain response status](terrain-response-status.md). |
 | `MECHANIC_CREATIONS_DIR` | Directory holding saved creations instead of the platform data directory. |
 | `MECHANIC_RENDER_EXPERIMENT` | Selects a launch-only rendering diagnostic; never persisted. See [performance profiling](performance-profiling.md). |
+| `MECHANIC_WORLDGEN_DIR` | Debug builds only. Generates worlds from this directory's `world.ron`, `library.ron`, and `biomes/*.ron` instead of the embedded definition, and regenerates the terrain whenever a file changes. Saves are untouched. See [world generation](world-generation.md). |
 | `MECHANIC_TERRAIN_REFERENCE_SHADER`, `MECHANIC_TERRAIN_CANDIDATE_SHADER` | Shader paths for the paired terrain-material comparison. |
 
 ### Captures

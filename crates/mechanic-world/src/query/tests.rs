@@ -808,7 +808,14 @@ fn one_block_foundation_samples_twenty_five_terrain_points() {
 fn active_octree_and_chunk_bvhs_match_direct_chunk_raycast() {
     let field = crate::TerrainField::new(WorldSeed(9));
     let terrain = TerrainOctree::default().snapshot();
-    let nodes = [BrickCoord::new(-1, 2, -1), BrickCoord::new(0, 2, -1)];
+    // The two leaves holding the ground under the ray.
+    let ground = field.surface_height(-0.8, -0.8);
+    #[expect(clippy::cast_possible_truncation, reason = "a few bricks up")]
+    let brick_y = (ground / crate::BRICK_EDGE_METERS).floor() as i32;
+    let nodes = [
+        BrickCoord::new(-1, brick_y, -1),
+        BrickCoord::new(0, brick_y, -1),
+    ];
     let mut chunks = BTreeMap::new();
     let mut ready = BTreeMap::new();
     let mut index = TerrainSpatialIndex::default();
@@ -827,7 +834,7 @@ fn active_octree_and_chunk_bvhs_match_direct_chunk_raycast() {
         ready.insert(id, TerrainTransitionMask::NONE);
         index.insert(id);
     }
-    let origin = WorldPosition(DVec3::new(-0.8, 10.0, -0.8));
+    let origin = WorldPosition(DVec3::new(-0.8, ground + 10.0, -0.8));
     let direct = chunks
         .values()
         .filter_map(|chunk| {

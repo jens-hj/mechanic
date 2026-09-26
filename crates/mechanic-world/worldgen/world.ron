@@ -1,0 +1,159 @@
+// The frame every biome is placed into. Heights are metres; the world spans
+// ±8 km horizontally. Climate channels are (x, z) fields roughly in [-1, 1];
+// each biome names a target point in that space and the nearest ones blend.
+World(
+    vertical: (-640, 480),
+    sea_level: 0,
+
+    climate: (
+        temperature: Clamp(Warp(
+            by: (kind: SimplexSmooth, freq: 0.0011, octaves: 2, amp: 380, dims: Two, seed: 21),
+            vertical: 0,
+            of: Noise(kind: SimplexSmooth, freq: 0.00036, octaves: 3, amp: 1.5, dims: Two, seed: 1),
+        ), -1, 1),
+        humidity: Clamp(Warp(
+            by: (kind: SimplexSmooth, freq: 0.0012, octaves: 2, amp: 360, dims: Two, seed: 22),
+            vertical: 0,
+            of: Noise(kind: SimplexSmooth, freq: 0.00042, octaves: 3, amp: 1.5, dims: Two, seed: 2),
+        ), -1, 1),
+        continentalness: Clamp(Warp(
+            by: (kind: SimplexSmooth, freq: 0.0008, octaves: 2, amp: 500, dims: Two, seed: 23),
+            vertical: 0,
+            of: Noise(kind: SimplexSmooth, freq: 0.00024, octaves: 4, amp: 1.6, offset: 0.35, dims: Two, seed: 3),
+        ), -1, 1),
+        weirdness: Clamp(Warp(
+            by: (kind: SimplexSmooth, freq: 0.0013, octaves: 2, amp: 300, dims: Two, seed: 24),
+            vertical: 0,
+            of: Noise(kind: SimplexSmooth, freq: 0.0005, octaves: 3, amp: 1.5, dims: Two, seed: 4),
+        ), -1, 1),
+    ),
+    blend: 0.14,
+
+    spawn: (biome: "verdant_hills", radius: 420),
+
+    rivers: (
+        source_area: 1.2,
+        half_width: (3.5, 22),
+        depth: (1.5, 7),
+        bank_slope: 0.55,
+        meander: 26,
+    ),
+
+    // Carve layers cut voids into the blended biome ground. Each keeps
+    // `roof` metres of rock between its voids and every face of the ground,
+    // so it breaks through only where the roof drops to zero or below.
+    // Biomes scale a layer with `carves: {"name": factor}`.
+    carves: [
+        // Walkable tunnels on levels hung from the regional low ground and
+        // from halfway up to the surface, joined by wandering ramps and
+        // chambers. In entrance country the roof opens: tunnels run out of
+        // hillsides and collapse into trenches just under flat ground.
+        (
+            name: "tunnels",
+            void: Min([
+                Max([Ref("tunnel_low"), Ref("tunnel_mid"), Ref("tunnel_high"), Ref("tunnel_ramp"), Ref("caverns")]),
+                Ref("cave_country"),
+            ]),
+            roof: Sub(C(3), Mul([Ref("entrance_country"), C(9)])),
+            floor: Sub(Ref("base"), C(30)),
+        ),
+        // Walk-in ramps from the surface down to a chamber among the tunnels.
+        (
+            name: "entrances",
+            void: Ref("entrance_ramps"),
+            roof: C(-100),
+            floor: C(-640),
+            visible: 40,
+        ),
+        // Sinkhole funnels over deep shafts; only biomes that list it.
+        (
+            name: "shafts",
+            void: Ref("shafts"),
+            roof: C(-100),
+            floor: C(-640),
+            visible: 80,
+            unlisted: 0,
+        ),
+        // Cuts along lines, from open or buried ravines tens of metres wide
+        // to ocean trenches hundreds of metres deep.
+        (
+            name: "ravines",
+            void: Max([Ref("ravines"), Ref("ocean_trenches")]),
+            roof: Ref("ravine_roof"),
+            floor: C(-640),
+            visible: 560,
+        ),
+        // The same cut a metre or two across: ditches too fine to see from
+        // far away, so only cut near.
+        (
+            name: "trenches",
+            void: Ref("trenches"),
+            roof: C(-10),
+            floor: C(-640),
+            visible: 0,
+        ),
+    ],
+
+    biomes: [
+        "verdant_hills",
+        "dune_sea",
+        "arch_steppe",
+        "titan_crags",
+        "karst_needles",
+        "gyroid_reef",
+        "drift_isles",
+        "shelf_mire",
+        "sunken_coast",
+    ],
+
+    // Physical material decides digging and load response; texture and tint
+    // decide the look. `recolor` keeps a texture's shading but replaces its hue.
+    palette: [
+        // Verdant hills
+        (name: "meadow_grass", material: SurfaceCover, texture: Grass),
+        (name: "loam", material: Soil, texture: Dirt),
+        (name: "river_gravel", material: Sand, texture: Sand, tint: "#b9b2a4"),
+        (name: "iron_seam", material: Iron, texture: Iron),
+        (name: "granite", material: Rock, texture: Stone, tint: "#dcd8d0"),
+        // Dune sea
+        (name: "pale_sand", material: Sand, texture: Sand, tint: "#fff3dc"),
+        (name: "dune_shadow", material: Sand, texture: Sand, tint: "#e2b98c"),
+        (name: "buried_sandstone", material: Rock, texture: Stone, tint: "#e0c294", recolor: true),
+        // Arch steppe
+        (name: "ochre_sand", material: Sand, texture: Sand, tint: "#eaa262", recolor: true),
+        (name: "rust_shadow", material: Rock, texture: Stone, tint: "#8c4c34", recolor: true),
+        (name: "banded_dark", material: Rock, texture: Stone, tint: "#b8643e", recolor: true),
+        (name: "banded_light", material: Rock, texture: Stone, tint: "#e6ad7a", recolor: true),
+        // Titan crags
+        (name: "snow", material: Sand, texture: Sand, tint: "#f4f8ff", recolor: true, roughness: 0.7),
+        (name: "alpine_turf", material: SurfaceCover, texture: Grass, tint: "#c4d29a"),
+        (name: "dark_granite", material: Rock, texture: Stone, tint: "#6c6c74", recolor: true),
+        (name: "copper_vein", material: Iron, texture: Copper),
+        (name: "granite_grey", material: Rock, texture: Stone, tint: "#bcbcc0", recolor: true, scale: 2),
+        // Karst needles
+        (name: "karst_moss", material: SurfaceCover, texture: Grass, tint: "#86b884"),
+        (name: "graphite_streak", material: Graphite, texture: Graphite),
+        (name: "limestone", material: Rock, texture: Stone, tint: "#f2eee2", recolor: true),
+        (name: "flowstone", material: Rock, texture: Stone, tint: "#d8c49e", recolor: true, roughness: 0.4),
+        // Gyroid reef
+        (name: "reef_teal", material: SurfaceCover, texture: Grass, tint: "#3ad8c8", recolor: true, masked: false),
+        (name: "reef_violet", material: Rock, texture: Stone, tint: "#9060e0", recolor: true),
+        (name: "reef_violet_deep", material: Rock, texture: Stone, tint: "#4a2c8c", recolor: true),
+        // Drift isles
+        (name: "magenta_turf", material: SurfaceCover, texture: Grass, tint: "#e444b4", recolor: true, masked: false),
+        (name: "obsidian_glass", material: Rock, texture: Graphite, tint: "#26242e", recolor: true, roughness: 0.3),
+        (name: "isle_underside", material: Rock, texture: Stone, tint: "#3e2c46", recolor: true),
+        (name: "black_rock", material: Rock, texture: Stone, tint: "#403e48", recolor: true),
+        // Shelf mire
+        (name: "cap_ochre", material: Soil, texture: Dirt, tint: "#dca444", recolor: true),
+        (name: "gill_pink", material: Soil, texture: Dirt, tint: "#e690a8", recolor: true),
+        (name: "mire_mud", material: Soil, texture: Dirt, tint: "#4c4c32", recolor: true, roughness: 0.55),
+        (name: "sickly_turf", material: SurfaceCover, texture: Grass, tint: "#bcd444", recolor: true, masked: false),
+        (name: "fungal_stone", material: Rock, texture: Stone, tint: "#a49c7c", recolor: true),
+        // Sunken coast
+        (name: "beach_sand", material: Sand, texture: Sand),
+        (name: "seabed_silt", material: Sand, texture: Sand, tint: "#8e9e8c", recolor: true),
+        (name: "coastal_grass", material: SurfaceCover, texture: Grass, tint: "#c6dc96"),
+        (name: "sea_cliff", material: Rock, texture: Stone, tint: "#aca89e"),
+    ],
+)

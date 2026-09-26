@@ -1,0 +1,35 @@
+// Vast flat desert. A nearly level base carries long parallel dune crests
+// bent by the wind; slip faces show darker sand. No rivers cross it.
+Biome(
+    name: "dune_sea",
+    climate: (temperature: 0.6, humidity: -0.6, continentalness: 0.35, weirdness: -0.3),
+
+    let: {
+        // Ridged noise stretched along z makes long crests running across x;
+        // a slow warp bends them into barchan-like arcs.
+        "dunes": Warp(
+            by: (kind: SimplexSmooth, freq: 0.003, octaves: 2, amp: 45, dims: Two, seed: 3),
+            vertical: 0,
+            of: Stretch((1.0, 1.0, 3.4), Noise(kind: SimplexSmooth, fractal: Ridged, freq: 0.011, octaves: 2, gain: 0.35, dims: Two, seed: 4)),
+        ),
+    },
+
+    height: Add([
+        C(9),
+        Noise(kind: SimplexSmooth, freq: 0.0007, octaves: 2, amp: 3, dims: Two, seed: 1),
+        Mul([
+            Remap(Ref("dunes"), (-1, 1), (0, 1)),
+            Remap(Noise(kind: SimplexSmooth, freq: 0.0016, dims: Two, seed: 2), (-1, 1), (3, 11)),
+        ]),
+        Noise(freq: 0.35, amp: 0.04, dims: Two, seed: 5),
+    ]),
+
+    rivers: 0,
+    carves: {"tunnels": 0.15, "entrances": 0, "ravines": 0},
+
+    surface: [
+        (when: All([Up(0.93, 1), Depth(0, 0.6)]), use: "pale_sand"),
+        (when: Depth(0, 3.5), use: "dune_shadow"),
+        (when: Always, use: "buried_sandstone"),
+    ],
+)

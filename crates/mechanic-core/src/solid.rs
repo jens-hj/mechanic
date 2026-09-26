@@ -31,7 +31,8 @@ use polygon::PolyCell;
 pub use spiral::{SpiralCore, spiral_core, spiral_pieces};
 use stitch::build_evaluated;
 
-use crate::{PartSpec, ShapeFeatureId, ShapeRegion, decompose, decompose_part};
+use crate::shape::decompose_cells;
+use crate::{PartSpec, ShapeFeatureId, ShapeRegion, decompose_part};
 
 /// Evaluates one ordinary construction part with features already filtered to
 /// that owner and supplied in global order.
@@ -45,7 +46,7 @@ pub fn evaluate_part_solid(
     features: impl IntoIterator<Item = (ShapeFeatureId, ShapeFeature)>,
 ) -> Result<EvaluatedSolid, SolidError> {
     let cells = match spec {
-        PartSpec::Cuboid(cuboid) => pieces_to_cells(decompose_part(cuboid)),
+        PartSpec::Cuboid(cuboid) => pieces_to_cells(decompose_part(cuboid), None),
         PartSpec::Cylinder(cylinder) if cylinder.spiral().is_some() => {
             return Err(SolidError::SpiralPart);
         }
@@ -80,8 +81,8 @@ pub fn evaluate_region_solid(
     features: impl IntoIterator<Item = (ShapeFeatureId, ShapeFeature)>,
 ) -> Result<EvaluatedSolid, SolidError> {
     let grid = region.grid();
-    let pieces = decompose(&grid, &|cell, corner| region.corner_steps(cell, corner));
-    evaluate(pieces_to_cells(pieces), features)
+    let pieces = decompose_cells(&grid, &|cell, corner| region.corner_steps(cell, corner));
+    evaluate(pieces_to_cells(pieces, Some(grid.counts())), features)
 }
 
 fn evaluate(

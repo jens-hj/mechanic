@@ -329,6 +329,26 @@ fn cell_indices(counts: IVec3) -> impl Iterator<Item = IVec3> {
 /// Never in practice: the cell counts come from validated grid dimensions, and
 /// a piece is fused only from one cell's eight corners.
 pub fn decompose(grid: &CellGrid, corner_steps: &dyn Fn(IVec3, usize) -> IVec3) -> Vec<PartPiece> {
+    decompose_with(grid, corner_steps, true)
+}
+
+/// Like [`decompose`], but every plain cell stays its own box.
+///
+/// A boundary is stitched from matching edges, and a box merged across cells
+/// has no vertex where a neighbouring shaped cell's edge ends. Boundary
+/// evaluation therefore needs one box per cell; colliders and mass do not.
+pub(crate) fn decompose_cells(
+    grid: &CellGrid,
+    corner_steps: &dyn Fn(IVec3, usize) -> IVec3,
+) -> Vec<PartPiece> {
+    decompose_with(grid, corner_steps, false)
+}
+
+fn decompose_with(
+    grid: &CellGrid,
+    corner_steps: &dyn Fn(IVec3, usize) -> IVec3,
+    merge_plain: bool,
+) -> Vec<PartPiece> {
     let counts = grid.counts();
     let shaped = cell_indices(counts)
         .filter(|&cell| cell_is_shaped(grid, cell, corner_steps))
@@ -341,7 +361,7 @@ pub fn decompose(grid: &CellGrid, corner_steps: &dyn Fn(IVec3, usize) -> IVec3) 
     for &cell in &shaped {
         plain[cell_slot(counts, cell)] = false;
     }
-    append_box_cover(grid, &plain, &mut pieces);
+    append_box_cover(grid, &plain, merge_plain, &mut pieces);
     for &cell in &shaped {
         append_shaped_cell(grid, cell, corner_steps, &mut pieces);
     }
@@ -364,9 +384,10 @@ fn cell_slot(counts: IVec3, cell: IVec3) -> usize {
         .expect("cell indices are inside the part")
 }
 
-/// Covers every plain cell with as few axis-aligned boxes as possible by
-/// greedily growing each run along x, then y, then z.
-fn append_box_cover(grid: &CellGrid, plain: &[bool], pieces: &mut Vec<PartPiece>) {
+/// Covers every plain cell with axis-aligned boxes. When merging, as few as
+/// possible by greedily growing each run along x, then y, then z; otherwise one
+/// per cell.
+fn append_box_cover(grid: &CellGrid, plain: &[bool], merge: bool, pieces: &mut Vec<PartPiece>) {
     let counts = grid.counts();
     let mut used = vec![false; plain.len()];
     for cell in cell_indices(counts) {
@@ -375,7 +396,8 @@ fn append_box_cover(grid: &CellGrid, plain: &[bool], pieces: &mut Vec<PartPiece>
             continue;
         }
         let mut span = IVec3::ONE;
-        while cell.x + span.x < counts.x
+        while merge
+            && cell.x + span.x < counts.x
             && run_available(
                 counts,
                 plain,
@@ -387,7 +409,8 @@ fn append_box_cover(grid: &CellGrid, plain: &[bool], pieces: &mut Vec<PartPiece>
         {
             span.x += 1;
         }
-        while cell.y + span.y < counts.y
+        while merge
+            && cell.y + span.y < counts.y
             && run_available(
                 counts,
                 plain,
@@ -399,7 +422,8 @@ fn append_box_cover(grid: &CellGrid, plain: &[bool], pieces: &mut Vec<PartPiece>
         {
             span.y += 1;
         }
-        while cell.z + span.z < counts.z
+        while merge
+            && cell.z + span.z < counts.z
             && run_available(
                 counts,
                 plain,

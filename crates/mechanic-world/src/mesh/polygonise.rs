@@ -5,8 +5,8 @@ use super::groups::IndexGroup;
 use super::lattice::LatticePoint;
 use crate::transvoxel::tables::{REGULAR_CELL_CLASS, REGULAR_CELL_DATA, REGULAR_VERTEX_DATA};
 use crate::{
-    BRICK_EDGE_CELLS, TERRAIN_CELL_METERS, TerrainFace, TerrainMaterial, TerrainTransitionMask,
-    WorldCell,
+    BRICK_EDGE_CELLS, SurfaceId, TERRAIN_CELL_METERS, TerrainFace, TerrainMaterial,
+    TerrainTransitionMask, WorldCell,
 };
 use bevy_math::{DVec3, Vec3};
 
@@ -25,7 +25,7 @@ pub(super) const CUBE_CORNERS: [[i32; 3]; 8] = [
 pub(super) struct MeshVertex {
     pub(super) position: DVec3,
     pub(super) normal: Vec3,
-    pub(super) material: TerrainMaterial,
+    pub(super) material: (TerrainMaterial, SurfaceId),
     pub(super) compaction: u8,
 }
 
@@ -109,13 +109,16 @@ pub(super) fn crossing(
     }
 }
 
-pub(super) fn crossing_material(first: LatticePoint, second: LatticePoint) -> TerrainMaterial {
-    if let Some(material) = first.authored_material.or(second.authored_material) {
-        material
+pub(super) fn crossing_material(
+    first: LatticePoint,
+    second: LatticePoint,
+) -> (TerrainMaterial, SurfaceId) {
+    if let Some(authored) = first.authored.or(second.authored) {
+        authored
     } else if first.sample.is_solid() {
-        second.sample.material
+        (second.sample.material, second.sample.surface)
     } else {
-        first.sample.material
+        (first.sample.material, first.sample.surface)
     }
 }
 
@@ -227,12 +230,13 @@ pub(super) fn append_triangle(
     for (target, vertex) in indices.iter_mut().zip(triangle) {
         let position = vertex.position.as_vec3().to_array();
         let normal = vertex.normal.to_array();
+        let (material, surface) = vertex.material;
         let mut weights = [0.0; TerrainMaterial::COUNT];
-        weights[vertex.material.code() as usize] = 1.0;
+        weights[material.code() as usize] = 1.0;
         let key = (
             position.map(f32::to_bits),
             normal.map(f32::to_bits),
-            weights.map(f32::to_bits),
+            surface.0,
         );
         *target = if let Some(&known) = chunk.vertex_cache.vertices.get(&key) {
             let shared = &mut chunk.compaction[known as usize];
@@ -244,6 +248,7 @@ pub(super) fn append_triangle(
             chunk.vertices.push(position);
             chunk.normals.push(normal);
             chunk.material_weights.push(weights);
+            chunk.surfaces.push(surface);
             chunk.compaction.push(vertex.compaction);
             chunk.vertex_cache.vertices.insert(key, index);
             index

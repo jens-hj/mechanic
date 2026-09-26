@@ -12,6 +12,9 @@ pub(super) struct ManifestHeader {
     pub(super) version: u32,
     pub(super) name: String,
     pub(super) generator_version: WorldGeneratorVersion,
+    /// Absent in saves made before worldgen digests, which are outdated.
+    #[serde(default)]
+    pub(super) worldgen: u64,
     pub(super) seed: WorldSeed,
     pub(super) last_played_unix_seconds: u64,
 }

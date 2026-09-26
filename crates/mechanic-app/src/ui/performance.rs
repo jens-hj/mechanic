@@ -293,6 +293,7 @@ pub(crate) fn capture(snapshot: &PerformanceSnapshot) -> Model {
             ),
             count_u64_row("Bounds cache bytes", snapshot.terrain_bounds_cache_bytes),
             count_u64_row("Terrain triangles", snapshot.terrain_triangle_count),
+            scale_row("Terrain detail", snapshot.terrain_detail_scale),
             count_row("Streaming backlog", snapshot.terrain_streaming_backlog),
             count_u64_row("Terrain remeshes", snapshot.terrain_remesh_count),
             flags_row_named("Terrain overflow", snapshot.terrain_overflow_flags),
@@ -459,6 +460,20 @@ fn extent_row(label: &'static str, value: Option<[u32; 2]>) -> Row {
             format!("{width} × {height}")
         }),
         tone: Tone::Neutral,
+    }
+}
+
+fn scale_row(label: &'static str, value: Option<f64>) -> Row {
+    Row {
+        label,
+        value: value.map_or_else(not_available, |value| format!("{:.0}%", value * 100.0)),
+        tone: value.map_or(Tone::Neutral, |value| {
+            if value >= 0.99 {
+                Tone::Good
+            } else {
+                Tone::Warn
+            }
+        }),
     }
 }
 

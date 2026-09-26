@@ -5,6 +5,52 @@ The active architectural redesign follows
 checkpoint and exact acceptance gates. The dated profiling pauses below are
 historical; they do not pause the authorized CPU/GPU and production-rendering work.
 
+## Declarative worldgen streaming (2026-09-25)
+
+After the switch to declarative 3D world generation, walking through a world
+fell to 5.8 FPS:
+
+| Measure | Value |
+|---|---|
+| Resident terrain triangles | 38.6M |
+| Terrain publication (main thread) | 44 ms per frame |
+| Streaming backlog | 21.7k |
+
+Nearby chunks were missing, their neighbours' caps showing as pits.
+
+- [x] Tighten region bounds so selection stops meshing empty nodes: blend
+  bounds from biome weight ranges, Taylor noise bounds, and distance-aware
+  river bounds. Nodes per cut fell from 13–29k to 9–18k.
+- [x] Add LOD level 6 (3.2 m samples) from 640 m to the 1 km horizon. Tie
+  caves to level ≤ 2 in both selection and meshing.
+- [x] Order streaming by distance ring and view before seams, and cancel
+  stale jobs. `walking_never_uncovers_nearby_ground` covers holes.
+- [x] Make publication incremental: replacement groups, a running triangle
+  total, no main-world copy of terrain meshes.
+- [x] Budget resident terrain triangles (about 6M) with a stepped detail
+  scale.
+- [x] Stop breakage from re-sampling untouched ground every tick. That was
+  the largest main-loop cost once the new generator made point sampling
+  expensive.
+- [x] Give async compute half the cores (5 on the M1 Pro), not Bevy's
+  quarter, and keep 6 jobs queued per worker.
+- Background capture of the reporter's world on Apple M1 Pro / Metal, taken
+  as a diagnostic rather than an acceptance run:
+  - The median frame fell from 152 to 63–80 ms, and GPU opaque from 37.7 to
+    20–25 ms.
+  - Sampling shows every thread mostly idle. The remaining frame time is the
+    background window's presentation pacing, so the next step is a
+    controlled foreground capture.
+- [ ] Controlled foreground capture while walking across biomes.
+- [ ] Reduce per-chunk sampling for scattered 3D-warped shapes. The
+  heaviest biomes still take 20–35 ms p95 per chunk.
+- [x] Carve layers (tunnels, entrances, shafts, ravines, trenches) keep
+  their cost bounded: `Fissure` bounds from the centre's value, gradient and
+  curvature; per-block skipping of voids more than 16 m away; planar values
+  shared by blocks stacked over the same columns; stack evaluation of small
+  scatter shapes. A full cut still costs 1.5–1.9× the carve-free world,
+  about half of it real tunnel and ravine geometry near the player.
+
 ## BLOB physics optimization (2026-09-08)
 
 - [x] Limit World physics terrain publication to snapped, generously margined

@@ -1,0 +1,38 @@
+// Familiar temperate ground: rolling grassy hills, dirt on the slopes, grey
+// granite on the steepest faces, and weathered boulders half sunk in the turf.
+// The world spawns here.
+Biome(
+    name: "verdant_hills",
+    climate: (temperature: 0.0, humidity: 0.2, continentalness: 0.25, weirdness: -0.35),
+
+    height: Add([
+        C(14),
+        Ref("rolling"),
+        Mul([Pow(Ref("crests"), 3), C(18)]),
+        Ref("grain"),
+    ]),
+
+    density: SmoothUnion(1.2, [
+        Height(Ref("height")),
+        Scatter(
+            cell: 36, reach: 5, chance: 0.4,
+            ground: Ref("height"), lift: (-1.2, -0.2), tilt: 35,
+            vars: {"r": (1.1, 2.4)},
+            shape: Warp(
+                by: (freq: 0.45, octaves: 2, amp: 0.35, seed: 5),
+                of: Stretch((1.35, 0.8, 1.0), Sphere(Ref("r"))),
+            ),
+        ),
+    ]),
+
+    surface: [
+        (when: All([NearRiver(9), Depth(0, 0.8)]), use: "river_gravel"),
+        // No grass underground: tunnel and ramp floors are bare loam.
+        (when: All([Carved(Some("tunnels")), Up(0.5, 1)]), use: "loam"),
+        (when: All([Carved(Some("entrances")), Up(0.5, 1)]), use: "loam"),
+        (when: All([Up(0.74, 1), Depth(0, 0.18)]), use: "meadow_grass"),
+        (when: All([Up(0.5, 1), Depth(0, 1.4)]), use: "loam"),
+        (when: All([Depth(2.5, 1000), Field(Noise(freq: 0.07, octaves: 2, seed: 9), 0.62, 1)]), use: "iron_seam"),
+        (when: Always, use: "granite"),
+    ],
+)

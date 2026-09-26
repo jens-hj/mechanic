@@ -1,0 +1,36 @@
+// Alien porous reef. A warped gyroid, a triply periodic minimal surface,
+// fills broad mounds with interlocking walkable tunnels. Teal growth on top,
+// violet mineral beneath.
+Biome(
+    name: "gyroid_reef",
+    climate: (temperature: 0.35, humidity: 0.3, continentalness: 0.15, weirdness: 0.55),
+    rarity: -0.12,
+
+    height: Add([
+        C(12),
+        Noise(kind: SimplexSmooth, freq: 0.003, octaves: 2, amp: 5, dims: Two, seed: 1),
+    ]),
+
+    density: SmoothUnion(2, [
+        Height(Ref("height")),
+        SmoothIntersect(3, [
+            Warp(
+                by: (kind: SimplexSmooth, freq: 0.009, amp: 6, seed: 2),
+                of: Gyroid(period: 26, thickness: Remap(Noise(freq: 0.01, seed: 3), (-1, 1), (1.2, 2.6))),
+            ),
+            Height(Add([
+                Ref("height"),
+                Mul([Clamp(Noise(kind: SimplexSmooth, freq: 0.004, octaves: 2, offset: 0.35, dims: Two, seed: 4), 0, 1), C(60)]),
+            ])),
+        ]),
+    ]),
+
+    rivers: 0.4,
+    carves: {"tunnels": 0, "entrances": 0, "ravines": 0, "trenches": 0},
+
+    surface: [
+        (when: Ceiling, use: "reef_violet_deep"),
+        (when: All([Up(0.55, 1), Depth(0, 0.3)]), use: "reef_teal"),
+        (when: Always, use: "reef_violet"),
+    ],
+)

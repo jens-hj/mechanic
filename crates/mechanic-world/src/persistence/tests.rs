@@ -300,7 +300,9 @@ fn list_classifies_version_two_outdated_and_corrupt_manifests() {
     fs::write(
             &corrupt_path,
             format!(
-                "(version:{WORLD_FORMAT_VERSION},name:\"Corrupt\",generator_version:1,seed:11,last_played_unix_seconds:3,player_pose:broken)"
+                "(version:{WORLD_FORMAT_VERSION},name:\"Corrupt\",generator_version:{},worldgen:{},seed:11,last_played_unix_seconds:3,player_pose:broken)",
+                crate::WorldGeneratorVersion::CURRENT.0,
+                crate::WorldgenSpec::embedded().hash(),
             ),
         )
         .unwrap();
@@ -351,7 +353,9 @@ fn opening_outdated_deletes_only_exact_child_and_corrupt_current_is_preserved() 
     let corrupt_manifest = corrupt_directory.join("world.ron");
     fs::create_dir_all(&corrupt_directory).unwrap();
     let bytes = format!(
-        "(version:{WORLD_FORMAT_VERSION},name:\"Current corrupt\",generator_version:1,seed:12,last_played_unix_seconds:4,player_pose:broken)"
+        "(version:{WORLD_FORMAT_VERSION},name:\"Current corrupt\",generator_version:{},worldgen:{},seed:12,last_played_unix_seconds:4,player_pose:broken)",
+        crate::WorldGeneratorVersion::CURRENT.0,
+        crate::WorldgenSpec::embedded().hash(),
     );
     fs::write(&corrupt_manifest, &bytes).unwrap();
     let corrupt = store

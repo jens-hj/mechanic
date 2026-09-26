@@ -18,8 +18,13 @@ use bevy::{
 };
 
 use crate::render_diagnostics::{ProfiledCamera, RenderTimings, RenderTimingsPlugin};
-use crate::world::terrain_render::terrain_render_material;
-use crate::world::{TerrainRenderMaterial, generate_rgba8_mip_chain};
+use crate::world::TerrainRenderMaterial;
+use crate::world::terrain_render::{
+    ATTRIBUTE_TERRAIN_SLOTS, ATTRIBUTE_TERRAIN_WEIGHTS_HIGH, ATTRIBUTE_TERRAIN_WEIGHTS_LOW,
+    advance_terrain_textures, terrain_render_material,
+};
+use bevy::render::storage::ShaderBuffer;
+use mechanic_world::{SurfaceId, TerrainMaterial};
 
 const WIDTH: u32 = 4096;
 const HEIGHT: u32 = 2524;
@@ -73,25 +78,27 @@ fn fixture() -> (App, Handle<Shader>, Entity, Entity) {
             .resource::<RenderAdapterInfo>()
             .0
     );
-    let (material, mut pending) = terrain_render_material(app.world().resource::<AssetServer>());
+    let palette = mechanic_world::TerrainField::new(mechanic_world::WorldSeed(1))
+        .palette()
+        .clone();
+    let asset_server = app.world().resource::<AssetServer>().clone();
+    let (material, mut build) =
+        app.world_mut()
+            .resource_scope(|world, mut images: Mut<Assets<Image>>| {
+                let mut buffers = world.resource_mut::<Assets<ShaderBuffer>>();
+                terrain_render_material(&asset_server, &mut images, &mut buffers, &palette)
+            });
     let shader = app.world().resource::<AssetServer>().load(SHADER_PATH);
-    for _ in 0..600 {
+    let mut done = false;
+    for _ in 0..6_000 {
         frame(&mut app);
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
-        pending.retain(|handle| {
-            if let Some(mut image) = images.get_mut(handle) {
-                generate_rgba8_mip_chain(&mut image).unwrap();
-                false
-            } else {
-                true
-            }
-        });
-        if pending.is_empty() {
+        done = advance_terrain_textures(&mut build, &mut images).unwrap();
+        if done {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(pending.is_empty(), "authored terrain textures did not load");
+    assert!(done, "authored terrain textures did not load");
     let material = app
         .world_mut()
         .resource_mut::<Assets<TerrainRenderMaterial>>()
@@ -146,7 +153,8 @@ fn terrain_patch(blended: bool, side: u32) -> Mesh {
     let mut normals = Vec::new();
     let mut uv = Vec::new();
     let mut uv1 = Vec::new();
-    let mut colors = Vec::new();
+    let mut low = Vec::new();
+    let mut high = Vec::new();
     let mut indices = Vec::new();
     for z in 0..side {
         for x in 0..side {
@@ -157,25 +165,44 @@ fn terrain_patch(blended: bool, side: u32) -> Mesh {
             positions.push([px, py, pz]);
             normals.push(Vec3::new(-slope, 1.0, 0.0).normalize().to_array());
             uv.push([px / 1.5, pz / 1.5]);
-            let channel = if blended { x % 6 } else { 0 };
-            let mut color = [0.0; 4];
-            if channel < 4 {
-                color[channel as usize] = 1.0;
-            }
-            colors.push(color);
-            uv1.push([py / 1.5, if channel == 4 { 1.0 } else { 0.0 }]);
+            let slot = if blended { x % 6 } else { 0 } as usize;
+            let mut weights = [[0_u8; 4]; 2];
+            weights[slot / 4][slot % 4] = u8::MAX;
+            low.push(weights[0]);
+            high.push(weights[1]);
+            uv1.push([py / 1.5, 0.0]);
             if x + 1 < side && z + 1 < side {
                 let a = z * side + x;
                 indices.extend_from_slice(&[a, a + 1, a + side, a + 1, a + side + 1, a + side]);
             }
         }
     }
+    // Slots hold the six plain material surfaces in code order.
+    let ids = TerrainMaterial::BY_CODE.map(|material| u32::from(SurfaceId::plain(material).0));
+    let table = [
+        ids[0] | ids[1] << 16,
+        ids[2] | ids[3] << 16,
+        ids[4] | ids[5] << 16,
+        u32::MAX,
+    ];
+    let vertex_count = positions.len();
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv1);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_attribute(
+        ATTRIBUTE_TERRAIN_WEIGHTS_LOW,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(low),
+    );
+    mesh.insert_attribute(
+        ATTRIBUTE_TERRAIN_WEIGHTS_HIGH,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(high),
+    );
+    mesh.insert_attribute(
+        ATTRIBUTE_TERRAIN_SLOTS,
+        bevy::mesh::VertexAttributeValues::Uint32x4(vec![table; vertex_count]),
+    );
     mesh.insert_indices(Indices::U32(indices));
     mesh
 }

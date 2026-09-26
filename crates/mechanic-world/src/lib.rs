@@ -41,7 +41,10 @@ pub use edits::{
     TerrainSource, decode_brick, encode_brick,
 };
 pub use footprint::LoadFootprint;
-pub use generation::{CaveEdge, CaveGraph, CaveNode, TerrainField, TerrainMaterial, TerrainSample};
+pub use generation::{
+    SurfaceId, SurfaceLook, SurfacePalette, TerrainField, TerrainMaterial, TerrainSample,
+    TextureSet, WorldgenError, WorldgenSpec,
+};
 pub use material_response::TerrainMaterialError;
 pub use mesh::{
     LatticeEdgeVertexCache, PreparedTerrainRegion, TerrainCollisionChunk, TerrainIndexGroups,
@@ -64,9 +67,10 @@ pub use soil::{
     GROUND_NORMAL_MIN_Y, SoilAccumulator, SoilCompression, SoilPatch, SoilResponse, loose_strength,
 };
 pub use streaming::{
-    ActiveTerrainNode, TerrainBoundsCache, TerrainFace, TerrainPublicationDelta,
+    ActiveTerrainNode, CAVE_STREAMED_LEVEL, MAX_STREAMED_LEVEL, MIN_TERRAIN_DETAIL_SCALE,
+    STREAMED_LEVELS, TerrainActivation, TerrainBoundsCache, TerrainFace, TerrainPublicationDelta,
     TerrainPublicationUpsert, TerrainReadiness, TerrainSelection, TerrainSelectionStats,
-    TerrainStreamer, TerrainTransitionMask, publication_face_mask, select_active_nodes,
-    select_active_nodes_cached, select_active_nodes_with_interests, terrain_loading_worker_count,
-    terrain_worker_count,
+    TerrainStreamer, TerrainTransitionMask, TerrainView, publication_face_mask,
+    select_active_nodes, select_active_nodes_cached, select_active_nodes_with_interests,
+    terrain_loading_worker_count, terrain_worker_count,
 };

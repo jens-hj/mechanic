@@ -1,0 +1,52 @@
+// Terraced mesas of banded red sandstone, scattered with great stone rings:
+// eroded tori standing on edge and half buried, so each reads as a natural
+// arch. The strata grooves run across both the mesas and the arches.
+Biome(
+    name: "arch_steppe",
+    climate: (temperature: 0.45, humidity: -0.35, continentalness: 0.3, weirdness: 0.3),
+
+    let: {
+        // Horizontal strata carved a few centimetres into every rock face.
+        "grooves": Mul([Abs(Sin(Mul([Y, C(1.4)]))), C(0.25)]),
+    },
+
+    height: Add([
+        C(20),
+        Terrace(
+            of: Noise(kind: SimplexSmooth, freq: 0.0026, octaves: 3, amp: 34, dims: Two, seed: 1),
+            step: 11, sharpness: 0.86,
+        ),
+        Noise(freq: 0.02, octaves: 2, amp: 0.7, dims: Two, seed: 2),
+    ]),
+
+    density: Sub(
+        SmoothUnion(2.5, [
+            Height(Ref("height")),
+            Scatter(
+                // Encloses every ring above and beside its anchor; only the
+                // deepest buried arc, always inside rock, falls outside.
+                cell: 120, reach: 44, chance: 0.65,
+                ground: Ref("height"), tilt: 10,
+                vars: {"ring": (14, 30), "tube": (3, 6), "sink": (0.2, 0.5)},
+                shape: Domain(
+                    y: Add([Y, Mul([Ref("sink"), Ref("ring")])]),
+                    of: Warp(
+                        by: (freq: 0.07, amp: 1.4, seed: 6),
+                        of: RotateX(90, Torus(major: Ref("ring"), minor: Ref("tube"))),
+                    ),
+                ),
+            ),
+        ]),
+        Ref("grooves"),
+    ),
+
+    rivers: 0.6,
+    carves: {"tunnels": 0.5, "ravines": 1.5},
+
+    surface: [
+        (when: Ceiling, use: "rust_shadow"),
+        (when: All([Up(0.8, 1), Depth(0, 0.35)]), use: "ochre_sand"),
+        (when: Field(Sin(Mul([Y, C(0.8)])), 0.25, 1), use: "banded_dark"),
+        (when: Always, use: "banded_light"),
+    ],
+)

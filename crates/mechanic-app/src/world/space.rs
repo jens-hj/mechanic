@@ -19,6 +19,8 @@ use crate::editor::state::{EditorGraph, EditorState};
 use crate::garage;
 use crate::simulation::state::AppSimulation;
 use bevy::camera::Exposure;
+use bevy::image::Image;
+use bevy::render::storage::ShaderBuffer;
 use mechanic_core::{DimensionLinkId, PartSpec};
 use mechanic_world::{
     FloatingOrigin, KinematicCapsule, TerrainReadiness, TerrainSpatialIndex, TerrainStreamer,
@@ -214,6 +216,8 @@ pub(super) fn enter_world(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut terrain_materials: ResMut<Assets<TerrainRenderMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut surface_buffers: ResMut<Assets<ShaderBuffer>>,
     mut clear: ResMut<ClearColor>,
     mut runtime: ResMut<WorldRuntime>,
     mut player: ResMut<PlayerState>,
@@ -269,6 +273,8 @@ pub(super) fn enter_world(
         &mut meshes,
         &mut materials,
         &mut terrain_materials,
+        &mut images,
+        &mut surface_buffers,
         &mut runtime,
         &mut diagnostics,
     );
@@ -325,8 +331,9 @@ pub(super) fn leave_world(
     runtime.active_terrain_index = TerrainSpatialIndex::default();
     runtime.terrain_entities.clear();
     runtime.terrain_mesh_handles.clear();
+    runtime.terrain_cutovers = super::streaming::TerrainCutovers::default();
     runtime.terrain_material = None;
-    runtime.terrain_texture_mips_pending.clear();
+    runtime.terrain_textures = None;
     runtime.selection_focus = None;
     let garage_editor = runtime
         .garage_editor

@@ -17,6 +17,8 @@ pub(crate) mod streaming;
 mod terrain_render;
 mod transfer;
 mod walking;
+#[cfg(debug_assertions)]
+mod worldgen_watch;
 
 use brush::{
     MAX_PENDING_TERRAIN_EDITS, TerrainEditCommand, TerrainEditOperation, TerrainEditTaskResult,
@@ -35,7 +37,7 @@ use streaming::{
     TerrainAcknowledgements, TerrainMeshResult, TerrainSelectionTaskResult,
     integrate_terrain_remeshes, schedule_terrain_remeshes,
 };
-use terrain_render::prepare_terrain_texture_mips;
+use terrain_render::prepare_terrain_textures;
 pub(crate) use terrain_render::{TerrainRenderMaterial, generate_rgba8_mip_chain};
 pub(crate) use transfer::place_loaded_creation_in_garage;
 use transfer::static_parts_for_physics;
@@ -117,8 +119,12 @@ pub(crate) struct WorldDiagnostics {
     pub(crate) local_resolved_nodes: u32,
     pub(crate) local_total_nodes: u32,
     pub(crate) triangle_count: u64,
+    /// Detail scale the triangle budget currently asks selection for.
+    pub(crate) terrain_detail_scale: f64,
     pub(crate) streaming_backlog: u32,
     pub(crate) remesh_count: u64,
+    /// Terrain mesh jobs that have finished, stale ones included.
+    pub(crate) completed_mesh_jobs: u64,
     pub(crate) overflow_flags: u32,
     pub(crate) foundation_candidate_count: u64,
     pub(crate) foundation_sample_count: u64,
@@ -180,10 +186,16 @@ pub(crate) struct WorldRuntime {
     active_terrain_index: TerrainSpatialIndex,
     terrain_entities: BTreeMap<TerrainNodeId, Entity>,
     terrain_mesh_handles: BTreeMap<TerrainNodeId, Handle<Mesh>>,
+    terrain_cutovers: streaming::TerrainCutovers,
     player_terrain_ready: bool,
     terrain_material: Option<Handle<TerrainRenderMaterial>>,
-    terrain_texture_mips_pending: Vec<Handle<Image>>,
+    terrain_textures: Option<terrain_render::TerrainTextureBuild>,
+    /// Mean base-colour luminance of each terrain texture layer.
+    terrain_layer_luma: [f32; mechanic_world::TextureSet::ALL.len()],
     selection_focus: Option<WorldPosition>,
+    /// Detail scale the triangle budget asks selection for, and when it
+    /// last changed.
+    terrain_detail: streaming::TerrainDetail,
     selected_terrain_revision: u64,
     construction_collision: Option<ConstructionCollisionIndex>,
     collision_revision: Option<(u64, u64)>,
@@ -583,12 +595,12 @@ impl FromWorld for WorldRuntime {
         let (document, field) = loaded.map_or_else(
             || {
                 let seed = WorldSeed(0x4d45_4348_414e_4943);
-                let field = TerrainField::new(seed);
+                let field = authored_field(seed);
                 let document = WorldDocument::new("Prototype Reach", seed, field.safe_spawn());
                 (document, field)
             },
             |document| {
-                let field = TerrainField::with_version(document.seed, document.generator_version);
+                let field = authored_field(document.seed);
                 (document, field)
             },
         );
@@ -665,10 +677,13 @@ impl FromWorld for WorldRuntime {
             active_terrain_index: TerrainSpatialIndex::default(),
             terrain_entities: BTreeMap::new(),
             terrain_mesh_handles: BTreeMap::new(),
+            terrain_cutovers: streaming::TerrainCutovers::default(),
             player_terrain_ready: false,
             terrain_material: None,
-            terrain_texture_mips_pending: Vec::new(),
+            terrain_textures: None,
+            terrain_layer_luma: [0.5; mechanic_world::TextureSet::ALL.len()],
             selection_focus: None,
+            terrain_detail: streaming::TerrainDetail::default(),
             selected_terrain_revision: u64::MAX,
             construction_collision: None,
             collision_revision: None,
@@ -686,6 +701,18 @@ impl FromWorld for WorldRuntime {
             walking_suspended: false,
         }
     }
+}
+
+/// The field a world generates: from `MECHANIC_WORLDGEN_DIR` during authoring,
+/// otherwise the embedded definition. An authoring error falls back to the
+/// embedded definition and is reported.
+pub(crate) fn authored_field(seed: WorldSeed) -> TerrainField {
+    #[cfg(debug_assertions)]
+    match worldgen_watch::world_field(seed) {
+        Ok(field) => return field,
+        Err(error) => warn!("worldgen: {error}; using the built-in definition"),
+    }
+    TerrainField::new(seed)
 }
 
 /// Installs the temporary F6 world/garage loop without changing benchmark scenes.
@@ -707,7 +734,7 @@ impl Plugin for WorldPrototypePlugin {
                     walk_world.after(FrameSet::Readback),
                     use_brush.after(walk_world),
                     coordinate_terrain_edits.after(use_brush),
-                    prepare_terrain_texture_mips,
+                    prepare_terrain_textures,
                     schedule_terrain_remeshes.after(coordinate_terrain_edits),
                     integrate_terrain_remeshes.after(schedule_terrain_remeshes),
                     spoil::step_spoil
@@ -730,6 +757,14 @@ impl Plugin for WorldPrototypePlugin {
                     .run_if(world_list_closed),
             )
             .add_systems(Update, handle_world_list.after(FrameSet::Commands));
+        #[cfg(debug_assertions)]
+        app.init_resource::<worldgen_watch::WorldgenWatch>()
+            .add_systems(
+                Update,
+                worldgen_watch::reload_worldgen
+                    .before(schedule_terrain_remeshes)
+                    .run_if(in_state(AppSpace::World)),
+            );
     }
 }
 

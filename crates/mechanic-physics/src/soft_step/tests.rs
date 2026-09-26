@@ -1691,15 +1691,22 @@ fn a_large_cube_settles_on_finely_meshed_generated_ground() {
         TerrainTransitionMask, WorldPosition, WorldSeed, mesh_chunk,
     };
     let field = TerrainField::new(WorldSeed(91));
-    let surface = field.surface_height(0.0, 0.0);
+    // Spawn is the world's one guaranteed near-level ground.
+    let site = field.safe_spawn().0;
+    let surface = field.surface_height(site.x, site.z);
     let mut graph = ConstructionGraph::new();
     spawn(&mut graph, IVec3::ZERO, [8; 3]);
     let creation = graph.compile().unwrap();
     let mut state = MachineState::at_rest(&creation);
+    state.poses[0].position.x = site.x;
+    state.poses[0].position.z = site.z;
     state.poses[0].position.y = surface + 1.01;
     let mut world = World::new(creation, state);
     world.scene = TerrainContactScene::default();
-    let centre = WorldPosition(DVec3::Y * surface).cell().unwrap().brick();
+    let centre = WorldPosition(DVec3::new(site.x, surface, site.z))
+        .cell()
+        .unwrap()
+        .brick();
     let edits = TerrainOctree::default().snapshot();
     let mut chunks = Vec::new();
     for z in -1..=1 {

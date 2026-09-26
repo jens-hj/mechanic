@@ -1,0 +1,35 @@
+// Huge ridged mountains broken into stepped cliff bands. A slow 3D warp
+// pushes the cliff faces in and out, so the bands overhang; snow settles on
+// the high ledges and copper shows in the walls.
+Biome(
+    name: "titan_crags",
+    climate: (temperature: -0.5, humidity: 0.0, continentalness: 0.6, weirdness: -0.1),
+
+    // Few octaves on purpose: the warp below makes the height a per-point
+    // lookup, and the terrace flattens finer detail anyway.
+    height: Add([
+        C(55),
+        Mul([
+            Pow(Remap(Noise(fractal: Ridged, freq: 0.0011, octaves: 4, dims: Two, seed: 3), (-1, 1), (0, 1)), 2.2),
+            C(230),
+        ]),
+        Noise(freq: 0.004, amp: 9, dims: Two, seed: 1),
+    ]),
+
+    density: Warp(
+        by: (kind: SimplexSmooth, freq: 0.011, amp: 9, seed: 2),
+        vertical: 0.35,
+        of: Height(Terrace(of: Ref("height"), step: 26, sharpness: 0.5)),
+    ),
+
+    rivers: 0.8,
+
+    surface: [
+        (when: Carved(None), use: "dark_granite"),
+        (when: All([Altitude(175, 1000), Up(0.55, 1), Depth(0, 0.6)]), use: "snow"),
+        (when: All([Up(0.72, 1), Depth(0, 0.22)]), use: "alpine_turf"),
+        (when: Ceiling, use: "dark_granite"),
+        (when: Field(Noise(freq: 0.02, octaves: 2, seed: 3), 0.6, 1), use: "copper_vein"),
+        (when: Always, use: "granite_grey"),
+    ],
+)

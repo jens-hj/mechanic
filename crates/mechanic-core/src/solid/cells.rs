@@ -7,9 +7,16 @@ use super::polygon::{
 use crate::{
     CYLINDER_SWEEP_STEP_DEGREES, ConvexPiece, FaceKind, PartPiece, PartSpec, PipeBendSpec,
 };
-use bevy_math::{DVec3, Quat, Vec3};
+use bevy_math::{DVec3, IVec3, Quat, Vec3};
 
-pub(super) fn pieces_to_cells(pieces: Vec<PartPiece>) -> Vec<PolyCell> {
+/// Converts decomposed pieces to cells. `grid_counts` is the cell count of the
+/// grid the pieces fill completely, when they do. Faces on its inner planes and
+/// faces between the pieces of one cell are then marked interior, because
+/// fusion may split the two sides of such a face differently.
+pub(super) fn pieces_to_cells(pieces: Vec<PartPiece>, grid_counts: Option<IVec3>) -> Vec<PolyCell> {
+    let inner_plane = |axis: usize, plane: i32| {
+        grid_counts.is_some_and(|counts| plane > 0 && plane < counts[axis])
+    };
     pieces
         .into_iter()
         .map(|piece| match piece {
@@ -17,9 +24,38 @@ pub(super) fn pieces_to_cells(pieces: Vec<PartPiece>) -> Vec<PolyCell> {
                 center,
                 half_extents,
                 rotation,
-                ..
-            } => cuboid_cell(center, half_extents, rotation),
-            PartPiece::Convex(piece) => convex_piece_cell(piece),
+                cell_min,
+                cell_span,
+            } => {
+                let mut cell = cuboid_cell(center, half_extents, rotation);
+                // `cuboid_cell` emits its faces in `grid_patch` order.
+                for (index, face) in cell.faces.iter_mut().enumerate() {
+                    let axis = index / 2;
+                    let plane = cell_min[axis] + if index % 2 == 1 { cell_span[axis] } else { 0 };
+                    face.interior = inner_plane(axis, plane);
+                }
+                cell
+            }
+            PartPiece::Convex(piece) => {
+                let interior = piece
+                    .faces
+                    .iter()
+                    .map(|face| {
+                        face.grid_face.is_none_or(|grid| {
+                            let axis = grid.face.axis().index();
+                            let positive = grid_patch(grid.face) % 2 == 1;
+                            inner_plane(axis, grid.cell[axis] + i32::from(positive))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let mut cell = convex_piece_cell(piece);
+                if grid_counts.is_some() {
+                    for (face, interior) in cell.faces.iter_mut().zip(interior) {
+                        face.interior = interior;
+                    }
+                }
+                cell
+            }
         })
         .collect()
 }
@@ -100,6 +136,7 @@ pub(super) fn base_face(vertices: Vec<DVec3>, local: u32) -> PolyFace {
         smoothing_group: 0,
         smooth_with: Vec::new(),
         uv_provenance: key,
+        interior: false,
     }
 }
 

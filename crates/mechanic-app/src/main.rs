@@ -147,6 +147,30 @@ use simulation::{
     publication::WorldPhysicsPublication, state::AppSimulation, visuals::SimulationVisualCache,
 };
 
+/// Bevy's defaults give async compute a quarter of the cores, which starves
+/// terrain streaming: every mesh job runs there. Asset IO needs one thread;
+/// the systems' compute pool keeps what is left.
+fn task_pool_options() -> bevy::app::TaskPoolOptions {
+    use bevy::app::TaskPoolThreadAssignmentPolicy;
+    bevy::app::TaskPoolOptions {
+        io: TaskPoolThreadAssignmentPolicy {
+            min_threads: 1,
+            max_threads: 1,
+            percent: 0.1,
+            on_thread_spawn: None,
+            on_thread_destroy: None,
+        },
+        async_compute: TaskPoolThreadAssignmentPolicy {
+            min_threads: 1,
+            max_threads: mechanic_world::terrain_worker_count(),
+            percent: 0.5,
+            on_thread_spawn: None,
+            on_thread_destroy: None,
+        },
+        ..default()
+    }
+}
+
 fn main() {
     // Validate before starting the renderer; diagnostic modes are never persisted.
     let render_experiment = render_experiments::current();
@@ -156,6 +180,9 @@ fn main() {
     App::new()
         .add_plugins(
             DefaultPlugins
+                .set(TaskPoolPlugin {
+                    task_pool_options: task_pool_options(),
+                })
                 .set(bevy::winit::WinitPlugin {
                     prevent_activation: automation::background() || tool_fx::capture_active(),
                     ..default()

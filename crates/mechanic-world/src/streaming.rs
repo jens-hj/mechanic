@@ -14,7 +14,8 @@ pub use publication::{
 };
 use publication::{neighbour_candidates, publication_face_mask_maps};
 pub use selection::{
-    ActiveTerrainNode, TerrainSelection, TerrainSelectionStats, select_active_nodes,
+    ActiveTerrainNode, CAVE_STREAMED_LEVEL, MAX_STREAMED_LEVEL, MIN_TERRAIN_DETAIL_SCALE,
+    STREAMED_LEVELS, TerrainSelection, TerrainSelectionStats, select_active_nodes,
     select_active_nodes_cached, select_active_nodes_with_interests,
 };
 use selection::{adjacent_leaf, owner_of_leaf};
@@ -26,7 +27,7 @@ use std::{
 
 use bevy_math::DVec3;
 
-use crate::{BRICK_EDGE_METERS, TerrainNodeId, WorldPosition};
+use crate::{TerrainNodeId, WorldPosition};
 
 /// Generation-aware node streaming state shared by render and collision owners.
 #[derive(Clone, Debug, Default)]
@@ -42,6 +43,62 @@ pub struct TerrainStreamer {
     dirty_publication: BTreeSet<TerrainNodeId>,
     replacement_needs: BTreeMap<TerrainNodeId, BTreeSet<TerrainNodeId>>,
     replacement_owners: BTreeMap<TerrainNodeId, BTreeSet<TerrainNodeId>>,
+    view: Option<TerrainView>,
+    queue: RequestQueue,
+    last_retired: Vec<TerrainNodeId>,
+}
+
+/// Nodes one activation made current, and the nodes it replaced.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerrainActivation {
+    /// Newly active nodes.
+    pub activated: Vec<ActiveTerrainNode>,
+    /// Previously active nodes the activation removed; a node whose
+    /// generation changed appears in both lists.
+    pub retired: Vec<TerrainNodeId>,
+}
+
+/// Where the camera looks, so work in view streams before work behind it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainView {
+    /// Horizontal look direction; need not be normalised.
+    pub forward: DVec3,
+    /// Half the horizontal field of view in radians, before any margin.
+    pub half_angle: f64,
+}
+
+/// Pending work sorted by priority, rebuilt when the cut, the focus, or the
+/// view changes enough to reorder it.
+#[derive(Clone, Debug, Default)]
+struct RequestQueue {
+    /// Worst priority first, so the best is popped from the end.
+    order: Vec<(RequestPriority, TerrainNodeId)>,
+    focus: Option<DVec3>,
+    view: Option<TerrainView>,
+    stale: bool,
+}
+
+/// Rings, in metres of horizontal distance, that order streaming work: all
+/// work in a ring precedes any farther ring, whatever its seams or edits.
+const PRIORITY_RINGS: [f64; 6] = [16.0, 40.0, 64.0, 160.0, 400.0, 640.0];
+
+/// Focus movement that reorders queued work.
+const REQUEUE_METRES: f64 = 4.0;
+
+/// Extra half angle beyond the field of view still counted as in view, so
+/// turning a little finds ground ready.
+const VIEW_MARGIN_RADIANS: f64 = 0.35;
+
+/// Ordering of one pending request; smaller is sooner.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+struct RequestPriority {
+    /// Neither pinned nor needed before entering the world.
+    routine: bool,
+    ring: usize,
+    newest_edit: std::cmp::Reverse<u64>,
+    out_of_view: bool,
+    not_seam: bool,
+    distance: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -119,57 +176,135 @@ impl TerrainStreamer {
             }
         }
         self.rebuild_seam_dependencies();
+        self.queue.stale = true;
     }
 
     /// Pins nodes overlapped by construction bodies.
     pub fn set_pinned(&mut self, nodes: impl IntoIterator<Item = TerrainNodeId>) {
         self.pinned.clear();
         self.pinned.extend(nodes);
+        self.queue.stale = true;
     }
 
     /// Sets nodes that must resolve before local world entry.
     pub fn set_critical_nodes(&mut self, nodes: impl IntoIterator<Item = TerrainNodeId>) {
         self.critical.clear();
         self.critical.extend(nodes);
+        self.queue.stale = true;
+    }
+
+    /// Sets the camera's look direction; work in view streams first within
+    /// each distance ring.
+    pub fn set_view(&mut self, view: Option<TerrainView>) {
+        self.view = view;
+    }
+
+    /// Whether a job for `node` still produces something the cut wants.
+    pub fn wants(&self, node: &ActiveTerrainNode) -> bool {
+        self.desired.get(&node.id) == Some(node)
     }
 
     /// Highest-priority pending request not already in flight.
+    ///
+    /// Nearby ground comes first: pinned and startup-critical nodes, then
+    /// distance rings, and within a ring edited nodes, nodes in view, and
+    /// nodes seams depend on, nearest first.
     pub fn next_request(
-        &self,
+        &mut self,
         in_flight: &BTreeSet<TerrainNodeId>,
         focus: WorldPosition,
     ) -> Option<ActiveTerrainNode> {
-        self.pending
-            .values()
-            .map(|pending| pending.node)
-            .filter(|node| !in_flight.contains(&node.id))
-            .min_by(|first, second| {
-                let priority = |node: &ActiveTerrainNode| {
-                    let centre = DVec3::new(
-                        (f64::from(node.id.coordinates.x) + node.id.edge_bricks() as f64 * 0.5)
-                            * BRICK_EDGE_METERS,
-                        (f64::from(node.id.coordinates.y) + node.id.edge_bricks() as f64 * 0.5)
-                            * BRICK_EDGE_METERS,
-                        (f64::from(node.id.coordinates.z) + node.id.edge_bricks() as f64 * 0.5)
-                            * BRICK_EDGE_METERS,
-                    );
-                    (
-                        !(self.pinned.contains(&node.id) || self.critical.contains(&node.id)),
-                        std::cmp::Reverse(node.generation),
-                        !self.seam_dependencies.contains(&node.id),
-                        centre.distance_squared(focus.0),
-                    )
-                };
-                let first_priority = priority(first);
-                let second_priority = priority(second);
-                first_priority
-                    .0
-                    .cmp(&second_priority.0)
-                    .then_with(|| first_priority.1.cmp(&second_priority.1))
-                    .then_with(|| first_priority.2.cmp(&second_priority.2))
-                    .then_with(|| first_priority.3.total_cmp(&second_priority.3))
-                    .then_with(|| first.id.cmp(&second.id))
+        let turned = match (self.queue.view, self.view) {
+            (Some(queued), Some(current)) => {
+                queued
+                    .forward
+                    .normalize_or_zero()
+                    .dot(current.forward.normalize_or_zero())
+                    < (VIEW_MARGIN_RADIANS * 0.5).cos()
+            }
+            (queued, current) => queued.is_some() != current.is_some(),
+        };
+        if self.queue.stale
+            || turned
+            || self.queue.focus.is_none_or(|queued| {
+                queued.distance_squared(focus.0) > REQUEUE_METRES * REQUEUE_METRES
             })
+        {
+            self.rebuild_queue(focus.0);
+        }
+        let mut skipped = Vec::new();
+        let found = loop {
+            let Some((priority, id)) = self.queue.order.pop() else {
+                break None;
+            };
+            let Some(pending) = self.pending.get(&id) else {
+                continue;
+            };
+            if in_flight.contains(&id) {
+                skipped.push((priority, id));
+                continue;
+            }
+            break Some(pending.node);
+        };
+        self.queue.order.extend(skipped.into_iter().rev());
+        found
+    }
+
+    fn rebuild_queue(&mut self, focus: DVec3) {
+        let view = self.view.map(|view| {
+            let forward = DVec3::new(view.forward.x, 0.0, view.forward.z).normalize_or_zero();
+            (
+                forward,
+                (view.half_angle + VIEW_MARGIN_RADIANS)
+                    .min(core::f64::consts::PI)
+                    .cos(),
+            )
+        });
+        let mut order = self
+            .pending
+            .values()
+            .map(|pending| {
+                let node = pending.node;
+                let (minimum, maximum) = selection::node_bounds(node.id);
+                let distance =
+                    selection::horizontal_distance_squared_to_bounds(focus, minimum, maximum)
+                        .sqrt();
+                let ring = PRIORITY_RINGS
+                    .iter()
+                    .position(|&reach| distance <= reach)
+                    .unwrap_or(PRIORITY_RINGS.len());
+                let out_of_view = view.is_some_and(|(forward, cos_limit)| {
+                    let centre = (minimum + maximum) * 0.5 - focus;
+                    let direction = DVec3::new(centre.x, 0.0, centre.z);
+                    let half_width = (maximum.x - minimum.x) * 0.5;
+                    direction.length() > half_width * 1.5
+                        && forward != DVec3::ZERO
+                        && direction.normalize_or_zero().dot(forward) < cos_limit
+                });
+                let priority = RequestPriority {
+                    routine: !(self.pinned.contains(&node.id) || self.critical.contains(&node.id)),
+                    ring,
+                    newest_edit: std::cmp::Reverse(node.generation),
+                    out_of_view,
+                    not_seam: !self.seam_dependencies.contains(&node.id),
+                    distance,
+                };
+                (priority, node.id)
+            })
+            .collect::<Vec<_>>();
+        order.sort_by(|first, second| {
+            second
+                .0
+                .partial_cmp(&first.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| second.1.cmp(&first.1))
+        });
+        self.queue = RequestQueue {
+            order,
+            focus: Some(focus),
+            view: self.view,
+            stale: false,
+        };
     }
 
     /// Removes a request from the pending queue once a worker accepts it.
@@ -191,6 +326,25 @@ impl TerrainStreamer {
     /// Atomically activates a complete local replacement at a safe
     /// render/physics boundary.
     pub fn activate(&mut self, id: TerrainNodeId) -> Vec<ActiveTerrainNode> {
+        self.activate_replacing(id).activated
+    }
+
+    /// Whether a node is in the active cut, in any generation.
+    pub fn is_active(&self, id: TerrainNodeId) -> bool {
+        self.active.contains_key(&id)
+    }
+
+    /// Like [`Self::activate`], also naming the previously active nodes the
+    /// activation replaced, so a renderer can show the new nodes and drop the
+    /// old ones in one step.
+    pub fn activate_replacing(&mut self, id: TerrainNodeId) -> TerrainActivation {
+        let activated = self.activate_group(id);
+        let retired = core::mem::take(&mut self.last_retired);
+        TerrainActivation { activated, retired }
+    }
+
+    fn activate_group(&mut self, id: TerrainNodeId) -> Vec<ActiveTerrainNode> {
+        self.last_retired.clear();
         if !self.staged.contains_key(&id) {
             return Vec::new();
         }
@@ -243,6 +397,7 @@ impl TerrainStreamer {
 
         for old in &old_nodes {
             self.active.remove(old);
+            self.last_retired.push(*old);
             self.mark_publication_dirty(*old);
             if let Some(needs) = self.replacement_needs.remove(old) {
                 for replacement in needs {

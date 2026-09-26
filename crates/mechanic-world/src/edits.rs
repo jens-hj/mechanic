@@ -34,7 +34,7 @@ use bevy_math::DVec3;
 use crate::{
     BrickCoord, SoilCompression, SoilPatch, SoilResponse, TERRAIN_CELL_METERS, TerrainField,
     TerrainMaterial, TerrainSample, WORLD_HALF_EXTENT_METERS, WorldCell, WorldPosition,
-    generation::TerrainColumnSample, soil::COMPACTION_STEP_METRES,
+    soil::COMPACTION_STEP_METRES,
 };
 
 /// Sparse depth-27 terrain octree with copy-on-write immutable snapshots.
@@ -123,15 +123,11 @@ impl TerrainOctree {
         TerrainSource::sample_cell(self, field, cell)
     }
 
-    pub(crate) fn sample_cell_in_column(
-        &self,
-        field: &TerrainField,
-        cell: WorldCell,
-        column: TerrainColumnSample,
-    ) -> TerrainSample {
+    /// Whether a cell holds ground, without painting its material.
+    pub(crate) fn is_solid_cell(&self, field: &TerrainField, cell: WorldCell) -> bool {
         self.brick(cell.brick())
             .and_then(|brick| brick.sample(cell.local_in_brick()))
-            .unwrap_or_else(|| field.sample_cell_in_column(cell, column))
+            .map_or_else(|| field.cell_density(cell) > 0.0, TerrainSample::is_solid)
     }
 
     /// Samples the cell containing a continuous position.
@@ -187,11 +183,19 @@ impl TerrainOctree {
         let maximum = cell_containing(patch.centre.0 + extent);
         for z in minimum.z..=maximum.z {
             for x in minimum.x..=maximum.x {
-                let position = WorldCell::new(x, minimum.y, z).centre();
-                let column = field.sample_column(position.0.x, position.0.z);
                 for y in (minimum.y..=maximum.y).rev() {
                     let cell = WorldCell::new(x, y, z);
-                    let sample = self.sample_cell_in_column(field, cell, column);
+                    let promoted = self
+                        .brick(cell.brick())
+                        .and_then(|brick| brick.sample(cell.local_in_brick()));
+                    // Untouched ground is never compacted, so only its density
+                    // decides whether to paint it.
+                    if promoted.is_none()
+                        && field.cell_density(cell) <= EMPTY_DENSITY + COMPACTION_STEP_METRES
+                    {
+                        continue;
+                    }
+                    let sample = promoted.unwrap_or_else(|| field.sample_cell(cell));
                     if sample.density <= EMPTY_DENSITY + COMPACTION_STEP_METRES
                         || (!sample.is_solid() && sample.compaction == 0)
                     {
@@ -391,7 +395,6 @@ impl TerrainOctree {
                 ) else {
                     continue;
                 };
-                let column = field.sample_column(column_position.0.x, column_position.0.z);
                 let previous_y = previous.and_then(|(previous_centre, previous_radius)| {
                     sphere_y_cell_range(
                         previous_centre,
@@ -403,7 +406,7 @@ impl TerrainOctree {
                 let mut sample_range = |first: i32, last: i32| {
                     for y in first..=last {
                         let cell = WorldCell::new(x, y, z);
-                        if !self.sample_cell_in_column(field, cell, column).is_solid() {
+                        if !self.is_solid_cell(field, cell) {
                             continue;
                         }
                         cells_to_empty.push(cell);
@@ -514,7 +517,6 @@ impl TerrainOctree {
                 ) else {
                     continue;
                 };
-                let column = field.sample_column(column_position.0.x, column_position.0.z);
                 let previous_y = previous.and_then(|(previous_centre, previous_radius)| {
                     sphere_y_cell_range(
                         previous_centre,
@@ -526,7 +528,7 @@ impl TerrainOctree {
                 let mut sample_range = |first: i32, last: i32| {
                     for y in first..=last {
                         let cell = WorldCell::new(x, y, z);
-                        if self.sample_cell_in_column(field, cell, column).is_solid() {
+                        if self.is_solid_cell(field, cell) {
                             continue;
                         }
                         let distance = cell.centre().0.distance(centre.0);

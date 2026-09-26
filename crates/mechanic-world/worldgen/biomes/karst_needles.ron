@@ -1,0 +1,48 @@
+// A limestone forest: needle spires rise from every cell of a Voronoi
+// pattern, their walls fluted by ridged 3D noise that grows stronger towards
+// each needle. Round sinkhole shafts drop through the floor into a dense,
+// wide cave system. Moss clings to flat tops.
+Biome(
+    name: "karst_needles",
+    climate: (temperature: 0.1, humidity: 0.45, continentalness: 0.35, weirdness: 0.2),
+
+    let: {
+        // 1 at a cell's centre falling to 0 a quarter of the way out.
+        "core": Clamp(Remap(
+            Noise(kind: Cells, freq: 0.021, dims: Two, seed: 3),
+            (-1, -0.76), (1, 0),
+        ), 0, 1),
+        // Needles gather in groves with open ground between them.
+        "groves": Clamp(Remap(Noise(kind: SimplexSmooth, freq: 0.005, octaves: 2, dims: Two, seed: 7), (-0.15, 0.45), (0, 1)), 0, 1),
+        // Concave profile: a broad foot rising to a sharp needle.
+        "spire": Mul([
+            Pow(Ref("core"), 1.8),
+            Ref("groves"),
+            Remap(Noise(freq: 0.009, dims: Two, seed: 4), (-1, 1), (20, 80)),
+        ]),
+    },
+
+    height: Add([
+        C(10),
+        Noise(kind: SimplexSmooth, freq: 0.003, octaves: 3, amp: 6, dims: Two, seed: 1),
+        Ref("grain"),
+    ]),
+
+    density: Add([
+        Height(Add([Ref("height"), Ref("spire")])),
+        Mul([
+            Noise(fractal: Ridged, freq: 0.045, octaves: 2, seed: 5),
+            Add([C(0.7), Mul([Ref("core"), Ref("groves"), C(3.3)])]),
+        ]),
+    ]),
+
+    rivers: 0.7,
+    carves: {"tunnels": 2.0, "shafts": 1},
+
+    surface: [
+        (when: Carved(Some("tunnels")), use: "flowstone"),
+        (when: All([Up(0.78, 1), Depth(0, 0.2)]), use: "karst_moss"),
+        (when: Field(Noise(freq: 0.13, octaves: 2, seed: 6), 0.55, 1), use: "graphite_streak"),
+        (when: Always, use: "limestone"),
+    ],
+)

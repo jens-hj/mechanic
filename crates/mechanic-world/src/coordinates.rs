@@ -32,7 +32,7 @@ pub struct WorldGeneratorVersion(pub u32);
 
 impl WorldGeneratorVersion {
     /// Generator used by this build.
-    pub const CURRENT: Self = Self(1);
+    pub const CURRENT: Self = Self(2);
 }
 
 /// Exact global coordinate of one terrain-cell centre.

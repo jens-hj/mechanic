@@ -1,0 +1,48 @@
+// Alien fungal wetland. Low mud flats barely above the sea carry giant
+// shelf caps: two stacked discs on a crooked stem, pink gills beneath and
+// ochre crowns on top.
+Biome(
+    name: "shelf_mire",
+    climate: (temperature: 0.25, humidity: 0.65, continentalness: 0.05, weirdness: 0.3),
+    rarity: -0.12,
+
+    height: Add([
+        C(1.8),
+        Noise(kind: SimplexSmooth, freq: 0.006, octaves: 3, amp: 2.2, dims: Two, seed: 1),
+    ]),
+
+    density: SmoothUnion(2, [
+        Height(Ref("height")),
+        Scatter(
+            cell: 72, reach: 42, chance: 0.7,
+            ground: Ref("height"), lift: (-1, 0), tilt: 9,
+            vars: {"tall": (12, 30), "cap": (8, 18), "thick": (1.4, 2.6), "stem": (1.8, 3.4)},
+            shape: SmoothUnion(2.5, [
+                Warp(
+                    by: (freq: 0.12, amp: 1.1, seed: 2),
+                    of: Cylinder(radius: Ref("stem"), half_height: Ref("tall")),
+                ),
+                Domain(
+                    y: Sub(Y, Ref("tall")),
+                    of: Cylinder(radius: Ref("cap"), half_height: Ref("thick")),
+                ),
+                Domain(
+                    y: Sub(Y, Mul([Ref("tall"), C(0.55)])),
+                    x: Sub(X, Mul([Ref("stem"), C(1.2)])),
+                    of: Cylinder(radius: Mul([Ref("cap"), C(0.6)]), half_height: Mul([Ref("thick"), C(0.8)])),
+                ),
+            ]),
+        ),
+    ]),
+
+    rivers: 1.0,
+    carves: {"tunnels": 0, "entrances": 0},
+
+    surface: [
+        (when: Ceiling, use: "gill_pink"),
+        (when: All([Altitude(-100, 2.4), Depth(0, 1.2)]), use: "mire_mud"),
+        (when: All([Altitude(6, 1000), Up(0.8, 1), Depth(0, 0.4)]), use: "cap_ochre"),
+        (when: All([Up(0.7, 1), Depth(0, 0.25)]), use: "sickly_turf"),
+        (when: Always, use: "fungal_stone"),
+    ],
+)

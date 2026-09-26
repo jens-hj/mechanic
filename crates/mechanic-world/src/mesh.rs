@@ -30,7 +30,7 @@ use bevy_math::{DVec3, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BRICK_EDGE_CELLS, TERRAIN_CELL_METERS, TerrainFace, TerrainField, TerrainMaterial,
+    BRICK_EDGE_CELLS, SurfaceId, TERRAIN_CELL_METERS, TerrainFace, TerrainField, TerrainMaterial,
     TerrainNodeId, TerrainOctreeSnapshot, TerrainTransitionMask, WorldCell, WorldPosition,
 };
 
@@ -90,6 +90,8 @@ pub struct TerrainMeshChunk {
     pub index_groups: TerrainIndexGroups,
     /// One weight per [`TerrainMaterial`] at each vertex.
     pub material_weights: Vec<[f32; TerrainMaterial::COUNT]>,
+    /// Palette surface each vertex shows.
+    pub surfaces: Vec<SurfaceId>,
     /// Plastic compaction of the ground at each vertex, in compaction steps.
     pub compaction: Vec<u8>,
     /// Owning global bounds.
@@ -106,7 +108,7 @@ pub struct TerrainMeshChunk {
     pub vertex_cache: LatticeEdgeVertexCache,
 }
 
-type VertexKey = ([u32; 3], [u32; 3], [u32; TerrainMaterial::COUNT]);
+type VertexKey = ([u32; 3], [u32; 3], u16);
 
 #[derive(Clone, Debug, Default, PartialEq)]
 /// Transient incremental cache used while emitting one chunk's lattice vertices.
@@ -355,6 +357,44 @@ pub struct TerrainMeshMetrics {
     pub bvh_construction_ms: f64,
 }
 
+/// A request's node with its placement and bounds, before any geometry.
+fn empty_chunk(
+    request: TerrainMeshRequest,
+    cubes: i32,
+    stride: i32,
+) -> (WorldCell, TerrainMeshChunk) {
+    let minimum_raw = request.node.minimum_cell_i64();
+    let minimum = WorldCell::new(
+        i32::try_from(minimum_raw[0]).expect("streamed node lies in i32 cell space"),
+        i32::try_from(minimum_raw[1]).expect("streamed node lies in i32 cell space"),
+        i32::try_from(minimum_raw[2]).expect("streamed node lies in i32 cell space"),
+    );
+    let minimum_position = minimum.centre().0 - DVec3::splat(TERRAIN_CELL_METERS * 0.5);
+    let maximum_cell = WorldCell::new(
+        minimum.x + cubes * stride,
+        minimum.y + cubes * stride,
+        minimum.z + cubes * stride,
+    );
+    let maximum_position = maximum_cell.centre().0 - DVec3::splat(TERRAIN_CELL_METERS * 0.5);
+    // Vertices are part of the GPU-facing f32 contract. Bounds use the same
+    // representable endpoints so a rounded boundary vertex remains inside.
+    let bounds = WorldBounds {
+        minimum: WorldPosition(minimum_position.as_vec3().as_dvec3() - DVec3::splat(1.0e-6)),
+        maximum: WorldPosition(maximum_position.as_vec3().as_dvec3() + DVec3::splat(1.0e-6)),
+    };
+    let chunk = TerrainMeshChunk {
+        node: request.node,
+        origin: WorldPosition(minimum_position),
+        bounds,
+        generation: request.generation,
+        sample_spacing_metres: f64::from(stride) * TERRAIN_CELL_METERS,
+        transition_mask: request.transition_mask,
+        ..TerrainMeshChunk::default()
+    };
+
+    (minimum, chunk)
+}
+
 /// Generates a smooth isosurface chunk.
 ///
 /// Regular and transition cells use the official Transvoxel lookup tables over
@@ -376,7 +416,7 @@ pub fn mesh_chunk(
 ///
 /// # Panics
 ///
-/// Panics if the request is outside streamed LOD levels zero through five or
+/// Panics if the request is outside the streamed LOD levels or
 /// if one chunk exceeds the `u32` mesh-index contract.
 pub fn mesh_chunk_profiled(
     field: &TerrainField,
@@ -394,7 +434,7 @@ pub fn mesh_chunk_profiled(
 ///
 /// # Panics
 ///
-/// Panics if the request is outside streamed LOD levels zero through five or
+/// Panics if the request is outside the streamed LOD levels or
 /// if one chunk exceeds the `u32` mesh-index contract.
 pub fn mesh_chunk_profiled_prepared(
     field: &TerrainField,
@@ -402,44 +442,26 @@ pub fn mesh_chunk_profiled_prepared(
     request: TerrainMeshRequest,
 ) -> (TerrainMeshChunk, TerrainMeshMetrics) {
     assert!(
-        request.node.level <= 5,
-        "streamed mesh LOD is level 0 through 5"
+        request.node.level <= crate::MAX_STREAMED_LEVEL,
+        "streamed mesh LOD is level 0 through the coarsest streamed level"
     );
     let stride = 1_i32 << request.node.level;
     let cubes = BRICK_EDGE_CELLS;
-    let minimum_raw = request.node.minimum_cell_i64();
-    let minimum = WorldCell::new(
-        i32::try_from(minimum_raw[0]).expect("streamed node lies in i32 cell space"),
-        i32::try_from(minimum_raw[1]).expect("streamed node lies in i32 cell space"),
-        i32::try_from(minimum_raw[2]).expect("streamed node lies in i32 cell space"),
-    );
-    let minimum_position = minimum.centre().0 - DVec3::splat(TERRAIN_CELL_METERS * 0.5);
-    let maximum_cell = WorldCell::new(
-        minimum.x + cubes * stride,
-        minimum.y + cubes * stride,
-        minimum.z + cubes * stride,
-    );
-    let maximum_position = maximum_cell.centre().0 - DVec3::splat(TERRAIN_CELL_METERS * 0.5);
-    // Vertices are part of the GPU-facing f32 contract. Bounds use the same
-    // representable endpoints so a rounded boundary vertex remains inside.
-    let bounds = WorldBounds {
-        minimum: WorldPosition(minimum_position.as_vec3().as_dvec3() - DVec3::splat(1.0e-6)),
-        maximum: WorldPosition(maximum_position.as_vec3().as_dvec3() + DVec3::splat(1.0e-6)),
-    };
-    let mut chunk = TerrainMeshChunk {
-        node: request.node,
-        origin: WorldPosition(minimum_position),
-        bounds,
-        generation: request.generation,
-        sample_spacing_metres: f64::from(stride) * TERRAIN_CELL_METERS,
-        transition_mask: request.transition_mask,
-        ..TerrainMeshChunk::default()
-    };
+    let (minimum, mut chunk) = empty_chunk(request, cubes, stride);
 
     let lattice_edge = usize::try_from(cubes + 1).expect("chunk edge is positive");
     let sampling_started = Instant::now();
-    let halo = sample_halo(field, edits, request.node, minimum, cubes, stride);
-    let mut lattice = lattice_from_halo(&halo, cubes);
+    if lattice::chunk_is_clear(field, edits, minimum, cubes, stride) {
+        return (
+            chunk,
+            TerrainMeshMetrics {
+                column_sampling_ms: sampling_started.elapsed().as_secs_f64() * 1_000.0,
+                ..TerrainMeshMetrics::default()
+            },
+        );
+    }
+    let halo = sample_halo(field, edits, minimum, cubes, stride);
+    let mut lattice = lattice_from_halo(field, &halo, minimum, cubes, stride);
     if request.node.level < 5 {
         synchronize_edited_boundary_lattice(
             field,
@@ -513,6 +535,7 @@ fn release_growth_slack(chunk: &mut TerrainMeshChunk) {
     chunk.vertices.shrink_to_fit();
     chunk.normals.shrink_to_fit();
     chunk.material_weights.shrink_to_fit();
+    chunk.surfaces.shrink_to_fit();
     chunk.compaction.shrink_to_fit();
     chunk.index_groups.regular.shrink_to_fit();
     for indices in chunk

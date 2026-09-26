@@ -72,6 +72,8 @@ pub struct WorldDocument {
     pub name: String,
     /// Deterministic generation recipe.
     pub generator_version: WorldGeneratorVersion,
+    /// Digest of the world-generation definition the terrain was baked from.
+    pub worldgen: u64,
     /// Actual numeric world seed.
     pub seed: WorldSeed,
     /// Unix timestamp of most recent play.
@@ -99,6 +101,7 @@ impl WorldDocument {
             version: WORLD_FORMAT_VERSION,
             name: name.into(),
             generator_version: WorldGeneratorVersion::CURRENT,
+            worldgen: crate::WorldgenSpec::embedded().hash(),
             seed,
             last_played_unix_seconds: unix_now(),
             player_pose: WorldPoseDoc {

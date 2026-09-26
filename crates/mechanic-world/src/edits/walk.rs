@@ -3,7 +3,7 @@
 use super::brick::TerrainBrick;
 use super::node::{TerrainDensityClass, TerrainNode, TerrainNodeId, TerrainNodeSummary};
 use crate::{BRICK_EDGE_CELLS, BrickCoord, TERRAIN_CELL_METERS, TerrainField, WorldCell};
-use bevy_math::IVec3;
+use bevy_math::{DVec3, IVec3};
 use std::sync::Arc;
 
 pub(super) fn find_brick(node: &TerrainNode, coordinate: BrickCoord) -> Option<&TerrainBrick> {
@@ -219,42 +219,14 @@ pub(super) fn classify_node(
         };
     }
 
-    // Untouched regions are classified only when all eight corners and the
-    // centre agree with a margin at least as wide as the node. Anything less
-    // certain remains mixed, so traversal can never discard a procedural or
-    // edited isosurface.
     let edge_cells = id.edge_bricks() * i64::from(BRICK_EDGE_CELLS);
-    let minimum_cell = [id.coordinates.x, id.coordinates.y, id.coordinates.z]
+    let minimum = [id.coordinates.x, id.coordinates.y, id.coordinates.z]
         .map(|coordinate| i64::from(coordinate) * i64::from(BRICK_EDGE_CELLS));
-    let maximum_cell = minimum_cell.map(|coordinate| coordinate + edge_cells - 1);
-    let mut minimum_density = f32::INFINITY;
-    let mut maximum_density = f32::NEG_INFINITY;
-    for z in [minimum_cell[2], maximum_cell[2]] {
-        for y in [minimum_cell[1], maximum_cell[1]] {
-            for x in [minimum_cell[0], maximum_cell[0]] {
-                let Ok(x) = i32::try_from(x) else {
-                    return TerrainDensityClass::Mixed;
-                };
-                let Ok(y) = i32::try_from(y) else {
-                    return TerrainDensityClass::Mixed;
-                };
-                let Ok(z) = i32::try_from(z) else {
-                    return TerrainDensityClass::Mixed;
-                };
-                let density = field.sample_cell(WorldCell::new(x, y, z)).density;
-                minimum_density = minimum_density.min(density);
-                maximum_density = maximum_density.max(density);
-            }
-        }
-    }
-    let margin = (edge_cells as f64 * TERRAIN_CELL_METERS) as f32;
-    if maximum_density < -margin {
-        TerrainDensityClass::Empty
-    } else if minimum_density > margin
-        && find_node(root, id).is_none_or(|node| node.promoted_descendants == 0)
-    {
-        TerrainDensityClass::Solid
-    } else {
+    let lower = DVec3::from_array(minimum.map(|cell| cell as f64 * TERRAIN_CELL_METERS));
+    let upper = lower + DVec3::splat(edge_cells as f64 * TERRAIN_CELL_METERS);
+    if find_node(root, id).is_some_and(|node| node.promoted_descendants != 0) {
         TerrainDensityClass::Mixed
+    } else {
+        field.classify(lower, upper)
     }
 }

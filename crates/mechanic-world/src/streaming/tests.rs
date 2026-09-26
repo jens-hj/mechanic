@@ -1,3 +1,6 @@
+mod coverage;
+mod priority;
+
 use std::collections::BTreeSet;
 
 use bevy_math::DVec3;
@@ -179,7 +182,7 @@ fn every_selected_and_balance_created_node_is_mixed() {
     );
     for node in selection.nodes {
         assert_eq!(
-            classify_node(&field, &terrain, node.id, &mut cache),
+            classify_node(&field, &terrain, node.id, false, &mut cache),
             crate::TerrainDensityClass::Mixed
         );
     }
@@ -343,10 +346,10 @@ fn procedural_bounds_are_conservative_on_every_meshing_lattice() {
         let terrain = TerrainOctree::default().snapshot();
         let mut cache = TerrainBoundsCache::default();
         for level in 0..=5 {
-            for coordinate in [BrickCoord::new(-37, 100, 29), BrickCoord::new(41, -60, -33)] {
+            for coordinate in [BrickCoord::new(-37, 100, 29), BrickCoord::new(41, -90, -33)] {
                 let id = TerrainNodeId::containing(coordinate, level).unwrap();
-                let class = classify_node(&field, &terrain, id, &mut cache);
-                assert_ne!(class, TerrainDensityClass::Mixed);
+                let class = classify_node(&field, &terrain, id, false, &mut cache);
+                assert_ne!(class, TerrainDensityClass::Mixed, "{id:?} {seed:?}");
                 let minimum = id.minimum_cell_i64();
                 let stride = 1_i64 << level;
                 let y = if class == TerrainDensityClass::Empty {
@@ -370,13 +373,16 @@ fn procedural_bounds_are_conservative_on_every_meshing_lattice() {
                     }
                 }
             }
-            let cave_cell = field.cave().nodes[usize::from(field.cave().chamber)]
-                .position
-                .cell()
-                .unwrap();
-            let cave_id = TerrainNodeId::containing(cave_cell.brick(), level).unwrap();
+            let ground = WorldPosition(bevy_math::DVec3::new(
+                3.0,
+                field.surface_height(3.0, -2.0),
+                -2.0,
+            ))
+            .cell()
+            .unwrap();
+            let ground_id = TerrainNodeId::containing(ground.brick(), level).unwrap();
             assert_eq!(
-                classify_node(&field, &terrain, cave_id, &mut cache),
+                classify_node(&field, &terrain, ground_id, false, &mut cache),
                 TerrainDensityClass::Mixed
             );
         }

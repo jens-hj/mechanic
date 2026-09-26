@@ -12,6 +12,7 @@ mechanic-core.workspace = true
 mechanic-physics.workspace = true
 mechanic-gpu.workspace = true
 mechanic-world.workspace = true
+png.workspace = true
 pollster.workspace = true
 ron.workspace = true
 serde_json.workspace = true
