@@ -33,7 +33,7 @@ use jet::{Jet, Launch};
 pub use jet::{JetDoc, Parcel};
 use pool::Pool;
 use sheet::Sheet;
-pub use sheet::SheetDoc;
+pub use sheet::{RunningView, SheetDoc};
 
 use crate::{BrickCoord, TERRAIN_CELL_METERS, TerrainField, WaterBody, WaterSurface};
 

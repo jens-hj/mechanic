@@ -87,6 +87,8 @@ pub(super) fn step_water(
                 "pools": step.pools,
                 "cells": step.cells,
                 "falls": step.falls.len(),
+                "sheet_cells": step.sheet_cells,
+                "falling_m3": runtime.water.ledger().falling_m3,
                 "ledger_m3": runtime.water.ledger().total(),
             })
         });

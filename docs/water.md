@@ -180,6 +180,14 @@ that replaces it is ready. `water_material.wgsl` colours by depth, fades to
 clear at the shore, ripples along the current, and lights through Bevy's
 PBR path, so the sky reflects in it. Water neither casts nor receives shadows.
 
+Stored water draws after each water step. A pool is a flat quad over each
+open column. Running water is a quad per cell whose corners stand at the mean
+surface of the running cells around them, so a sheet down a slope is one
+surface, and it carries each cell's current, so its ripples run with it. A
+stream in flight is two crossed ribbons along its arc, wider as more water
+pours. Lakes and rivers moved from their seed level mesh again once they
+move 2 cm.
+
 `MECHANIC_WATER=off` hides it. Looking over a lake at 4112 × 2524 on an M1 Pro,
 the frame rose from 41 ms without water to 45–47 ms with it.
 

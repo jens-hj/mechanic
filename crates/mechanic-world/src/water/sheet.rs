@@ -91,7 +91,36 @@ enum Target {
     Wall,
 }
 
+/// One cell of running water as it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RunningView {
+    /// The cell.
+    pub cell: WaterCell,
+    /// Height of its surface, in metres.
+    pub level: f64,
+    /// Depth of its water over its floor, in metres.
+    pub depth: f64,
+    /// Its current along x and z, in m/s.
+    pub flow: DVec2,
+}
+
 impl WaterWorld {
+    /// Every cell of running water deep enough to run, to draw.
+    pub fn running_cells(&self) -> Vec<RunningView> {
+        self.sheets
+            .iter()
+            .filter_map(|(&cell, sheet)| {
+                let surface = sheet.surface()?;
+                Some(RunningView {
+                    cell,
+                    level: surface.level,
+                    depth: surface.level - sheet.floor,
+                    flow: surface.flow,
+                })
+            })
+            .collect()
+    }
+
     /// Water held in running sheets, in m³.
     pub fn running_m3(&self) -> f64 {
         self.sheets.values().map(|sheet| sheet.volume).sum()
