@@ -11,6 +11,7 @@ mod groups;
 mod lattice;
 mod polygonise;
 mod transition;
+mod water;
 
 pub use bvh::{TriangleBvh, TriangleBvhNode, TriangleBvhTriangle};
 use bvh::{
@@ -23,6 +24,7 @@ pub use lattice::PreparedTerrainRegion;
 use lattice::{lattice_from_halo, sample_halo, synchronize_edited_boundary_lattice};
 use polygonise::{CUBE_CORNERS, polygonise_cube, weighted_materials};
 use transition::{generate_face_cap, generate_transition_face};
+pub use water::{WaterSheet, WaterTile, water_sheet};
 
 use std::{collections::HashMap, time::Instant};
 
@@ -376,11 +378,18 @@ fn empty_chunk(
         minimum.z + cubes * stride,
     );
     let maximum_position = maximum_cell.centre().0 - DVec3::splat(TERRAIN_CELL_METERS * 0.5);
-    // Vertices are part of the GPU-facing f32 contract. Bounds use the same
-    // representable endpoints so a rounded boundary vertex remains inside.
+    // Vertices are part of the GPU-facing f32 contract, and node-local
+    // vertices round by up to a few f32 ulps of their global coordinates.
+    // Bounds span both the exact and the representable endpoints plus that
+    // rounding, so a boundary vertex remains inside whichever way it rounded.
+    let slack = |position: DVec3| position.abs() * (4.0 * f64::from(f32::EPSILON)) + 1.0e-6;
     let bounds = WorldBounds {
-        minimum: WorldPosition(minimum_position.as_vec3().as_dvec3() - DVec3::splat(1.0e-6)),
-        maximum: WorldPosition(maximum_position.as_vec3().as_dvec3() + DVec3::splat(1.0e-6)),
+        minimum: WorldPosition(
+            minimum_position.min(minimum_position.as_vec3().as_dvec3()) - slack(minimum_position),
+        ),
+        maximum: WorldPosition(
+            maximum_position.max(maximum_position.as_vec3().as_dvec3()) + slack(maximum_position),
+        ),
     };
     let chunk = TerrainMeshChunk {
         node: request.node,

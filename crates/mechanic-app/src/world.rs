@@ -17,6 +17,7 @@ pub(crate) mod streaming;
 mod terrain_render;
 mod transfer;
 mod walking;
+pub(crate) mod water_render;
 #[cfg(debug_assertions)]
 mod worldgen_watch;
 
@@ -42,6 +43,8 @@ pub(crate) use terrain_render::{TerrainRenderMaterial, generate_rgba8_mip_chain}
 pub(crate) use transfer::place_loaded_creation_in_garage;
 use transfer::static_parts_for_physics;
 use walking::{PlayerCollisionBuild, walk_world};
+pub(crate) use water_render::WaterRenderMaterial;
+use water_render::{WaterTiles, clear_water_tiles, stream_water};
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -724,9 +727,10 @@ impl Plugin for WorldPrototypePlugin {
             .init_resource::<WorldRuntime>()
             .init_resource::<WorldListState>()
             .init_resource::<WorldDiagnostics>()
+            .init_resource::<WaterTiles>()
             .add_systems(Startup, restore_initial_garage)
             .add_systems(OnEnter(AppSpace::World), enter_world)
-            .add_systems(OnExit(AppSpace::World), leave_world)
+            .add_systems(OnExit(AppSpace::World), (leave_world, clear_water_tiles))
             .add_systems(
                 Update,
                 (
@@ -741,6 +745,7 @@ impl Plugin for WorldPrototypePlugin {
                         .after(FrameSet::Readback)
                         .before(coordinate_terrain_edits),
                     clumps::sync_clump_rendering.after(integrate_terrain_remeshes),
+                    stream_water.after(integrate_terrain_remeshes),
                     sync_world_foundations
                         .after(integrate_terrain_remeshes)
                         .after(FrameSet::Build)

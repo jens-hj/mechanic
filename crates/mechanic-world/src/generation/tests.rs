@@ -1,4 +1,5 @@
 mod carves;
+mod water;
 
 use bevy_math::{DVec3, IVec3};
 

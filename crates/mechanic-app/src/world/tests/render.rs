@@ -197,3 +197,99 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn water_draws_a_translucent_blue_surface_over_the_ground() {
+    use crate::world::WaterRenderMaterial;
+    use crate::world::water_render::ATTRIBUTE_WATER;
+
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(AssetPlugin {
+                file_path: format!("{}/assets", env!("CARGO_MANIFEST_DIR")),
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            })
+            .set(RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<PipelinedRenderingPlugin>(),
+    )
+    .add_plugins(MaterialPlugin::<WaterRenderMaterial>::default())
+    .init_resource::<Pixels>();
+    app.finish();
+    app.cleanup();
+    let mut target = Image::new_target_texture(64, 64, TextureFormat::Rgba8UnormSrgb, None);
+    target.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    let target = app.world_mut().resource_mut::<Assets<Image>>().add(target);
+    app.world_mut()
+        .spawn(Readback::texture(target.clone()))
+        .observe(|event: On<ReadbackComplete>, mut pixels: ResMut<Pixels>| {
+            pixels.0.clone_from(&event.data);
+        });
+    app.world_mut().spawn((
+        Camera3d::default(),
+        bevy::core_pipeline::tonemapping::Tonemapping::SomewhatBoringDisplayTransform,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::BLACK),
+            ..default()
+        },
+        RenderTarget::Image(target.into()),
+        Transform::from_xyz(0.0, 3.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    // Pale ground under the water.
+    let ground = app
+        .world_mut()
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial::from(Color::srgb(0.8, 0.75, 0.6)));
+    let plane = app
+        .world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .add(Plane3d::default().mesh().size(8.0, 8.0));
+    app.world_mut().spawn((
+        Mesh3d(plane),
+        MeshMaterial3d(ground),
+        Transform::from_xyz(0.0, -2.0, 0.0),
+    ));
+    let mut water = Mesh::from(Plane3d::default().mesh().size(8.0, 8.0));
+    let count = water.count_vertices();
+    water.insert_attribute(
+        ATTRIBUTE_WATER,
+        bevy::mesh::VertexAttributeValues::Float32x3(vec![[2.0, 0.3, 0.0]; count]),
+    );
+    water.remove_attribute(Mesh::ATTRIBUTE_UV_0);
+    let water = app.world_mut().resource_mut::<Assets<Mesh>>().add(water);
+    let material = app
+        .world_mut()
+        .resource_mut::<Assets<WaterRenderMaterial>>()
+        .add(WaterRenderMaterial::default());
+    app.world_mut()
+        .spawn((Mesh3d(water), MeshMaterial3d(material)));
+    app.world_mut().spawn((
+        DirectionalLight {
+            illuminance: 18_000.0,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 1.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    for _ in 0..60 {
+        render_frame(&mut app);
+    }
+    let pixels = &app.world().resource::<Pixels>().0;
+    let center = (32 * 64 + 32) * 4;
+    let pixel = &pixels[center..center + 4];
+    eprintln!("Water pixel: {pixel:?}");
+    assert!(pixel[1] > 8, "water is still the magenta error material");
+    assert!(
+        pixel[2] > pixel[0],
+        "water over pale ground should read blue: {pixel:?}"
+    );
+}

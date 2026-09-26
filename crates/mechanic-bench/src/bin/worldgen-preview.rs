@@ -1,5 +1,6 @@
 //! Headless pictures of a generated world for authoring biomes: a biome and
-//! river map, a shaded relief painted with each surface's look, and one
+//! river map, a shaded relief painted with each surface's look under its sea,
+//! lakes and rivers, and one
 //! vertical cross-section through every biome showing caves, arches, and
 //! overhangs. With `--views`, also a ray-marched perspective view of every
 //! biome. With `--carves`, finds places where each carve layer breaks the
@@ -127,6 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "map_pixels": pixels * pixels,
             "sections_ms": section_ms,
             "river_segments": field.river_segment_count(),
+            "lakes": field.lake_count(),
             "coverage": coverage,
             "spawn": [start.x, start.y, start.z],
             "spawn_biome": field.biome_at(start.x, start.z),
@@ -221,6 +223,8 @@ struct Pixel {
     height: Option<f64>,
     colour: [f64; 3],
     river: bool,
+    /// Depth of the water over the ground, where there is any.
+    water: f64,
 }
 
 #[expect(
@@ -256,6 +260,7 @@ fn sample_map(
                         let ground =
                             field.sample_position(WorldPosition(DVec3::new(x, height - 0.03, z)));
                         sample.colour = look_colour(field.palette().look(ground.surface));
+                        sample.water = water_depth(field, x, z, height);
                     }
                 }
             });
@@ -277,9 +282,7 @@ fn sample_map(
         entry.0 += coordinate(column, centre.0);
         entry.1 += coordinate(row, centre.1);
         entry.2 += 1;
-        let underwater = sample
-            .height
-            .is_none_or(|height| height < field.sea_level());
+        let underwater = sample.water > 0.0;
         let biome = biome_colour(sample.biome, names.len());
         let biome = if sample.river || underwater {
             mix(biome, [0.1, 0.35, 0.85], 0.7)
@@ -296,10 +299,7 @@ fn sample_map(
         let light = normal.dot(DVec3::new(-0.6, 0.7, -0.4).normalize()).max(0.0) * 0.85 + 0.25;
         let mut colour = sample.colour.map(|channel| channel * light);
         if underwater {
-            colour = mix(colour, [0.05, 0.2, 0.45], 0.55);
-        }
-        if sample.river {
-            colour = mix(colour, [0.1, 0.35, 0.85], 0.8);
+            colour = water_colour(colour, sample.water);
         }
         relief_rgb.extend(to_bytes(colour));
     }
@@ -358,6 +358,21 @@ fn sample_map(
     }
 }
 
+/// Depth of the water standing over ground at `height` in a column, or zero.
+fn water_depth(field: &TerrainField, x: f64, z: f64, height: f64) -> f64 {
+    field.water_surface(x, z).map_or(0.0, |surface| {
+        let depth = surface.level - height;
+        let open = field.is_water(DVec3::new(x, height + depth * 0.5, z));
+        if depth > 0.0 && open { depth } else { 0.0 }
+    })
+}
+
+/// Ground seen through `depth` metres of water.
+fn water_colour(ground: [f64; 3], depth: f64) -> [f64; 3] {
+    let shallow = mix(ground, [0.12, 0.42, 0.5], 0.45);
+    mix(shallow, [0.03, 0.12, 0.3], 1.0 - (-depth / 6.0).exp())
+}
+
 /// A vertical slice along x through `(x, z)`, spanning the column's ground
 /// ± half the slice width: solid is painted, open ground is sky or cave.
 fn cross_section(field: &TerrainField, x: f64, z: f64, span: f64) -> Vec<u8> {
@@ -382,8 +397,8 @@ fn cross_section(field: &TerrainField, x: f64, z: f64, span: f64) -> Vec<u8> {
                     let colour = if field.density(point) > 0.0 {
                         let sample = field.sample_position(WorldPosition(point));
                         look_colour(field.palette().look(sample.surface))
-                    } else if point.y < field.sea_level() {
-                        [0.08, 0.16, 0.3]
+                    } else if field.is_water(point) {
+                        [0.08, 0.2, 0.36]
                     } else if field.ground_height(point.x, point.z) - 2.0 > point.y {
                         [0.03, 0.03, 0.04]
                     } else {
@@ -452,8 +467,11 @@ fn perspective_view(field: &TerrainField, target: DVec3, offset: DVec3) -> Vec<u
                         let base = look_colour(field.palette().look(sample.surface));
                         let lit = normal.dot(sun).max(0.0) * 0.8 + 0.25 + normal.y.max(0.0) * 0.1;
                         let shaded = base.map(|channel| channel * lit);
-                        let shaded = if hit.y < field.sea_level() {
-                            mix(shaded, [0.1, 0.25, 0.45], 0.6)
+                        let depth = water_depth(field, hit.x, hit.z, hit.y);
+                        let shaded = if depth > 0.0 && eye.y > hit.y + depth {
+                            let sky = mix([0.72, 0.8, 0.88], [0.36, 0.52, 0.76], 0.5);
+                            let fresnel = (1.0 - (-direction.y).max(0.0)).powi(5);
+                            mix(water_colour(shaded, depth), sky, fresnel * 0.6)
                         } else {
                             shaded
                         };

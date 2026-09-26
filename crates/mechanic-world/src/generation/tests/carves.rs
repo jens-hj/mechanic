@@ -174,6 +174,10 @@ fn ravines_open_or_buried_follow_the_roof_sign() {
             for k in -100..100 {
                 let (x, z) = (x0 + f64::from(i) * 8.0, z0 + f64::from(k) * 8.0);
                 let column = world.column(x, z);
+                if column.water.seal_below.is_finite() {
+                    // Beside water every carve keeps a sealing roof.
+                    continue;
+                }
                 let roof = column.carves[ravines].roof;
                 let point = DVec3::new(x, column.ground - 20.0, z);
                 let (density, carved) = world.density_and_carve(&column, point);

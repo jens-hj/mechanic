@@ -30,9 +30,10 @@ contract they always did.
    channel segments. The density is then capped at a valley surface: a
    parabolic channel inside the banks, walls that rise at `bank_slope`
    outside them, and a fade back to untouched ground about 140 m out. River
-   beds never rise downstream, and every river ends at the sea (land below
-   `sea_level`) or at the world's edge. Only carving happens: nothing is
-   filled with water yet.
+   beds never rise downstream, and every river ends at the sea (connected
+   ground below `sea_level` of at least the water section's `sea_area`) or
+   at the world's edge. Smaller hollows fill as lakes. The sea, lakes and rivers are then
+   filled: see [Water](water.md).
 5. **Carve layers.** Each layer in `world.ron`'s `carves` is a void
    density, positive where it is open, gated by how much rock must stay
    above it. See [Carve layers](#carve-layers). A biome's
@@ -249,8 +250,8 @@ a layer's cost can be isolated by removing it from a copy.
 
 ## Open work
 
-- **Water.** Rivers, lakes, seas and ocean trenches are carved but not
-  filled.
+- **Water.** Standing water is implicit and does not yet respond to edits;
+  see [Water](water.md).
 - **Carves and drainage.** Rivers are traced before carving, so an open
   ravine does not redirect them. Connections between tunnel levels, and from
   ramps to tunnels, are likely rather than guaranteed.

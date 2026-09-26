@@ -1,4 +1,7 @@
 #![expect(clippy::cast_possible_truncation, clippy::float_cmp)]
+
+mod water;
+
 use bevy_math::{DVec3, Vec3};
 
 use super::{PreparedTerrainRegion, TerrainIndexGroups, TerrainMeshRequest, mesh_chunk};
@@ -195,7 +198,11 @@ fn generated_vertices_stay_in_owning_bounds_and_normals_are_finite() {
     assert_eq!(unique.len(), chunk.vertices.len());
     for (vertex, normal) in chunk.vertices.iter().zip(&chunk.normals) {
         let global = chunk.origin.0 + DVec3::from_array(vertex.map(f64::from));
-        assert!(chunk.bounds.contains(WorldPosition(global)));
+        assert!(
+            chunk.bounds.contains(WorldPosition(global)),
+            "{global} outside {:?}",
+            chunk.bounds
+        );
         assert!(normal.iter().all(|component| component.is_finite()));
     }
 }

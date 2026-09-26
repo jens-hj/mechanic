@@ -43,14 +43,15 @@ pub use edits::{
 pub use footprint::LoadFootprint;
 pub use generation::{
     SurfaceId, SurfaceLook, SurfacePalette, TerrainField, TerrainMaterial, TerrainSample,
-    TextureSet, WorldgenError, WorldgenSpec,
+    TextureSet, WaterBody, WaterSurface, WorldgenError, WorldgenSpec,
 };
 pub use material_response::TerrainMaterialError;
 pub use mesh::{
     LatticeEdgeVertexCache, PreparedTerrainRegion, TerrainCollisionChunk, TerrainIndexGroups,
     TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest, TerrainRayHit,
-    TerrainTriangleGroupMask, TriangleBvh, TriangleBvhNode, TriangleBvhTriangle, WorldBounds,
-    mesh_chunk, mesh_chunk_profiled, mesh_chunk_profiled_prepared,
+    TerrainTriangleGroupMask, TriangleBvh, TriangleBvhNode, TriangleBvhTriangle, WaterSheet,
+    WaterTile, WorldBounds, mesh_chunk, mesh_chunk_profiled, mesh_chunk_profiled_prepared,
+    water_sheet,
 };
 pub use persistence::{
     AUTOSAVE_DEBOUNCE, AUTOSAVE_DIRTY_INTERVAL, AutosaveState, FrozenCreationDoc, OpenWorldOutcome,

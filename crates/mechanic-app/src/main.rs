@@ -210,6 +210,7 @@ fn main() {
         .add_plugins(StreamingMeshAllocatorPlugin)
         .add_plugins(OneShotEnvironmentMapPlugin)
         .add_plugins(MaterialPlugin::<world::TerrainRenderMaterial>::default())
+        .add_plugins(MaterialPlugin::<world::WaterRenderMaterial>::default())
         .add_plugins(MaterialPlugin::<ConstructionRenderMaterial>::default())
         // After DefaultPlugins: the overlay's render pass installs into the
         // render sub-app, which does not exist until RenderPlugin has run.

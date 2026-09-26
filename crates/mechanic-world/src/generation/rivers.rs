@@ -23,6 +23,9 @@ const VALLEY_REACH_METRES: f64 = 140.0;
 /// Width over which a valley's far edge fades back to untouched ground.
 const VALLEY_FADE_METRES: f64 = 40.0;
 
+/// Surface current at a source and at the largest catchment, in m/s.
+const RIVER_SPEED_M_S: (f64, f64) = (0.4, 1.6);
+
 /// Height added to a valley where rivers are disallowed or faded out.
 pub(crate) const RIVER_LIFT_METRES: f64 = 2_000.0;
 
@@ -36,6 +39,8 @@ struct Segment {
     level: [f64; 2],
     half_width: [f64; 2],
     depth: [f64; 2],
+    /// Surface current in m/s.
+    speed: f64,
 }
 
 /// Carved valley under one column.
@@ -45,6 +50,14 @@ pub(crate) struct Valley {
     pub(crate) height: f64,
     /// Horizontal distance to the nearest centre line.
     pub(crate) distance: f64,
+    /// Water level of the segment that carves the valley.
+    pub(crate) level: f64,
+    /// Half width of that segment's channel.
+    pub(crate) half_width: f64,
+    /// Distance from that segment's centre line.
+    pub(crate) channel_distance: f64,
+    /// Surface current along that segment, in m/s.
+    pub(crate) flow: [f64; 2],
 }
 
 #[derive(Debug)]
@@ -115,13 +128,21 @@ impl RiverNetwork {
     }
 
     /// Traces rivers over `heights`, sampled on the drainage grid with
-    /// `side` points per row starting at the world's lower corner.
+    /// `side` points per row starting at the world's lower corner, draining
+    /// to the world's edge and to the `sea` points. Also returns the filled
+    /// heights: every hollow raised to where it spills.
     #[expect(clippy::cast_precision_loss, reason = "grid indices are a few hundred")]
     #[expect(
         clippy::too_many_lines,
         reason = "fill, flow, accumulation, and segmenting share the grid"
     )]
-    pub(crate) fn trace(doc: &RiversDoc, sea_level: f64, heights: &[f64], seed: i32) -> Self {
+    pub(crate) fn trace(
+        doc: &RiversDoc,
+        sea: &[bool],
+        sea_level: f64,
+        heights: &[f64],
+        seed: i32,
+    ) -> (Self, Vec<f64>) {
         let side = drainage_side();
         debug_assert_eq!(heights.len(), side * side);
         let position =
@@ -147,7 +168,7 @@ impl RiverNetwork {
         for (index, &height) in heights.iter().enumerate() {
             let (column, row) = (index % side, index / side);
             let edge = column == 0 || row == 0 || column == side - 1 || row == side - 1;
-            if edge || height < sea_level {
+            if edge || sea[index] {
                 filled[index] = height;
                 queue.push(Pending { height, index });
             }
@@ -196,16 +217,20 @@ impl RiverNetwork {
         let mut segments = Vec::new();
         for index in 0..heights.len() {
             let next = downstream[index];
-            if area[index] < source || next == usize::MAX || heights[index] < sea_level {
+            if area[index] < source || next == usize::MAX || sea[index] {
                 continue;
             }
             let (t0, t1) = (magnitude(area[index]), magnitude(area[next]));
             segments.push(Segment {
                 from: [position(index % side), position(index / side)],
                 to: [position(next % side), position(next / side)],
-                level: [filled[index], filled[next].max(sea_level)],
+                level: [
+                    filled[index],
+                    if sea[next] { sea_level } else { filled[next] },
+                ],
                 half_width: [lerp(doc.half_width, t0), lerp(doc.half_width, t1)],
                 depth: [lerp(doc.depth, t0), lerp(doc.depth, t1)],
+                speed: lerp(RIVER_SPEED_M_S, t0),
             });
         }
 
@@ -254,16 +279,19 @@ impl RiverNetwork {
                 seed.wrapping_add(salt),
             )
         };
-        Self {
-            segments,
-            buckets,
-            bucket_count,
-            bank_slope: doc.bank_slope,
-            meander: doc.meander,
-            meander_x: meander_noise(101),
-            meander_z: meander_noise(211),
-            reach,
-        }
+        (
+            Self {
+                segments,
+                buckets,
+                bucket_count,
+                bank_slope: doc.bank_slope,
+                meander: doc.meander,
+                meander_x: meander_noise(101),
+                meander_z: meander_noise(211),
+                reach,
+            },
+            filled,
+        )
     }
 
     pub(crate) fn segment_count(&self) -> usize {
@@ -300,9 +328,21 @@ impl RiverNetwork {
             let outer = half_width + VALLEY_REACH_METRES;
             height += smoothstep(outer - VALLEY_FADE_METRES, outer, distance) * RIVER_LIFT_METRES;
             if result.is_none_or(|best| height < best.height) {
+                let run = [
+                    segment.to[0] - segment.from[0],
+                    segment.to[1] - segment.from[1],
+                ];
+                let length = run[0].hypot(run[1]).max(f64::EPSILON);
                 result = Some(Valley {
                     height,
                     distance: result.map_or(distance, |best| best.distance.min(distance)),
+                    level,
+                    half_width,
+                    channel_distance: distance,
+                    flow: [
+                        run[0] / length * segment.speed,
+                        run[1] / length * segment.speed,
+                    ],
                 });
             } else if let Some(best) = &mut result {
                 best.distance = best.distance.min(distance);
@@ -355,6 +395,45 @@ impl RiverNetwork {
             }
         }
         lowest
+    }
+
+    /// Lowest and highest water level of any channel within `reach` of the
+    /// box's columns, if one is.
+    pub(crate) fn level_range(&self, x: Interval, z: Interval, reach: f64) -> Option<(f64, f64)> {
+        if !(x.lo.is_finite() && x.hi.is_finite() && z.lo.is_finite() && z.hi.is_finite()) {
+            return None;
+        }
+        let (x0, x1) = (
+            bucket_of(x.lo, self.bucket_count),
+            bucket_of(x.hi, self.bucket_count),
+        );
+        let (z0, z1) = (
+            bucket_of(z.lo, self.bucket_count),
+            bucket_of(z.hi, self.bucket_count),
+        );
+        let box_centre = [(x.lo + x.hi) * 0.5, (z.lo + z.hi) * 0.5];
+        let box_radius = (x.hi - x.lo).hypot(z.hi - z.lo) * 0.5;
+        let mut range: Option<(f64, f64)> = None;
+        for bucket_z in z0..=z1 {
+            for bucket_x in x0..=x1 {
+                for &index in &self.buckets[bucket_x + bucket_z * self.bucket_count] {
+                    let segment = &self.segments[index as usize];
+                    let (to_centre, _) = distance_to_segment(box_centre, segment.from, segment.to);
+                    let nearest =
+                        (to_centre - box_radius - self.meander.abs() * std::f64::consts::SQRT_2)
+                            .max(0.0);
+                    if nearest > segment.half_width[0].max(segment.half_width[1]) + reach {
+                        continue;
+                    }
+                    let (lo, hi) = (
+                        segment.level[0].min(segment.level[1]),
+                        segment.level[0].max(segment.level[1]),
+                    );
+                    range = Some(range.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+                }
+            }
+        }
+        range
     }
 }
 
@@ -422,7 +501,11 @@ mod tests {
                 height
             })
             .collect();
-        let network = RiverNetwork::trace(&doc(), 0.0, &heights, 5);
+        let sea = heights
+            .iter()
+            .map(|height| *height < 0.0)
+            .collect::<Vec<_>>();
+        let (network, _) = RiverNetwork::trace(&doc(), &sea, 0.0, &heights, 5);
         assert!(network.segment_count() > 0);
         for segment in &network.segments {
             assert!(segment.level[1] <= segment.level[0] + 1.0e-9);

@@ -5,7 +5,8 @@
 //! `density`. At every column the climate picks blend weights; the weighted
 //! biome densities are summed, then carved by the world's river valleys and
 //! carve layers: caves, their entrances, and ravines. Surface rules paint the result from the dominant biome's
-//! palette. See `docs/world-generation.md`.
+//! palette. The sea, lakes and rivers fill the result: see `water`. See
+//! `docs/world-generation.md`.
 
 mod compile;
 mod fields;
@@ -17,6 +18,7 @@ mod scatter;
 mod spec;
 mod surfaces;
 mod tape;
+mod water;
 
 use std::sync::{Arc, Mutex};
 
@@ -32,6 +34,7 @@ use self::scatter::mix;
 use self::spec::{BiomeDoc, CarveDoc, Dims, Expr, Fractal, NoiseDoc, NoiseKind};
 use self::surfaces::{SurfaceProbe, SurfaceRules};
 use self::tape::{PlanarCache, Tape, smoothstep};
+use self::water::{ColumnWater, SEALED_ROOF_METRES, WaterBodies, sea_points};
 use crate::{
     TERRAIN_CELL_METERS, TerrainDensityClass, WORLD_HALF_EXTENT_METERS, WorldCell,
     WorldGeneratorVersion, WorldPosition, WorldSeed,
@@ -40,6 +43,7 @@ use crate::{
 pub use self::load::{WorldgenError, WorldgenSpec};
 pub use self::spec::TextureSet;
 pub use self::surfaces::{SurfaceId, SurfaceLook, SurfacePalette};
+pub use self::water::{WaterBody, WaterSurface};
 
 /// Material assigned to an occupied terrain cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -231,6 +235,7 @@ struct CompiledWorld {
     carves: Vec<CompiledCarve>,
     fields: WorldFields,
     rivers: RiverNetwork,
+    water: WaterBodies,
     /// Biomes with any weight around each drainage-grid point, as bit sets.
     /// Lower and upper weight bounds per drainage point and biome, in 1/255.
     weight_low: Vec<u8>,
@@ -293,6 +298,7 @@ struct Column {
     ground: f64,
     valley: f64,
     river_distance: f64,
+    water: ColumnWater,
     /// Temperature, humidity, continentalness, and weirdness.
     climate: [f64; 4],
     carves: [CarveColumn; MAX_CARVES],
@@ -544,6 +550,39 @@ impl TerrainField {
         self.world.sea_level
     }
 
+    /// Number of lakes the drainage fill found.
+    pub fn lake_count(&self) -> usize {
+        self.world.water.lake_count()
+    }
+
+    /// The water over a column, where the column lies in the sea, a lake or a
+    /// river. Whether a point below the level is water depends on the ground
+    /// there: see [`Self::is_water`].
+    pub fn water_surface(&self, x: f64, z: f64) -> Option<WaterSurface> {
+        self.world.cached_column(x, z).water.surface
+    }
+
+    /// Whether untouched ground holds water at a point. Water fills open
+    /// ground below its level; buried voids under it stay dry.
+    pub fn is_water(&self, position: DVec3) -> bool {
+        let column = self.world.cached_column(position.x, position.z);
+        column.inside && self.world.is_water(&column, position)
+    }
+
+    /// Lowest and highest water level that may lie over any column of a
+    /// box, if any water may. Conservative: it may name water the box does
+    /// not hold, never the reverse.
+    pub fn water_level_range(&self, minimum: DVec3, maximum: DVec3) -> Option<(f64, f64)> {
+        let x = Interval::new(minimum.x, maximum.x);
+        let z = Interval::new(minimum.z, maximum.z);
+        let grid = self.world.water.level_range(x, z);
+        let rivers = self.world.rivers.level_range(x, z, 0.0);
+        match (grid, rivers) {
+            (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.max(b.1))),
+            (a, b) => a.or(b),
+        }
+    }
+
     /// Number of traced river segments.
     pub fn river_segment_count(&self) -> usize {
         self.world.rivers.segment_count()
@@ -592,7 +631,11 @@ impl TerrainField {
 
     fn spawnable_height(&self, x: f64, z: f64) -> Option<f64> {
         let height = self.topmost_surface(x, z)?;
-        if height < self.world.sea_level + 0.5 {
+        if height < self.world.sea_level + 0.5
+            || self
+                .water_surface(x, z)
+                .is_some_and(|water| water.level > height - 0.5)
+        {
             return None;
         }
         for (dx, dz) in [(3.0, 0.0), (-3.0, 0.0), (0.0, 3.0), (0.0, -3.0)] {
@@ -995,6 +1038,7 @@ impl CompiledWorld {
             carves,
             fields,
             rivers: RiverNetwork::none(),
+            water: WaterBodies::none(),
             weight_low: Vec::new(),
             weight_high: Vec::new(),
             palette,
@@ -1006,13 +1050,23 @@ impl CompiledWorld {
         compiled.fields.fill(&heights);
         (compiled.weight_low, compiled.weight_high) =
             weight_grid_bounds(&weights, compiled.biomes.len());
+        compiled.trace_drainage(world, &heights, base);
+        Ok(compiled)
+    }
+
+    /// Traces the sea, the rivers draining to it, and the lakes their fill
+    /// finds, over blended heights on the drainage grid.
+    fn trace_drainage(&mut self, world: &spec::WorldDoc, heights: &[f64], base: u64) {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "noise seeds are folded hashes"
         )]
-        let river_seed = mix(base ^ 7) as i32;
-        compiled.rivers = RiverNetwork::trace(&world.rivers, world.sea_level, &heights, river_seed);
-        Ok(compiled)
+        let seed = mix(base ^ 7) as i32;
+        let sea = sea_points(heights, world.sea_level, world.water.sea_area);
+        let (rivers, filled) =
+            RiverNetwork::trace(&world.rivers, &sea, world.sea_level, heights, seed);
+        self.rivers = rivers;
+        self.water = WaterBodies::trace(&world.water, world.sea_level, heights, &filled, &sea);
     }
 
     /// Blended biome heights on the drainage grid, and which biomes weigh on
@@ -1228,6 +1282,7 @@ impl CompiledWorld {
                 ground: self.vertical.0,
                 valley: f64::INFINITY,
                 river_distance: f64::INFINITY,
+                water: ColumnWater::DRY,
                 climate: [0.0; 4],
                 carves: [CarveColumn::default(); MAX_CARVES],
                 dominant: self.spawn,
@@ -1257,18 +1312,18 @@ impl CompiledWorld {
                 dominant = (biome, score);
             }
         }
-        let (valley, river_distance) = if river_factor > 0.0 {
-            self.rivers
-                .valley(x, z)
-                .map_or((f64::INFINITY, f64::INFINITY), |valley| {
-                    (
-                        (1.0 - river_factor.min(1.0)).mul_add(RIVER_LIFT_METRES, valley.height),
-                        valley.distance,
-                    )
-                })
+        let river = if river_factor > 0.0 {
+            self.rivers.valley(x, z)
         } else {
-            (f64::INFINITY, f64::INFINITY)
+            None
         };
+        let (valley, river_distance) = river.map_or((f64::INFINITY, f64::INFINITY), |valley| {
+            (
+                (1.0 - river_factor.min(1.0)).mul_add(RIVER_LIFT_METRES, valley.height),
+                valley.distance,
+            )
+        });
+        let water = self.water.column(x, z, river);
         for (carve, compiled) in carves.iter_mut().zip(&self.carves) {
             if carve.factor > 0.0 {
                 let point = [x, 0.0, z];
@@ -1286,6 +1341,7 @@ impl CompiledWorld {
             ground,
             valley,
             river_distance,
+            water,
             climate,
             carves,
             dominant: dominant.0,
@@ -1308,8 +1364,13 @@ impl CompiledWorld {
         if carve.factor <= 0.0 {
             return 0.0;
         }
+        let roof = if y < column.water.seal_below {
+            carve.roof.max(SEALED_ROOF_METRES)
+        } else {
+            carve.roof
+        };
         let mut open = carve.factor
-            * smoothstep(carve.roof, carve.roof + ROOF_FADE_METRES, blended)
+            * smoothstep(roof, roof + ROOF_FADE_METRES, blended)
             * smoothstep(carve.floor, carve.floor + BAND_FADE_METRES, y);
         if carve.top.is_finite() {
             open *= 1.0 - smoothstep(carve.top - BAND_FADE_METRES, carve.top, y);
@@ -1346,6 +1407,11 @@ impl CompiledWorld {
                     carved = u8::try_from(layer + 1).expect("carve layers are capped");
                 }
             }
+        }
+        let shore = column.water.floor - y;
+        if shore > density {
+            density = shore;
+            carved = 0;
         }
         (
             density.max(self.vertical.0 - y).min(self.vertical.1 - y),
@@ -1389,6 +1455,13 @@ impl CompiledWorld {
 
     /// Density at a point with the carve layer that shaped it.
     fn density_and_carve(&self, column: &Column, position: DVec3) -> (f64, u8) {
+        let (density, carved, _) = self.density_parts(column, position);
+        (density, carved)
+    }
+
+    /// Density at a point, the carve layer that shaped it, and the biome
+    /// density before rivers, carves and shores.
+    fn density_parts(&self, column: &Column, position: DVec3) -> (f64, u8, f64) {
         let point = position.to_array();
         let mut blended = 0.0;
         for (biome, weight) in column.weights.iter() {
@@ -1396,9 +1469,34 @@ impl CompiledWorld {
         }
         let [temperature, humidity, continentalness, weirdness] = column.climate;
         let inputs = [blended, temperature, humidity, continentalness, weirdness];
-        self.compose(column, position.y, blended, true, |layer| {
+        let (density, carved) = self.compose(column, position.y, blended, true, |layer| {
             self.carves[layer].void.eval(point, &inputs)
-        })
+        });
+        (density, carved, blended)
+    }
+
+    /// Whether untouched ground holds water at a point: open, below the
+    /// level of the column's water, and open to that water rather than a
+    /// buried void. Space a carve opened counts only where the ground would
+    /// be open without it, or where the carve breaks the sea floor.
+    fn is_water(&self, column: &Column, position: DVec3) -> bool {
+        let Some(surface) = column.water.surface else {
+            return false;
+        };
+        if position.y >= surface.level {
+            return false;
+        }
+        let (density, carved, blended) = self.density_parts(column, position);
+        if density > 0.0 {
+            return false;
+        }
+        let Some(layer) = carved.checked_sub(1) else {
+            return true;
+        };
+        let y = position.y;
+        let uncarved = blended.min(column.valley - y).max(column.water.floor - y);
+        uncarved <= 0.0
+            || (surface.body == WaterBody::Sea && column.carves[usize::from(layer)].roof <= 0.0)
     }
 
     /// Densities over a lattice, with its columns and the carve layer that
@@ -1740,6 +1838,16 @@ impl CompiledWorld {
             let void = carve.void.interval(domain, &inputs);
             let widest = (factor - 1.0).max(0.0) * CARVE_WIDENING_METRES;
             density = Interval::new(density.lo.min(-void.hi - widest), density.hi);
+        }
+        let shores = [
+            self.water.floor_bound(x, z),
+            rivers_possible
+                .then(|| self.rivers.level_range(x, z, water::BANK_TOTAL_METRES))
+                .flatten()
+                .map(|(_, hi)| hi + self.water.margin()),
+        ];
+        for shore in shores.into_iter().flatten() {
+            density = Interval::new(density.lo, density.hi.max(shore - y.lo));
         }
         density
             .max(Interval::point(bottom).sub(y))

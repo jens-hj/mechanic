@@ -515,6 +515,21 @@ pub struct RiversDoc {
     pub meander: f64,
 }
 
+/// Standing water filled into the ground: the sea, and lakes in the hollows
+/// the drainage fill finds. Rivers carry their own levels.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct WaterDoc {
+    /// Smallest connected area below sea level that is sea, in square
+    /// kilometres. Smaller hollows below sea level fill as lakes.
+    pub sea_area: f64,
+    /// Shallowest hollow that holds a lake, in metres.
+    pub lake_depth: f64,
+    /// Height every shore and bank keeps above its water, in metres.
+    pub shore_margin: f64,
+    /// Slope of the ground a shore raises, rise per metre.
+    pub shore_slope: f64,
+}
+
 /// Where the world starts.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct SpawnDoc {
@@ -540,6 +555,8 @@ pub struct WorldDoc {
     pub spawn: SpawnDoc,
     /// River network.
     pub rivers: RiversDoc,
+    /// Sea and lakes.
+    pub water: WaterDoc,
     /// Layers that open voids in the ground: caves, entrances, ravines.
     pub carves: Vec<CarveDoc>,
     /// Biome file stems under `biomes/`, in order.
