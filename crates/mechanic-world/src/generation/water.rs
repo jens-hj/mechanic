@@ -132,6 +132,8 @@ pub enum WaterBody {
     /// Water stored in the world rather than derived from the seed: a pool,
     /// by its number in the world's water.
     Pool(u32),
+    /// Water running over the ground, stored in the world.
+    Running,
 }
 
 /// The water over one column.

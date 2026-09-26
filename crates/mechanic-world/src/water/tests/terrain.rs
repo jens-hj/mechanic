@@ -69,8 +69,14 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
     };
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, bricks);
-    for _ in 0..600 {
+    for step in 0..600 {
+        let before = water.ledger();
         water.step(&ground, 0.05);
+        let after = water.ledger();
+        assert!(
+            (after.total() - before.total()).abs() < 1.0e-9,
+            "step {step} made or lost water: {before:?} -> {after:?}"
+        );
     }
     let dug = DVec3::new(beyond.x, level - 0.5, beyond.z);
     let surface = water.surface(&ground, dug).expect("the trench holds water");

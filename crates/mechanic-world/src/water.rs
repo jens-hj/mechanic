@@ -16,6 +16,7 @@
 mod cycle;
 mod ground;
 mod pool;
+mod sheet;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -28,6 +29,8 @@ pub use cycle::{SurplusDoc, WaterLedger, WaterNetwork, WaterShift};
 use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache};
 pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
+use sheet::Sheet;
+pub use sheet::SheetDoc;
 
 use crate::{BrickCoord, TERRAIN_CELL_METERS, TerrainField, WaterBody, WaterSurface};
 
@@ -145,6 +148,10 @@ impl WaterCell {
         Self::new(self.x, self.y - 1, self.z)
     }
 
+    const fn up(self) -> Self {
+        Self::new(self.x, self.y + 1, self.z)
+    }
+
     const fn neighbours(self) -> [Self; 6] {
         [
             Self::new(self.x - 1, self.y, self.z),
@@ -212,6 +219,8 @@ pub struct WaterStep {
     pub pools: usize,
     /// Cells held by pools after the step.
     pub cells: usize,
+    /// Cells of running water after the step.
+    pub sheet_cells: usize,
     /// Streams falling this step.
     pub falls: Vec<WaterFall>,
 }
@@ -254,6 +263,8 @@ pub struct StoredWaterDoc {
     pub air_m3: f64,
     /// Cells that filled from seed-derived water and joined it.
     pub joined: Vec<JoinedCellDoc>,
+    /// Running water.
+    pub sheets: Vec<SheetDoc>,
 }
 
 /// A cell that filled from seed-derived water and joined it, in a saved
@@ -286,6 +297,7 @@ struct Joined {
 pub struct WaterSurfaces {
     field: Arc<TerrainField>,
     wet: HashMap<WaterCell, (u32, f64)>,
+    running: HashMap<WaterCell, WaterSurface>,
     shifts: BTreeMap<WaterBody, WaterShift>,
     /// Cells that joined seed-derived water, with its undrawn surface.
     joined: HashMap<WaterCell, WaterSurface>,
@@ -297,6 +309,7 @@ impl WaterSurfaces {
         Self {
             field,
             wet: HashMap::new(),
+            running: HashMap::new(),
             shifts: BTreeMap::new(),
             joined: HashMap::new(),
         }
@@ -320,6 +333,9 @@ impl WaterSurfaces {
                     flow: DVec2::ZERO,
                 });
             }
+            if let Some(&running) = self.running.get(&near) {
+                return Some(running);
+            }
             if let Some(&joined) = self.joined.get(&near) {
                 return Some(cycle::shifted(&self.shifts, joined));
             }
@@ -336,6 +352,8 @@ enum End {
     Pool(u32),
     /// Seed-derived water, which books what it gains or loses.
     Body(WaterBody),
+    /// Running water on a cell's floor.
+    Sheet(WaterCell),
     /// A cell with no pool yet, which one starts in.
     Seed(WaterCell),
 }
@@ -348,6 +366,7 @@ const fn end_key(end: End) -> (u8, u32) {
         End::Body(WaterBody::Sea) => (2, 0),
         End::Body(WaterBody::Lake(lake)) => (3, lake),
         End::Body(WaterBody::River(reach)) => (4, reach),
+        End::Sheet(_) | End::Body(WaterBody::Running) => (5, 0),
     }
 }
 
@@ -383,6 +402,8 @@ pub struct WaterWorld {
     /// Cells a pool filled up to the seed-derived water beside it, which then
     /// became part of that water.
     joined: HashMap<WaterCell, Joined>,
+    /// Running water, by cell.
+    sheets: BTreeMap<WaterCell, Sheet>,
 }
 
 impl WaterWorld {
@@ -410,6 +431,9 @@ impl WaterWorld {
         }
         for pool in &doc.pools {
             water.deposit_at(ground, pool.seed, pool.volume_m3);
+        }
+        for sheet in &doc.sheets {
+            water.add_sheet(ground, sheet.cell, sheet.volume_m3);
         }
         let ids = water.pools.keys().copied().collect::<Vec<_>>();
         for id in ids {
@@ -446,6 +470,7 @@ impl WaterWorld {
                 joined.sort_by_key(|joined| joined.cell);
                 joined
             },
+            sheets: self.sheet_docs(),
         }
     }
 
@@ -482,6 +507,7 @@ impl WaterWorld {
         let (lakes_m3, rivers_m3) = self.cycle.totals();
         WaterLedger {
             pools_m3: self.stored_m3(),
+            running_m3: self.running_m3(),
             joined_m3: self.joined_m3(),
             lakes_m3,
             rivers_m3,
@@ -501,6 +527,11 @@ impl WaterWorld {
             })
             .collect();
         let shifts = self.cycle.shifts(field.as_ref());
+        let running = self
+            .sheets
+            .iter()
+            .filter_map(|(&cell, sheet)| Some((cell, sheet.surface()?)))
+            .collect();
         let joined = self
             .joined
             .iter()
@@ -509,6 +540,7 @@ impl WaterWorld {
         WaterSurfaces {
             field,
             wet,
+            running,
             shifts,
             joined,
         }
@@ -542,8 +574,8 @@ impl WaterWorld {
         })
     }
 
-    /// The water at a point: a pool whose water reaches it, or the
-    /// seed-derived water over its column, lowered by what was drawn from it.
+    /// The water at a point: a pool whose water reaches it, running water,
+    /// or the seed-derived water over its column where it stands now.
     pub fn surface(&self, ground: &impl WaterGround, point: DVec3) -> Option<WaterSurface> {
         let cell = WaterCell::containing(point);
         for dy in (-8..=2).rev() {
@@ -557,6 +589,9 @@ impl WaterWorld {
                         flow: DVec2::ZERO,
                     });
                 }
+            }
+            if let Some(running) = self.running(near) {
+                return Some(running);
             }
             if let Some(joined) = self.joined.get(&near) {
                 return Some(self.drawn(ground, joined.surface));
@@ -630,9 +665,11 @@ impl WaterWorld {
         self.next_pool += 1;
         let mut pool = Pool::new(cell, volume);
         let openings = self.openings(ground, cell);
+        pool.rim = floor_of(cell, openings).unwrap_or_else(|| cell.bottom());
         pool.add_member(cell, openings);
         self.owner.insert(cell, id);
         self.pools.insert(id, pool);
+        self.absorb_sheet(id, cell);
         self.border(ground, id, cell);
         if let Some(pool) = self.pools.get_mut(&id) {
             pool.settle();
@@ -678,10 +715,17 @@ impl WaterWorld {
                 return;
             };
             let openings = self.openings(ground, cell);
-            if floor_of(cell, openings).is_none() || self.owner.get(&cell) == Some(&id) {
+            let Some(floor) = floor_of(cell, openings) else {
+                continue;
+            };
+            if self.owner.get(&cell) == Some(&id) {
                 continue;
             }
-            if self.owner.contains_key(&cell)
+            // Ground falling away below the highest floor the water crossed
+            // lies beyond the pool's rim: it spills there.
+            let beyond_rim = self.pools.get(&id).is_some_and(|pool| floor < pool.rim);
+            if beyond_rim
+                || self.owner.contains_key(&cell)
                 || self.implicit(ground, cell).is_some()
                 || self.falls(ground, cell, Some(id))
             {
@@ -692,8 +736,10 @@ impl WaterWorld {
             }
             if let Some(pool) = self.pools.get_mut(&id) {
                 pool.add_member(cell, openings);
+                pool.rim = pool.rim.max(floor);
             }
             self.owner.insert(cell, id);
+            self.absorb_sheet(id, cell);
             self.border(ground, id, cell);
             budget -= 1;
         }
@@ -710,7 +756,11 @@ impl WaterWorld {
             self.exchange(ground, id, dt, &mut out);
         }
         self.pour_inlets(ground, dt, &mut out.transfers);
-        let (moved_m3, fed) = self.apply(ground, &out.transfers);
+        let (mut moved_m3, mut fed) = self.apply(ground, &out.transfers);
+        let (running, sheet_fed, lips) = self.step_sheets(ground, dt);
+        moved_m3 += running;
+        fed.extend(sheet_fed);
+        out.falls.extend(lips);
         // Water that arrived floods at once, so no pool stands higher than
         // its water can reach.
         for &id in &fed {
@@ -725,7 +775,9 @@ impl WaterWorld {
         for (keep, other) in out.merges {
             self.merge(keep, other);
         }
+        self.settle_sheets(ground);
         self.evaporate(dt);
+        self.evaporate_sheets(EVAPORATION_M_S, dt);
         self.cycle.step(ground, dt);
         self.dry_up(ground, &fed);
         for pool in self.pools.values_mut() {
@@ -735,6 +787,7 @@ impl WaterWorld {
             moved_m3,
             pools: self.pools.len(),
             cells: self.owner.len(),
+            sheet_cells: self.sheets.len(),
             falls: out.falls,
         }
     }
@@ -750,7 +803,7 @@ impl WaterWorld {
         );
         // A pool that fills its cells under seed-derived water standing over
         // them is that water already.
-        let (top, full) = (pool.top(), pool.full());
+        let (top, full, rim) = (pool.top(), pool.full(), pool.rim);
         let contacts = pool.contacts.iter().copied().collect::<Vec<_>>();
         let weir = |head: f64| WEIR_COEFFICIENT * WATER_CELL_METRES * head.max(0.0).powf(1.5) * dt;
         // Water between two bodies over all the cells they touch at: summed
@@ -776,6 +829,7 @@ impl WaterWorld {
                 self.drop_contact(id, cell);
                 continue;
             };
+            let own_floor = floor;
             // Water crosses into the contact only over the higher of its
             // floor and the floor of the member it leaves.
             let floor = self.lip(id, cell).map_or(floor, |lip| lip.max(floor));
@@ -818,6 +872,16 @@ impl WaterWorld {
                 level_between(from, to, weir(head), even);
             } else if self.falls(ground, cell, Some(id)) {
                 self.fall(ground, id, cell, [level, floor, area], dt, out);
+            } else if own_floor < rim {
+                // Beyond the rim the water runs off as a sheet.
+                let head = level - floor;
+                if head > 0.0 {
+                    out.transfers.push(Transfer {
+                        from: End::Pool(id),
+                        to: End::Sheet(cell),
+                        volume: weir(head).min(head * area),
+                    });
+                }
             } else {
                 self.drop_contact(id, cell);
                 if let Some(pool) = self.pools.get_mut(&id) {
@@ -849,7 +913,7 @@ impl WaterWorld {
             let volume = weir(head).min(head * area);
             let landing = match to {
                 End::Pool(other) => self.pools[&other].level.min(cell.bottom()),
-                End::Seed(seed) => seed.bottom(),
+                End::Seed(seed) | End::Sheet(seed) => seed.bottom(),
                 End::Body(_) => cell.bottom() - WATER_CELL_METRES,
             };
             let from = cell.centre();
@@ -995,7 +1059,7 @@ impl WaterWorld {
                 let held = match from {
                     End::Pool(id) => self.pools.get(&id).map_or(0.0, |pool| pool.volume),
                     End::Body(body) => self.cycle.available(ground, body),
-                    End::Seed(_) => 0.0,
+                    End::Seed(_) | End::Sheet(_) => 0.0,
                 };
                 (key, if out > held { held / out } else { 1.0 })
             })
@@ -1014,7 +1078,7 @@ impl WaterWorld {
                     }
                 }
                 End::Body(body) => self.cycle.add(body, -volume),
-                End::Seed(_) => {}
+                End::Seed(_) | End::Sheet(_) => {}
             }
             if let End::Pool(id) = transfer.to {
                 fed.insert(id);
@@ -1036,10 +1100,13 @@ impl WaterWorld {
             End::Seed(cell) => {
                 if let Some(&id) = self.owner.get(&cell) {
                     self.deposit_end(ground, End::Pool(id), volume);
-                } else {
+                } else if self.stands(ground, cell, volume) {
                     self.start_pool(ground, cell, volume);
+                } else {
+                    self.add_sheet(ground, cell, volume);
                 }
             }
+            End::Sheet(cell) => self.add_sheet(ground, cell, volume),
         }
     }
 
@@ -1092,6 +1159,11 @@ impl WaterWorld {
             pool.settle();
             return taken;
         }
+        if let Some(sheet) = self.sheets.get_mut(&cell) {
+            let taken = volume_m3.min(sheet.volume);
+            sheet.volume -= taken;
+            return taken;
+        }
         if let Some(surface) = self.implicit(ground, cell) {
             let taken = volume_m3.min(self.cycle.available(ground, surface.body));
             self.cycle.add(surface.body, -taken);
@@ -1120,6 +1192,7 @@ impl WaterWorld {
 
     /// Re-reads one cell's ground and lets the water around it respond.
     fn remeasure(&mut self, ground: &impl WaterGround, cell: WaterCell) {
+        self.remeasure_sheet(ground, cell);
         let openings = self.openings(ground, cell);
         let floor = floor_of(cell, openings);
         if let Some(joined) = self.joined.get_mut(&cell) {
@@ -1216,7 +1289,7 @@ impl WaterWorld {
                         0.5 * (surface.level - pool.level).max(0.0) * area
                     })
                 }),
-                End::Seed(seed) => {
+                End::Seed(seed) | End::Sheet(seed) => {
                     let openings = self.openings(ground, seed);
                     room.entry(to).or_insert_with(|| {
                         f64::from(openings.iter().map(|&open| u32::from(open)).sum::<u32>())

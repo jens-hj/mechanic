@@ -84,6 +84,8 @@ impl WaterShift {
 pub struct WaterLedger {
     /// Water in stored pools, in m³.
     pub pools_m3: f64,
+    /// Water running over the ground, in m³.
+    pub running_m3: f64,
     /// Water in cells dug beside or under seed-derived water that joined
     /// it, in m³.
     pub joined_m3: f64,
@@ -100,7 +102,13 @@ pub struct WaterLedger {
 impl WaterLedger {
     /// All of it, in m³.
     pub fn total(&self) -> f64 {
-        self.pools_m3 + self.joined_m3 + self.lakes_m3 + self.rivers_m3 + self.sea_m3 + self.air_m3
+        self.pools_m3
+            + self.running_m3
+            + self.joined_m3
+            + self.lakes_m3
+            + self.rivers_m3
+            + self.sea_m3
+            + self.air_m3
     }
 }
 
@@ -174,7 +182,7 @@ impl Cycle {
     pub(super) fn available(&self, ground: &impl WaterNetwork, body: WaterBody) -> f64 {
         let held = match body {
             WaterBody::Sea => return f64::INFINITY,
-            WaterBody::Pool(_) => return 0.0,
+            WaterBody::Pool(_) | WaterBody::Running => return 0.0,
             WaterBody::Lake(lake) => ground.lake(lake).map_or(0.0, |lake| lake.volume_m3),
             WaterBody::River(reach) => ground
                 .reach(reach)
@@ -187,7 +195,7 @@ impl Cycle {
     pub(super) fn add(&mut self, body: WaterBody, volume: f64) {
         match body {
             WaterBody::Sea => self.sea += volume,
-            WaterBody::Pool(_) => {}
+            WaterBody::Pool(_) | WaterBody::Running => {}
             _ => *self.surplus.entry(body).or_default() += volume,
         }
     }
@@ -210,7 +218,7 @@ impl Cycle {
             WaterBody::River(reach) => ground
                 .reach(reach)
                 .map_or(WaterShift::NONE, |reach| river_shift(reach, surplus)),
-            WaterBody::Sea | WaterBody::Pool(_) => WaterShift::NONE,
+            WaterBody::Sea | WaterBody::Pool(_) | WaterBody::Running => WaterShift::NONE,
         }
     }
 
@@ -246,7 +254,7 @@ impl Cycle {
                     };
                     (lake_spill(lake, surplus, dt), lake.outflow)
                 }
-                WaterBody::Sea | WaterBody::Pool(_) => continue,
+                WaterBody::Sea | WaterBody::Pool(_) | WaterBody::Running => continue,
             };
             let passed = if surplus.abs() < SETTLED_M3 {
                 surplus

@@ -35,6 +35,9 @@ pub(super) struct Pool {
     pub(super) seed: WaterCell,
     pub(super) volume: f64,
     pub(super) level: f64,
+    /// Highest floor its water crossed from its seed: ground below it
+    /// beyond its members lies past the rim, where it spills.
+    pub(super) rim: f64,
     /// Member cells and their openings.
     pub(super) members: HashMap<WaterCell, Openings>,
     /// Open terrain cells of all members, by global terrain-cell layer.
@@ -53,6 +56,7 @@ impl Pool {
             seed,
             volume,
             level: f64::NEG_INFINITY,
+            rim: f64::NEG_INFINITY,
             members: HashMap::new(),
             layers: BTreeMap::new(),
             border: BinaryHeap::new(),
@@ -173,6 +177,7 @@ impl Pool {
     /// Takes in another pool's cells and water.
     pub(super) fn absorb_pool(&mut self, other: Self) {
         self.volume += other.volume;
+        self.rim = self.rim.max(other.rim);
         for (cell, openings) in other.members {
             self.add_member(cell, openings);
         }

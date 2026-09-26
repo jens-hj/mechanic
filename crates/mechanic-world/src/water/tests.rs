@@ -443,4 +443,86 @@ fn a_puddle_evaporates_into_the_air() {
     assert!(ledger.air_m3 + ledger.sea_m3 > 0.01 - 1.0e-9);
 }
 
+/// A stair of eight 20 cm steps, 40 cm deep, down to a pit 1.2 m below the
+/// last step: a slope a sheet runs down.
+fn stair() -> Ground {
+    let mut rooms = (0..8)
+        .map(|step| {
+            let x = f64::from(step) * 0.4;
+            room([x, -0.2 * f64::from(step), 0.0], [x + 0.4, 3.0, 0.4])
+        })
+        .collect::<Vec<_>>();
+    rooms.push(room([3.2, -3.0, 0.0], [4.0, 3.0, 0.4]));
+    Ground {
+        rooms,
+        lake: None,
+        river: None,
+    }
+}
+
+#[test]
+fn water_spilled_on_a_slope_runs_down_it_before_it_pools() {
+    let ground = stair();
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.2, 1.0, 0.2), 0.2);
+    run_steps(&mut water, &ground, 10);
+    assert_eq!(water.pools().count(), 0, "the water pooled at once");
+    let running = water
+        .surface(&ground, DVec3::new(0.6, 0.0, 0.2))
+        .filter(|surface| surface.body == WaterBody::Running)
+        .expect("no water runs down the stair");
+    assert!(
+        running.flow.x > 0.05,
+        "the water runs at {:?} m/s",
+        running.flow
+    );
+    // A save in mid-run keeps every drop.
+    let saved = WaterWorld::from_doc(&ground, &water.to_doc());
+    assert!((saved.ledger().total() - 0.2).abs() < 1.0e-9);
+    run(&mut water, &ground, 30);
+    let pit = water
+        .pools()
+        .find(|pool| pool.level < -1.5)
+        .expect("nothing pooled in the pit");
+    assert!(
+        pit.volume_m3 > 0.19,
+        "the pit holds {:.3} m³",
+        pit.volume_m3
+    );
+    assert!(
+        (water.ledger().total() - 0.2).abs() < 1.0e-9,
+        "water was made or lost"
+    );
+}
+
+/// Runs the water for `steps` twentieths of a second.
+fn run_steps(water: &mut WaterWorld, ground: &Ground, steps: u32) {
+    for _ in 0..steps {
+        water.step(ground, 0.05);
+    }
+}
+
+#[test]
+fn a_pool_spills_over_its_rim_and_runs_down_the_slope_beyond() {
+    // A basin 40 cm deep behind the stair's top step, which is its rim.
+    let mut ground = stair();
+    ground.rooms.push(room([-0.8, -0.4, 0.0], [0.0, 3.0, 0.4]));
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(-0.4, 1.0, 0.2), 0.2);
+    run(&mut water, &ground, 60);
+    let basin = level_at(&water, &ground, DVec3::new(-0.4, -0.2, 0.2));
+    assert!(
+        (-0.01..0.05).contains(&basin),
+        "the basin stands at {basin:.3} m"
+    );
+    let pit = water
+        .pools()
+        .find(|pool| pool.level < -1.5)
+        .map_or(0.0, |pool| pool.volume_m3);
+    // The basin holds 0.128 m³ below its rim; the rest runs on, less the
+    // film left standing over the rim.
+    assert!((0.05..0.072).contains(&pit), "the pit got {pit:.3} m³");
+    assert!((water.ledger().total() - 0.2).abs() < 1.0e-9);
+}
+
 mod terrain;

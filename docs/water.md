@@ -25,6 +25,10 @@ it.
   where the head is measured over the lip the water must cross. Pools whose
   levels come within 5 mm merge. Water pouring over a drop falls to where it
   lands and joins the pool there or starts one.
+- **Pools spill over their rims.** A pool records the highest floor its
+  water crossed from its seed. Ground beyond it that lies lower is past the
+  rim: the pool does not take it in but spills onto it as running water.
+- **Running water is a sheet.** See [Running water](#running-water).
 - **Seed-derived water pours in.** A free cell beside the sea, a lake or a
   river is an inlet: the water pours in and lands wherever it falls. A pool
   touching seed-derived water trades with it both ways, never past the point
@@ -38,9 +42,29 @@ it.
   least a 32 m drainage cell, so a hole of a few cubic metres lowers it by
   millimetres.
 - **Only what changed is kept.** A save holds each pool's seed cell and
-  volume, each lake's and river reach's surplus, the sea's and the air's,
+  volume, each sheet cell's volume, each lake's and river reach's surplus, the sea's and the air's,
   and the cells that joined seed-derived water with what they hold. Loading
   floods every pool out from its seed again.
+
+## Running water
+
+Water that lands where it cannot stand runs (`water/sheet.rs`). A sheet cell
+holds a volume on its floor, and pipes to its four horizontal neighbours
+carry water between them: the virtual-pipe model of shallow water. Each
+pipe's flow gathers speed with the difference in surface height across it
+and loses it to friction at 2 per second, and no cell sends more than it
+holds, so volume is exact. The flows give each sheet cell a current, which
+buoyancy and drag see. Pipes step four times per water step.
+
+- **Slopes and lips.** A sheet climbs a step of one water cell and runs
+  down one. A bigger drop is a lip: the water pours over it and lands below.
+- **Where it ends.** Running water reaching a pool or seed-derived water
+  joins it. A cell whose water is at least a centimetre deep, has no lower
+  neighbour and has barely drained for ten steps becomes a pool, which then
+  floods its hollow and takes in the sheets there. Water landing in a hollow
+  starts a pool at once.
+- **Films.** Water shallower than 2 mm clings to the ground and does not
+  run; it evaporates.
 
 ## The cycle
 
@@ -72,8 +96,8 @@ entry, and its total changes only through `deposit` and `withdraw`.
   hollow holds.
 - **The sea receives.** Rivers deliver to it, and the sea gives endlessly
   to anything a world can hold, booking what it gives.
-- **Evaporation.** Stored water loses 5 mm an hour from its surface to the
-  air, so a forgotten puddle dries in a day. The air rains it back out within
+- **Evaporation.** Pools and running water lose 5 mm an hour from their
+  surface to the air, so a forgotten puddle dries in a day. The air rains it back out within
   an hour; the ledger books it to the sea, where it would end up.
 
 Reaches that run through a lake are that lake's water. A lake with no river
