@@ -1,0 +1,289 @@
+//! Stored water: pools settle level, fill and spill, fill from lakes, follow
+//! the ground as it changes, and survive a save.
+
+use bevy_math::{DVec2, DVec3};
+
+use super::{WaterGround, WaterWorld};
+use crate::{BRICK_EDGE_CELLS, BrickCoord, TERRAIN_CELL_METERS, WaterBody, WaterSurface};
+
+/// An axis-aligned box of open space.
+#[derive(Clone, Copy)]
+struct Room {
+    minimum: DVec3,
+    maximum: DVec3,
+}
+
+const fn room(minimum: [f64; 3], maximum: [f64; 3]) -> Room {
+    Room {
+        minimum: DVec3::from_array(minimum),
+        maximum: DVec3::from_array(maximum),
+    }
+}
+
+/// Ground solid everywhere but in its rooms, with an optional lake: open
+/// ground where `lake_room` holds it, below `lake_level`.
+struct Ground {
+    rooms: Vec<Room>,
+    lake: Option<(Room, f64)>,
+}
+
+impl Ground {
+    fn open(&self, point: DVec3) -> bool {
+        self.rooms
+            .iter()
+            .chain(self.lake.iter().map(|(room, _)| room))
+            .any(|room| point.cmpge(room.minimum).all() && point.cmplt(room.maximum).all())
+    }
+
+    fn lake_at(&self, x: f64, z: f64) -> Option<WaterSurface> {
+        let (room, level) = self.lake?;
+        let inside =
+            x >= room.minimum.x && x < room.maximum.x && z >= room.minimum.z && z < room.maximum.z;
+        inside.then_some(WaterSurface {
+            level,
+            body: WaterBody::Lake(0),
+            flow: DVec2::ZERO,
+        })
+    }
+
+    /// Every brick a box of rooms touches.
+    fn bricks(&self) -> Vec<BrickCoord> {
+        let edge = f64::from(BRICK_EDGE_CELLS) * TERRAIN_CELL_METERS;
+        let mut bricks = Vec::new();
+        for room in &self.rooms {
+            #[expect(clippy::cast_possible_truncation, reason = "a few bricks")]
+            let index = |value: f64| (value / edge).floor() as i32;
+            for z in index(room.minimum.z)..=index(room.maximum.z) {
+                for y in index(room.minimum.y)..=index(room.maximum.y) {
+                    for x in index(room.minimum.x)..=index(room.maximum.x) {
+                        bricks.push(BrickCoord::new(x, y, z));
+                    }
+                }
+            }
+        }
+        bricks.sort_by_key(|brick| (brick.x, brick.y, brick.z));
+        bricks.dedup();
+        bricks
+    }
+}
+
+impl WaterGround for Ground {
+    fn open_cells(&self, brick: BrickCoord) -> Vec<bool> {
+        let minimum = brick.minimum_cell();
+        let edge = BRICK_EDGE_CELLS;
+        let mut open = Vec::new();
+        for z in 0..edge {
+            for y in 0..edge {
+                for x in 0..edge {
+                    let centre = crate::WorldCell::new(minimum.x + x, minimum.y + y, minimum.z + z)
+                        .centre()
+                        .0;
+                    open.push(self.open(centre));
+                }
+            }
+        }
+        open
+    }
+
+    fn implicit(&self, point: DVec3) -> Option<WaterSurface> {
+        self.lake_at(point.x, point.z)
+            .filter(|surface| point.y < surface.level && self.open(point))
+    }
+
+    fn lake_area(&self, _lake: u32) -> f64 {
+        10_000.0
+    }
+
+    fn surface(&self, x: f64, z: f64) -> Option<WaterSurface> {
+        self.lake_at(x, z)
+    }
+
+    fn may_hold_water(&self, _brick: BrickCoord) -> bool {
+        self.lake.is_some()
+    }
+}
+
+/// Runs the water for `seconds` in steps of a twentieth of a second.
+fn run(water: &mut WaterWorld, ground: &Ground, seconds: u32) {
+    for _ in 0..seconds * 20 {
+        water.step(ground, 0.05);
+    }
+}
+
+fn level_at(water: &WaterWorld, ground: &Ground, point: DVec3) -> f64 {
+    water
+        .surface(ground, point)
+        .map_or(f64::NEG_INFINITY, |surface| surface.level)
+}
+
+/// Two 40 cm shafts 3 m tall, joined by a tunnel along their feet.
+fn u_tube() -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, 0.0, 0.0], [0.4, 3.0, 0.4]),
+            room([2.0, 0.0, 0.0], [2.4, 3.0, 0.4]),
+            room([0.0, 0.0, 0.0], [2.4, 0.4, 0.4]),
+        ],
+        lake: None,
+    }
+}
+
+#[test]
+fn water_poured_into_a_u_tube_settles_level_in_both_arms() {
+    let ground = u_tube();
+    let mut water = WaterWorld::new();
+    assert!((water.deposit(&ground, DVec3::new(0.2, 2.9, 0.2), 0.5) - 0.5).abs() < f64::EPSILON);
+    run(&mut water, &ground, 10);
+    // The tunnel holds 0.384 m³; the rest stands 0.3625 m up both 0.16 m² arms.
+    let left = level_at(&water, &ground, DVec3::new(0.2, 0.6, 0.2));
+    let right = level_at(&water, &ground, DVec3::new(2.2, 0.6, 0.2));
+    assert!((left - 0.7625).abs() < 0.02, "left arm at {left:.3} m");
+    assert!(
+        (left - right).abs() < 1.0e-9,
+        "arms at {left:.3} and {right:.3} m"
+    );
+    assert!((water.stored_m3() - 0.5).abs() < 1.0e-9);
+}
+
+/// A 1 m pit in a floor with walls round it, and a lower basin to the east
+/// beyond a 20 cm rim.
+fn pit_and_basin() -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, -1.0, 0.0], [1.0, 2.0, 1.0]),
+            room([-0.4, 0.0, -0.4], [1.0, 2.0, 1.4]),
+            room([1.2, -0.6, -0.4], [4.0, 2.0, 1.4]),
+            room([1.0, 0.0, -0.4], [1.2, 2.0, 1.4]),
+        ],
+        lake: None,
+    }
+}
+
+#[test]
+fn a_pit_fills_then_spills_over_its_rim_into_lower_ground() {
+    let ground = pit_and_basin();
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.5, 1.5, 0.5), 1.5);
+    run(&mut water, &ground, 60);
+    let pit = level_at(&water, &ground, DVec3::new(0.5, -0.5, 0.5));
+    let basin = level_at(&water, &ground, DVec3::new(3.0, -0.5, 0.5));
+    assert!(pit > -0.02, "the pit stands at {pit:.3} m");
+    assert!(basin > -0.6, "nothing spilled into the basin");
+    assert!(
+        basin < 0.0,
+        "the basin filled to {basin:.3} m, over the rim"
+    );
+    assert!(
+        (water.stored_m3() - 1.5).abs() < 1.0e-9,
+        "water was made or lost"
+    );
+}
+
+/// A lake to the west, and a trench dug east from it into a bank.
+fn lake_and_trench(cave: bool) -> Ground {
+    let mut rooms = vec![room([0.0, -0.5, 0.0], [4.0, 3.0, 0.6])];
+    if cave {
+        rooms.push(room([4.0, -3.0, -1.0], [8.0, 0.0, 2.0]));
+    }
+    rooms.push(room([-20.0, 1.0, -20.0], [20.0, 3.0, 20.0]));
+    Ground {
+        rooms,
+        lake: Some((room([-20.0, -2.0, -20.0], [0.0, 3.0, 20.0]), 0.8)),
+    }
+}
+
+#[test]
+fn a_trench_dug_from_a_lake_fills_to_the_lake_level() {
+    let ground = lake_and_trench(false);
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    run(&mut water, &ground, 30);
+    let trench = level_at(&water, &ground, DVec3::new(3.0, 0.0, 0.3));
+    assert!(
+        (trench - 0.8).abs() < 0.02,
+        "the trench stands at {trench:.3} m"
+    );
+    assert!(
+        (water.drawdown_m3(0) - water.stored_m3()).abs() < 1.0e-9,
+        "the trench holds {:.3} m³ but the lake gave {:.3} m³",
+        water.stored_m3(),
+        water.drawdown_m3(0)
+    );
+}
+
+#[test]
+fn a_breached_lake_drains_into_a_cave_until_the_levels_meet() {
+    let ground = lake_and_trench(true);
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    run(&mut water, &ground, 120);
+    let cave = level_at(&water, &ground, DVec3::new(6.0, -2.0, 0.5));
+    let lake = level_at(&water, &ground, DVec3::new(-5.0, 0.0, 0.5));
+    assert!(
+        water.stored_m3() > 36.0,
+        "the cave holds {:.1} m³",
+        water.stored_m3()
+    );
+    assert!(
+        (cave - lake).abs() < 0.02,
+        "cave at {cave:.3} m, lake at {lake:.3} m"
+    );
+    assert!(lake < 0.8, "the lake did not go down");
+    assert!((water.drawdown_m3(0) - water.stored_m3()).abs() < 1.0e-9);
+}
+
+/// A closed 1 m box open at the top, and the same with a block in one half
+/// of its floor.
+fn pit(filled: bool) -> Ground {
+    let mut rooms = vec![room([0.0, -1.0, 0.0], [1.0, 1.0, 1.0])];
+    if filled {
+        rooms = vec![
+            room([0.5, -1.0, 0.0], [1.0, 1.0, 1.0]),
+            room([0.0, -0.6, 0.0], [0.5, 1.0, 1.0]),
+        ];
+    }
+    Ground { rooms, lake: None }
+}
+
+#[test]
+fn ground_filled_into_a_pool_raises_its_level() {
+    let mut water = WaterWorld::new();
+    water.deposit(&pit(false), DVec3::new(0.5, 0.5, 0.5), 0.5);
+    run(&mut water, &pit(false), 5);
+    let before = level_at(&water, &pit(false), DVec3::new(0.7, -0.8, 0.5));
+    assert!(
+        (before + 0.5).abs() < 0.01,
+        "the pit stands at {before:.3} m"
+    );
+    let filled = pit(true);
+    water.terrain_changed(&filled, filled.bricks());
+    run(&mut water, &filled, 5);
+    // 0.2 m³ fills the lower 0.4 m of the open half; 0.3 m³ stands on the full floor.
+    let after = level_at(&water, &filled, DVec3::new(0.7, -0.8, 0.5));
+    assert!((after + 0.3).abs() < 0.01, "the pit stands at {after:.3} m");
+    assert!((water.stored_m3() - 0.5).abs() < 1.0e-9);
+}
+
+#[test]
+fn withdrawing_from_a_pool_lowers_its_level() {
+    let ground = pit(false);
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.5, 0.5, 0.5), 0.5);
+    run(&mut water, &ground, 5);
+    let taken = water.withdraw(&ground, DVec3::new(0.5, -0.9, 0.5), 0.2);
+    assert!((taken - 0.2).abs() < 1.0e-12);
+    let level = level_at(&water, &ground, DVec3::new(0.5, -0.9, 0.5));
+    assert!((level + 0.7).abs() < 0.01, "the pit stands at {level:.3} m");
+}
+
+#[test]
+fn stored_water_survives_a_save() {
+    let ground = u_tube();
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.2, 2.9, 0.2), 0.5);
+    run(&mut water, &ground, 10);
+    let loaded = WaterWorld::from_doc(&ground, &water.to_doc());
+    let point = DVec3::new(2.2, 0.6, 0.2);
+    assert!((level_at(&loaded, &ground, point) - level_at(&water, &ground, point)).abs() < 1.0e-9);
+    assert!((loaded.stored_m3() - 0.5).abs() < 1.0e-9);
+}

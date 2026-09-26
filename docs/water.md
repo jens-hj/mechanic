@@ -2,30 +2,40 @@
 
 Water follows the terrain's rules. Untouched water is a pure function of the
 seed and the world definition: a level per column and a rule, with nothing
-stored. Later phases store only where water differs from that, the way edited
-bricks override untouched ground. Water shares the terrain's quantum
-(`MATERIAL_QUANTUM_M3`) and is conserved, except at declared sources and
-sinks: the sea, river inflow and the brush.
+stored. Stored water records only where water differs from that, the way
+edited bricks override untouched ground. Stored water is conserved: pools,
+falls and lakes exchange it exactly. The sea and rivers are the declared
+endless sources and sinks.
 
 ## The model
 
-One value, moisture, describes every 5 cm cell. In an empty cell it is liquid
-water; in a solid cell it is pore water, which later makes mud. It is stored
-per 20 cm water cell (4³ terrain cells, 8³ per brick) as `u16` quanta, and
-the 5 cm view is derived by filling a water cell's fine cells from the bottom.
-
-- **Still water is a pool.** A connected body of full water cells is one
-  level and one volume. It grows by incremental priority-flood, the algorithm
-  the drainage already uses. A U-tube is a single pool, so pressure comes out
-  right without being simulated. A spill point is the lowest border cell with
-  open space below it that is not part of the pool.
-- **Only moving water is simulated.** Flowing cells form a sparse active set
-  that sleeps, like spoil clumps.
 - **Seed-derived water is implicit.** The sea, lakes and rivers below.
+- **Stored water lies in pools.** Water is held in 20 cm water cells, four
+  terrain cells to an edge. A pool is one level and one volume over its member
+  cells; how full each cell is follows from the level and the cell's open
+  terrain cells. A pool grows by priority flood, the algorithm the drainage
+  already uses: the lowest neighbour whose floor the water covers by a
+  centimetre is taken in next. A U-tube is one pool, so it settles level in
+  both arms without pressure being simulated.
+- **Water moves across contacts.** A neighbour a pool cannot take in is a
+  contact: another pool's cell, seed-derived water, or a drop, where the cell's
+  bottom opens onto free space or lower water. Across a contact the higher
+  water runs to the lower at a weir rate, `1.7 × 0.2 m × head^1.5` a second,
+  where the head is measured over the lip the water must cross. Pools whose
+  levels come within 5 mm merge. Water pouring over a drop falls to where it
+  lands and joins the pool there or starts one.
+- **Seed-derived water pours in.** A free cell beside the sea, a lake or a
+  river is an inlet: the water pours in and lands wherever it falls. A pool
+  touching seed-derived water trades with it both ways. Water taken from a
+  lake is its drawdown, which lowers the whole lake by the drawdown over the
+  lake's area; water returned to it raises it again.
+- **Only what changed is kept.** A save holds each pool's seed cell and
+  volume, and each lake's drawdown. Loading floods every pool out from its
+  seed again.
 
-Status: the implicit water, its preview, its rendering, and buoyancy and drag
-on the CPU route are done. Stored water, pools, flow, pumps and pore water are
-open.
+Status: the implicit water, its preview, its rendering, buoyancy and drag on
+the CPU route, and stored water in `mechanic-world` (`WaterWorld`) are done.
+Stored water in the app, pumps and pore water are open.
 
 ## Implicit water
 
@@ -114,8 +124,9 @@ Spawns keep a metre above any water within ten metres.
 
 ## Known limits
 
-- Dug ground does not fill yet. A hole dug inside a lake's footprint shows no
-  water until stored water arrives, and edits never move a shore.
+- A pool cut in two by new ground stays one pool, at one level.
+- Water crosses between any two water cells that both have open terrain
+  cells, so a wall thinner than 20 cm leaks.
 - Where a surface-breaking carve meets a buried part of the same layer below
   a water level, the two can meet at a wall of water. Stored water will
   resolve this by flowing when the region wakes.

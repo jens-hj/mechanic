@@ -17,6 +17,7 @@ mod query;
 mod soil;
 mod streaming;
 mod transvoxel;
+mod water;
 
 pub use breakage::{
     BreakageAccumulator, BreakagePatch, BreakageResponse, CELL_QUANTA, ExtractionCell,
@@ -74,4 +75,8 @@ pub use streaming::{
     TerrainStreamer, TerrainTransitionMask, TerrainView, publication_face_mask,
     select_active_nodes, select_active_nodes_cached, select_active_nodes_with_interests,
     terrain_loading_worker_count, terrain_worker_count,
+};
+pub use water::{
+    LakeDrawdownDoc, PoolDoc, PoolView, StoredWaterDoc, TerrainWater, WATER_CELL_EDGE_CELLS,
+    WATER_CELL_METRES, WaterCell, WaterFall, WaterGround, WaterStep, WaterWorld,
 };

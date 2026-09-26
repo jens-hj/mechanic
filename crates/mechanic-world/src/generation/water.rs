@@ -69,6 +69,9 @@ pub enum WaterBody {
     Lake(u32),
     /// A river channel.
     River,
+    /// Water stored in the world rather than derived from the seed: a pool,
+    /// by its number in the world's water.
+    Pool(u32),
 }
 
 /// The water over one column.
@@ -110,6 +113,8 @@ pub(crate) struct WaterBodies {
     body: Vec<u32>,
     /// Level of each body, by the same numbering.
     levels: Vec<f64>,
+    /// Surface area of each lake's hollow, in square metres, by lake number.
+    lake_areas: Vec<f64>,
     margin: f64,
     slope: f64,
 }
@@ -120,6 +125,7 @@ impl WaterBodies {
         Self {
             body: Vec::new(),
             levels: Vec::new(),
+            lake_areas: Vec::new(),
             margin: 0.0,
             slope: 1.0,
         }
@@ -139,6 +145,7 @@ impl WaterBodies {
             .map(|&sea| if sea { SEA } else { 0 })
             .collect::<Vec<_>>();
         let mut levels = vec![f64::NAN, sea_level];
+        let mut lake_areas = Vec::new();
         let hollow = |index: usize| !sea[index] && filled[index] - heights[index] > HOLLOW_METRES;
         let mut seen = vec![false; heights.len()];
         let mut members = Vec::new();
@@ -161,6 +168,11 @@ impl WaterBodies {
             }
             let id = u32::try_from(levels.len()).expect("lake count fits u32");
             levels.push(level);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a lake spans few drainage cells"
+            )]
+            lake_areas.push(members.len() as f64 * DRAINAGE_CELL_METRES * DRAINAGE_CELL_METRES);
             for &index in &members {
                 body[index] = id;
             }
@@ -169,6 +181,7 @@ impl WaterBodies {
         Self {
             body,
             levels,
+            lake_areas,
             margin: doc.shore_margin,
             slope: doc.shore_slope,
         }
@@ -177,6 +190,11 @@ impl WaterBodies {
     /// Number of lakes.
     pub(crate) fn lake_count(&self) -> usize {
         self.levels.len().saturating_sub(2)
+    }
+
+    /// Surface area of a lake's hollow, in square metres.
+    pub(crate) fn lake_area(&self, lake: u32) -> Option<f64> {
+        self.lake_areas.get(lake as usize).copied()
     }
 
     /// Each body's bilinear weight at a column, over the four drainage

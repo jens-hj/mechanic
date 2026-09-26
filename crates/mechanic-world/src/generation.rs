@@ -555,6 +555,12 @@ impl TerrainField {
         self.world.water.lake_count()
     }
 
+    /// Surface area of a lake, in square metres: what a volume drawn from it
+    /// spreads over.
+    pub fn lake_area(&self, lake: u32) -> Option<f64> {
+        self.world.water.lake_area(lake)
+    }
+
     /// The water over a column, where the column lies in the sea, a lake or a
     /// river. Whether a point below the level is water depends on the ground
     /// there: see [`Self::is_water`].
