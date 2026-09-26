@@ -134,6 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 geometry: &geometry,
                 topology_generation: 1,
                 origin: DVec3::ZERO,
+                water: None,
             }),
         )?;
         let solve_ms = solve_started.elapsed().as_secs_f64() * 1000.0;

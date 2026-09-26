@@ -426,6 +426,7 @@ fn run(
             geometry: &geometry,
             topology_generation: 1,
             origin: DVec3::ZERO,
+            water: None,
         };
         let started = Instant::now();
         machine.step(GRAVITY, &settings, &[], &commands(tick), Some(terrain))?;
@@ -610,6 +611,7 @@ fn impact(
             geometry: &geometry,
             topology_generation: 1,
             origin: DVec3::ZERO,
+            water: None,
         };
         let started = Instant::now();
         machine.step(GRAVITY, &settings, &[], &[], Some(terrain))?;

@@ -40,6 +40,9 @@ pub const STANDARD_GRAVITY_M_S2_F32: f32 = 9.81;
 /// World-space gravitational acceleration: standard gravity along negative Y.
 pub const GRAVITY: DVec3 = DVec3::new(0.0, -STANDARD_GRAVITY_M_S2, 0.0);
 
+/// Density of fresh water, in kg/m³.
+pub const WATER_DENSITY_KG_M3: f64 = 1_000.0;
+
 /// Density of authored machine parts (controllers, engines, transmissions,
 /// servos, seats, inputs, and dimension links), in kg/m³. Construction blocks
 /// take their density from their material instead.

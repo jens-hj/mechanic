@@ -77,6 +77,8 @@ pub(crate) struct CpuRoute {
     /// Terrain publications applied to `scene`, which must keep increasing.
     publication: u64,
     origin: DVec3,
+    /// Water the bodies float in, if the world has any.
+    water: Option<std::sync::Arc<mechanic_world::TerrainField>>,
     /// Whether terrain has been published at least once.
     published: bool,
     /// App tick at publication; earlier commands belong to a retired scene.
@@ -130,6 +132,7 @@ impl PreparedRoute {
             generation,
             publication: 0,
             origin: DVec3::ZERO,
+            water: None,
             published: false,
             base_tick,
             settings: SoftStepConfig::default(),
@@ -161,6 +164,7 @@ impl CpuRoute {
         self.chunks = std::mem::take(&mut previous.chunks);
         self.publication = previous.publication;
         self.origin = previous.origin;
+        self.water = previous.water.take();
         self.published = std::mem::take(&mut previous.published);
     }
 
@@ -186,6 +190,14 @@ impl CpuRoute {
             velocities,
             coordinates,
         )
+    }
+
+    /// Sets the water the bodies float in and are dragged by.
+    pub(crate) fn set_water(
+        &mut self,
+        water: Option<std::sync::Arc<mechanic_world::TerrainField>>,
+    ) {
+        self.water = water;
     }
 
     /// Brings the collision scene up to the terrain around the bodies. Called every
@@ -314,6 +326,10 @@ impl CpuRoute {
             geometry: &self.geometry,
             topology_generation: self.generation,
             origin: self.origin,
+            water: self
+                .water
+                .as_deref()
+                .map(|field| field as &dyn mechanic_physics::WaterSource),
         };
         let outcome =
             self.machine

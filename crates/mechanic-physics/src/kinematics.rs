@@ -218,6 +218,17 @@ impl<'a> MachineKinematics<'a> {
         Ok(result)
     }
 
+    /// World position of a body's centre of mass.
+    pub(crate) fn centre(&self, body: usize) -> DVec3 {
+        self.centers[body]
+    }
+
+    /// Generalized force of one world wrench per body, each a force and a
+    /// torque about the body's centre of mass.
+    pub(crate) fn project_wrenches(&self, wrenches: Vec<SpatialMotion>) -> Vec<f64> {
+        self.project(wrenches)
+    }
+
     fn project(&self, wrenches: Vec<SpatialMotion>) -> Vec<f64> {
         let mut result = vec![0.0; self.size];
         for (body, wrench) in wrenches.into_iter().enumerate() {

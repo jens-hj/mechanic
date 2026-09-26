@@ -218,6 +218,12 @@ pub(crate) struct WorldRuntime {
 }
 
 impl WorldRuntime {
+    /// The field whose sea, lakes and rivers bodies float in, unless water is
+    /// switched off.
+    pub(crate) fn water_field(&self) -> Option<Arc<TerrainField>> {
+        (crate::env::text(crate::env::WATER).as_deref() != Some("off")).then(|| self.field.clone())
+    }
+
     pub(crate) fn material_motion(&mut self) {
         self.autosave.mutate(self.clock);
     }

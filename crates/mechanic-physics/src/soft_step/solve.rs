@@ -8,6 +8,7 @@ use mechanic_core::{
 };
 
 use super::{SoftStepConfig, SoftStepDiagnostics, SoftStepTerrain};
+use crate::buoyancy::{BuoyancyProbes, WaterAround};
 use crate::{
     BodyPose, DynamicsFactor, MachineCollisionGeometry, MachineKinematics, MachineMotion,
     MachineState, PhysicsError, TerrainContact, TerrainContactFeature, TerrainSweepHit,
@@ -29,6 +30,8 @@ pub(super) struct Machine<'a> {
     /// How far each mesh's first side has run ahead of its second, in metres
     /// of pitch-surface travel, in `gear_links` order.
     pub mesh_slip: &'a [f64],
+    /// The machine's probes and the water around them, when it is in water.
+    pub water: Option<(&'a BuoyancyProbes, &'a WaterAround)>,
 }
 
 /// Generalized inertia added to a held body's rows, so rows touching it see an
@@ -1070,6 +1073,9 @@ pub(super) fn substep(
                 *value += push * rate;
             }
         }
+    }
+    if let Some((probes, water)) = machine.water {
+        probes.add_forces(water, &model, &state.velocities, gravity, dt, &mut force)?;
     }
     for value in &mut force {
         *value *= dt;

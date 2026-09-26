@@ -23,8 +23,9 @@ the 5 cm view is derived by filling a water cell's fine cells from the bottom.
   that sleeps, like spoil clumps.
 - **Seed-derived water is implicit.** The sea, lakes and rivers below.
 
-Status: the implicit water, its preview and its rendering are done. Buoyancy,
-stored water, pools, flow, pumps and pore water are open.
+Status: the implicit water, its preview, its rendering, and buoyancy and drag
+on the CPU route are done. Stored water, pools, flow, pumps and pore water are
+open.
 
 ## Implicit water
 
@@ -85,6 +86,31 @@ PBR path, so the sky reflects in it. Water neither casts nor receives shadows.
 
 `MECHANIC_WATER=off` hides it. Looking over a lake at 4112 × 2524 on an M1 Pro,
 the frame rose from 41 ms without water to 45–47 ms with it.
+
+## Floating
+
+The CPU route floats bodies (`mechanic-physics/src/buoyancy.rs`). Each
+dynamic collider is cut once into probes of at most 12.5 cm, each a volume at
+a point in its body; a cylinder is probed from its exact hull, not its sixteen
+overlapping tangent boxes. Each tick looks the water up once per collider,
+through `WaterSource` (the terrain field answers it). Every substep then adds,
+beside gravity:
+
+- **Buoyancy:** the weight of the water a probe displaces, applied at the
+  probe. A probe goes under gradually over its own height, so a body crossing
+  the surface feels a smooth force.
+- **Drag:** pressure drag on the collider's frontal area (the face of a cube
+  of its volume, shared among its probes) plus light viscous damping, against
+  the body's motion relative to the current. It can slow a probe to the
+  current within a substep but never reverse it.
+
+A 1 m wooden cube settles 0.7 m deep, a 1 m steel cube sinks at about
+11 m/s, and a floating block rides a 1 m/s current. Bodies do not displace
+the water: a lake's level ignores what floats in it. A hull counts only the
+solid material it is built from, so a closed steel boat sinks. The GPU
+route has no buoyancy.
+
+Spawns keep a metre above any water within ten metres.
 
 ## Known limits
 

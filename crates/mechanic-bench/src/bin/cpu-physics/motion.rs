@@ -99,6 +99,7 @@ pub(super) fn run(options: &scale::Options) -> Result<(), Box<dyn Error>> {
                         geometry: &geometry,
                         topology_generation: 1,
                         origin: DVec3::ZERO,
+                        water: None,
                     };
                     let started = Instant::now();
                     machine.step(DVec3::ZERO, &settings, &[], &[], Some(terrain))?;
@@ -205,6 +206,7 @@ fn vehicle(options: &scale::Options) -> Result<(), Box<dyn Error>> {
                 geometry: &geometry,
                 topology_generation: 1,
                 origin: DVec3::ZERO,
+                water: None,
             };
             let start = Instant::now();
             machine.step(

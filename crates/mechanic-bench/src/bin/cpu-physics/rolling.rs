@@ -82,6 +82,7 @@ fn roll(floor: &str, height: &dyn Fn(f64) -> f64, speed: f64) -> Result<(), Box<
             geometry: &geometry,
             topology_generation: 1,
             origin: DVec3::ZERO,
+            water: None,
         };
         let started = Instant::now();
         machine.step(GRAVITY, &settings, &[], &[], Some(terrain))?;

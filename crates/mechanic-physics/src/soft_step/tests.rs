@@ -2,6 +2,7 @@
 
 mod fits;
 mod gears;
+mod water;
 
 use super::*;
 use crate::{
@@ -291,6 +292,7 @@ struct World {
     geometry: MachineCollisionGeometry,
     machine: CpuMachine,
     settings: SoftStepConfig,
+    water: Option<Box<dyn WaterSource>>,
 }
 
 impl World {
@@ -318,6 +320,7 @@ impl World {
             geometry: MachineCollisionGeometry::new(&creation, GENERATION).unwrap(),
             machine: CpuMachine::new(creation, GENERATION, state).unwrap(),
             settings: SoftStepConfig::default(),
+            water: None,
         }
     }
 
@@ -335,6 +338,7 @@ impl World {
             geometry: &self.geometry,
             topology_generation: GENERATION,
             origin: DVec3::ZERO,
+            water: self.water.as_deref(),
         };
         let tick = self.next_tick();
         self.machine
@@ -1663,6 +1667,7 @@ fn a_runaway_body_does_not_hide_what_the_others_press_on_the_ground() {
             geometry: &world.geometry,
             topology_generation: GENERATION,
             origin: DVec3::ZERO,
+            water: None,
         };
         world
             .machine

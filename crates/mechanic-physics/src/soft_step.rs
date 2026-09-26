@@ -21,7 +21,8 @@ use mechanic_core::{CompiledCreation, CoordinateDrive, TICK_SECONDS};
 use crate::{
     BodyPose, CpuSnapshot, DriveCommand, DynamicsFactorization, ExternalImpulse,
     MachineCollisionGeometry, MachineKinematics, MachineMotion, MachineState, PhysicsError,
-    TerrainContactFeature, TerrainContactScene,
+    TerrainContactFeature, TerrainContactScene, WaterSource,
+    buoyancy::BuoyancyProbes,
     free_motion::apply_external_impulses,
     joint_forces::{PassiveForce, validate_drive},
     joint_machine::bounds,
@@ -158,6 +159,8 @@ pub struct SoftStepTerrain<'a> {
     pub topology_generation: u64,
     /// Floating-origin offset applied to published terrain, in metres.
     pub origin: DVec3,
+    /// Water the machine can float in and be dragged by, if any.
+    pub water: Option<&'a dyn WaterSource>,
 }
 
 /// Work and quality of the most recent tick.
@@ -349,6 +352,8 @@ pub struct CpuMachine {
     held: Vec<bool>,
     /// Generalized velocity rows owned by held bodies.
     held_rows: Vec<bool>,
+    /// Colliders cut into volumes that water lifts.
+    buoyancy: BuoyancyProbes,
 }
 
 impl CpuMachine {
@@ -390,6 +395,7 @@ impl CpuMachine {
             .map(|pattern| PassiveForce::from_kind(creation.bearings[pattern.bearing].kind))
             .collect::<Vec<_>>();
         Ok(Self {
+            buoyancy: BuoyancyProbes::new(&creation),
             supported: vec![false; creation.compounds.len()],
             held: vec![false; creation.compounds.len()],
             held_rows: vec![false; state.velocities.len()],
@@ -632,6 +638,12 @@ impl CpuMachine {
         );
         diagnostics.contacts = contacts.len();
 
+        let water = terrain.and_then(|terrain| {
+            terrain.water.map(|water| {
+                self.buoyancy
+                    .water_around(&state.poses, water, terrain.origin)
+            })
+        });
         let machine = Machine {
             creation: &self.creation,
             passive: &self.passive,
@@ -639,6 +651,10 @@ impl CpuMachine {
             closure_passive: &self.closure_passive,
             held: &self.held_rows,
             mesh_slip: &self.mesh_slip,
+            water: water
+                .as_ref()
+                .filter(|water| water.any())
+                .map(|water| (&self.buoyancy, water)),
         };
         let mut joints = JointImpulses::new(
             self.drives.len(),

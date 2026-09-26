@@ -276,6 +276,7 @@ pub(super) fn run(
             geometry: &geometry,
             topology_generation: 1,
             origin,
+            water: None,
         };
         let started = Instant::now();
         machine.step(GRAVITY, &settings, &reactions, &commands, Some(step))?;

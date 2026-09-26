@@ -8,6 +8,7 @@
 //! reduced-coordinate machine model, joint force laws and collision geometry.
 //! The soft-step solver runs closed mechanism loops; the exact reference does not.
 
+mod buoyancy;
 mod error;
 mod free_motion;
 mod gear_mesh;
@@ -21,6 +22,7 @@ mod soft_step;
 mod spoil;
 mod terrain_contacts;
 
+pub use buoyancy::WaterSource;
 pub use error::PhysicsError;
 pub use free_motion::{CpuFreeMotion, CpuSnapshot, ExternalImpulse, MachineState};
 pub use joint_machine::{

@@ -111,6 +111,7 @@ pub(super) fn scene_ticks(
         geometry: &geometry,
         topology_generation: 1,
         origin: DVec3::ZERO,
+        water: None,
     };
     let mut settled = CpuMachine::new(creation.clone(), 1, initial)?;
     for _ in 0..options.warmup {

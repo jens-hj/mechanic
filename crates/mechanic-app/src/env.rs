@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub(crate) const PHYSICS: &str = "MECHANIC_PHYSICS";
 /// `off` disables soil accumulation on the CPU route.
 pub(crate) const SOIL: &str = "MECHANIC_SOIL";
-/// `off` hides the sea, lakes and rivers.
+/// `off` removes the sea, lakes and rivers from rendering and physics.
 pub(crate) const WATER: &str = "MECHANIC_WATER";
 /// Directory holding saved creations instead of the platform data directory.
 pub(crate) const CREATIONS_DIR: &str = "MECHANIC_CREATIONS_DIR";

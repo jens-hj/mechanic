@@ -165,6 +165,7 @@ pub(super) fn run(options: &Options) -> Result<(), Box<dyn Error>> {
                 geometry: &geometry,
                 topology_generation: 1,
                 origin,
+                water: None,
             }),
         )?;
         let conversion_started = Instant::now();
