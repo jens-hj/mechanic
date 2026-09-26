@@ -631,11 +631,21 @@ impl TerrainField {
 
     fn spawnable_height(&self, x: f64, z: f64) -> Option<f64> {
         let height = self.topmost_surface(x, z)?;
-        if height < self.world.sea_level + 0.5
-            || self
-                .water_surface(x, z)
-                .is_some_and(|water| water.level > height - 0.5)
-        {
+        // Stand clear of the water's edge: at least a metre above any water
+        // within ten metres.
+        let wet = [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (-10.0, 0.0),
+            (0.0, 10.0),
+            (0.0, -10.0),
+        ]
+        .into_iter()
+        .any(|(dx, dz)| {
+            self.water_surface(x + dx, z + dz)
+                .is_some_and(|water| water.level > height - 1.0)
+        });
+        if height < self.world.sea_level + 0.5 || wet {
             return None;
         }
         for (dx, dz) in [(3.0, 0.0), (-3.0, 0.0), (0.0, 3.0), (0.0, -3.0)] {

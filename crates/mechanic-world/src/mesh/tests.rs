@@ -234,6 +234,10 @@ fn promoted_meshing_keeps_the_analytic_surface_height_and_outward_winding() {
         let second = Vec3::from_array(chunk.vertices[triangle[1] as usize]);
         let third = Vec3::from_array(chunk.vertices[triangle[2] as usize]);
         let geometric = (second - first).cross(third - first);
+        if geometric == Vec3::ZERO {
+            // Two corners on one lattice point: no area, so no winding.
+            continue;
+        }
         let smooth = Vec3::from_array(chunk.normals[triangle[0] as usize])
             + Vec3::from_array(chunk.normals[triangle[1] as usize])
             + Vec3::from_array(chunk.normals[triangle[2] as usize]);
