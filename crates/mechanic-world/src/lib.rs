@@ -78,7 +78,7 @@ pub use streaming::{
     terrain_loading_worker_count, terrain_worker_count,
 };
 pub use water::{
-    JoinedCellDoc, PoolDoc, PoolView, StoredWaterDoc, SurplusDoc, TerrainWater,
-    WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell, WaterFall, WaterGround, WaterLedger,
-    WaterNetwork, WaterShift, WaterStep, WaterSurfaces, WaterWorld,
+    JetDoc, JoinedCellDoc, Parcel, PoolDoc, PoolView, SheetDoc, StoredWaterDoc, SurplusDoc,
+    TerrainWater, WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell, WaterFall, WaterGround,
+    WaterLedger, WaterNetwork, WaterShift, WaterStep, WaterSurfaces, WaterWorld,
 };

@@ -23,8 +23,8 @@ it.
   bottom opens onto free space or lower water. Across a contact the higher
   water runs to the lower at a weir rate, `1.7 × 0.2 m × head^1.5` a second,
   where the head is measured over the lip the water must cross. Pools whose
-  levels come within 5 mm merge. Water pouring over a drop falls to where it
-  lands and joins the pool there or starts one.
+  levels come within 5 mm merge. Water pouring over a drop is launched into
+  the air (see [Waterfalls](#waterfalls)).
 - **Pools spill over their rims.** A pool records the highest floor its
   water crossed from its seed. Ground beyond it that lies lower is past the
   rim: the pool does not take it in but spills onto it as running water.
@@ -42,7 +42,7 @@ it.
   least a 32 m drainage cell, so a hole of a few cubic metres lowers it by
   millimetres.
 - **Only what changed is kept.** A save holds each pool's seed cell and
-  volume, each sheet cell's volume, each lake's and river reach's surplus, the sea's and the air's,
+  volume, each sheet cell's volume, the parcels in flight, each lake's and river reach's surplus, the sea's and the air's,
   and the cells that joined seed-derived water with what they hold. Loading
   floods every pool out from its seed again.
 
@@ -57,7 +57,8 @@ holds, so volume is exact. The flows give each sheet cell a current, which
 buoyancy and drag see. Pipes step four times per water step.
 
 - **Slopes and lips.** A sheet climbs a step of one water cell and runs
-  down one. A bigger drop is a lip: the water pours over it and lands below.
+  down one. A bigger drop is a lip: the water pours over it at the speed it
+  ran at.
 - **Where it ends.** Running water reaching a pool or seed-derived water
   joins it. A cell whose water is at least a centimetre deep, has no lower
   neighbour and has barely drained for ten steps becomes a pool, which then
@@ -65,6 +66,19 @@ buoyancy and drag see. Pipes step four times per water step.
   starts a pool at once.
 - **Films.** Water shallower than 2 mm clings to the ground and does not
   run; it evaporates.
+
+## Waterfalls
+
+Water pouring over a lip, from a pool or a sheet, is launched in one parcel
+a step with its speed over the lip: the weir speed `√(g × head)` from a
+pool, the sheet's current from a sheet (`water/jet.rs`). Each parcel falls
+along its arc, swept through the water cells 10 cm at a time, until it meets
+a pool, seed-derived water, running water or the ground, where it lands. The
+water in flight is in the ledger, so a tall fall holds water and a stream
+keeps falling for its flight time after its source stops. `WaterStep::falls`
+gives each stream's launch point and parcels, which the app draws as a
+ribbon whose width follows the rate. Water less than 2 mm over a lip clings
+to it.
 
 ## The cycle
 

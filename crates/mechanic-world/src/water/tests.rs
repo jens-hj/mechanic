@@ -525,4 +525,59 @@ fn a_pool_spills_over_its_rim_and_runs_down_the_slope_beyond() {
     assert!((water.ledger().total() - 0.2).abs() < 1.0e-9);
 }
 
+/// A basin 20 cm deep behind a rim on a cliff top, over a pit 5 m below.
+fn cliff() -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, -0.2, 0.0], [0.8, 3.0, 0.4]),
+            room([0.8, 0.0, 0.0], [1.0, 3.0, 0.4]),
+            room([1.0, -5.0, 0.0], [3.0, 3.0, 0.4]),
+        ],
+        lake: None,
+        river: None,
+    }
+}
+
+#[test]
+fn a_pool_spilling_over_a_cliff_holds_water_in_the_air_on_the_way_down() {
+    let ground = cliff();
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.4, 1.0, 0.2), 0.2);
+    let mut most_in_air = 0.0_f64;
+    let mut arc = None;
+    for _ in 0..20 {
+        let step = water.step(&ground, 0.05);
+        most_in_air = most_in_air.max(water.ledger().falling_m3);
+        if let Some(fall) = step.falls.into_iter().find(|fall| fall.points.len() > 4) {
+            arc = Some(fall);
+        }
+    }
+    assert!(
+        most_in_air > 0.005,
+        "only {most_in_air:.4} m³ was ever in the air"
+    );
+    let arc = arc.expect("no stream poured over the cliff");
+    let (top, bottom) = (arc.points[0], arc.points[arc.points.len() - 1]);
+    assert!(
+        bottom.y < top.y - 0.5,
+        "the stream runs from {top} to {bottom}"
+    );
+    assert!(
+        bottom.x > top.x,
+        "the stream falls straight down, from {top} to {bottom}"
+    );
+    run(&mut water, &ground, 60);
+    // The basin still trickles over its rim, but the stream is spent.
+    assert!(water.ledger().falling_m3 < 1.0e-4, "the stream still runs");
+    let pit = water
+        .pools()
+        .find(|pool| pool.level < -4.0)
+        .map_or(0.0, |pool| pool.volume_m3);
+    assert!(pit > 0.1, "the pit got {pit:.3} m³");
+    assert!(
+        (water.ledger().total() - 0.2).abs() < 1.0e-9,
+        "water was made or lost"
+    );
+}
+
 mod terrain;

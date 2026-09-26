@@ -439,25 +439,34 @@ fn columns_mesh(columns: &[SurfaceColumn], origin: DVec3) -> Mesh {
     surface_mesh(positions, attributes, indices)
 }
 
-/// Two crossed ribbons down each falling stream, placed against `origin`.
+/// Two crossed ribbons along each stream's arc, placed against `origin`,
+/// wider as more water pours.
 fn falls_mesh(falls: &[WaterFall], origin: DVec3) -> Mesh {
-    let half = 0.5 * WATER_CELL_METRES;
     let mut positions = Vec::new();
     let mut attributes = Vec::new();
     let mut indices = Vec::new();
     for fall in falls {
-        for across in [DVec3::X * half, DVec3::Z * half] {
-            let base = u32::try_from(positions.len()).expect("a falls mesh fits u32 indices");
-            for point in [
-                fall.from - across,
-                fall.from + across,
-                fall.to - across,
-                fall.to + across,
-            ] {
-                positions.push((point - origin).as_vec3().to_array());
-                attributes.push([0.6, 0.0, 0.0]);
+        // A stream of a litre a second is a finger wide; ten litres a hand.
+        let half = (fall.rate_m3_s * 400.0)
+            .sqrt()
+            .mul_add(0.02, 0.02)
+            .min(WATER_CELL_METRES);
+        for pair in fall.points.windows(2) {
+            let along = (pair[1] - pair[0]).normalize_or_zero();
+            let side = along.cross(DVec3::Y).normalize_or(DVec3::X);
+            for across in [side * half, along.cross(side).normalize_or_zero() * half] {
+                let base = u32::try_from(positions.len()).expect("a falls mesh fits u32 indices");
+                for point in [
+                    pair[0] - across,
+                    pair[0] + across,
+                    pair[1] - across,
+                    pair[1] + across,
+                ] {
+                    positions.push((point - origin).as_vec3().to_array());
+                    attributes.push([0.6, 0.0, 0.0]);
+                }
+                indices.extend([base, base + 2, base + 1, base + 1, base + 2, base + 3]);
             }
-            indices.extend([base, base + 2, base + 1, base + 1, base + 2, base + 3]);
         }
     }
     surface_mesh(positions, attributes, indices)
@@ -574,8 +583,12 @@ pub(crate) fn draw_stored_water(
     let falls = runtime
         .water_falls
         .iter()
-        .filter(|fall| !field.is_water(fall.from + DVec3::Y * 0.05))
-        .copied()
+        .filter(|fall| {
+            fall.points
+                .first()
+                .is_some_and(|&top| !field.is_water(top + DVec3::Y * 0.05))
+        })
+        .cloned()
         .collect::<Vec<_>>();
     if !falls.is_empty() {
         tiles.falls = Some(spawn(

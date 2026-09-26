@@ -10,12 +10,15 @@
 //! bigger drop is a lip it pours over. Water reaching a pool or seed-derived
 //! water joins it. Water that stops in a hollow deep enough becomes a pool.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use bevy_math::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 
-use super::{End, FILM_METRES, WATER_CELL_METRES, WaterCell, WaterFall, WaterGround, WaterWorld};
+use super::jet::Launch;
+use super::{
+    CLING_METRES, End, FILM_METRES, GRAVITY, WATER_CELL_METRES, WaterCell, WaterGround, WaterWorld,
+};
 use super::{floor_of, held_in};
 use crate::WaterSurface;
 
@@ -26,18 +29,11 @@ const CELL_AREA_M2: f64 = WATER_CELL_METRES * WATER_CELL_METRES;
 /// water 20 cm deep, so waves cross a cell in a tenth of a second.
 const PIPE_METRES: f64 = WATER_CELL_METRES;
 
-/// Gravity, in m/s².
-const GRAVITY: f64 = 9.81;
-
 /// How fast friction takes a pipe's flow, per second.
 const FRICTION_PER_SECOND: f64 = 2.0;
 
 /// Substeps per water step: pipes need shorter steps than pools.
 const SUBSTEPS: u32 = 4;
-
-/// Water shallower than this clings to the ground and does not run, in
-/// metres.
-const CLING_METRES: f64 = 0.002;
 
 /// Least water a sheet cell keeps; less evaporates at once, in m³.
 const DRY_SHEET_M3: f64 = 1.0e-7;
@@ -207,16 +203,15 @@ impl WaterWorld {
             .map(|surface| Target::Water(End::Body(surface.body), surface.level))
     }
 
-    /// Runs the sheets for `dt` seconds. Returns the water moved, the pools
-    /// that received water, and the streams pouring over lips.
+    /// Runs the sheets for `dt` seconds. Returns the water moved and the
+    /// pools that received water.
     pub(super) fn step_sheets(
         &mut self,
         ground: &impl WaterGround,
         dt: f64,
-    ) -> (f64, BTreeSet<u32>, Vec<WaterFall>) {
+    ) -> (f64, BTreeSet<u32>) {
         let mut moved = 0.0;
         let mut fed = BTreeSet::new();
-        let mut lips = BTreeMap::<WaterCell, (WaterCell, f64)>::new();
         let sub = dt / f64::from(SUBSTEPS);
         for _ in 0..SUBSTEPS {
             let cells = self.sheets.keys().copied().collect::<Vec<_>>();
@@ -259,7 +254,9 @@ impl WaterWorld {
             }
             // Then the water moves.
             for (cell, targets) in sends {
-                let flux = self.sheets[&cell].flux;
+                let sheet = self.sheets[&cell];
+                let flux = sheet.flux;
+                let depth = (sheet.volume / CELL_AREA_M2).max(CLING_METRES);
                 for (face, target) in targets.into_iter().enumerate() {
                     let volume = flux[face] * sub;
                     if volume <= 0.0 {
@@ -278,30 +275,27 @@ impl WaterWorld {
                             self.deposit_end(ground, end, volume);
                         }
                         Target::Lip(over) => {
-                            let to = self.landing(ground, over.below());
-                            if let End::Pool(id) = to {
-                                fed.insert(id);
-                            }
-                            self.deposit_end(ground, to, volume);
-                            lips.entry(over).or_insert((cell, 0.0)).1 += volume;
+                            // It leaves the lip at the speed it ran at.
+                            let (dx, dz) = DIRECTIONS[face];
+                            let away = DVec3::new(f64::from(dx), 0.0, f64::from(dz));
+                            let speed = flux[face] / (WATER_CELL_METRES * depth);
+                            let centre = over.centre();
+                            self.pour(
+                                Launch {
+                                    lip: over,
+                                    from: DVec3::new(centre.x, sheet.floor + depth, centre.z)
+                                        - away * 0.4 * WATER_CELL_METRES,
+                                    velocity: away * speed,
+                                },
+                                volume,
+                            );
                         }
                         Target::Wall => {}
                     }
                 }
             }
         }
-        let falls = lips
-            .into_iter()
-            .map(|(over, (from, volume))| {
-                let centre = over.centre();
-                WaterFall {
-                    from: DVec3::new(centre.x, from.bottom() + WATER_CELL_METRES, centre.z),
-                    to: DVec3::new(centre.x, over.bottom() - WATER_CELL_METRES, centre.z),
-                    rate_m3_s: volume / dt,
-                }
-            })
-            .collect();
-        (moved, fed, falls)
+        (moved, fed)
     }
 
     /// Sheet cells that have lain still in a hollow, deep enough to stand,
