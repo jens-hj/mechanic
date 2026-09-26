@@ -83,9 +83,6 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
         "the trench stands at {:.3} m under a lake at {level:.3} m",
         surface.level
     );
-    assert!(
-        water.stored_m3() > 0.5,
-        "only {:.2} m³ ran in",
-        water.stored_m3()
-    );
+    let held = water.stored_m3() + water.joined_m3(&ground);
+    assert!(held > 0.5, "only {held:.2} m³ ran in");
 }

@@ -310,7 +310,7 @@ impl WaterSurfaces {
 }
 
 /// Where water moving in a step goes to or comes from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum End {
     Pool(u32),
     /// Seed-derived water: a lake gains or loses, the sea and rivers are
@@ -318,6 +318,17 @@ enum End {
     Body(WaterBody),
     /// A cell with no pool yet, which one starts in.
     Seed(WaterCell),
+}
+
+/// A stable key for one end of a transfer, for grouping.
+const fn end_key(end: End) -> u32 {
+    match end {
+        End::Pool(id) | End::Body(WaterBody::Pool(id)) => id,
+        End::Body(WaterBody::Sea) => u32::MAX,
+        End::Body(WaterBody::River) => u32::MAX - 1,
+        End::Body(WaterBody::Lake(lake)) => u32::MAX / 2 + lake,
+        End::Seed(_) => u32::MAX - 2,
+    }
 }
 
 /// What one step's contacts do.
@@ -697,11 +708,14 @@ impl WaterWorld {
         for &id in &fed {
             self.flood(ground, id, SPREAD_CELLS_PER_STEP);
         }
-        for (keep, other) in out.merges {
-            self.merge(keep, other);
-        }
+        // Pools join seed-derived water before they merge with each other,
+        // so two pools under a lake join it rather than pool what the lake
+        // presses up into them.
         for (id, contact) in out.joins {
             self.join(ground, id, contact);
+        }
+        for (keep, other) in out.merges {
+            self.merge(keep, other);
         }
         self.dry_up(ground, &fed);
         for pool in self.pools.values_mut() {
@@ -724,8 +738,28 @@ impl WaterWorld {
             pool.level,
             pool.surface_area().max(WATER_CELL_METRES.powi(2)),
         );
+        // A pool that fills its cells under seed-derived water standing over
+        // them is that water already.
+        let (top, full) = (pool.top(), pool.full());
         let contacts = pool.contacts.iter().copied().collect::<Vec<_>>();
         let weir = |head: f64| WEIR_COEFFICIENT * WATER_CELL_METRES * head.max(0.0).powf(1.5) * dt;
+        // Water between two bodies over all the cells they touch at: summed
+        // over the cells, but never more than brings their levels halfway
+        // together.
+        let mut levelling = BTreeMap::<(u32, u32), (Transfer, f64)>::new();
+        let mut level_between = |from: End, to: End, volume: f64, even: f64| {
+            let key = (end_key(from), end_key(to));
+            let entry = levelling.entry(key).or_insert((
+                Transfer {
+                    from,
+                    to,
+                    volume: 0.0,
+                },
+                even,
+            ));
+            entry.0.volume += volume;
+            entry.1 = entry.1.min(even);
+        };
         for cell in contacts {
             let openings = self.openings(ground, cell);
             let Some(floor) = floor_of(cell, openings) else {
@@ -749,15 +783,11 @@ impl WaterWorld {
                 } else if level > other_level {
                     let head = level - other_level.max(floor);
                     let even = 0.5 * (level - other_level) * area.min(other_area);
-                    out.transfers.push(Transfer {
-                        from: End::Pool(id),
-                        to: End::Pool(other),
-                        volume: weir(head).min(even),
-                    });
+                    level_between(End::Pool(id), End::Pool(other), weir(head), even);
                 }
             } else if let Some(surface) = self.implicit(ground, cell)
-                && (level - surface.level).abs() < MERGE_METRES
                 && level > floor
+                && (level > surface.level - MERGE_METRES || (full && surface.level > top))
             {
                 out.joins.push((id, cell));
             } else if let Some(surface) = self.implicit(ground, cell) {
@@ -775,42 +805,57 @@ impl WaterWorld {
                         level - surface.level.max(floor),
                     )
                 };
-                out.transfers.push(Transfer {
-                    from,
-                    to,
-                    volume: weir(head).min(even),
-                });
+                level_between(from, to, weir(head), even);
             } else if self.falls(ground, cell, Some(id)) {
-                let head = level - floor;
-                if head > 0.0 {
-                    let to = self.landing(ground, cell.below());
-                    let volume = weir(head).min(head * area);
-                    let landing = match to {
-                        End::Pool(other) => self.pools[&other].level.min(cell.bottom()),
-                        End::Seed(seed) => seed.bottom(),
-                        End::Body(_) => cell.bottom() - WATER_CELL_METRES,
-                    };
-                    let from = cell.centre();
-                    // A stream leaves over the lip, never from higher than
-                    // the cell above it.
-                    let top = level.min(cell.bottom() + 2.0 * WATER_CELL_METRES);
-                    out.falls.push(WaterFall {
-                        from: DVec3::new(from.x, top, from.z),
-                        to: DVec3::new(from.x, landing, from.z),
-                        rate_m3_s: volume / dt,
-                    });
-                    out.transfers.push(Transfer {
-                        from: End::Pool(id),
-                        to,
-                        volume,
-                    });
-                }
+                self.fall(ground, id, cell, [level, floor, area], dt, out);
             } else {
                 self.drop_contact(id, cell);
                 if let Some(pool) = self.pools.get_mut(&id) {
                     pool.queue(cell, floor);
                 }
             }
+        }
+        for (mut transfer, even) in levelling.into_values() {
+            transfer.volume = transfer.volume.min(even);
+            out.transfers.push(transfer);
+        }
+    }
+
+    /// Water spilling from a pool over a drop at `cell`, with the pool's
+    /// level, the lip's floor and the pool's surface area.
+    fn fall(
+        &mut self,
+        ground: &impl WaterGround,
+        id: u32,
+        cell: WaterCell,
+        [level, floor, area]: [f64; 3],
+        dt: f64,
+        out: &mut Exchanges,
+    ) {
+        let weir = |head: f64| WEIR_COEFFICIENT * WATER_CELL_METRES * head.max(0.0).powf(1.5) * dt;
+        let head = level - floor;
+        if head > 0.0 {
+            let to = self.landing(ground, cell.below());
+            let volume = weir(head).min(head * area);
+            let landing = match to {
+                End::Pool(other) => self.pools[&other].level.min(cell.bottom()),
+                End::Seed(seed) => seed.bottom(),
+                End::Body(_) => cell.bottom() - WATER_CELL_METRES,
+            };
+            let from = cell.centre();
+            // A stream leaves over the lip, never from higher than
+            // the cell above it.
+            let top = level.min(cell.bottom() + 2.0 * WATER_CELL_METRES);
+            out.falls.push(WaterFall {
+                from: DVec3::new(from.x, top, from.z),
+                to: DVec3::new(from.x, landing, from.z),
+                rate_m3_s: volume / dt,
+            });
+            out.transfers.push(Transfer {
+                from: End::Pool(id),
+                to,
+                volume,
+            });
         }
     }
 
@@ -1102,6 +1147,11 @@ impl WaterWorld {
     /// wherever it falls.
     fn pour_inlets(&mut self, ground: &impl WaterGround, dt: f64, transfers: &mut Vec<Transfer>) {
         let inlets = self.inlets.iter().copied().collect::<Vec<_>>();
+        // Room left this step in each pool and each cell a pool starts in:
+        // inlets fill a pool at most halfway to their water's level, the
+        // other half being its own contacts' share, and a new pool no more
+        // than its first cell holds.
+        let mut room = HashMap::<End, f64>::new();
         for cell in inlets {
             if self.owner.contains_key(&cell) {
                 // Its pool exchanges with the water beside it directly.
@@ -1131,10 +1181,31 @@ impl WaterWorld {
                 continue;
             }
             let to = self.landing(ground, cell);
+            let left = match to {
+                End::Body(_) => continue,
+                End::Pool(id) => room.entry(to).or_insert_with(|| {
+                    self.pools.get(&id).map_or(0.0, |pool| {
+                        let area = pool.surface_area().max(WATER_CELL_METRES.powi(2));
+                        0.5 * (surface.level - pool.level).max(0.0) * area
+                    })
+                }),
+                End::Seed(seed) => {
+                    let openings = self.openings(ground, seed);
+                    room.entry(to).or_insert_with(|| {
+                        f64::from(openings.iter().map(|&open| u32::from(open)).sum::<u32>())
+                            * FINE_VOLUME_M3
+                    })
+                }
+            };
+            let volume = (WEIR_COEFFICIENT * WATER_CELL_METRES * head.powf(1.5) * dt).min(*left);
+            if volume <= 0.0 {
+                continue;
+            }
+            *left -= volume;
             transfers.push(Transfer {
                 from: End::Body(surface.body),
                 to,
-                volume: WEIR_COEFFICIENT * WATER_CELL_METRES * head.powf(1.5) * dt,
+                volume,
             });
         }
     }

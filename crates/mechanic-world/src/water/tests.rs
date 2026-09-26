@@ -276,6 +276,24 @@ fn a_hole_dug_under_a_lake_fills_and_becomes_lake() {
     assert!((hole.level - (0.8 - water.drawdown_m3(0) / 10_000.0)).abs() < 1.0e-9);
 }
 
+#[test]
+fn water_poured_in_from_a_lake_never_stands_above_the_lake() {
+    let ground = lake_with_hole();
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    for step in 0..600 {
+        water.step(&ground, 0.05);
+        for pool in water.pools() {
+            assert!(
+                pool.level < 0.8 + 0.01,
+                "step {step}: pool {} stands at {:.3} m over a lake at 0.8 m",
+                pool.id,
+                pool.level
+            );
+        }
+    }
+}
+
 /// A closed 1 m box open at the top, and the same with a block in one half
 /// of its floor.
 fn pit(filled: bool) -> Ground {

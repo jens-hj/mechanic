@@ -26,8 +26,9 @@ endless sources and sinks.
   lands and joins the pool there or starts one.
 - **Seed-derived water pours in.** A free cell beside the sea, a lake or a
   river is an inlet: the water pours in and lands wherever it falls. A pool
-  touching seed-derived water trades with it both ways, and once it stands
-  at that water's level it joins it: its cells become part of the lake, sea
+  touching seed-derived water trades with it both ways, never past the point
+  where their levels meet, and once it stands at that water's level, or fills
+  its own cells under it, it joins it: its cells become part of the lake, sea
   or river, and whatever it counted above its own cells returns to it. A hole
   dug under a lake or a trench cut from it therefore ends up lake. Water taken
   from a lake is its drawdown, which lowers the whole lake by the drawdown

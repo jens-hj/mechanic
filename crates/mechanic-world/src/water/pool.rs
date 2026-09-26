@@ -130,6 +130,21 @@ impl Pool {
         });
     }
 
+    /// Height of the top of its highest member layer.
+    pub(super) fn top(&self) -> f64 {
+        self.layers
+            .keys()
+            .next_back()
+            .map_or(f64::NEG_INFINITY, |&layer| {
+                f64::from(layer + 1) * FINE_LAYER_METRES
+            })
+    }
+
+    /// Whether its members hold all they can.
+    pub(super) fn full(&self) -> bool {
+        self.volume >= self.held_below(self.top()) - 1.0e-12
+    }
+
     /// Water its members hold below a height, in m³.
     pub(super) fn held_below(&self, height: f64) -> f64 {
         self.layers

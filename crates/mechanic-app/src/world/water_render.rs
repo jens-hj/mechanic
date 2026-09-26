@@ -357,7 +357,8 @@ fn open_columns(pool: &PoolView, field: &TerrainField) -> Vec<SurfaceColumn> {
         })
         .map(|(&cell, &depth)| SurfaceColumn {
             cell,
-            level: pool.level,
+            // A sealed pool pressed higher than its cells shows at their top.
+            level: pool.level.min(cell.bottom() + WATER_CELL_METRES),
             depth,
         })
         .collect()

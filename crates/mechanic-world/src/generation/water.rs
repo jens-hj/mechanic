@@ -61,7 +61,7 @@ const CHANNEL_SLOPE: f64 = 4.0;
 const SEA: u32 = 1;
 
 /// Which water a column holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WaterBody {
     /// The sea, at the world's sea level.
     Sea,
