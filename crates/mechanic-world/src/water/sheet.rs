@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use super::jet::Launch;
 use super::{
-    CLING_METRES, End, FILM_METRES, GRAVITY, WATER_CELL_METRES, WaterCell, WaterGround, WaterWorld,
+    CLING_METRES, End, FILM_METRES, GRAVITY, Joined, MERGE_METRES, WATER_CELL_METRES, WaterCell,
+    WaterGround, WaterWorld,
 };
 use super::{floor_of, held_in};
 use crate::WaterSurface;
@@ -67,6 +68,11 @@ pub struct SheetDoc {
 }
 
 impl Sheet {
+    /// Height of its water's surface, however shallow.
+    pub(super) fn surface_height(&self) -> f64 {
+        self.floor + self.volume / CELL_AREA_M2
+    }
+
     /// Its surface, where it is deep enough to run.
     pub(super) fn surface(&self) -> Option<WaterSurface> {
         let depth = self.volume / CELL_AREA_M2;
@@ -148,7 +154,11 @@ impl WaterWorld {
     }
 
     /// Height of a cell's running surface and its depth, if it has a floor.
-    fn sheet_surface(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<(f64, f64)> {
+    pub(super) fn sheet_surface(
+        &mut self,
+        ground: &impl WaterGround,
+        cell: WaterCell,
+    ) -> Option<(f64, f64)> {
         if let Some(sheet) = self.sheets.get(&cell) {
             let depth = sheet.volume / CELL_AREA_M2;
             return Some((sheet.floor + depth, depth));
@@ -340,19 +350,83 @@ impl WaterWorld {
                 self.cycle.evaporate(sheet.volume.max(0.0));
                 continue;
             }
+            if self.submerge(ground, cell, sheet) {
+                continue;
+            }
             let Some((height, depth)) = self.sheet_surface(ground, cell) else {
                 continue;
             };
             let draining = sheet.flux.iter().sum::<f64>() > 0.01 * sheet.volume;
-            let hollow = depth >= FILM_METRES && !draining && self.in_hollow(ground, cell, height);
-            let still = if hollow { sheet.still + 1 } else { 0 };
-            if still >= STILL_STEPS {
+            let hollow = depth >= FILM_METRES && self.in_hollow(ground, cell, height);
+            let still = if hollow && !draining {
+                sheet.still + 1
+            } else {
+                0
+            };
+            // Water brimming over its cell's top in a hollow fills a hole: it
+            // stands there as a pool, however it sloshes.
+            let brimming = hollow && height > cell.bottom() + WATER_CELL_METRES;
+            if still >= STILL_STEPS || brimming {
                 self.sheets.remove(&cell);
                 self.start_pool(ground, cell, sheet.volume);
             } else if let Some(sheet) = self.sheets.get_mut(&cell) {
                 sheet.still = still;
             }
         }
+    }
+
+    /// A sheet cell that stands no higher than still water beside it, whose
+    /// surface covers its floor, lies under that water: a pool floods it and
+    /// takes its water, seed-derived water takes it in as a joined cell.
+    /// Water running down past a pool's rim is not under the pool: it is the
+    /// pool's spill.
+    fn submerge(&mut self, ground: &impl WaterGround, cell: WaterCell, sheet: Sheet) -> bool {
+        let height = sheet.floor + sheet.volume / CELL_AREA_M2;
+        let under = |level: f64| level > sheet.floor + FILM_METRES && height < level + MERGE_METRES;
+        for (dx, dz) in DIRECTIONS {
+            let beside = WaterCell::new(cell.x + dx, cell.y, cell.z + dz);
+            if let Some(&id) = self.owner.get(&beside) {
+                let Some(pool) = self.pools.get_mut(&id) else {
+                    continue;
+                };
+                if under(pool.level) && sheet.floor >= pool.rim {
+                    self.sheets.remove(&cell);
+                    pool.volume += sheet.volume;
+                    pool.queue(cell, sheet.floor);
+                    return true;
+                }
+                continue;
+            }
+            let seed = match self.joined.get(&beside) {
+                Some(joined) => Some(joined.surface),
+                None => self.ground.implicit(ground, beside),
+            };
+            let Some(seed) = seed else {
+                continue;
+            };
+            let level = self.drawn(ground, seed).level;
+            if under(level) {
+                self.sheets.remove(&cell);
+                let held = held_in(cell, self.openings(ground, cell), level);
+                self.joined.insert(
+                    cell,
+                    Joined {
+                        surface: seed,
+                        held,
+                    },
+                );
+                self.cycle.add(seed.body, sheet.volume - held);
+                // Free cells around it now border the seed-derived water.
+                for neighbour in cell.neighbours() {
+                    if !self.owner.contains_key(&neighbour) && !self.joined.contains_key(&neighbour)
+                    {
+                        self.remeasure(ground, neighbour);
+                    }
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// Whether no neighbour of a sheet cell lies lower than its floor, so

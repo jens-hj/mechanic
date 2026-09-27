@@ -1,6 +1,6 @@
 //! Stored water on generated terrain: a trench dug from a real lake fills.
 
-use bevy_math::DVec3;
+use bevy_math::{DVec2, DVec3};
 
 use crate::water::{TerrainWater, WaterWorld};
 use crate::{TerrainField, TerrainOctree, WaterBody, WorldPosition, WorldSeed};
@@ -91,4 +91,16 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
     );
     let held = water.stored_m3() + water.joined_m3();
     assert!(held > 0.5, "only {held:.2} m³ ran in");
+    // Water fills the dug trench and does not creep off along the shore.
+    let flat = |point: DVec3| DVec2::new(point.x, point.z);
+    let (from, to) = (flat(beyond), flat(lake));
+    for (cell, _) in water.joined_cells(&ground) {
+        let point = flat(cell.centre());
+        let along = ((point - from).dot(to - from) / from.distance_squared(to)).clamp(0.0, 1.0);
+        let off = point.distance(from.lerp(to, along));
+        assert!(
+            off < 2.5,
+            "{cell:?} joined the lake {off:.1} m off the trench"
+        );
+    }
 }

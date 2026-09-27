@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use bevy_math::{DVec3, IVec3};
 
-use super::WaterCell;
 use super::cycle::WaterNetwork;
+use super::{WATER_CELL_METRES, WaterCell};
 use crate::generation::Lattice;
 use crate::{
     BRICK_EDGE_CELLS, BrickCoord, LakeBasin, RiverReach, TerrainField, TerrainSource, WaterSurface,
@@ -27,6 +27,21 @@ pub(super) const BRICK_EDGE_WATER_CELLS: i32 = BRICK_EDGE_CELLS / WATER_CELL_EDG
 
 /// Water cells in one brick.
 const BRICK_WATER_CELLS: usize = 512;
+
+/// Seed-derived water at the waterline of untouched ground, too shallow to
+/// reach any layer's centre: a cell whose floor lies within a cell below
+/// the surface over its column. Deeper untouched cells under the surface
+/// are sealed voids, dry as the seed made them.
+fn shore(ground: &impl WaterGround, cell: WaterCell, openings: Openings) -> Option<WaterSurface> {
+    if ground.edited(cell.brick()) {
+        return None;
+    }
+    let floor = super::floor_of(cell, openings)?;
+    let centre = cell.centre();
+    ground
+        .surface(centre.x, centre.z)
+        .filter(|surface| floor < surface.level && floor > surface.level - WATER_CELL_METRES)
+}
 
 /// Open terrain cells in each of a water cell's four layers, bottom first.
 pub(super) type Openings = [u8; 4];
@@ -45,6 +60,10 @@ pub trait WaterGround: WaterNetwork {
 
     /// Whether seed-derived water may reach into a brick at all.
     fn may_hold_water(&self, brick: BrickCoord) -> bool;
+
+    /// Whether a brick's ground was edited. Seed-derived water pours only
+    /// into edited ground: untouched ground is wet or dry as the seed made it.
+    fn edited(&self, brick: BrickCoord) -> bool;
 }
 
 /// Terrain, untouched and edited, as the ground water sits in.
@@ -112,6 +131,10 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
             .water_level_range(minimum, maximum)
             .is_some_and(|(_, highest)| minimum.y < highest)
     }
+
+    fn edited(&self, brick: BrickCoord) -> bool {
+        self.edits.brick(brick).is_some()
+    }
 }
 
 /// Openings of every water cell in the bricks water has looked at.
@@ -166,7 +189,8 @@ impl OpeningsCache {
         let found = (0..openings.len())
             .rev()
             .filter(|&layer| openings[layer] > 0)
-            .find_map(|layer| ground.implicit(cell.layer_centre(layer)));
+            .find_map(|layer| ground.implicit(cell.layer_centre(layer)))
+            .or_else(|| shore(ground, cell, openings));
         self.implicit.insert(cell, found);
         found
     }

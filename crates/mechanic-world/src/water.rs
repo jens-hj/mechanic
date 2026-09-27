@@ -434,6 +434,11 @@ impl WaterWorld {
         let mut water = Self::new();
         water.cycle = Cycle::from_doc(&doc.bodies, doc.sea_m3, doc.air_m3);
         for joined in &doc.joined {
+            // Seed-derived water that covers the cell anyway holds its water.
+            if water.ground.implicit(ground, joined.cell).is_some() {
+                water.cycle.add(joined.body, joined.held_m3);
+                continue;
+            }
             water.joined.insert(
                 joined.cell,
                 Joined {
@@ -653,6 +658,14 @@ impl WaterWorld {
                     .pools
                     .get(&other)
                     .is_some_and(|other| other.level < cell.bottom());
+        }
+        // Running water standing up to the cell is no drop either.
+        if self
+            .sheets
+            .get(&below)
+            .is_some_and(|sheet| sheet.surface_height() >= cell.bottom())
+        {
+            return false;
         }
         self.implicit(ground, below)
             .is_none_or(|surface| surface.level < cell.bottom())
@@ -896,8 +909,12 @@ impl WaterWorld {
             } else if self.falls(ground, cell, Some(id)) {
                 self.fall(id, cell, [level, floor, area], dt, out);
             } else if own_floor < rim {
-                // Beyond the rim the water runs off as a sheet.
-                let head = level - floor;
+                // Beyond the rim the water runs off as a sheet, over any
+                // water already running there.
+                let below = self
+                    .sheet_surface(ground, cell)
+                    .map_or(floor, |(height, _)| height.max(floor));
+                let head = level - below;
                 if head > 0.0 {
                     out.transfers.push(Transfer {
                         from: End::Pool(id),
@@ -1262,14 +1279,16 @@ impl WaterWorld {
         if self.implicit(ground, cell).is_some() {
             return;
         }
+        let edited = ground.edited(cell.brick());
         for neighbour in cell.neighbours() {
             if let Some(&id) = self.owner.get(&neighbour) {
                 if let Some(pool) = self.pools.get_mut(&id) {
                     pool.queue(cell, floor);
                 }
-            } else if self
-                .implicit(ground, neighbour)
-                .is_some_and(|surface| surface.level > floor + FILM_METRES)
+            } else if edited
+                && self
+                    .implicit(ground, neighbour)
+                    .is_some_and(|surface| surface.level > floor + FILM_METRES)
             {
                 self.inlets.insert(cell);
             }
@@ -1290,10 +1309,15 @@ impl WaterWorld {
                 // Its pool exchanges with the water beside it directly.
                 continue;
             }
-            let Some(floor) = floor_of(cell, self.openings(ground, cell)) else {
+            if floor_of(cell, self.openings(ground, cell)).is_none() {
                 self.inlets.remove(&cell);
                 continue;
-            };
+            }
+            // Water already running in the cell raises the lip the inlet
+            // pours over: it never fills the cell above its source.
+            let floor = self
+                .sheet_surface(ground, cell)
+                .map_or(f64::INFINITY, |(height, _)| height);
             let mut source = None;
             for neighbour in cell.neighbours() {
                 if let Some(surface) = self.implicit(ground, neighbour) {
@@ -1324,9 +1348,9 @@ impl WaterWorld {
                 }),
                 End::Seed(seed) | End::Sheet(seed) => {
                     let openings = self.openings(ground, seed);
+                    let running = self.sheets.get(&seed).map_or(0.0, |sheet| sheet.volume);
                     room.entry(to).or_insert_with(|| {
-                        f64::from(openings.iter().map(|&open| u32::from(open)).sum::<u32>())
-                            * FINE_VOLUME_M3
+                        (held_in(seed, openings, surface.level) - running).max(0.0)
                     })
                 }
             };

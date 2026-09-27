@@ -130,6 +130,10 @@ impl WaterGround for Ground {
     fn may_hold_water(&self, _brick: BrickCoord) -> bool {
         self.lake.is_some()
     }
+
+    fn edited(&self, _brick: BrickCoord) -> bool {
+        true
+    }
 }
 
 /// Runs the water for `seconds` in steps of a twentieth of a second.
@@ -276,6 +280,46 @@ fn a_breached_lake_drains_into_a_cave_until_the_levels_meet() {
     );
     assert!(lake < 0.8, "the lake did not go down");
     assert!((drawn(&water) - held).abs() < 0.05);
+}
+
+/// A shallow channel dug from a lake, its floor 10 cm under the lake,
+/// opening into a pit a metre deeper.
+fn lake_channel_and_pit() -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, 0.7, 0.0], [3.0, 3.0, 0.6]),
+            room([3.0, -0.5, -0.4], [4.6, 3.0, 1.0]),
+            room([-20.0, 1.0, -20.0], [20.0, 3.0, 20.0]),
+        ],
+        lake: Some((room([-20.0, -2.0, -20.0], [0.0, 3.0, 20.0]), 0.8)),
+        river: None,
+    }
+}
+
+#[test]
+fn a_channel_from_a_lake_into_a_pit_fills_and_comes_to_rest() {
+    let ground = lake_channel_and_pit();
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    // The channel pours into the pit at about 11 L/s: it takes some five
+    // minutes to fill.
+    run(&mut water, &ground, 400);
+    let step = water.step(&ground, 0.05);
+    assert_eq!(step.sheet_cells, 0, "water still runs in the channel");
+    assert!(step.falls.is_empty(), "water still falls into the pit");
+    assert!(
+        step.moved_m3 < 1.0e-6,
+        "{:.2e} m³ still moves each step",
+        step.moved_m3
+    );
+    for point in [DVec3::new(1.5, 0.75, 0.3), DVec3::new(3.8, 0.0, 0.3)] {
+        let surface = water.surface(&ground, point).expect("the dig holds water");
+        assert_eq!(surface.body, WaterBody::Lake(0), "at {point}");
+    }
+    // The pit's 3.1 m³ below the channel came from the lake.
+    let held = water.stored_m3() + water.joined_m3();
+    assert!(held > 3.0, "the dig holds only {held:.3} m³");
+    assert!((drawn(&water) - held).abs() < 0.01);
 }
 
 /// A lake over a bed 2 m down, with a 1 m hole dug into the bed.
@@ -464,7 +508,10 @@ fn stair() -> Ground {
 fn water_spilled_on_a_slope_runs_down_it_before_it_pools() {
     let ground = stair();
     let mut water = WaterWorld::new();
-    water.deposit(&ground, DVec3::new(0.2, 1.0, 0.2), 0.2);
+    // A bucketful, 12 L: a film a few centimetres deep, and what clings to
+    // the steps stays behind.
+    let spilled = 0.012;
+    water.deposit(&ground, DVec3::new(0.2, 1.0, 0.2), spilled);
     run_steps(&mut water, &ground, 10);
     assert_eq!(water.pools().count(), 0, "the water pooled at once");
     let running = water
@@ -478,19 +525,19 @@ fn water_spilled_on_a_slope_runs_down_it_before_it_pools() {
     );
     // A save in mid-run keeps every drop.
     let saved = WaterWorld::from_doc(&ground, &water.to_doc());
-    assert!((saved.ledger().total() - 0.2).abs() < 1.0e-9);
+    assert!((saved.ledger().total() - spilled).abs() < 1.0e-9);
     run(&mut water, &ground, 30);
     let pit = water
         .pools()
         .find(|pool| pool.level < -1.5)
         .expect("nothing pooled in the pit");
     assert!(
-        pit.volume_m3 > 0.19,
+        pit.volume_m3 > 0.85 * spilled,
         "the pit holds {:.3} m³",
         pit.volume_m3
     );
     assert!(
-        (water.ledger().total() - 0.2).abs() < 1.0e-9,
+        (water.ledger().total() - spilled).abs() < 1.0e-9,
         "water was made or lost"
     );
 }
