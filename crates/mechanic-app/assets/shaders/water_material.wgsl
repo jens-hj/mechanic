@@ -50,10 +50,8 @@ fn vertex(vertex: WaterVertex) -> WaterVaryings {
     return out;
 }
 
-// Slope of a few travelling waves at a point: small ripples everywhere,
-// carried along by the current.
-fn wave_slope(point: vec2<f32>, flow: vec2<f32>, time: f32) -> vec2<f32> {
-    let drift = point - flow * time;
+// Slope of a few travelling waves at a point.
+fn wave_slope(point: vec2<f32>, time: f32) -> vec2<f32> {
     var slope = vec2<f32>(0.0);
     let directions = array<vec2<f32>, 4>(
         vec2<f32>(0.8, 0.6),
@@ -65,11 +63,28 @@ fn wave_slope(point: vec2<f32>, flow: vec2<f32>, time: f32) -> vec2<f32> {
     for (var wave = 0u; wave < 4u; wave += 1u) {
         let k = 6.2831853 / lengths[wave];
         let speed = sqrt(9.81 / k);
-        let phase = k * dot(directions[wave], drift) - speed * k * time;
+        let phase = k * dot(directions[wave], point) - speed * k * time;
         let amplitude = 0.012 * lengths[wave];
         slope += directions[wave] * (k * amplitude * cos(phase));
     }
     return slope;
+}
+
+// Seconds the ripples ride the current before they start afresh.
+const FLOW_PERIOD: f32 = 2.0;
+
+// Ripples carried along by the current: two copies, each drifting for a
+// period and starting afresh, crossfaded so neither restart shows. The
+// drift never outgrows a period, so a current that changes from step to
+// step moves the ripples a little, not by all the distance since launch.
+fn flowing_slope(point: vec2<f32>, flow: vec2<f32>, time: f32) -> vec2<f32> {
+    let speed = length(flow);
+    let current = select(vec2<f32>(0.0), flow * min(1.0, 2.0 / speed), speed > 0.0);
+    let first = fract(time / FLOW_PERIOD);
+    let second = fract(time / FLOW_PERIOD + 0.5);
+    let weight = 1.0 - abs(1.0 - 2.0 * first);
+    return weight * wave_slope(point - current * first * FLOW_PERIOD, time)
+        + (1.0 - weight) * wave_slope(point - current * second * FLOW_PERIOD + vec2<f32>(0.37, 0.61), time);
 }
 
 @fragment
@@ -90,7 +105,7 @@ fn fragment(
 
     let depth = max(varyings.water.x, 0.0);
     let flow = varyings.water.yz;
-    let slope = wave_slope(varyings.world_position.xz, flow, globals.time);
+    let slope = flowing_slope(varyings.world_position.xz, flow, globals.time);
     // Ripples fade with distance so far water reads as a calm mirror
     // instead of aliasing.
     let calm = 1.0 / (1.0 + fwidth(varyings.world_position.x) * 4.0);
