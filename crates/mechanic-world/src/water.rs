@@ -214,6 +214,23 @@ fn floor_of(cell: WaterCell, openings: Openings) -> Option<f64> {
     })
 }
 
+/// Height of the ground in a cell as running water sees it, where the cell
+/// has any opening: the mean top of its ground over the column, up to its
+/// lowest wholly open layer. Unlike [`floor_of`] it rises smoothly as ground
+/// fills a layer, so running water down a slope is not a stair.
+fn ground_height(cell: WaterCell, openings: Openings) -> Option<f64> {
+    floor_of(cell, openings)?;
+    let full = u8::try_from(WATER_CELL_EDGE_CELLS * WATER_CELL_EDGE_CELLS).expect("16 cells");
+    let mut height = cell.bottom();
+    for open in openings {
+        if open == full {
+            break;
+        }
+        height += FINE_LAYER_METRES * f64::from(full - open) / f64::from(full);
+    }
+    Some(height)
+}
+
 /// A stream of water pouring over a drop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WaterFall {

@@ -52,8 +52,12 @@ Water that lands where it cannot stand runs (`water/sheet.rs`). A sheet cell
 holds a volume on its floor, and pipes to its four horizontal neighbours
 carry water between them: the virtual-pipe model of shallow water. Each
 pipe's flow gathers speed with the difference in surface height across it
-and loses it to friction at 2 per second, and no cell sends more than it
-holds, so volume is exact. The flows give each sheet cell a current, which
+and loses it to friction, and no cell sends more than it holds, so volume is
+exact. Friction is 0.5 per second plus bed friction by Manning's law,
+`g n² |v| / h^(4/3)` with `n` = 0.03, which grows as water thins: a film
+barely creeps while a stream runs at a few metres a second. A sheet rests on
+the mean height of the ground in its column rather than on the bottom of its
+lowest open 5 cm layer, so a sheet down a slope is a ramp, not a stair. The flows give each sheet cell a current, which
 buoyancy and drag see. Pipes step four times per water step.
 
 - **Slopes and lips.** A sheet climbs a step of one water cell and runs

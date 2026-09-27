@@ -545,6 +545,63 @@ fn water_spilled_on_a_slope_runs_down_it_before_it_pools() {
     );
 }
 
+/// A slope falling one in four over 4 m, 2.4 m wide, its ground in 20 cm
+/// columns rough by up to 4 cm.
+fn rough_slope() -> Ground {
+    let mut rooms = Vec::new();
+    for i in 0..20 {
+        for k in 0..12 {
+            let (x, z) = (f64::from(i) * 0.2, f64::from(k) * 0.2);
+            // A fixed scatter standing in for the lumps of real ground.
+            let lump = f64::from((i * 7 + k * 13 + i * k * 5) % 9) / 8.0 * 0.04;
+            let height = -x / 4.0 + lump;
+            rooms.push(room([x, height, z], [x + 0.2, 2.0, z + 0.2]));
+        }
+    }
+    rooms.push(room([4.0, -3.0, 0.0], [5.0, 2.0, 2.4]));
+    Ground {
+        rooms,
+        lake: None,
+        river: None,
+    }
+}
+
+#[test]
+fn a_trickle_down_rough_ground_gathers_into_rills() {
+    let ground = rough_slope();
+    let mut water = WaterWorld::new();
+    let mut discharge = std::collections::HashMap::<(i32, i32), f64>::new();
+    for step in 0..400 {
+        water.deposit(&ground, DVec3::new(0.3, 1.0, 1.2), 0.00005);
+        water.step(&ground, 0.05);
+        if step >= 200 {
+            for running in water.running_cells() {
+                *discharge
+                    .entry((running.cell.x, running.cell.z))
+                    .or_default() += running.depth * running.flow.length();
+            }
+        }
+    }
+    let mut shares = discharge.values().copied().collect::<Vec<_>>();
+    shares.sort_by(|a, b| b.total_cmp(a));
+    let total = shares.iter().sum::<f64>();
+    let mut carried = 0.0;
+    let carrying = shares
+        .iter()
+        .take_while(|&&share| {
+            carried += share;
+            carried - share < 0.8 * total
+        })
+        .count();
+    // A litre a second gathers into a few paths down the lumps: most of the
+    // ground it wets carries little of it.
+    assert!(
+        carrying * 10 < shares.len() * 3,
+        "{carrying} of {} wetted columns carry 80% of the flow",
+        shares.len()
+    );
+}
+
 /// Runs the water for `steps` twentieths of a second.
 fn run_steps(water: &mut WaterWorld, ground: &Ground, steps: u32) {
     for _ in 0..steps {

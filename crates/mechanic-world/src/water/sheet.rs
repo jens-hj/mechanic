@@ -26,7 +26,7 @@ use super::{
     CLING_METRES, End, FILM_METRES, GRAVITY, Joined, MERGE_METRES, WATER_CELL_METRES, WaterCell,
     WaterGround, WaterWorld,
 };
-use super::{floor_of, held_in};
+use super::{floor_of, ground_height, held_in};
 use crate::WaterSurface;
 
 /// Horizontal area of one water cell, in square metres.
@@ -36,8 +36,12 @@ const CELL_AREA_M2: f64 = WATER_CELL_METRES * WATER_CELL_METRES;
 /// water 20 cm deep, so waves cross a cell in a tenth of a second.
 const PIPE_METRES: f64 = WATER_CELL_METRES;
 
-/// How fast friction takes a pipe's flow, per second.
-const FRICTION_PER_SECOND: f64 = 2.0;
+/// How fast friction takes a pipe's flow whatever its depth, per second.
+const FRICTION_PER_SECOND: f64 = 0.5;
+
+/// Manning's roughness of the ground under running water, in s/m^(1/3):
+/// short grass and bare soil.
+const ROUGHNESS: f64 = 0.03;
 
 /// Substeps per water step: pipes need shorter steps than pools.
 const SUBSTEPS: u32 = 4;
@@ -209,7 +213,7 @@ impl WaterWorld {
         let slot = self.sheets.slot_or_insert(cell.x, cell.z);
         if !self.sheets.at(slot).present {
             let floor =
-                floor_of(cell, self.openings(ground, cell)).unwrap_or_else(|| cell.bottom());
+                ground_height(cell, self.openings(ground, cell)).unwrap_or_else(|| cell.bottom());
             self.sheets.place(slot, cell.y, floor);
         }
         self.sheets.at_mut(slot).volume += volume;
@@ -225,7 +229,7 @@ impl WaterWorld {
             let depth = sheet.volume / CELL_AREA_M2;
             return Some((sheet.floor + depth, depth));
         }
-        floor_of(cell, self.openings(ground, cell)).map(|floor| (floor, 0.0))
+        ground_height(cell, self.openings(ground, cell)).map(|floor| (floor, 0.0))
     }
 
     /// Running water at a cell: its surface and current, if it runs there.
@@ -250,7 +254,7 @@ impl WaterWorld {
     fn faces(&mut self, ground: &impl WaterGround, cell: WaterCell) -> [Face; 4] {
         DIRECTIONS.map(|(dx, dz)| {
             let beside = WaterCell::new(cell.x + dx, cell.y, cell.z + dz);
-            if let Some(floor) = floor_of(beside, self.openings(ground, beside)) {
+            if let Some(floor) = ground_height(beside, self.openings(ground, beside)) {
                 if !self.drops(ground, beside) {
                     return Face::Onto {
                         y: beside.y,
@@ -263,7 +267,7 @@ impl WaterWorld {
                 let mut below = beside;
                 for _ in 0..CHUTE_CELLS {
                     below = below.below();
-                    let Some(floor) = floor_of(below, self.openings(ground, below)) else {
+                    let Some(floor) = ground_height(below, self.openings(ground, below)) else {
                         break;
                     };
                     if !self.drops(ground, below) {
@@ -282,7 +286,7 @@ impl WaterWorld {
             // Solid beside: the water may climb a step of one cell.
             let above = beside.up();
             let open_above = floor_of(cell.up(), self.openings(ground, cell.up())).is_some();
-            match floor_of(above, self.openings(ground, above)) {
+            match ground_height(above, self.openings(ground, above)) {
                 Some(floor) if open_above => Face::Onto {
                     y: above.y,
                     floor,
@@ -425,6 +429,7 @@ impl WaterWorld {
             for ((slot, faces), flow) in routes.iter().zip(&mut flows) {
                 let sheet = self.sheets.at(*slot);
                 let height = sheet.surface_height();
+                let depth = (sheet.volume / CELL_AREA_M2).max(CLING_METRES);
                 for (face, route) in faces.iter().enumerate() {
                     let beyond = match *route {
                         Route::Wall => None,
@@ -441,8 +446,9 @@ impl WaterWorld {
                         Route::Lip(over) => Some(over.bottom()),
                     };
                     flow[face] = beyond.map_or(0.0, |beyond| {
-                        let damped = sheet.flux[face] * (1.0 - FRICTION_PER_SECOND * sub).max(0.0);
-                        (damped + sub * GRAVITY * PIPE_METRES * (height - beyond)).max(0.0)
+                        let driven =
+                            sheet.flux[face] + sub * GRAVITY * PIPE_METRES * (height - beyond);
+                        (driven / (1.0 + friction(sheet.flux[face], depth) * sub)).max(0.0)
                     });
                 }
                 let out = flow.iter().sum::<f64>() * sub;
@@ -523,15 +529,18 @@ impl WaterWorld {
             }
             let (height, depth) = (sheet.surface_height(), sheet.volume / CELL_AREA_M2);
             let draining = sheet.flux.iter().sum::<f64>() > 0.01 * sheet.volume;
-            let hollow = depth >= FILM_METRES && self.sheet_in_hollow(ground, cell, sheet);
+            // Water brimming over its cell's top in a hollow fills a hole: it
+            // stands there as a pool, however it sloshes.
+            let over = height > cell.bottom() + WATER_CELL_METRES;
+            let hollow = depth >= FILM_METRES
+                && (over || !draining)
+                && self.sheet_in_hollow(ground, cell, sheet);
             let still = if hollow && !draining {
                 sheet.still + 1
             } else {
                 0
             };
-            // Water brimming over its cell's top in a hollow fills a hole: it
-            // stands there as a pool, however it sloshes.
-            let brimming = hollow && height > cell.bottom() + WATER_CELL_METRES;
+            let brimming = hollow && over;
             if still >= STILL_STEPS || brimming {
                 self.sheets.remove_at(slot);
                 self.start_pool(ground, cell, sheet.volume);
@@ -552,6 +561,10 @@ impl WaterWorld {
         let under = |level: f64| level > sheet.floor + FILM_METRES && height < level + MERGE_METRES;
         for (dx, dz) in DIRECTIONS {
             let beside = WaterCell::new(cell.x + dx, cell.y, cell.z + dz);
+            // Running water beside it is no still water.
+            if self.sheets.get(beside).is_some() {
+                continue;
+            }
             if let Some(&id) = self.owner.get(&beside) {
                 let Some(pool) = self.pools.get_mut(&id) else {
                     continue;
@@ -661,7 +674,7 @@ impl WaterWorld {
             return;
         };
         let openings = self.openings(ground, cell);
-        match floor_of(cell, openings) {
+        match ground_height(cell, openings) {
             Some(floor) if held_in(cell, openings, f64::INFINITY) > 0.0 => {
                 if let Some(sheet) = self.sheets.get_mut(cell) {
                     sheet.floor = floor;
@@ -673,6 +686,15 @@ impl WaterWorld {
             }
         }
     }
+}
+
+/// How fast friction takes a pipe's flow, per second: bed friction by
+/// Manning's law, `g n² |v| / h^(4/3)`, grows as water thins, so a film
+/// barely creeps while a stream runs, and running water gathers into rills
+/// along the lowest ground instead of spreading evenly.
+fn friction(flux: f64, depth: f64) -> f64 {
+    let speed = flux.abs() / (WATER_CELL_METRES * depth);
+    FRICTION_PER_SECOND + GRAVITY * ROUGHNESS * ROUGHNESS * speed / depth.powf(4.0 / 3.0)
 }
 
 /// A sheet's current from the flow through its faces, in m/s.
