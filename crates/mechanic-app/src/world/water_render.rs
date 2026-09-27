@@ -647,9 +647,9 @@ pub(crate) fn draw_stored_water(
             .id()
     };
     let mut seen = std::collections::HashSet::new();
-    for pool in runtime.water.pools() {
+    for pool in &runtime.water.view().pools {
         seen.insert(pool.id);
-        let columns = open_columns(&pool, field);
+        let columns = open_columns(pool, field);
         let cells = columns.len();
         if let Some(&(entity, level, drawn)) = tiles.pools.get(&pool.id) {
             if (level - pool.level).abs() < 0.005 && drawn == cells {
@@ -676,11 +676,7 @@ pub(crate) fn draw_stored_water(
         }
         keep
     });
-    let ground = mechanic_world::TerrainWater {
-        field,
-        edits: &runtime.edits,
-    };
-    let cells = runtime.water.joined_cells(&ground);
+    let cells = &runtime.water.view().joined;
     let set = cells.iter().map(|(cell, _)| *cell).collect::<HashSet<_>>();
     if set != *tiles.joined_cells {
         let stale = set
@@ -690,7 +686,7 @@ pub(crate) fn draw_stored_water(
         tiles.stale.extend(stale);
         tiles.joined_cells = Arc::new(set);
     }
-    let joined = joined_columns(&cells, field);
+    let joined = joined_columns(cells, field);
     let key = fingerprint(&joined);
     if tiles.joined.is_none_or(|(_, drawn)| drawn != key) {
         if let Some((entity, _)) = tiles.joined.take() {
@@ -724,7 +720,7 @@ pub(crate) fn draw_stored_water(
 /// any. A stream falling under a lake falls through lake water: it does not
 /// show.
 fn moving_meshes(runtime: &WorldRuntime, origin: DVec3) -> (Option<Mesh>, Option<Mesh>) {
-    let running = runtime.water.running_cells();
+    let running = &runtime.water.view().running;
     let falls = runtime
         .water_falls
         .iter()
@@ -736,7 +732,7 @@ fn moving_meshes(runtime: &WorldRuntime, origin: DVec3) -> (Option<Mesh>, Option
         .cloned()
         .collect::<Vec<_>>();
     (
-        (!running.is_empty()).then(|| running_mesh(&running, origin)),
+        (!running.is_empty()).then(|| running_mesh(running, origin)),
         (!falls.is_empty()).then(|| falls_mesh(&falls, origin)),
     )
 }

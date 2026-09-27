@@ -216,8 +216,9 @@ pub(crate) struct WorldRuntime {
     step_visual_offset: f32,
     pending_player_reactions: Vec<GpuExternalImpulse>,
     walking_suspended: bool,
-    /// Stored water: pools, falls, and what was drawn from lakes.
-    water: mechanic_world::WaterWorld,
+    /// Stored water: pools, falls, and what was drawn from lakes, stepped
+    /// on a worker.
+    water: water::WaterRunner,
     /// Water time not yet stepped, in seconds.
     water_seconds: f64,
     /// View of the water after its last step, for physics and drawing.
@@ -654,6 +655,7 @@ impl FromWorld for WorldRuntime {
         });
         let field = Arc::new(field);
         let water_surfaces = Arc::new(water.surfaces(field.clone()));
+        let water = water::WaterRunner::new(water, &field, &edits);
         Self {
             store,
             document,

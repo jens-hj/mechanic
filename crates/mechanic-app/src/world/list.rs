@@ -254,13 +254,14 @@ pub(super) fn install_world(
     runtime.capsule = KinematicCapsule::new(document.player_pose.translation);
     runtime.floating_origin = world_editor.origin;
     runtime.document = document;
-    runtime.water = super::water::load_water(
+    let water = super::water::load_water(
         &runtime.store,
         &runtime.document.name,
         &runtime.field,
         &terrain,
     )?;
-    runtime.water_surfaces = Arc::new(runtime.water.surfaces(runtime.field.clone()));
+    runtime.water_surfaces = Arc::new(water.surfaces(runtime.field.clone()));
+    runtime.water = super::water::WaterRunner::new(water, &runtime.field, &terrain);
     runtime.water_falls.clear();
     runtime.water_seconds = 0.0;
     runtime.edits = terrain;

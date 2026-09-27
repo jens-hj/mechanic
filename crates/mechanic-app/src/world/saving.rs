@@ -62,7 +62,7 @@ pub(super) fn save_all(runtime: &mut WorldRuntime) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     runtime
         .store
-        .save_water(&runtime.document.name, &runtime.water.to_doc())
+        .save_water(&runtime.document.name, &runtime.water.world_mut().to_doc())
         .map_err(|error| error.to_string())?;
     Ok(())
 }

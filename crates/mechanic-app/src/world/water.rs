@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    BrickCoord, TerrainField, TerrainOctree, TerrainWater, WaterWorld, WorldStore,
+    BrickCoord, PoolView, RunningView, TerrainField, TerrainOctree, TerrainWater, WaterCell,
+    WaterFall, WaterLedger, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -13,9 +15,9 @@ use super::{WorldListPhase, WorldListState, WorldRuntime};
 /// Seconds of water per step: water moves at 20 Hz.
 const WATER_STEP_SECONDS: f64 = 0.05;
 
-/// Water steps one frame may run; a slower frame lets water fall behind
-/// rather than slow further.
-const MAX_STEPS_PER_FRAME: u32 = 3;
+/// Water steps one batch may run; water further behind than this slows down
+/// rather than catch up.
+const MAX_STEPS_PER_BATCH: u32 = 3;
 
 /// Whether the world's water is switched on.
 pub(crate) fn water_enabled() -> bool {
@@ -47,19 +49,93 @@ pub(super) fn load_water(
     Ok(water)
 }
 
-/// Tells the water the ground changed in these bricks.
+/// Tells the water the ground changed in these bricks. The water takes the
+/// change in before its next step.
 pub(super) fn ground_changed(
     runtime: &mut WorldRuntime,
     bricks: impl IntoIterator<Item = BrickCoord>,
 ) {
-    let ground = TerrainWater {
-        field: &runtime.field,
-        edits: &runtime.edits,
-    };
-    runtime.water.terrain_changed(&ground, bricks);
+    runtime.water.pending.extend(bricks);
 }
 
-/// Runs the world's stored water and publishes a view of it.
+/// What the water looked like after its last batch of steps, to draw.
+#[derive(Default)]
+pub(crate) struct WaterView {
+    /// Every pool.
+    pub(crate) pools: Vec<PoolView>,
+    /// Cells joined to seed-derived water, with its surface as it stands.
+    pub(crate) joined: Vec<(WaterCell, WaterSurface)>,
+    /// Running water.
+    pub(crate) running: Vec<RunningView>,
+}
+
+/// One batch of water steps done on the worker.
+struct WaterBatch {
+    world: WaterWorld,
+    view: WaterView,
+    surfaces: WaterSurfaces,
+    falls: Vec<WaterFall>,
+    steps: Vec<(f64, WaterStep)>,
+    ledger: WaterLedger,
+}
+
+/// The world's stored water, stepped on a worker so a slow step never holds
+/// up a frame: while a batch runs the worker owns the water, and the frame
+/// draws what the last batch published.
+pub(crate) struct WaterRunner {
+    world: Option<WaterWorld>,
+    task: Option<Task<WaterBatch>>,
+    /// A batch finished while the water was waited for, not yet published.
+    finished: Option<WaterBatch>,
+    /// Bricks whose ground changed since the water last looked.
+    pending: Vec<BrickCoord>,
+    view: WaterView,
+}
+
+impl WaterRunner {
+    /// Water to run, with its view as it stands.
+    pub(crate) fn new(world: WaterWorld, field: &TerrainField, edits: &TerrainOctree) -> Self {
+        let ground = TerrainWater { field, edits };
+        let view = view(&world, &ground);
+        Self {
+            world: Some(world),
+            task: None,
+            finished: None,
+            pending: Vec::new(),
+            view,
+        }
+    }
+
+    /// The water itself, waiting for a running batch to finish.
+    pub(crate) fn world_mut(&mut self) -> &mut WaterWorld {
+        if let Some(task) = self.task.take() {
+            let mut batch = block_on(task);
+            self.world = Some(std::mem::take(&mut batch.world));
+            self.finished = Some(batch);
+        }
+        self.world
+            .as_mut()
+            .expect("the water is home when no batch runs")
+    }
+
+    /// The view the last batch published.
+    pub(crate) const fn view(&self) -> &WaterView {
+        &self.view
+    }
+}
+
+/// The view of the water to draw.
+fn view(world: &WaterWorld, ground: &impl mechanic_world::WaterGround) -> WaterView {
+    WaterView {
+        pools: world.pools().collect(),
+        joined: world.joined_cells(ground),
+        running: world.running_cells(),
+    }
+}
+
+/// Runs the world's stored water on a worker and publishes a view of it
+/// when a batch finishes. Water that falls behind slows down; the frame
+/// does not wait for it.
 pub(super) fn step_water(
     mut runtime: ResMut<WorldRuntime>,
     list: Res<WorldListState>,
@@ -70,23 +146,71 @@ pub(super) fn step_water(
     }
     let runtime = &mut *runtime;
     runtime.water_seconds = (runtime.water_seconds + time.delta_secs_f64())
-        .min(f64::from(MAX_STEPS_PER_FRAME) * WATER_STEP_SECONDS);
-    let mut stepped = false;
-    while runtime.water_seconds >= WATER_STEP_SECONDS {
-        runtime.water_seconds -= WATER_STEP_SECONDS;
-        let started = std::time::Instant::now();
+        .min(f64::from(MAX_STEPS_PER_BATCH) * WATER_STEP_SECONDS);
+    let done = runtime.water.finished.take().or_else(|| {
+        let task = runtime.water.task.as_mut()?;
+        let batch = block_on(future::poll_once(task))?;
+        runtime.water.task = None;
+        Some(batch)
+    });
+    if let Some(mut batch) = done {
+        if runtime.water.world.is_none() {
+            runtime.water.world = Some(std::mem::take(&mut batch.world));
+        }
+        publish(runtime, batch);
+    }
+    if runtime.water.task.is_some() || runtime.water_seconds < WATER_STEP_SECONDS {
+        return;
+    }
+    let Some(mut world) = runtime.water.world.take() else {
+        return;
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a few steps"
+    )]
+    let steps = (runtime.water_seconds / WATER_STEP_SECONDS).floor() as u32;
+    runtime.water_seconds -= f64::from(steps) * WATER_STEP_SECONDS;
+    let field = runtime.field.clone();
+    let edits = runtime.edits.snapshot();
+    let bricks = std::mem::take(&mut runtime.water.pending);
+    runtime.water.task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let ground = TerrainWater {
-            field: &runtime.field,
-            edits: &runtime.edits,
+            field: &field,
+            edits: &edits,
         };
-        let step = runtime.water.step(&ground, WATER_STEP_SECONDS);
+        world.terrain_changed(&ground, bricks);
+        let mut done = Vec::with_capacity(steps as usize);
+        let mut falls = Vec::new();
+        for _ in 0..steps {
+            let started = std::time::Instant::now();
+            let mut step = world.step(&ground, WATER_STEP_SECONDS);
+            falls = std::mem::take(&mut step.falls);
+            done.push((started.elapsed().as_secs_f64() * 1000.0, step));
+        }
+        WaterBatch {
+            view: view(&world, &ground),
+            surfaces: world.surfaces(field.clone()),
+            ledger: world.ledger(),
+            world,
+            falls,
+            steps: done,
+        }
+    }));
+}
+
+/// Shows what a finished batch did.
+fn publish(runtime: &mut WorldRuntime, batch: WaterBatch) {
+    let mut moved = false;
+    for (duration_ms, step) in &batch.steps {
+        moved |= step.moved_m3 > 0.0;
         crate::performance_capture::record("water_step", || {
             serde_json::json!({
-                "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
+                "duration_ms": duration_ms,
                 "moved_m3": step.moved_m3,
                 "pools": step.pools,
                 "cells": step.cells,
-                "falls": step.falls.len(),
                 "sheet_cells": step.sheet_cells,
                 "phases_ms": {
                     "flood": step.phases.flood_ms,
@@ -96,18 +220,17 @@ pub(super) fn step_water(
                     "joins": step.phases.joins_ms,
                     "settle": step.phases.settle_ms,
                 },
-                "falling_m3": runtime.water.ledger().falling_m3,
-                "ledger_m3": runtime.water.ledger().total(),
+                "falls": batch.falls.len(),
+                "falling_m3": batch.ledger.falling_m3,
+                "ledger_m3": batch.ledger.total(),
             })
         });
-        if step.moved_m3 > 0.0 {
-            runtime.autosave.mutate(runtime.clock);
-        }
-        runtime.water_falls = step.falls;
-        stepped = true;
     }
-    if stepped {
-        runtime.water_surfaces = Arc::new(runtime.water.surfaces(runtime.field.clone()));
-        runtime.water_revision = runtime.water_revision.wrapping_add(1);
+    if moved {
+        runtime.autosave.mutate(runtime.clock);
     }
+    runtime.water.view = batch.view;
+    runtime.water_falls = batch.falls;
+    runtime.water_surfaces = Arc::new(batch.surfaces);
+    runtime.water_revision = runtime.water_revision.wrapping_add(1);
 }
