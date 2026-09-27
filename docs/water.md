@@ -57,8 +57,14 @@ holds, so volume is exact. The flows give each sheet cell a current, which
 buoyancy and drag see. Pipes step four times per water step.
 
 - **Slopes and lips.** A sheet climbs a step of one water cell and runs
-  down one. A bigger drop is a lip: the water pours over it at the speed it
-  ran at.
+  down a drop of up to five cells, a metre, as a steep chute. A taller drop
+  is a lip: the water pours over it at the speed it ran at.
+- **Storage.** Sheets live in dense tiles of 32 × 32 columns
+  (`water/grid.rs`), one sheet per column. Where each face of a sheet leads
+  is worked out once from the ground and kept until the ground under it
+  changes; standing water in the way is looked up once per step, and not at
+  all where the neighbour already runs. The pipes themselves are plain
+  arithmetic over the tiles.
 - **Where it ends.** Running water reaching a pool or seed-derived water
   joins it. A cell whose water is at least a centimetre deep, has no lower
   neighbour and has barely drained for ten steps becomes a pool, which then
@@ -193,12 +199,16 @@ the frame rose from 41 ms without water to 45–47 ms with it.
 
 ## In the app
 
-`world/water.rs` steps the world's `WaterWorld` at 20 Hz, at most three
-steps a frame, and publishes a `WaterSurfaces` view after each step. Every
-committed terrain edit (brush, spoil and soil alike) goes through
-`commit_terrain_edit_result`, which tells the water which bricks changed:
-pools there are measured again, and free cells beside seed-derived water
-become inlets. Loading a world floods its pools out again and finds the
+`world/water.rs` steps the world's `WaterWorld` at 20 Hz on a worker
+(`WaterRunner`). Each frame hands the worker the water time owed, at most
+three steps, whenever its last batch is done, and publishes what that batch
+left: a `WaterSurfaces` view for buoyancy, and the pools, joined cells,
+running water and falls to draw. A worker that falls behind slows the water
+down; the frame never waits for it, except to save. Every committed terrain
+edit (brush, spoil and soil alike) goes through `commit_terrain_edit_result`,
+which queues the bricks that changed for the worker's next batch: pools
+there are measured again, and free cells beside seed-derived water become
+inlets. Loading a world floods its pools out again and finds the
 inlets in every edited brick.
 
 Stored water is saved in `water.ron` beside `material.bin`. A world without
@@ -237,6 +247,20 @@ solid material it is built from, so a closed steel boat sinks. The GPU
 route has no buoyancy.
 
 Spawns keep a metre above any water within ten metres.
+
+## Performance
+
+`cargo run -p mechanic-bench --release --bin water-breach [seed]` cuts a
+trench through a lake's bank above open land (seed 1 by default: a lake over
+a 17 m hillside) and steps the water for 120 s (`BREACH_SECONDS`), printing
+JSONL per simulated second and a summary with each phase's p95
+(`WaterPhases`). On an M1 Pro the flood peaks at about 18,000 running cells,
+with a step p95 of 22 ms. Most cells then are films a few millimetres deep
+spread over the slope.
+
+The ground is read per water cell and cached: a cell the field bounds as
+wholly air or wholly ground costs one interval test, and only cells the
+surface crosses sample the field's density.
 
 ## Known limits
 

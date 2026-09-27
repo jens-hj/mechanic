@@ -8,15 +8,15 @@
     reason = "cell indices within one 32-cell brick"
 )]
 
-use std::collections::HashMap;
-
 use bevy_math::{DVec3, IVec3};
 
+use super::cells::CellMap;
 use super::cycle::WaterNetwork;
 use super::{WATER_CELL_METRES, WaterCell};
 use crate::generation::Lattice;
 use crate::{
-    BRICK_EDGE_CELLS, BrickCoord, LakeBasin, RiverReach, TerrainField, TerrainSource, WaterSurface,
+    BRICK_EDGE_CELLS, BrickCoord, LakeBasin, RiverReach, TerrainDensityClass, TerrainField,
+    TerrainSource, WaterSurface,
 };
 
 /// Terrain cells along one edge of a water cell.
@@ -43,14 +43,28 @@ fn shore(ground: &impl WaterGround, cell: WaterCell, openings: Openings) -> Opti
         .filter(|surface| floor < surface.level && floor > surface.level - WATER_CELL_METRES)
 }
 
+/// Terrain cells in one water cell.
+pub(super) const CELL_TERRAIN_CELLS: usize = 64;
+
+/// Openings not yet sampled: no layer holds more than 16 open cells.
+const UNKNOWN: Openings = [u8::MAX; 4];
+
+/// Position of one of a water cell's terrain cells, x fastest, then y, then
+/// z.
+fn local_offset(index: usize) -> IVec3 {
+    let index = index as i32;
+    let edge = WATER_CELL_EDGE_CELLS;
+    IVec3::new(index % edge, index / edge % edge, index / (edge * edge))
+}
+
 /// Open terrain cells in each of a water cell's four layers, bottom first.
 pub(super) type Openings = [u8; 4];
 
 /// The ground water sits in.
 pub trait WaterGround: WaterNetwork {
-    /// Whether each terrain cell of a brick is open, x fastest, then y, then
-    /// z, over the brick's 32³ cells.
-    fn open_cells(&self, brick: BrickCoord) -> Vec<bool>;
+    /// Whether each terrain cell of one water cell is open, x fastest, then
+    /// y, then z, over its 4³ cells.
+    fn open_cells(&self, cell: WaterCell) -> [bool; CELL_TERRAIN_CELLS];
 
     /// Seed-derived water at a point, if the point holds any.
     fn implicit(&self, point: DVec3) -> Option<WaterSurface>;
@@ -86,32 +100,43 @@ impl<S> WaterNetwork for TerrainWater<'_, S> {
 }
 
 impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
-    fn open_cells(&self, brick: BrickCoord) -> Vec<bool> {
-        let edge = BRICK_EDGE_CELLS;
-        if let Some(edited) = self.edits.brick(brick) {
-            let mut open = Vec::with_capacity((edge * edge * edge) as usize);
-            for z in 0..edge {
-                for y in 0..edge {
-                    for x in 0..edge {
-                        let sample = edited.sample(IVec3::new(x, y, z));
-                        open.push(sample.is_none_or(|sample| !sample.is_solid()));
-                    }
-                }
+    fn open_cells(&self, cell: WaterCell) -> [bool; CELL_TERRAIN_CELLS] {
+        let edge = WATER_CELL_EDGE_CELLS;
+        let origin = IVec3::new(cell.x * edge, cell.y * edge, cell.z * edge);
+        let mut open = [false; CELL_TERRAIN_CELLS];
+        if let Some(edited) = self.edits.brick(cell.brick()) {
+            let local = origin - {
+                let minimum = cell.brick().minimum_cell();
+                IVec3::new(minimum.x, minimum.y, minimum.z)
+            };
+            for (index, open) in open.iter_mut().enumerate() {
+                let offset = local_offset(index);
+                let sample = edited.sample(local + offset);
+                *open = sample.is_none_or(|sample| !sample.is_solid());
             }
             return open;
         }
-        let minimum = brick.minimum_cell();
+        // Most cells water looks at are wholly air or wholly ground, which
+        // the field bounds far faster than it samples.
+        let centre = |cell: IVec3| crate::WorldCell::new(cell.x, cell.y, cell.z).centre().0;
+        match self
+            .field
+            .classify(centre(origin), centre(origin + IVec3::splat(edge - 1)))
+        {
+            TerrainDensityClass::Empty => return [true; CELL_TERRAIN_CELLS],
+            TerrainDensityClass::Solid => return open,
+            TerrainDensityClass::Mixed => {}
+        }
         let lattice = Lattice {
-            origin: IVec3::new(minimum.x, minimum.y, minimum.z),
+            origin,
             stride: 1,
             dims: [edge as usize; 3],
             centred: true,
         };
-        self.field
-            .density_lattice(&lattice)
-            .into_iter()
-            .map(|density| density <= 0.0)
-            .collect()
+        for (open, density) in open.iter_mut().zip(self.field.density_lattice(&lattice)) {
+            *open = density <= 0.0;
+        }
+        open
     }
 
     fn implicit(&self, point: DVec3) -> Option<WaterSurface> {
@@ -140,34 +165,31 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
 /// Openings of every water cell in the bricks water has looked at.
 #[derive(Clone, Debug, Default)]
 pub(super) struct OpeningsCache {
-    bricks: HashMap<BrickCoord, Box<[Openings; BRICK_WATER_CELLS]>>,
+    bricks: CellMap<BrickCoord, Box<[Openings; BRICK_WATER_CELLS]>>,
     /// Seed-derived water found in each cell.
-    implicit: HashMap<WaterCell, Option<WaterSurface>>,
+    implicit: CellMap<WaterCell, Option<WaterSurface>>,
+    /// Whether seed-derived water may reach into each brick.
+    may_hold: CellMap<BrickCoord, bool>,
 }
 
 impl OpeningsCache {
-    /// Openings of one water cell.
+    /// Openings of one water cell, sampled the first time it is asked for.
     pub(super) fn openings(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Openings {
-        let brick = cell.brick();
-        let openings = self.bricks.entry(brick).or_insert_with(|| {
-            let open = ground.open_cells(brick);
-            let edge = BRICK_EDGE_CELLS as usize;
-            let mut openings = Box::new([[0_u8; 4]; BRICK_WATER_CELLS]);
-            for (index, &open) in open.iter().enumerate() {
-                if !open {
-                    continue;
+        let known = self
+            .bricks
+            .entry(cell.brick())
+            .or_insert_with(|| Box::new([UNKNOWN; BRICK_WATER_CELLS]));
+        let slot = &mut known[cell.local_index_in_brick()];
+        if *slot == UNKNOWN {
+            let mut openings = [0_u8; 4];
+            for (index, open) in ground.open_cells(cell).into_iter().enumerate() {
+                if open {
+                    openings[local_offset(index).y as usize] += 1;
                 }
-                let (x, y, z) = (index % edge, index / edge % edge, index / edge / edge);
-                let water = WaterCell::local_index(IVec3::new(
-                    (x / 4) as i32,
-                    (y / 4) as i32,
-                    (z / 4) as i32,
-                ));
-                openings[water][y % 4] += 1;
             }
-            openings
-        });
-        openings[cell.local_index_in_brick()]
+            *slot = openings;
+        }
+        *slot
     }
 
     /// Seed-derived water in a cell, looked for at its lowest opening.
@@ -179,7 +201,11 @@ impl OpeningsCache {
         if let Some(&found) = self.implicit.get(&cell) {
             return found;
         }
-        if !ground.may_hold_water(cell.brick()) {
+        let may_hold = *self
+            .may_hold
+            .entry(cell.brick())
+            .or_insert_with(|| ground.may_hold_water(cell.brick()));
+        if !may_hold {
             self.implicit.insert(cell, None);
             return None;
         }

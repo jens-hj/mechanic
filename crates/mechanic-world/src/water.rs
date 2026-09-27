@@ -13,7 +13,9 @@
 //! from it. Water taken from a lake lowers the whole lake, and every cubic
 //! metre is booked: see [`cycle`] for where it comes from and goes.
 
+mod cells;
 mod cycle;
+mod grid;
 mod ground;
 mod jet;
 mod pool;
@@ -25,14 +27,15 @@ use std::sync::Arc;
 use bevy_math::{DVec2, DVec3, IVec3};
 use serde::{Deserialize, Serialize};
 
+use cells::CellMap;
 use cycle::Cycle;
 pub use cycle::{SurplusDoc, WaterLedger, WaterNetwork, WaterShift};
+use grid::SheetGrid;
 use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache};
 pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use jet::{Jet, Launch};
 pub use jet::{JetDoc, Parcel};
 use pool::Pool;
-use sheet::Sheet;
 pub use sheet::{RunningView, SheetDoc};
 
 use crate::{BrickCoord, TERRAIN_CELL_METERS, TerrainField, WaterBody, WaterSurface};
@@ -441,7 +444,7 @@ struct Transfer {
 pub struct WaterWorld {
     pools: BTreeMap<u32, Pool>,
     next_pool: u32,
-    owner: HashMap<WaterCell, u32>,
+    owner: CellMap<WaterCell, u32>,
     ground: OpeningsCache,
     /// The rivers, lakes, sea and air around stored water.
     cycle: Cycle,
@@ -449,9 +452,9 @@ pub struct WaterWorld {
     inlets: std::collections::BTreeSet<WaterCell>,
     /// Cells a pool filled up to the seed-derived water beside it, which then
     /// became part of that water.
-    joined: HashMap<WaterCell, Joined>,
+    joined: CellMap<WaterCell, Joined>,
     /// Running water, by cell.
-    sheets: BTreeMap<WaterCell, Sheet>,
+    sheets: SheetGrid,
     /// Water in flight, by the lip it poured over.
     jets: BTreeMap<WaterCell, Jet>,
     /// This step's launches over lips.
@@ -590,7 +593,7 @@ impl WaterWorld {
         let running = self
             .sheets
             .iter()
-            .filter_map(|(&cell, sheet)| Some((cell, sheet.surface()?)))
+            .filter_map(|(cell, sheet)| Some((cell, sheet.surface()?)))
             .collect();
         let joined = self
             .joined
@@ -697,7 +700,7 @@ impl WaterWorld {
         // Running water standing up to the cell is no drop either.
         if self
             .sheets
-            .get(&below)
+            .get(below)
             .is_some_and(|sheet| sheet.surface_height() >= cell.bottom())
         {
             return false;
@@ -932,7 +935,8 @@ impl WaterWorld {
                 }
             } else if let Some(surface) = self.implicit(ground, cell)
                 && level > floor
-                && (level > surface.level - MERGE_METRES || (full && surface.level > top))
+                && (level > surface.level - MERGE_METRES
+                    || (full && surface.level > top && cell.bottom() >= top - FILM_METRES))
             {
                 out.joins.push((id, cell));
             } else if let Some(surface) = self.implicit(ground, cell) {
@@ -1254,7 +1258,7 @@ impl WaterWorld {
             pool.settle();
             return taken;
         }
-        if let Some(sheet) = self.sheets.get_mut(&cell) {
+        if let Some(sheet) = self.sheets.get_mut(cell) {
             let taken = volume_m3.min(sheet.volume);
             sheet.volume -= taken;
             return taken;
@@ -1391,7 +1395,7 @@ impl WaterWorld {
                 }),
                 End::Seed(seed) | End::Sheet(seed) => {
                     let openings = self.openings(ground, seed);
-                    let running = self.sheets.get(&seed).map_or(0.0, |sheet| sheet.volume);
+                    let running = self.sheets.get(seed).map_or(0.0, |sheet| sheet.volume);
                     room.entry(to).or_insert_with(|| {
                         (held_in(seed, openings, surface.level) - running).max(0.0)
                     })

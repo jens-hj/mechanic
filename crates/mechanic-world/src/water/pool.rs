@@ -2,8 +2,9 @@
 //! floods into.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 
+use super::cells::CellMap;
 use super::ground::Openings;
 use super::{FINE_LAYER_METRES, FINE_VOLUME_M3, WaterCell};
 
@@ -39,7 +40,7 @@ pub(super) struct Pool {
     /// beyond its members lies past the rim, where it spills.
     pub(super) rim: f64,
     /// Member cells and their openings.
-    pub(super) members: HashMap<WaterCell, Openings>,
+    pub(super) members: CellMap<WaterCell, Openings>,
     /// Open terrain cells of all members, by global terrain-cell layer.
     layers: BTreeMap<i32, u32>,
     /// Neighbours not yet taken in, lowest floor first.
@@ -57,7 +58,7 @@ impl Pool {
             volume,
             level: f64::NEG_INFINITY,
             rim: f64::NEG_INFINITY,
-            members: HashMap::new(),
+            members: CellMap::default(),
             layers: BTreeMap::new(),
             border: BinaryHeap::new(),
             queued: HashSet::new(),
