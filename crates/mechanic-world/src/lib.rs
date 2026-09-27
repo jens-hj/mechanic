@@ -52,8 +52,8 @@ pub use mesh::{
     LatticeEdgeVertexCache, PreparedTerrainRegion, TerrainCollisionChunk, TerrainIndexGroups,
     TerrainMeshChunk, TerrainMeshMetrics, TerrainMeshRequest, TerrainRayHit,
     TerrainTriangleGroupMask, TriangleBvh, TriangleBvhNode, TriangleBvhTriangle, WaterSheet,
-    WaterTile, WorldBounds, mesh_chunk, mesh_chunk_profiled, mesh_chunk_profiled_prepared,
-    water_sheet,
+    WaterTile, WorldBounds, joined_water_sheet, mesh_chunk, mesh_chunk_profiled,
+    mesh_chunk_profiled_prepared, water_sheet,
 };
 pub use persistence::{
     AUTOSAVE_DEBOUNCE, AUTOSAVE_DIRTY_INTERVAL, AutosaveState, FrozenCreationDoc, OpenWorldOutcome,

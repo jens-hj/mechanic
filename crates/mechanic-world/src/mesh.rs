@@ -24,7 +24,7 @@ pub use lattice::PreparedTerrainRegion;
 use lattice::{lattice_from_halo, sample_halo, synchronize_edited_boundary_lattice};
 use polygonise::{CUBE_CORNERS, polygonise_cube, weighted_materials};
 use transition::{generate_face_cap, generate_transition_face};
-pub use water::{WaterSheet, WaterTile, water_sheet};
+pub use water::{WaterSheet, WaterTile, joined_water_sheet, water_sheet};
 
 use std::{collections::HashMap, time::Instant};
 

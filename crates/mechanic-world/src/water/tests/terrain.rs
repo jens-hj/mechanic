@@ -3,7 +3,9 @@
 use bevy_math::{DVec2, DVec3};
 
 use crate::water::{TerrainWater, WaterWorld};
-use crate::{TerrainField, TerrainOctree, WaterBody, WorldPosition, WorldSeed};
+use crate::{
+    TerrainField, TerrainOctree, WaterBody, WaterTile, WorldPosition, WorldSeed, joined_water_sheet,
+};
 
 /// A lake column near spawn and a dry bank beside it: the lake point, the
 /// bank point, and the lake's level.
@@ -91,6 +93,34 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
     );
     let held = water.stored_m3() + water.joined_m3();
     assert!(held > 0.5, "only {held:.2} m³ ran in");
+    // The lake's own sheet runs on over the trench, as deep as it was dug.
+    let joined = water
+        .joined_cells(&ground)
+        .into_iter()
+        .map(|(cell, _)| cell)
+        .collect::<std::collections::HashSet<_>>();
+    let tile = WaterTile {
+        minimum: [beyond.x - 4.0, beyond.z - 4.0],
+        edge: 8.0,
+        cells: 32,
+    };
+    let shifts = water.cycle.shifts(&ground);
+    let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined)
+        .expect("the trench shows water");
+    let deepest = sheet
+        .vertices
+        .iter()
+        .zip(&sheet.depths)
+        .filter(|(vertex, _)| {
+            let point = DVec2::new(
+                f64::from(vertex[0]) + tile.minimum[0],
+                f64::from(vertex[2]) + tile.minimum[1],
+            );
+            point.distance(DVec2::new(beyond.x, beyond.z)) < 1.0
+        })
+        .map(|(_, &depth)| depth)
+        .fold(0.0_f32, f32::max);
+    assert!(deepest > 0.4, "the trench shows {deepest:.2} m of water");
     // Water fills the dug trench and does not creep off along the shore.
     let flat = |point: DVec3| DVec2::new(point.x, point.z);
     let (from, to) = (flat(beyond), flat(lake));

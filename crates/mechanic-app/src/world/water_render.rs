@@ -6,7 +6,8 @@
 //! runs on under the shore, where the terrain hides it, so tiles need no
 //! seams: shorelines are where the terrain crosses the water at any detail.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
@@ -17,7 +18,7 @@ use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
     PoolView, RunningView, TerrainField, WATER_CELL_METRES, WaterBody, WaterCell, WaterFall,
-    WaterSheet, WaterShift, WaterSurface, WaterTile, water_sheet,
+    WaterSheet, WaterShift, WaterSurface, WaterTile, joined_water_sheet,
 };
 
 use super::{WorldOwned, WorldRuntime};
@@ -133,6 +134,15 @@ impl TileKey {
         })
     }
 
+    /// Whether the tile's grid reaches a column: its own square and one
+    /// grid cell around it.
+    fn reaches(self, [x, z]: [f64; 2]) -> bool {
+        let [x0, z0] = self.minimum();
+        let (edge, margin) = (self.edge(), self.edge() / f64::from(TILE_CELLS));
+        (x0 - margin..=x0 + edge + margin).contains(&x)
+            && (z0 - margin..=z0 + edge + margin).contains(&z)
+    }
+
     fn tile(self) -> WaterTile {
         WaterTile {
             minimum: self.minimum(),
@@ -145,6 +155,18 @@ impl TileKey {
 enum TileState {
     Meshing(Task<Option<WaterSheet>>),
     Shown(Option<Entity>),
+    /// Shown, and meshing again since the water under it changed; the old
+    /// mesh stays until the new one is ready.
+    Refreshing(Option<Entity>, Task<Option<WaterSheet>>),
+}
+
+impl TileState {
+    fn shown(&self) -> Option<Entity> {
+        match self {
+            Self::Shown(entity) | Self::Refreshing(entity, _) => *entity,
+            Self::Meshing(_) => None,
+        }
+    }
 }
 
 /// The water tiles around the camera.
@@ -167,6 +189,12 @@ pub(crate) struct WaterTiles {
     joined: Option<(Entity, (usize, u64))>,
     /// Water revision the pools were drawn at.
     drawn_revision: Option<u64>,
+    /// Cells joined to seed-derived water, which the tiles draw as that
+    /// water.
+    joined_cells: Arc<HashSet<WaterCell>>,
+    /// Columns whose joined cells changed since the tiles over them were
+    /// meshed.
+    stale: Vec<[f64; 2]>,
 }
 
 /// A lake that has dropped this much further than its tiles show is meshed
@@ -267,8 +295,8 @@ pub(crate) fn stream_water(
     }
     if tiles.origin != Some(origin) {
         for state in tiles.tiles.values() {
-            if let TileState::Shown(Some(entity)) = state {
-                commands.entity(*entity).despawn();
+            if let Some(entity) = state.shown() {
+                commands.entity(entity).despawn();
             }
         }
         tiles.tiles.clear();
@@ -280,6 +308,14 @@ pub(crate) fn stream_water(
         .clone();
     let camera = origin + camera.translation().as_dvec3();
     let wanted = wanted_tiles(camera);
+    let mesh = |key: TileKey, tiles: &WaterTiles| {
+        let field = runtime.field.clone();
+        let edits = runtime.edits.snapshot();
+        let (shifts, joined) = (tiles.shifts.clone(), tiles.joined_cells.clone());
+        AsyncComputeTaskPool::get()
+            .spawn(async move { joined_water_sheet(&field, &edits, key.tile(), &shifts, &joined) })
+    };
+    refresh_stale(&mut tiles, mesh);
 
     let mut in_flight = tiles
         .tiles
@@ -293,23 +329,21 @@ pub(crate) fn stream_water(
         if tiles.tiles.contains_key(key) {
             continue;
         }
-        let field = runtime.field.clone();
-        let edits = runtime.edits.snapshot();
-        let tile = key.tile();
-        let shifts = tiles.shifts.clone();
-        let task = AsyncComputeTaskPool::get()
-            .spawn(async move { water_sheet(&field, &edits, tile, &shifts) });
+        let task = mesh(*key, &tiles);
         tiles.tiles.insert(*key, TileState::Meshing(task));
         in_flight += 1;
     }
 
     for (key, state) in &mut tiles.tiles {
-        let TileState::Meshing(task) = state else {
+        let (TileState::Meshing(task) | TileState::Refreshing(_, task)) = state else {
             continue;
         };
         let Some(sheet) = block_on(future::poll_once(task)) else {
             continue;
         };
+        if let Some(old) = state.shown() {
+            commands.entity(old).despawn();
+        }
         let entity = sheet.map(|sheet| {
             let translation = (sheet.origin.0 - origin).as_vec3();
             commands
@@ -329,18 +363,56 @@ pub(crate) fn stream_water(
         *state = TileState::Shown(entity);
     }
 
-    let settled = wanted
-        .iter()
-        .all(|key| matches!(tiles.tiles.get(key), Some(TileState::Shown(_))));
+    retire_tiles(&mut commands, &mut tiles, wanted);
+}
+
+/// Once every wanted tile shows, drops the tiles no longer wanted.
+fn retire_tiles(commands: &mut Commands, tiles: &mut WaterTiles, wanted: Vec<TileKey>) {
+    let settled = wanted.iter().all(|key| {
+        matches!(
+            tiles.tiles.get(key),
+            Some(TileState::Shown(_) | TileState::Refreshing(..))
+        )
+    });
     if settled {
-        let wanted = wanted.into_iter().collect::<std::collections::HashSet<_>>();
+        let wanted = wanted.into_iter().collect::<HashSet<_>>();
         tiles.tiles.retain(|key, state| {
             let keep = wanted.contains(key);
-            if !keep && let TileState::Shown(Some(entity)) = state {
-                commands.entity(*entity).despawn();
+            if !keep && let Some(entity) = state.shown() {
+                commands.entity(entity).despawn();
             }
             keep
         });
+    }
+}
+
+/// Meshes again the tiles over water that joined or left seed-derived water
+/// since they were meshed, showing the old mesh until the new one is ready.
+fn refresh_stale(
+    tiles: &mut WaterTiles,
+    mesh: impl Fn(TileKey, &WaterTiles) -> Task<Option<WaterSheet>>,
+) {
+    let stale = std::mem::take(&mut tiles.stale);
+    if stale.is_empty() {
+        return;
+    }
+    let keys = tiles
+        .tiles
+        .keys()
+        .copied()
+        .filter(|key| stale.iter().any(|&column| key.reaches(column)))
+        .collect::<Vec<_>>();
+    for key in keys {
+        let task = mesh(key, tiles);
+        if let Some(old) = tiles.tiles.remove(&key) {
+            let refreshed = match old {
+                TileState::Meshing(_) => TileState::Meshing(task),
+                TileState::Shown(entity) | TileState::Refreshing(entity, _) => {
+                    TileState::Refreshing(entity, task)
+                }
+            };
+            tiles.tiles.insert(key, refreshed);
+        }
     }
 }
 
@@ -370,33 +442,35 @@ fn open_columns(pool: &PoolView, field: &TerrainField) -> Vec<SurfaceColumn> {
         .collect()
 }
 
-/// The columns of cells that joined seed-derived water where that water's
-/// own sheet does not show: ground dug beside a lake, not under it.
+/// The columns of cells that joined seed-derived water beyond the reach of
+/// that water's own sheet, which draws the joined cells within it: its top
+/// cell, and the depth down to its lowest.
 fn joined_columns(
     joined: &[(WaterCell, WaterSurface)],
     field: &TerrainField,
 ) -> Vec<SurfaceColumn> {
-    let mut tops = std::collections::BTreeMap::<(i32, i32), (WaterCell, f64)>::new();
+    let mut tops = std::collections::BTreeMap::<(i32, i32), (WaterCell, f64, f64)>::new();
     for &(cell, surface) in joined {
         if cell.bottom() >= surface.level {
             continue;
         }
         let top = tops
             .entry((cell.x, cell.z))
-            .or_insert((cell, surface.level));
+            .or_insert((cell, surface.level, cell.bottom()));
         if cell.y > top.0.y {
-            *top = (cell, surface.level);
+            top.0 = cell;
         }
+        top.2 = top.2.min(cell.bottom());
     }
     tops.into_values()
-        .filter(|&(cell, level)| {
+        .filter(|&(cell, ..)| {
             let centre = cell.centre();
-            !field.is_water(DVec3::new(centre.x, level - 0.02, centre.z))
+            field.water_surface(centre.x, centre.z).is_none()
         })
-        .map(|(cell, level)| SurfaceColumn {
+        .map(|(cell, level, bottom)| SurfaceColumn {
             cell,
             level,
-            depth: 1.0,
+            depth: level - bottom,
         })
         .collect()
 }
@@ -606,7 +680,17 @@ pub(crate) fn draw_stored_water(
         field,
         edits: &runtime.edits,
     };
-    let joined = joined_columns(&runtime.water.joined_cells(&ground), field);
+    let cells = runtime.water.joined_cells(&ground);
+    let set = cells.iter().map(|(cell, _)| *cell).collect::<HashSet<_>>();
+    if set != *tiles.joined_cells {
+        let stale = set
+            .symmetric_difference(&tiles.joined_cells)
+            .map(|cell| [cell.centre().x, cell.centre().z])
+            .collect::<Vec<_>>();
+        tiles.stale.extend(stale);
+        tiles.joined_cells = Arc::new(set);
+    }
+    let joined = joined_columns(&cells, field);
     let key = fingerprint(&joined);
     if tiles.joined.is_none_or(|(_, drawn)| drawn != key) {
         if let Some((entity, _)) = tiles.joined.take() {

@@ -7,9 +7,11 @@
 //! It is cut only where open ground at the surface is not water: a dry void
 //! under a lake.
 
+use std::collections::HashSet;
+
 use bevy_math::DVec3;
 
-use crate::{TerrainField, TerrainSource, WorldPosition};
+use crate::{TerrainField, TerrainSource, WaterCell, WorldPosition};
 
 /// How far below its level the surface is probed, in metres.
 const SURFACE_PROBE_METRES: f64 = 0.02;
@@ -70,6 +72,23 @@ pub fn water_sheet(
     tile: WaterTile,
     shifts: &std::collections::BTreeMap<crate::WaterBody, crate::WaterShift>,
 ) -> Option<WaterSheet> {
+    joined_water_sheet(field, edits, tile, shifts, &HashSet::new())
+}
+
+/// Meshes one tile of water surface as [`water_sheet`] does, with the cells
+/// dug out beside or under seed-derived water and `joined` to it counted as
+/// that water: one surface runs on over them, as deep as the dug ground.
+///
+/// # Panics
+///
+/// Panics only if a tile exceeds the `u32` mesh-index contract.
+pub fn joined_water_sheet<S: std::hash::BuildHasher>(
+    field: &TerrainField,
+    edits: &impl TerrainSource,
+    tile: WaterTile,
+    shifts: &std::collections::BTreeMap<crate::WaterBody, crate::WaterShift>,
+    joined: &HashSet<WaterCell, S>,
+) -> Option<WaterSheet> {
     let [x0, z0] = tile.minimum;
     field.water_level_range(
         DVec3::new(x0, 0.0, z0),
@@ -98,7 +117,8 @@ pub fn water_sheet(
                 .map_or(seed, |shift| shift.apply(seed));
             let probe = DVec3::new(x, surface.level - SURFACE_PROBE_METRES, z);
             let buried = density(probe) > 0.0;
-            let open = !buried && field.is_water(probe);
+            let open = !buried
+                && (field.is_water(probe) || joined.contains(&WaterCell::containing(probe)));
             let mut depth = 0.0;
             if open {
                 let mut y = surface.level;
