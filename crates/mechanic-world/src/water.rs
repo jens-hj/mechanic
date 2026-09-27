@@ -232,6 +232,41 @@ pub struct WaterStep {
     pub sheet_cells: usize,
     /// Streams pouring or still in flight after the step.
     pub falls: Vec<WaterFall>,
+    /// Where the step's time went.
+    pub phases: WaterPhases,
+}
+
+/// Time one water step spent in each of its phases, in milliseconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WaterPhases {
+    /// Pools taking in the ground their water covers.
+    pub flood_ms: f64,
+    /// Water crossing between pools, seed-derived water and inlets.
+    pub exchange_ms: f64,
+    /// Running water.
+    pub sheets_ms: f64,
+    /// Water in flight.
+    pub jets_ms: f64,
+    /// Pools joining seed-derived water and merging.
+    pub joins_ms: f64,
+    /// Settling, evaporation, the cycle and drying up.
+    pub settle_ms: f64,
+}
+
+/// Milliseconds since the last lap.
+struct PhaseClock(std::time::Instant);
+
+impl PhaseClock {
+    fn new() -> Self {
+        Self(std::time::Instant::now())
+    }
+
+    fn lap(&mut self) -> f64 {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.0).as_secs_f64() * 1000.0;
+        self.0 = now;
+        elapsed
+    }
 }
 
 /// One pool as it is drawn.
@@ -780,28 +815,35 @@ impl WaterWorld {
 
     /// Runs the water for `dt` seconds.
     pub fn step(&mut self, ground: &impl WaterGround, dt: f64) -> WaterStep {
+        let mut clock = PhaseClock::new();
+        let mut phases = WaterPhases::default();
         self.launches.clear();
         let ids = self.pools.keys().copied().collect::<Vec<_>>();
         for &id in &ids {
             self.flood(ground, id, SPREAD_CELLS_PER_STEP);
         }
+        phases.flood_ms = clock.lap();
         let mut out = Exchanges::default();
         for &id in &ids {
             self.exchange(ground, id, dt, &mut out);
         }
         self.pour_inlets(ground, dt, &mut out.transfers);
         let (mut moved_m3, mut fed) = self.apply(ground, &out.transfers);
+        phases.exchange_ms = clock.lap();
         let (running, sheet_fed) = self.step_sheets(ground, dt);
         moved_m3 += running;
         fed.extend(sheet_fed);
+        phases.sheets_ms = clock.lap();
         let (landed, jet_fed) = self.step_jets(ground, dt);
         moved_m3 += landed;
         fed.extend(jet_fed);
+        phases.jets_ms = clock.lap();
         // Water that arrived floods at once, so no pool stands higher than
         // its water can reach.
         for &id in &fed {
             self.flood(ground, id, SPREAD_CELLS_PER_STEP);
         }
+        phases.flood_ms += clock.lap();
         // Pools join seed-derived water before they merge with each other,
         // so two pools under a lake join it rather than pool what the lake
         // presses up into them.
@@ -811,6 +853,7 @@ impl WaterWorld {
         for (keep, other) in out.merges {
             self.merge(keep, other);
         }
+        phases.joins_ms = clock.lap();
         self.settle_sheets(ground);
         self.evaporate(dt);
         self.evaporate_sheets(EVAPORATION_M_S, dt);
@@ -819,12 +862,14 @@ impl WaterWorld {
         for pool in self.pools.values_mut() {
             pool.settle();
         }
+        phases.settle_ms = clock.lap();
         WaterStep {
             moved_m3,
             pools: self.pools.len(),
             cells: self.owner.len(),
             sheet_cells: self.sheets.len(),
             falls: self.take_falls(dt),
+            phases,
         }
     }
 
@@ -1279,16 +1324,14 @@ impl WaterWorld {
         if self.implicit(ground, cell).is_some() {
             return;
         }
-        let edited = ground.edited(cell.brick());
         for neighbour in cell.neighbours() {
             if let Some(&id) = self.owner.get(&neighbour) {
                 if let Some(pool) = self.pools.get_mut(&id) {
                     pool.queue(cell, floor);
                 }
-            } else if edited
-                && self
-                    .implicit(ground, neighbour)
-                    .is_some_and(|surface| surface.level > floor + FILM_METRES)
+            } else if self
+                .implicit(ground, neighbour)
+                .is_some_and(|surface| surface.level > floor + FILM_METRES)
             {
                 self.inlets.insert(cell);
             }

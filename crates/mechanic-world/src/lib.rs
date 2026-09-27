@@ -80,5 +80,6 @@ pub use streaming::{
 pub use water::{
     JetDoc, JoinedCellDoc, Parcel, PoolDoc, PoolView, RunningView, SheetDoc, StoredWaterDoc,
     SurplusDoc, TerrainWater, WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell, WaterFall,
-    WaterGround, WaterLedger, WaterNetwork, WaterShift, WaterStep, WaterSurfaces, WaterWorld,
+    WaterGround, WaterLedger, WaterNetwork, WaterPhases, WaterShift, WaterStep, WaterSurfaces,
+    WaterWorld,
 };

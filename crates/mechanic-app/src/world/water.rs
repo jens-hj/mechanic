@@ -88,6 +88,14 @@ pub(super) fn step_water(
                 "cells": step.cells,
                 "falls": step.falls.len(),
                 "sheet_cells": step.sheet_cells,
+                "phases_ms": {
+                    "flood": step.phases.flood_ms,
+                    "exchange": step.phases.exchange_ms,
+                    "sheets": step.phases.sheets_ms,
+                    "jets": step.phases.jets_ms,
+                    "joins": step.phases.joins_ms,
+                    "settle": step.phases.settle_ms,
+                },
                 "falling_m3": runtime.water.ledger().falling_m3,
                 "ledger_m3": runtime.water.ledger().total(),
             })
